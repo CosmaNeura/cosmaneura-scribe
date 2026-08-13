@@ -81,6 +81,11 @@ For GitHub OIDC, use the workload identity's object ID and
 `--assignee-principal-type ServicePrincipal`. Permission changes can take several minutes to
 propagate. Keep `use_azuread_auth = true` in `backend.hcl`.
 
+The AzureRM provider also sets `storage_use_azuread = true`. Any identity that plans or applies
+Blob properties and containers therefore needs an appropriate data-plane role on the scribe
+storage account (`Storage Blob Data Reader` for read-only plans and `Storage Blob Data Contributor`
+for applies). Do not work around a missing role by enabling shared keys.
+
 ## 2. Inventory the existing development environment
 
 These commands are read-only:
