@@ -163,6 +163,49 @@ class LegacyTranscriptPayload(BaseModel):
     transcript_data: list[LegacyTranscriptEntry]
 
 
+class MasterTranscriptSegment(BaseModel):
+    speaker: str = Field(pattern=r"^(Doctor|Patient|Other|Unknown)$")
+    content: str = Field(min_length=1, max_length=100_000)
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+
+
+class MasterTranscriptDeliveryRequest(BaseModel):
+    schema_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    encounter_id: ExternalEntityId
+    scribe_session_id: UUID
+    duration_seconds: int = Field(ge=0, le=86_400)
+    segments: list[MasterTranscriptSegment] = Field(min_length=1, max_length=10_000)
+
+
+class MasterTranscriptDeliveryResponse(BaseModel):
+    schema_version: str = Field(pattern=r"^1\.0$")
+    transcript_id: ExternalEntityId
+    disposition: str = Field(pattern=r"^(created|replayed)$")
+
+
+class DeliveryStatus(StrEnum):
+    PENDING = "pending"
+    RETRYABLE = "retryable"
+    DELIVERED = "delivered"
+    TERMINAL = "terminal"
+
+
+class TranscriptDelivery(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    session_id: UUID
+    idempotency_key: str = Field(min_length=8, max_length=255)
+    payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: DeliveryStatus
+    attempt_count: int = Field(ge=0)
+    platform_transcript_id: ExternalEntityId | None = None
+    last_error_code: str | None = Field(default=None, max_length=64)
+    created_at: datetime
+    updated_at: datetime
+
+
 class AuditEvent(BaseModel):
     model_config = ConfigDict(frozen=True)
 

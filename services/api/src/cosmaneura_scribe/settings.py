@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     upload_grant_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     managed_identity_client_id: UUID | None = None
 
+    master_platform_handoff_enabled: bool = False
+    master_platform_base_url: AnyHttpUrl | None = None
+    master_platform_scope: str | None = None
+    master_platform_timeout_seconds: float = Field(default=15, ge=1, le=60)
+
     repository_backend: Literal["memory", "postgres"] = "memory"
     database_url: SecretStr | None = None
     database_host: str | None = None
@@ -42,6 +47,14 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "database_host and database_user are required for managed-identity PostgreSQL"
                 )
+        if self.master_platform_handoff_enabled:
+            if self.master_platform_base_url is None or self.master_platform_scope is None:
+                raise ValueError(
+                    "master_platform_base_url and master_platform_scope are required "
+                    "when handoff is enabled"
+                )
+            if not self.master_platform_scope.endswith("/.default"):
+                raise ValueError("master_platform_scope must end with /.default")
         return self
 
 

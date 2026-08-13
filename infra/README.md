@@ -80,5 +80,11 @@ As of 2026-08-13, this subscription is restricted from creating PostgreSQL Flexi
 US and East US 2. Do not redirect the server to Central US without a separately reviewed
 cross-region design; VNet-integrated Flexible Server must use networking in its own region.
 
-Service Bus, CMK wiring, retention automation, authenticated master connectivity, and deployment
-identities follow in reviewed slices.
+The master-platform handoff is false by default. After the platform's Entra app role and workload
+endpoint are configured, set `enable_master_platform_handoff`, `master_platform_base_url`, and
+`master_platform_scope` as described in
+[`../docs/MASTER_PLATFORM_HANDOFF.md`](../docs/MASTER_PLATFORM_HANDOFF.md). These are non-secret
+identifiers; the runtime managed identity obtains the token.
+
+Service Bus, CMK wiring, retention automation, and deployment identities follow in reviewed
+slices.

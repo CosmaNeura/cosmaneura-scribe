@@ -146,6 +146,27 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
+        name  = "COSMANEURA_SCRIBE_MASTER_PLATFORM_HANDOFF_ENABLED"
+        value = tostring(var.enable_master_platform_handoff)
+      }
+
+      dynamic "env" {
+        for_each = var.enable_master_platform_handoff ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_MASTER_PLATFORM_BASE_URL"
+          value = var.master_platform_base_url
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_master_platform_handoff ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_MASTER_PLATFORM_SCOPE"
+          value = var.master_platform_scope
+        }
+      }
+
+      env {
         name  = "COSMANEURA_SCRIBE_STORAGE_ACCOUNT_URL"
         value = azurerm_storage_account.audio.primary_blob_endpoint
       }

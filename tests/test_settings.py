@@ -30,3 +30,27 @@ def test_local_database_url_is_treated_as_secret() -> None:
         database_ssl=False,
     )
     assert "password" not in repr(settings.database_url)
+
+
+def test_master_platform_handoff_requires_url_and_default_scope() -> None:
+    with pytest.raises(ValidationError, match="master_platform_base_url"):
+        Settings(master_platform_handoff_enabled=True)
+
+    with pytest.raises(ValidationError, match="must end with /.default"):
+        Settings(
+            master_platform_handoff_enabled=True,
+            master_platform_base_url="https://platform.internal.example",
+            master_platform_scope="api://platform/Scribe.Transcript.Write",
+        )
+
+
+def test_master_platform_handoff_configuration_contains_no_secret() -> None:
+    settings = Settings(
+        master_platform_handoff_enabled=True,
+        master_platform_base_url="https://platform.internal.example",
+        master_platform_scope="api://platform/.default",
+        managed_identity_client_id=uuid4(),
+    )
+
+    assert settings.master_platform_scope == "api://platform/.default"
+    assert "secret" not in settings.model_dump()

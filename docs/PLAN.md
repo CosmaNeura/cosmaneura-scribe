@@ -20,7 +20,7 @@ stay in the existing Cosmaneura engine.
 - Conservative consent policy and consent/session state machines
 - Short-lived user-delegation upload grants and grant-bound chunk custody metadata
 - Structured transcript contract
-- Legacy note-engine adapter
+- Entra-authenticated master-platform adapter with durable, idempotent delivery receipts
 - Reversible database baseline, deployed private-storage foundation, internal Container Apps runtime,
   and CI guardrails
 - Durable async PostgreSQL repository with per-request transactions and atomic idempotency
@@ -35,8 +35,8 @@ stay in the existing Cosmaneura engine.
 2. Review and apply the staged private PostgreSQL foundation plan.
 3. Build an immutable image from the persistence commit, run the one-shot migration job, and switch
    the internal API to PostgreSQL only after migration and readiness checks pass.
-4. Add the private authenticated master-platform adapter for session creation and transcript
-   handoff.
+4. Configure the Entra application role and run the synthetic cross-service handoff acceptance
+   test.
 5. Implement the replaceable speech-to-text worker interface and a de-identified Azure Speech
    benchmark harness.
 

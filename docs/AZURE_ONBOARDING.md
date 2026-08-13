@@ -260,6 +260,18 @@ to the identity's client ID:
 COSMANEURA_SCRIBE_MANAGED_IDENTITY_CLIENT_ID=<runtime-managed-identity-client-id>
 ```
 
+The same managed identity obtains the master-platform access token. After the platform API app
+role is assigned, configure only these non-secret values:
+
+```text
+COSMANEURA_SCRIBE_MASTER_PLATFORM_HANDOFF_ENABLED=true
+COSMANEURA_SCRIBE_MASTER_PLATFORM_BASE_URL=https://<master-platform-origin>
+COSMANEURA_SCRIBE_MASTER_PLATFORM_SCOPE=api://<platform-api-client-id>/.default
+```
+
+The full Entra role and rollout procedure is in
+[`MASTER_PLATFORM_HANDOFF.md`](MASTER_PLATFORM_HANDOFF.md). Do not add a client secret.
+
 ## 7. Connection readiness checklist
 
 - [ ] Azure CLI installed and interactive MFA login succeeds.
@@ -278,6 +290,7 @@ COSMANEURA_SCRIBE_MANAGED_IDENTITY_CLIENT_ID=<runtime-managed-identity-client-id
       East Coast region.
 - [ ] Migration identity is the PostgreSQL Entra administrator; runtime identity is not.
 - [ ] Manual database job completed before `use_postgres_repository` is enabled.
+- [ ] Platform API app role assigned to the Scribe managed identity before handoff is enabled.
 
 ## 8. Current regional provisioning prerequisite
 
