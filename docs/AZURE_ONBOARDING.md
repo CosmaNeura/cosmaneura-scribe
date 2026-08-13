@@ -35,7 +35,7 @@ not authentication secrets, but they should still be handled as internal configu
 
 ## 1. Install and sign in on this Mac
 
-Azure CLI is not currently installed on this workstation. Microsoft recommends Homebrew on macOS:
+If Azure CLI is not installed, Microsoft supports installing it with Homebrew on macOS:
 
 ```bash
 brew update
@@ -60,6 +60,26 @@ authentication at
 When this succeeds, tell the coding agent only: **"Azure CLI is signed in to the development
 subscription."** The agent can inspect resource identifiers with read-only Azure CLI calls; no token
 or password needs to be copied.
+
+### Remote state permission
+
+OpenTofu uses Entra authentication for the remote state backend. A subscription Owner does not
+automatically receive Azure Storage data-plane access. Grant each developer or CI plan identity
+`Storage Blob Data Contributor` on only the state container; do not distribute an account key.
+
+An Azure administrator can use the portal or this command after replacing the identifiers:
+
+```bash
+az role assignment create \
+  --assignee-object-id <entra-object-id> \
+  --assignee-principal-type User \
+  --role "Storage Blob Data Contributor" \
+  --scope /subscriptions/<subscription-id>/resourceGroups/<state-resource-group>/providers/Microsoft.Storage/storageAccounts/<state-account>/blobServices/default/containers/<state-container>
+```
+
+For GitHub OIDC, use the workload identity's object ID and
+`--assignee-principal-type ServicePrincipal`. Permission changes can take several minutes to
+propagate. Keep `use_azuread_auth = true` in `backend.hcl`.
 
 ## 2. Inventory the existing development environment
 
@@ -87,6 +107,11 @@ Recommended reuse boundary:
   Key Vault scope, managed identities, Service Bus topics/subscriptions, and audit/retention policy.
 - Never import an existing resource into Terraform until a reviewed `tofu plan` shows that the
   configuration will not replace or weaken it.
+
+The 2026-08-13 inventory found no compatible VNet, private-endpoint subnet, or Blob/Key Vault
+private DNS zones in East US. The scribe development configuration therefore creates those
+resources in its dedicated resource group. Existing West US, West US 2, and North Central US
+resources are not reused for the East US PHI path.
 
 ## 3. Configure passwordless GitHub Actions access
 

@@ -53,19 +53,16 @@ variable "key_vault_name" {
   type        = string
 }
 
-variable "private_endpoint_subnet_id" {
-  description = "Existing subnet delegated for private endpoints."
-  type        = string
+variable "virtual_network_address_space" {
+  description = "Dedicated scribe development VNet address space."
+  type        = list(string)
+  default     = ["10.42.0.0/16"]
 }
 
-variable "blob_private_dns_zone_id" {
-  description = "Existing privatelink.blob.core.windows.net private DNS zone ID."
-  type        = string
-}
-
-variable "key_vault_private_dns_zone_id" {
-  description = "Existing privatelink.vaultcore.azure.net private DNS zone ID."
-  type        = string
+variable "private_endpoint_subnet_address_prefixes" {
+  description = "Address prefixes for the subnet that hosts scribe private endpoints."
+  type        = list(string)
+  default     = ["10.42.1.0/24"]
 }
 
 variable "tags" {

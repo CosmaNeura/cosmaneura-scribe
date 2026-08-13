@@ -21,3 +21,11 @@ output "runtime_managed_identity_client_id" {
 output "runtime_managed_identity_id" {
   value = azurerm_user_assigned_identity.runtime.id
 }
+
+output "virtual_network_id" {
+  value = azurerm_virtual_network.scribe.id
+}
+
+output "private_endpoint_subnet_id" {
+  value = azurerm_subnet.private_endpoints.id
+}

@@ -5,8 +5,9 @@ accepts no secret values. Local runs authenticate through Azure CLI; GitHub runs
 
 Read [`../docs/AZURE_ONBOARDING.md`](../docs/AZURE_ONBOARDING.md) before initialization.
 
-Do not apply this configuration until the existing resource-group, private-endpoint subnet, and
-private DNS zone IDs have been inventoried and a reviewed plan confirms there are no replacements.
+Do not apply this configuration until the subscription has been inventoried and a reviewed plan
+confirms there are no replacements. The canonical development subscription had no compatible East
+US VNet or private DNS zones, so this configuration creates a dedicated network boundary for scribe.
 
 ```bash
 cp backend.hcl.example backend.hcl
@@ -19,7 +20,7 @@ tofu plan
 
 `backend.hcl` and `development.auto.tfvars` are local configuration and must remain uncommitted.
 
-This first slice provisions private Blob custody, Key Vault, private endpoints, a runtime managed
-identity, and least-privilege data-plane roles. PostgreSQL, Container Apps, Service Bus, monitoring,
-CMK wiring, retention automation, and deployment identities follow after existing shared resources
-are selected.
+This first slice provisions a dedicated East US VNet and private DNS, private Blob custody, Key
+Vault, private endpoints, a runtime managed identity, and least-privilege data-plane roles.
+PostgreSQL, Container Apps, Service Bus, monitoring, CMK wiring, retention automation, and
+deployment identities follow in reviewed slices.

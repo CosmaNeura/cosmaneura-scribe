@@ -45,6 +45,7 @@ resource "azurerm_storage_account" "audio" {
   default_to_oauth_authentication   = true
   https_traffic_only_enabled        = true
   infrastructure_encryption_enabled = true
+  local_user_enabled                = false
   min_tls_version                   = "TLS1_2"
   public_network_access_enabled     = false
   shared_access_key_enabled         = false
@@ -89,7 +90,7 @@ resource "azurerm_private_endpoint" "audio_blob" {
   name                = "${local.name_prefix}-blob-pe"
   resource_group_name = local.resource_group_name
   location            = local.resource_group_location
-  subnet_id           = var.private_endpoint_subnet_id
+  subnet_id           = azurerm_subnet.private_endpoints.id
 
   private_service_connection {
     name                           = "${local.name_prefix}-blob-connection"
@@ -100,7 +101,7 @@ resource "azurerm_private_endpoint" "audio_blob" {
 
   private_dns_zone_group {
     name                 = "blob"
-    private_dns_zone_ids = [var.blob_private_dns_zone_id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.blob.id]
   }
 
   tags = local.tags
@@ -110,7 +111,7 @@ resource "azurerm_private_endpoint" "key_vault" {
   name                = "${local.name_prefix}-vault-pe"
   resource_group_name = local.resource_group_name
   location            = local.resource_group_location
-  subnet_id           = var.private_endpoint_subnet_id
+  subnet_id           = azurerm_subnet.private_endpoints.id
 
   private_service_connection {
     name                           = "${local.name_prefix}-vault-connection"
@@ -121,7 +122,7 @@ resource "azurerm_private_endpoint" "key_vault" {
 
   private_dns_zone_group {
     name                 = "vault"
-    private_dns_zone_ids = [var.key_vault_private_dns_zone_id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.key_vault.id]
   }
 
   tags = local.tags
