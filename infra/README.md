@@ -41,6 +41,44 @@ reference to an image that does not yet exist:
 3. Set the gitignored `container_image_tag` to that commit SHA and
    `deploy_container_app = true`; review and apply the second plan.
 
-The API has VNet-only ingress and scales from zero to one replica because its repository is still
-process memory. PostgreSQL, Service Bus, CMK wiring, retention automation, authenticated master
-connectivity, and deployment identities follow in reviewed slices.
+The API has VNet-only ingress and scales from zero to one replica. The currently deployed revision
+still uses process memory. Durable PostgreSQL is implemented but is deliberately controlled by
+three false-by-default flags:
+
+```hcl
+deploy_postgres_foundation    = false
+deploy_database_migration_job = false
+use_postgres_repository       = false
+```
+
+The PostgreSQL cutover is also staged so creation, schema bootstrap, and traffic are independently
+reviewable:
+
+1. Confirm subscription capacity in East US. Set only `deploy_postgres_foundation = true`, then
+   review the paid-resource plan and apply it. This adds a delegated subnet, private DNS zone/link,
+   PostgreSQL 16 Flexible Server (`B_Standard_B1ms`, 32 GiB), application database, migration
+   managed identity, scoped ACR pull grant, and diagnostics. Password authentication and public
+   network access remain disabled.
+2. Build an immutable image from the persistence commit. Set its exact commit tag and enable only
+   `deploy_database_migration_job`. Apply the job definition, start it manually once, and verify the
+   successful execution. The migration identity creates the runtime Entra database principal,
+   applies reversible Alembic migrations, and grants least privilege.
+3. Set `use_postgres_repository = true`. Review the Container App revision plan, apply, and verify
+   `/readyz`. Keep the prior revision available for rollback until the persistence smoke test passes.
+
+No database password or token is a Terraform variable. See
+[`../docs/POSTGRES_OPERATIONS.md`](../docs/POSTGRES_OPERATIONS.md) for the operational commands and
+rollback boundary.
+
+The 2026-08-13 preview is **9 to add, 0 to change, 0 to destroy**. Microsoft's East US retail
+meters list B1ms compute at $0.017/hour and storage at $0.115/GB-month, approximately $16.09/month
+for 730 compute hours and 32 GB. Backup above the included allowance, private DNS queries, and
+diagnostic-log ingestion are usage-dependent and excluded from that estimate. Recheck pricing when
+approval is requested.
+
+As of 2026-08-13, this subscription is restricted from creating PostgreSQL Flexible Server in East
+US and East US 2. Do not redirect the server to Central US without a separately reviewed
+cross-region design; VNet-integrated Flexible Server must use networking in its own region.
+
+Service Bus, CMK wiring, retention automation, authenticated master connectivity, and deployment
+identities follow in reviewed slices.

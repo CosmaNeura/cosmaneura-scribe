@@ -37,6 +37,9 @@ packages = ["services/api/src/cosmaneura_scribe"]
 addopts = "-q --strict-markers"
 testpaths = ["tests"]
 pythonpath = ["services/api/src"]
+markers = [
+  "postgres: requires the disposable PostgreSQL integration-test database",
+]
 
 [tool.ruff]
 line-length = 100

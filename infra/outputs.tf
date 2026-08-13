@@ -45,3 +45,15 @@ output "container_apps_environment_default_domain" {
 output "container_app_fqdn" {
   value = var.deploy_container_app ? azurerm_container_app.api[0].latest_revision_fqdn : null
 }
+
+output "postgres_fqdn" {
+  value = var.deploy_postgres_foundation ? azurerm_postgresql_flexible_server.scribe[0].fqdn : null
+}
+
+output "postgres_database_name" {
+  value = var.deploy_postgres_foundation ? azurerm_postgresql_flexible_server_database.scribe[0].name : null
+}
+
+output "database_migration_job_name" {
+  value = var.deploy_database_migration_job ? azurerm_container_app_job.database_migrations[0].name : null
+}

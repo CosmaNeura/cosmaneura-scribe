@@ -23,6 +23,8 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 WORKDIR /app
 
 COPY --from=builder --chown=10001:10001 /app/.venv /app/.venv
+COPY --chown=10001:10001 alembic.ini ./
+COPY --chown=10001:10001 alembic ./alembic
 
 USER 10001:10001
 

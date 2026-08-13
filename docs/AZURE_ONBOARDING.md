@@ -176,10 +176,18 @@ Initial scribe roles, scoped to the exact resource:
   short-lived user-delegation SAS for one encrypted object.
 - Key Vault Secrets User on the scribe vault when the service must resolve a secret.
 - Service Bus Data Sender/Receiver only on the topics/subscriptions the process uses.
+- PostgreSQL runtime access is created inside the database by a separate migration identity; the
+  API identity is not an Entra database administrator.
 
 The scribe API now uses `DefaultAzureCredential` and generates a user-delegation SAS rather than
 using an account key. Microsoft documents this pattern at
 [Create a user-delegation SAS with Python](https://learn.microsoft.com/azure/storage/blobs/storage-blob-user-delegation-sas-create-python).
+
+PostgreSQL follows the same passwordless model. A dedicated migration managed identity is the
+server's Entra administrator and runs the manual bootstrap job. That job creates the runtime
+identity's database principal and grants only the operations the API requires. The API requests a
+short-lived token for `https://ossrdbms-aad.database.windows.net/.default`; no database password or
+connection string is placed in Container Apps, Key Vault, Terraform state, or GitHub.
 
 ## 5. Enter true application secrets
 
@@ -226,6 +234,24 @@ COSMANEURA_SCRIBE_STORAGE_CONTAINER_NAME=audio
 AZURE_TOKEN_CREDENTIALS=dev
 ```
 
+For local development, keep PostgreSQL disabled unless using a disposable local test database:
+
+```text
+COSMANEURA_SCRIBE_REPOSITORY_BACKEND=memory
+```
+
+The deployed API receives only these non-secret PostgreSQL identifiers from OpenTofu:
+
+```text
+COSMANEURA_SCRIBE_REPOSITORY_BACKEND=postgres
+COSMANEURA_SCRIBE_DATABASE_HOST=<private-server-fqdn>
+COSMANEURA_SCRIBE_DATABASE_NAME=cosmaneura_scribe
+COSMANEURA_SCRIBE_DATABASE_USER=<runtime-managed-identity-name>
+```
+
+Do not set `COSMANEURA_SCRIBE_DATABASE_URL` in Azure. That option exists only for disposable local
+and CI PostgreSQL instances. The Azure runtime uses its managed identity and TLS.
+
 `DefaultAzureCredential` will use the Azure CLI session. In the deployed Container App, set
 `AZURE_TOKEN_CREDENTIALS=prod`, attach the runtime managed identity, and set this non-secret value
 to the identity's client ID:
@@ -248,3 +274,20 @@ COSMANEURA_SCRIBE_MANAGED_IDENTITY_CLIENT_ID=<runtime-managed-identity-client-id
 - [ ] Key Vault uses RBAC, purge protection, private networking, and managed-identity references.
 - [ ] Only synthetic/de-identified data used during validation.
 - [ ] Current Azure HIPAA-eligible-service list confirmed for every service in the PHI path.
+- [ ] PostgreSQL Flexible Server provisioning is available for this subscription in the selected
+      East Coast region.
+- [ ] Migration identity is the PostgreSQL Entra administrator; runtime identity is not.
+- [ ] Manual database job completed before `use_postgres_repository` is enabled.
+
+## 8. Current regional provisioning prerequisite
+
+On 2026-08-13, Azure's subscription-scoped PostgreSQL SKU API reported new Flexible Server
+provisioning as restricted in both **East US** and **East US 2** for the development subscription.
+Central US reported capacity, but using it would require a separate cross-region network design and
+is not an automatic substitute for the approved East Coast topology.
+
+An Azure subscription administrator should open Azure Portal → **Help + support** → **Create a
+support request** → **Service and subscription limits (quotas)** and request PostgreSQL Flexible
+Server provisioning in East US, with East US 2 as the acceptable fallback. Include the target SKU
+`B_Standard_B1ms`, PostgreSQL 16, and one development server. No credential or PHI belongs in the
+request. Re-run the subscription capacity check before any apply.

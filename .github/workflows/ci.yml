@@ -11,6 +11,22 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cosmaneura_scribe_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cosmaneura_scribe_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      COSMANEURA_SCRIBE_TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/cosmaneura_scribe_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

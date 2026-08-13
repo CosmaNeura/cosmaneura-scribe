@@ -160,6 +160,38 @@ resource "azurerm_container_app" "api" {
         value = azurerm_storage_container.audio.name
       }
 
+      dynamic "env" {
+        for_each = var.use_postgres_repository ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_REPOSITORY_BACKEND"
+          value = "postgres"
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.use_postgres_repository ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_DATABASE_HOST"
+          value = azurerm_postgresql_flexible_server.scribe[0].fqdn
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.use_postgres_repository ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_DATABASE_NAME"
+          value = azurerm_postgresql_flexible_server_database.scribe[0].name
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.use_postgres_repository ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_DATABASE_USER"
+          value = azurerm_user_assigned_identity.runtime.name
+        }
+      }
+
       liveness_probe {
         transport        = "HTTP"
         port             = 8020
@@ -172,7 +204,7 @@ resource "azurerm_container_app" "api" {
       readiness_probe {
         transport               = "HTTP"
         port                    = 8020
-        path                    = "/healthz"
+        path                    = var.use_postgres_repository ? "/readyz" : "/healthz"
         initial_delay           = 5
         interval_seconds        = 10
         timeout                 = 5

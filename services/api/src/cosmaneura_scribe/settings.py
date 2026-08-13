@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, Field, model_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,10 +21,27 @@ class Settings(BaseSettings):
     upload_grant_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     managed_identity_client_id: UUID | None = None
 
+    repository_backend: Literal["memory", "postgres"] = "memory"
+    database_url: SecretStr | None = None
+    database_host: str | None = None
+    database_port: int = Field(default=5432, ge=1, le=65535)
+    database_name: str = Field(default="cosmaneura_scribe", min_length=1, max_length=63)
+    database_user: str | None = None
+    database_ssl: bool = True
+    database_pool_size: int = Field(default=5, ge=1, le=20)
+    database_max_overflow: int = Field(default=5, ge=0, le=20)
+    database_runtime_principal_name: str | None = None
+    database_runtime_principal_object_id: UUID | None = None
+
     @model_validator(mode="after")
     def require_azure_settings(self) -> Settings:
         if self.storage_backend == "azure" and self.storage_account_url is None:
             raise ValueError("storage_account_url is required for the Azure storage backend")
+        if self.repository_backend == "postgres" and self.database_url is None:
+            if self.database_host is None or self.database_user is None:
+                raise ValueError(
+                    "database_host and database_user are required for managed-identity PostgreSQL"
+                )
         return self
 
 

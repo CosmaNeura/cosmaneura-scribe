@@ -182,3 +182,37 @@ def test_audio_registration_must_match_an_issued_grant(client: TestClient) -> No
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "Audio object does not have an upload grant."
+
+
+def test_readiness_reports_repository_health(client: TestClient) -> None:
+    response = client.get("/readyz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready"}
+
+
+def test_idempotency_key_rejects_a_different_request(client: TestClient) -> None:
+    tenant_id = uuid4()
+    first = {
+        "appointment_id": "appointment-idempotency",
+        "practitioner_id": "practitioner-idempotency",
+        "patient_id": "patient-idempotency",
+        "modality": "virtual",
+        "participant_regions": ["FL"],
+        "method": "pre_visit_form",
+        "all_parties_consented": True,
+        "granted_at": datetime.now(UTC).isoformat(),
+    }
+    request_headers = headers(tenant_id, "consent-conflict-1000")
+
+    assert client.post("/v1/consents", headers=request_headers, json=first).status_code == 201
+    conflict = client.post(
+        "/v1/consents",
+        headers=request_headers,
+        json={**first, "appointment_id": "appointment-changed"},
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == (
+        "Idempotency-Key was already used with a different request."
+    )

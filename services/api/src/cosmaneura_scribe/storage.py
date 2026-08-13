@@ -21,7 +21,10 @@ class AudioStorage(Protocol):
         session_id: UUID,
         object_id: UUID,
         request: AudioUploadGrantRequest,
+        expires_at: datetime | None = None,
     ) -> AudioUploadGrant: ...
+
+    async def close(self) -> None: ...
 
 
 class InMemoryAudioStorage:
@@ -35,8 +38,9 @@ class InMemoryAudioStorage:
         session_id: UUID,
         object_id: UUID,
         request: AudioUploadGrantRequest,
+        expires_at: datetime | None = None,
     ) -> AudioUploadGrant:
-        expires_at = datetime.now(UTC) + self._ttl
+        expires_at = expires_at or datetime.now(UTC) + self._ttl
         path = _blob_name(tenant_id, session_id, object_id, request)
         return AudioUploadGrant(
             object_id=object_id,
@@ -46,6 +50,9 @@ class InMemoryAudioStorage:
             upload_url=f"https://storage.invalid/{quote(path)}?development-grant=true",
             expires_at=expires_at,
         )
+
+    async def close(self) -> None:
+        return None
 
 
 class AzureBlobAudioStorage:
@@ -79,9 +86,10 @@ class AzureBlobAudioStorage:
         session_id: UUID,
         object_id: UUID,
         request: AudioUploadGrantRequest,
+        expires_at: datetime | None = None,
     ) -> AudioUploadGrant:
         now = datetime.now(UTC)
-        expires_at = now + self._ttl
+        expires_at = expires_at or now + self._ttl
         delegation_key = await self._client.get_user_delegation_key(
             key_start_time=now - timedelta(minutes=5),
             key_expiry_time=expires_at,

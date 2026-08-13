@@ -11,12 +11,16 @@ Cosmaneura SOAP-note and value-point engine.
 - Idempotent audio-chunk registration bound to the matching grant
 - Structured, role-labeled transcript persistence and retrieval
 - Adapter to the existing `AIVisitTranscript` shape
-- PostgreSQL custody/audit baseline and deployed private Azure OpenTofu foundation
+- Async in-memory and durable PostgreSQL repositories with atomic request transactions
+- PostgreSQL row-level tenant isolation, legal state-transition guards, and append-only audit events
+- Passwordless Entra-token database access and a separately privileged migration job
+- PostgreSQL custody/audit migrations and deployed private Azure OpenTofu foundation
 - Non-root container image and internal-only Azure Container Apps deployment definition
 
-The service currently uses an in-memory development repository by default. The Azure adapter uses
-`DefaultAzureCredential` and user-delegation SAS, so it needs no storage account key. Durable
-PostgreSQL repository wiring, orchestration, and Azure Speech are the next implementation slices.
+The service uses an in-memory repository by default and is ready to switch to PostgreSQL after the
+private database foundation is provisioned and bootstrapped. Azure Storage and PostgreSQL both use
+`DefaultAzureCredential`, so neither an account key nor a database password is stored in the app.
+The currently deployed revision remains on the in-memory repository until that controlled cutover.
 
 ## Run locally
 
@@ -33,6 +37,9 @@ OpenAPI docs are at `http://localhost:8020/docs`. Regenerate the committed contr
 
 Before connecting an Azure subscription, follow the passwordless setup in
 [`docs/AZURE_ONBOARDING.md`](docs/AZURE_ONBOARDING.md).
+
+The database provisioning and cutover runbook is in
+[`docs/POSTGRES_OPERATIONS.md`](docs/POSTGRES_OPERATIONS.md).
 
 ## Existing note-engine compatibility
 
