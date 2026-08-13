@@ -1,5 +1,11 @@
 locals {
   name_prefix = "cosmaneura-scribe-${var.environment}"
+  environment_short = {
+    development = "dev"
+    staging     = "stg"
+    production  = "prod"
+  }[var.environment]
+  container_app_name = "cosmaneura-scribe-${local.environment_short}-api"
   resource_group_name = var.create_resource_group ? (
     azurerm_resource_group.scribe[0].name
   ) : data.azurerm_resource_group.scribe[0].name

@@ -95,9 +95,10 @@ resource "azurerm_private_dns_a_record" "container_apps_wildcard" {
 resource "azurerm_container_app" "api" {
   count = var.deploy_container_app ? 1 : 0
 
-  name                         = "${local.name_prefix}-api"
+  name                         = local.container_app_name
   resource_group_name          = local.resource_group_name
   container_app_environment_id = azurerm_container_app_environment.scribe.id
+  workload_profile_name        = "Consumption"
   revision_mode                = "Single"
   max_inactive_revisions       = 3
 
