@@ -53,7 +53,9 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     command.upgrade(config, "head")
 
     asyncio.run(_create_app_role(admin_url))
-    app_url = str(parsed.set(username=APP_ROLE, password=APP_PASSWORD))
+    app_url = parsed.set(username=APP_ROLE, password=APP_PASSWORD).render_as_string(
+        hide_password=False
+    )
     yield admin_url, app_url
 
     asyncio.run(_drop_app_role(admin_url))
