@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 import httpx
 from azure.core.exceptions import AzureError
@@ -19,7 +19,9 @@ from .schemas import (
 )
 from .settings import Settings
 
-ROLE_LABELS = {
+ROLE_LABELS: dict[
+    SpeakerRole, Literal["Doctor", "Patient", "Other", "Unknown"]
+] = {
     SpeakerRole.CLINICIAN: "Doctor",
     SpeakerRole.PATIENT: "Patient",
     SpeakerRole.OTHER: "Other",
