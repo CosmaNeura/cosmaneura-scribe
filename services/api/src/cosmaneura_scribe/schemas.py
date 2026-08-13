@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+ExternalEntityId = Annotated[str, Field(min_length=1, max_length=128)]
 
 
 class CaptureModality(StrEnum):
@@ -20,9 +23,9 @@ class ConsentMethod(StrEnum):
 
 
 class ConsentCreate(BaseModel):
-    appointment_id: UUID
-    practitioner_id: UUID
-    patient_id: UUID
+    appointment_id: ExternalEntityId
+    practitioner_id: ExternalEntityId
+    patient_id: ExternalEntityId
     modality: CaptureModality
     participant_regions: set[str] = Field(min_length=1)
     method: ConsentMethod
@@ -56,9 +59,9 @@ class SessionStatus(StrEnum):
 
 
 class SessionCreate(BaseModel):
-    appointment_id: UUID
-    practitioner_id: UUID
-    patient_id: UUID
+    appointment_id: ExternalEntityId
+    practitioner_id: ExternalEntityId
+    patient_id: ExternalEntityId
     consent_record_id: UUID
     modality: CaptureModality
 
@@ -91,6 +94,22 @@ class AudioChunk(AudioChunkRegister):
     id: UUID
     session_id: UUID
     registered_at: datetime
+
+
+class AudioUploadGrantRequest(BaseModel):
+    sequence_number: int = Field(ge=0)
+    channel: CaptureChannel
+
+
+class AudioUploadGrant(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    object_id: UUID
+    session_id: UUID
+    sequence_number: int
+    channel: CaptureChannel
+    upload_url: str = Field(repr=False)
+    expires_at: datetime
 
 
 class SpeakerRole(StrEnum):
@@ -137,9 +156,9 @@ class LegacyTranscriptEntry(BaseModel):
 
 
 class LegacyTranscriptPayload(BaseModel):
-    doctor_id: UUID
-    appointment_id: UUID
-    patient_id: UUID
+    doctor_id: ExternalEntityId
+    appointment_id: ExternalEntityId
+    patient_id: ExternalEntityId
     duration: int
     transcript_data: list[LegacyTranscriptEntry]
 

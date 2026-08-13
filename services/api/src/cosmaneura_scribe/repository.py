@@ -4,7 +4,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID
 
-from .schemas import AudioChunk, AuditEvent, CaptureSession, ConsentRecord, Transcript
+from .schemas import (
+    AudioChunk,
+    AudioUploadGrant,
+    AuditEvent,
+    CaptureSession,
+    ConsentRecord,
+    Transcript,
+)
 
 
 @dataclass(frozen=True)
@@ -18,6 +25,7 @@ class InMemoryRepository:
     consents: dict[tuple[UUID, UUID], ConsentRecord] = field(default_factory=lambda: {})
     sessions: dict[tuple[UUID, UUID], CaptureSession] = field(default_factory=lambda: {})
     chunks: dict[tuple[UUID, UUID], AudioChunk] = field(default_factory=lambda: {})
+    upload_grants: dict[tuple[UUID, UUID], AudioUploadGrant] = field(default_factory=lambda: {})
     transcripts: dict[tuple[UUID, UUID], Transcript] = field(default_factory=lambda: {})
     transcript_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
     idempotency: dict[tuple[UUID, str, str], IdempotencyRecord] = field(default_factory=lambda: {})

@@ -7,13 +7,15 @@ Cosmaneura SOAP-note and value-point engine.
 
 - Conservative all-party consent records
 - Tenant-scoped capture-session state machine
-- Idempotent audio-chunk registration without exposing storage internals to logs
+- Passwordless, short-lived Azure Blob upload grants scoped to one encrypted audio object
+- Idempotent audio-chunk registration bound to the matching grant
 - Structured, role-labeled transcript persistence and retrieval
 - Adapter to the existing `AIVisitTranscript` shape
-- PostgreSQL custody/audit baseline and private Azure storage baseline
+- PostgreSQL custody/audit baseline and validated private Azure OpenTofu baseline
 
-The service currently uses an in-memory development repository. Azure Blob upload-token issuance,
-Durable Functions orchestration, and Azure Speech are the next implementation slices.
+The service currently uses an in-memory development repository by default. The Azure adapter uses
+`DefaultAzureCredential` and user-delegation SAS, so it needs no storage account key. Durable
+Functions orchestration and Azure Speech are the next implementation slices.
 
 ## Run locally
 
@@ -28,9 +30,11 @@ make dev
 OpenAPI docs are at `http://localhost:8020/docs`. Regenerate the committed contract with
 `make openapi`.
 
+Before connecting an Azure subscription, follow the passwordless setup in
+[`docs/AZURE_ONBOARDING.md`](docs/AZURE_ONBOARDING.md).
+
 ## Existing note-engine compatibility
 
 The adapter emits `doctor_id`, `appointment_id`, `patient_id`, `duration`, and transcript entries
 with `speaker`, `content`, `startTime`, and `endTime`, matching the current Cosmaneura model. The
 new service retains channel, confidence, and speaker-role metadata internally.
-

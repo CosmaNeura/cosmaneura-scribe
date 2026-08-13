@@ -18,9 +18,10 @@ stay in the existing Cosmaneura engine.
 ## Current Sprint 0 slice
 
 - Conservative consent policy and consent/session state machines
-- Chunk custody metadata and structured transcript contract
+- Short-lived user-delegation upload grants and grant-bound chunk custody metadata
+- Structured transcript contract
 - Legacy note-engine adapter
-- Reversible database baseline, private-storage baseline, and CI guardrails
+- Reversible database baseline, validated private-storage OpenTofu baseline, and CI guardrails
 
 ## Required external decisions
 
@@ -28,4 +29,3 @@ stay in the existing Cosmaneura engine.
 - Have counsel approve the state × modality consent matrix before replacing the conservative
   all-party default.
 - Benchmark Azure Speech and Deepgram only on de-identified samples under the appropriate BAAs.
-

@@ -93,6 +93,64 @@
         "title": "AudioChunkRegister",
         "type": "object"
       },
+      "AudioUploadGrant": {
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/CaptureChannel"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          },
+          "sequence_number": {
+            "title": "Sequence Number",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "upload_url": {
+            "title": "Upload Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_id",
+          "session_id",
+          "sequence_number",
+          "channel",
+          "upload_url",
+          "expires_at"
+        ],
+        "title": "AudioUploadGrant",
+        "type": "object"
+      },
+      "AudioUploadGrantRequest": {
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/CaptureChannel"
+          },
+          "sequence_number": {
+            "minimum": 0.0,
+            "title": "Sequence Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence_number",
+          "channel"
+        ],
+        "title": "AudioUploadGrantRequest",
+        "type": "object"
+      },
       "CaptureChannel": {
         "enum": [
           "microphone",
@@ -114,7 +172,8 @@
       "CaptureSession": {
         "properties": {
           "appointment_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Appointment Id",
             "type": "string"
           },
@@ -137,12 +196,14 @@
             "$ref": "#/components/schemas/CaptureModality"
           },
           "patient_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Patient Id",
             "type": "string"
           },
           "practitioner_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Practitioner Id",
             "type": "string"
           },
@@ -170,7 +231,8 @@
             "type": "boolean"
           },
           "appointment_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Appointment Id",
             "type": "string"
           },
@@ -207,12 +269,14 @@
             "uniqueItems": true
           },
           "patient_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Patient Id",
             "type": "string"
           },
           "practitioner_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Practitioner Id",
             "type": "string"
           }
@@ -246,7 +310,8 @@
             "type": "boolean"
           },
           "appointment_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Appointment Id",
             "type": "string"
           },
@@ -288,7 +353,8 @@
             "uniqueItems": true
           },
           "patient_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Patient Id",
             "type": "string"
           },
@@ -297,7 +363,8 @@
             "type": "string"
           },
           "practitioner_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Practitioner Id",
             "type": "string"
           },
@@ -373,12 +440,14 @@
       "LegacyTranscriptPayload": {
         "properties": {
           "appointment_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Appointment Id",
             "type": "string"
           },
           "doctor_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Doctor Id",
             "type": "string"
           },
@@ -387,7 +456,8 @@
             "type": "integer"
           },
           "patient_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Patient Id",
             "type": "string"
           },
@@ -412,7 +482,8 @@
       "SessionCreate": {
         "properties": {
           "appointment_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Appointment Id",
             "type": "string"
           },
@@ -425,12 +496,14 @@
             "$ref": "#/components/schemas/CaptureModality"
           },
           "patient_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Patient Id",
             "type": "string"
           },
           "practitioner_id": {
-            "format": "uuid",
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Practitioner Id",
             "type": "string"
           }
@@ -863,6 +936,77 @@
           }
         },
         "summary": "Register Chunk"
+      }
+    },
+    "/v1/sessions/{session_id}/chunks/upload-grant": {
+      "post": {
+        "operationId": "issue_chunk_upload_grant_v1_sessions__session_id__chunks_upload_grant_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudioUploadGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioUploadGrant"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Chunk Upload Grant"
       }
     },
     "/v1/sessions/{session_id}/complete": {

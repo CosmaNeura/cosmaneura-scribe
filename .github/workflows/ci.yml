@@ -25,3 +25,18 @@ jobs:
       - run: uv run python scripts/check_secrets.py
       - run: uv run python scripts/generate_openapi.py
       - run: git diff --exit-code -- openapi/openapi.json
+
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: 1.12.5
+          tofu_wrapper: false
+      - run: tofu fmt -check -recursive
+        working-directory: infra
+      - run: tofu init -backend=false
+        working-directory: infra
+      - run: tofu validate
+        working-directory: infra

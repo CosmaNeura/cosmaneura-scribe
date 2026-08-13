@@ -12,9 +12,9 @@ def headers(tenant_id: object, key: str) -> dict[str, str]:
 
 def consent_body(*, consented: bool = True) -> dict[str, object]:
     return {
-        "appointment_id": str(uuid4()),
-        "practitioner_id": str(uuid4()),
-        "patient_id": str(uuid4()),
+        "appointment_id": "appointment_01kzy09rxaepjt63rb0pv1256p",
+        "practitioner_id": "doctor_01kzy09rx9emh9n9q0p0e6neam",
+        "patient_id": "patient_01kzy09rxben2txt3pfy34bn6h",
         "modality": "virtual",
         "participant_regions": ["FL", "OH"],
         "method": "pre_visit_form",
@@ -42,7 +42,7 @@ def test_session_requires_matching_consent(client: TestClient) -> None:
         "/v1/sessions",
         headers=headers(tenant_id, "session-key-0001"),
         json={
-            "appointment_id": str(uuid4()),
+            "appointment_id": "appointment_01kzy0aa32f87qrme1w5jq2f8m",
             "practitioner_id": body["practitioner_id"],
             "patient_id": body["patient_id"],
             "consent_record_id": consent["id"],

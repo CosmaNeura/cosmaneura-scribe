@@ -1,0 +1,11 @@
+subscription_id                 = "00000000-0000-0000-0000-000000000000"
+tenant_id                       = "00000000-0000-0000-0000-000000000000"
+environment                     = "development"
+location                        = "eastus"
+resource_group_name             = "cosmaneura-scribe-development"
+create_resource_group           = false
+storage_account_name            = "replacewithgloballyunique"
+key_vault_name                  = "replace-with-unique-name"
+private_endpoint_subnet_id      = "/subscriptions/.../subnets/private-endpoints"
+blob_private_dns_zone_id        = "/subscriptions/.../privateDnsZones/privatelink.blob.core.windows.net"
+key_vault_private_dns_zone_id = "/subscriptions/.../privateDnsZones/privatelink.vaultcore.azure.net"

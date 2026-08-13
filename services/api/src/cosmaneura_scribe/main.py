@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -14,6 +15,8 @@ from .repository import IdempotencyRecord, InMemoryRepository
 from .schemas import (
     AudioChunk,
     AudioChunkRegister,
+    AudioUploadGrant,
+    AudioUploadGrantRequest,
     CaptureSession,
     ConsentCreate,
     ConsentRecord,
@@ -23,6 +26,8 @@ from .schemas import (
     Transcript,
     TranscriptCreate,
 )
+from .settings import get_settings
+from .storage import AudioStorage, build_audio_storage
 
 app = FastAPI(
     title="Cosmaneura Scribe API",
@@ -41,10 +46,16 @@ def get_consent_policy() -> ConsentPolicy:
     return consent_policy
 
 
+@lru_cache
+def get_audio_storage() -> AudioStorage:
+    return build_audio_storage(get_settings())
+
+
 TenantId = Annotated[UUID, Header(alias="X-Tenant-ID")]
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=255)]
 Repository = Annotated[InMemoryRepository, Depends(get_repository)]
 Policy = Annotated[ConsentPolicy, Depends(get_consent_policy)]
+Storage = Annotated[AudioStorage, Depends(get_audio_storage)]
 
 
 def _fingerprint(payload: object) -> str:
@@ -185,6 +196,51 @@ async def create_session(
     return session
 
 
+@app.post(
+    "/v1/sessions/{session_id}/chunks/upload-grant",
+    response_model=AudioUploadGrant,
+    status_code=201,
+)
+async def issue_chunk_upload_grant(
+    session_id: UUID,
+    payload: AudioUploadGrantRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    store: Repository,
+    policy: Policy,
+    audio_storage: Storage,
+) -> AudioUploadGrant:
+    session = _session_or_404(store, tenant_id, session_id)
+    _assert_session_consent(store, tenant_id, session, policy)
+    if session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
+        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
+
+    fingerprint = _fingerprint(payload)
+    operation = f"chunk.upload-grant:{session_id}"
+    previous_id = _idempotent_entity(store, tenant_id, operation, idempotency_key, fingerprint)
+    if previous_id is not None:
+        return store.upload_grants[(tenant_id, previous_id)]
+
+    object_id = uuid4()
+    grant = await audio_storage.issue_upload_grant(
+        tenant_id=tenant_id,
+        session_id=session_id,
+        object_id=object_id,
+        request=payload,
+    )
+    store.upload_grants[(tenant_id, object_id)] = grant
+    store.idempotency[(tenant_id, operation, idempotency_key)] = IdempotencyRecord(
+        fingerprint, object_id
+    )
+    store.audit(
+        tenant_id=tenant_id,
+        action="audio_upload_grant.issued",
+        entity_type="audio_object",
+        entity_id=object_id,
+    )
+    return grant
+
+
 @app.post("/v1/sessions/{session_id}/chunks", response_model=AudioChunk, status_code=201)
 async def register_chunk(
     session_id: UUID,
@@ -198,6 +254,19 @@ async def register_chunk(
     _assert_session_consent(store, tenant_id, session, policy)
     if session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
         raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
+
+    grant = store.upload_grants.get((tenant_id, payload.object_id))
+    if grant is None:
+        raise HTTPException(status_code=409, detail="Audio object does not have an upload grant.")
+    if (
+        grant.session_id != session_id
+        or grant.sequence_number != payload.sequence_number
+        or grant.channel != payload.channel
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Audio registration does not match its upload grant.",
+        )
 
     fingerprint = _fingerprint(payload)
     operation = f"chunk.register:{session_id}"

@@ -15,9 +15,9 @@ def create_session(
     client: TestClient, tenant_id: object
 ) -> tuple[dict[str, object], dict[str, object]]:
     identity = {
-        "appointment_id": str(uuid4()),
-        "practitioner_id": str(uuid4()),
-        "patient_id": str(uuid4()),
+        "appointment_id": "appointment_01kzy09rxaepjt63rb0pv1256p",
+        "practitioner_id": "doctor_01kzy09rx9emh9n9q0p0e6neam",
+        "patient_id": "patient_01kzy09rxben2txt3pfy34bn6h",
         "modality": "virtual",
     }
     consent = client.post(
@@ -44,10 +44,15 @@ def test_consent_gated_pipeline_and_legacy_handoff(
 ) -> None:
     tenant_id = uuid4()
     identity, session = create_session(client, tenant_id)
+    grant = client.post(
+        f"/v1/sessions/{session['id']}/chunks/upload-grant",
+        headers=headers(tenant_id, "grant-key-1000"),
+        json={"sequence_number": 0, "channel": "microphone"},
+    ).json()
     chunk_body = {
         "sequence_number": 0,
         "channel": "microphone",
-        "object_id": str(uuid4()),
+        "object_id": grant["object_id"],
         "sha256": "a" * 64,
         "ciphertext_size_bytes": 4096,
     }
@@ -114,6 +119,33 @@ def test_consent_gated_pipeline_and_legacy_handoff(
     assert all(not hasattr(event, "content") for event in repository.audit_events)
 
 
+def test_upload_grant_is_short_lived_idempotent_and_metadata_only(
+    client: TestClient, repository: InMemoryRepository
+) -> None:
+    tenant_id = uuid4()
+    _, session = create_session(client, tenant_id)
+    request = {"sequence_number": 0, "channel": "microphone"}
+
+    first = client.post(
+        f"/v1/sessions/{session['id']}/chunks/upload-grant",
+        headers=headers(tenant_id, "grant-key-1000"),
+        json=request,
+    )
+    replay = client.post(
+        f"/v1/sessions/{session['id']}/chunks/upload-grant",
+        headers=headers(tenant_id, "grant-key-1000"),
+        json=request,
+    )
+
+    assert first.status_code == 201
+    assert replay.json() == first.json()
+    assert first.json()["upload_url"].startswith("https://storage.invalid/")
+    assert [event.action for event in repository.audit_events].count(
+        "audio_upload_grant.issued"
+    ) == 1
+    assert all(not hasattr(event, "upload_url") for event in repository.audit_events)
+
+
 def test_tenant_isolation_hides_session(client: TestClient) -> None:
     owner_tenant = uuid4()
     _, session = create_session(client, owner_tenant)
@@ -132,3 +164,21 @@ def test_session_cannot_complete_without_audio(client: TestClient) -> None:
         headers=headers(tenant_id, "complete-key-2000"),
     )
     assert response.status_code == 409
+
+
+def test_audio_registration_must_match_an_issued_grant(client: TestClient) -> None:
+    tenant_id = uuid4()
+    _, session = create_session(client, tenant_id)
+    response = client.post(
+        f"/v1/sessions/{session['id']}/chunks",
+        headers=headers(tenant_id, "chunk-key-unguarded"),
+        json={
+            "sequence_number": 0,
+            "channel": "microphone",
+            "object_id": str(uuid4()),
+            "sha256": "a" * 64,
+            "ciphertext_size_bytes": 4096,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Audio object does not have an upload grant."
