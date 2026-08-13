@@ -21,7 +21,8 @@ stay in the existing Cosmaneura engine.
 - Short-lived user-delegation upload grants and grant-bound chunk custody metadata
 - Structured transcript contract
 - Legacy note-engine adapter
-- Reversible database baseline, validated private-storage OpenTofu baseline, and CI guardrails
+- Reversible database baseline, deployed private-storage foundation, internal Container Apps runtime,
+  and CI guardrails
 
 ## Required external decisions
 

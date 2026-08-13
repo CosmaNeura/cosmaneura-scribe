@@ -20,7 +20,27 @@ tofu plan
 
 `backend.hcl` and `development.auto.tfvars` are local configuration and must remain uncommitted.
 
-This first slice provisions a dedicated East US VNet and private DNS, private Blob custody, Key
-Vault, private endpoints, a runtime managed identity, and least-privilege data-plane roles.
-PostgreSQL, Container Apps, Service Bus, monitoring, CMK wiring, retention automation, and
-deployment identities follow in reviewed slices.
+The deployed foundation provisions a dedicated East US VNet and private DNS, private Blob custody,
+Key Vault, private endpoints, a runtime managed identity, and least-privilege data-plane roles.
+
+The Container Apps slice adds a dedicated delegated subnet, ACR, Log Analytics, and an internal
+workload-profile environment. Deployment is intentionally two-stage so Azure never receives a
+reference to an image that does not yet exist:
+
+1. Keep `deploy_container_app = false`, review and apply the foundation plan.
+2. Build an immutable commit-tagged image without local Docker:
+
+   ```bash
+   az acr build \
+     --registry <registry-name> \
+     --image cosmaneura-scribe-api:<git-commit-sha> \
+     --file Dockerfile \
+     ..
+   ```
+
+3. Set the gitignored `container_image_tag` to that commit SHA and
+   `deploy_container_app = true`; review and apply the second plan.
+
+The API has VNet-only ingress and scales from zero to one replica because its repository is still
+process memory. PostgreSQL, Service Bus, CMK wiring, retention automation, authenticated master
+connectivity, and deployment identities follow in reviewed slices.

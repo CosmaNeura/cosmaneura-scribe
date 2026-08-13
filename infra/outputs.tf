@@ -29,3 +29,19 @@ output "virtual_network_id" {
 output "private_endpoint_subnet_id" {
   value = azurerm_subnet.private_endpoints.id
 }
+
+output "container_registry_login_server" {
+  value = azurerm_container_registry.scribe.login_server
+}
+
+output "container_apps_environment_id" {
+  value = azurerm_container_app_environment.scribe.id
+}
+
+output "container_apps_environment_default_domain" {
+  value = azurerm_container_app_environment.scribe.default_domain
+}
+
+output "container_app_fqdn" {
+  value = var.deploy_container_app ? azurerm_container_app.api[0].latest_revision_fqdn : null
+}

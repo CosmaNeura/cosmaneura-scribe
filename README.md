@@ -11,11 +11,12 @@ Cosmaneura SOAP-note and value-point engine.
 - Idempotent audio-chunk registration bound to the matching grant
 - Structured, role-labeled transcript persistence and retrieval
 - Adapter to the existing `AIVisitTranscript` shape
-- PostgreSQL custody/audit baseline and validated private Azure OpenTofu baseline
+- PostgreSQL custody/audit baseline and deployed private Azure OpenTofu foundation
+- Non-root container image and internal-only Azure Container Apps deployment definition
 
 The service currently uses an in-memory development repository by default. The Azure adapter uses
 `DefaultAzureCredential` and user-delegation SAS, so it needs no storage account key. Durable
-Functions orchestration and Azure Speech are the next implementation slices.
+PostgreSQL repository wiring, orchestration, and Azure Speech are the next implementation slices.
 
 ## Run locally
 

@@ -9,3 +9,9 @@ key_vault_name                  = "replace-with-unique-name"
 
 virtual_network_address_space            = ["10.42.0.0/16"]
 private_endpoint_subnet_address_prefixes = ["10.42.1.0/24"]
+container_apps_subnet_address_prefixes   = ["10.42.2.0/23"]
+
+container_registry_name  = "replacewithgloballyuniqueacr"
+deploy_container_app     = false
+container_image_repository = "cosmaneura-scribe-api"
+container_image_tag        = "replace-with-commit-sha-after-acr-build"
