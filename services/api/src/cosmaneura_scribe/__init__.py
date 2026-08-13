@@ -1,0 +1,1 @@
+"""Cosmaneura ambient scribe service."""
