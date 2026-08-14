@@ -140,7 +140,7 @@ resource "azurerm_monitor_diagnostic_setting" "postgres" {
 resource "azurerm_container_app_job" "database_migrations" {
   count = var.deploy_database_migration_job ? 1 : 0
 
-  name                         = "cosmaneura-scribe-dev-migrate"
+  name                         = "cosmaneura-scribe-${local.environment_short}-migrate"
   resource_group_name          = local.resource_group_name
   location                     = local.resource_group_location
   container_app_environment_id = azurerm_container_app_environment.scribe.id

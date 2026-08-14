@@ -5,6 +5,12 @@ accepts no secret values. Local runs authenticate through Azure CLI; GitHub runs
 
 Read [`../docs/AZURE_ONBOARDING.md`](../docs/AZURE_ONBOARDING.md) before initialization.
 
+Development and production use distinct backend keys, resource groups, and address spaces. The
+production examples are `production.backend.hcl.example` and `production.tfvars.example`; their
+gates are documented in
+[`../docs/PRODUCTION_ENVIRONMENT_PLAN.md`](../docs/PRODUCTION_ENVIRONMENT_PLAN.md). Production
+cannot deploy the API with process-memory persistence.
+
 Do not apply this configuration until the subscription has been inventoried and a reviewed plan
 confirms there are no replacements. The canonical development subscription had no compatible East
 US VNet or private DNS zones, so this configuration creates a dedicated network boundary for scribe.

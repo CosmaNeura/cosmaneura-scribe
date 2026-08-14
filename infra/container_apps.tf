@@ -268,6 +268,13 @@ resource "azurerm_container_app" "api" {
     }
   }
 
+  lifecycle {
+    precondition {
+      condition     = var.environment != "production" || var.use_postgres_repository
+      error_message = "a production Scribe API cannot use the process-memory repository"
+    }
+  }
+
   depends_on = [
     azurerm_private_endpoint.audio_blob,
     azurerm_role_assignment.runtime_acr,
