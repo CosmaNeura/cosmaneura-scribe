@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     database_runtime_principal_name: str | None = None
     database_runtime_principal_object_id: UUID | None = None
 
+    transcription_backend: Literal["none", "azure"] = "none"
+    azure_speech_endpoint: AnyHttpUrl | None = None
+    azure_speech_max_speakers: int = Field(default=4, ge=2, le=36)
+
     @model_validator(mode="after")
     def require_azure_settings(self) -> Settings:
         if self.storage_backend == "azure" and self.storage_account_url is None:
@@ -76,6 +80,10 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "workflow_api_audience must be the v2 API application client ID UUID"
                 ) from exc
+        if self.transcription_backend == "azure" and self.azure_speech_endpoint is None:
+            raise ValueError(
+                "azure_speech_endpoint is required when Azure transcription is enabled"
+            )
         return self
 
 
