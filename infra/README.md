@@ -93,5 +93,13 @@ audience, tenant, app-only token type, caller client ID, and role before accepti
 Health and readiness probes remain unauthenticated. See
 [`../docs/PLATFORM_WORKFLOW_AUTH.md`](../docs/PLATFORM_WORKFLOW_AUTH.md).
 
+Private connectivity to the platform is also independently false by default. Scribe owns only its
+reverse peering and the link from its private Container Apps DNS zone to the platform VNet. The
+platform owns the new VNet, environment, and opposite peering. Do not enable
+`connect_parallel_platform_vnet` until the platform foundation exists and both plans have been
+separately reviewed. The paired sequence and rollback boundaries are documented in the platform
+repository's `docs/PLATFORM_SCRIBE_NETWORK_PLAN.md` and summarized in
+[`../docs/PLATFORM_WORKFLOW_AUTH.md`](../docs/PLATFORM_WORKFLOW_AUTH.md).
+
 Service Bus, CMK wiring, retention automation, and deployment identities follow in reviewed
 slices.

@@ -173,6 +173,26 @@ variable "trusted_platform_client_id" {
   }
 }
 
+variable "connect_parallel_platform_vnet" {
+  description = "Create Scribe-owned reverse peering and private-DNS link after a separately approved platform foundation plan."
+  type        = bool
+  default     = false
+}
+
+variable "parallel_platform_vnet_id" {
+  description = "Non-secret resource ID of the approved parallel platform VNet."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.parallel_platform_vnet_id == "" ||
+      can(regex("^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.Network/virtualNetworks/[^/]+$", var.parallel_platform_vnet_id))
+    )
+    error_message = "parallel_platform_vnet_id must be an Azure virtual network resource ID"
+  }
+}
+
 variable "deploy_postgres_foundation" {
   description = "Create the paid private PostgreSQL foundation after a separately approved plan."
   type        = bool

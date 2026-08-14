@@ -25,3 +25,9 @@ master_platform_scope          = "api://00000000-0000-0000-0000-000000000000/.de
 enable_workflow_authentication = false
 workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
 trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
+
+# Synthetic private-connectivity planning only. Leave false until the platform VNet exists and
+# both enabled plans receive separate approval. The development Scribe environment is not a
+# production customer-traffic destination.
+connect_parallel_platform_vnet = false
+parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"

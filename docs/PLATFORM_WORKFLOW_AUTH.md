@@ -57,3 +57,21 @@ intentionally not the same string.
 
 Rollback is to disable the platform caller first. Do not temporarily allow unauthenticated `/v1`
 traffic. Network isolation remains a second boundary, not a substitute for token verification.
+
+## Private network path
+
+Authentication does not create network reachability. The live platform environment has no VNet,
+so the approved design creates a separate East US platform VNet and empty Container Apps
+environment. The platform state owns that foundation and its side of peering. This repository owns
+the reverse peering and a link from Scribe's existing private Container Apps DNS zone to the new
+platform VNet:
+
+```hcl
+connect_parallel_platform_vnet = false
+parallel_platform_vnet_id      = "/subscriptions/<subscription>/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"
+```
+
+Keep the flag false until the platform VNet exists and both enabled plans receive separate
+approval. This development Scribe environment is for synthetic connectivity validation only; it
+must not receive production customer traffic. No deployment, feature enablement, or cutover is
+authorized by the network design.
