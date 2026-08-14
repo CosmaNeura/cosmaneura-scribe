@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -28,6 +29,7 @@ from .schemas import (
     ConsentRecord,
     Transcript,
     TranscriptDelivery,
+    TranscriptionJob,
 )
 from .settings import Settings
 
@@ -359,6 +361,112 @@ class PostgresRepository:
             session_id=session_id,
         )
         return Transcript.model_validate(row) if row is not None else None
+
+    async def transcription_job_for(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> TranscriptionJob | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, session_id, status, attempt_count, lease_token, lease_until,
+                   last_error_code, created_at, updated_at
+            FROM transcription_jobs
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        return TranscriptionJob.model_validate(row) if row is not None else None
+
+    async def claim_transcription_job(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+        max_attempts: int,
+    ) -> TranscriptionJob | None:
+        row = (
+            (
+                await self._session.execute(
+                    text(
+                        """
+                        INSERT INTO transcription_jobs (
+                            id, tenant_id, session_id, status, attempt_count,
+                            lease_token, lease_until, created_at, updated_at
+                        ) VALUES (
+                            :id, :tenant_id, :session_id, 'processing', 1,
+                            :lease_token, :lease_until, :now, :now
+                        )
+                        ON CONFLICT (tenant_id, session_id) DO UPDATE
+                        SET status = 'processing',
+                            attempt_count = transcription_jobs.attempt_count + 1,
+                            lease_token = EXCLUDED.lease_token,
+                            lease_until = EXCLUDED.lease_until,
+                            last_error_code = NULL,
+                            updated_at = EXCLUDED.updated_at
+                        WHERE transcription_jobs.attempt_count < :max_attempts
+                          AND (
+                            transcription_jobs.status = 'retryable'
+                            OR (
+                                transcription_jobs.status = 'processing'
+                                AND transcription_jobs.lease_until <= :now
+                            )
+                          )
+                        RETURNING id, session_id, status, attempt_count, lease_token,
+                                  lease_until, last_error_code, created_at, updated_at
+                        """
+                    ),
+                    {
+                        "id": job_id,
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "lease_token": lease_token,
+                        "lease_until": lease_until,
+                        "now": now,
+                        "max_attempts": max_attempts,
+                    },
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return TranscriptionJob.model_validate(dict(row)) if row is not None else None
+
+    async def update_transcription_job(
+        self,
+        tenant_id: UUID,
+        job: TranscriptionJob,
+        *,
+        expected_lease_token: UUID,
+    ) -> bool:
+        updated = await self._session.execute(
+            text(
+                """
+                UPDATE transcription_jobs
+                SET status = :status,
+                    attempt_count = :attempt_count,
+                    lease_token = :lease_token,
+                    lease_until = :lease_until,
+                    last_error_code = :last_error_code,
+                    updated_at = :updated_at
+                WHERE tenant_id = :tenant_id
+                  AND id = :id
+                  AND status = 'processing'
+                  AND lease_token = :expected_lease_token
+                RETURNING id
+                """
+            ),
+            {
+                **job.model_dump(mode="python"),
+                "tenant_id": tenant_id,
+                "status": job.status.value,
+                "expected_lease_token": expected_lease_token,
+            },
+        )
+        return updated.scalar_one_or_none() is not None
 
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
         row = await self._one_or_none(

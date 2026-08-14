@@ -148,6 +148,27 @@ class Transcript(TranscriptCreate):
     created_at: datetime
 
 
+class TranscriptionJobStatus(StrEnum):
+    PROCESSING = "processing"
+    RETRYABLE = "retryable"
+    COMPLETED = "completed"
+    TERMINAL = "terminal"
+
+
+class TranscriptionJob(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    session_id: UUID
+    status: TranscriptionJobStatus
+    attempt_count: int = Field(ge=1)
+    lease_token: UUID | None = Field(default=None, repr=False)
+    lease_until: datetime | None = None
+    last_error_code: str | None = Field(default=None, max_length=64)
+    created_at: datetime
+    updated_at: datetime
+
+
 class LegacyTranscriptEntry(BaseModel):
     speaker: str
     content: str

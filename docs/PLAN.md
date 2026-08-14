@@ -33,6 +33,8 @@ stay in the existing Cosmaneura engine.
 - Provider-neutral speech-to-text request/result contract
 - Managed-identity Azure AI Speech file transcription with diarization and channel preservation
 - De-identified benchmark harness with sanitized WER, latency, and speaker metrics
+- Consent-gated transcription orchestration with durable leases, bounded retries, channel-prior
+  role labels, metadata-only quality gates, and idempotent transcript persistence
 
 ## Next P0 slice
 
@@ -44,8 +46,8 @@ stay in the existing Cosmaneura engine.
 4. Configure the Entra application role and run the synthetic cross-service handoff acceptance
    test.
 5. Run the Azure Speech benchmark on approved de-identified clinical fixtures, then implement the
-   worker orchestration, speaker-role labeler, and quality gates against the provider-neutral
-   result contract.
+   encrypted Blob download/decrypt/assembly adapter and connect the completed worker orchestration
+   to the reviewed internal job trigger.
 6. Build P1a web capture first, then P1b mobile capture as a dedicated iOS/Android application;
    neither is a thin wrapper around the other.
 

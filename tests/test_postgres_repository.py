@@ -20,6 +20,7 @@ from cosmaneura_scribe.schemas import (
     SessionStatus,
     SpeakerRole,
     Transcript,
+    TranscriptionJobStatus,
     TranscriptSegment,
 )
 from cosmaneura_scribe.settings import Settings
@@ -46,6 +47,9 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", admin_url)
     command.downgrade(config, "base")
+    command.upgrade(config, "head")
+    command.downgrade(config, "0003")
+    assert asyncio.run(_table_exists(admin_url, "transcription_jobs")) is False
     command.upgrade(config, "head")
     command.downgrade(config, "0001")
     assert asyncio.run(_table_exists(admin_url, "audio_upload_grants")) is False
@@ -133,6 +137,8 @@ def test_repository_persists_across_provider_restart_and_isolates_tenants(
     object_id = uuid4()
     chunk_id = uuid4()
     transcript_id = uuid4()
+    job_id = uuid4()
+    lease_token = uuid4()
     now = datetime.now(UTC)
 
     consent = ConsentRecord(
@@ -215,6 +221,43 @@ def test_repository_persists_across_provider_restart_and_isolates_tenants(
             await repository.update_session(
                 tenant_id, session.model_copy(update={"status": SessionStatus.UPLOADED})
             )
+            job = await repository.claim_transcription_job(
+                tenant_id,
+                session_id,
+                job_id=job_id,
+                lease_token=lease_token,
+                now=now,
+                lease_until=now + timedelta(minutes=15),
+                max_attempts=3,
+            )
+            assert job is not None
+            assert (
+                await repository.claim_transcription_job(
+                    tenant_id,
+                    session_id,
+                    job_id=uuid4(),
+                    lease_token=uuid4(),
+                    now=now + timedelta(seconds=1),
+                    lease_until=now + timedelta(minutes=16),
+                    max_attempts=3,
+                )
+                is None
+            )
+            await repository.update_session(
+                tenant_id, session.model_copy(update={"status": SessionStatus.PROCESSING})
+            )
+            assert await repository.update_transcription_job(
+                tenant_id,
+                job.model_copy(
+                    update={
+                        "status": TranscriptionJobStatus.COMPLETED,
+                        "lease_token": None,
+                        "lease_until": None,
+                        "updated_at": now,
+                    }
+                ),
+                expected_lease_token=lease_token,
+            )
             await repository.add_transcript(tenant_id, transcript)
             await repository.update_session(
                 tenant_id,
@@ -232,6 +275,9 @@ def test_repository_persists_across_provider_restart_and_isolates_tenants(
         async with restarted.transaction(tenant_id) as repository:
             persisted = await repository.transcript_for(tenant_id, session_id)
             assert persisted == transcript
+            persisted_job = await repository.transcription_job_for(tenant_id, session_id)
+            assert persisted_job is not None
+            assert persisted_job.status == TranscriptionJobStatus.COMPLETED
             replay_id = await repository.claim_idempotency(
                 tenant_id=tenant_id,
                 operation="consent.create",
@@ -251,6 +297,7 @@ def test_repository_persists_across_provider_restart_and_isolates_tenants(
         async with restarted.transaction(other_tenant_id) as repository:
             assert await repository.get_consent(other_tenant_id, consent_id) is None
             assert await repository.transcript_for(other_tenant_id, session_id) is None
+            assert await repository.transcription_job_for(other_tenant_id, session_id) is None
         await restarted.close()
 
     asyncio.run(scenario())

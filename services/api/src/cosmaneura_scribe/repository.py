@@ -17,6 +17,8 @@ from .schemas import (
     ConsentRecord,
     Transcript,
     TranscriptDelivery,
+    TranscriptionJob,
+    TranscriptionJobStatus,
 )
 
 
@@ -80,6 +82,30 @@ class Repository(Protocol):
 
     async def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None: ...
 
+    async def transcription_job_for(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> TranscriptionJob | None: ...
+
+    async def claim_transcription_job(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+        max_attempts: int,
+    ) -> TranscriptionJob | None: ...
+
+    async def update_transcription_job(
+        self,
+        tenant_id: UUID,
+        job: TranscriptionJob,
+        *,
+        expected_lease_token: UUID,
+    ) -> bool: ...
+
     async def get_delivery(
         self, tenant_id: UUID, delivery_id: UUID
     ) -> TranscriptDelivery | None: ...
@@ -113,6 +139,10 @@ class InMemoryRepository:
     upload_grants: dict[tuple[UUID, UUID], UploadGrantRecord] = field(default_factory=lambda: {})
     transcripts: dict[tuple[UUID, UUID], Transcript] = field(default_factory=lambda: {})
     transcript_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
+    transcription_jobs: dict[tuple[UUID, UUID], TranscriptionJob] = field(
+        default_factory=lambda: {}
+    )
+    transcription_job_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
     deliveries: dict[tuple[UUID, UUID], TranscriptDelivery] = field(default_factory=lambda: {})
     delivery_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
     idempotency: dict[tuple[UUID, str, str], IdempotencyRecord] = field(default_factory=lambda: {})
@@ -130,6 +160,8 @@ class InMemoryRepository:
                 copy.deepcopy(self.upload_grants),
                 copy.deepcopy(self.transcripts),
                 copy.deepcopy(self.transcript_by_session),
+                copy.deepcopy(self.transcription_jobs),
+                copy.deepcopy(self.transcription_job_by_session),
                 copy.deepcopy(self.deliveries),
                 copy.deepcopy(self.delivery_by_session),
                 copy.deepcopy(self.idempotency),
@@ -145,6 +177,8 @@ class InMemoryRepository:
                     self.upload_grants,
                     self.transcripts,
                     self.transcript_by_session,
+                    self.transcription_jobs,
+                    self.transcription_job_by_session,
                     self.deliveries,
                     self.delivery_by_session,
                     self.idempotency,
@@ -229,6 +263,73 @@ class InMemoryRepository:
         if transcript_id is None:
             return None
         return self.transcripts[(tenant_id, transcript_id)]
+
+    async def transcription_job_for(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> TranscriptionJob | None:
+        job_id = self.transcription_job_by_session.get((tenant_id, session_id))
+        if job_id is None:
+            return None
+        return self.transcription_jobs[(tenant_id, job_id)]
+
+    async def claim_transcription_job(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+        max_attempts: int,
+    ) -> TranscriptionJob | None:
+        current = await self.transcription_job_for(tenant_id, session_id)
+        if current is not None:
+            eligible = current.status == TranscriptionJobStatus.RETRYABLE or (
+                current.status == TranscriptionJobStatus.PROCESSING
+                and current.lease_until is not None
+                and current.lease_until <= now
+            )
+            if not eligible or current.attempt_count >= max_attempts:
+                return None
+            job_id = current.id
+            created_at = current.created_at
+            attempt_count = current.attempt_count + 1
+        else:
+            created_at = now
+            attempt_count = 1
+
+        claimed = TranscriptionJob(
+            id=job_id,
+            session_id=session_id,
+            status=TranscriptionJobStatus.PROCESSING,
+            attempt_count=attempt_count,
+            lease_token=lease_token,
+            lease_until=lease_until,
+            last_error_code=None,
+            created_at=created_at,
+            updated_at=now,
+        )
+        self.transcription_jobs[(tenant_id, job_id)] = claimed
+        self.transcription_job_by_session[(tenant_id, session_id)] = job_id
+        return claimed
+
+    async def update_transcription_job(
+        self,
+        tenant_id: UUID,
+        job: TranscriptionJob,
+        *,
+        expected_lease_token: UUID,
+    ) -> bool:
+        current = self.transcription_jobs.get((tenant_id, job.id))
+        if (
+            current is None
+            or current.status != TranscriptionJobStatus.PROCESSING
+            or current.lease_token != expected_lease_token
+        ):
+            return False
+        self.transcription_jobs[(tenant_id, job.id)] = job
+        return True
 
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
         return self.deliveries.get((tenant_id, delivery_id))
