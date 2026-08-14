@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -105,10 +106,14 @@ class TranscriptionWorker:
         role_labeler: SpeakerRoleLabeler | None = None,
         quality_gate: TranscriptQualityGate | None = None,
         lease_duration: timedelta = timedelta(minutes=15),
+        heartbeat_interval: timedelta | None = None,
         max_attempts: int = 3,
     ) -> None:
         if lease_duration <= timedelta(0):
             raise ValueError("lease_duration must be positive")
+        heartbeat_interval = heartbeat_interval or lease_duration / 3
+        if heartbeat_interval <= timedelta(0) or heartbeat_interval >= lease_duration:
+            raise ValueError("heartbeat_interval must be positive and shorter than lease_duration")
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
         self._repositories = repositories
@@ -118,6 +123,7 @@ class TranscriptionWorker:
         self._role_labeler = role_labeler or ChannelPriorRoleLabeler()
         self._quality_gate = quality_gate or BasicTranscriptQualityGate()
         self._lease_duration = lease_duration
+        self._heartbeat_interval = heartbeat_interval
         self._max_attempts = max_attempts
 
     async def process(
@@ -185,11 +191,13 @@ class TranscriptionWorker:
             )
 
         try:
-            result = await self._assemble_and_transcribe(
+            result = await self._transcribe_with_heartbeat(
                 tenant_id=tenant_id,
                 session=session,
                 chunks=chunks,
                 language_code=language_code,
+                job_id=job.id,
+                lease_token=lease_token,
             )
             transcript = self._to_transcript(session, result)
             self._quality_gate.validate(result, transcript.segments)
@@ -232,6 +240,88 @@ class TranscriptionWorker:
                 terminal=False,
             )
             raise TranscriptionWorkerError("transcription_attempt_failed") from None
+
+    async def _transcribe_with_heartbeat(
+        self,
+        *,
+        tenant_id: UUID,
+        session: CaptureSession,
+        chunks: tuple[AudioChunk, ...],
+        language_code: str,
+        job_id: UUID,
+        lease_token: UUID,
+    ) -> SttResult:
+        work = asyncio.create_task(
+            self._assemble_and_transcribe(
+                tenant_id=tenant_id,
+                session=session,
+                chunks=chunks,
+                language_code=language_code,
+            )
+        )
+        heartbeat = asyncio.create_task(
+            self._heartbeat(
+                tenant_id=tenant_id,
+                job_id=job_id,
+                lease_token=lease_token,
+            )
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {work, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if heartbeat in done:
+                await heartbeat
+                raise TranscriptionWorkerError("transcription_lease_lost")
+
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+            result = await work
+            await self._renew_lease(
+                tenant_id=tenant_id,
+                job_id=job_id,
+                lease_token=lease_token,
+            )
+            return result
+        finally:
+            for task in (work, heartbeat):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(work, heartbeat, return_exceptions=True)
+
+    async def _heartbeat(
+        self,
+        *,
+        tenant_id: UUID,
+        job_id: UUID,
+        lease_token: UUID,
+    ) -> None:
+        while True:
+            await asyncio.sleep(self._heartbeat_interval.total_seconds())
+            await self._renew_lease(
+                tenant_id=tenant_id,
+                job_id=job_id,
+                lease_token=lease_token,
+            )
+
+    async def _renew_lease(
+        self,
+        *,
+        tenant_id: UUID,
+        job_id: UUID,
+        lease_token: UUID,
+    ) -> None:
+        now = datetime.now(UTC)
+        async with self._repositories.transaction(tenant_id) as store:
+            renewed = await store.renew_transcription_job(
+                tenant_id,
+                job_id,
+                lease_token=lease_token,
+                now=now,
+                lease_until=now + self._lease_duration,
+            )
+        if not renewed:
+            raise TranscriptionWorkerError("transcription_lease_lost")
 
     async def _assemble_and_transcribe(
         self,

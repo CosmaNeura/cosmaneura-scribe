@@ -34,7 +34,8 @@ stay in the existing Cosmaneura engine.
 - Managed-identity Azure AI Speech file transcription with diarization and channel preservation
 - De-identified benchmark harness with sanitized WER, latency, and speaker metrics
 - Consent-gated transcription orchestration with durable leases, bounded retries, channel-prior
-  role labels, metadata-only quality gates, and idempotent transcript persistence
+  role labels, heartbeat renewal with lost-lease cancellation, metadata-only quality gates, and
+  idempotent transcript persistence
 
 ## Next P0 slice
 

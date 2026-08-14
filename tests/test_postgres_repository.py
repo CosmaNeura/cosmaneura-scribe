@@ -231,14 +231,21 @@ def test_repository_persists_across_provider_restart_and_isolates_tenants(
                 max_attempts=3,
             )
             assert job is not None
+            assert await repository.renew_transcription_job(
+                tenant_id,
+                job.id,
+                lease_token=lease_token,
+                now=now + timedelta(minutes=14),
+                lease_until=now + timedelta(minutes=29),
+            )
             assert (
                 await repository.claim_transcription_job(
                     tenant_id,
                     session_id,
                     job_id=uuid4(),
                     lease_token=uuid4(),
-                    now=now + timedelta(seconds=1),
-                    lease_until=now + timedelta(minutes=16),
+                    now=now + timedelta(minutes=16),
+                    lease_until=now + timedelta(minutes=31),
                     max_attempts=3,
                 )
                 is None

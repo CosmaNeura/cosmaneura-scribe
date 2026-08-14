@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -89,6 +89,54 @@ class FakeTranscriber:
 
     async def close(self) -> None:
         return None
+
+
+class BlockingTranscriber(FakeTranscriber):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = False
+
+    async def transcribe(self, request: TranscriptionRequest) -> SttResult:
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return await super().transcribe(request)
+
+
+class TrackingRepository(InMemoryRepository):
+    def __init__(self, *, allow_renewal: bool = True) -> None:
+        super().__init__()
+        self.allow_renewal = allow_renewal
+        self.renewed = asyncio.Event()
+        self.renewal_count = 0
+
+    async def renew_transcription_job(
+        self,
+        tenant_id: UUID,
+        job_id: UUID,
+        *,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+    ) -> bool:
+        self.renewal_count += 1
+        if not self.allow_renewal:
+            self.renewed.set()
+            return False
+        result = await super().renew_transcription_job(
+            tenant_id,
+            job_id,
+            lease_token=lease_token,
+            now=now,
+            lease_until=lease_until,
+        )
+        self.renewed.set()
+        return result
 
 
 async def _seed_uploaded_session(
@@ -245,5 +293,98 @@ def test_worker_failure_is_sanitized_and_retried_under_a_new_lease() -> None:
         assert completed is not None
         assert completed.status == TranscriptionJobStatus.COMPLETED
         assert completed.attempt_count == 2
+
+    asyncio.run(scenario())
+
+
+def test_worker_renews_lease_during_slow_transcription() -> None:
+    tenant_id = uuid4()
+    repository = TrackingRepository()
+    assembler = FakeAssembler()
+    transcriber = BlockingTranscriber()
+
+    async def scenario() -> None:
+        session = await _seed_uploaded_session(repository, tenant_id=tenant_id)
+        worker = TranscriptionWorker(
+            repositories=repository,
+            assembler=assembler,
+            transcriber=transcriber,
+            lease_duration=timedelta(milliseconds=120),
+            heartbeat_interval=timedelta(milliseconds=20),
+        )
+        processing = asyncio.create_task(
+            worker.process(tenant_id=tenant_id, session_id=session.id)
+        )
+        await asyncio.wait_for(transcriber.started.wait(), timeout=1)
+        await asyncio.wait_for(repository.renewed.wait(), timeout=1)
+
+        async with repository.transaction(tenant_id) as store:
+            competing_claim = await store.claim_transcription_job(
+                tenant_id,
+                session.id,
+                job_id=uuid4(),
+                lease_token=uuid4(),
+                now=datetime.now(UTC),
+                lease_until=datetime.now(UTC) + timedelta(milliseconds=120),
+                max_attempts=3,
+            )
+        assert competing_claim is None
+
+        transcriber.release.set()
+        transcript = await processing
+        assert transcript.session_id == session.id
+        assert repository.renewal_count >= 2
+
+    asyncio.run(scenario())
+
+
+def test_worker_cancels_provider_work_when_lease_renewal_is_lost() -> None:
+    tenant_id = uuid4()
+    repository = TrackingRepository(allow_renewal=False)
+    assembler = FakeAssembler()
+    transcriber = BlockingTranscriber()
+
+    async def scenario() -> None:
+        session = await _seed_uploaded_session(repository, tenant_id=tenant_id)
+        worker = TranscriptionWorker(
+            repositories=repository,
+            assembler=assembler,
+            transcriber=transcriber,
+            lease_duration=timedelta(milliseconds=60),
+            heartbeat_interval=timedelta(milliseconds=10),
+        )
+        with pytest.raises(TranscriptionWorkerError) as exception:
+            await worker.process(tenant_id=tenant_id, session_id=session.id)
+        assert exception.value.code == "transcription_lease_lost"
+        assert transcriber.cancelled
+        async with repository.transaction(tenant_id) as store:
+            assert await store.transcript_for(tenant_id, session.id) is None
+
+    asyncio.run(scenario())
+
+
+def test_worker_cancels_provider_work_during_shutdown() -> None:
+    tenant_id = uuid4()
+    repository = TrackingRepository()
+    assembler = FakeAssembler()
+    transcriber = BlockingTranscriber()
+
+    async def scenario() -> None:
+        session = await _seed_uploaded_session(repository, tenant_id=tenant_id)
+        worker = TranscriptionWorker(
+            repositories=repository,
+            assembler=assembler,
+            transcriber=transcriber,
+            lease_duration=timedelta(seconds=1),
+            heartbeat_interval=timedelta(milliseconds=500),
+        )
+        processing = asyncio.create_task(
+            worker.process(tenant_id=tenant_id, session_id=session.id)
+        )
+        await asyncio.wait_for(transcriber.started.wait(), timeout=1)
+        processing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await processing
+        assert transcriber.cancelled
 
     asyncio.run(scenario())

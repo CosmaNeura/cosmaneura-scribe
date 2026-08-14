@@ -18,8 +18,8 @@ Cosmaneura SOAP-note and value-point engine.
 - Passwordless Entra-token database access and a separately privileged migration job
 - Provider-neutral speech-to-text contract and managed-identity Azure AI Speech adapter
 - De-identified benchmark harness that emits aggregate accuracy/performance metrics only
-- Consent-gated transcription worker with durable leases, bounded retries, channel role priors,
-  metadata-only quality gates, and idempotent transcript persistence
+- Consent-gated transcription worker with renewable leases, lost-lease cancellation, bounded
+  retries, channel role priors, metadata-only quality gates, and idempotent transcript persistence
 - PostgreSQL custody/audit migrations and deployed private Azure OpenTofu foundation
 - Non-root container image and internal-only Azure Container Apps deployment definition
 

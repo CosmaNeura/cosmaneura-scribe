@@ -106,6 +106,16 @@ class Repository(Protocol):
         expected_lease_token: UUID,
     ) -> bool: ...
 
+    async def renew_transcription_job(
+        self,
+        tenant_id: UUID,
+        job_id: UUID,
+        *,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+    ) -> bool: ...
+
     async def get_delivery(
         self, tenant_id: UUID, delivery_id: UUID
     ) -> TranscriptDelivery | None: ...
@@ -329,6 +339,29 @@ class InMemoryRepository:
         ):
             return False
         self.transcription_jobs[(tenant_id, job.id)] = job
+        return True
+
+    async def renew_transcription_job(
+        self,
+        tenant_id: UUID,
+        job_id: UUID,
+        *,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+    ) -> bool:
+        current = self.transcription_jobs.get((tenant_id, job_id))
+        if (
+            current is None
+            or current.status != TranscriptionJobStatus.PROCESSING
+            or current.lease_token != lease_token
+            or current.lease_until is None
+            or current.lease_until <= now
+        ):
+            return False
+        self.transcription_jobs[(tenant_id, job_id)] = current.model_copy(
+            update={"lease_until": lease_until, "updated_at": now}
+        )
         return True
 
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:

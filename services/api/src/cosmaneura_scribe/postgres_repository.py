@@ -468,6 +468,39 @@ class PostgresRepository:
         )
         return updated.scalar_one_or_none() is not None
 
+    async def renew_transcription_job(
+        self,
+        tenant_id: UUID,
+        job_id: UUID,
+        *,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+    ) -> bool:
+        renewed = await self._session.execute(
+            text(
+                """
+                UPDATE transcription_jobs
+                SET lease_until = :lease_until,
+                    updated_at = :now
+                WHERE tenant_id = :tenant_id
+                  AND id = :id
+                  AND status = 'processing'
+                  AND lease_token = :lease_token
+                  AND lease_until > :now
+                RETURNING id
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "id": job_id,
+                "lease_token": lease_token,
+                "now": now,
+                "lease_until": lease_until,
+            },
+        )
+        return renewed.scalar_one_or_none() is not None
+
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
         row = await self._one_or_none(
             """

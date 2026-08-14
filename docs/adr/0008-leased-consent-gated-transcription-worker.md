@@ -6,9 +6,10 @@
 
 Transcription orchestration is independent of Blob assembly and the speech provider. A worker
 claims one tenant-scoped PostgreSQL lease per session, validates consent before audio assembly,
-revalidates immediately before STT and persistence, and commits lease completion, transcript,
-session state, and metadata-only audit together. Provider and assembly errors are represented by
-fixed codes and receive bounded retries; consent and metadata-quality failures are terminal.
+renews its lease during assembly and STT, revalidates immediately before STT and persistence, and
+commits lease completion, transcript, session state, and metadata-only audit together. A failed
+renewal cancels in-flight work. Provider and assembly errors are represented by fixed codes and
+receive bounded retries; consent and metadata-quality failures are terminal.
 
 For virtual visits, separate capture channels provide strong role priors: microphone is clinician
 and system audio is patient. In-person, phone, and mixed audio remain unknown. Provider speaker
@@ -19,9 +20,8 @@ this slice.
 
 - At-least-once job delivery does not create multiple transcripts; an active lease prevents
   simultaneous provider calls.
-- An expired lease can recover a session after worker termination. Until activation adds lease
-  heartbeat renewal, a stale live worker may duplicate provider work but cannot persist after
-  losing its token.
+- An expired lease can recover a session after worker termination. A live worker renews its lease
+  periodically and cancels provider work if ownership is lost.
 - Revoked or mismatched consent stops audio processing at each custody boundary.
 - Transcript text, audio paths, Blob names, endpoints, and provider exceptions remain outside job
   rows, audits, and operational error messages.

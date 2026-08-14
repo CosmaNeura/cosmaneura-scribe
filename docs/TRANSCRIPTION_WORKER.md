@@ -9,20 +9,22 @@ library boundary today; no public route or Azure job trigger is enabled by this 
 2. Validate the persisted consent record against the session before reading any audio metadata.
 3. Claim a PostgreSQL transcription-job lease and move `uploaded` to `processing` atomically.
 4. Pass ordered encrypted chunk metadata to the replaceable audio assembler.
-5. Revalidate consent after assembly and immediately before speech-to-text.
-6. Preserve provider speaker IDs and prefix them with the capture channel. For virtual visits,
+5. Renew the owned lease periodically throughout assembly and speech-to-text. A failed renewal
+   cancels in-flight provider work before it can be persisted.
+6. Revalidate consent after assembly and immediately before speech-to-text.
+7. Preserve provider speaker IDs and prefix them with the capture channel. For virtual visits,
    separate microphone and system audio supply clinician/patient role priors; in-person, phone, and
    mixed audio remain `unknown` for later review.
-7. Apply metadata-only duration, segment-count, ordering, and timestamp quality gates.
-8. Revalidate consent, verify lease ownership, persist the transcript, complete the job, move the
+8. Apply metadata-only duration, segment-count, ordering, and timestamp quality gates.
+9. Revalidate consent, verify lease ownership, persist the transcript, complete the job, move the
    session to `transcript_ready`, and write a metadata-only audit event in one transaction.
 
 Failures expose only fixed codes. Ordinary provider or assembly failures become `retryable` until
 the configured maximum attempt count; consent and quality failures are terminal. An active lease
 prevents concurrent duplicate transcription, while an expired lease may be reclaimed after a
-worker crash. A stale worker cannot persist after losing its lease, although provider work may be
-duplicated after lease expiry until heartbeat renewal is added at activation. Transcript replay
-avoids a second provider call.
+worker crash. Heartbeat renewal keeps slow provider calls owned; if renewal fails, the worker
+cancels its assembly/provider task and cannot persist. Transcript replay avoids a second provider
+call.
 
 ## Remaining activation boundary
 
