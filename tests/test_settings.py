@@ -54,3 +54,28 @@ def test_master_platform_handoff_configuration_contains_no_secret() -> None:
 
     assert settings.master_platform_scope == "api://platform/.default"
     assert "secret" not in settings.model_dump()
+
+
+def test_workflow_authentication_requires_complete_nonsecret_configuration() -> None:
+    with pytest.raises(ValidationError, match="workflow_api_audience"):
+        Settings(workflow_authentication_enabled=True)
+
+    with pytest.raises(ValidationError, match="v2 API application client ID UUID"):
+        Settings(
+            workflow_authentication_enabled=True,
+            entra_tenant_id=uuid4(),
+            workflow_api_audience="api://scribe/.default",
+            trusted_platform_client_id=uuid4(),
+        )
+
+
+def test_workflow_authentication_configuration_contains_no_secret() -> None:
+    settings = Settings(
+        workflow_authentication_enabled=True,
+        entra_tenant_id=uuid4(),
+        workflow_api_audience=str(uuid4()),
+        trusted_platform_client_id=uuid4(),
+    )
+
+    assert settings.workflow_authentication_enabled is True
+    assert "secret" not in settings.model_dump()

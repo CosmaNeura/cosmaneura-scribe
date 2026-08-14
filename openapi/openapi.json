@@ -801,6 +801,12 @@
         "title": "ValidationError",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -866,22 +872,22 @@
         "parameters": [
           {
             "in": "header",
-            "name": "X-Tenant-ID",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "X-Tenant-Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": true,
             "schema": {
               "maxLength": 255,
               "minLength": 8,
               "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
               "type": "string"
             }
           }
@@ -918,6 +924,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Consent"
       }
     },
@@ -927,22 +938,22 @@
         "parameters": [
           {
             "in": "header",
-            "name": "X-Tenant-ID",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "X-Tenant-Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": true,
             "schema": {
               "maxLength": 255,
               "minLength": 8,
               "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
               "type": "string"
             }
           }
@@ -979,6 +990,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Session"
       }
     },
@@ -998,22 +1014,22 @@
           },
           {
             "in": "header",
-            "name": "X-Tenant-ID",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "X-Tenant-Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": true,
             "schema": {
               "maxLength": 255,
               "minLength": 8,
               "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
               "type": "string"
             }
           }
@@ -1050,6 +1066,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Register Chunk"
       }
     },
@@ -1069,22 +1090,22 @@
           },
           {
             "in": "header",
-            "name": "X-Tenant-ID",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "X-Tenant-Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": true,
             "schema": {
               "maxLength": 255,
               "minLength": 8,
               "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
               "type": "string"
             }
           }
@@ -1121,6 +1142,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Issue Chunk Upload Grant"
       }
     },
@@ -1140,22 +1166,22 @@
           },
           {
             "in": "header",
-            "name": "X-Tenant-ID",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "X-Tenant-Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": true,
             "schema": {
               "maxLength": 255,
               "minLength": 8,
               "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
               "type": "string"
             }
           }
@@ -1182,6 +1208,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Complete Session"
       }
     },
@@ -1201,22 +1232,22 @@
           },
           {
             "in": "header",
-            "name": "X-Tenant-ID",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "X-Tenant-Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": true,
             "schema": {
               "maxLength": 255,
               "minLength": 8,
               "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
               "type": "string"
             }
           }
@@ -1243,6 +1274,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Deliver Transcript To Master Platform"
       }
     },
@@ -1262,22 +1298,22 @@
           },
           {
             "in": "header",
-            "name": "X-Tenant-ID",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "X-Tenant-Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": true,
             "schema": {
               "maxLength": 255,
               "minLength": 8,
               "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
               "type": "string"
             }
           }
@@ -1304,6 +1340,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Prepare Note Engine Handoff"
       }
     },
@@ -1354,6 +1395,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Transcript"
       },
       "post": {
@@ -1371,22 +1417,22 @@
           },
           {
             "in": "header",
-            "name": "X-Tenant-ID",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "X-Tenant-Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": true,
             "schema": {
               "maxLength": 255,
               "minLength": 8,
               "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
               "type": "string"
             }
           }
@@ -1423,6 +1469,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Save Transcript"
       }
     }

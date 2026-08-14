@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     upload_grant_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     managed_identity_client_id: UUID | None = None
 
+    workflow_authentication_enabled: bool = False
+    entra_tenant_id: UUID | None = None
+    workflow_api_audience: str | None = Field(default=None, min_length=1)
+    trusted_platform_client_id: UUID | None = None
+
     master_platform_handoff_enabled: bool = False
     master_platform_base_url: AnyHttpUrl | None = None
     master_platform_scope: str | None = None
@@ -55,6 +60,22 @@ class Settings(BaseSettings):
                 )
             if not self.master_platform_scope.endswith("/.default"):
                 raise ValueError("master_platform_scope must end with /.default")
+        if self.workflow_authentication_enabled:
+            if (
+                self.entra_tenant_id is None
+                or self.workflow_api_audience is None
+                or self.trusted_platform_client_id is None
+            ):
+                raise ValueError(
+                    "entra_tenant_id, workflow_api_audience, and trusted_platform_client_id "
+                    "are required when workflow authentication is enabled"
+                )
+            try:
+                UUID(self.workflow_api_audience)
+            except ValueError as exc:
+                raise ValueError(
+                    "workflow_api_audience must be the v2 API application client ID UUID"
+                ) from exc
         return self
 
 

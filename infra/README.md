@@ -86,5 +86,12 @@ endpoint are configured, set `enable_master_platform_handoff`, `master_platform_
 [`../docs/MASTER_PLATFORM_HANDOFF.md`](../docs/MASTER_PLATFORM_HANDOFF.md). These are non-secret
 identifiers; the runtime managed identity obtains the token.
 
+Inbound workflow authentication is independently false by default. Configure the Scribe API app
+registration and assign `Scribe.Workflow.Access` to the exact master-platform managed identity
+before setting `enable_workflow_authentication = true`. The API then validates the token's issuer,
+audience, tenant, app-only token type, caller client ID, and role before accepting `X-Tenant-ID`.
+Health and readiness probes remain unauthenticated. See
+[`../docs/PLATFORM_WORKFLOW_AUTH.md`](../docs/PLATFORM_WORKFLOW_AUTH.md).
+
 Service Bus, CMK wiring, retention automation, and deployment identities follow in reviewed
 slices.

@@ -139,6 +139,40 @@ variable "master_platform_scope" {
   }
 }
 
+variable "enable_workflow_authentication" {
+  description = "Require Entra app-only authentication on every /v1 workflow route."
+  type        = bool
+  default     = false
+}
+
+variable "workflow_api_audience" {
+  description = "Scribe API application client ID accepted in v2 access-token aud claims."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_workflow_authentication ||
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.workflow_api_audience))
+    )
+    error_message = "workflow_api_audience must be the Scribe API client ID UUID when enabled"
+  }
+}
+
+variable "trusted_platform_client_id" {
+  description = "Client ID of the one platform workload identity allowed to call Scribe."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_workflow_authentication ||
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.trusted_platform_client_id))
+    )
+    error_message = "trusted_platform_client_id must be a UUID when authentication is enabled"
+  }
+}
+
 variable "deploy_postgres_foundation" {
   description = "Create the paid private PostgreSQL foundation after a separately approved plan."
   type        = bool

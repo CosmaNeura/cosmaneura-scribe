@@ -11,6 +11,7 @@ Cosmaneura SOAP-note and value-point engine.
 - Idempotent audio-chunk registration bound to the matching grant
 - Structured, role-labeled transcript persistence and retrieval
 - Entra workload-identity adapter to the master platform's source-agnostic encounter contract
+- Fail-closed Entra app-only authentication on every Scribe workflow route
 - Durable transcript-delivery receipts with stable idempotency keys and retry status
 - Async in-memory and durable PostgreSQL repositories with atomic request transactions
 - PostgreSQL row-level tenant isolation, legal state-transition guards, and append-only audit events
@@ -51,6 +52,11 @@ existing note and engagement pipelines once.
 
 Follow [`docs/MASTER_PLATFORM_HANDOFF.md`](docs/MASTER_PLATFORM_HANDOFF.md) for passwordless Entra
 configuration and the safe rollout sequence.
+
+Calls in the opposite direction—from the master platform into Scribe—use a separate
+`Scribe.Workflow.Access` app role. The verified platform workload identity is the only caller
+allowed to supply practice-tenant context. Follow
+[`docs/PLATFORM_WORKFLOW_AUTH.md`](docs/PLATFORM_WORKFLOW_AUTH.md) for the rollout.
 
 ## Legacy note-engine compatibility
 

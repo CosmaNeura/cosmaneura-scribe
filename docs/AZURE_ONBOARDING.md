@@ -272,6 +272,21 @@ COSMANEURA_SCRIBE_MASTER_PLATFORM_SCOPE=api://<platform-api-client-id>/.default
 The full Entra role and rollout procedure is in
 [`MASTER_PLATFORM_HANDOFF.md`](MASTER_PLATFORM_HANDOFF.md). Do not add a client secret.
 
+The reverse call path uses the master platform's managed identity. After assigning its service
+principal the `Scribe.Workflow.Access` application role, configure these non-secret values on the
+Scribe Container App:
+
+```text
+COSMANEURA_SCRIBE_WORKFLOW_AUTHENTICATION_ENABLED=true
+COSMANEURA_SCRIBE_ENTRA_TENANT_ID=<entra-directory-tenant-id>
+COSMANEURA_SCRIBE_WORKFLOW_API_AUDIENCE=<scribe-api-application-client-id>
+COSMANEURA_SCRIBE_TRUSTED_PLATFORM_CLIENT_ID=<platform-managed-identity-client-id>
+```
+
+The practice tenant remains a product boundary, not the Entra directory tenant. Scribe accepts the
+`X-Tenant-ID` context only after the exact platform workload identity and role are verified. See
+[`PLATFORM_WORKFLOW_AUTH.md`](PLATFORM_WORKFLOW_AUTH.md); no client secret is used.
+
 ## 7. Connection readiness checklist
 
 - [ ] Azure CLI installed and interactive MFA login succeeds.
@@ -291,6 +306,7 @@ The full Entra role and rollout procedure is in
 - [ ] Migration identity is the PostgreSQL Entra administrator; runtime identity is not.
 - [ ] Manual database job completed before `use_postgres_repository` is enabled.
 - [ ] Platform API app role assigned to the Scribe managed identity before handoff is enabled.
+- [ ] Scribe API app role assigned to the platform managed identity before workflow auth is enabled.
 
 ## 8. Current regional provisioning prerequisite
 

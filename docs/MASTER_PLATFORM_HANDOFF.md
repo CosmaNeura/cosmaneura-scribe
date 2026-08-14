@@ -7,18 +7,20 @@ or store. Staff continue to use Clerk, and patient authentication is unchanged.
 
 1. Create or select an app registration representing the master-platform API.
 2. Set its Application ID URI, normally `api://<platform-api-client-id>`.
-3. Add an **application role** with value `Scribe.Transcript.Write`, allowed member type
+3. Configure the platform API resource application to issue v2 access tokens and add the `idtyp`
+   optional claim to **access tokens**. The API requires `idtyp=app`.
+4. Add an **application role** with value `Scribe.Transcript.Write`, allowed member type
    **Applications**, and enable it.
-4. Assign that role to the Scribe runtime managed identity's service principal. Scope the
-   assignment to the platform API service principal, not the subscription.
-5. In the token configuration for the Scribe caller, include the `idtyp` optional claim so app-only
-   tokens carry `idtyp=app`.
+5. Assign that role to the Scribe runtime managed identity's service principal through Microsoft
+   Graph using Azure CLI or Microsoft Graph PowerShell. This is an application-role assignment to
+   the platform API service principal, not an Azure subscription IAM role. Follow Microsoft's
+   [managed-identity app-role guide](https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/assign-app-role-managed-identity-powershell).
 
 An Entra administrator can perform the role assignment in the portal under **Enterprise
 applications**, or use Microsoft Graph. Record these non-secret identifiers:
 
 - Entra tenant ID
-- platform API audience, such as `api://<platform-api-client-id>`
+- platform API audience: the application client ID UUID
 - Scribe runtime managed-identity client ID
 - Scribe runtime managed-identity principal/object ID
 - platform API client ID and service-principal object ID
@@ -34,7 +36,7 @@ Configure these non-secret environment values on the master web Container App:
 ```text
 SCRIBE_HANDOFF_ENABLED=true
 ENTRA_TENANT_ID=<tenant-id>
-SCRIBE_API_AUDIENCE=api://<platform-api-client-id>
+SCRIBE_API_AUDIENCE=<platform-api-client-id>
 SCRIBE_CALLER_CLIENT_ID=<scribe-managed-identity-client-id>
 ```
 

@@ -9,7 +9,10 @@ from functools import lru_cache
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from .consent import ConsentError, ConsentPolicy
 from .handoff import (
@@ -47,6 +50,7 @@ from .schemas import (
     TranscriptCreate,
     TranscriptDelivery,
 )
+from .service_auth import get_verified_tenant_id
 from .settings import get_settings
 from .storage import AudioStorage, build_audio_storage
 
@@ -74,6 +78,19 @@ app = FastAPI(
 consent_policy = ConsentPolicy()
 
 
+@app.exception_handler(RequestValidationError)
+async def safe_request_validation_error(
+    request: Request,
+    exc: RequestValidationError,
+) -> Response:
+    if request.url.path.startswith("/v1/"):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": "Request validation failed."},
+        )
+    return await request_validation_exception_handler(request, exc)
+
+
 @lru_cache
 def get_repository_provider() -> RepositoryProvider:
     settings = get_settings()
@@ -98,7 +115,7 @@ def get_master_platform_handoff() -> MasterPlatformHandoff:
     return build_master_platform_handoff(get_settings())
 
 
-TenantId = Annotated[UUID, Header(alias="X-Tenant-ID")]
+TenantId = Annotated[UUID, Depends(get_verified_tenant_id)]
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=255)]
 Provider = Annotated[RepositoryProvider, Depends(get_repository_provider)]
 

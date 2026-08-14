@@ -146,6 +146,35 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
+        name  = "COSMANEURA_SCRIBE_WORKFLOW_AUTHENTICATION_ENABLED"
+        value = tostring(var.enable_workflow_authentication)
+      }
+
+      dynamic "env" {
+        for_each = var.enable_workflow_authentication ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_ENTRA_TENANT_ID"
+          value = var.tenant_id
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_workflow_authentication ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_WORKFLOW_API_AUDIENCE"
+          value = var.workflow_api_audience
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_workflow_authentication ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_TRUSTED_PLATFORM_CLIENT_ID"
+          value = var.trusted_platform_client_id
+        }
+      }
+
+      env {
         name  = "COSMANEURA_SCRIBE_MASTER_PLATFORM_HANDOFF_ENABLED"
         value = tostring(var.enable_master_platform_handoff)
       }

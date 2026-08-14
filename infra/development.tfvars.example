@@ -20,3 +20,8 @@ container_image_tag        = "replace-with-commit-sha-after-acr-build"
 enable_master_platform_handoff = false
 master_platform_base_url       = "https://app.example.invalid"
 master_platform_scope          = "api://00000000-0000-0000-0000-000000000000/.default"
+
+# Enable only after the Scribe API app role is assigned to the platform managed identity.
+enable_workflow_authentication = false
+workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
+trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
