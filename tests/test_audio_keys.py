@@ -540,6 +540,36 @@ def test_session_audio_key_migration_rejects_update_but_allows_retention_delete(
                         "consent_id": consent_id,
                     },
                 )
+
+            for invalid_wrapped_dek in (WRAPPED_DEK[:-1], f"!{WRAPPED_DEK[1:]}"):
+                with pytest.raises(DBAPIError, match="check constraint"):
+                    async with engine.begin() as connection:
+                        await connection.execute(
+                            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                            {"tenant_id": str(tenant_id)},
+                        )
+                        await connection.execute(
+                            text(
+                                """
+                                INSERT INTO session_audio_keys (
+                                    tenant_id, session_id, key_version, wrapped_dek
+                                ) VALUES (
+                                    :tenant_id, :session_id, 'version-1', :wrapped_dek
+                                )
+                                """
+                            ),
+                            {
+                                "tenant_id": tenant_id,
+                                "session_id": session_id,
+                                "wrapped_dek": invalid_wrapped_dek,
+                            },
+                        )
+
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
                 await connection.execute(
                     text(
                         """

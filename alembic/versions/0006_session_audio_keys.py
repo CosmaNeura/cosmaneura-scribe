@@ -19,13 +19,16 @@ def upgrade() -> None:
             tenant_id uuid NOT NULL,
             session_id uuid NOT NULL,
             key_version varchar(128) NOT NULL,
-            wrapped_dek char(512) NOT NULL,
+            wrapped_dek varchar(512) NOT NULL,
             created_at timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (tenant_id, session_id),
             FOREIGN KEY (tenant_id, session_id)
                 REFERENCES scribe_sessions (tenant_id, id),
             CHECK (key_version ~ '^[A-Za-z0-9_-]{1,128}$'),
-            CHECK (wrapped_dek ~ '^[A-Za-z0-9_-]{512}$')
+            CHECK (
+                char_length(wrapped_dek) = 512
+                AND wrapped_dek ~ '^[A-Za-z0-9_-]+$'
+            )
         )
         """
     )
