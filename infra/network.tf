@@ -12,7 +12,7 @@ resource "azurerm_subnet" "private_endpoints" {
   virtual_network_name = azurerm_virtual_network.scribe.name
   address_prefixes     = var.private_endpoint_subnet_address_prefixes
 
-  private_endpoint_network_policies = "Disabled"
+  private_endpoint_network_policies = "NetworkSecurityGroupEnabled"
 }
 
 resource "azurerm_private_dns_zone" "blob" {

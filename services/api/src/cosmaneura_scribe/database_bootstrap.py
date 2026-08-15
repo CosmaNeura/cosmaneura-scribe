@@ -77,6 +77,41 @@ def _quoted_identifier(connection: AsyncConnection, value: str) -> str:
     return connection.dialect.identifier_preparer.quote(value)
 
 
+async def _deny_implicit_future_permissions(settings: Settings) -> None:
+    principals = _database_principals(settings)
+    provider = build_postgres_provider(settings)
+    try:
+        async with provider.engine.begin() as connection:
+            database = _quoted_identifier(connection, settings.database_name)
+            application_roles = ", ".join(
+                _quoted_identifier(connection, principal.role_name) for principal in principals
+            )
+            grantees = f"PUBLIC, {application_roles}"
+            await connection.execute(
+                text(f"REVOKE CONNECT, TEMPORARY ON DATABASE {database} FROM PUBLIC")
+            )
+            await connection.execute(text("REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC"))
+            for object_type in ("TABLES", "SEQUENCES", "ROUTINES"):
+                await connection.execute(
+                    text(f"REVOKE ALL PRIVILEGES ON ALL {object_type} IN SCHEMA public FROM PUBLIC")
+                )
+            for object_type in ("TABLES", "SEQUENCES", "ROUTINES"):
+                await connection.execute(
+                    text(
+                        "ALTER DEFAULT PRIVILEGES "
+                        f"REVOKE ALL PRIVILEGES ON {object_type} FROM {grantees}"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                        f"REVOKE ALL PRIVILEGES ON {object_type} FROM {grantees}"
+                    )
+                )
+    finally:
+        await provider.close()
+
+
 async def _grant_runtime_permissions(settings: Settings) -> None:
     role_name = settings.database_runtime_principal_name
     if role_name is None:
@@ -87,6 +122,14 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
         async with provider.engine.begin() as connection:
             role = _quoted_identifier(connection, role_name)
             database = _quoted_identifier(connection, settings.database_name)
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON DATABASE {database} FROM {role}")
+            )
+            await connection.execute(text(f"REVOKE ALL PRIVILEGES ON SCHEMA public FROM {role}"))
+            for object_type in ("TABLES", "SEQUENCES", "ROUTINES"):
+                await connection.execute(
+                    text(f"REVOKE ALL PRIVILEGES ON ALL {object_type} IN SCHEMA public FROM {role}")
+                )
             await connection.execute(text(f"GRANT CONNECT ON DATABASE {database} TO {role}"))
             await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
             await connection.execute(
@@ -127,6 +170,12 @@ async def _grant_transcription_permissions(settings: Settings) -> None:
             await connection.execute(
                 text(f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM {role}")
             )
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM {role}")
+            )
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM {role}")
+            )
             await connection.execute(text(f"GRANT CONNECT ON DATABASE {database} TO {role}"))
             await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
             await connection.execute(
@@ -150,6 +199,7 @@ async def bootstrap_database(settings: Settings | None = None) -> None:
     if settings.repository_backend != "postgres":
         raise RuntimeError("Database bootstrap requires repository_backend=postgres")
     await _ensure_database_principals(settings)
+    await _deny_implicit_future_permissions(settings)
     await upgrade_database(settings)
     await _grant_runtime_permissions(settings)
     await _grant_transcription_permissions(settings)

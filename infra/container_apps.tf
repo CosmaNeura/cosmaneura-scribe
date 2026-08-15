@@ -20,8 +20,13 @@ resource "azurerm_log_analytics_workspace" "scribe" {
   location            = local.resource_group_location
 
   sku               = "PerGB2018"
-  retention_in_days = 30
-  daily_quota_gb    = 0.5
+  retention_in_days = 90
+  daily_quota_gb    = -1
+  data_collection_rule_id = (
+    var.enable_phi_safe_data_plane_diagnostics
+    ? azurerm_monitor_data_collection_rule.phi_safe_workspace[0].id
+    : null
+  )
 
   tags = local.tags
 }
@@ -64,6 +69,10 @@ resource "azurerm_container_app_environment" "scribe" {
     name                  = "Consumption"
     workload_profile_type = "Consumption"
   }
+
+  depends_on = [
+    azurerm_subnet_network_security_group_association.container_apps,
+  ]
 
   tags = local.tags
 }

@@ -1,13 +1,11 @@
 variable "subscription_id" {
   description = "Azure subscription containing the development environment."
   type        = string
-  sensitive   = true
 }
 
 variable "tenant_id" {
   description = "Microsoft Entra tenant ID."
   type        = string
-  sensitive   = true
 }
 
 variable "environment" {
@@ -85,6 +83,12 @@ variable "container_registry_name" {
     condition     = can(regex("^[a-zA-Z0-9]{5,50}$", var.container_registry_name))
     error_message = "container_registry_name must contain 5-50 alphanumeric characters"
   }
+}
+
+variable "enable_phi_safe_data_plane_diagnostics" {
+  description = "Enable Blob and Key Vault audit diagnostics only after the workspace redaction transform is reviewed."
+  type        = bool
+  default     = false
 }
 
 variable "deploy_container_app" {
