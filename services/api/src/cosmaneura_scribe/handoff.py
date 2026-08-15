@@ -109,8 +109,8 @@ class HttpMasterPlatformHandoff:
                 },
                 json=payload.model_dump(mode="json"),
             )
-        except (AzureError, httpx.TimeoutException, httpx.NetworkError) as exc:
-            raise HandoffRetryableError("transport_unavailable") from exc
+        except (AzureError, httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError):
+            raise HandoffRetryableError("transport_unavailable") from None
 
         if response.status_code in {200, 201}:
             try:

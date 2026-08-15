@@ -29,8 +29,12 @@ The assembler uses managed identity to read the derived object names from privat
 to call Key Vault `unwrapkey` with RSA-OAEP-256 once per assembly. It verifies each registered
 ciphertext length and SHA-256 before decryption, rejects duplicate nonces and noncontiguous channel
 sequences, bounds chunk count and aggregate ciphertext before Blob access, and emits channels in
-the canonical capture-channel order. The plaintext ceiling is deliberately capped for the 1-GiB
-Container Apps memory boundary until assembly and provider upload are fully streaming.
+the canonical capture-channel order. The 64-MiB plaintext ceiling accumulates across all channels,
+not per track. At PCM16 mono 16 kHz, it permits about 35 minutes of one-channel audio or about 17
+minutes of a two-channel virtual visit. The Container Apps Job deliberately keeps this default for
+its 1-GiB memory boundary until assembly and provider upload are fully streaming. Before any pilot,
+duration acceptance must prove that its maximum supported visit fits this aggregate limit; a higher
+limit requires a separately reviewed memory or streaming change.
 
 Plaintext WAV tracks are never written to a filesystem. The assembler builds each track in memory,
 encrypts it with a fresh process-local AES-256-GCM key, and writes only the encrypted track into a

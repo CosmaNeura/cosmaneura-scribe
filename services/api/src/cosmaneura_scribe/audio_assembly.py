@@ -177,7 +177,7 @@ class KeyVaultSessionKeyUnwrapper:
                     "value": _base64url_encode(wrapped_dek),
                 },
             )
-        except (AzureError, httpx.TimeoutException, httpx.NetworkError):
+        except (AzureError, httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError):
             raise AudioAssemblyError("audio_key_unwrap_unavailable") from None
         if response.status_code != 200:
             raise AudioAssemblyError("audio_key_unwrap_rejected")
@@ -202,7 +202,7 @@ class KeyVaultSessionKeyUnwrapper:
 
 @dataclass
 class EncryptedAudioTrackReader(AudioTrackReader):
-    path: Path
+    path: Path = field(repr=False)
     key: bytearray = field(repr=False)
     nonce: bytes = field(repr=False)
     additional_data: bytes = field(repr=False)

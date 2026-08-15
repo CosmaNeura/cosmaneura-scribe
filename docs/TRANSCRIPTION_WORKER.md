@@ -45,6 +45,12 @@ Speech adapter only after its raw enable gate and exactly two positional tenant/
 validate. It closes all three clients and invokes cancellation-shielded assembly cleanup on every
 exit path, including SIGTERM and SIGINT.
 
+The assembly plaintext limit is 64 MiB in aggregate across channels, not per track. For PCM16 mono
+16 kHz input, that is about 35 minutes of one-channel audio or about 17 minutes of a two-channel
+virtual visit. The job intentionally keeps the 64-MiB default while it has 1 GiB of memory. Before
+any pilot, the acceptance run must prove that the pilot's maximum supported visit duration fits the
+aggregate ceiling; raising it requires a reviewed memory or streaming change.
+
 ## Deployment and activation
 
 The controls are deliberately staged:
