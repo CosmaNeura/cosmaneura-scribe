@@ -93,11 +93,10 @@ async def _role_table_privileges(
             FROM pg_catalog.pg_class AS relation
             JOIN pg_catalog.pg_namespace AS namespace
               ON namespace.oid = relation.relnamespace
-            CROSS JOIN LATERAL pg_catalog.aclexplode(
-              COALESCE(relation.relacl, '{}'::aclitem[])
-            ) AS privileges
+            CROSS JOIN LATERAL pg_catalog.aclexplode(relation.relacl) AS privileges
             WHERE namespace.nspname = 'public'
               AND relation.relkind IN ('r', 'p')
+              AND relation.relacl IS NOT NULL
               AND privileges.grantee = (
                 SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :role_name
               )
