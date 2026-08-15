@@ -91,6 +91,34 @@ variable "enable_phi_safe_data_plane_diagnostics" {
   default     = false
 }
 
+variable "log_analytics_retention_in_days" {
+  description = "Operational Log Analytics retention. Defaults to the reviewed 90-day baseline."
+  type        = number
+  default     = 90
+
+  validation {
+    condition = (
+      var.log_analytics_retention_in_days >= 30 &&
+      var.log_analytics_retention_in_days <= 730
+    )
+    error_message = "log_analytics_retention_in_days must be between 30 and 730"
+  }
+}
+
+variable "log_analytics_daily_quota_gb" {
+  description = "Daily Log Analytics cap in GB. Use -1 after budget/alerts exist; any finite cap is an explicit audit-loss exception."
+  type        = number
+  default     = -1
+
+  validation {
+    condition = (
+      var.log_analytics_daily_quota_gb == -1 ||
+      var.log_analytics_daily_quota_gb >= 0.5
+    )
+    error_message = "log_analytics_daily_quota_gb must be -1 or at least 0.5"
+  }
+}
+
 variable "deploy_container_app" {
   description = "Deploy the API after its referenced image exists in ACR."
   type        = bool

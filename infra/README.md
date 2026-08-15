@@ -49,6 +49,11 @@ Cost Management budget and ingestion-cost alert, then monitor the workspace `Usa
 monitoring replaces the unsafe hard cap. This 90-day operational workspace is not the seven-year
 audit archive; the retention slice must add a separately reviewed immutable archive.
 
+`log_analytics_retention_in_days` and `log_analytics_daily_quota_gb` expose those environment
+values for staged reconciliation; their reviewed defaults remain `90` and `-1`. Preserving a
+finite live cap while budget/alert ownership is unresolved is a temporary, explicit exception: it
+must be recorded as an audit-loss risk and must not be mistaken for the accepted baseline.
+
 Blob and Key Vault data-plane diagnostics have an additional false-by-default gate:
 
 ```hcl

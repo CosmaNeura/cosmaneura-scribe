@@ -10,6 +10,8 @@ storage_account_name     = "cosmaneurascribeprod"
 key_vault_name           = "cosmaneura-scribe-prod"
 container_registry_name  = "cosmaneurascribeprod"
 enable_phi_safe_data_plane_diagnostics = false
+log_analytics_retention_in_days = 90
+log_analytics_daily_quota_gb    = -1
 
 # Production is isolated from development's 10.42.0.0/16 boundary.
 virtual_network_address_space            = ["10.44.0.0/16"]

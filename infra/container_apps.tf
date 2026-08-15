@@ -20,8 +20,8 @@ resource "azurerm_log_analytics_workspace" "scribe" {
   location            = local.resource_group_location
 
   sku               = "PerGB2018"
-  retention_in_days = 90
-  daily_quota_gb    = -1
+  retention_in_days = var.log_analytics_retention_in_days
+  daily_quota_gb    = var.log_analytics_daily_quota_gb
   data_collection_rule_id = (
     var.enable_phi_safe_data_plane_diagnostics
     ? azurerm_monitor_data_collection_rule.phi_safe_workspace[0].id
