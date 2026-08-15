@@ -93,6 +93,30 @@
         "title": "AudioChunkRegister",
         "type": "object"
       },
+      "AudioEncryptionPublicKey": {
+        "properties": {
+          "algorithm": {
+            "const": "RSA-OAEP-256",
+            "default": "RSA-OAEP-256",
+            "title": "Algorithm",
+            "type": "string"
+          },
+          "key_version": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "title": "Key Version",
+            "type": "string"
+          },
+          "public_jwk": {
+            "$ref": "#/components/schemas/RsaPublicJwk"
+          }
+        },
+        "required": [
+          "key_version",
+          "public_jwk"
+        ],
+        "title": "AudioEncryptionPublicKey",
+        "type": "object"
+      },
       "AudioUploadGrant": {
         "properties": {
           "channel": {
@@ -487,6 +511,108 @@
           "transcript_data"
         ],
         "title": "LegacyTranscriptPayload",
+        "type": "object"
+      },
+      "RsaPublicJwk": {
+        "additionalProperties": false,
+        "properties": {
+          "alg": {
+            "const": "RSA-OAEP-256",
+            "default": "RSA-OAEP-256",
+            "title": "Alg",
+            "type": "string"
+          },
+          "e": {
+            "maxLength": 16,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "E",
+            "type": "string"
+          },
+          "ext": {
+            "const": true,
+            "default": true,
+            "title": "Ext",
+            "type": "boolean"
+          },
+          "key_ops": {
+            "default": [
+              "wrapKey"
+            ],
+            "items": {
+              "const": "wrapKey",
+              "type": "string"
+            },
+            "title": "Key Ops",
+            "type": "array"
+          },
+          "kty": {
+            "const": "RSA",
+            "default": "RSA",
+            "title": "Kty",
+            "type": "string"
+          },
+          "n": {
+            "maxLength": 512,
+            "minLength": 512,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "N",
+            "type": "string"
+          }
+        },
+        "required": [
+          "n",
+          "e"
+        ],
+        "title": "RsaPublicJwk",
+        "type": "object"
+      },
+      "SessionAudioKeyCreate": {
+        "properties": {
+          "key_version": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "title": "Key Version",
+            "type": "string"
+          },
+          "wrapped_dek": {
+            "maxLength": 512,
+            "minLength": 512,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Wrapped Dek",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_version",
+          "wrapped_dek"
+        ],
+        "title": "SessionAudioKeyCreate",
+        "type": "object"
+      },
+      "SessionAudioKeyReceipt": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "key_version": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "title": "Key Version",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "key_version",
+          "created_at"
+        ],
+        "title": "SessionAudioKeyReceipt",
         "type": "object"
       },
       "SessionCreate": {
@@ -922,6 +1048,51 @@
         ]
       }
     },
+    "/v1/audio-encryption-key": {
+      "get": {
+        "operationId": "get_audio_encryption_public_key_v1_audio_encryption_key_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioEncryptionPublicKey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Audio Encryption Public Key"
+      }
+    },
     "/v1/consents": {
       "post": {
         "operationId": "create_consent_v1_consents_post",
@@ -1078,6 +1249,82 @@
           }
         ],
         "summary": "Create Session"
+      }
+    },
+    "/v1/sessions/{session_id}/audio-key": {
+      "post": {
+        "operationId": "bind_session_audio_key_v1_sessions__session_id__audio_key_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionAudioKeyCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAudioKeyReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Bind Session Audio Key"
       }
     },
     "/v1/sessions/{session_id}/chunks": {

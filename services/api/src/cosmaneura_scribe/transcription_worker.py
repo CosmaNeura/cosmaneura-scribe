@@ -40,6 +40,8 @@ class AudioAssemblyRequest:
     tenant_id: UUID
     session_id: UUID
     chunks: tuple[AudioChunk, ...] = field(repr=False)
+    job_id: UUID
+    lease_token: UUID = field(repr=False)
 
 
 class AudioTrackAssembler(Protocol):
@@ -251,6 +253,8 @@ class TranscriptionWorker:
                 session=session,
                 chunks=chunks,
                 language_code=language_code,
+                job_id=job_id,
+                lease_token=lease_token,
             )
         )
         heartbeat = asyncio.create_task(
@@ -322,15 +326,24 @@ class TranscriptionWorker:
         session: CaptureSession,
         chunks: tuple[AudioChunk, ...],
         language_code: str,
+        job_id: UUID,
+        lease_token: UUID,
     ) -> SttResult:
         async with self._assembler.assemble(
             AudioAssemblyRequest(
                 tenant_id=tenant_id,
                 session_id=session.id,
                 chunks=chunks,
+                job_id=job_id,
+                lease_token=lease_token,
             )
         ) as assembled_tracks:
-            await self._revalidate_before_transcription(tenant_id, session.id)
+            await self._revalidate_before_transcription(
+                tenant_id,
+                session.id,
+                job_id=job_id,
+                lease_token=lease_token,
+            )
             return await self._transcriber.transcribe(
                 TranscriptionRequest(
                     session_id=session.id,
@@ -340,12 +353,29 @@ class TranscriptionWorker:
                 )
             )
 
-    async def _revalidate_before_transcription(self, tenant_id: UUID, session_id: UUID) -> None:
+    async def _revalidate_before_transcription(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+    ) -> None:
+        now = datetime.now(UTC)
         async with self._repositories.transaction(tenant_id) as store:
             session = await self._session_for_processing(store, tenant_id, session_id)
             if session.status != SessionStatus.PROCESSING:
                 raise TranscriptionWorkerError("transcription_lease_lost")
             await self._validate_consent(store, tenant_id, session)
+            renewed = await store.renew_transcription_job(
+                tenant_id,
+                job_id,
+                lease_token=lease_token,
+                now=now,
+                lease_until=now + self._lease_duration,
+            )
+            if not renewed:
+                raise TranscriptionWorkerError("transcription_lease_lost")
 
     async def _persist_success(
         self,

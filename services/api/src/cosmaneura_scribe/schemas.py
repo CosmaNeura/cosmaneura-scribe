@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from .session_state_v1 import SessionStatus
 from .transcript_constraints import (
@@ -115,6 +124,80 @@ class AudioUploadGrant(BaseModel):
     channel: CaptureChannel
     upload_url: str = Field(repr=False)
     expires_at: datetime
+
+
+class RsaPublicJwk(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kty: Literal["RSA"] = "RSA"
+    n: str = Field(pattern=r"^[A-Za-z0-9_-]+$", min_length=512, max_length=512)
+    e: str = Field(pattern=r"^[A-Za-z0-9_-]+$", min_length=1, max_length=16)
+    alg: Literal["RSA-OAEP-256"] = "RSA-OAEP-256"
+    ext: Literal[True] = True
+    key_ops: tuple[Literal["wrapKey"], ...] = ("wrapKey",)
+
+    @field_validator("n")
+    @classmethod
+    def modulus_is_rsa_3072(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(
+                value + "=" * (-len(value) % 4),
+                altchars=b"-_",
+                validate=True,
+            )
+        except binascii.Error:
+            raise ValueError("n must be unpadded base64url") from None
+        if len(decoded) != 384:
+            raise ValueError("n must contain one RSA-3072 modulus")
+        return value
+
+
+class AudioEncryptionPublicKey(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    key_version: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    algorithm: Literal["RSA-OAEP-256"] = "RSA-OAEP-256"
+    public_jwk: RsaPublicJwk
+
+
+class SessionAudioKeyCreate(BaseModel):
+    key_version: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    wrapped_dek: str = Field(
+        pattern=r"^[A-Za-z0-9_-]+$",
+        min_length=512,
+        max_length=512,
+        repr=False,
+    )
+
+    @field_validator("wrapped_dek")
+    @classmethod
+    def wrapped_dek_is_valid_base64url(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(
+                value + "=" * (-len(value) % 4),
+                altchars=b"-_",
+                validate=True,
+            )
+        except binascii.Error:
+            raise ValueError("wrapped_dek must be unpadded base64url") from None
+        if len(decoded) != 384:
+            raise ValueError("wrapped_dek must contain one RSA-3072 wrapped key")
+        return value
+
+
+class SessionAudioKey(SessionAudioKeyCreate):
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    created_at: datetime
+
+
+class SessionAudioKeyReceipt(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    key_version: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    created_at: datetime
 
 
 class SpeakerRole(StrEnum):

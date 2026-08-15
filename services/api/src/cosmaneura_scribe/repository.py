@@ -16,6 +16,7 @@ from .schemas import (
     CaptureSession,
     ConsentRecord,
     DeliveryStatus,
+    SessionAudioKey,
     SessionStatus,
     Transcript,
     TranscriptDelivery,
@@ -48,6 +49,12 @@ class UploadGrantRecord:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class AudioAssemblyManifest:
+    audio_key: SessionAudioKey
+    chunks: tuple[AudioChunk, ...] = field(repr=False)
+
+
 class Repository(Protocol):
     async def claim_idempotency(
         self,
@@ -70,6 +77,28 @@ class Repository(Protocol):
     async def add_session(self, tenant_id: UUID, session: CaptureSession) -> None: ...
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None: ...
+
+    async def get_session_audio_key(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> SessionAudioKey | None: ...
+
+    async def add_session_audio_key(
+        self,
+        tenant_id: UUID,
+        audio_key: SessionAudioKey,
+    ) -> bool: ...
+
+    async def get_audio_assembly_manifest(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+    ) -> AudioAssemblyManifest | None: ...
 
     async def get_chunk(self, tenant_id: UUID, chunk_id: UUID) -> AudioChunk | None: ...
 
@@ -187,6 +216,7 @@ class RepositoryProvider(Protocol):
 class InMemoryRepository:
     consents: dict[tuple[UUID, UUID], ConsentRecord] = field(default_factory=lambda: {})
     sessions: dict[tuple[UUID, UUID], CaptureSession] = field(default_factory=lambda: {})
+    session_audio_keys: dict[tuple[UUID, UUID], SessionAudioKey] = field(default_factory=lambda: {})
     chunks: dict[tuple[UUID, UUID], AudioChunk] = field(default_factory=lambda: {})
     upload_grants: dict[tuple[UUID, UUID], UploadGrantRecord] = field(default_factory=lambda: {})
     transcripts: dict[tuple[UUID, UUID], Transcript] = field(default_factory=lambda: {})
@@ -208,6 +238,7 @@ class InMemoryRepository:
             snapshot = (
                 copy.deepcopy(self.consents),
                 copy.deepcopy(self.sessions),
+                copy.deepcopy(self.session_audio_keys),
                 copy.deepcopy(self.chunks),
                 copy.deepcopy(self.upload_grants),
                 copy.deepcopy(self.transcripts),
@@ -225,6 +256,7 @@ class InMemoryRepository:
                 (
                     self.consents,
                     self.sessions,
+                    self.session_audio_keys,
                     self.chunks,
                     self.upload_grants,
                     self.transcripts,
@@ -286,6 +318,53 @@ class InMemoryRepository:
                 f"{current.status.value} -> {session.status.value}"
             )
         self.sessions[(tenant_id, session.id)] = session
+
+    async def get_session_audio_key(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> SessionAudioKey | None:
+        return self.session_audio_keys.get((tenant_id, session_id))
+
+    async def add_session_audio_key(
+        self,
+        tenant_id: UUID,
+        audio_key: SessionAudioKey,
+    ) -> bool:
+        row_key = (tenant_id, audio_key.session_id)
+        if row_key in self.session_audio_keys:
+            return False
+        self.session_audio_keys[row_key] = audio_key
+        return True
+
+    async def get_audio_assembly_manifest(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+    ) -> AudioAssemblyManifest | None:
+        session = self.sessions.get((tenant_id, session_id))
+        job = self.transcription_jobs.get((tenant_id, job_id))
+        audio_key = self.session_audio_keys.get((tenant_id, session_id))
+        if (
+            session is None
+            or session.status != SessionStatus.PROCESSING
+            or job is None
+            or job.session_id != session_id
+            or job.status != TranscriptionJobStatus.PROCESSING
+            or job.lease_token != lease_token
+            or job.lease_until is None
+            or job.lease_until <= now
+            or audio_key is None
+        ):
+            return None
+        return AudioAssemblyManifest(
+            audio_key=audio_key,
+            chunks=tuple(await self.chunks_for(tenant_id, session_id)),
+        )
 
     async def get_chunk(self, tenant_id: UUID, chunk_id: UUID) -> AudioChunk | None:
         return self.chunks.get((tenant_id, chunk_id))

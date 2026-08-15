@@ -50,6 +50,39 @@ class FakeAssembler:
         )
 
 
+class LeaseStealingAssembler(FakeAssembler):
+    def __init__(self, repository: InMemoryRepository) -> None:
+        super().__init__()
+        self._repository = repository
+
+    @asynccontextmanager
+    async def assemble(
+        self, request: AudioAssemblyRequest
+    ) -> AsyncIterator[tuple[AudioTrack, ...]]:
+        self.call_count += 1
+        now = datetime.now(UTC)
+        async with self._repository.transaction(request.tenant_id) as store:
+            current = await store.transcription_job_for(request.tenant_id, request.session_id)
+            assert current is not None
+            expired = current.model_copy(update={"lease_until": now - timedelta(seconds=1)})
+            assert await store.update_transcription_job(
+                request.tenant_id,
+                expired,
+                expected_lease_token=request.lease_token,
+            )
+            stolen = await store.claim_transcription_job(
+                request.tenant_id,
+                request.session_id,
+                job_id=current.id,
+                lease_token=uuid4(),
+                now=now,
+                lease_until=now + timedelta(minutes=5),
+                max_attempts=3,
+            )
+            assert stolen is not None
+        yield (AudioTrack(uuid4(), CaptureChannel.MIXED, Path("/secure/stolen-lease.enc")),)
+
+
 class FakeTranscriber:
     def __init__(self, *, failures: int = 0) -> None:
         self.failures = failures
@@ -129,9 +162,9 @@ class OversizedContentTranscriber(FakeTranscriber):
 
 
 class TrackingRepository(InMemoryRepository):
-    def __init__(self, *, allow_renewal: bool = True) -> None:
+    def __init__(self, *, fail_after_renewals: int | None = None) -> None:
         super().__init__()
-        self.allow_renewal = allow_renewal
+        self.fail_after_renewals = fail_after_renewals
         self.renewed = asyncio.Event()
         self.renewal_count = 0
 
@@ -145,7 +178,7 @@ class TrackingRepository(InMemoryRepository):
         lease_until: datetime,
     ) -> bool:
         self.renewal_count += 1
-        if not self.allow_renewal:
+        if self.fail_after_renewals is not None and self.renewal_count > self.fail_after_renewals:
             self.renewed.set()
             return False
         result = await super().renew_transcription_job(
@@ -388,9 +421,33 @@ def test_worker_renews_lease_during_slow_transcription() -> None:
     asyncio.run(scenario())
 
 
+def test_worker_revalidates_exact_lease_before_speech_egress() -> None:
+    tenant_id = uuid4()
+    repository = InMemoryRepository()
+    assembler = LeaseStealingAssembler(repository)
+    transcriber = FakeTranscriber()
+
+    async def scenario() -> None:
+        session = await _seed_uploaded_session(repository, tenant_id=tenant_id)
+        worker = TranscriptionWorker(
+            repositories=repository,
+            assembler=assembler,
+            transcriber=transcriber,
+        )
+
+        with pytest.raises(TranscriptionWorkerError) as exception:
+            await worker.process(tenant_id=tenant_id, session_id=session.id)
+
+        assert exception.value.code == "transcription_lease_lost"
+
+    asyncio.run(scenario())
+    assert assembler.call_count == 1
+    assert transcriber.call_count == 0
+
+
 def test_worker_cancels_provider_work_when_lease_renewal_is_lost() -> None:
     tenant_id = uuid4()
-    repository = TrackingRepository(allow_renewal=False)
+    repository = TrackingRepository(fail_after_renewals=1)
     assembler = FakeAssembler()
     transcriber = BlockingTranscriber()
 

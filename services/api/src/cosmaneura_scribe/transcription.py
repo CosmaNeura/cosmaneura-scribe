@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol, cast
 from uuid import UUID
 
 from azure.ai.transcription.aio import TranscriptionClient
@@ -19,13 +20,23 @@ from .schemas import CaptureChannel
 from .settings import Settings
 
 
+class AudioTrackReader(Protocol):
+    def open(self) -> AbstractContextManager[BinaryIO]: ...
+
+
 @dataclass(frozen=True)
 class AudioTrack:
-    """One assembled local audio track; the path must never be logged."""
+    """One assembled local audio track; paths and reader state must never be logged."""
 
     object_id: UUID
     channel: CaptureChannel
     local_path: Path = field(repr=False)
+    reader: AudioTrackReader | None = field(default=None, repr=False, compare=False)
+
+    def open(self) -> AbstractContextManager[BinaryIO]:
+        if self.reader is not None:
+            return self.reader.open()
+        return cast(AbstractContextManager[BinaryIO], self.local_path.open("rb"))
 
 
 @dataclass(frozen=True)
@@ -133,7 +144,7 @@ class AzureSpeechTranscriber:
                 ),
             )
             try:
-                with track.local_path.open("rb") as audio_file:
+                with track.open() as audio_file:
                     result = await self._client.transcribe(
                         TranscriptionContent(definition=options, audio=audio_file),
                         logging_enable=False,

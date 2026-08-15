@@ -10,6 +10,7 @@ dependencies = [
   "azure-ai-transcription>=1,<2",
   "azure-identity>=1.24,<2",
   "azure-storage-blob>=12.26,<13",
+  "cryptography>=44,<51",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "pyjwt[crypto]>=2.10,<3",

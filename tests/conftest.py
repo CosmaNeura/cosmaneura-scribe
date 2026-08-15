@@ -159,6 +159,9 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     config.set_main_option("sqlalchemy.url", admin_url)
     command.downgrade(config, "base")
     command.upgrade(config, "head")
+    command.downgrade(config, "0005")
+    assert asyncio.run(_table_exists(admin_url, "session_audio_keys")) is False
+    command.upgrade(config, "head")
     command.downgrade(config, "0003")
     assert asyncio.run(_table_exists(admin_url, "transcription_jobs")) is False
     command.upgrade(config, "head")

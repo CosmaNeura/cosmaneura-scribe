@@ -30,9 +30,11 @@ The currently deployed revision remains on the in-memory repository until that c
 - Provider-neutral speech-to-text contract and managed-identity Azure AI Speech adapter
 - Consent-gated transcription worker with renewable leases, lost-lease cancellation, bounded
   retries, channel role priors, metadata-only quality gates, and idempotent transcript persistence
+- Per-session client-generated audio keys, immutable wrapped-key custody, and lease-bound private
+  Blob assembly with encrypted ephemeral tracks
 
-Activation still requires a reviewed key-custody design, a production encrypted-Blob audio
-assembler, a worker trigger, and a live synthetic round-trip against an Azure AI Speech endpoint.
+Activation still requires the dedicated worker identity and manual trigger, private Azure AI
+Speech connectivity, and a live synthetic round-trip. Those controls remain disabled by default.
 
 ## Run locally
 
@@ -79,8 +81,8 @@ owns dual-channel microphone/system-audio capture for virtual visits.
 The current client boundaries are in `apps/web-capture`, `apps/mobile-capture`,
 `apps/review-ui`, and `apps/desktop-companion`.
 
-The transcription worker orchestration and the still-required encrypted Blob assembly boundary are
-documented in [`docs/TRANSCRIPTION_WORKER.md`](docs/TRANSCRIPTION_WORKER.md).
+The transcription worker orchestration and inactive encrypted Blob assembly boundary are documented
+in [`docs/TRANSCRIPTION_WORKER.md`](docs/TRANSCRIPTION_WORKER.md).
 
 ## Legacy note-engine compatibility
 

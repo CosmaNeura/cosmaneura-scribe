@@ -13,6 +13,11 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from .audio_keys import (
+    AudioEncryptionKeyProvider,
+    AudioEncryptionKeyUnavailable,
+    build_audio_encryption_key_provider,
+)
 from .canonical_json import canonical_sha256
 from .consent import ConsentError, ConsentPolicy
 from .delivery_reconciler import (
@@ -44,6 +49,7 @@ from .safe_logging import log_event
 from .schemas import (
     AudioChunk,
     AudioChunkRegister,
+    AudioEncryptionPublicKey,
     AudioUploadGrant,
     AudioUploadGrantRequest,
     CaptureSession,
@@ -51,6 +57,9 @@ from .schemas import (
     ConsentRecord,
     DeliveryStatus,
     LegacyTranscriptPayload,
+    SessionAudioKey,
+    SessionAudioKeyCreate,
+    SessionAudioKeyReceipt,
     SessionCreate,
     SessionStatus,
     TokenDiagnostics,
@@ -80,6 +89,9 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
     if get_master_platform_handoff.cache_info().currsize:
         await get_master_platform_handoff().close()
         get_master_platform_handoff.cache_clear()
+    if get_audio_encryption_key_provider.cache_info().currsize:
+        await get_audio_encryption_key_provider().close()
+        get_audio_encryption_key_provider.cache_clear()
 
 
 app = FastAPI(
@@ -148,6 +160,11 @@ def get_master_platform_handoff() -> MasterPlatformHandoff:
     return build_master_platform_handoff(get_settings())
 
 
+@lru_cache
+def get_audio_encryption_key_provider() -> AudioEncryptionKeyProvider:
+    return build_audio_encryption_key_provider(get_settings())
+
+
 TenantId = Annotated[UUID, Depends(get_verified_tenant_id)]
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=255)]
 Provider = Annotated[RepositoryProvider, Depends(get_repository_provider)]
@@ -169,6 +186,10 @@ Repository = Annotated[RepositoryContract, Depends(get_repository)]
 Policy = Annotated[ConsentPolicy, Depends(get_consent_policy)]
 Storage = Annotated[AudioStorage, Depends(get_audio_storage)]
 Handoff = Annotated[MasterPlatformHandoff, Depends(get_master_platform_handoff)]
+EncryptionKeys = Annotated[
+    AudioEncryptionKeyProvider,
+    Depends(get_audio_encryption_key_provider),
+]
 
 
 def _fingerprint(payload: object) -> str:
@@ -271,6 +292,21 @@ async def token_diagnostics(principal: WorkflowPrincipal) -> TokenDiagnostics:
     return principal.diagnostics
 
 
+@app.get("/v1/audio-encryption-key", response_model=AudioEncryptionPublicKey)
+async def get_audio_encryption_public_key(
+    tenant_id: TenantId,
+    provider: EncryptionKeys,
+) -> AudioEncryptionPublicKey:
+    del tenant_id
+    try:
+        return await provider.get_public_key()
+    except AudioEncryptionKeyUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audio encryption key is unavailable.",
+        ) from None
+
+
 @app.post("/v1/consents", response_model=ConsentRecord, status_code=201)
 async def create_consent(
     payload: ConsentCreate,
@@ -347,6 +383,97 @@ async def create_session(
     return session
 
 
+def _audio_key_receipt(audio_key: SessionAudioKey) -> SessionAudioKeyReceipt:
+    return SessionAudioKeyReceipt(
+        session_id=audio_key.session_id,
+        key_version=audio_key.key_version,
+        created_at=audio_key.created_at,
+    )
+
+
+@app.post(
+    "/v1/sessions/{session_id}/audio-key",
+    response_model=SessionAudioKeyReceipt,
+    status_code=201,
+)
+async def bind_session_audio_key(
+    session_id: UUID,
+    payload: SessionAudioKeyCreate,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    store: Repository,
+    policy: Policy,
+    key_provider: EncryptionKeys,
+) -> SessionAudioKeyReceipt:
+    fingerprint = _fingerprint(payload)
+    previous_id = await _idempotent_entity(
+        store,
+        tenant_id,
+        f"session.audio-key:{session_id}",
+        idempotency_key,
+        fingerprint,
+        session_id,
+    )
+    if previous_id is not None:
+        previous = await store.get_session_audio_key(tenant_id, previous_id)
+        if previous is None:
+            raise HTTPException(status_code=500, detail="Idempotent audio key is unavailable.")
+        replay_session = await _locked_session_or_404(store, tenant_id, previous.session_id)
+        await _assert_session_consent(store, tenant_id, replay_session, policy)
+        return _audio_key_receipt(previous)
+
+    session = await _locked_session_or_404(store, tenant_id, session_id)
+    await _assert_session_consent(store, tenant_id, session, policy)
+    existing = await store.get_session_audio_key(tenant_id, session_id)
+    if existing is not None:
+        if (
+            existing.key_version != payload.key_version
+            or existing.wrapped_dek != payload.wrapped_dek
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The session audio key is immutable.",
+            )
+        return _audio_key_receipt(existing)
+    if session.status != SessionStatus.CREATED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The session is not accepting an audio key.",
+        )
+    try:
+        current_key = await key_provider.get_public_key()
+    except AudioEncryptionKeyUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audio encryption key is unavailable.",
+        ) from None
+    if (
+        payload.key_version != current_key.key_version
+        or key_provider.versioned_key_id(payload.key_version) is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The audio encryption key version is no longer current.",
+        )
+    audio_key = SessionAudioKey(
+        session_id=session_id,
+        created_at=datetime.now(UTC),
+        **payload.model_dump(),
+    )
+    if not await store.add_session_audio_key(tenant_id, audio_key):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The session audio key is immutable.",
+        )
+    await store.audit(
+        tenant_id=tenant_id,
+        action="session_audio_key.bound",
+        entity_type="session_audio_key",
+        entity_id=session_id,
+    )
+    return _audio_key_receipt(audio_key)
+
+
 @app.post(
     "/v1/sessions/{session_id}/chunks/upload-grant",
     response_model=AudioUploadGrant,
@@ -363,6 +490,11 @@ async def issue_chunk_upload_grant(
 ) -> AudioUploadGrant:
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    if await store.get_session_audio_key(tenant_id, session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Register the session audio key before requesting upload grants.",
+        )
 
     fingerprint = _fingerprint(payload)
     operation = f"chunk.upload-grant:{session_id}"
@@ -427,22 +559,6 @@ async def register_chunk(
     store: Repository,
     policy: Policy,
 ) -> AudioChunk:
-    session = await _locked_session_or_404(store, tenant_id, session_id)
-    await _assert_session_consent(store, tenant_id, session, policy)
-
-    grant = await store.get_upload_grant(tenant_id, payload.object_id)
-    if grant is None:
-        raise HTTPException(status_code=409, detail="Audio object does not have an upload grant.")
-    if (
-        grant.session_id != session_id
-        or grant.sequence_number != payload.sequence_number
-        or grant.channel != payload.channel
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Audio registration does not match its upload grant.",
-        )
-
     fingerprint = _fingerprint(payload)
     operation = f"chunk.register:{session_id}"
     chunk = AudioChunk(
@@ -455,7 +571,29 @@ async def register_chunk(
         previous = await store.get_chunk(tenant_id, previous_id)
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent audio chunk is unavailable.")
+        replay_session = await _locked_session_or_404(store, tenant_id, previous.session_id)
+        await _assert_session_consent(store, tenant_id, replay_session, policy)
         return previous
+
+    session = await _locked_session_or_404(store, tenant_id, session_id)
+    await _assert_session_consent(store, tenant_id, session, policy)
+    if await store.get_session_audio_key(tenant_id, session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Register the session audio key before registering audio chunks.",
+        )
+    grant = await store.get_upload_grant(tenant_id, payload.object_id)
+    if grant is None:
+        raise HTTPException(status_code=409, detail="Audio object does not have an upload grant.")
+    if (
+        grant.session_id != session_id
+        or grant.sequence_number != payload.sequence_number
+        or grant.channel != payload.channel
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Audio registration does not match its upload grant.",
+        )
 
     if not can_transition_session(session.status, SessionStatus.CAPTURING):
         raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
@@ -481,11 +619,6 @@ async def complete_session(
     store: Repository,
     policy: Policy,
 ) -> CaptureSession:
-    session = await _locked_session_or_404(store, tenant_id, session_id)
-    await _assert_session_consent(store, tenant_id, session, policy)
-    if not await store.chunks_for(tenant_id, session_id):
-        raise HTTPException(status_code=409, detail="At least one audio chunk is required.")
-
     fingerprint = _fingerprint({"session_id": str(session_id)})
     previous_id = await _idempotent_entity(
         store,
@@ -499,7 +632,18 @@ async def complete_session(
         previous = await store.get_session(tenant_id, previous_id)
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent session is unavailable.")
+        await _assert_session_consent(store, tenant_id, previous, policy)
         return previous
+
+    session = await _locked_session_or_404(store, tenant_id, session_id)
+    await _assert_session_consent(store, tenant_id, session, policy)
+    if await store.get_session_audio_key(tenant_id, session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Register the session audio key before completing capture.",
+        )
+    if not await store.chunks_for(tenant_id, session_id):
+        raise HTTPException(status_code=409, detail="At least one audio chunk is required.")
 
     if session.status == SessionStatus.UPLOADED or not can_transition_session(
         session.status, SessionStatus.UPLOADED
@@ -529,9 +673,6 @@ async def save_transcript(
     store: Repository,
     policy: Policy,
 ) -> Transcript:
-    session = await _locked_session_or_404(store, tenant_id, session_id)
-    await _assert_session_consent(store, tenant_id, session, policy)
-
     fingerprint = _fingerprint(payload)
     operation = f"transcript.create:{session_id}"
     transcript = Transcript(
@@ -544,8 +685,12 @@ async def save_transcript(
         previous = await store.get_transcript(tenant_id, previous_id)
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent transcript is unavailable.")
+        replay_session = await _locked_session_or_404(store, tenant_id, previous.session_id)
+        await _assert_session_consent(store, tenant_id, replay_session, policy)
         return previous
 
+    session = await _locked_session_or_404(store, tenant_id, session_id)
+    await _assert_session_consent(store, tenant_id, session, policy)
     if session.status == SessionStatus.TRANSCRIPT_READY or not can_transition_session(
         session.status, SessionStatus.TRANSCRIPT_READY
     ):
