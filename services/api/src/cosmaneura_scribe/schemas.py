@@ -259,3 +259,17 @@ class AuditEvent(BaseModel):
     entity_type: str
     entity_id: UUID
     occurred_at: datetime
+
+
+class TokenDiagnostics(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    signature_valid: bool
+    lifetime_valid: bool
+    token_version_v2: bool
+    issuer_valid: bool
+    audience_valid: bool
+    tenant_valid: bool
+    idtyp_app: bool
+    azp_valid: bool
+    role_present: bool

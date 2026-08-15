@@ -5,8 +5,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from cosmaneura_scribe.postgres_repository import build_postgres_provider
-from cosmaneura_scribe.repository import IdempotencyConflictError, UploadGrantRecord
+from cosmaneura_scribe.postgres_repository import PostgresRepository, build_postgres_provider
+from cosmaneura_scribe.repository import (
+    IdempotencyClaimUnavailableError,
+    IdempotencyConflictError,
+    UploadGrantRecord,
+)
 from cosmaneura_scribe.schemas import (
     AudioChunk,
     CaptureChannel,
@@ -35,6 +39,36 @@ def _settings(database_url: str) -> Settings:
         database_pool_size=1,
         database_max_overflow=0,
     )
+
+
+class EmptyIdempotencyResult:
+    def scalar_one_or_none(self) -> None:
+        return None
+
+    def mappings(self) -> EmptyIdempotencyResult:
+        return self
+
+    def one_or_none(self) -> None:
+        return None
+
+
+class EmptyIdempotencySession:
+    async def execute(self, *_: object, **__: object) -> EmptyIdempotencyResult:
+        return EmptyIdempotencyResult()
+
+
+@pytest.mark.asyncio
+async def test_missing_concurrent_idempotency_row_is_a_typed_retryable_outcome() -> None:
+    repository = PostgresRepository(EmptyIdempotencySession())  # type: ignore[arg-type]
+
+    with pytest.raises(IdempotencyClaimUnavailableError):
+        await repository.claim_idempotency(
+            tenant_id=uuid4(),
+            operation="consent.create",
+            key="concurrent-visibility-gap-0001",
+            request_fingerprint="a" * 64,
+            entity_id=uuid4(),
+        )
 
 
 @pytest.mark.postgres

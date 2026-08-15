@@ -28,6 +28,10 @@ class IdempotencyConflictError(ValueError):
     """The same idempotency key was used for a different request."""
 
 
+class IdempotencyClaimUnavailableError(RuntimeError):
+    """A concurrent idempotency claim could not yet be observed safely."""
+
+
 @dataclass(frozen=True)
 class IdempotencyRecord:
     request_fingerprint: str

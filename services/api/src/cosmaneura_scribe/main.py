@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
+from time import perf_counter
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -25,6 +26,7 @@ from .handoff import (
     to_master_platform_payload,
 )
 from .repository import (
+    IdempotencyClaimUnavailableError,
     IdempotencyConflictError,
     InMemoryRepository,
     RepositoryProvider,
@@ -33,6 +35,7 @@ from .repository import (
 from .repository import (
     Repository as RepositoryContract,
 )
+from .safe_logging import log_event
 from .schemas import (
     AudioChunk,
     AudioChunkRegister,
@@ -45,11 +48,16 @@ from .schemas import (
     LegacyTranscriptPayload,
     SessionCreate,
     SessionStatus,
+    TokenDiagnostics,
     Transcript,
     TranscriptCreate,
     TranscriptDelivery,
 )
-from .service_auth import get_verified_tenant_id
+from .service_auth import (
+    EntraServicePrincipal,
+    authenticate_workflow_request,
+    get_verified_tenant_id,
+)
 from .session_state_v1 import can_transition_session
 from .settings import get_settings
 from .storage import AudioStorage, build_audio_storage
@@ -83,9 +91,15 @@ async def opaque_unhandled_error(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
+    started_at = perf_counter()
     try:
         return await call_next(request)
-    except Exception:
+    except Exception as exc:
+        log_event(
+            action="http.unhandled_exception",
+            error_class=type(exc).__name__,
+            duration_ms=(perf_counter() - started_at) * 1000,
+        )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "Internal server error."},
@@ -132,6 +146,10 @@ def get_master_platform_handoff() -> MasterPlatformHandoff:
 TenantId = Annotated[UUID, Depends(get_verified_tenant_id)]
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=255)]
 Provider = Annotated[RepositoryProvider, Depends(get_repository_provider)]
+WorkflowPrincipal = Annotated[
+    EntraServicePrincipal,
+    Depends(authenticate_workflow_request),
+]
 
 
 async def get_repository(
@@ -172,6 +190,12 @@ async def _idempotent_entity(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Idempotency-Key was already used with a different request.",
+        ) from exc
+    except IdempotencyClaimUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency-Key is currently being processed.",
+            headers={"Retry-After": "0"},
         ) from exc
 
 
@@ -231,6 +255,15 @@ async def readiness(provider: Provider) -> dict[str, str]:
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Persistence is not ready.") from exc
     return {"status": "ready"}
+
+
+@app.get(
+    "/v1/diagnostics/token",
+    response_model=TokenDiagnostics,
+    tags=["operations"],
+)
+async def token_diagnostics(principal: WorkflowPrincipal) -> TokenDiagnostics:
+    return principal.diagnostics
 
 
 @app.post("/v1/consents", response_model=ConsentRecord, status_code=201)

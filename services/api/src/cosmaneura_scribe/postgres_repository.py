@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .repository import (
+    IdempotencyClaimUnavailableError,
     IdempotencyConflictError,
     Repository,
     UploadGrantRecord,
@@ -82,6 +83,10 @@ class PostgresRepository:
         request_fingerprint: str,
         entity_id: UUID,
     ) -> UUID | None:
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"{tenant_id}:{operation}:{key}"},
+        )
         inserted = await self._session.execute(
             text(
                 """
@@ -125,8 +130,10 @@ class PostgresRepository:
                 )
             )
             .mappings()
-            .one()
+            .one_or_none()
         )
+        if previous is None:
+            raise IdempotencyClaimUnavailableError
         if previous["request_fingerprint"] != request_fingerprint:
             raise IdempotencyConflictError
         return previous["entity_id"]
