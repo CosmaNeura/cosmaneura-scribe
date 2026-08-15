@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import re
+from typing import TextIO
 from uuid import UUID
 
 LOGGER_NAME = "cosmaneura_scribe"
@@ -11,6 +12,22 @@ LOG_FIELD_ALLOWLIST = frozenset({"action", "entity_id", "tenant_id", "error_clas
 
 _SAFE_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _LOGGER = logging.getLogger(LOGGER_NAME)
+
+
+class _StandaloneSafeLogHandler(logging.StreamHandler[TextIO]):
+    """Marker handler used only by command-line jobs."""
+
+
+def configure_standalone_logging() -> None:
+    """Emit allowlisted job events at INFO without enabling third-party INFO logs."""
+
+    if not any(isinstance(handler, _StandaloneSafeLogHandler) for handler in _LOGGER.handlers):
+        handler = _StandaloneSafeLogHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        _LOGGER.addHandler(handler)
+    _LOGGER.setLevel(logging.INFO)
+    _LOGGER.propagate = False
 
 
 def log_event(

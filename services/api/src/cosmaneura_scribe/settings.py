@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -82,7 +83,9 @@ class Settings(BaseSettings):
 
     transcription_backend: Literal["none", "azure"] = "none"
     azure_speech_endpoint: AnyHttpUrl | None = None
+    azure_speech_private_endpoint_cidrs: tuple[IPv4Network | IPv6Network, ...] = ()
     azure_speech_max_speakers: int = Field(default=4, ge=2, le=36)
+    speech_smoke_enabled: bool = False
     transcription_job_enabled: bool = False
     transcription_job_language_code: str = Field(
         default="en-US",
@@ -154,6 +157,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "azure_speech_endpoint must be an exact Azure Cognitive Services HTTPS origin"
                 )
+            if not self.azure_speech_private_endpoint_cidrs:
+                raise ValueError(
+                    "azure_speech_private_endpoint_cidrs are required when Azure "
+                    "transcription is enabled"
+                )
         if self.transcription_job_enabled:
             if self.repository_backend != "postgres":
                 raise ValueError("the transcription job requires the PostgreSQL repository")
@@ -169,6 +177,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "audio_assembly_encrypted_temp_directory is required for the transcription job"
                 )
+        if self.speech_smoke_enabled:
+            if self.transcription_backend != "azure":
+                raise ValueError("the Speech smoke job requires the Azure transcription backend")
+            if self.managed_identity_client_id is None:
+                raise ValueError("managed_identity_client_id is required for the Speech smoke job")
         return self
 
 

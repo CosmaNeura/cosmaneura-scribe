@@ -39,6 +39,7 @@ Authenticate with Azure CLI locally, set the non-secret endpoint, and leave SDK 
 export AZURE_TOKEN_CREDENTIALS=dev
 export COSMANEURA_SCRIBE_TRANSCRIPTION_BACKEND=azure
 export COSMANEURA_SCRIBE_AZURE_SPEECH_ENDPOINT=https://<resource>.cognitiveservices.azure.com
+export COSMANEURA_SCRIBE_AZURE_SPEECH_PRIVATE_ENDPOINT_CIDRS='["10.42.1.4/32"]'
 uv run python scripts/benchmark_stt.py /secure/path/manifest.json \
   --output /secure/path/results.json
 ```
@@ -47,3 +48,7 @@ The calling identity needs only the applicable Cognitive Services Speech user ro
 Speech resource. Never use an API key for the production worker. A provider comparison is accepted
 only after medical-term substitutions, speaker attribution, and low-confidence segments are
 reviewed in the approved workspace; aggregate WER alone is insufficient.
+
+The production activation check is narrower and reproducible: the manual runner in
+`SPEECH_PRIVATE_ACCEPTANCE.md` accepts only the two committed hash-pinned synthetic fixtures and
+persists no result file.

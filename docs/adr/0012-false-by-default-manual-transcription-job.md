@@ -9,8 +9,9 @@ independent, false-by-default controls. `deploy_transcription_job` creates the j
 user-assigned identity, and only its ACR pull role. `enable_transcription_job` changes the runner's
 hard gate and creates the Blob, Key Vault, and Speech data-plane roles. Enabling requires the API
 to use PostgreSQL, keeps the migration job available for principal reconciliation, and requires the
-separately provisioned private Speech endpoint and resource ID. Deployment accepts only an image
-tag equal to a lowercase full commit SHA.
+Terraform-owned private Speech foundation. Deployment accepts only an image tag equal to a
+lowercase full commit SHA. ADR 0014 owns the private resource, DNS guard, and synthetic acceptance
+path.
 
 The job has no ingress, schedule, event scale rule, queue consumer, or principal authorized by this
 configuration to start executions. An operator with separately governed Azure control-plane access
@@ -55,7 +56,8 @@ and fixed error classes.
   are present.
 - Every execution is intentionally narrow and auditable, but an operator must supply the two UUIDs
   and start each retry manually until a later reviewed trigger replaces this one.
-- The Speech account, its private endpoint and DNS, and the synthetic live acceptance test remain a
-  separate slice. This decision adds only their endpoint/resource-ID interface.
+- The Speech account, its private endpoint and DNS, and the synthetic live acceptance test are
+  implemented separately by ADR 0014. The worker derives its endpoint and role scope from that
+  owned foundation rather than accepting free-form identifiers.
 - The Key Vault key is a data-plane resource. Infrastructure applies must run from an approved
   network path that can resolve and reach the private vault.

@@ -9,7 +9,7 @@ from uuid import UUID
 
 from .audio_assembly import build_audio_track_assembler
 from .postgres_repository import build_postgres_provider
-from .safe_logging import log_event
+from .safe_logging import configure_standalone_logging, log_event
 from .settings import Settings, get_settings
 from .transcription import build_speech_to_text_provider
 from .transcription_worker import TranscriptionWorker
@@ -184,6 +184,7 @@ async def _run_with_signal_cancellation(run: JobRun | None = None) -> bool:
 
 
 def main() -> None:
+    configure_standalone_logging()
     try:
         asyncio.run(_run_with_signal_cancellation())
     except asyncio.CancelledError:

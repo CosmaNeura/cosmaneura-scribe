@@ -40,7 +40,7 @@ resource "azurerm_role_assignment" "transcription_audio_key_crypto_user" {
 resource "azurerm_role_assignment" "transcription_speech_user" {
   count = var.enable_transcription_job ? 1 : 0
 
-  scope                            = var.azure_speech_resource_id
+  scope                            = azurerm_cognitive_account.speech[0].id
   role_definition_id               = "/subscriptions/${var.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/f2dc8367-1007-4938-bd23-fe263f013447"
   principal_id                     = azurerm_user_assigned_identity.transcription[0].principal_id
   principal_type                   = "ServicePrincipal"
@@ -172,7 +172,17 @@ resource "azurerm_container_app_job" "transcription" {
         for_each = var.enable_transcription_job ? [1] : []
         content {
           name  = "COSMANEURA_SCRIBE_AZURE_SPEECH_ENDPOINT"
-          value = var.azure_speech_endpoint
+          value = azurerm_cognitive_account.speech[0].endpoint
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_transcription_job ? [1] : []
+        content {
+          name = "COSMANEURA_SCRIBE_AZURE_SPEECH_PRIVATE_ENDPOINT_CIDRS"
+          value = jsonencode([
+            "${azurerm_private_endpoint.speech[0].private_service_connection[0].private_ip_address}/32"
+          ])
         }
       }
     }
@@ -181,6 +191,8 @@ resource "azurerm_container_app_job" "transcription" {
   depends_on = [
     azurerm_private_endpoint.audio_blob,
     azurerm_private_endpoint.key_vault,
+    azurerm_private_endpoint.speech,
+    azurerm_private_dns_zone_virtual_network_link.speech,
     azurerm_role_assignment.transcription_acr,
     azurerm_role_assignment.transcription_audio_reader,
     azurerm_role_assignment.transcription_audio_key_crypto_user,

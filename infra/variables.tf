@@ -254,41 +254,44 @@ variable "enable_transcription_job" {
         var.deploy_transcription_job &&
         var.deploy_database_migration_job &&
         var.use_postgres_repository &&
-        var.azure_speech_endpoint != "" &&
-        var.azure_speech_resource_id != "" &&
-        lower(try(regex("^https://([A-Za-z0-9-]+)\\.cognitiveservices\\.azure\\.com/?$", var.azure_speech_endpoint)[0], "")) ==
-        lower(try(basename(var.azure_speech_resource_id), "not-a-match"))
+        var.deploy_private_speech_foundation
       )
     )
-    error_message = "enable_transcription_job requires the deployed migration and transcription jobs, PostgreSQL API cutover, and a matching Speech endpoint and account ID"
+    error_message = "enable_transcription_job requires the deployed migration, transcription, private Speech foundation, and PostgreSQL API cutover"
   }
 }
 
-variable "azure_speech_endpoint" {
-  description = "Private HTTPS custom-subdomain endpoint of the separately provisioned Speech resource."
-  type        = string
-  default     = ""
+variable "deploy_private_speech_foundation" {
+  description = "Create the dedicated private Speech account, DNS, endpoint, and safe diagnostics."
+  type        = bool
+  default     = false
+}
+
+variable "deploy_speech_smoke_job" {
+  description = "Create the manual two-case synthetic Speech acceptance job and identity."
+  type        = bool
+  default     = false
 
   validation {
     condition = (
-      var.azure_speech_endpoint == "" ||
-      can(regex("^https://[A-Za-z0-9-]+\\.cognitiveservices\\.azure\\.com/?$", var.azure_speech_endpoint))
+      !var.deploy_speech_smoke_job ||
+      (
+        var.deploy_private_speech_foundation &&
+        can(regex("^[0-9a-f]{40}$", var.container_image_tag))
+      )
     )
-    error_message = "azure_speech_endpoint must be an HTTPS Cognitive Services custom-subdomain endpoint"
+    error_message = "deploy_speech_smoke_job requires the private Speech foundation and a lowercase 40-character commit SHA image tag"
   }
 }
 
-variable "azure_speech_resource_id" {
-  description = "ARM resource ID of the separately provisioned private Speech account."
-  type        = string
-  default     = ""
+variable "enable_speech_smoke_job" {
+  description = "Allow the pinned synthetic smoke job to call the private Speech account."
+  type        = bool
+  default     = false
 
   validation {
-    condition = (
-      var.azure_speech_resource_id == "" ||
-      can(regex("^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.CognitiveServices/accounts/[^/]+$", var.azure_speech_resource_id))
-    )
-    error_message = "azure_speech_resource_id must identify a Cognitive Services account"
+    condition     = !var.enable_speech_smoke_job || var.deploy_speech_smoke_job
+    error_message = "enable_speech_smoke_job requires deploy_speech_smoke_job=true"
   }
 }
 

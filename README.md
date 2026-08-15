@@ -34,9 +34,11 @@ The currently deployed revision remains on the in-memory repository until that c
   Blob assembly with encrypted ephemeral tracks
 - False-by-default manual Container Apps Job with a dedicated identity, one-target execution,
   cancellation cleanup, zero platform retries, and least-privilege activation roles
+- Terraform-owned private Azure AI Speech foundation and a separate false-default manual smoke job
+  with two hash-pinned synthetic cases and fail-closed private-DNS verification
 
-Activation still requires an approved infrastructure apply, private Azure AI Speech connectivity,
-and a live synthetic round-trip. The job deployment and execution gates remain disabled by default.
+Activation still requires an approved infrastructure apply and a successful live synthetic
+round-trip. The foundation, smoke, and transcription gates remain disabled by default.
 
 ## Run locally
 

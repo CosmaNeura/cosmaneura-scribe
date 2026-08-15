@@ -4,6 +4,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from azure.ai.transcription.aio import TranscriptionClient
@@ -18,6 +19,7 @@ from azure.identity.aio import DefaultAzureCredential
 
 from .schemas import CaptureChannel
 from .settings import Settings
+from .speech_private_network import PrivateSpeechEndpointGuard
 
 
 class AudioTrackReader(Protocol):
@@ -88,6 +90,10 @@ class AzureTranscriptionClient(Protocol):
     async def close(self) -> None: ...
 
 
+class SpeechEndpointGuard(Protocol):
+    async def verify(self) -> None: ...
+
+
 class TranscriptionInputError(ValueError):
     """Sanitized failure raised when an assembled audio track cannot be read."""
 
@@ -99,10 +105,12 @@ class AzureSpeechTranscriber:
         *,
         max_speakers: int,
         credential: DefaultAzureCredential | None = None,
+        endpoint_guard: SpeechEndpointGuard | None = None,
     ) -> None:
         self._client = client
         self._max_speakers = max_speakers
         self._credential = credential
+        self._endpoint_guard = endpoint_guard
 
     @property
     def name(self) -> str:
@@ -112,6 +120,14 @@ class AzureSpeechTranscriber:
     def from_settings(cls, settings: Settings) -> AzureSpeechTranscriber:
         if settings.azure_speech_endpoint is None:
             raise ValueError("azure_speech_endpoint is required for Azure transcription")
+        endpoint = str(settings.azure_speech_endpoint).rstrip("/")
+        hostname = urlsplit(endpoint).hostname
+        if hostname is None:
+            raise ValueError("azure_speech_endpoint is required for Azure transcription")
+        endpoint_guard = PrivateSpeechEndpointGuard(
+            hostname,
+            settings.azure_speech_private_endpoint_cidrs,
+        )
         credential = DefaultAzureCredential(
             managed_identity_client_id=(
                 str(settings.managed_identity_client_id)
@@ -121,7 +137,7 @@ class AzureSpeechTranscriber:
             require_envvar=False,
         )
         client = TranscriptionClient(
-            endpoint=str(settings.azure_speech_endpoint).rstrip("/"),
+            endpoint=endpoint,
             credential=credential,
             logging_enable=False,
         )
@@ -129,6 +145,7 @@ class AzureSpeechTranscriber:
             client,
             max_speakers=settings.azure_speech_max_speakers,
             credential=credential,
+            endpoint_guard=endpoint_guard,
         )
 
     async def transcribe(self, request: TranscriptionRequest) -> SttResult:
@@ -136,6 +153,8 @@ class AzureSpeechTranscriber:
         duration_ms = 0
 
         for track in request.tracks:
+            if self._endpoint_guard is not None:
+                await self._endpoint_guard.verify()
             options = TranscriptionOptions(
                 locales=[request.language_code],
                 profanity_filter_mode=ProfanityFilterMode.NONE,

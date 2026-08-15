@@ -135,6 +135,7 @@ def test_enabled_transcription_job_requires_closed_production_dependencies(
         "database_ssl": False,
         "transcription_backend": "azure",
         "azure_speech_endpoint": "https://scribe-test.cognitiveservices.azure.com",
+        "azure_speech_private_endpoint_cidrs": ("10.42.1.7/32",),
         "transcription_job_enabled": True,
     }
     missing_dependency_cases = (
@@ -142,6 +143,7 @@ def test_enabled_transcription_job_requires_closed_production_dependencies(
         ({"storage_backend": "memory"}, "Azure storage backend"),
         ({"transcription_backend": "none"}, "Azure transcription backend"),
         ({"azure_speech_endpoint": None}, "azure_speech_endpoint"),
+        ({"azure_speech_private_endpoint_cidrs": ()}, "private_endpoint_cidrs"),
         ({"managed_identity_client_id": None}, "managed_identity_client_id"),
         ({"audio_encryption_key_id": None}, "audio_encryption_key_id"),
         ({"audio_assembly_encrypted_temp_directory": None}, "encrypted_temp_directory"),
@@ -174,4 +176,38 @@ def test_azure_transcription_rejects_non_exact_speech_origins(endpoint: str) -> 
         Settings(
             transcription_backend="azure",
             azure_speech_endpoint=endpoint,
+            azure_speech_private_endpoint_cidrs=("10.42.1.7/32",),
         )
+
+
+def test_enabled_speech_smoke_requires_private_azure_and_managed_identity() -> None:
+    configuration: dict[str, object] = {
+        "managed_identity_client_id": uuid4(),
+        "transcription_backend": "azure",
+        "azure_speech_endpoint": "https://scribe-test.cognitiveservices.azure.com",
+        "azure_speech_private_endpoint_cidrs": ("10.42.1.7/32",),
+        "speech_smoke_enabled": True,
+    }
+    with pytest.raises(ValidationError, match="Azure transcription backend"):
+        Settings(**(configuration | {"transcription_backend": "none"}))
+    with pytest.raises(ValidationError, match="managed_identity_client_id"):
+        Settings(**(configuration | {"managed_identity_client_id": None}))
+
+    assert Settings(**configuration).speech_smoke_enabled is True
+
+
+def test_private_speech_cidrs_parse_from_container_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "COSMANEURA_SCRIBE_AZURE_SPEECH_PRIVATE_ENDPOINT_CIDRS",
+        '["10.42.1.7/32"]',
+    )
+
+    settings = Settings(
+        _env_file=None,
+        transcription_backend="azure",
+        azure_speech_endpoint="https://scribe-test.cognitiveservices.azure.com",
+    )
+
+    assert str(settings.azure_speech_private_endpoint_cidrs[0]) == "10.42.1.7/32"
