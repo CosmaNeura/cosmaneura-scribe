@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,23 @@ def test_managed_identity_client_id_is_nonsecret_configuration() -> None:
     client_id = uuid4()
     settings = Settings(managed_identity_client_id=client_id)
     assert settings.managed_identity_client_id == client_id
+
+
+def test_audio_assembly_configuration_is_explicit_and_bounded(tmp_path: Path) -> None:
+    settings = Settings(
+        audio_encryption_key_id="https://scribe-test.vault.azure.net/keys/scribe-audio",
+        audio_assembly_encrypted_temp_directory=tmp_path,
+        audio_assembly_max_plaintext_bytes=1_000_000,
+    )
+
+    assert str(settings.audio_encryption_key_id).startswith("https://scribe-test.vault.azure.net/")
+    assert settings.audio_assembly_encrypted_temp_directory == tmp_path
+
+    with pytest.raises(ValidationError, match="greater than or equal to 1000000"):
+        Settings(audio_assembly_max_plaintext_bytes=999_999)
+
+    with pytest.raises(ValidationError, match="versionless Azure Key Vault key ID"):
+        Settings(audio_encryption_key_id="https://attacker.invalid/keys/scribe-audio")
 
 
 def test_postgres_managed_identity_requires_host_and_user() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -8,15 +9,23 @@ from uuid import UUID, uuid4
 
 import pytest
 from conftest import RepositoryBackend
+from cosmaneura_scribe.consent import ConsentError
 from cosmaneura_scribe.delivery_reconciler import DeliveryReconciler
 from cosmaneura_scribe.handoff import HandoffRetryableError
-from cosmaneura_scribe.main import app, get_consent_policy, get_master_platform_handoff
+from cosmaneura_scribe.main import (
+    app,
+    get_audio_encryption_key_provider,
+    get_consent_policy,
+    get_master_platform_handoff,
+)
 from cosmaneura_scribe.repository import RepositoryProvider
 from cosmaneura_scribe.schemas import (
+    AudioEncryptionPublicKey,
     CaptureChannel,
     DeliveryStatus,
     MasterTranscriptDeliveryRequest,
     MasterTranscriptDeliveryResponse,
+    RsaPublicJwk,
     SessionStatus,
     SpeakerRole,
     Transcript,
@@ -40,6 +49,30 @@ from fastapi.testclient import TestClient
 
 def headers(tenant_id: object, key: str) -> dict[str, str]:
     return {"X-Tenant-ID": str(tenant_id), "Idempotency-Key": key}
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+TEST_WRAPPED_DEK = _base64url(b"w" * 384)
+TEST_RSA_3072_MODULUS = _base64url(b"\x80" + b"m" * 383)
+
+
+class PipelineAudioKeyProvider:
+    async def get_public_key(self) -> AudioEncryptionPublicKey:
+        return AudioEncryptionPublicKey(
+            key_version="pipeline-version-1",
+            public_jwk=RsaPublicJwk(n=TEST_RSA_3072_MODULUS, e="AQAB"),
+        )
+
+    def versioned_key_id(self, key_version: str) -> str | None:
+        if key_version != "pipeline-version-1":
+            return None
+        return f"https://scribe-test.vault.azure.net/keys/audio-encryption/{key_version}"
+
+    async def close(self) -> None:
+        return None
 
 
 def create_session(
@@ -70,6 +103,13 @@ def create_session(
         headers=headers(tenant_id, f"session-key-{key_suffix}"),
         json={**identity, "consent_record_id": consent["id"]},
     ).json()
+    app.dependency_overrides[get_audio_encryption_key_provider] = PipelineAudioKeyProvider
+    audio_key = client.post(
+        f"/v1/sessions/{session['id']}/audio-key",
+        headers=headers(tenant_id, f"audio-key-{key_suffix}"),
+        json={"key_version": "pipeline-version-1", "wrapped_dek": TEST_WRAPPED_DEK},
+    )
+    assert audio_key.status_code == 201
     return identity, session
 
 
@@ -195,22 +235,26 @@ def create_ready_transcript(
     transcript = client.post(
         f"/v1/sessions/{session['id']}/transcript",
         headers=headers(tenant_id, f"delivery-transcript-key-{key_suffix}"),
-        json={
-            "language_code": "en-US",
-            "stt_provider": "test_adapter",
-            "segments": [
-                {
-                    "speaker_id": "channel-mic",
-                    "speaker_role": "clinician",
-                    "content": "Synthetic contract fixture.",
-                    "start_ms": 0,
-                    "end_ms": 1200,
-                }
-            ],
-        },
+        json=_ready_transcript_payload(),
     )
     assert transcript.status_code == 201
     return identity, session
+
+
+def _ready_transcript_payload() -> dict[str, object]:
+    return {
+        "language_code": "en-US",
+        "stt_provider": "test_adapter",
+        "segments": [
+            {
+                "speaker_id": "channel-mic",
+                "speaker_role": "clinician",
+                "content": "Synthetic contract fixture.",
+                "start_ms": 0,
+                "end_ms": 1200,
+            }
+        ],
+    }
 
 
 def create_uploaded_session(
@@ -354,6 +398,53 @@ def test_upload_grant_is_short_lived_idempotent_and_metadata_only(
     events = repository_backend.audit_events(tenant_id)
     assert [event["action"] for event in events].count("audio_upload_grant.issued") == 1
     assert all("upload_url" not in event for event in events)
+
+
+def test_upload_grant_replay_revalidates_current_consent(client: TestClient) -> None:
+    tenant_id = uuid4()
+    _, session = create_session(client, tenant_id)
+    request = {"sequence_number": 0, "channel": "microphone"}
+    request_headers = headers(tenant_id, "grant-consent-replay-1000")
+    first = client.post(
+        f"/v1/sessions/{session['id']}/chunks/upload-grant",
+        headers=request_headers,
+        json=request,
+    )
+    assert first.status_code == 201
+
+    class RejectSessionConsentPolicy:
+        def validate_session(self, *_: object) -> None:
+            raise ConsentError("consent_invalid")
+
+    app.dependency_overrides[get_consent_policy] = RejectSessionConsentPolicy
+    replay = client.post(
+        f"/v1/sessions/{session['id']}/chunks/upload-grant",
+        headers=request_headers,
+        json=request,
+    )
+
+    assert replay.status_code == 409
+    assert replay.json() == {"detail": "consent_invalid"}
+
+
+def test_transcript_replay_revalidates_current_consent(client: TestClient) -> None:
+    tenant_id = uuid4()
+    _, session = create_ready_transcript(client, tenant_id, key_suffix="consent-replay")
+
+    class RejectSessionConsentPolicy:
+        def validate_session(self, *_: object) -> None:
+            raise ConsentError("consent_invalid")
+
+    app.dependency_overrides[get_consent_policy] = RejectSessionConsentPolicy
+    replay = client.post(
+        f"/v1/sessions/{session['id']}/transcript",
+        headers=headers(tenant_id, "delivery-transcript-key-consent-replay"),
+        json=_ready_transcript_payload(),
+    )
+
+    assert replay.status_code == 409
+    assert replay.json() == {"detail": "consent_invalid"}
+    assert "Synthetic contract fixture" not in replay.text
 
 
 def test_tenant_isolation_hides_session(client: TestClient) -> None:

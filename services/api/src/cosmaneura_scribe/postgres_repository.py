@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .repository import (
+    AudioAssemblyManifest,
     IdempotencyClaimUnavailableError,
     IdempotencyConflictError,
     Repository,
@@ -29,6 +30,7 @@ from .schemas import (
     CaptureSession,
     ConsentRecord,
     DeliveryStatus,
+    SessionAudioKey,
     Transcript,
     TranscriptDelivery,
     TranscriptionJob,
@@ -235,6 +237,84 @@ class PostgresRepository:
                 """
             ),
             {"tenant_id": tenant_id, "id": session.id, "status": session.status.value},
+        )
+
+    async def get_session_audio_key(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> SessionAudioKey | None:
+        row = await self._one_or_none(
+            """
+            SELECT session_id, key_version, wrapped_dek, created_at
+            FROM session_audio_keys
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        return SessionAudioKey.model_validate(row) if row is not None else None
+
+    async def add_session_audio_key(
+        self,
+        tenant_id: UUID,
+        audio_key: SessionAudioKey,
+    ) -> bool:
+        inserted = await self._session.execute(
+            text(
+                """
+                INSERT INTO session_audio_keys (
+                    tenant_id, session_id, key_version, wrapped_dek, created_at
+                ) VALUES (
+                    :tenant_id, :session_id, :key_version, :wrapped_dek, :created_at
+                )
+                ON CONFLICT (tenant_id, session_id) DO NOTHING
+                RETURNING session_id
+                """
+            ),
+            {"tenant_id": tenant_id, **audio_key.model_dump(mode="python")},
+        )
+        return inserted.scalar_one_or_none() is not None
+
+    async def get_audio_assembly_manifest(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+    ) -> AudioAssemblyManifest | None:
+        row = await self._one_or_none(
+            """
+            SELECT audio_key.session_id, audio_key.key_version,
+                   audio_key.wrapped_dek, audio_key.created_at
+            FROM session_audio_keys AS audio_key
+            JOIN scribe_sessions AS session
+              ON session.tenant_id = audio_key.tenant_id
+             AND session.id = audio_key.session_id
+            JOIN transcription_jobs AS job
+              ON job.tenant_id = session.tenant_id
+             AND job.session_id = session.id
+            WHERE audio_key.tenant_id = :tenant_id
+              AND audio_key.session_id = :session_id
+              AND session.status = 'processing'
+              AND job.id = :job_id
+              AND job.status = 'processing'
+              AND job.lease_token = :lease_token
+              AND job.lease_until > :now
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            job_id=job_id,
+            lease_token=lease_token,
+            now=now,
+        )
+        if row is None:
+            return None
+        return AudioAssemblyManifest(
+            audio_key=SessionAudioKey.model_validate(row),
+            chunks=tuple(await self.chunks_for(tenant_id, session_id)),
         )
 
     async def get_chunk(self, tenant_id: UUID, chunk_id: UUID) -> AudioChunk | None:

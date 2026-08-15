@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .audio_keys import versionless_key_id
 
 
 class Settings(BaseSettings):
@@ -20,6 +23,13 @@ class Settings(BaseSettings):
     storage_container_name: str = Field(default="audio", min_length=3, max_length=63)
     upload_grant_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     managed_identity_client_id: UUID | None = None
+    audio_encryption_key_id: AnyHttpUrl | None = None
+    audio_assembly_encrypted_temp_directory: Path | None = None
+    audio_assembly_max_plaintext_bytes: int = Field(
+        default=64 * 1_024 * 1_024,
+        ge=1_000_000,
+        le=128 * 1_024 * 1_024,
+    )
 
     workflow_authentication_enabled: bool = False
     entra_tenant_id: UUID | None = None
@@ -49,6 +59,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_azure_settings(self) -> Settings:
+        if (
+            self.audio_encryption_key_id is not None
+            and versionless_key_id(str(self.audio_encryption_key_id)) is None
+        ):
+            raise ValueError("audio_encryption_key_id must be a versionless Azure Key Vault key ID")
         if self.storage_backend == "azure" and self.storage_account_url is None:
             raise ValueError("storage_account_url is required for the Azure storage backend")
         if self.repository_backend == "postgres" and self.database_url is None:

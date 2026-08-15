@@ -26,18 +26,19 @@ worker crash. Heartbeat renewal keeps slow provider calls owned; if renewal fail
 cancels its assembly/provider task and cannot persist. Transcript replay avoids a second provider
 call.
 
-## Remaining activation boundary
+## Implemented assembly boundary
 
-`AudioTrackAssembler` intentionally has no production implementation yet. That adapter must:
+`EncryptedBlobAudioTrackAssembler` now:
 
 - use managed identity and private Blob connectivity;
 - download only object IDs registered to the tenant/session lease;
 - verify ciphertext size and SHA-256 metadata before decryption;
-- retrieve wrapping/key material through the separately reviewed key-custody design;
+- unwrap one immutable client-generated session DEK through Key Vault `unwrapkey`;
 - assemble ordered channel tracks in encrypted ephemeral storage;
 - return no blob URL, object path, transcript, or patient value in logs or errors; and
 - securely clean temporary material when its async context exits.
 
-The worker must not be connected to a queue, Container Apps Job, or production storage until this
-adapter, the de-identified benchmark, RBAC, private networking, retry costs, and operational alerts
-are separately reviewed.
+The implementation remains inactive: no route, queue, or Container Apps Job calls the worker. A
+later activation change must construct the adapter with the repository provider and configured
+encrypted temporary directory, and must separately verify RBAC, private networking, retry costs,
+and operational alerts.

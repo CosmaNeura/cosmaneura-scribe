@@ -69,7 +69,8 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
             await connection.execute(
                 text(
                     f"GRANT SELECT, INSERT ON consent_records, audio_chunks, "
-                    f"audio_upload_grants, transcripts, idempotency_records TO {role}"
+                    f"audio_upload_grants, session_audio_keys, transcripts, "
+                    f"idempotency_records TO {role}"
                 )
             )
             await connection.execute(
