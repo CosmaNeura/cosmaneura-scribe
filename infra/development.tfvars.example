@@ -13,6 +13,8 @@ container_apps_subnet_address_prefixes   = ["10.42.2.0/23"]
 
 container_registry_name    = "replacewithgloballyuniqueacr"
 enable_phi_safe_data_plane_diagnostics = false
+log_analytics_retention_in_days = 90
+log_analytics_daily_quota_gb    = -1
 deploy_container_app       = false
 container_image_repository = "cosmaneura-scribe-api"
 container_image_tag        = "replace-with-commit-sha-after-acr-build"
