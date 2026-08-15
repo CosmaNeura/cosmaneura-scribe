@@ -4,14 +4,22 @@
 |---|---|---|
 | First — 2026-08-15 | `main` at `2cc1faa` | 3 P0 + 4 P1 + 1 P2 defects, 8 infrastructure findings |
 | Second — 2026-08-15 | `codex/scribe-stt-mobile-roadmap` at `ad5a579` | STT slice added; all defects untouched; 5 new findings |
-| **Third — 2026-08-15** | **`main` at `4f11b94`** | **All 8 defects fixed and verified. 5 new findings, none blocking.** |
+| Third — 2026-08-15 | `main` at `4f11b94` | All 8 defects fixed and verified. 5 new findings, none blocking. |
+| **Fourth — 2026-08-15** | **`main` at `d57d721`** | **Audio key custody and the production assembler. Strongest work in the series. 6 new findings, none blocking.** |
 
 Findings marked **[verified]** were reproduced or exercised in this working tree. Findings marked
 **[read]** come from code inspection without a live Azure target.
 
 ---
 
-## 1. Verdict
+## 0. Fourth review — PR #4, per-session audio key custody
+
+See [section 7](#7-fourth-review--audio-key-custody-and-assembly) for the current pass. Sections 1–6
+below are the third review and remain accurate: no defect they closed has reopened.
+
+---
+
+## 1. Verdict (third review)
 
 The stop-and-repair round did what it was asked to do. Every defect from the first two reviews is
 closed, and the fixes are structural rather than local — one canonicalizer, one transition table,
@@ -168,3 +176,132 @@ that put repair ahead of new work, it did the repair, in order, and stopped.
 
 The corrective prompt is in [`CODEX_NEXT_PROMPT.md`](CODEX_NEXT_PROMPT.md); steps 6 and 7 there are
 still the open work, plus N-6 above.
+
+---
+
+## 7. Fourth review — audio key custody and assembly
+
+**Target:** `main` at `d57d721`, merging PR #4 (`agent/scribe-transcription-pipeline`, 2 commits,
++3,017 lines). Merged before this review; no open PR remained.
+
+This is the strongest work in the series. It is real envelope encryption for clinical audio, and the
+implementation matches ADR 0011's claims on every point I checked.
+
+### Gates, all run locally
+
+```
+158 passed, 0 skipped        (PostgreSQL 16 attached; was 128)
+ruff / pyright / check_phi_logs / check_secrets / check_adr_numbers   PASS
+openapi.json   in sync
+alembic upgrade head -> downgrade base -> upgrade head   clean, only alembic_version remains
+```
+
+### What the design gets right [verified]
+
+- **Envelope encryption.** One client-generated AES-256-GCM data key per session, wrapped with
+  RSA-3072 through Key Vault `RSA-OAEP-256`. The server never persists a plaintext key; it unwraps
+  once per assembly.
+- **AAD binds `tenant_id`, `session_id`, `object_id`, `channel`, `sequence_number`.** A chunk cannot
+  be replayed into another session or position even by someone holding the ciphertext.
+- **Verify before decrypt.** Registered length and SHA-256 are checked against the fetched envelope
+  before any decryption, with `hmac.compare_digest`. The Blob read requests
+  `ciphertext_size_bytes + 1` so an oversized object fails the length check.
+- **Resource limits bound *before* Blob access** — chunk count, and the sum of registered ciphertext
+  sizes against the plaintext ceiling plus a header allowance.
+- **Key Vault URL allowlist.** `_parse_key_url` requires HTTPS, a valid `*.vault.azure.net` host, an
+  exact `/keys/<name>[/<version>]` path, and rejects userinfo, ports, query, fragment, and
+  percent-encoding. Only the *configured* key ID ever receives a token; a client-supplied
+  `key_version` is charset-validated and can only be appended. `trust_env=False` and
+  `follow_redirects=False` close the proxy and redirect exfiltration paths.
+- **Plaintext never reaches a filesystem.** Tracks are built in memory, re-encrypted with a fresh
+  process-local AES-256-GCM key, and written `O_EXCL` mode 0600 into a `mkdtemp` 0700 directory.
+  Cleanup overwrites, fsyncs, and removes the tree, shielded from cancellation.
+- **Assembly is not a general Blob reader.** The manifest is re-resolved through the repository and
+  requires the session in `processing`, the named job in `processing`, the exact lease token, and an
+  unexpired lease.
+- **Key custody gates every audio path.** `/chunks/upload-grant`, `/chunks`, and `/complete` all
+  refuse a session with no bound key, so no audio can be uploaded before custody exists.
+- **The wrapped key never leaves the service.** I walked the generated OpenAPI: `wrapped_dek` appears
+  in exactly one request schema and **zero response schemas**. `SessionAudioKeyReceipt` carries only
+  session ID, key version, and timestamp.
+- **The two repositories agree.** In-memory and PostgreSQL `get_audio_assembly_manifest` enforce an
+  identical condition set — the security boundary does not weaken when the backend changes.
+- **Migration 0006** adds an immutability trigger, forced RLS, a composite FK, and CHECK constraints,
+  and blocks only `UPDATE` — leaving `DELETE` available for cryptographic erasure. Round-trip verified.
+
+### New findings
+
+**N-11 — `EncryptedAudioTrackReader.path` is not `repr=False` [verified] [low]**
+
+Every sibling field is masked — `key`, `nonce`, `additional_data`, and `AudioTrack.local_path` — but
+`path` is not:
+
+```
+EncryptedAudioTrackReader(path=PosixPath('/secure/patient-jane-doe.enc'))
+AudioTrack(object_id=UUID('...'), channel=<CaptureChannel.MIXED: 'mixed'>)     # correctly masked
+```
+
+The real path is `<mkdtemp>/track-00.enc` and carries no tenant, session, or patient identifier, so
+this is not an active PHI leak. It contradicts ADR 0011's own invariant — "never include object
+paths" — and the discipline applied everywhere around it. One-word fix.
+
+**N-12 — the plaintext ceiling is a duration limit nobody has stated in minutes [verified] [medium, product]**
+
+`DEFAULT_MAXIMUM_PLAINTEXT_BYTES = 64 MiB`, and `total_plaintext_bytes` accumulates across **all**
+channels in one assembly, not per track. At 16 kHz / 16-bit that is roughly **35 minutes of mono
+audio, or 17 minutes of a two-channel virtual visit**. Ambient clinical encounters routinely exceed
+both.
+
+ADR 0011 is honest that the cap exists "until assembly and provider upload are fully streaming," and
+the setting is configurable to 128 MiB. But the limit is expressed only in bytes, in code. It should
+appear in minutes wherever an operator or clinician-facing decision is made, and it belongs in the
+acceptance criteria before any pilot — a visit that silently fails assembly at minute 36 is a bad
+way to discover this.
+
+**N-13 — nonce reuse is fatal to the whole session [verified] [low, operational]**
+
+Reuse is detected at assembly, not prevented at upload, and the detection aborts the entire
+assembly. Failing closed is cryptographically correct — GCM nonce reuse is catastrophic — but a
+client-side bug makes that visit's audio permanently unrecoverable, with no partial recovery. This
+belongs in the capture-SDK conformance tests, and the operational consequence should be written
+down.
+
+**N-14 — the runtime role cannot perform cryptographic erasure [verified] [note]**
+
+`session_audio_keys` is granted `SELECT, INSERT` — no `DELETE`. That is correct least privilege, but
+ADR 0011's "allowing a later authorized retention workflow to delete the row" can be misread as the
+runtime being able to erase. Whoever builds retention needs its own principal and grant; do not
+widen the runtime role.
+
+**N-15 — capture clients cannot fetch the wrapping key directly [read] [note]**
+
+`GET /v1/audio-encryption-key` sits behind the platform workload identity, so the browser and mobile
+clients ADR 0009 commits to must receive the public key relayed through the platform. Consistent
+with ADR 0007, but it is an unstated dependency in the client design that will surface in P1a.
+
+**N-16 — the same httpx exception gap, now in two more places [read] [low]**
+
+`get_public_key` and `KeyVaultSessionKeyUnwrapper.unwrap` catch `AzureError`,
+`httpx.TimeoutException`, and `httpx.NetworkError`, but not `httpx.ProtocolError`. A malformed Key
+Vault response becomes an opaque 500 rather than a typed fixed code. `handoff.py` has the same gap.
+
+### Infrastructure — the gap grew
+
+`infra/` is still byte-identical to `2cc1faa`, three rounds running, while this change added two new
+hard requirements:
+
+- **`audio_encryption_key_id`** needs a Key Vault RSA-3072 key with `wrapKey` and `unwrapKey`, plus
+  a role assignment for the runtime identity. Neither exists in Terraform.
+- **`audio_assembly_encrypted_temp_directory`** must be a real directory. `build_audio_track_assembler`
+  refuses to start without it. The Container App defines **no volumes**, and the Dockerfile creates
+  no such path — and the container runs as UID 10001, so ownership matters. This is a concrete
+  activation blocker, not a preference.
+
+I-8 now covers Speech *and* the audio-encryption key, its RBAC, and the ephemeral volume.
+
+### Still open, carried forward
+
+N-6 (migration 0005 imports live application code) is unchanged and remains the one finding worth
+fixing on its own merits. The transcription worker, the delivery reconciler, and now the assembler
+all still have no trigger — `build_audio_track_assembler` has no caller outside its module. Retention
+remains unimplemented.
