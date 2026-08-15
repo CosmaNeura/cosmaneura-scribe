@@ -15,6 +15,7 @@ from .schemas import (
     CaptureChannel,
     CaptureSession,
     ConsentRecord,
+    DeliveryStatus,
     SessionStatus,
     Transcript,
     TranscriptDelivery,
@@ -132,7 +133,42 @@ class Repository(Protocol):
 
     async def add_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None: ...
 
-    async def update_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None: ...
+    async def claim_delivery_attempt(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        now: datetime,
+    ) -> TranscriptDelivery | None: ...
+
+    async def claim_stale_deliveries(
+        self,
+        tenant_id: UUID,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        limit: int,
+    ) -> list[TranscriptDelivery]: ...
+
+    async def complete_delivery_failure(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        expected_attempt_count: int,
+        failure_status: DeliveryStatus,
+        error_code: str,
+        now: datetime,
+    ) -> TranscriptDelivery | None: ...
+
+    async def complete_delivery_success(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        platform_transcript_id: str,
+        now: datetime,
+    ) -> TranscriptDelivery | None: ...
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID
@@ -397,8 +433,111 @@ class InMemoryRepository:
         self.deliveries[(tenant_id, delivery.id)] = delivery
         self.delivery_by_session[(tenant_id, delivery.session_id)] = delivery.id
 
-    async def update_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
-        self.deliveries[(tenant_id, delivery.id)] = delivery
+    async def claim_delivery_attempt(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        now: datetime,
+    ) -> TranscriptDelivery | None:
+        current = await self.get_delivery(tenant_id, delivery_id)
+        if current is None or current.status not in {
+            DeliveryStatus.PENDING,
+            DeliveryStatus.RETRYABLE,
+        }:
+            return None
+        claimed = current.model_copy(
+            update={
+                "status": DeliveryStatus.PENDING,
+                "attempt_count": current.attempt_count + 1,
+                "last_error_code": None,
+                "updated_at": now,
+            }
+        )
+        self.deliveries[(tenant_id, delivery_id)] = claimed
+        return claimed
+
+    async def claim_stale_deliveries(
+        self,
+        tenant_id: UUID,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        limit: int,
+    ) -> list[TranscriptDelivery]:
+        if limit < 1 or limit > 100:
+            raise ValueError("delivery reconciliation limit must be between 1 and 100")
+        candidates = sorted(
+            (
+                delivery
+                for (row_tenant, _), delivery in self.deliveries.items()
+                if row_tenant == tenant_id
+                and delivery.status in {DeliveryStatus.PENDING, DeliveryStatus.RETRYABLE}
+                and delivery.updated_at <= stale_before
+            ),
+            key=lambda delivery: (delivery.updated_at, delivery.id),
+        )[:limit]
+        claimed: list[TranscriptDelivery] = []
+        for delivery in candidates:
+            attempt = await self.claim_delivery_attempt(
+                tenant_id,
+                delivery.id,
+                now=now,
+            )
+            if attempt is not None:
+                claimed.append(attempt)
+        return claimed
+
+    async def complete_delivery_failure(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        expected_attempt_count: int,
+        failure_status: DeliveryStatus,
+        error_code: str,
+        now: datetime,
+    ) -> TranscriptDelivery | None:
+        if failure_status not in {DeliveryStatus.RETRYABLE, DeliveryStatus.TERMINAL}:
+            raise ValueError("delivery failure status must be retryable or terminal")
+        current = await self.get_delivery(tenant_id, delivery_id)
+        if (
+            current is None
+            or current.status != DeliveryStatus.PENDING
+            or current.attempt_count != expected_attempt_count
+        ):
+            return None
+        failed = current.model_copy(
+            update={
+                "status": failure_status,
+                "last_error_code": error_code,
+                "updated_at": now,
+            }
+        )
+        self.deliveries[(tenant_id, delivery_id)] = failed
+        return failed
+
+    async def complete_delivery_success(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        platform_transcript_id: str,
+        now: datetime,
+    ) -> TranscriptDelivery | None:
+        current = await self.get_delivery(tenant_id, delivery_id)
+        if current is None or current.status == DeliveryStatus.DELIVERED:
+            return None
+        delivered = current.model_copy(
+            update={
+                "status": DeliveryStatus.DELIVERED,
+                "platform_transcript_id": platform_transcript_id,
+                "last_error_code": None,
+                "updated_at": now,
+            }
+        )
+        self.deliveries[(tenant_id, delivery_id)] = delivered
+        return delivered
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID

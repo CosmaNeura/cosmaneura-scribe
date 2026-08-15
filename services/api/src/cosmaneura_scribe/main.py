@@ -15,6 +15,11 @@ from fastapi.responses import JSONResponse
 
 from .canonical_json import canonical_sha256
 from .consent import ConsentError, ConsentPolicy
+from .delivery_reconciler import (
+    complete_delivery_failure,
+    complete_delivery_success,
+    synchronize_delivery_session,
+)
 from .handoff import (
     HandoffConflictError,
     HandoffDisabledError,
@@ -631,6 +636,8 @@ async def deliver_transcript_to_master_platform(
 ) -> TranscriptDelivery:
     # Commit the attempt before making the network call. A crash after this
     # point leaves a pending receipt that is safe to retry with the same key.
+    attempted: TranscriptDelivery | None = None
+    delivered_replay: TranscriptDelivery | None = None
     async with provider.transaction(tenant_id) as store:
         session = await store.lock_session(tenant_id, session_id)
         if session is None:
@@ -646,6 +653,7 @@ async def deliver_transcript_to_master_platform(
         payload = to_master_platform_payload(session, transcript)
         payload_fingerprint = _fingerprint(payload)
         delivery = await store.delivery_for(tenant_id, session_id)
+        is_new_delivery = delivery is None
         now = datetime.now(UTC)
         if delivery is None:
             delivery = TranscriptDelivery(
@@ -672,6 +680,7 @@ async def deliver_transcript_to_master_platform(
             if previous is None:
                 raise HTTPException(status_code=500, detail="Delivery receipt is unavailable.")
             delivery = previous
+            is_new_delivery = False
 
         if delivery.payload_sha256 != payload_fingerprint:
             raise HTTPException(
@@ -679,89 +688,110 @@ async def deliver_transcript_to_master_platform(
                 detail="The session delivery is bound to a different transcript.",
             )
         if delivery.status == DeliveryStatus.DELIVERED:
-            return delivery
-        if delivery.status == DeliveryStatus.TERMINAL:
+            delivered_replay = delivery
+        elif delivery.status == DeliveryStatus.TERMINAL:
             response.status_code = status.HTTP_409_CONFLICT
             return delivery
-
-        attempted = delivery.model_copy(
-            update={
-                "status": DeliveryStatus.PENDING,
-                "attempt_count": delivery.attempt_count + 1,
-                "last_error_code": None,
-                "updated_at": now,
-            }
-        )
-        if await store.get_delivery(tenant_id, delivery.id) is None:
-            await store.add_delivery(tenant_id, attempted)
         else:
-            await store.update_delivery(tenant_id, attempted)
-        await store.audit(
+            if is_new_delivery:
+                attempted = delivery.model_copy(
+                    update={
+                        "status": DeliveryStatus.PENDING,
+                        "attempt_count": 1,
+                        "last_error_code": None,
+                        "updated_at": now,
+                    }
+                )
+                await store.add_delivery(tenant_id, attempted)
+            else:
+                attempted = await store.claim_delivery_attempt(
+                    tenant_id,
+                    delivery.id,
+                    now=now,
+                )
+                if attempted is None:
+                    current = await store.get_delivery(tenant_id, delivery.id)
+                    if current is None:
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Delivery receipt is unavailable.",
+                        )
+                    if current.status == DeliveryStatus.DELIVERED:
+                        delivered_replay = current
+                    elif current.status == DeliveryStatus.TERMINAL:
+                        response.status_code = status.HTTP_409_CONFLICT
+                        return current
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Delivery attempt is already being processed.",
+                            headers={"Retry-After": "0"},
+                        )
+            if attempted is not None:
+                await store.audit(
+                    tenant_id=tenant_id,
+                    action="transcript.delivery_attempted",
+                    entity_type="transcript_delivery",
+                    entity_id=delivery.id,
+                )
+
+    if delivered_replay is not None:
+        await synchronize_delivery_session(
+            provider,
             tenant_id=tenant_id,
-            action="transcript.delivery_attempted",
-            entity_type="transcript_delivery",
-            entity_id=delivery.id,
+            delivery=delivered_replay,
         )
+        return delivered_replay
+
+    if attempted is None:
+        raise RuntimeError("delivery attempt is unavailable")
 
     try:
         platform_result = await handoff.deliver(payload, idempotency_key=attempted.idempotency_key)
     except (HandoffDisabledError, HandoffRetryableError) as exc:
-        failed = attempted.model_copy(
-            update={
-                "status": DeliveryStatus.RETRYABLE,
-                "last_error_code": exc.code,
-                "updated_at": datetime.now(UTC),
-            }
+        failed = await complete_delivery_failure(
+            provider,
+            tenant_id=tenant_id,
+            attempted=attempted,
+            failure_status=DeliveryStatus.RETRYABLE,
+            error_code=exc.code,
+            audit_action="transcript.delivery_retryable",
         )
-        async with provider.transaction(tenant_id) as store:
-            await store.update_delivery(tenant_id, failed)
-            await store.audit(
+        if failed.status == DeliveryStatus.DELIVERED:
+            await synchronize_delivery_session(
+                provider,
                 tenant_id=tenant_id,
-                action="transcript.delivery_retryable",
-                entity_type="transcript_delivery",
-                entity_id=delivery.id,
+                delivery=failed,
             )
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        elif failed.status == DeliveryStatus.TERMINAL:
+            response.status_code = status.HTTP_409_CONFLICT
+        else:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return failed
     except (HandoffConflictError, HandoffRejectedError) as exc:
-        failed = attempted.model_copy(
-            update={
-                "status": DeliveryStatus.TERMINAL,
-                "last_error_code": exc.code,
-                "updated_at": datetime.now(UTC),
-            }
+        failed = await complete_delivery_failure(
+            provider,
+            tenant_id=tenant_id,
+            attempted=attempted,
+            failure_status=DeliveryStatus.TERMINAL,
+            error_code=exc.code,
+            audit_action="transcript.delivery_rejected",
         )
-        async with provider.transaction(tenant_id) as store:
-            await store.update_delivery(tenant_id, failed)
-            await store.audit(
+        if failed.status == DeliveryStatus.DELIVERED:
+            await synchronize_delivery_session(
+                provider,
                 tenant_id=tenant_id,
-                action="transcript.delivery_rejected",
-                entity_type="transcript_delivery",
-                entity_id=delivery.id,
+                delivery=failed,
             )
-        response.status_code = status.HTTP_409_CONFLICT
+        elif failed.status == DeliveryStatus.RETRYABLE:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        else:
+            response.status_code = status.HTTP_409_CONFLICT
         return failed
 
-    delivered = attempted.model_copy(
-        update={
-            "status": DeliveryStatus.DELIVERED,
-            "platform_transcript_id": platform_result.transcript_id,
-            "last_error_code": None,
-            "updated_at": datetime.now(UTC),
-        }
+    return await complete_delivery_success(
+        provider,
+        tenant_id=tenant_id,
+        attempted=attempted,
+        platform_transcript_id=platform_result.transcript_id,
     )
-    async with provider.transaction(tenant_id) as store:
-        await store.update_delivery(tenant_id, delivered)
-        current_session = await _session_or_404(store, tenant_id, session_id)
-        if current_session.status != SessionStatus.HANDED_OFF:
-            await store.update_session(
-                tenant_id,
-                current_session.model_copy(update={"status": SessionStatus.HANDED_OFF}),
-            )
-        await store.audit(
-            tenant_id=tenant_id,
-            action="transcript.delivered",
-            entity_type="transcript_delivery",
-            entity_id=delivery.id,
-        )
-    return delivered
