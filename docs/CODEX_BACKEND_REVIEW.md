@@ -1,278 +1,170 @@
 # Codex backend review
 
-- **First review:** 2026-08-15 against `main` at `2cc1faa`.
-- **Second review:** 2026-08-15 against `origin/codex/scribe-stt-mobile-roadmap` at `ad5a579`
-  (3 commits, +2,224 lines, no pull request, not merged).
-
-Scope both times: every foundational document (`CLAUDE.md`, `AGENTS.md`, `README.md`,
-`docs/PLAN.md`, all ADRs, the operational runbooks), the full API source, migrations, tests, CI,
-and the OpenTofu configuration.
-
-Findings marked **[verified]** were reproduced in this working tree. Findings marked **[read]** are
-from code and configuration inspection without a live Azure or PostgreSQL target.
-
----
-
-## 1. Verdict after the second review
-
-Codex built the speech-to-text slice, and built it well. It also shipped 2,224 lines on top of
-three defects that were already reproducible, did not touch any of them, and left the new pipeline
-unable to run.
-
-Gates on the new branch: `ruff` clean, `pyright --strict` 0 errors, **44 passed / 2 skipped** (up
-from 32/2), `openapi/openapi.json` in sync. Same green, same blind spot.
-
-What is new and genuinely good:
-
-- `transcription.py` — a provider-neutral `SpeechToTextProvider` protocol with an Azure AI Speech
-  adapter over the real `azure-ai-transcription` SDK. I verified the package is a legitimate
-  Microsoft release (`Microsoft Corporation`, `Azure/azure-sdk-for-python`, MIT, hashed sdist and
-  wheel on PyPI) and that every SDK attribute the adapter relies on exists with the right
-  optionality: `TranscriptionResult.{duration_milliseconds, phrases}` and
-  `TranscribedPhrase.{text, speaker, confidence, offset_milliseconds, duration_milliseconds,
-  channel}`. `speaker` is `Optional[int]` and is None-checked. **[verified]**
-- `transcription_worker.py` — leased, consent-revalidating orchestration with heartbeat renewal,
-  lost-lease cancellation of in-flight provider work, bounded retries, channel-prior role labeling,
-  and metadata-only quality gates. This is careful concurrency work.
-- Migration 0004 — `transcription_jobs` with RLS forced, a lease/status CHECK that makes an
-  unleased `processing` row unrepresentable, and a reversible downgrade.
-- **The in-memory and PostgreSQL job repositories agree.** I compared `claim_transcription_job`,
-  `renew_transcription_job`, and `update_transcription_job` line by line: identical eligibility
-  rules, identical attempt-count semantics, and both require `lease_until > now` on renewal. After
-  P0-3, this is the divergence that did *not* happen. **[verified]**
-- The benchmark harness gates on `deidentified: Literal[True]` and `consent_verified: Literal[True]`,
-  and emits only opaque case IDs with aggregate WER, timing, segment, and speaker counts.
-- `docs/TRANSCRIPTION_WORKER.md` states plainly that the worker "is a library boundary today; no
-  public route or Azure job trigger is enabled by this change," and lists what the missing
-  assembler must do. That is the honest self-report the first review asked for.
-
-What did not happen: `main.py`, `service_auth.py`, `tests/conftest.py`, `scripts/check_phi_logs.py`,
-and all of `infra/` are **byte-identical to `main`**. Every defect below still reproduces. **[verified]**
-
----
-
-## 2. Second-review findings
-
-### N-1 — The worker cannot run [verified]
-
-`TranscriptionWorker` is referenced by nothing outside its own module and its test file.
-`build_speech_to_text_provider` is referenced only by `scripts/benchmark_stt.py`. There is no
-production `AudioTrackAssembler` — only the Protocol and a test fake. `main.py` gained no route, and
-no Container Apps Job was added.
-
-So the pipeline is orchestration plus a provider adapter, with no audio source and no caller.
-`POST /v1/sessions/{id}/transcript` still requires some other system to produce the transcript, which
-is what the first review said. The gap is now one adapter and one trigger wide instead of an entire
-slice — real progress — but the product still cannot transcribe anything end to end.
-
-`docs/TRANSCRIPTION_WORKER.md` says this clearly. `README.md`'s "What works now" does not: it adds
-"Consent-gated transcription worker with renewable leases…" to a list of shipped capabilities. Milder
-than the earlier overclaims, and worth one qualifier.
-
-### N-2 — Duplicate ADR numbers [verified]
-
-```
-docs/adr/0006-private-master-platform-delivery.md
-docs/adr/0006-provider-neutral-azure-speech.md
-docs/adr/0007-verified-platform-tenant-context.md
-docs/adr/0007-web-and-mobile-capture-are-separate-clients.md
-docs/adr/0008-leased-consent-gated-transcription-worker.md
-```
-
-Two collisions. ADR 0002 already says "Superseded by ADR 0006," which is now ambiguous. Renumber the
-three new ADRs to 0008/0009/0010 and add a CI check that ADR prefixes are unique.
-
-### N-3 — The quality gate re-states P0-2's constraint instead of fixing it [verified]
-
-`BasicTranscriptQualityGate` enforces segment ordering, a 10,000-segment cap, and a 24-hour duration
-cap — exactly the constraints `MasterTranscriptDeliveryRequest` requires and `TranscriptCreate`
-still lacks. So worker-produced transcripts are deliverable, and transcripts arriving through
-`POST /v1/sessions/{id}/transcript` are still not. P0-2 is fully live on the API route.
-
-The rule now exists in three places (write schema, quality gate, delivery schema) and is correct in
-two of them. Put the constraints in `TranscriptCreate` and have the gate reuse them.
-
-### N-4 — `SessionStatus.FAILED` is now reachable and is a dead end [read]
-
-The worker sets `processing → failed` on terminal failure. Migration 0002's transition trigger has
-no transition *out* of `failed`. Once a session fails — bad consent, quality-gate rejection,
-exhausted retries — no code path can move it anywhere, and the job row is `terminal` with
-`attempt_count >= max_attempts` so it can never be re-claimed either. There is no operator recovery
-route. Decide whether `failed → uploaded` is legal for a re-run, or add an explicit reset endpoint.
-
-### N-5 — The real Azure client construction is unexercised [read]
-
-Every transcription test uses `FakeAzureClient`; `AzureSpeechTranscriber.from_settings` — the method
-that builds the real `TranscriptionClient` with `DefaultAzureCredential` — is never called in a
-test. The declared SDK shapes check out statically, so this is a normal gap rather than a defect,
-but the adapter should get one live round-trip against a real Speech endpoint on synthetic audio
-before the benchmark's numbers are trusted. Note that Azure SDK `rest_field` models are dict-backed,
-so a field the service omits reads as `None` regardless of its annotation; `phrase.confidence` is
-annotated non-optional and is not None-checked.
-
----
-
-## 3. Composition after both runs
-
-Line counts on the STT branch:
-
-| Area | Lines | Share of 8,519 |
-|---|---:|---:|
-| `services/` | 3,568 | 41.9% |
-| `tests/` | 1,860 | 21.8% |
-| `infra/` | 1,326 | 15.6% |
-| `docs/` | 1,069 | 12.5% |
-| `alembic/` | 520 | 6.1% |
-| `scripts/` | 132 | 1.5% |
-| `apps/` (READMEs only) | 44 | 0.5% |
-
-The ratio improved: this run was mostly product code with real tests. The `apps/` directories
-remain four README files describing clients that do not exist.
-
----
-
-## 4. Defects carried over — all re-reproduced on the STT branch
-
-### P0-1 — Idempotency fingerprints are unstable across processes [verified]
-
-`_fingerprint` hashes `model_dump(mode="json")`, and `participant_regions` is a `set[str]`, which
-serializes in per-process hash order.
-
-```
-same request body, six processes -> 6 distinct fingerprints
-```
-
-A client retrying `POST /v1/consents` with the same `Idempotency-Key` and a byte-identical body gets
-**409 "already used with a different request"** whenever the retry lands after a restart or on
-another replica. With `min_replicas = 0`, every scale-from-zero is a new process. The unstable hash
-is what `idempotency_records` stores, so the PostgreSQL cutover does not help.
-
-`main.py:137` · `schemas.py:30`
-
-**Fix.** Canonicalize before hashing — sort collections, normalize datetimes, fix key order. Pin it
-with a test asserting a hard-coded digest.
-
-### P0-2 — `/deliver` 500s on transcripts the API accepted, and leaks PHI doing it [verified]
-
-```
-PROBE 1  save out-of-order transcript -> 201
-PROBE 3  deliver the same transcript  -> 500
-ValidationError: segments must be in nondecreasing time order
-```
-
-Four routes to an unrecoverable 500: unordered segments, >10,000 segments, a segment over 100,000
-characters, or a duration over 24 hours. Retrying never helps; the receipt stays `pending`.
-
-With no global exception handler, the traceback ships to Log Analytics carrying a prefix of the
-offending value — reproduced with synthetic data:
-
-```
-String should have at most 100000 characters
-  [input_value='Patient Jane Doe DOB 197...']
-```
-
-Transcript content and a partial DOB in a log sink, which `CLAUDE.md` prohibits without qualification.
-
-`main.py:574` · `handoff.py:157` · `schemas.py`
-
-### P0-3 — The application and the database enforce different state machines [verified]
-
-```
-PROBE B  complete again after transcript_ready -> 200  status: uploaded
-PROBE C  legacy handoff from that state        -> 200  uploaded -> handed_off
-```
-
-Migration 0002's trigger permits neither transition and raises SQLSTATE `23514`. Both calls are 200s
-today and 500s the moment `use_postgres_repository` flips.
-
-`main.py:416` · `alembic/versions/0002_durable_repository.py`
-
-### P1-4 — `claim_idempotency` raises `NoResultFound` under concurrency [read]
-
-`INSERT ... ON CONFLICT DO NOTHING` does not block on an uncommitted conflicting row and returns
-zero rows; the follow-up `SELECT` also sees nothing, and `.one()` raises. Two concurrent identical
-submits produce a 500 where a 409 or a replay belongs.
-
-`postgres_repository.py:128` (was `:126` before the STT branch)
-
-### P1-5 — Token validation accepts only one of the two shapes Azure emits [read]
-
-The code reads `azp` only and requires a bare-UUID audience. Both hold for **v2** tokens. If the app
-registration's `accessTokenAcceptedVersion` is left at its default, Entra issues **v1** tokens —
-`sts.windows.net` issuer, `api://<id>` audience, caller in `appid` — and every call fails with an
-indistinguishable 401 or 403 across six separate checks.
-
-`service_auth.py:109` · `settings.py:70`
-
-### P1-6 — A JWKS outage is reported as an authentication failure [read]
-
-`PyJWKClientError` subclasses `PyJWTError`, so a failure to reach `login.microsoftonline.com`
-returns 401. If egress is ever restricted, the whole API returns 401 and the runbooks send the
-operator to Entra role assignments instead of to networking.
-
-`service_auth.py:103`
-
-### P1-7 — A delivered transcript can leave no receipt [read]
-
-The post-success block calls `_session_or_404`, whose `HTTPException` rolls back the receipt write
-*after* the platform accepted the transcript. Same outcome if the process dies before the commit.
-Nothing sweeps `pending` or `retryable` receipts.
-
-`main.py:664`
-
-### P2-8 — The PHI-log guard cannot detect anything [verified]
-
-`check_phi_logs.py` greps for a `log.<x>(...)` pattern in a codebase with no logging calls at all.
-It passes trivially and always will, while the actual leak path in P0-2 is invisible to it.
-
----
-
-## 5. Infrastructure — unchanged, so all findings stand
-
-`infra/` is byte-identical to `main`.
-
-| # | Finding | Where |
+| Review | Target | Outcome |
 |---|---|---|
-| I-1 | `subscription_id` and `tenant_id` are `sensitive = true`. Sensitivity propagates, so `tofu plan` prints `(sensitive value)` for exactly the settings the runbooks require an operator to eyeball. These are identifiers, not secrets — the onboarding doc says so. | `infra/variables.tf:1-11` |
-| I-2 | Audio blobs sit behind a private endpoint with public access disabled, but `/upload-grant` returns a SAS URL on the public blob endpoint. The web and mobile capture clients that ADR 0007 just committed to have no reachable upload path. This now blocks a scheduled deliverable, not a hypothetical one. | `infra/main.tf:56`, `storage.py:112` |
-| I-3 | No diagnostic settings on the storage account or Key Vault. PostgreSQL has one; the store that holds the audio does not. Blob data-plane access to PHI is unaudited. | `infra/main.tf` |
-| I-4 | No lifecycle policy on the audio container and no retention logic anywhere in the service — still the one P0 responsibility in `docs/PLAN.md` with zero implementation. Raw clinical audio accumulates forever. | `infra/main.tf:59` |
-| I-5 | No NSGs on the private-endpoint or Container Apps subnets. | `infra/network.tf`, `infra/container_apps.tf` |
-| I-6 | Log Analytics `daily_quota_gb = 0.5` silently drops ingestion past the cap. With an unhandled-exception path that logs full tracebacks, a bad day both leaks PHI and then hides the evidence. | `infra/container_apps.tf:29` |
-| I-7 | Partially addressed: the bootstrap now grants on `transcription_jobs`. Still no `ALTER DEFAULT PRIVILEGES`, so the next new table repeats the problem. | `database_bootstrap.py:82` |
-| I-8 | No Azure AI Speech resource, private endpoint, or RBAC assignment exists for the adapter that was just written. | `infra/` |
+| First — 2026-08-15 | `main` at `2cc1faa` | 3 P0 + 4 P1 + 1 P2 defects, 8 infrastructure findings |
+| Second — 2026-08-15 | `codex/scribe-stt-mobile-roadmap` at `ad5a579` | STT slice added; all defects untouched; 5 new findings |
+| **Third — 2026-08-15** | **`main` at `4f11b94`** | **All 8 defects fixed and verified. 5 new findings, none blocking.** |
 
-`ingress.external_enabled = true` inside an internal-load-balancer environment remains **correct** —
-it means "exposed on the environment's load balancer," which is private. Worth one inline comment.
+Findings marked **[verified]** were reproduced or exercised in this working tree. Findings marked
+**[read]** come from code inspection without a live Azure target.
 
 ---
 
-## 6. Why CI is still green
+## 1. Verdict
 
-`tests/conftest.py:27` still replaces `get_repository` with a bare `InMemoryRepository`, removing the
-per-request transaction wrapper. No endpoint has run against PostgreSQL in either review.
+The stop-and-repair round did what it was asked to do. Every defect from the first two reviews is
+closed, and the fixes are structural rather than local — one canonicalizer, one transition table,
+one set of transcript constraints, each with a single definition and multiple consumers.
 
-The new worker tests are **better** — they drive `InMemoryRepository` as a `RepositoryProvider`, so
-they exercise `provider.transaction()` properly, and `tests/test_postgres_repository.py` covers the
-job primitives against real PostgreSQL. That is the right instinct applied to new code while the old
-code keeps its blind spot.
+More importantly, the verification gap is closed. The endpoint suite now runs against real
+PostgreSQL as a `NOSUPERUSER` role, so RLS, triggers, and grants are exercised through HTTP for the
+first time.
 
-P0-3 stays unobservable because no endpoint test touches a trigger. P0-1 stays unobservable because
-every idempotency test runs in one process. P0-2 stays unobservable because the delivery tests use
-transcripts that satisfy the strict contract — and now the quality gate guarantees the worker's
-transcripts do too, which hides it further.
+Gates on `4f11b94`, all run locally:
 
----
+```
+128 passed, 0 skipped        (with PostgreSQL 16; 84 passed / 44 skipped without)
+ruff            All checks passed
+pyright         0 errors, 0 warnings
+check_phi_logs / check_secrets / check_adr_numbers   PASS
+openapi/openapi.json   in sync
+alembic upgrade head -> downgrade base -> upgrade head   clean
+```
 
-## 7. Root cause, revised
+## 2. The eight defects, re-tested
 
-The first review said Codex optimizes for reviewable artifacts over working software. This run
-partly refutes that: the worker is real product code with real tests and an honest
-"remaining activation boundary" section.
+| # | Defect | Fix | Verified how |
+|---|---|---|---|
+| P0-1 | Idempotency fingerprints unstable across processes | `canonical_json.py` — sorted collections, UTC-normalized datetimes, fixed key order | 6 subprocesses, one body → **1 identical digest** (was 6) |
+| P0-2 | `/deliver` 500s on an accepted transcript; PHI in the traceback | `transcript_constraints.py` enforced in `TranscriptCreate`, reused by the quality gate and the delivery schema; opaque-500 HTTP middleware | Out-of-order transcript now **`422` at write**, deliver `409`. Forced a PHI-carrying unhandled exception: response `{"detail":"Internal server error."}`, log line `{"action":"http.unhandled_exception","error_class":"RuntimeError"}`, **no PHI, no traceback** |
+| P0-3 | App and database enforced different state machines | `session_state_v1.py` is the one table; migration 0005 generates the trigger from it; routes guard with `can_transition_session` | `complete` after `transcript_ready` now **`409`** (was `200` + silent regression) |
+| P1-4 | `claim_idempotency` raised `NoResultFound` under concurrency | `pg_advisory_xact_lock` on the key, `one_or_none()`, new `IdempotencyClaimUnavailableError` → 409 | Postgres endpoint suite |
+| P1-5 | Only v2-shaped tokens accepted, with no diagnosis | 11 typed `AuthFailureReason` values in `WWW-Authenticate: error_description` and structured logs; explicit v1 detection on both `ver` and the `sts.windows.net` issuer | `test_service_auth.py` (+372 lines) |
+| P1-6 | JWKS outage reported as 401 | `PyJWKClientError` caught separately → **503** | Unit tests |
+| P1-7 | A delivered transcript could leave no receipt | Receipt committed first; `synchronize_delivery_session` runs in its own transaction and swallows failures into a safe log event | Code path + delivery tests |
+| P2-8 | PHI-log guard could not detect anything | Rewritten as an AST checker over `services/`, plus `safe_logging.log_event` with a 5-field allowlist | **Injected a raw `logging` call** — guard failed with `consent.py:19: direct logging call bypasses safe_logging.log_event`, then passed again on revert |
 
-What it confirms instead is narrower and more actionable: **Codex only moves forward.** Given a
-choice between a new slice and a defect in a shipped one, it takes the new slice every time. Three
-reproducible defects sat untouched while 2,224 lines landed on top of them, and the new code
-re-implemented one of those defects' missing constraint (N-3) rather than fixing it at the source.
+## 3. Work that stands out
 
-The corrective prompt is in [`CODEX_NEXT_PROMPT.md`](CODEX_NEXT_PROMPT.md).
+- **The test harness is the real deliverable.** `tests/conftest.py` creates a
+  `NOSUPERUSER` role and connects the application as that role, so row-level security is exercised
+  against a non-owner rather than silently bypassed. 44 tests are parameterized `[memory]` /
+  `[postgres]`. Downgrade-to-base and partial downgrades to `0003` and `0001` are covered.
+- **`_prepare_payload` in the reconciler re-verifies `canonical_sha256(payload)` against the stored
+  receipt hash before re-delivering**, so a stale receipt can never ship a transcript that changed
+  underneath it.
+- **`complete_delivery_failure` handles losing the race** — if another process already marked the
+  receipt `delivered`, it returns that instead of overwriting, and the caller branches on it.
+- **The opaque-500 is HTTP middleware, not an exception handler.** That is more correct than what
+  was asked for: Starlette re-raises after a bare `Exception` handler, so middleware is the only
+  layer that reliably stops a traceback reaching the log stream.
+- **Status guards moved to after the idempotency claim.** A replay now returns the original result
+  even if the session has since advanced, while a first call that fails the guard rolls the claim
+  back with the transaction. Correct, and load-bearing — worth preserving deliberately.
+
+## 4. New findings
+
+### N-6 — Migration 0005 imports live application code [verified] — the one worth fixing
+
+```python
+from cosmaneura_scribe.session_state_v1 import render_transition_predicate, render_status_values
+...
+op.execute(_transition_function(render_transition_predicate()))
+```
+
+The SQL this migration emits depends on the code at *run* time, not at *authoring* time. Two
+databases that both report `0005` applied can carry different triggers if anyone edits
+`SESSION_STATUS_TRANSITIONS` — and nothing would flag the divergence.
+
+The `_v1` module suffix is clearly the intended mitigation (a future change becomes
+`session_state_v2` plus a new migration), and that convention is right. Nothing enforces it.
+
+**Fix:** add a test that pins `render_transition_predicate()` and `render_status_values()` for v1 to
+hard-coded expected strings. Editing v1 then fails CI and forces the v2 + new-migration path. This
+is the same "pin the invariant, don't re-derive it" rule already applied to the canonicalization
+digest test.
+
+The existing parity test (Python table vs. deployed trigger, all 49 status pairs) is worth keeping —
+it proves the *rendering* is faithful — but it cannot catch this, because both sides derive from the
+same mutable source.
+
+### N-7 — Migration 0005's `downgrade()` is asymmetric [verified]
+
+`upgrade()` drops and re-adds `scribe_sessions_status_check`; `downgrade()` restores only the
+trigger. Harmless today — `render_status_values()` emits the same seven values as migration 0002, so
+the constraint is identical either way. I confirmed the trigger itself reverts correctly:
+
+```
+trigger has failed->uploaded after upgrade:    t
+trigger has failed->uploaded after downgrade:  f
+downgrade base -> 0 functions, only alembic_version remains
+```
+
+A latent trap only if this pattern is reused when the status set actually changes, which would leave
+a widened CHECK behind after a downgrade.
+
+### N-8 — `DeliveryReconciler` has no production caller [verified]
+
+`main.py` imports the three module-level helpers but not the `DeliveryReconciler` class; only tests
+construct it. `docs/MASTER_PLATFORM_HANDOFF.md` says so plainly — "implemented but not yet attached
+to a scheduler or route" — which is standing rule 6 followed correctly.
+
+Noting it only to keep the inventory honest: three components are now implemented and inert — the
+transcription worker, the audio assembler contract, and the delivery reconciler. Each is
+individually justified; the set of them is the thing to watch.
+
+### N-9 — Two unreachable exception branches in `service_auth` [read]
+
+The decoder now passes `verify_aud: False` and `verify_iss: False` so it can produce granular
+reasons, which means `jwt.decode` can no longer raise `InvalidAudienceError` or `InvalidIssuerError`.
+Those two `except` branches are dead with the default decoder; the real checks are the explicit
+comparisons below them. Harmless, but misleading to a future reader.
+
+Related and correct: dropping `aud`, `iss`, and `tid` from the PyJWT `require` list is **not** a
+weakening — a missing claim reads as `None`, fails the explicit comparison, and is rejected.
+
+### N-10 — In-memory and PostgreSQL raise different types for an illegal transition [read]
+
+`InMemoryRepository.update_session` raises `ValueError`; PostgreSQL raises SQLSTATE `23514`, which
+surfaces as a SQLAlchemy `DBAPIError`. Both are defense in depth behind the route guards, so neither
+is reachable in normal flow — but code written as `except ValueError` would behave differently per
+backend. Worth a shared exception type if anything ever needs to catch it.
+
+### Notes, not findings
+
+- **`/v1/diagnostics/token` can only ever return all-`true`**, since it sits behind the authenticator
+  that already enforced every check. The real diagnostic channel for a *failing* caller is the
+  `WWW-Authenticate: error_description` header and the structured log. Disclosing which check failed
+  is an operability-over-obscurity tradeoff that is right for a VNet-only API with one trusted
+  caller, and would not be right on a public endpoint. `TokenDiagnostics` is booleans only — no claim
+  values leak.
+- **`Retry-After: 0` on 409 responses.** The header is defined for 503/429/3xx, not 409. Harmless;
+  some client libraries will ignore it.
+
+## 5. Infrastructure — untouched, all eight findings stand
+
+`infra/` is byte-identical to `2cc1faa`. This is consistent with the queue order (infrastructure was
+step 7, behind work that was not reached), but nothing there has moved:
+
+| # | Finding |
+|---|---|
+| I-1 | `subscription_id` / `tenant_id` marked `sensitive`, so `tofu plan` redacts the Container App settings the runbooks require an operator to review |
+| I-2 | Private-only blob storage vs. a SAS URL on the public endpoint — no upload path for the web/mobile clients ADR 0009 commits to |
+| I-3 | No diagnostic settings on the storage account or Key Vault |
+| I-4 | No lifecycle policy and no retention logic anywhere — still the one P0 responsibility in `docs/PLAN.md` with zero implementation |
+| I-5 | No NSGs on the private-endpoint or Container Apps subnets |
+| I-6 | Log Analytics `daily_quota_gb = 0.5` silently drops ingestion past the cap |
+| I-7 | Bootstrap now grants on `transcription_jobs`, but still no `ALTER DEFAULT PRIVILEGES` — the next new table repeats the problem |
+| I-8 | No Azure AI Speech resource, private endpoint, or RBAC assignment for the adapter |
+
+## 6. Where the product stands
+
+Still not activated, and correctly deferred to the next round: the production `AudioTrackAssembler`,
+the worker trigger, one live Azure Speech round-trip, retention, and the infrastructure items above.
+
+The pattern the second review named — *Codex only moves forward* — did not repeat. Given a queue
+that put repair ahead of new work, it did the repair, in order, and stopped.
+
+The corrective prompt is in [`CODEX_NEXT_PROMPT.md`](CODEX_NEXT_PROMPT.md); steps 6 and 7 there are
+still the open work, plus N-6 above.
