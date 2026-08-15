@@ -3,12 +3,37 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .audio_keys import versionless_key_id
+
+
+def _is_exact_azure_speech_endpoint(value: AnyHttpUrl) -> bool:
+    parsed = urlsplit(str(value))
+    hostname = parsed.hostname
+    if hostname is None:
+        return False
+    suffix = ".cognitiveservices.azure.com"
+    account_name = hostname.casefold().removesuffix(suffix)
+    return (
+        parsed.scheme == "https"
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.port is None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+        and hostname.casefold() == f"{account_name}{suffix}"
+        and account_name.isascii()
+        and 1 <= len(account_name) <= 64
+        and account_name[0].isalnum()
+        and account_name[-1].isalnum()
+        and all(character.isalnum() or character == "-" for character in account_name)
+    )
 
 
 class Settings(BaseSettings):
@@ -52,10 +77,19 @@ class Settings(BaseSettings):
     database_max_overflow: int = Field(default=5, ge=0, le=20)
     database_runtime_principal_name: str | None = None
     database_runtime_principal_object_id: UUID | None = None
+    database_transcription_principal_name: str | None = None
+    database_transcription_principal_object_id: UUID | None = None
 
     transcription_backend: Literal["none", "azure"] = "none"
     azure_speech_endpoint: AnyHttpUrl | None = None
     azure_speech_max_speakers: int = Field(default=4, ge=2, le=36)
+    transcription_job_enabled: bool = False
+    transcription_job_language_code: str = Field(
+        default="en-US",
+        min_length=2,
+        max_length=16,
+        pattern=r"^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$",
+    )
 
     @model_validator(mode="after")
     def require_azure_settings(self) -> Settings:
@@ -70,6 +104,22 @@ class Settings(BaseSettings):
             if self.database_host is None or self.database_user is None:
                 raise ValueError(
                     "database_host and database_user are required for managed-identity PostgreSQL"
+                )
+        if (self.database_transcription_principal_name is None) != (
+            self.database_transcription_principal_object_id is None
+        ):
+            raise ValueError(
+                "database_transcription_principal_name and "
+                "database_transcription_principal_object_id must be configured together"
+            )
+        if self.database_transcription_principal_name is not None:
+            if (
+                self.database_transcription_principal_name == self.database_runtime_principal_name
+                or self.database_transcription_principal_object_id
+                == self.database_runtime_principal_object_id
+            ):
+                raise ValueError(
+                    "the transcription database principal must be distinct from the runtime"
                 )
         if self.master_platform_handoff_enabled:
             if self.master_platform_base_url is None or self.master_platform_scope is None:
@@ -95,10 +145,30 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "workflow_api_audience must be the v2 API application client ID UUID"
                 ) from exc
-        if self.transcription_backend == "azure" and self.azure_speech_endpoint is None:
-            raise ValueError(
-                "azure_speech_endpoint is required when Azure transcription is enabled"
-            )
+        if self.transcription_backend == "azure":
+            if self.azure_speech_endpoint is None:
+                raise ValueError(
+                    "azure_speech_endpoint is required when Azure transcription is enabled"
+                )
+            if not _is_exact_azure_speech_endpoint(self.azure_speech_endpoint):
+                raise ValueError(
+                    "azure_speech_endpoint must be an exact Azure Cognitive Services HTTPS origin"
+                )
+        if self.transcription_job_enabled:
+            if self.repository_backend != "postgres":
+                raise ValueError("the transcription job requires the PostgreSQL repository")
+            if self.storage_backend != "azure":
+                raise ValueError("the transcription job requires the Azure storage backend")
+            if self.transcription_backend != "azure":
+                raise ValueError("the transcription job requires the Azure transcription backend")
+            if self.managed_identity_client_id is None:
+                raise ValueError("managed_identity_client_id is required for the transcription job")
+            if self.audio_encryption_key_id is None:
+                raise ValueError("audio_encryption_key_id is required for the transcription job")
+            if self.audio_assembly_encrypted_temp_directory is None:
+                raise ValueError(
+                    "audio_assembly_encrypted_temp_directory is required for the transcription job"
+                )
         return self
 
 

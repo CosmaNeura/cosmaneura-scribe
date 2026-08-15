@@ -350,6 +350,45 @@ def test_worker_failure_is_sanitized_and_retried_under_a_new_lease() -> None:
     asyncio.run(scenario())
 
 
+def test_worker_stops_after_three_durable_attempts() -> None:
+    tenant_id = uuid4()
+    repository = InMemoryRepository()
+    assembler = FakeAssembler()
+    transcriber = FakeTranscriber(failures=4)
+
+    async def scenario() -> None:
+        session = await _seed_uploaded_session(repository, tenant_id=tenant_id)
+        worker = TranscriptionWorker(
+            repositories=repository,
+            assembler=assembler,
+            transcriber=transcriber,
+            max_attempts=3,
+        )
+
+        for expected_attempt in (1, 2, 3):
+            with pytest.raises(TranscriptionWorkerError) as exception:
+                await worker.process(tenant_id=tenant_id, session_id=session.id)
+            assert exception.value.code == "transcription_attempt_failed"
+            async with repository.transaction(tenant_id) as store:
+                job = await store.transcription_job_for(tenant_id, session.id)
+            assert job is not None
+            assert job.attempt_count == expected_attempt
+            expected_status = (
+                TranscriptionJobStatus.TERMINAL
+                if expected_attempt == 3
+                else TranscriptionJobStatus.RETRYABLE
+            )
+            assert job.status == expected_status
+
+        with pytest.raises(TranscriptionWorkerError) as exception:
+            await worker.process(tenant_id=tenant_id, session_id=session.id)
+        assert exception.value.code == "session_not_ready"
+
+    asyncio.run(scenario())
+    assert assembler.call_count == 3
+    assert transcriber.call_count == 3
+
+
 def test_worker_schema_violation_is_a_terminal_quality_failure() -> None:
     tenant_id = uuid4()
     repository = InMemoryRepository()

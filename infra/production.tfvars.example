@@ -20,6 +20,8 @@ postgres_subnet_address_prefixes         = ["10.44.4.0/24"]
 deploy_container_app          = false
 deploy_postgres_foundation    = false
 deploy_database_migration_job = false
+deploy_transcription_job      = false
+enable_transcription_job      = false
 use_postgres_repository       = false
 container_image_repository    = "cosmaneura-scribe-api"
 container_image_tag           = "not-deployed"
@@ -34,6 +36,10 @@ master_platform_scope          = "api://00000000-0000-0000-0000-000000000000/.de
 enable_workflow_authentication = false
 workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
 trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
+
+# Provision this external interface separately; neither value contains a credential.
+azure_speech_endpoint    = "https://replace-with-private-speech.cognitiveservices.azure.com"
+azure_speech_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-scribe-production/providers/Microsoft.CognitiveServices/accounts/replace-with-private-speech"
 
 connect_parallel_platform_vnet = false
 parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"

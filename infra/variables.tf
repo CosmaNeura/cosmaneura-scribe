@@ -221,6 +221,73 @@ variable "use_postgres_repository" {
   }
 }
 
+variable "deploy_transcription_job" {
+  description = "Create the manual transcription job and its dedicated managed identity."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.deploy_transcription_job ||
+      (
+        var.deploy_postgres_foundation &&
+        can(regex("^[0-9a-f]{40}$", var.container_image_tag))
+      )
+    )
+    error_message = "deploy_transcription_job requires PostgreSQL and a lowercase 40-character commit SHA image tag"
+  }
+}
+
+variable "enable_transcription_job" {
+  description = "Enable one-target manual transcription executions and their data-plane roles."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.enable_transcription_job ||
+      (
+        var.deploy_transcription_job &&
+        var.deploy_database_migration_job &&
+        var.use_postgres_repository &&
+        var.azure_speech_endpoint != "" &&
+        var.azure_speech_resource_id != "" &&
+        lower(try(regex("^https://([A-Za-z0-9-]+)\\.cognitiveservices\\.azure\\.com/?$", var.azure_speech_endpoint)[0], "")) ==
+        lower(try(basename(var.azure_speech_resource_id), "not-a-match"))
+      )
+    )
+    error_message = "enable_transcription_job requires the deployed migration and transcription jobs, PostgreSQL API cutover, and a matching Speech endpoint and account ID"
+  }
+}
+
+variable "azure_speech_endpoint" {
+  description = "Private HTTPS custom-subdomain endpoint of the separately provisioned Speech resource."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.azure_speech_endpoint == "" ||
+      can(regex("^https://[A-Za-z0-9-]+\\.cognitiveservices\\.azure\\.com/?$", var.azure_speech_endpoint))
+    )
+    error_message = "azure_speech_endpoint must be an HTTPS Cognitive Services custom-subdomain endpoint"
+  }
+}
+
+variable "azure_speech_resource_id" {
+  description = "ARM resource ID of the separately provisioned private Speech account."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.azure_speech_resource_id == "" ||
+      can(regex("^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.CognitiveServices/accounts/[^/]+$", var.azure_speech_resource_id))
+    )
+    error_message = "azure_speech_resource_id must identify a Cognitive Services account"
+  }
+}
+
 variable "postgres_server_name" {
   description = "Globally unique PostgreSQL Flexible Server name."
   type        = string

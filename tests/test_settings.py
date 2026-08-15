@@ -97,3 +97,81 @@ def test_workflow_authentication_configuration_contains_no_secret() -> None:
 
     assert settings.workflow_authentication_enabled is True
     assert "secret" not in settings.model_dump()
+
+
+def test_transcription_database_principal_requires_complete_identity() -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(database_transcription_principal_name="scribe-transcription")
+
+    shared_object_id = uuid4()
+    with pytest.raises(ValidationError, match="must be distinct"):
+        Settings(
+            database_runtime_principal_name="scribe-runtime",
+            database_runtime_principal_object_id=shared_object_id,
+            database_transcription_principal_name="scribe-transcription",
+            database_transcription_principal_object_id=shared_object_id,
+        )
+
+    with pytest.raises(ValidationError, match="must be distinct"):
+        Settings(
+            database_runtime_principal_name="scribe-runtime",
+            database_runtime_principal_object_id=uuid4(),
+            database_transcription_principal_name="scribe-runtime",
+            database_transcription_principal_object_id=uuid4(),
+        )
+
+
+def test_enabled_transcription_job_requires_closed_production_dependencies(
+    tmp_path: Path,
+) -> None:
+    configuration: dict[str, object] = {
+        "managed_identity_client_id": uuid4(),
+        "storage_backend": "azure",
+        "storage_account_url": "https://scribetest.blob.core.windows.net",
+        "audio_encryption_key_id": "https://scribe-test.vault.azure.net/keys/scribe-audio",
+        "audio_assembly_encrypted_temp_directory": tmp_path,
+        "repository_backend": "postgres",
+        "database_url": "postgresql+asyncpg://test:test@localhost/scribe",
+        "database_ssl": False,
+        "transcription_backend": "azure",
+        "azure_speech_endpoint": "https://scribe-test.cognitiveservices.azure.com",
+        "transcription_job_enabled": True,
+    }
+    missing_dependency_cases = (
+        ({"repository_backend": "memory"}, "PostgreSQL repository"),
+        ({"storage_backend": "memory"}, "Azure storage backend"),
+        ({"transcription_backend": "none"}, "Azure transcription backend"),
+        ({"azure_speech_endpoint": None}, "azure_speech_endpoint"),
+        ({"managed_identity_client_id": None}, "managed_identity_client_id"),
+        ({"audio_encryption_key_id": None}, "audio_encryption_key_id"),
+        ({"audio_assembly_encrypted_temp_directory": None}, "encrypted_temp_directory"),
+    )
+    for overrides, expected_error in missing_dependency_cases:
+        with pytest.raises(ValidationError, match=expected_error):
+            Settings(**(configuration | overrides))
+
+    settings = Settings(**configuration)
+
+    assert settings.transcription_job_enabled is True
+    assert settings.transcription_job_language_code == "en-US"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "http://scribe-test.cognitiveservices.azure.com",
+        "https://example.com",
+        "https://user@scribe-test.cognitiveservices.azure.com",
+        "https://scribe-test.cognitiveservices.azure.com:8443",
+        "https://scribe-test.cognitiveservices.azure.com/path",
+        "https://scribe-test.cognitiveservices.azure.com?query=true",
+        "https://scribe-test.cognitiveservices.azure.com#fragment",
+        "https://nested.scribe-test.cognitiveservices.azure.com",
+    ),
+)
+def test_azure_transcription_rejects_non_exact_speech_origins(endpoint: str) -> None:
+    with pytest.raises(ValidationError, match="exact Azure Cognitive Services HTTPS origin"):
+        Settings(
+            transcription_backend="azure",
+            azure_speech_endpoint=endpoint,
+        )

@@ -210,6 +210,11 @@ resource "azurerm_container_app" "api" {
         value = azurerm_storage_container.audio.name
       }
 
+      env {
+        name  = "COSMANEURA_SCRIBE_AUDIO_ENCRYPTION_KEY_ID"
+        value = azurerm_key_vault_key.audio.versionless_id
+      }
+
       dynamic "env" {
         for_each = var.use_postgres_repository ? [1] : []
         content {
@@ -278,6 +283,7 @@ resource "azurerm_container_app" "api" {
   depends_on = [
     azurerm_private_endpoint.audio_blob,
     azurerm_role_assignment.runtime_acr,
+    azurerm_role_assignment.runtime_audio_key_reader,
   ]
 
   tags = local.tags

@@ -36,6 +36,8 @@ stay in the existing Cosmaneura engine.
 - Consent-gated transcription orchestration with durable leases, bounded retries, channel-prior
   role labels, heartbeat renewal with lost-lease cancellation, metadata-only quality gates, and
   idempotent transcript persistence
+- Client-generated session-key custody, private encrypted Blob assembly, and a manual-only,
+  false-by-default Container Apps transcription job with a dedicated least-privilege identity
 
 ## Next P0 slice
 
@@ -46,9 +48,8 @@ stay in the existing Cosmaneura engine.
    the internal API to PostgreSQL only after migration and readiness checks pass.
 4. Configure the Entra application role and run the synthetic cross-service handoff acceptance
    test.
-5. Run the Azure Speech benchmark on approved de-identified clinical fixtures, then implement the
-   encrypted Blob download/decrypt/assembly adapter and connect the completed worker orchestration
-   to the reviewed internal job trigger.
+5. Provision the dedicated private Azure Speech resource and run the two-case synthetic live
+   round-trip before activating the already defined manual transcription job.
 6. Build P1a web capture first, then P1b mobile capture as a dedicated iOS/Android application;
    neither is a thin wrapper around the other.
 

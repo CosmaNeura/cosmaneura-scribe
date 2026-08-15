@@ -92,6 +92,25 @@ resource "azurerm_key_vault" "scribe" {
   tags = local.tags
 }
 
+resource "azurerm_key_vault_key" "audio" {
+  name         = "session-audio-wrapping"
+  key_vault_id = azurerm_key_vault.scribe.id
+  key_type     = "RSA"
+  key_size     = 3072
+  key_opts     = ["unwrapKey", "wrapKey"]
+
+  depends_on = [
+    azurerm_private_dns_zone_virtual_network_link.key_vault,
+    azurerm_private_endpoint.key_vault,
+  ]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  tags = local.tags
+}
+
 resource "azurerm_private_endpoint" "audio_blob" {
   name                = "${local.name_prefix}-blob-pe"
   resource_group_name = local.resource_group_name
@@ -140,8 +159,10 @@ resource "azurerm_role_assignment" "runtime_audio" {
   principal_id         = azurerm_user_assigned_identity.runtime.principal_id
 }
 
-resource "azurerm_role_assignment" "runtime_vault" {
-  scope                = azurerm_key_vault.scribe.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = azurerm_user_assigned_identity.runtime.principal_id
+resource "azurerm_role_assignment" "runtime_audio_key_reader" {
+  scope                            = azurerm_key_vault_key.audio.resource_id
+  role_definition_id               = "/subscriptions/${var.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/21090545-7ca7-4776-b22c-e363652d74d2"
+  principal_id                     = azurerm_user_assigned_identity.runtime.principal_id
+  principal_type                   = "ServicePrincipal"
+  skip_service_principal_aad_check = true
 }
