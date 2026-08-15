@@ -1,4 +1,4 @@
-# ADR 0007: Web and mobile capture are separate first-class clients
+# ADR 0009: Web and mobile capture are separate first-class clients
 
 **Status:** Accepted
 

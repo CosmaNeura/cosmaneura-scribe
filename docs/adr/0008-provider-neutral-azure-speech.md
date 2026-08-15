@@ -1,4 +1,4 @@
-# ADR 0006: Keep speech-to-text provider-neutral and benchmark Azure first
+# ADR 0008: Keep speech-to-text provider-neutral and benchmark Azure first
 
 **Status:** Accepted
 

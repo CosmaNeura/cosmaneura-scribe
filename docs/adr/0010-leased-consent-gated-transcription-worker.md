@@ -1,4 +1,4 @@
-# ADR 0008: Transcription uses consent revalidation and durable job leases
+# ADR 0010: Transcription uses consent revalidation and durable job leases
 
 **Status:** Accepted
 
