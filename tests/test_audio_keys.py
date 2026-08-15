@@ -165,6 +165,28 @@ async def test_key_provider_rejects_unusable_key_material_without_echoing_it(
 
 
 @pytest.mark.asyncio
+async def test_key_provider_sanitizes_protocol_errors() -> None:
+    sensitive = "protocol-detail-must-not-escape"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError(sensitive, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = KeyVaultAudioEncryptionKeyProvider(
+            configured_key_id="https://scribe-test.vault.azure.net/keys/audio-encryption",
+            credential=StaticCredential(),
+            client=client,
+        )
+        with pytest.raises(AudioEncryptionKeyUnavailable) as caught:
+            await provider.get_public_key()
+
+    assert str(caught.value) == "audio_encryption_key_unavailable"
+    assert sensitive not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "attributes",
     [

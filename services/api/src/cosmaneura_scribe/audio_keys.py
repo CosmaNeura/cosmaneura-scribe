@@ -84,7 +84,7 @@ class KeyVaultAudioEncryptionKeyProvider:
                 params={"api-version": "7.4"},
                 headers={"Authorization": f"Bearer {token.token}"},
             )
-        except (AzureError, httpx.TimeoutException, httpx.NetworkError):
+        except (AzureError, httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError):
             raise AudioEncryptionKeyUnavailable("audio_encryption_key_unavailable") from None
         if response.status_code != 200:
             raise AudioEncryptionKeyUnavailable("audio_encryption_key_unavailable")

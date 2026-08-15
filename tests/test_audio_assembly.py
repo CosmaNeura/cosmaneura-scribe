@@ -16,6 +16,7 @@ from azure.core.credentials import AccessToken
 from conftest import RepositoryBackend
 from cosmaneura_scribe.audio_assembly import (
     AudioAssemblyError,
+    EncryptedAudioTrackReader,
     EncryptedBlobAudioTrackAssembler,
     EncryptedChunkHeader,
     KeyVaultSessionKeyUnwrapper,
@@ -313,6 +314,40 @@ async def test_key_vault_unwrapper_reconstructs_configured_key_and_uses_unwrapke
         "alg": "RSA-OAEP-256",
         "value": WRAPPED_DEK,
     }
+
+
+@pytest.mark.asyncio
+async def test_key_vault_unwrapper_sanitizes_protocol_errors() -> None:
+    sensitive = "protocol-detail-must-not-escape"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError(sensitive, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        unwrapper = KeyVaultSessionKeyUnwrapper(
+            configured_key_id="https://scribe-test.vault.azure.net/keys/scribe-audio",
+            credential=StaticCredential(),
+            client=client,
+        )
+        with pytest.raises(AudioAssemblyError) as caught:
+            await unwrapper.unwrap(_audio_key(uuid4()))
+
+    assert str(caught.value) == "audio_key_unwrap_unavailable"
+    assert sensitive not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+
+
+def test_encrypted_track_reader_repr_omits_path(tmp_path: Path) -> None:
+    sensitive_path = tmp_path / "object-path-must-not-escape.enc"
+    reader = EncryptedAudioTrackReader(
+        path=sensitive_path,
+        key=bytearray(b"k" * 32),
+        nonce=b"n" * 12,
+        additional_data=b"metadata",
+    )
+
+    assert str(sensitive_path) not in repr(reader)
 
 
 @pytest.mark.asyncio

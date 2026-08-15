@@ -25,6 +25,9 @@ OR (OLD.status = 'processing' AND NEW.status IN ('transcript_ready', 'failed'))
 OR (OLD.status = 'transcript_ready' AND NEW.status IN ('handed_off', 'failed'))
 OR (OLD.status = 'handed_off' AND NEW.status = 'failed')
 """.strip()
+PREVIOUS_STATUS_VALUES = (
+    "'created', 'capturing', 'uploaded', 'processing', 'transcript_ready', 'handed_off', 'failed'"
+)
 
 
 def _transition_function(predicate: str) -> str:
@@ -45,14 +48,19 @@ def _transition_function(predicate: str) -> str:
     """
 
 
-def upgrade() -> None:
-    op.execute(_transition_function(render_transition_predicate()))
+def _replace_status_constraint(status_values: str) -> None:
     op.execute("ALTER TABLE scribe_sessions DROP CONSTRAINT IF EXISTS scribe_sessions_status_check")
     op.execute(
         "ALTER TABLE scribe_sessions "
-        f"ADD CONSTRAINT scribe_sessions_status_check CHECK (status IN ({render_status_values()}))"
+        f"ADD CONSTRAINT scribe_sessions_status_check CHECK (status IN ({status_values}))"
     )
+
+
+def upgrade() -> None:
+    op.execute(_transition_function(render_transition_predicate()))
+    _replace_status_constraint(render_status_values())
 
 
 def downgrade() -> None:
     op.execute(_transition_function(PREVIOUS_TRANSITION_PREDICATE))
+    _replace_status_constraint(PREVIOUS_STATUS_VALUES)
