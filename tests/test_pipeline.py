@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from conftest import RepositoryBackend
 from cosmaneura_scribe.handoff import HandoffRetryableError
 from cosmaneura_scribe.main import app, get_master_platform_handoff
-from cosmaneura_scribe.repository import InMemoryRepository
 from cosmaneura_scribe.schemas import (
     MasterTranscriptDeliveryRequest,
     MasterTranscriptDeliveryResponse,
@@ -126,7 +126,8 @@ def create_ready_transcript(
 
 
 def test_consent_gated_pipeline_and_legacy_handoff(
-    client: TestClient, repository: InMemoryRepository
+    client: TestClient,
+    repository_backend: RepositoryBackend,
 ) -> None:
     tenant_id = uuid4()
     identity, session = create_session(client, tenant_id)
@@ -202,11 +203,15 @@ def test_consent_gated_pipeline_and_legacy_handoff(
         "endTime": 1200,
     }
     assert payload["transcript_data"][1]["speaker"] == "Patient"
-    assert all(not hasattr(event, "content") for event in repository.audit_events)
+    assert all(
+        set(event) <= {"tenant_id", "action", "entity_type", "entity_id", "occurred_at"}
+        for event in repository_backend.audit_events(tenant_id)
+    )
 
 
 def test_upload_grant_is_short_lived_idempotent_and_metadata_only(
-    client: TestClient, repository: InMemoryRepository
+    client: TestClient,
+    repository_backend: RepositoryBackend,
 ) -> None:
     tenant_id = uuid4()
     _, session = create_session(client, tenant_id)
@@ -226,10 +231,9 @@ def test_upload_grant_is_short_lived_idempotent_and_metadata_only(
     assert first.status_code == 201
     assert replay.json() == first.json()
     assert first.json()["upload_url"].startswith("https://storage.invalid/")
-    assert [event.action for event in repository.audit_events].count(
-        "audio_upload_grant.issued"
-    ) == 1
-    assert all(not hasattr(event, "upload_url") for event in repository.audit_events)
+    events = repository_backend.audit_events(tenant_id)
+    assert [event["action"] for event in events].count("audio_upload_grant.issued") == 1
+    assert all("upload_url" not in event for event in events)
 
 
 def test_tenant_isolation_hides_session(client: TestClient) -> None:
@@ -306,7 +310,7 @@ def test_idempotency_key_rejects_a_different_request(client: TestClient) -> None
 
 def test_master_platform_delivery_is_source_agnostic_and_idempotent(
     handoff_client: tuple[TestClient, RecordingHandoff],
-    repository: InMemoryRepository,
+    repository_backend: RepositoryBackend,
 ) -> None:
     client, handoff = handoff_client
     tenant_id = uuid4()
@@ -330,15 +334,14 @@ def test_master_platform_delivery_is_source_agnostic_and_idempotent(
     assert "patient_id" not in outbound
     assert "scheduling_provider" not in outbound
     assert handoff.idempotency_keys == [f"scribe-{session['id']}-v1"]
-    assert [event.action for event in repository.audit_events].count(
-        "transcript.delivery_attempted"
-    ) == 1
-    assert [event.action for event in repository.audit_events].count("transcript.delivered") == 1
+    actions = repository_backend.audit_actions(tenant_id)
+    assert actions.count("transcript.delivery_attempted") == 1
+    assert actions.count("transcript.delivered") == 1
 
 
 def test_retryable_delivery_records_failure_and_reuses_outbound_key(
     client: TestClient,
-    repository: InMemoryRepository,
+    repository_backend: RepositoryBackend,
 ) -> None:
     handoff = RecordingHandoff(failures=1)
     app.dependency_overrides[get_master_platform_handoff] = lambda: handoff
@@ -357,9 +360,8 @@ def test_retryable_delivery_records_failure_and_reuses_outbound_key(
     assert retry.json()["status"] == "delivered"
     assert retry.json()["attempt_count"] == 2
     assert len(set(handoff.idempotency_keys)) == 1
-    persisted = next(iter(repository.deliveries.values()))
+    persisted = repository_backend.delivery_for(tenant_id, UUID(str(session["id"])))
+    assert persisted is not None
     assert persisted.status == "delivered"
     assert persisted.attempt_count == 2
-    assert [event.action for event in repository.audit_events].count(
-        "transcript.delivery_retryable"
-    ) == 1
+    assert repository_backend.audit_actions(tenant_id).count("transcript.delivery_retryable") == 1

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import os
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from alembic.config import Config
 from cosmaneura_scribe.postgres_repository import build_postgres_provider
 from cosmaneura_scribe.repository import IdempotencyConflictError, UploadGrantRecord
 from cosmaneura_scribe.schemas import (
@@ -25,94 +22,8 @@ from cosmaneura_scribe.schemas import (
 )
 from cosmaneura_scribe.settings import Settings
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
-
-from alembic import command
-
-APP_ROLE = "cosmaneura_scribe_test_app"
-APP_PASSWORD = "test-only-123!"
-
-
-@pytest.fixture(scope="module")
-def postgres_urls() -> Iterator[tuple[str, str]]:
-    admin_url = os.getenv("COSMANEURA_SCRIBE_TEST_DATABASE_URL")
-    if admin_url is None:
-        pytest.skip("COSMANEURA_SCRIBE_TEST_DATABASE_URL is not configured")
-    parsed = make_url(admin_url)
-    if not (parsed.database or "").endswith("_test"):
-        pytest.skip("PostgreSQL integration tests require a database ending in _test")
-
-    config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", admin_url)
-    command.downgrade(config, "base")
-    command.upgrade(config, "head")
-    command.downgrade(config, "0003")
-    assert asyncio.run(_table_exists(admin_url, "transcription_jobs")) is False
-    command.upgrade(config, "head")
-    command.downgrade(config, "0001")
-    assert asyncio.run(_table_exists(admin_url, "audio_upload_grants")) is False
-    assert asyncio.run(_table_exists(admin_url, "idempotency_records")) is False
-    assert asyncio.run(_table_exists(admin_url, "transcript_deliveries")) is False
-    command.upgrade(config, "head")
-
-    asyncio.run(_create_app_role(admin_url))
-    app_url = parsed.set(username=APP_ROLE, password=APP_PASSWORD).render_as_string(
-        hide_password=False
-    )
-    yield admin_url, app_url
-
-    asyncio.run(_drop_app_role(admin_url))
-    command.downgrade(config, "base")
-
-
-async def _table_exists(database_url: str, table_name: str) -> bool:
-    engine = create_async_engine(database_url, connect_args={"ssl": False})
-    try:
-        async with engine.connect() as connection:
-            found = await connection.scalar(
-                text("SELECT to_regclass(:table_name) IS NOT NULL"),
-                {"table_name": f"public.{table_name}"},
-            )
-            return bool(found)
-    finally:
-        await engine.dispose()
-
-
-async def _create_app_role(database_url: str) -> None:
-    engine = create_async_engine(database_url, connect_args={"ssl": False})
-    try:
-        async with engine.begin() as connection:
-            role_exists = await connection.scalar(
-                text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
-                {"role": APP_ROLE},
-            )
-            if role_exists:
-                await connection.execute(text(f"DROP OWNED BY {APP_ROLE}"))
-                await connection.execute(text(f"DROP ROLE {APP_ROLE}"))
-            await connection.execute(
-                text(f"CREATE ROLE {APP_ROLE} LOGIN PASSWORD '{APP_PASSWORD}' NOSUPERUSER")
-            )
-            await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}"))
-            await connection.execute(
-                text(
-                    f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
-                    f"IN SCHEMA public TO {APP_ROLE}"
-                )
-            )
-    finally:
-        await engine.dispose()
-
-
-async def _drop_app_role(database_url: str) -> None:
-    engine = create_async_engine(database_url, connect_args={"ssl": False})
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(text(f"DROP OWNED BY {APP_ROLE}"))
-            await connection.execute(text(f"DROP ROLE IF EXISTS {APP_ROLE}"))
-    finally:
-        await engine.dispose()
 
 
 def _settings(database_url: str) -> Settings:
