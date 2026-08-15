@@ -13,7 +13,6 @@ resource "azurerm_cognitive_account" "speech" {
 
   network_acls {
     default_action = "Deny"
-    bypass         = "None"
     ip_rules       = []
   }
 

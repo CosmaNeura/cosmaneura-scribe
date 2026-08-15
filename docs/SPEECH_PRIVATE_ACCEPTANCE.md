@@ -19,7 +19,8 @@ Run a refreshed plan. It must add one S0 `SpeechServices` account, one private D
 link, one `account` private endpoint, and one diagnostic setting. Confirm:
 
 - local authentication and public network access are disabled;
-- the ACL is `Deny` with no bypass or IP rules;
+- the ACL is `Deny` with no IP rules, and the ARM result exposes no effective bypass (AzureRM
+  rejects the `bypass` field for `SpeechServices`; stop if Azure reports one);
 - diagnostics contain only `Audit`, `ManagedNetworkEvent`, and `AllMetrics`;
 - the plan has no replacement or destroy; and
 - neither a smoke identity nor a Speech User assignment exists yet.
