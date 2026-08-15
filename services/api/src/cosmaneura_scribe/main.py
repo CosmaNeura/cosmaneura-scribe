@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -14,6 +12,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from .canonical_json import canonical_sha256
 from .consent import ConsentError, ConsentPolicy
 from .handoff import (
     HandoffConflictError,
@@ -135,11 +134,7 @@ Handoff = Annotated[MasterPlatformHandoff, Depends(get_master_platform_handoff)]
 
 
 def _fingerprint(payload: object) -> str:
-    if hasattr(payload, "model_dump"):
-        body = payload.model_dump(mode="json")  # type: ignore[union-attr]
-    else:
-        body = payload
-    return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    return canonical_sha256(payload)
 
 
 async def _idempotent_entity(

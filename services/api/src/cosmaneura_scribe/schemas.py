@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 ExternalEntityId = Annotated[str, Field(min_length=1, max_length=128)]
 
@@ -32,6 +32,10 @@ class ConsentCreate(BaseModel):
     all_parties_consented: bool
     granted_at: datetime
     evidence_object_id: UUID | None = None
+
+    @field_serializer("participant_regions")
+    def serialize_participant_regions(self, regions: set[str]) -> list[str]:
+        return sorted(regions)
 
     @model_validator(mode="after")
     def validate_granted_at(self) -> ConsentCreate:
