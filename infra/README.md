@@ -5,6 +5,12 @@ accepts no secret values. Local runs authenticate through Azure CLI; GitHub runs
 
 Read [`../docs/AZURE_ONBOARDING.md`](../docs/AZURE_ONBOARDING.md) before initialization.
 
+Development and production use distinct backend keys, resource groups, and address spaces. The
+production examples are `production.backend.hcl.example` and `production.tfvars.example`; their
+gates are documented in
+[`../docs/PRODUCTION_ENVIRONMENT_PLAN.md`](../docs/PRODUCTION_ENVIRONMENT_PLAN.md). Production
+cannot deploy the API with process-memory persistence.
+
 Do not apply this configuration until the subscription has been inventoried and a reviewed plan
 confirms there are no replacements. The canonical development subscription had no compatible East
 US VNet or private DNS zones, so this configuration creates a dedicated network boundary for scribe.
@@ -80,5 +86,26 @@ As of 2026-08-13, this subscription is restricted from creating PostgreSQL Flexi
 US and East US 2. Do not redirect the server to Central US without a separately reviewed
 cross-region design; VNet-integrated Flexible Server must use networking in its own region.
 
-Service Bus, CMK wiring, retention automation, authenticated master connectivity, and deployment
-identities follow in reviewed slices.
+The master-platform handoff is false by default. After the platform's Entra app role and workload
+endpoint are configured, set `enable_master_platform_handoff`, `master_platform_base_url`, and
+`master_platform_scope` as described in
+[`../docs/MASTER_PLATFORM_HANDOFF.md`](../docs/MASTER_PLATFORM_HANDOFF.md). These are non-secret
+identifiers; the runtime managed identity obtains the token.
+
+Inbound workflow authentication is independently false by default. Configure the Scribe API app
+registration and assign `Scribe.Workflow.Access` to the exact master-platform managed identity
+before setting `enable_workflow_authentication = true`. The API then validates the token's issuer,
+audience, tenant, app-only token type, caller client ID, and role before accepting `X-Tenant-ID`.
+Health and readiness probes remain unauthenticated. See
+[`../docs/PLATFORM_WORKFLOW_AUTH.md`](../docs/PLATFORM_WORKFLOW_AUTH.md).
+
+Private connectivity to the platform is also independently false by default. Scribe owns only its
+reverse peering and the link from its private Container Apps DNS zone to the platform VNet. The
+platform owns the new VNet, environment, and opposite peering. Do not enable
+`connect_parallel_platform_vnet` until the platform foundation exists and both plans have been
+separately reviewed. The paired sequence and rollback boundaries are documented in the platform
+repository's `docs/PLATFORM_SCRIBE_NETWORK_PLAN.md` and summarized in
+[`../docs/PLATFORM_WORKFLOW_AUTH.md`](../docs/PLATFORM_WORKFLOW_AUTH.md).
+
+Service Bus, CMK wiring, retention automation, and deployment identities follow in reviewed
+slices.

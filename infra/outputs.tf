@@ -46,6 +46,16 @@ output "container_app_fqdn" {
   value = var.deploy_container_app ? azurerm_container_app.api[0].latest_revision_fqdn : null
 }
 
+output "parallel_platform_peering_id" {
+  description = "Scribe-owned side of the optional platform VNet peering."
+  value       = var.connect_parallel_platform_vnet ? azurerm_virtual_network_peering.scribe_to_parallel_platform[0].id : null
+}
+
+output "parallel_platform_private_dns_link_id" {
+  description = "Link that makes the private Scribe Container Apps zone resolvable from the platform VNet."
+  value       = var.connect_parallel_platform_vnet ? azurerm_private_dns_zone_virtual_network_link.parallel_platform_container_apps[0].id : null
+}
+
 output "postgres_fqdn" {
   value = var.deploy_postgres_foundation ? azurerm_postgresql_flexible_server.scribe[0].fqdn : null
 }

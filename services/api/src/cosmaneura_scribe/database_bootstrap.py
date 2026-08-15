@@ -75,6 +75,11 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
             await connection.execute(
                 text(f"GRANT SELECT, INSERT, UPDATE ON scribe_sessions TO {role}")
             )
+            await connection.execute(
+                text(
+                    f"GRANT SELECT, INSERT, UPDATE ON transcript_deliveries TO {role}"
+                )
+            )
             await connection.execute(text(f"GRANT INSERT ON audit_events TO {role}"))
     finally:
         await provider.close()

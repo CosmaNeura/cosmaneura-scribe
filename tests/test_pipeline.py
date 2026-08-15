@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+from cosmaneura_scribe.handoff import HandoffRetryableError
+from cosmaneura_scribe.main import app, get_master_platform_handoff
 from cosmaneura_scribe.repository import InMemoryRepository
+from cosmaneura_scribe.schemas import (
+    MasterTranscriptDeliveryRequest,
+    MasterTranscriptDeliveryResponse,
+)
 from fastapi.testclient import TestClient
 
 
@@ -36,6 +43,85 @@ def create_session(
         headers=headers(tenant_id, "session-key-1000"),
         json={**identity, "consent_record_id": consent["id"]},
     ).json()
+    return identity, session
+
+
+class RecordingHandoff:
+    def __init__(self, *, failures: int = 0) -> None:
+        self.failures = failures
+        self.requests: list[MasterTranscriptDeliveryRequest] = []
+        self.idempotency_keys: list[str] = []
+
+    async def deliver(
+        self,
+        payload: MasterTranscriptDeliveryRequest,
+        *,
+        idempotency_key: str,
+    ) -> MasterTranscriptDeliveryResponse:
+        self.requests.append(payload)
+        self.idempotency_keys.append(idempotency_key)
+        if self.failures:
+            self.failures -= 1
+            raise HandoffRetryableError("platform_http_503")
+        return MasterTranscriptDeliveryResponse(
+            schema_version="1.0",
+            transcript_id="ai_visit_transcript_01kzy0c3m3e74q9s19kgjhrjra",
+            disposition="created",
+        )
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.fixture
+def handoff_client(client: TestClient) -> tuple[TestClient, RecordingHandoff]:
+    handoff = RecordingHandoff()
+    app.dependency_overrides[get_master_platform_handoff] = lambda: handoff
+    return client, handoff
+
+
+def create_ready_transcript(
+    client: TestClient, tenant_id: object
+) -> tuple[dict[str, object], dict[str, object]]:
+    identity, session = create_session(client, tenant_id)
+    grant = client.post(
+        f"/v1/sessions/{session['id']}/chunks/upload-grant",
+        headers=headers(tenant_id, "delivery-grant-key-1000"),
+        json={"sequence_number": 0, "channel": "microphone"},
+    ).json()
+    client.post(
+        f"/v1/sessions/{session['id']}/chunks",
+        headers=headers(tenant_id, "delivery-chunk-key-1000"),
+        json={
+            "sequence_number": 0,
+            "channel": "microphone",
+            "object_id": grant["object_id"],
+            "sha256": "b" * 64,
+            "ciphertext_size_bytes": 4096,
+        },
+    )
+    client.post(
+        f"/v1/sessions/{session['id']}/complete",
+        headers=headers(tenant_id, "delivery-complete-key-1000"),
+    )
+    transcript = client.post(
+        f"/v1/sessions/{session['id']}/transcript",
+        headers=headers(tenant_id, "delivery-transcript-key-1000"),
+        json={
+            "language_code": "en-US",
+            "stt_provider": "test_adapter",
+            "segments": [
+                {
+                    "speaker_id": "channel-mic",
+                    "speaker_role": "clinician",
+                    "content": "Synthetic contract fixture.",
+                    "start_ms": 0,
+                    "end_ms": 1200,
+                }
+            ],
+        },
+    )
+    assert transcript.status_code == 201
     return identity, session
 
 
@@ -216,3 +302,64 @@ def test_idempotency_key_rejects_a_different_request(client: TestClient) -> None
     assert conflict.json()["detail"] == (
         "Idempotency-Key was already used with a different request."
     )
+
+
+def test_master_platform_delivery_is_source_agnostic_and_idempotent(
+    handoff_client: tuple[TestClient, RecordingHandoff],
+    repository: InMemoryRepository,
+) -> None:
+    client, handoff = handoff_client
+    tenant_id = uuid4()
+    identity, session = create_ready_transcript(client, tenant_id)
+    url = f"/v1/sessions/{session['id']}/deliver"
+    request_headers = headers(tenant_id, "master-delivery-key-1000")
+
+    first = client.post(url, headers=request_headers)
+    replay = client.post(url, headers=request_headers)
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "delivered"
+    assert first.json()["attempt_count"] == 1
+    assert replay.json() == first.json()
+    assert len(handoff.requests) == 1
+    outbound = handoff.requests[0].model_dump(mode="json")
+    assert outbound["encounter_id"] == identity["appointment_id"]
+    assert outbound["scribe_session_id"] == session["id"]
+    assert outbound["segments"][0]["speaker"] == "Doctor"
+    assert "practitioner_id" not in outbound
+    assert "patient_id" not in outbound
+    assert "scheduling_provider" not in outbound
+    assert handoff.idempotency_keys == [f"scribe-{session['id']}-v1"]
+    assert [event.action for event in repository.audit_events].count(
+        "transcript.delivery_attempted"
+    ) == 1
+    assert [event.action for event in repository.audit_events].count("transcript.delivered") == 1
+
+
+def test_retryable_delivery_records_failure_and_reuses_outbound_key(
+    client: TestClient,
+    repository: InMemoryRepository,
+) -> None:
+    handoff = RecordingHandoff(failures=1)
+    app.dependency_overrides[get_master_platform_handoff] = lambda: handoff
+    tenant_id = uuid4()
+    _, session = create_ready_transcript(client, tenant_id)
+    url = f"/v1/sessions/{session['id']}/deliver"
+    request_headers = headers(tenant_id, "master-delivery-retry-1000")
+
+    first = client.post(url, headers=request_headers)
+    retry = client.post(url, headers=request_headers)
+
+    assert first.status_code == 503
+    assert first.json()["status"] == "retryable"
+    assert first.json()["last_error_code"] == "platform_http_503"
+    assert retry.status_code == 200
+    assert retry.json()["status"] == "delivered"
+    assert retry.json()["attempt_count"] == 2
+    assert len(set(handoff.idempotency_keys)) == 1
+    persisted = next(iter(repository.deliveries.values()))
+    assert persisted.status == "delivered"
+    assert persisted.attempt_count == 2
+    assert [event.action for event in repository.audit_events].count(
+        "transcript.delivery_retryable"
+    ) == 1

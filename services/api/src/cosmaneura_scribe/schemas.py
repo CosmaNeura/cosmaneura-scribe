@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -161,6 +161,62 @@ class LegacyTranscriptPayload(BaseModel):
     patient_id: ExternalEntityId
     duration: int
     transcript_data: list[LegacyTranscriptEntry]
+
+
+class MasterTranscriptSegment(BaseModel):
+    speaker: Literal["Doctor", "Patient", "Other", "Unknown"]
+    content: str = Field(min_length=1, max_length=100_000)
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def timestamps_are_ordered(self) -> MasterTranscriptSegment:
+        if self.end_ms <= self.start_ms:
+            raise ValueError("end_ms must be greater than start_ms")
+        return self
+
+
+class MasterTranscriptDeliveryRequest(BaseModel):
+    schema_version: Literal["1.0"] = "1.0"
+    encounter_id: ExternalEntityId
+    scribe_session_id: UUID
+    duration_seconds: int = Field(ge=0, le=86_400)
+    segments: list[MasterTranscriptSegment] = Field(min_length=1, max_length=10_000)
+
+    @model_validator(mode="after")
+    def segments_are_ordered(self) -> MasterTranscriptDeliveryRequest:
+        starts = [segment.start_ms for segment in self.segments]
+        if starts != sorted(starts):
+            raise ValueError("segments must be in nondecreasing time order")
+        return self
+
+
+class MasterTranscriptDeliveryResponse(BaseModel):
+    schema_version: Literal["1.0"]
+    transcript_id: ExternalEntityId
+    disposition: Literal["created", "replayed"]
+
+
+class DeliveryStatus(StrEnum):
+    PENDING = "pending"
+    RETRYABLE = "retryable"
+    DELIVERED = "delivered"
+    TERMINAL = "terminal"
+
+
+class TranscriptDelivery(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    session_id: UUID
+    idempotency_key: str = Field(min_length=8, max_length=255)
+    payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: DeliveryStatus
+    attempt_count: int = Field(ge=0)
+    platform_transcript_id: ExternalEntityId | None = None
+    last_error_code: str | None = Field(default=None, max_length=64)
+    created_at: datetime
+    updated_at: datetime
 
 
 class AuditEvent(BaseModel):

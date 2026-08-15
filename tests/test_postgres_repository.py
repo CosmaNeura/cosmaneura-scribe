@@ -50,6 +50,7 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     command.downgrade(config, "0001")
     assert asyncio.run(_table_exists(admin_url, "audio_upload_grants")) is False
     assert asyncio.run(_table_exists(admin_url, "idempotency_records")) is False
+    assert asyncio.run(_table_exists(admin_url, "transcript_deliveries")) is False
     command.upgrade(config, "head")
 
     asyncio.run(_create_app_role(admin_url))

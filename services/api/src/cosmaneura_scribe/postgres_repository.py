@@ -27,6 +27,7 @@ from .schemas import (
     CaptureSession,
     ConsentRecord,
     Transcript,
+    TranscriptDelivery,
 )
 from .settings import Settings
 
@@ -173,6 +174,20 @@ class PostgresRepository:
                    modality, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
+            """,
+            tenant_id=tenant_id,
+            id=session_id,
+        )
+        return CaptureSession.model_validate(row) if row is not None else None
+
+    async def lock_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                   modality, status, created_at
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :id
+            FOR UPDATE
             """,
             tenant_id=tenant_id,
             id=session_id,
@@ -344,6 +359,76 @@ class PostgresRepository:
             session_id=session_id,
         )
         return Transcript.model_validate(row) if row is not None else None
+
+    async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, session_id, idempotency_key, payload_sha256, status,
+                   attempt_count, platform_transcript_id, last_error_code,
+                   created_at, updated_at
+            FROM transcript_deliveries
+            WHERE tenant_id = :tenant_id AND id = :id
+            """,
+            tenant_id=tenant_id,
+            id=delivery_id,
+        )
+        return TranscriptDelivery.model_validate(row) if row is not None else None
+
+    async def delivery_for(self, tenant_id: UUID, session_id: UUID) -> TranscriptDelivery | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, session_id, idempotency_key, payload_sha256, status,
+                   attempt_count, platform_transcript_id, last_error_code,
+                   created_at, updated_at
+            FROM transcript_deliveries
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        return TranscriptDelivery.model_validate(row) if row is not None else None
+
+    async def add_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO transcript_deliveries (
+                    id, tenant_id, session_id, idempotency_key, payload_sha256,
+                    status, attempt_count, platform_transcript_id, last_error_code,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :tenant_id, :session_id, :idempotency_key, :payload_sha256,
+                    :status, :attempt_count, :platform_transcript_id, :last_error_code,
+                    :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                **delivery.model_dump(mode="python"),
+                "tenant_id": tenant_id,
+                "status": delivery.status.value,
+            },
+        )
+
+    async def update_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
+        await self._session.execute(
+            text(
+                """
+                UPDATE transcript_deliveries
+                SET status = :status,
+                    attempt_count = :attempt_count,
+                    platform_transcript_id = :platform_transcript_id,
+                    last_error_code = :last_error_code,
+                    updated_at = :updated_at
+                WHERE tenant_id = :tenant_id AND id = :id
+                """
+            ),
+            {
+                **delivery.model_dump(mode="python"),
+                "tenant_id": tenant_id,
+                "status": delivery.status.value,
+            },
+        )
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID

@@ -1,0 +1,39 @@
+subscription_id       = "00000000-0000-0000-0000-000000000000"
+tenant_id             = "00000000-0000-0000-0000-000000000000"
+environment           = "production"
+location              = "eastus"
+resource_group_name   = "cosmaneura-scribe-production"
+create_resource_group = true
+
+# These names were available on 2026-08-14 but remain unreserved until a reviewed apply.
+storage_account_name     = "cosmaneurascribeprod"
+key_vault_name           = "cosmaneura-scribe-prod"
+container_registry_name  = "cosmaneurascribeprod"
+
+# Production is isolated from development's 10.42.0.0/16 boundary.
+virtual_network_address_space            = ["10.44.0.0/16"]
+private_endpoint_subnet_address_prefixes = ["10.44.1.0/24"]
+container_apps_subnet_address_prefixes   = ["10.44.2.0/23"]
+postgres_subnet_address_prefixes         = ["10.44.4.0/24"]
+
+# Foundation-only review. East US PostgreSQL capacity is still pending and no workload is approved.
+deploy_container_app          = false
+deploy_postgres_foundation    = false
+deploy_database_migration_job = false
+use_postgres_repository       = false
+container_image_repository    = "cosmaneura-scribe-api"
+container_image_tag           = "not-deployed"
+postgres_server_name          = "cosmaneura-scribe-prod-pg"
+postgres_database_name        = "cosmaneura_scribe"
+
+# Workload features remain off until Entra roles, durable storage, and synthetic validation pass.
+enable_master_platform_handoff = false
+master_platform_base_url       = "https://app.example.invalid"
+master_platform_scope          = "api://00000000-0000-0000-0000-000000000000/.default"
+
+enable_workflow_authentication = false
+workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
+trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
+
+connect_parallel_platform_vnet = false
+parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"

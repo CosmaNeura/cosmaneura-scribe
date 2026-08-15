@@ -105,6 +105,94 @@ variable "container_image_tag" {
   default     = "not-deployed"
 }
 
+variable "enable_master_platform_handoff" {
+  description = "Enable Entra-authenticated transcript delivery to the master platform."
+  type        = bool
+  default     = false
+}
+
+variable "master_platform_base_url" {
+  description = "HTTPS origin of the master platform; contains no credential."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_master_platform_handoff ||
+      can(regex("^https://", var.master_platform_base_url))
+    )
+    error_message = "master_platform_base_url must be HTTPS when handoff is enabled"
+  }
+}
+
+variable "master_platform_scope" {
+  description = "Entra API scope in api://<app-id>/.default form; contains no credential."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_master_platform_handoff ||
+      can(regex("^api://.+/\\.default$", var.master_platform_scope))
+    )
+    error_message = "master_platform_scope must use api://<app-id>/.default when enabled"
+  }
+}
+
+variable "enable_workflow_authentication" {
+  description = "Require Entra app-only authentication on every /v1 workflow route."
+  type        = bool
+  default     = false
+}
+
+variable "workflow_api_audience" {
+  description = "Scribe API application client ID accepted in v2 access-token aud claims."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_workflow_authentication ||
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.workflow_api_audience))
+    )
+    error_message = "workflow_api_audience must be the Scribe API client ID UUID when enabled"
+  }
+}
+
+variable "trusted_platform_client_id" {
+  description = "Client ID of the one platform workload identity allowed to call Scribe."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_workflow_authentication ||
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", var.trusted_platform_client_id))
+    )
+    error_message = "trusted_platform_client_id must be a UUID when authentication is enabled"
+  }
+}
+
+variable "connect_parallel_platform_vnet" {
+  description = "Create Scribe-owned reverse peering and private-DNS link after a separately approved platform foundation plan."
+  type        = bool
+  default     = false
+}
+
+variable "parallel_platform_vnet_id" {
+  description = "Non-secret resource ID of the approved parallel platform VNet."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      var.parallel_platform_vnet_id == "" ||
+      can(regex("^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.Network/virtualNetworks/[^/]+$", var.parallel_platform_vnet_id))
+    )
+    error_message = "parallel_platform_vnet_id must be an Azure virtual network resource ID"
+  }
+}
+
 variable "deploy_postgres_foundation" {
   description = "Create the paid private PostgreSQL foundation after a separately approved plan."
   type        = bool

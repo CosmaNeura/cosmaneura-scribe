@@ -146,6 +146,56 @@ resource "azurerm_container_app" "api" {
       }
 
       env {
+        name  = "COSMANEURA_SCRIBE_WORKFLOW_AUTHENTICATION_ENABLED"
+        value = tostring(var.enable_workflow_authentication)
+      }
+
+      dynamic "env" {
+        for_each = var.enable_workflow_authentication ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_ENTRA_TENANT_ID"
+          value = var.tenant_id
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_workflow_authentication ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_WORKFLOW_API_AUDIENCE"
+          value = var.workflow_api_audience
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_workflow_authentication ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_TRUSTED_PLATFORM_CLIENT_ID"
+          value = var.trusted_platform_client_id
+        }
+      }
+
+      env {
+        name  = "COSMANEURA_SCRIBE_MASTER_PLATFORM_HANDOFF_ENABLED"
+        value = tostring(var.enable_master_platform_handoff)
+      }
+
+      dynamic "env" {
+        for_each = var.enable_master_platform_handoff ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_MASTER_PLATFORM_BASE_URL"
+          value = var.master_platform_base_url
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_master_platform_handoff ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_MASTER_PLATFORM_SCOPE"
+          value = var.master_platform_scope
+        }
+      }
+
+      env {
         name  = "COSMANEURA_SCRIBE_STORAGE_ACCOUNT_URL"
         value = azurerm_storage_account.audio.primary_blob_endpoint
       }
@@ -215,6 +265,13 @@ resource "azurerm_container_app" "api" {
     http_scale_rule {
       name                = "http"
       concurrent_requests = "20"
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.environment != "production" || var.use_postgres_repository
+      error_message = "a production Scribe API cannot use the process-memory repository"
     }
   }
 

@@ -16,6 +16,7 @@ from .schemas import (
     CaptureSession,
     ConsentRecord,
     Transcript,
+    TranscriptDelivery,
 )
 
 
@@ -55,6 +56,8 @@ class Repository(Protocol):
 
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None: ...
 
+    async def lock_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None: ...
+
     async def add_session(self, tenant_id: UUID, session: CaptureSession) -> None: ...
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None: ...
@@ -77,6 +80,18 @@ class Repository(Protocol):
 
     async def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None: ...
 
+    async def get_delivery(
+        self, tenant_id: UUID, delivery_id: UUID
+    ) -> TranscriptDelivery | None: ...
+
+    async def delivery_for(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> TranscriptDelivery | None: ...
+
+    async def add_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None: ...
+
+    async def update_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None: ...
+
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID
     ) -> None: ...
@@ -98,6 +113,8 @@ class InMemoryRepository:
     upload_grants: dict[tuple[UUID, UUID], UploadGrantRecord] = field(default_factory=lambda: {})
     transcripts: dict[tuple[UUID, UUID], Transcript] = field(default_factory=lambda: {})
     transcript_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
+    deliveries: dict[tuple[UUID, UUID], TranscriptDelivery] = field(default_factory=lambda: {})
+    delivery_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
     idempotency: dict[tuple[UUID, str, str], IdempotencyRecord] = field(default_factory=lambda: {})
     audit_events: list[AuditEvent] = field(default_factory=lambda: [])
     _transaction_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -113,6 +130,8 @@ class InMemoryRepository:
                 copy.deepcopy(self.upload_grants),
                 copy.deepcopy(self.transcripts),
                 copy.deepcopy(self.transcript_by_session),
+                copy.deepcopy(self.deliveries),
+                copy.deepcopy(self.delivery_by_session),
                 copy.deepcopy(self.idempotency),
                 copy.deepcopy(self.audit_events),
             )
@@ -126,6 +145,8 @@ class InMemoryRepository:
                     self.upload_grants,
                     self.transcripts,
                     self.transcript_by_session,
+                    self.deliveries,
+                    self.delivery_by_session,
                     self.idempotency,
                     self.audit_events,
                 ) = snapshot
@@ -163,6 +184,10 @@ class InMemoryRepository:
 
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
         return self.sessions.get((tenant_id, session_id))
+
+    async def lock_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
+        # The in-memory transaction lock already serializes all mutations.
+        return await self.get_session(tenant_id, session_id)
 
     async def add_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         self.sessions[(tenant_id, session.id)] = session
@@ -204,6 +229,22 @@ class InMemoryRepository:
         if transcript_id is None:
             return None
         return self.transcripts[(tenant_id, transcript_id)]
+
+    async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
+        return self.deliveries.get((tenant_id, delivery_id))
+
+    async def delivery_for(self, tenant_id: UUID, session_id: UUID) -> TranscriptDelivery | None:
+        delivery_id = self.delivery_by_session.get((tenant_id, session_id))
+        if delivery_id is None:
+            return None
+        return self.deliveries[(tenant_id, delivery_id)]
+
+    async def add_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
+        self.deliveries[(tenant_id, delivery.id)] = delivery
+        self.delivery_by_session[(tenant_id, delivery.session_id)] = delivery.id
+
+    async def update_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
+        self.deliveries[(tenant_id, delivery.id)] = delivery
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID

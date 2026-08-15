@@ -15,3 +15,19 @@ container_registry_name  = "replacewithgloballyuniqueacr"
 deploy_container_app     = false
 container_image_repository = "cosmaneura-scribe-api"
 container_image_tag        = "replace-with-commit-sha-after-acr-build"
+
+# Enable only after the Entra app role is assigned and the master endpoint is configured.
+enable_master_platform_handoff = false
+master_platform_base_url       = "https://app.example.invalid"
+master_platform_scope          = "api://00000000-0000-0000-0000-000000000000/.default"
+
+# Enable only after the Scribe API app role is assigned to the platform managed identity.
+enable_workflow_authentication = false
+workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
+trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
+
+# Synthetic private-connectivity planning only. Leave false until the platform VNet exists and
+# both enabled plans receive separate approval. The development Scribe environment is not a
+# production customer-traffic destination.
+connect_parallel_platform_vnet = false
+parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"

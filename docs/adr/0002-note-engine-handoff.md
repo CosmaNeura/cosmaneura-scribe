@@ -1,6 +1,6 @@
 # ADR 0002: Adapt to the existing transcript model
 
-**Status:** Accepted
+**Status:** Superseded by ADR 0006
 
 The scribe keeps a richer internal transcript with speaker IDs, roles, channels, confidence, and
 timestamps. At handoff it maps clinician/patient roles to the current `Doctor`/`Patient` speaker
@@ -11,3 +11,6 @@ The canonical platform accepts this payload at `POST /internal/v1/scribe/transcr
 derives ownership from the appointment, rejects mismatched doctor/patient IDs, and queues the
 existing note-schema and engagement jobs only on first import. This supports P0 through the current
 upload UX without introducing a second note engine or a new service credential.
+
+This was the transition design. ADR 0006 replaces the staff-session transport with a private
+workload-identity contract while retaining the legacy mapper during rollout.
