@@ -16,10 +16,7 @@ Cosmaneura SOAP-note and value-point engine.
 - Async in-memory and durable PostgreSQL repositories with atomic request transactions
 - PostgreSQL row-level tenant isolation, legal state-transition guards, and append-only audit events
 - Passwordless Entra-token database access and a separately privileged migration job
-- Provider-neutral speech-to-text contract and managed-identity Azure AI Speech adapter
 - De-identified benchmark harness that emits aggregate accuracy/performance metrics only
-- Consent-gated transcription worker with renewable leases, lost-lease cancellation, bounded
-  retries, channel role priors, metadata-only quality gates, and idempotent transcript persistence
 - PostgreSQL custody/audit migrations and deployed private Azure OpenTofu foundation
 - Non-root container image and internal-only Azure Container Apps deployment definition
 
@@ -27,6 +24,15 @@ The service uses an in-memory repository by default and is ready to switch to Po
 private database foundation is provisioned and bootstrapped. Azure Storage and PostgreSQL both use
 `DefaultAzureCredential`, so neither an account key nor a database password is stored in the app.
 The currently deployed revision remains on the in-memory repository until that controlled cutover.
+
+## Implemented, not yet activated
+
+- Provider-neutral speech-to-text contract and managed-identity Azure AI Speech adapter
+- Consent-gated transcription worker with renewable leases, lost-lease cancellation, bounded
+  retries, channel role priors, metadata-only quality gates, and idempotent transcript persistence
+
+Activation still requires a reviewed key-custody design, a production encrypted-Blob audio
+assembler, a worker trigger, and a live synthetic round-trip against an Azure AI Speech endpoint.
 
 ## Run locally
 
