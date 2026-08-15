@@ -5,17 +5,18 @@
 | First — 2026-08-15 | `main` at `2cc1faa` | 3 P0 + 4 P1 + 1 P2 defects, 8 infrastructure findings |
 | Second — 2026-08-15 | `codex/scribe-stt-mobile-roadmap` at `ad5a579` | STT slice added; all defects untouched; 5 new findings |
 | Third — 2026-08-15 | `main` at `4f11b94` | All 8 defects fixed and verified. 5 new findings, none blocking. |
-| **Fourth — 2026-08-15** | **`main` at `d57d721`** | **Audio key custody and the production assembler. Strongest work in the series. 6 new findings, none blocking.** |
+| Fourth — 2026-08-15 | `main` at `d57d721` | Audio key custody and the production assembler. Strongest work in the series. 6 new findings, none blocking. |
+| **Fifth — 2026-08-15** | **PR #5, `agent/scribe-transcription-job` at `2db0624` (open)** | **Infrastructure finally moves. Dormant manual job trigger. 6 new findings, none blocking merge.** |
 
 Findings marked **[verified]** were reproduced or exercised in this working tree. Findings marked
 **[read]** come from code inspection without a live Azure target.
 
 ---
 
-## 0. Fourth review — PR #4, per-session audio key custody
+## 0. Current pass
 
-See [section 7](#7-fourth-review--audio-key-custody-and-assembly) for the current pass. Sections 1–6
-below are the third review and remain accurate: no defect they closed has reopened.
+Section 8 is the fifth review, of open PR #5. Section 7 is the fourth. Sections 1–6 are the third and
+remain accurate: no defect they closed has reopened.
 
 ---
 
@@ -305,3 +306,153 @@ N-6 (migration 0005 imports live application code) is unchanged and remains the 
 fixing on its own merits. The transcription worker, the delivery reconciler, and now the assembler
 all still have no trigger — `build_audio_track_assembler` has no caller outside its module. Retention
 remains unimplemented.
+
+---
+
+## 8. Fifth review — PR #5, the dormant transcription job
+
+**Target:** `agent/scribe-transcription-job` at `2db0624`, **open, not merged**. One feature commit
+plus a merge from `main`. +1,418 lines across 24 files.
+
+This is the round where infrastructure finally moved, after three rounds untouched.
+
+### Gates, all run locally against the branch
+
+```
+180 passed, 0 skipped        (PostgreSQL 16 attached; was 158)
+ruff / pyright / check_phi_logs / check_secrets / check_adr_numbers   PASS
+openapi.json   in sync
+```
+
+Not verified locally: `tofu fmt -check` and `tofu validate`. Neither OpenTofu nor Terraform is
+installed in this environment; CI runs both.
+
+### What it does
+
+A manual Azure Container Apps Job as the first production transcription trigger, dormant by default,
+behind two independent Terraform flags — `deploy_transcription_job` creates the job, its dedicated
+identity, and only ACR pull; `enable_transcription_job` flips the runner's gate and creates the
+Blob, Key Vault, and Speech data-plane roles. ADR 0012 records it.
+
+It also closes three things this review series has been carrying:
+
+- **The activation blocker is gone.** An `EmptyDir` volume is mounted at `/mnt/encrypted-assembly`,
+  matching `COSMANEURA_SCRIBE_AUDIO_ASSEMBLY_ENCRYPTED_TEMP_DIRECTORY` exactly.
+- **The wrapping key exists.** `azurerm_key_vault_key.audio`, RSA-3072, `key_opts` limited to
+  `wrapKey`/`unwrapKey`, `prevent_destroy`.
+- **Key Vault privilege narrowed.** The API runtime's `Key Vault Secrets User` **on the whole vault**
+  is replaced by `Key Vault Reader` **scoped to the key** — it can publish public wrapping material
+  and cannot unwrap. Only the transcription identity gets `Key Vault Crypto User`, and only on enable.
+
+### Verified rather than read
+
+**The dormant gate holds.** I probed `run_transcription_job` with trip-wires on settings loading and
+client construction:
+
+```
+disabled + garbage args  -> transcription_job_disabled   touched: nothing
+disabled + valid args    -> transcription_job_disabled   touched: nothing
+enabled + garbage args   -> transcription_job_target_invalid   touched: nothing
+"1" instead of "true"    -> transcription_job_disabled   touched: nothing
+```
+
+No argument value reaches any log line — `../../etc/passwd` never appears, and `tenant_id` /
+`entity_id` stay null when parsing fails. The ADR's central claim is accurate.
+
+**The database role matches what the worker actually calls.** I traced every worker operation
+against the new grant list: `lock_session` (`SELECT … FOR UPDATE` needs SELECT + UPDATE on
+`scribe_sessions` — has both), `claim_transcription_job` (INSERT … ON CONFLICT DO UPDATE — has
+SELECT/INSERT/UPDATE), `get_audio_assembly_manifest` (SELECT across three tables — has all), the
+transcript insert, and the audit insert. Nothing is missing, and nothing is granted that the worker
+does not use: no upload-grant, idempotency, delivery, DELETE, or DDL privilege.
+
+**The Terraform guards are real.** `enable_transcription_job` requires `deploy_transcription_job`
+(so the `[0]` identity index cannot go out of range), plus the migration job, the PostgreSQL cutover,
+and both Speech values — with a cross-check that the endpoint subdomain equals
+`basename(azure_speech_resource_id)`. `deploy_transcription_job` requires a lowercase 40-character
+commit SHA image tag.
+
+**Two operational traps I expected to find are already documented.** `infra/README.md` states that
+the Key Vault key is a data-plane resource, that an ordinary public GitHub runner cannot create it,
+that the deployment principal needs `Key Vault Crypto Officer` (with the GUID) scoped to that vault
+only, and that subscription Owner/Contributor grants no Key Vault data-plane permission. It also
+says to re-run the migration job after deploying the job so bootstrap maps the new identity. There
+is even a decommissioning procedure noting that a recreated identity of the same name has a
+different Entra object ID and must never inherit the old database mapping.
+
+### New findings
+
+**N-17 — the Key Vault Reader assumption is the highest-risk unverified thing here [read] [medium]**
+
+The entire client key-wrapping flow depends on `Key Vault Reader`
+(`21090545-7ca7-4776-b22c-e363652d74d2`) being sufficient for `GET /keys/{name}` to return public
+material. If it is not, `GET /v1/audio-encryption-key` returns 503, no client can wrap a session
+DEK, and nothing downstream works. **No test can catch this** — every test uses a fake client.
+
+The same applies to the other three role GUIDs (`AcrPull`, `Storage Blob Data Reader`,
+`Key Vault Crypto User`, `Cognitive Services Speech User`). They look right, but a wrong GUID is
+either an apply error or a silent least-privilege failure.
+
+One `az role definition show` per GUID plus one live `GET /v1/audio-encryption-key` settles all of
+it. Do that before enabling anything.
+
+**N-18 — RBAC propagation on the enable step [read] [low]**
+
+The README correctly says to wait for propagation after the one-time Crypto Officer grant, but the
+activation sequence creates three data-plane assignments and flips the env var in the same apply.
+The first execution can 403 on Blob, Key Vault, or Speech. One runbook line.
+
+**N-19 — the documented start command needs one dry run [read] [low]**
+
+```bash
+az containerapp job start --container-name worker --args <tenant-uuid> <session-uuid>
+```
+
+Worth confirming the CLI *merges* this override with the job template rather than replacing the
+container spec — if it replaces, `--image` and `--command` are also required and the documented
+command starts nothing. Cheap to verify, and the whole operator procedure rests on it.
+
+**N-20 — the migration job can strip privileges from a live execution [read] [low]**
+
+`_grant_transcription_permissions` runs `REVOKE ALL … FROM role` before granting. That is correct
+for convergence on re-runs, but PostgreSQL evaluates privileges per statement, so re-running the
+migration job during an active transcription execution can fail it mid-transaction. Executions are
+manual and rare — a runbook line is the whole fix.
+
+**N-21 — the enable flag is an interlock, not a boundary [read] [note]**
+
+Anyone with Container Apps start permission can override `--env-vars` and set the enable flag true
+regardless of Terraform. ADR 0012 says exactly this and treats start permission as trusted code
+execution under the worker identity, and the README's framing — "turning on the Boolean alone is
+insufficient unless all private dependencies and roles are present" — is the accurate one. The real
+boundary is the RBAC assignments, which do not exist while disabled. Worth stating plainly, because
+"false by default" reads stronger than it is.
+
+**N-22 — no key rotation policy [read] [note]**
+
+The *code* supports rotation correctly: unwrap uses the version stored on the session, the configured
+path is versionless, and `bind_session_audio_key` rejects a stale version with a specific 409 so
+clients re-fetch. But there is no rotation policy, no expiration, and no documented answer to how
+long an old version must stay enabled — which is: until every session bound to it is transcribed or
+cryptographically erased. A later slice.
+
+### Carried findings — unseen, not ignored
+
+The corrective prompt has not been pushed yet, so Codex has not seen these. All four confirmed still
+present on this branch:
+
+| # | Status |
+|---|---|
+| N-6 | Migration 0005 still calls `render_transition_predicate()` at run time; no test pins the v1 output |
+| N-11 | `EncryptedAudioTrackReader.path` still lacks `repr=False` (line 205) |
+| N-16 | All three Key Vault / handoff call sites still miss `httpx.ProtocolError` |
+| N-12 | **Now live in the deployed job.** No `MAX_PLAINTEXT_BYTES` env is set, so the 64 MiB default applies against `memory = "1Gi"` — roughly 35 minutes of mono audio or 17 of a two-channel virtual visit |
+
+The `DeliveryReconciler` still has no trigger; this PR wires the transcription worker only.
+
+### Merge assessment
+
+Nothing here blocks merge. N-17 blocks *enabling*, and the PR already keeps both flags false, so the
+sequencing is right. The remaining infrastructure findings from earlier rounds — `sensitive = true`,
+storage and Key Vault diagnostics, `ALTER DEFAULT PRIVILEGES`, NSGs, the Log Analytics quota, the
+client upload path, and retention — are untouched and still stand.
