@@ -70,9 +70,11 @@ enable_transcription_job = false
    clients. Run bootstrap only in a drained maintenance window with no API traffic or transcription
    execution: bootstrap revokes current application privileges before granting the reviewed sets,
    and PostgreSQL checks privileges per statement.
-3. Separately provision private Azure AI Speech, private DNS, and the synthetic acceptance path.
-4. Set the reviewed Speech endpoint/resource ID and `enable_transcription_job = true`. The plan
-   must add only the job revision plus Blob Reader, key-scoped Crypto User, and Speech User roles.
+3. Follow `SPEECH_PRIVATE_ACCEPTANCE.md` to provision the owned private Azure AI Speech foundation,
+   deploy its dormant smoke job, and record a successful two-case synthetic execution.
+4. Set `enable_transcription_job = true`. The plan must derive the endpoint/private-IP guard from
+   the owned account and add only the job revision plus Blob Reader, key-scoped Crypto User, and
+   Speech User roles.
    Apply only after reviewing those scopes. Azure data-plane role assignments are eventually
    consistent; wait for all three assignments to appear for the worker identity and propagate
    before the first execution. Treat an initial `403` as propagation delay and never widen a role

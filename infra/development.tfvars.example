@@ -37,9 +37,12 @@ trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
 connect_parallel_platform_vnet = false
 parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"
 
-# Manual transcription remains doubly gated. Provision the job only after PostgreSQL and a
-# full-SHA image exists; enable it only after the separate private Speech foundation is accepted.
+# Private Speech and its pinned synthetic acceptance job remain independently false by default.
+deploy_private_speech_foundation = false
+deploy_speech_smoke_job          = false
+enable_speech_smoke_job          = false
+
+# Manual transcription remains doubly gated and cannot be enabled before the owned private Speech
+# foundation exists and its synthetic smoke execution passes.
 deploy_transcription_job = false
 enable_transcription_job = false
-azure_speech_endpoint     = "https://replace-with-private-speech.cognitiveservices.azure.com"
-azure_speech_resource_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-scribe-development/providers/Microsoft.CognitiveServices/accounts/replace-with-private-speech"

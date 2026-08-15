@@ -29,6 +29,7 @@ def _enabled_settings(tmp_path: Path) -> Settings:
         database_ssl=False,
         transcription_backend="azure",
         azure_speech_endpoint="https://scribe-test.cognitiveservices.azure.com",
+        azure_speech_private_endpoint_cidrs=("10.42.1.0/24",),
         transcription_job_enabled=True,
     )
 

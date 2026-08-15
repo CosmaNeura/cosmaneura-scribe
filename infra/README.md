@@ -139,9 +139,10 @@ PostgreSQL role. The dormant runner exits nonzero before Settings, target UUID p
 creation, making accidental starts visible without touching custody.
 
 Activation additionally requires keeping `deploy_database_migration_job = true`, setting
-`use_postgres_repository = true`, and supplying the endpoint and ARM resource ID of a separately
-provisioned private Speech account. Enabling creates only the worker's container-scoped Blob Reader,
-key-scoped Key Vault Crypto User, and account-scoped Speech User assignments.
+`use_postgres_repository = true`, and provisioning the Terraform-owned private Speech foundation.
+Enabling creates only the worker's container-scoped Blob Reader, key-scoped Key Vault Crypto User,
+and account-scoped Speech User assignments; its endpoint and exact private-IP guard are derived
+from the owned resources.
 Wait for all three role assignments to appear for the worker and propagate before starting the
 first execution; an initial `403` is a reason to wait and retry, not to widen permissions. Run the
 database bootstrap job only in a drained maintenance window with no API traffic or transcription
@@ -187,5 +188,17 @@ separately reviewed. The paired sequence and rollback boundaries are documented 
 repository's `docs/PLATFORM_SCRIBE_NETWORK_PLAN.md` and summarized in
 [`../docs/PLATFORM_WORKFLOW_AUTH.md`](../docs/PLATFORM_WORKFLOW_AUTH.md).
 
-Speech private networking, a live synthetic round-trip, retention automation, and deployment
-identities follow in reviewed slices.
+Private Speech is independently staged behind three false-default flags:
+
+```hcl
+deploy_private_speech_foundation = false
+deploy_speech_smoke_job          = false
+enable_speech_smoke_job          = false
+```
+
+The foundation owns the S0 account, default-deny private endpoint/DNS, and only safe diagnostic
+categories. The dormant smoke identity has ACR pull only; enabling adds account-scoped Speech User
+and runs exactly two hash-pinned synthetic cases. Follow
+[`../docs/SPEECH_PRIVATE_ACCEPTANCE.md`](../docs/SPEECH_PRIVATE_ACCEPTANCE.md) before activating the
+clinical transcription job. Retention automation and deployment identities follow in later
+reviewed slices.

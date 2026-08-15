@@ -5,7 +5,8 @@ locals {
     staging     = "stg"
     production  = "prod"
   }[var.environment]
-  container_app_name = "cosmaneura-scribe-${local.environment_short}-api"
+  container_app_name  = "cosmaneura-scribe-${local.environment_short}-api"
+  speech_account_name = "cosmaneura-scribe-${local.environment_short}-speech"
   resource_group_name = var.create_resource_group ? (
     azurerm_resource_group.scribe[0].name
   ) : data.azurerm_resource_group.scribe[0].name

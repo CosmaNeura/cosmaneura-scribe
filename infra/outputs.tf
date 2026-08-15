@@ -93,3 +93,19 @@ output "transcription_managed_identity_name" {
 output "transcription_managed_identity_id" {
   value = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].id : null
 }
+
+output "speech_account_endpoint" {
+  value = var.deploy_private_speech_foundation ? azurerm_cognitive_account.speech[0].endpoint : null
+}
+
+output "speech_private_endpoint_ip" {
+  value = var.deploy_private_speech_foundation ? azurerm_private_endpoint.speech[0].private_service_connection[0].private_ip_address : null
+}
+
+output "speech_smoke_job_name" {
+  value = var.deploy_speech_smoke_job ? azurerm_container_app_job.speech_smoke[0].name : null
+}
+
+output "speech_smoke_managed_identity_client_id" {
+  value = var.deploy_speech_smoke_job ? azurerm_user_assigned_identity.speech_smoke[0].client_id : null
+}

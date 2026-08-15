@@ -96,6 +96,17 @@ class FakeProvider:
         return None
 
 
+class FakeEndpointGuard:
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.calls = 0
+        self.failure = failure
+
+    async def verify(self) -> None:
+        self.calls += 1
+        if self.failure is not None:
+            raise self.failure
+
+
 def test_azure_adapter_preserves_channel_speaker_and_timing_without_repr_leak(
     tmp_path: Path,
 ) -> None:
@@ -199,6 +210,42 @@ def test_missing_audio_error_does_not_expose_local_path(tmp_path: Path) -> None:
 
     assert str(exception.value) == "audio track unavailable"
     assert "sensitive-patient" not in repr(exception.value)
+
+
+def test_azure_adapter_checks_private_endpoint_before_each_egress(tmp_path: Path) -> None:
+    audio_path = tmp_path / "synthetic.wav"
+    audio_path.write_bytes(b"fixture")
+    client = FakeAzureClient(
+        [
+            _result(
+                text="Synthetic fixture",
+                speaker=1,
+                offset_ms=0,
+                duration_ms=500,
+                confidence=0.9,
+            )
+        ]
+    )
+    guard = FakeEndpointGuard()
+    provider = AzureSpeechTranscriber(
+        client,
+        max_speakers=4,
+        endpoint_guard=guard,
+    )
+
+    asyncio.run(
+        provider.transcribe(
+            TranscriptionRequest(
+                session_id=uuid4(),
+                consent_record_id=uuid4(),
+                language_code="en-US",
+                tracks=(AudioTrack(uuid4(), CaptureChannel.MIXED, audio_path),),
+            )
+        )
+    )
+
+    assert guard.calls == 1
+    assert len(client.requests) == 1
 
 
 def test_manifest_requires_explicit_deidentification() -> None:
