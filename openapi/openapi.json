@@ -551,6 +551,59 @@
         "title": "SpeakerRole",
         "type": "string"
       },
+      "TokenDiagnostics": {
+        "properties": {
+          "audience_valid": {
+            "title": "Audience Valid",
+            "type": "boolean"
+          },
+          "azp_valid": {
+            "title": "Azp Valid",
+            "type": "boolean"
+          },
+          "idtyp_app": {
+            "title": "Idtyp App",
+            "type": "boolean"
+          },
+          "issuer_valid": {
+            "title": "Issuer Valid",
+            "type": "boolean"
+          },
+          "lifetime_valid": {
+            "title": "Lifetime Valid",
+            "type": "boolean"
+          },
+          "role_present": {
+            "title": "Role Present",
+            "type": "boolean"
+          },
+          "signature_valid": {
+            "title": "Signature Valid",
+            "type": "boolean"
+          },
+          "tenant_valid": {
+            "title": "Tenant Valid",
+            "type": "boolean"
+          },
+          "token_version_v2": {
+            "title": "Token Version V2",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "signature_valid",
+          "lifetime_valid",
+          "token_version_v2",
+          "issuer_valid",
+          "audience_valid",
+          "tenant_valid",
+          "idtyp_app",
+          "azp_valid",
+          "role_present"
+        ],
+        "title": "TokenDiagnostics",
+        "type": "object"
+      },
       "Transcript": {
         "properties": {
           "created_at": {
@@ -574,6 +627,7 @@
             "items": {
               "$ref": "#/components/schemas/TranscriptSegment"
             },
+            "maxItems": 10000,
             "minItems": 1,
             "title": "Segments",
             "type": "array"
@@ -613,6 +667,7 @@
             "items": {
               "$ref": "#/components/schemas/TranscriptSegment"
             },
+            "maxItems": 10000,
             "minItems": 1,
             "title": "Segments",
             "type": "array"
@@ -727,6 +782,7 @@
             "title": "Confidence"
           },
           "content": {
+            "maxLength": 100000,
             "minLength": 1,
             "title": "Content",
             "type": "string"
@@ -752,11 +808,11 @@
           }
         },
         "required": [
-          "speaker_id",
-          "speaker_role",
           "content",
           "start_ms",
-          "end_ms"
+          "end_ms",
+          "speaker_id",
+          "speaker_role"
         ],
         "title": "TranscriptSegment",
         "type": "object"
@@ -930,6 +986,32 @@
           }
         ],
         "summary": "Create Consent"
+      }
+    },
+    "/v1/diagnostics/token": {
+      "get": {
+        "operationId": "token_diagnostics_v1_diagnostics_token_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenDiagnostics"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Token Diagnostics",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/v1/sessions": {

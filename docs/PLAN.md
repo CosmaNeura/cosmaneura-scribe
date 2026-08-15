@@ -10,10 +10,13 @@ stay in the existing Cosmaneura engine.
 
 1. **P0 pipeline:** consent, private Blob ingestion, orchestration, pluggable STT, role labeling,
    quality gates, and note-engine handoff behind the current upload UX.
-2. **P1 in-person:** mobile/web capture with VAD, encrypted chunks, offline queue/resume, and review.
-3. **P2 virtual:** Tauri macOS/Windows companion with separate microphone and system-audio channels.
-4. **P3 phone:** Azure Communication Services consent IVR and recording.
-5. **P4 real-time:** streaming STT and draft notes within 60 seconds of visit end.
+2. **P1a web capture:** responsive browser/PWA capture for computers and exam-room tablets with
+   VAD, encrypted chunks, foreground reconnect/resume, and review.
+3. **P1b mobile capture:** dedicated React Native iOS/Android application with native audio,
+   background/lock handling, encrypted offline queue/resume, local purge, and review.
+4. **P2 virtual:** Tauri macOS/Windows companion with separate microphone and system-audio channels.
+5. **P3 phone:** Azure Communication Services consent IVR and recording.
+6. **P4 real-time:** streaming STT and draft notes within 60 seconds of visit end.
 
 ## Completed Sprint 0 foundation
 
@@ -27,6 +30,12 @@ stay in the existing Cosmaneura engine.
 - Database-enforced tenant isolation, legal session transitions, and append-only audit events
 - Passwordless managed-identity database bootstrap and least-privilege runtime grants
 - Disposable PostgreSQL migration, persistence, isolation, and rollback tests in CI
+- Provider-neutral speech-to-text request/result contract
+- Managed-identity Azure AI Speech file transcription with diarization and channel preservation
+- De-identified benchmark harness with sanitized WER, latency, and speaker metrics
+- Consent-gated transcription orchestration with durable leases, bounded retries, channel-prior
+  role labels, heartbeat renewal with lost-lease cancellation, metadata-only quality gates, and
+  idempotent transcript persistence
 
 ## Next P0 slice
 
@@ -37,12 +46,16 @@ stay in the existing Cosmaneura engine.
    the internal API to PostgreSQL only after migration and readiness checks pass.
 4. Configure the Entra application role and run the synthetic cross-service handoff acceptance
    test.
-5. Implement the replaceable speech-to-text worker interface and a de-identified Azure Speech
-   benchmark harness.
+5. Run the Azure Speech benchmark on approved de-identified clinical fixtures, then implement the
+   encrypted Blob download/decrypt/assembly adapter and connect the completed worker orchestration
+   to the reviewed internal job trigger.
+6. Build P1a web capture first, then P1b mobile capture as a dedicated iOS/Android application;
+   neither is a thin wrapper around the other.
 
 ## Required external decisions
 
-- Confirm the provider mobile-app stack before P1.
+- Confirm Apple and Google developer-account ownership, bundle identifiers, signing custody, and
+  mobile device-management requirements before P1b distribution.
 - Have counsel approve the state × modality consent matrix before replacing the conservative
   all-party default.
 - Benchmark Azure Speech and Deepgram only on de-identified samples under the appropriate BAAs.

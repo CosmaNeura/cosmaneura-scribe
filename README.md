@@ -16,6 +16,10 @@ Cosmaneura SOAP-note and value-point engine.
 - Async in-memory and durable PostgreSQL repositories with atomic request transactions
 - PostgreSQL row-level tenant isolation, legal state-transition guards, and append-only audit events
 - Passwordless Entra-token database access and a separately privileged migration job
+- Provider-neutral speech-to-text contract and managed-identity Azure AI Speech adapter
+- De-identified benchmark harness that emits aggregate accuracy/performance metrics only
+- Consent-gated transcription worker with renewable leases, lost-lease cancellation, bounded
+  retries, channel role priors, metadata-only quality gates, and idempotent transcript persistence
 - PostgreSQL custody/audit migrations and deployed private Azure OpenTofu foundation
 - Non-root container image and internal-only Azure Container Apps deployment definition
 
@@ -57,6 +61,20 @@ Calls in the opposite direction—from the master platform into Scribe—use a s
 `Scribe.Workflow.Access` app role. The verified platform workload identity is the only caller
 allowed to supply practice-tenant context. Follow
 [`docs/PLATFORM_WORKFLOW_AUTH.md`](docs/PLATFORM_WORKFLOW_AUTH.md) for the rollout.
+
+## Capture clients
+
+Web and mobile capture are separate P1 applications sharing one generated API client and encrypted
+chunk protocol. The responsive web application targets foreground capture on computers and exam
+room tablets. The React Native iOS/Android application adds native background/lock handling,
+encrypted offline queuing, reconnect/resume, and local purge. The desktop companion remains P2 and
+owns dual-channel microphone/system-audio capture for virtual visits.
+
+The current client boundaries are in `apps/web-capture`, `apps/mobile-capture`,
+`apps/review-ui`, and `apps/desktop-companion`.
+
+The transcription worker orchestration and the still-required encrypted Blob assembly boundary are
+documented in [`docs/TRANSCRIPTION_WORKER.md`](docs/TRANSCRIPTION_WORKER.md).
 
 ## Legacy note-engine compatibility
 

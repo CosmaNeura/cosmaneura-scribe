@@ -15,13 +15,22 @@ from .schemas import (
     CaptureChannel,
     CaptureSession,
     ConsentRecord,
+    DeliveryStatus,
+    SessionStatus,
     Transcript,
     TranscriptDelivery,
+    TranscriptionJob,
+    TranscriptionJobStatus,
 )
+from .session_state_v1 import can_transition_session
 
 
 class IdempotencyConflictError(ValueError):
     """The same idempotency key was used for a different request."""
+
+
+class IdempotencyClaimUnavailableError(RuntimeError):
+    """A concurrent idempotency claim could not yet be observed safely."""
 
 
 @dataclass(frozen=True)
@@ -80,6 +89,40 @@ class Repository(Protocol):
 
     async def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None: ...
 
+    async def transcription_job_for(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> TranscriptionJob | None: ...
+
+    async def claim_transcription_job(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+        max_attempts: int,
+    ) -> TranscriptionJob | None: ...
+
+    async def update_transcription_job(
+        self,
+        tenant_id: UUID,
+        job: TranscriptionJob,
+        *,
+        expected_lease_token: UUID,
+    ) -> bool: ...
+
+    async def renew_transcription_job(
+        self,
+        tenant_id: UUID,
+        job_id: UUID,
+        *,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+    ) -> bool: ...
+
     async def get_delivery(
         self, tenant_id: UUID, delivery_id: UUID
     ) -> TranscriptDelivery | None: ...
@@ -90,7 +133,42 @@ class Repository(Protocol):
 
     async def add_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None: ...
 
-    async def update_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None: ...
+    async def claim_delivery_attempt(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        now: datetime,
+    ) -> TranscriptDelivery | None: ...
+
+    async def claim_stale_deliveries(
+        self,
+        tenant_id: UUID,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        limit: int,
+    ) -> list[TranscriptDelivery]: ...
+
+    async def complete_delivery_failure(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        expected_attempt_count: int,
+        failure_status: DeliveryStatus,
+        error_code: str,
+        now: datetime,
+    ) -> TranscriptDelivery | None: ...
+
+    async def complete_delivery_success(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        platform_transcript_id: str,
+        now: datetime,
+    ) -> TranscriptDelivery | None: ...
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID
@@ -113,6 +191,10 @@ class InMemoryRepository:
     upload_grants: dict[tuple[UUID, UUID], UploadGrantRecord] = field(default_factory=lambda: {})
     transcripts: dict[tuple[UUID, UUID], Transcript] = field(default_factory=lambda: {})
     transcript_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
+    transcription_jobs: dict[tuple[UUID, UUID], TranscriptionJob] = field(
+        default_factory=lambda: {}
+    )
+    transcription_job_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
     deliveries: dict[tuple[UUID, UUID], TranscriptDelivery] = field(default_factory=lambda: {})
     delivery_by_session: dict[tuple[UUID, UUID], UUID] = field(default_factory=lambda: {})
     idempotency: dict[tuple[UUID, str, str], IdempotencyRecord] = field(default_factory=lambda: {})
@@ -130,6 +212,8 @@ class InMemoryRepository:
                 copy.deepcopy(self.upload_grants),
                 copy.deepcopy(self.transcripts),
                 copy.deepcopy(self.transcript_by_session),
+                copy.deepcopy(self.transcription_jobs),
+                copy.deepcopy(self.transcription_job_by_session),
                 copy.deepcopy(self.deliveries),
                 copy.deepcopy(self.delivery_by_session),
                 copy.deepcopy(self.idempotency),
@@ -145,6 +229,8 @@ class InMemoryRepository:
                     self.upload_grants,
                     self.transcripts,
                     self.transcript_by_session,
+                    self.transcription_jobs,
+                    self.transcription_job_by_session,
                     self.deliveries,
                     self.delivery_by_session,
                     self.idempotency,
@@ -193,6 +279,12 @@ class InMemoryRepository:
         self.sessions[(tenant_id, session.id)] = session
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
+        current = self.sessions.get((tenant_id, session.id))
+        if current is not None and not can_transition_session(current.status, session.status):
+            raise ValueError(
+                f"invalid scribe session status transition: "
+                f"{current.status.value} -> {session.status.value}"
+            )
         self.sessions[(tenant_id, session.id)] = session
 
     async def get_chunk(self, tenant_id: UUID, chunk_id: UUID) -> AudioChunk | None:
@@ -230,6 +322,104 @@ class InMemoryRepository:
             return None
         return self.transcripts[(tenant_id, transcript_id)]
 
+    async def transcription_job_for(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> TranscriptionJob | None:
+        job_id = self.transcription_job_by_session.get((tenant_id, session_id))
+        if job_id is None:
+            return None
+        return self.transcription_jobs[(tenant_id, job_id)]
+
+    async def claim_transcription_job(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+        max_attempts: int,
+    ) -> TranscriptionJob | None:
+        current = await self.transcription_job_for(tenant_id, session_id)
+        if current is not None:
+            session = await self.get_session(tenant_id, session_id)
+            recovering_terminal = (
+                current.status == TranscriptionJobStatus.TERMINAL
+                and session is not None
+                and session.status == SessionStatus.UPLOADED
+            )
+            eligible_retry = current.status == TranscriptionJobStatus.RETRYABLE or (
+                current.status == TranscriptionJobStatus.PROCESSING
+                and current.lease_until is not None
+                and current.lease_until <= now
+            )
+            if not recovering_terminal and (
+                not eligible_retry or current.attempt_count >= max_attempts
+            ):
+                return None
+            job_id = current.id
+            created_at = current.created_at
+            attempt_count = 1 if recovering_terminal else current.attempt_count + 1
+        else:
+            created_at = now
+            attempt_count = 1
+
+        claimed = TranscriptionJob(
+            id=job_id,
+            session_id=session_id,
+            status=TranscriptionJobStatus.PROCESSING,
+            attempt_count=attempt_count,
+            lease_token=lease_token,
+            lease_until=lease_until,
+            last_error_code=None,
+            created_at=created_at,
+            updated_at=now,
+        )
+        self.transcription_jobs[(tenant_id, job_id)] = claimed
+        self.transcription_job_by_session[(tenant_id, session_id)] = job_id
+        return claimed
+
+    async def update_transcription_job(
+        self,
+        tenant_id: UUID,
+        job: TranscriptionJob,
+        *,
+        expected_lease_token: UUID,
+    ) -> bool:
+        current = self.transcription_jobs.get((tenant_id, job.id))
+        if (
+            current is None
+            or current.status != TranscriptionJobStatus.PROCESSING
+            or current.lease_token != expected_lease_token
+        ):
+            return False
+        self.transcription_jobs[(tenant_id, job.id)] = job
+        return True
+
+    async def renew_transcription_job(
+        self,
+        tenant_id: UUID,
+        job_id: UUID,
+        *,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+    ) -> bool:
+        current = self.transcription_jobs.get((tenant_id, job_id))
+        if (
+            current is None
+            or current.status != TranscriptionJobStatus.PROCESSING
+            or current.lease_token != lease_token
+            or current.lease_until is None
+            or current.lease_until <= now
+        ):
+            return False
+        self.transcription_jobs[(tenant_id, job_id)] = current.model_copy(
+            update={"lease_until": lease_until, "updated_at": now}
+        )
+        return True
+
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
         return self.deliveries.get((tenant_id, delivery_id))
 
@@ -243,8 +433,111 @@ class InMemoryRepository:
         self.deliveries[(tenant_id, delivery.id)] = delivery
         self.delivery_by_session[(tenant_id, delivery.session_id)] = delivery.id
 
-    async def update_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
-        self.deliveries[(tenant_id, delivery.id)] = delivery
+    async def claim_delivery_attempt(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        now: datetime,
+    ) -> TranscriptDelivery | None:
+        current = await self.get_delivery(tenant_id, delivery_id)
+        if current is None or current.status not in {
+            DeliveryStatus.PENDING,
+            DeliveryStatus.RETRYABLE,
+        }:
+            return None
+        claimed = current.model_copy(
+            update={
+                "status": DeliveryStatus.PENDING,
+                "attempt_count": current.attempt_count + 1,
+                "last_error_code": None,
+                "updated_at": now,
+            }
+        )
+        self.deliveries[(tenant_id, delivery_id)] = claimed
+        return claimed
+
+    async def claim_stale_deliveries(
+        self,
+        tenant_id: UUID,
+        *,
+        stale_before: datetime,
+        now: datetime,
+        limit: int,
+    ) -> list[TranscriptDelivery]:
+        if limit < 1 or limit > 100:
+            raise ValueError("delivery reconciliation limit must be between 1 and 100")
+        candidates = sorted(
+            (
+                delivery
+                for (row_tenant, _), delivery in self.deliveries.items()
+                if row_tenant == tenant_id
+                and delivery.status in {DeliveryStatus.PENDING, DeliveryStatus.RETRYABLE}
+                and delivery.updated_at <= stale_before
+            ),
+            key=lambda delivery: (delivery.updated_at, delivery.id),
+        )[:limit]
+        claimed: list[TranscriptDelivery] = []
+        for delivery in candidates:
+            attempt = await self.claim_delivery_attempt(
+                tenant_id,
+                delivery.id,
+                now=now,
+            )
+            if attempt is not None:
+                claimed.append(attempt)
+        return claimed
+
+    async def complete_delivery_failure(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        expected_attempt_count: int,
+        failure_status: DeliveryStatus,
+        error_code: str,
+        now: datetime,
+    ) -> TranscriptDelivery | None:
+        if failure_status not in {DeliveryStatus.RETRYABLE, DeliveryStatus.TERMINAL}:
+            raise ValueError("delivery failure status must be retryable or terminal")
+        current = await self.get_delivery(tenant_id, delivery_id)
+        if (
+            current is None
+            or current.status != DeliveryStatus.PENDING
+            or current.attempt_count != expected_attempt_count
+        ):
+            return None
+        failed = current.model_copy(
+            update={
+                "status": failure_status,
+                "last_error_code": error_code,
+                "updated_at": now,
+            }
+        )
+        self.deliveries[(tenant_id, delivery_id)] = failed
+        return failed
+
+    async def complete_delivery_success(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        platform_transcript_id: str,
+        now: datetime,
+    ) -> TranscriptDelivery | None:
+        current = await self.get_delivery(tenant_id, delivery_id)
+        if current is None or current.status == DeliveryStatus.DELIVERED:
+            return None
+        delivered = current.model_copy(
+            update={
+                "status": DeliveryStatus.DELIVERED,
+                "platform_transcript_id": platform_transcript_id,
+                "last_error_code": None,
+                "updated_at": now,
+            }
+        )
+        self.deliveries[(tenant_id, delivery_id)] = delivered
+        return delivered
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID

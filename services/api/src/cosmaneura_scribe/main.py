@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import hashlib
-import json
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
+from time import perf_counter
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -14,7 +13,13 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from .canonical_json import canonical_sha256
 from .consent import ConsentError, ConsentPolicy
+from .delivery_reconciler import (
+    complete_delivery_failure,
+    complete_delivery_success,
+    synchronize_delivery_session,
+)
 from .handoff import (
     HandoffConflictError,
     HandoffDisabledError,
@@ -26,6 +31,7 @@ from .handoff import (
     to_master_platform_payload,
 )
 from .repository import (
+    IdempotencyClaimUnavailableError,
     IdempotencyConflictError,
     InMemoryRepository,
     RepositoryProvider,
@@ -34,6 +40,7 @@ from .repository import (
 from .repository import (
     Repository as RepositoryContract,
 )
+from .safe_logging import log_event
 from .schemas import (
     AudioChunk,
     AudioChunkRegister,
@@ -46,11 +53,17 @@ from .schemas import (
     LegacyTranscriptPayload,
     SessionCreate,
     SessionStatus,
+    TokenDiagnostics,
     Transcript,
     TranscriptCreate,
     TranscriptDelivery,
 )
-from .service_auth import get_verified_tenant_id
+from .service_auth import (
+    EntraServicePrincipal,
+    authenticate_workflow_request,
+    get_verified_tenant_id,
+)
+from .session_state_v1 import can_transition_session
 from .settings import get_settings
 from .storage import AudioStorage, build_audio_storage
 
@@ -76,6 +89,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 consent_policy = ConsentPolicy()
+
+
+@app.middleware("http")
+async def opaque_unhandled_error(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    started_at = perf_counter()
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        log_event(
+            action="http.unhandled_exception",
+            error_class=type(exc).__name__,
+            duration_ms=(perf_counter() - started_at) * 1000,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error."},
+        )
 
 
 @app.exception_handler(RequestValidationError)
@@ -118,6 +151,10 @@ def get_master_platform_handoff() -> MasterPlatformHandoff:
 TenantId = Annotated[UUID, Depends(get_verified_tenant_id)]
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=255)]
 Provider = Annotated[RepositoryProvider, Depends(get_repository_provider)]
+WorkflowPrincipal = Annotated[
+    EntraServicePrincipal,
+    Depends(authenticate_workflow_request),
+]
 
 
 async def get_repository(
@@ -135,11 +172,7 @@ Handoff = Annotated[MasterPlatformHandoff, Depends(get_master_platform_handoff)]
 
 
 def _fingerprint(payload: object) -> str:
-    if hasattr(payload, "model_dump"):
-        body = payload.model_dump(mode="json")  # type: ignore[union-attr]
-    else:
-        body = payload
-    return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    return canonical_sha256(payload)
 
 
 async def _idempotent_entity(
@@ -163,12 +196,29 @@ async def _idempotent_entity(
             status_code=status.HTTP_409_CONFLICT,
             detail="Idempotency-Key was already used with a different request.",
         ) from exc
+    except IdempotencyClaimUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency-Key is currently being processed.",
+            headers={"Retry-After": "0"},
+        ) from exc
 
 
 async def _session_or_404(
     store: RepositoryContract, tenant_id: UUID, session_id: UUID
 ) -> CaptureSession:
     session = await store.get_session(tenant_id, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Capture session not found.")
+    return session
+
+
+async def _locked_session_or_404(
+    store: RepositoryContract,
+    tenant_id: UUID,
+    session_id: UUID,
+) -> CaptureSession:
+    session = await store.lock_session(tenant_id, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Capture session not found.")
     return session
@@ -210,6 +260,15 @@ async def readiness(provider: Provider) -> dict[str, str]:
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Persistence is not ready.") from exc
     return {"status": "ready"}
+
+
+@app.get(
+    "/v1/diagnostics/token",
+    response_model=TokenDiagnostics,
+    tags=["operations"],
+)
+async def token_diagnostics(principal: WorkflowPrincipal) -> TokenDiagnostics:
+    return principal.diagnostics
 
 
 @app.post("/v1/consents", response_model=ConsentRecord, status_code=201)
@@ -302,10 +361,8 @@ async def issue_chunk_upload_grant(
     policy: Policy,
     audio_storage: Storage,
 ) -> AudioUploadGrant:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
-    if session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
-        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
 
     fingerprint = _fingerprint(payload)
     operation = f"chunk.upload-grant:{session_id}"
@@ -332,6 +389,9 @@ async def issue_chunk_upload_grant(
             ),
             expires_at=previous.expires_at,
         )
+
+    if session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
+        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
 
     grant = await audio_storage.issue_upload_grant(
         tenant_id=tenant_id,
@@ -367,10 +427,8 @@ async def register_chunk(
     store: Repository,
     policy: Policy,
 ) -> AudioChunk:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
-    if session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
-        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
 
     grant = await store.get_upload_grant(tenant_id, payload.object_id)
     if grant is None:
@@ -399,6 +457,9 @@ async def register_chunk(
             raise HTTPException(status_code=500, detail="Idempotent audio chunk is unavailable.")
         return previous
 
+    if not can_transition_session(session.status, SessionStatus.CAPTURING):
+        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
+
     await store.add_chunk(tenant_id, chunk)
     await store.update_session(
         tenant_id, session.model_copy(update={"status": SessionStatus.CAPTURING})
@@ -420,7 +481,7 @@ async def complete_session(
     store: Repository,
     policy: Policy,
 ) -> CaptureSession:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
     if not await store.chunks_for(tenant_id, session_id):
         raise HTTPException(status_code=409, detail="At least one audio chunk is required.")
@@ -439,6 +500,14 @@ async def complete_session(
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent session is unavailable.")
         return previous
+
+    if session.status == SessionStatus.UPLOADED or not can_transition_session(
+        session.status, SessionStatus.UPLOADED
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Session cannot be completed from its current status.",
+        )
 
     completed = session.model_copy(update={"status": SessionStatus.UPLOADED})
     await store.update_session(tenant_id, completed)
@@ -460,10 +529,8 @@ async def save_transcript(
     store: Repository,
     policy: Policy,
 ) -> Transcript:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
-    if session.status not in {SessionStatus.UPLOADED, SessionStatus.PROCESSING}:
-        raise HTTPException(status_code=409, detail="Session audio is not ready for transcription.")
 
     fingerprint = _fingerprint(payload)
     operation = f"transcript.create:{session_id}"
@@ -478,6 +545,11 @@ async def save_transcript(
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent transcript is unavailable.")
         return previous
+
+    if session.status == SessionStatus.TRANSCRIPT_READY or not can_transition_session(
+        session.status, SessionStatus.TRANSCRIPT_READY
+    ):
+        raise HTTPException(status_code=409, detail="Session audio is not ready for transcription.")
 
     await store.add_transcript(tenant_id, transcript)
     await store.update_session(
@@ -519,7 +591,7 @@ async def prepare_note_engine_handoff(
     store: Repository,
     policy: Policy,
 ) -> LegacyTranscriptPayload:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
     transcript = await store.transcript_for(tenant_id, session_id)
     if transcript is None:
@@ -535,6 +607,11 @@ async def prepare_note_engine_handoff(
         session_id,
     )
     if previous_id is None:
+        if not can_transition_session(session.status, SessionStatus.HANDED_OFF):
+            raise HTTPException(
+                status_code=409,
+                detail="Session is not ready for handoff.",
+            )
         await store.update_session(
             tenant_id, session.model_copy(update={"status": SessionStatus.HANDED_OFF})
         )
@@ -559,6 +636,8 @@ async def deliver_transcript_to_master_platform(
 ) -> TranscriptDelivery:
     # Commit the attempt before making the network call. A crash after this
     # point leaves a pending receipt that is safe to retry with the same key.
+    attempted: TranscriptDelivery | None = None
+    delivered_replay: TranscriptDelivery | None = None
     async with provider.transaction(tenant_id) as store:
         session = await store.lock_session(tenant_id, session_id)
         if session is None:
@@ -574,6 +653,7 @@ async def deliver_transcript_to_master_platform(
         payload = to_master_platform_payload(session, transcript)
         payload_fingerprint = _fingerprint(payload)
         delivery = await store.delivery_for(tenant_id, session_id)
+        is_new_delivery = delivery is None
         now = datetime.now(UTC)
         if delivery is None:
             delivery = TranscriptDelivery(
@@ -600,6 +680,7 @@ async def deliver_transcript_to_master_platform(
             if previous is None:
                 raise HTTPException(status_code=500, detail="Delivery receipt is unavailable.")
             delivery = previous
+            is_new_delivery = False
 
         if delivery.payload_sha256 != payload_fingerprint:
             raise HTTPException(
@@ -607,89 +688,110 @@ async def deliver_transcript_to_master_platform(
                 detail="The session delivery is bound to a different transcript.",
             )
         if delivery.status == DeliveryStatus.DELIVERED:
-            return delivery
-        if delivery.status == DeliveryStatus.TERMINAL:
+            delivered_replay = delivery
+        elif delivery.status == DeliveryStatus.TERMINAL:
             response.status_code = status.HTTP_409_CONFLICT
             return delivery
-
-        attempted = delivery.model_copy(
-            update={
-                "status": DeliveryStatus.PENDING,
-                "attempt_count": delivery.attempt_count + 1,
-                "last_error_code": None,
-                "updated_at": now,
-            }
-        )
-        if await store.get_delivery(tenant_id, delivery.id) is None:
-            await store.add_delivery(tenant_id, attempted)
         else:
-            await store.update_delivery(tenant_id, attempted)
-        await store.audit(
+            if is_new_delivery:
+                attempted = delivery.model_copy(
+                    update={
+                        "status": DeliveryStatus.PENDING,
+                        "attempt_count": 1,
+                        "last_error_code": None,
+                        "updated_at": now,
+                    }
+                )
+                await store.add_delivery(tenant_id, attempted)
+            else:
+                attempted = await store.claim_delivery_attempt(
+                    tenant_id,
+                    delivery.id,
+                    now=now,
+                )
+                if attempted is None:
+                    current = await store.get_delivery(tenant_id, delivery.id)
+                    if current is None:
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Delivery receipt is unavailable.",
+                        )
+                    if current.status == DeliveryStatus.DELIVERED:
+                        delivered_replay = current
+                    elif current.status == DeliveryStatus.TERMINAL:
+                        response.status_code = status.HTTP_409_CONFLICT
+                        return current
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Delivery attempt is already being processed.",
+                            headers={"Retry-After": "0"},
+                        )
+            if attempted is not None:
+                await store.audit(
+                    tenant_id=tenant_id,
+                    action="transcript.delivery_attempted",
+                    entity_type="transcript_delivery",
+                    entity_id=delivery.id,
+                )
+
+    if delivered_replay is not None:
+        await synchronize_delivery_session(
+            provider,
             tenant_id=tenant_id,
-            action="transcript.delivery_attempted",
-            entity_type="transcript_delivery",
-            entity_id=delivery.id,
+            delivery=delivered_replay,
         )
+        return delivered_replay
+
+    if attempted is None:
+        raise RuntimeError("delivery attempt is unavailable")
 
     try:
         platform_result = await handoff.deliver(payload, idempotency_key=attempted.idempotency_key)
     except (HandoffDisabledError, HandoffRetryableError) as exc:
-        failed = attempted.model_copy(
-            update={
-                "status": DeliveryStatus.RETRYABLE,
-                "last_error_code": exc.code,
-                "updated_at": datetime.now(UTC),
-            }
+        failed = await complete_delivery_failure(
+            provider,
+            tenant_id=tenant_id,
+            attempted=attempted,
+            failure_status=DeliveryStatus.RETRYABLE,
+            error_code=exc.code,
+            audit_action="transcript.delivery_retryable",
         )
-        async with provider.transaction(tenant_id) as store:
-            await store.update_delivery(tenant_id, failed)
-            await store.audit(
+        if failed.status == DeliveryStatus.DELIVERED:
+            await synchronize_delivery_session(
+                provider,
                 tenant_id=tenant_id,
-                action="transcript.delivery_retryable",
-                entity_type="transcript_delivery",
-                entity_id=delivery.id,
+                delivery=failed,
             )
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        elif failed.status == DeliveryStatus.TERMINAL:
+            response.status_code = status.HTTP_409_CONFLICT
+        else:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return failed
     except (HandoffConflictError, HandoffRejectedError) as exc:
-        failed = attempted.model_copy(
-            update={
-                "status": DeliveryStatus.TERMINAL,
-                "last_error_code": exc.code,
-                "updated_at": datetime.now(UTC),
-            }
+        failed = await complete_delivery_failure(
+            provider,
+            tenant_id=tenant_id,
+            attempted=attempted,
+            failure_status=DeliveryStatus.TERMINAL,
+            error_code=exc.code,
+            audit_action="transcript.delivery_rejected",
         )
-        async with provider.transaction(tenant_id) as store:
-            await store.update_delivery(tenant_id, failed)
-            await store.audit(
+        if failed.status == DeliveryStatus.DELIVERED:
+            await synchronize_delivery_session(
+                provider,
                 tenant_id=tenant_id,
-                action="transcript.delivery_rejected",
-                entity_type="transcript_delivery",
-                entity_id=delivery.id,
+                delivery=failed,
             )
-        response.status_code = status.HTTP_409_CONFLICT
+        elif failed.status == DeliveryStatus.RETRYABLE:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        else:
+            response.status_code = status.HTTP_409_CONFLICT
         return failed
 
-    delivered = attempted.model_copy(
-        update={
-            "status": DeliveryStatus.DELIVERED,
-            "platform_transcript_id": platform_result.transcript_id,
-            "last_error_code": None,
-            "updated_at": datetime.now(UTC),
-        }
+    return await complete_delivery_success(
+        provider,
+        tenant_id=tenant_id,
+        attempted=attempted,
+        platform_transcript_id=platform_result.transcript_id,
     )
-    async with provider.transaction(tenant_id) as store:
-        await store.update_delivery(tenant_id, delivered)
-        current_session = await _session_or_404(store, tenant_id, session_id)
-        if current_session.status != SessionStatus.HANDED_OFF:
-            await store.update_session(
-                tenant_id,
-                current_session.model_copy(update={"status": SessionStatus.HANDED_OFF}),
-            )
-        await store.audit(
-            tenant_id=tenant_id,
-            action="transcript.delivered",
-            entity_type="transcript_delivery",
-            entity_id=delivery.id,
-        )
-    return delivered

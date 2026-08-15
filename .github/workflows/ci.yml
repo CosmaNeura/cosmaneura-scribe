@@ -39,6 +39,7 @@ jobs:
       - run: uv run pytest --cov=cosmaneura_scribe
       - run: uv run python scripts/check_phi_logs.py
       - run: uv run python scripts/check_secrets.py
+      - run: uv run python scripts/check_adr_numbers.py
       - run: uv run python scripts/generate_openapi.py
       - run: git diff --exit-code -- openapi/openapi.json
 
