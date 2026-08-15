@@ -108,6 +108,26 @@ class BlockingTranscriber(FakeTranscriber):
         return await super().transcribe(request)
 
 
+class OversizedContentTranscriber(FakeTranscriber):
+    async def transcribe(self, request: TranscriptionRequest) -> SttResult:
+        self.call_count += 1
+        return SttResult(
+            provider=self.name,
+            language_code=request.language_code,
+            duration_ms=1_000,
+            segments=(
+                SttSegment(
+                    channel=CaptureChannel.MICROPHONE,
+                    provider_speaker_id="speaker-1",
+                    start_ms=0,
+                    end_ms=1_000,
+                    confidence=0.96,
+                    content="x" * 100_001,
+                ),
+            ),
+        )
+
+
 class TrackingRepository(InMemoryRepository):
     def __init__(self, *, allow_renewal: bool = True) -> None:
         super().__init__()
@@ -297,6 +317,38 @@ def test_worker_failure_is_sanitized_and_retried_under_a_new_lease() -> None:
     asyncio.run(scenario())
 
 
+def test_worker_schema_violation_is_a_terminal_quality_failure() -> None:
+    tenant_id = uuid4()
+    repository = InMemoryRepository()
+    assembler = FakeAssembler()
+    transcriber = OversizedContentTranscriber()
+
+    async def scenario() -> None:
+        session = await _seed_uploaded_session(repository, tenant_id=tenant_id)
+        worker = TranscriptionWorker(
+            repositories=repository,
+            assembler=assembler,
+            transcriber=transcriber,
+        )
+
+        with pytest.raises(TranscriptionWorkerError) as exception:
+            await worker.process(tenant_id=tenant_id, session_id=session.id)
+
+        assert exception.value.code == "quality_gate_failed"
+        async with repository.transaction(tenant_id) as store:
+            persisted_session = await store.get_session(tenant_id, session.id)
+            job = await store.transcription_job_for(tenant_id, session.id)
+            transcript = await store.transcript_for(tenant_id, session.id)
+        assert persisted_session is not None
+        assert persisted_session.status == SessionStatus.FAILED
+        assert job is not None
+        assert job.status == TranscriptionJobStatus.TERMINAL
+        assert job.last_error_code == "quality_gate_failed"
+        assert transcript is None
+
+    asyncio.run(scenario())
+
+
 def test_worker_renews_lease_during_slow_transcription() -> None:
     tenant_id = uuid4()
     repository = TrackingRepository()
@@ -312,9 +364,7 @@ def test_worker_renews_lease_during_slow_transcription() -> None:
             lease_duration=timedelta(milliseconds=120),
             heartbeat_interval=timedelta(milliseconds=20),
         )
-        processing = asyncio.create_task(
-            worker.process(tenant_id=tenant_id, session_id=session.id)
-        )
+        processing = asyncio.create_task(worker.process(tenant_id=tenant_id, session_id=session.id))
         await asyncio.wait_for(transcriber.started.wait(), timeout=1)
         await asyncio.wait_for(repository.renewed.wait(), timeout=1)
 
@@ -378,9 +428,7 @@ def test_worker_cancels_provider_work_during_shutdown() -> None:
             lease_duration=timedelta(seconds=1),
             heartbeat_interval=timedelta(milliseconds=500),
         )
-        processing = asyncio.create_task(
-            worker.process(tenant_id=tenant_id, session_id=session.id)
-        )
+        processing = asyncio.create_task(worker.process(tenant_id=tenant_id, session_id=session.id))
         await asyncio.wait_for(transcriber.started.wait(), timeout=1)
         processing.cancel()
         with pytest.raises(asyncio.CancelledError):

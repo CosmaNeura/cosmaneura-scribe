@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from .consent import ConsentError, ConsentPolicy
 from .repository import Repository, RepositoryProvider
 from .schemas import (
@@ -23,6 +25,7 @@ from .schemas import (
     TranscriptionJobStatus,
     TranscriptSegment,
 )
+from .transcript_constraints import validate_transcript_segments
 from .transcription import (
     AudioTrack,
     SpeechToTextProvider,
@@ -67,20 +70,11 @@ class ChannelPriorRoleLabeler:
 
 
 class BasicTranscriptQualityGate:
-    def __init__(self, *, max_segments: int = 10_000, max_duration_ms: int = 86_400_000) -> None:
-        self._max_segments = max_segments
-        self._max_duration_ms = max_duration_ms
-
     def validate(self, result: SttResult, segments: Sequence[TranscriptSegment]) -> None:
-        if not segments or len(segments) > self._max_segments:
-            raise TranscriptionQualityError
-        if result.duration_ms <= 0 or result.duration_ms > self._max_duration_ms:
-            raise TranscriptionQualityError
-        if any(segment.end_ms > result.duration_ms for segment in segments):
-            raise TranscriptionQualityError
-        starts = [segment.start_ms for segment in segments]
-        if starts != sorted(starts):
-            raise TranscriptionQualityError
+        try:
+            validate_transcript_segments(segments, duration_ms=result.duration_ms)
+        except ValueError:
+            raise TranscriptionQualityError from None
 
 
 class TranscriptionQualityError(ValueError):
@@ -218,7 +212,7 @@ class TranscriptionWorker:
                 terminal=True,
             )
             raise TranscriptionWorkerError("consent_invalid") from None
-        except TranscriptionQualityError:
+        except (TranscriptionQualityError, ValidationError):
             await self._record_failure(
                 tenant_id=tenant_id,
                 session_id=session_id,
@@ -267,9 +261,7 @@ class TranscriptionWorker:
             )
         )
         try:
-            done, _ = await asyncio.wait(
-                {work, heartbeat}, return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _ = await asyncio.wait({work, heartbeat}, return_when=asyncio.FIRST_COMPLETED)
             if heartbeat in done:
                 await heartbeat
                 raise TranscriptionWorkerError("transcription_lease_lost")

@@ -19,9 +19,7 @@ from .schemas import (
 )
 from .settings import Settings
 
-ROLE_LABELS: dict[
-    SpeakerRole, Literal["Doctor", "Patient", "Other", "Unknown"]
-] = {
+ROLE_LABELS: dict[SpeakerRole, Literal["Doctor", "Patient", "Other", "Unknown"]] = {
     SpeakerRole.CLINICIAN: "Doctor",
     SpeakerRole.PATIENT: "Patient",
     SpeakerRole.OTHER: "Other",

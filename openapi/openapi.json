@@ -574,6 +574,7 @@
             "items": {
               "$ref": "#/components/schemas/TranscriptSegment"
             },
+            "maxItems": 10000,
             "minItems": 1,
             "title": "Segments",
             "type": "array"
@@ -613,6 +614,7 @@
             "items": {
               "$ref": "#/components/schemas/TranscriptSegment"
             },
+            "maxItems": 10000,
             "minItems": 1,
             "title": "Segments",
             "type": "array"
@@ -727,6 +729,7 @@
             "title": "Confidence"
           },
           "content": {
+            "maxLength": 100000,
             "minLength": 1,
             "title": "Content",
             "type": "string"
@@ -752,11 +755,11 @@
           }
         },
         "required": [
-          "speaker_id",
-          "speaker_role",
           "content",
           "start_ms",
-          "end_ms"
+          "end_ms",
+          "speaker_id",
+          "speaker_role"
         ],
         "title": "TranscriptSegment",
         "type": "object"

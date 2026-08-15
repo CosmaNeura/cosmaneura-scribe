@@ -1,15 +1,35 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from conftest import RepositoryBackend
 from cosmaneura_scribe.handoff import HandoffRetryableError
-from cosmaneura_scribe.main import app, get_master_platform_handoff
+from cosmaneura_scribe.main import app, get_consent_policy, get_master_platform_handoff
 from cosmaneura_scribe.schemas import (
+    CaptureChannel,
     MasterTranscriptDeliveryRequest,
     MasterTranscriptDeliveryResponse,
+    SessionStatus,
+    SpeakerRole,
+    Transcript,
+    TranscriptionJobStatus,
+    TranscriptSegment,
+)
+from cosmaneura_scribe.transcription import (
+    AudioTrack,
+    SttResult,
+    SttSegment,
+    TranscriptionRequest,
+)
+from cosmaneura_scribe.transcription_worker import (
+    AudioAssemblyRequest,
+    TranscriptionWorker,
+    TranscriptionWorkerError,
 )
 from fastapi.testclient import TestClient
 
@@ -73,6 +93,54 @@ class RecordingHandoff:
         return None
 
 
+class SyntheticAssembler:
+    @asynccontextmanager
+    async def assemble(
+        self,
+        request: AudioAssemblyRequest,
+    ) -> AsyncIterator[tuple[AudioTrack, ...]]:
+        assert request.chunks
+        yield (
+            AudioTrack(
+                object_id=uuid4(),
+                channel=CaptureChannel.MIXED,
+                local_path=Path("/secure/synthetic-recovery.enc"),
+            ),
+        )
+
+
+class RecoveryTranscriber:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    @property
+    def name(self) -> str:
+        return "recovery_fixture"
+
+    async def transcribe(self, request: TranscriptionRequest) -> SttResult:
+        self.call_count += 1
+        starts = (1_000, 0) if self.call_count == 1 else (0, 1_000)
+        return SttResult(
+            provider=self.name,
+            language_code=request.language_code,
+            duration_ms=2_000,
+            segments=tuple(
+                SttSegment(
+                    channel=CaptureChannel.MIXED,
+                    provider_speaker_id=f"speaker-{index}",
+                    content="Synthetic recovery fixture.",
+                    start_ms=start_ms,
+                    end_ms=start_ms + 500,
+                    confidence=0.95,
+                )
+                for index, start_ms in enumerate(starts)
+            ),
+        )
+
+    async def close(self) -> None:
+        return None
+
+
 @pytest.fixture
 def handoff_client(client: TestClient) -> tuple[TestClient, RecordingHandoff]:
     handoff = RecordingHandoff()
@@ -81,6 +149,31 @@ def handoff_client(client: TestClient) -> tuple[TestClient, RecordingHandoff]:
 
 
 def create_ready_transcript(
+    client: TestClient, tenant_id: object
+) -> tuple[dict[str, object], dict[str, object]]:
+    identity, session = create_uploaded_session(client, tenant_id)
+    transcript = client.post(
+        f"/v1/sessions/{session['id']}/transcript",
+        headers=headers(tenant_id, "delivery-transcript-key-1000"),
+        json={
+            "language_code": "en-US",
+            "stt_provider": "test_adapter",
+            "segments": [
+                {
+                    "speaker_id": "channel-mic",
+                    "speaker_role": "clinician",
+                    "content": "Synthetic contract fixture.",
+                    "start_ms": 0,
+                    "end_ms": 1200,
+                }
+            ],
+        },
+    )
+    assert transcript.status_code == 201
+    return identity, session
+
+
+def create_uploaded_session(
     client: TestClient, tenant_id: object
 ) -> tuple[dict[str, object], dict[str, object]]:
     identity, session = create_session(client, tenant_id)
@@ -100,28 +193,12 @@ def create_ready_transcript(
             "ciphertext_size_bytes": 4096,
         },
     )
-    client.post(
+    complete = client.post(
         f"/v1/sessions/{session['id']}/complete",
         headers=headers(tenant_id, "delivery-complete-key-1000"),
     )
-    transcript = client.post(
-        f"/v1/sessions/{session['id']}/transcript",
-        headers=headers(tenant_id, "delivery-transcript-key-1000"),
-        json={
-            "language_code": "en-US",
-            "stt_provider": "test_adapter",
-            "segments": [
-                {
-                    "speaker_id": "channel-mic",
-                    "speaker_role": "clinician",
-                    "content": "Synthetic contract fixture.",
-                    "start_ms": 0,
-                    "end_ms": 1200,
-                }
-            ],
-        },
-    )
-    assert transcript.status_code == 201
+    assert complete.status_code == 200
+    assert complete.json()["status"] == "uploaded"
     return identity, session
 
 
@@ -272,6 +349,189 @@ def test_audio_registration_must_match_an_issued_grant(client: TestClient) -> No
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "Audio object does not have an upload grant."
+
+
+@pytest.mark.parametrize("invalid_case", ["unordered", "too_many", "content", "duration"])
+def test_transcript_create_rejects_payloads_that_cannot_be_delivered(
+    client: TestClient,
+    repository_backend: RepositoryBackend,
+    invalid_case: str,
+) -> None:
+    tenant_id = uuid4()
+    _, session = create_uploaded_session(client, tenant_id)
+    base_segment = {
+        "speaker_id": "channel-mic",
+        "speaker_role": "clinician",
+        "content": "Synthetic constraint fixture.",
+        "start_ms": 0,
+        "end_ms": 1,
+    }
+    if invalid_case == "unordered":
+        segments = [
+            {**base_segment, "start_ms": 10, "end_ms": 20},
+            {**base_segment, "start_ms": 0, "end_ms": 5},
+        ]
+    elif invalid_case == "too_many":
+        segments = [base_segment] * 10_001
+    elif invalid_case == "content":
+        segments = [{**base_segment, "content": "x" * 100_001}]
+    else:
+        segments = [{**base_segment, "end_ms": 86_400_001}]
+
+    response = client.post(
+        f"/v1/sessions/{session['id']}/transcript",
+        headers=headers(tenant_id, f"invalid-transcript-{invalid_case}"),
+        json={
+            "language_code": "en-US",
+            "stt_provider": "test_adapter",
+            "segments": segments,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Request validation failed."}
+    persisted_session = repository_backend.session_for(tenant_id, UUID(str(session["id"])))
+    assert persisted_session is not None
+    assert persisted_session.status == SessionStatus.UPLOADED
+    assert repository_backend.transcript_for(tenant_id, persisted_session.id) is None
+
+
+def test_unhandled_route_exception_is_opaque_and_consumed(
+    strict_client: TestClient,
+) -> None:
+    sensitive_value = "Patient Jane Doe DOB 1970-01-01"
+
+    class ExplodingConsentPolicy:
+        def validate_new_record(self, _: bool) -> None:
+            raise RuntimeError(sensitive_value)
+
+    app.dependency_overrides[get_consent_policy] = ExplodingConsentPolicy
+    response = strict_client.post(
+        "/v1/consents",
+        headers=headers(uuid4(), "opaque-error-key-0001"),
+        json={
+            "appointment_id": "appointment-opaque-error",
+            "practitioner_id": "practitioner-opaque-error",
+            "patient_id": "patient-opaque-error",
+            "modality": "virtual",
+            "participant_regions": ["FL"],
+            "method": "pre_visit_form",
+            "all_parties_consented": True,
+            "granted_at": "2026-08-15T12:00:00Z",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error."}
+    assert sensitive_value not in response.text
+
+
+def test_complete_with_a_new_key_cannot_regress_a_ready_transcript(
+    client: TestClient,
+    repository_backend: RepositoryBackend,
+) -> None:
+    tenant_id = uuid4()
+    _, session = create_ready_transcript(client, tenant_id)
+
+    response = client.post(
+        f"/v1/sessions/{session['id']}/complete",
+        headers=headers(tenant_id, "complete-regression-key-0001"),
+    )
+
+    assert response.status_code == 409
+    persisted = repository_backend.session_for(tenant_id, UUID(str(session["id"])))
+    assert persisted is not None
+    assert persisted.status == SessionStatus.TRANSCRIPT_READY
+
+
+def test_legacy_handoff_rejects_an_uploaded_session_even_if_a_transcript_exists(
+    client: TestClient,
+    repository_backend: RepositoryBackend,
+) -> None:
+    tenant_id = uuid4()
+    _, session_data = create_uploaded_session(client, tenant_id)
+    session_id = UUID(str(session_data["id"]))
+    transcript = Transcript(
+        id=uuid4(),
+        session_id=session_id,
+        language_code="en-US",
+        stt_provider="test_adapter",
+        segments=[
+            TranscriptSegment(
+                speaker_id="channel-mic",
+                speaker_role=SpeakerRole.CLINICIAN,
+                content="Synthetic state guard fixture.",
+                start_ms=0,
+                end_ms=1_000,
+            )
+        ],
+        created_at=datetime.now(UTC),
+    )
+
+    async def seed_transcript_without_advancing_session() -> None:
+        async with repository_backend.provider.transaction(tenant_id) as repository:
+            await repository.add_transcript(tenant_id, transcript)
+
+    repository_backend.run(seed_transcript_without_advancing_session)
+    response = client.post(
+        f"/v1/sessions/{session_id}/handoff",
+        headers=headers(tenant_id, "handoff-state-guard-0001"),
+    )
+
+    assert response.status_code == 409
+    persisted = repository_backend.session_for(tenant_id, session_id)
+    assert persisted is not None
+    assert persisted.status == SessionStatus.UPLOADED
+
+
+def test_failed_session_can_be_requeued_with_a_fresh_completion_key(
+    client: TestClient,
+    repository_backend: RepositoryBackend,
+) -> None:
+    tenant_id = uuid4()
+    _, session_data = create_uploaded_session(client, tenant_id)
+    session_id = UUID(str(session_data["id"]))
+    transcriber = RecoveryTranscriber()
+    worker = TranscriptionWorker(
+        repositories=repository_backend.provider,
+        assembler=SyntheticAssembler(),
+        transcriber=transcriber,
+    )
+
+    async def fail_quality_gate() -> None:
+        with pytest.raises(TranscriptionWorkerError) as exception:
+            await worker.process(tenant_id=tenant_id, session_id=session_id)
+        assert exception.value.code == "quality_gate_failed"
+
+    repository_backend.run(fail_quality_gate)
+    failed_session = repository_backend.session_for(tenant_id, session_id)
+    failed_job = repository_backend.transcription_job_for(tenant_id, session_id)
+    assert failed_session is not None
+    assert failed_session.status == SessionStatus.FAILED
+    assert failed_job is not None
+    assert failed_job.status == TranscriptionJobStatus.TERMINAL
+
+    requeue = client.post(
+        f"/v1/sessions/{session_id}/complete",
+        headers=headers(tenant_id, "complete-failed-requeue-0001"),
+    )
+    assert requeue.status_code == 200
+    assert requeue.json()["status"] == "uploaded"
+
+    transcript = repository_backend.run(
+        worker.process,
+        tenant_id=tenant_id,
+        session_id=session_id,
+    )
+    assert transcript.session_id == session_id
+    completed_session = repository_backend.session_for(tenant_id, session_id)
+    completed_job = repository_backend.transcription_job_for(tenant_id, session_id)
+    assert completed_session is not None
+    assert completed_session.status == SessionStatus.TRANSCRIPT_READY
+    assert completed_job is not None
+    assert completed_job.status == TranscriptionJobStatus.COMPLETED
+    assert completed_job.attempt_count == 1
+    assert transcriber.call_count == 2
 
 
 def test_readiness_reports_repository_health(client: TestClient) -> None:

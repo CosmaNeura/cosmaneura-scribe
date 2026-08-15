@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -50,6 +50,7 @@ from .schemas import (
     TranscriptDelivery,
 )
 from .service_auth import get_verified_tenant_id
+from .session_state_v1 import can_transition_session
 from .settings import get_settings
 from .storage import AudioStorage, build_audio_storage
 
@@ -75,6 +76,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 consent_policy = ConsentPolicy()
+
+
+@app.middleware("http")
+async def opaque_unhandled_error(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    try:
+        return await call_next(request)
+    except Exception:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error."},
+        )
 
 
 @app.exception_handler(RequestValidationError)
@@ -164,6 +179,17 @@ async def _session_or_404(
     store: RepositoryContract, tenant_id: UUID, session_id: UUID
 ) -> CaptureSession:
     session = await store.get_session(tenant_id, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Capture session not found.")
+    return session
+
+
+async def _locked_session_or_404(
+    store: RepositoryContract,
+    tenant_id: UUID,
+    session_id: UUID,
+) -> CaptureSession:
+    session = await store.lock_session(tenant_id, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Capture session not found.")
     return session
@@ -297,10 +323,8 @@ async def issue_chunk_upload_grant(
     policy: Policy,
     audio_storage: Storage,
 ) -> AudioUploadGrant:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
-    if session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
-        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
 
     fingerprint = _fingerprint(payload)
     operation = f"chunk.upload-grant:{session_id}"
@@ -327,6 +351,9 @@ async def issue_chunk_upload_grant(
             ),
             expires_at=previous.expires_at,
         )
+
+    if session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
+        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
 
     grant = await audio_storage.issue_upload_grant(
         tenant_id=tenant_id,
@@ -362,10 +389,8 @@ async def register_chunk(
     store: Repository,
     policy: Policy,
 ) -> AudioChunk:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
-    if session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
-        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
 
     grant = await store.get_upload_grant(tenant_id, payload.object_id)
     if grant is None:
@@ -394,6 +419,9 @@ async def register_chunk(
             raise HTTPException(status_code=500, detail="Idempotent audio chunk is unavailable.")
         return previous
 
+    if not can_transition_session(session.status, SessionStatus.CAPTURING):
+        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
+
     await store.add_chunk(tenant_id, chunk)
     await store.update_session(
         tenant_id, session.model_copy(update={"status": SessionStatus.CAPTURING})
@@ -415,7 +443,7 @@ async def complete_session(
     store: Repository,
     policy: Policy,
 ) -> CaptureSession:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
     if not await store.chunks_for(tenant_id, session_id):
         raise HTTPException(status_code=409, detail="At least one audio chunk is required.")
@@ -434,6 +462,14 @@ async def complete_session(
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent session is unavailable.")
         return previous
+
+    if session.status == SessionStatus.UPLOADED or not can_transition_session(
+        session.status, SessionStatus.UPLOADED
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Session cannot be completed from its current status.",
+        )
 
     completed = session.model_copy(update={"status": SessionStatus.UPLOADED})
     await store.update_session(tenant_id, completed)
@@ -455,10 +491,8 @@ async def save_transcript(
     store: Repository,
     policy: Policy,
 ) -> Transcript:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
-    if session.status not in {SessionStatus.UPLOADED, SessionStatus.PROCESSING}:
-        raise HTTPException(status_code=409, detail="Session audio is not ready for transcription.")
 
     fingerprint = _fingerprint(payload)
     operation = f"transcript.create:{session_id}"
@@ -473,6 +507,11 @@ async def save_transcript(
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent transcript is unavailable.")
         return previous
+
+    if session.status == SessionStatus.TRANSCRIPT_READY or not can_transition_session(
+        session.status, SessionStatus.TRANSCRIPT_READY
+    ):
+        raise HTTPException(status_code=409, detail="Session audio is not ready for transcription.")
 
     await store.add_transcript(tenant_id, transcript)
     await store.update_session(
@@ -514,7 +553,7 @@ async def prepare_note_engine_handoff(
     store: Repository,
     policy: Policy,
 ) -> LegacyTranscriptPayload:
-    session = await _session_or_404(store, tenant_id, session_id)
+    session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
     transcript = await store.transcript_for(tenant_id, session_id)
     if transcript is None:
@@ -530,6 +569,11 @@ async def prepare_note_engine_handoff(
         session_id,
     )
     if previous_id is None:
+        if not can_transition_session(session.status, SessionStatus.HANDED_OFF):
+            raise HTTPException(
+                status_code=409,
+                detail="Session is not ready for handoff.",
+            )
         await store.update_session(
             tenant_id, session.model_copy(update={"status": SessionStatus.HANDED_OFF})
         )

@@ -4,18 +4,25 @@ import asyncio
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Annotated
+from functools import partial
+from typing import Annotated, Any
 from uuid import UUID
 
 import pytest
 from alembic.config import Config
+from anyio.from_thread import BlockingPortal
 from cosmaneura_scribe.main import app, get_repository_provider
 from cosmaneura_scribe.postgres_repository import (
     PostgresRepositoryProvider,
     build_postgres_provider,
 )
 from cosmaneura_scribe.repository import InMemoryRepository, RepositoryProvider
-from cosmaneura_scribe.schemas import TranscriptDelivery
+from cosmaneura_scribe.schemas import (
+    CaptureSession,
+    Transcript,
+    TranscriptDelivery,
+    TranscriptionJob,
+)
 from cosmaneura_scribe.service_auth import get_verified_tenant_id
 from cosmaneura_scribe.settings import Settings
 from fastapi import Header
@@ -46,16 +53,23 @@ def postgres_settings(database_url: str) -> Settings:
     )
 
 
-@dataclass(frozen=True)
+@dataclass
 class RepositoryBackend:
     name: str
     provider: RepositoryProvider
+    portal: BlockingPortal | None = None
+
+    def run(self, function: Any, *args: object, **kwargs: object) -> Any:
+        operation = partial(function, *args, **kwargs)
+        if self.portal is not None:
+            return self.portal.call(operation)
+        return asyncio.run(operation())
 
     def audit_actions(self, tenant_id: UUID) -> list[str]:
         return [str(event["action"]) for event in self.audit_events(tenant_id)]
 
     def audit_events(self, tenant_id: UUID) -> list[dict[str, object]]:
-        return asyncio.run(self._audit_events(tenant_id))
+        return self.run(self._audit_events, tenant_id)
 
     async def _audit_events(self, tenant_id: UUID) -> list[dict[str, object]]:
         if isinstance(self.provider, InMemoryRepository):
@@ -80,7 +94,7 @@ class RepositoryBackend:
             return [dict(row) for row in rows.mappings()]
 
     def delivery_for(self, tenant_id: UUID, session_id: UUID) -> TranscriptDelivery | None:
-        return asyncio.run(self._delivery_for(tenant_id, session_id))
+        return self.run(self._delivery_for, tenant_id, session_id)
 
     async def _delivery_for(
         self,
@@ -89,6 +103,43 @@ class RepositoryBackend:
     ) -> TranscriptDelivery | None:
         async with self.provider.transaction(tenant_id) as repository:
             return await repository.delivery_for(tenant_id, session_id)
+
+    def session_for(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
+        return self.run(self._session_for, tenant_id, session_id)
+
+    async def _session_for(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> CaptureSession | None:
+        async with self.provider.transaction(tenant_id) as repository:
+            return await repository.get_session(tenant_id, session_id)
+
+    def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None:
+        return self.run(self._transcript_for, tenant_id, session_id)
+
+    async def _transcript_for(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> Transcript | None:
+        async with self.provider.transaction(tenant_id) as repository:
+            return await repository.transcript_for(tenant_id, session_id)
+
+    def transcription_job_for(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> TranscriptionJob | None:
+        return self.run(self._transcription_job_for, tenant_id, session_id)
+
+    async def _transcription_job_for(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> TranscriptionJob | None:
+        async with self.provider.transaction(tenant_id) as repository:
+            return await repository.transcription_job_for(tenant_id, session_id)
 
 
 @pytest.fixture(scope="session")
@@ -147,8 +198,10 @@ def app_client(repository_backend: RepositoryBackend) -> Iterator[TestClient]:
     app.dependency_overrides[get_repository_provider] = lambda: repository_backend.provider
     try:
         with TestClient(app, raise_server_exceptions=False) as test_client:
+            repository_backend.portal = test_client.portal
             yield test_client
             test_client.portal.call(repository_backend.provider.close)
+            repository_backend.portal = None
     finally:
         app.dependency_overrides.clear()
 
@@ -157,6 +210,20 @@ def app_client(repository_backend: RepositoryBackend) -> Iterator[TestClient]:
 def client(app_client: TestClient) -> Iterator[TestClient]:
     app.dependency_overrides[get_verified_tenant_id] = verified_test_tenant
     yield app_client
+
+
+@pytest.fixture
+def strict_client(repository_backend: RepositoryBackend) -> Iterator[TestClient]:
+    app.dependency_overrides[get_repository_provider] = lambda: repository_backend.provider
+    app.dependency_overrides[get_verified_tenant_id] = verified_test_tenant
+    try:
+        with TestClient(app) as test_client:
+            repository_backend.portal = test_client.portal
+            yield test_client
+            test_client.portal.call(repository_backend.provider.close)
+            repository_backend.portal = None
+    finally:
+        app.dependency_overrides.clear()
 
 
 async def _table_exists(database_url: str, table_name: str) -> bool:

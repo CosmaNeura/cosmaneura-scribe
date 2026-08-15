@@ -15,11 +15,13 @@ from .schemas import (
     CaptureChannel,
     CaptureSession,
     ConsentRecord,
+    SessionStatus,
     Transcript,
     TranscriptDelivery,
     TranscriptionJob,
     TranscriptionJobStatus,
 )
+from .session_state_v1 import can_transition_session
 
 
 class IdempotencyConflictError(ValueError):
@@ -237,6 +239,12 @@ class InMemoryRepository:
         self.sessions[(tenant_id, session.id)] = session
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
+        current = self.sessions.get((tenant_id, session.id))
+        if current is not None and not can_transition_session(current.status, session.status):
+            raise ValueError(
+                f"invalid scribe session status transition: "
+                f"{current.status.value} -> {session.status.value}"
+            )
         self.sessions[(tenant_id, session.id)] = session
 
     async def get_chunk(self, tenant_id: UUID, chunk_id: UUID) -> AudioChunk | None:
@@ -295,16 +303,24 @@ class InMemoryRepository:
     ) -> TranscriptionJob | None:
         current = await self.transcription_job_for(tenant_id, session_id)
         if current is not None:
-            eligible = current.status == TranscriptionJobStatus.RETRYABLE or (
+            session = await self.get_session(tenant_id, session_id)
+            recovering_terminal = (
+                current.status == TranscriptionJobStatus.TERMINAL
+                and session is not None
+                and session.status == SessionStatus.UPLOADED
+            )
+            eligible_retry = current.status == TranscriptionJobStatus.RETRYABLE or (
                 current.status == TranscriptionJobStatus.PROCESSING
                 and current.lease_until is not None
                 and current.lease_until <= now
             )
-            if not eligible or current.attempt_count >= max_attempts:
+            if not recovering_terminal and (
+                not eligible_retry or current.attempt_count >= max_attempts
+            ):
                 return None
             job_id = current.id
             created_at = current.created_at
-            attempt_count = current.attempt_count + 1
+            attempt_count = 1 if recovering_terminal else current.attempt_count + 1
         else:
             created_at = now
             attempt_count = 1

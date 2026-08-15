@@ -402,17 +402,32 @@ class PostgresRepository:
                         )
                         ON CONFLICT (tenant_id, session_id) DO UPDATE
                         SET status = 'processing',
-                            attempt_count = transcription_jobs.attempt_count + 1,
+                            attempt_count = CASE
+                                WHEN transcription_jobs.status = 'terminal' THEN 1
+                                ELSE transcription_jobs.attempt_count + 1
+                            END,
                             lease_token = EXCLUDED.lease_token,
                             lease_until = EXCLUDED.lease_until,
                             last_error_code = NULL,
                             updated_at = EXCLUDED.updated_at
-                        WHERE transcription_jobs.attempt_count < :max_attempts
-                          AND (
-                            transcription_jobs.status = 'retryable'
-                            OR (
-                                transcription_jobs.status = 'processing'
-                                AND transcription_jobs.lease_until <= :now
+                        WHERE (
+                            transcription_jobs.attempt_count < :max_attempts
+                            AND (
+                                transcription_jobs.status = 'retryable'
+                                OR (
+                                    transcription_jobs.status = 'processing'
+                                    AND transcription_jobs.lease_until <= :now
+                                )
+                            )
+                          )
+                          OR (
+                            transcription_jobs.status = 'terminal'
+                            AND EXISTS (
+                                SELECT 1
+                                FROM scribe_sessions
+                                WHERE scribe_sessions.tenant_id = :tenant_id
+                                  AND scribe_sessions.id = :session_id
+                                  AND scribe_sessions.status = 'uploaded'
                             )
                           )
                         RETURNING id, session_id, status, attempt_count, lease_token,

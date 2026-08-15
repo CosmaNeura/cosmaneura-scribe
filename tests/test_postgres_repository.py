@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from cosmaneura_scribe.postgres_repository import build_postgres_provider
@@ -20,6 +20,7 @@ from cosmaneura_scribe.schemas import (
     TranscriptionJobStatus,
     TranscriptSegment,
 )
+from cosmaneura_scribe.session_state_v1 import can_transition_session
 from cosmaneura_scribe.settings import Settings
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -217,6 +218,102 @@ def test_repository_persists_across_provider_restart_and_isolates_tenants(
             assert await repository.transcript_for(other_tenant_id, session_id) is None
             assert await repository.transcription_job_for(other_tenant_id, session_id) is None
         await restarted.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.postgres
+def test_python_session_transition_table_matches_the_database_trigger(
+    postgres_urls: tuple[str, str],
+) -> None:
+    _, app_url = postgres_urls
+    tenant_id = uuid4()
+    consent_id = uuid4()
+
+    async def scenario() -> None:
+        engine = create_async_engine(app_url, connect_args={"ssl": False})
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO consent_records (
+                            id, tenant_id, appointment_id, practitioner_id, patient_id,
+                            modality, participant_regions, method, all_parties_consented,
+                            granted_at, policy_version
+                        ) VALUES (
+                            :id, :tenant_id, 'appointment-transition-table',
+                            'practitioner-transition-table', 'patient-transition-table',
+                            'virtual', ARRAY['FL'], 'pre_visit_form', true, now(), 'all-party-v1'
+                        )
+                        """
+                    ),
+                    {"id": consent_id, "tenant_id": tenant_id},
+                )
+
+            async def attempt_transition(
+                session_id: UUID,
+                old_status: SessionStatus,
+                new_status: SessionStatus,
+            ) -> None:
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                        {"tenant_id": str(tenant_id)},
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO scribe_sessions (
+                                id, tenant_id, appointment_id, practitioner_id,
+                                patient_id, consent_record_id, modality, status
+                            ) VALUES (
+                                :id, :tenant_id, 'appointment-transition-table',
+                                'practitioner-transition-table',
+                                'patient-transition-table', :consent_id,
+                                'virtual', :old_status
+                            )
+                            """
+                        ),
+                        {
+                            "id": session_id,
+                            "tenant_id": tenant_id,
+                            "consent_id": consent_id,
+                            "old_status": old_status.value,
+                        },
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE scribe_sessions
+                            SET status = :new_status
+                            WHERE tenant_id = :tenant_id AND id = :id
+                            """
+                        ),
+                        {
+                            "id": session_id,
+                            "tenant_id": tenant_id,
+                            "new_status": new_status.value,
+                        },
+                    )
+
+            for old_status in SessionStatus:
+                for new_status in SessionStatus:
+                    session_id = uuid4()
+                    if can_transition_session(old_status, new_status):
+                        await attempt_transition(session_id, old_status, new_status)
+                    else:
+                        with pytest.raises(
+                            DBAPIError,
+                            match="invalid scribe session status transition",
+                        ):
+                            await attempt_transition(session_id, old_status, new_status)
+        finally:
+            await engine.dispose()
 
     asyncio.run(scenario())
 
