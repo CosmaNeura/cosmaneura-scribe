@@ -6,8 +6,10 @@
 
 Scribe owns one dedicated Azure AI Speech account per environment. OpenTofu creates an S0
 `SpeechServices` account with its custom subdomain, local/key authentication disabled, public
-network access disabled, and a network ACL whose default action is `Deny` with no bypass or IP
-rules. The account is reachable only through an `account` private endpoint in the Scribe private
+network access disabled, and a network ACL whose default action is `Deny` with no IP rules. AzureRM
+rejects an explicit `bypass` value for `SpeechServices`, so the absence of an effective bypass is a
+live acceptance gate rather than a configurable Terraform field. The account is reachable only
+through an `account` private endpoint in the Scribe private
 endpoint subnet and the Scribe-linked `privatelink.cognitiveservices.azure.com` zone. The only
 diagnostic categories sent to the existing Log Analytics workspace are `Audit`,
 `ManagedNetworkEvent`, and `AllMetrics`. Request/response and trace categories are deliberately
