@@ -43,6 +43,43 @@ The Container Apps slice adds a dedicated delegated subnet, ACR, Log Analytics, 
 workload-profile environment. Deployment is intentionally two-stage so Azure never receives a
 reference to an image that does not yet exist:
 
+The dedicated Log Analytics workspace retains operational records for 90 days and has no daily
+ingestion cap, avoiding silent audit loss during an incident. Before applying, configure an Azure
+Cost Management budget and ingestion-cost alert, then monitor the workspace `Usage` table; cost
+monitoring replaces the unsafe hard cap. This 90-day operational workspace is not the seven-year
+audit archive; the retention slice must add a separately reviewed immutable archive.
+
+Blob and Key Vault data-plane diagnostics have an additional false-by-default gate:
+
+```hcl
+enable_phi_safe_data_plane_diagnostics = false
+```
+
+Keep it false for the first workspace apply. Enabling it creates a `WorkspaceTransforms` DCR,
+attaches it to the existing workspace, and only then enables `StorageRead`, `StorageWrite`,
+`StorageDelete`, `Transaction`, Key Vault `AuditEvent`, and `AllMetrics`. The Blob transform drops
+`Uri`, `ObjectKey`, `SourceUri`, and `DestinationUri` before `StorageBlobLogs` ingestion. Key Vault
+audit metadata can include the fixed, non-clinical wrapping-key name, but not key material. Restrict
+workspace access as PHI-adjacent operational data.
+
+Before accepting the diagnostics apply, use the Azure transformation editor against sample data.
+After apply, wait for propagation, perform only synthetic Blob reads/writes/deletes, and require:
+
+```kusto
+DCRLogErrors
+| where TimeGenerated > ago(1h) and OperationName == "Transformation"
+| summarize failures=count()
+
+StorageBlobLogs
+| where TimeGenerated > ago(1h)
+| summarize leaked_locations=countif(
+    isnotempty(Uri) or isnotempty(ObjectKey) or
+    isnotempty(SourceUri) or isnotempty(DestinationUri))
+```
+
+Both counts must be zero. If either is nonzero, disable the diagnostic gate before further Blob
+traffic; never accept raw object-location logging.
+
 1. Keep `deploy_container_app = false`, review and apply the foundation plan.
 2. Build an immutable commit-tagged image without local Docker:
 
@@ -105,6 +142,10 @@ Activation additionally requires keeping `deploy_database_migration_job = true`,
 `use_postgres_repository = true`, and supplying the endpoint and ARM resource ID of a separately
 provisioned private Speech account. Enabling creates only the worker's container-scoped Blob Reader,
 key-scoped Key Vault Crypto User, and account-scoped Speech User assignments.
+Wait for all three role assignments to appear for the worker and propagate before starting the
+first execution; an initial `403` is a reason to wait and retry, not to widen permissions. Run the
+database bootstrap job only in a drained maintenance window with no API traffic or transcription
+execution because it revokes current privileges before restoring the reviewed grant sets.
 Terraform grants no caller permission to start the job. Supply tenant and session UUIDs only as ARM
 execution overrides by following
 [`../docs/TRANSCRIPTION_WORKER.md`](../docs/TRANSCRIPTION_WORKER.md). Container Apps retries are

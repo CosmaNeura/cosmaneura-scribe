@@ -129,6 +129,10 @@ resource "azurerm_private_endpoint" "audio_blob" {
     private_dns_zone_ids = [azurerm_private_dns_zone.blob.id]
   }
 
+  depends_on = [
+    azurerm_subnet_network_security_group_association.private_endpoints,
+  ]
+
   tags = local.tags
 }
 
@@ -149,6 +153,10 @@ resource "azurerm_private_endpoint" "key_vault" {
     name                 = "vault"
     private_dns_zone_ids = [azurerm_private_dns_zone.key_vault.id]
   }
+
+  depends_on = [
+    azurerm_subnet_network_security_group_association.private_endpoints,
+  ]
 
   tags = local.tags
 }

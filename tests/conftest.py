@@ -246,6 +246,9 @@ async def _create_app_role(database_url: str) -> None:
     engine = create_async_engine(database_url, connect_args={"ssl": False})
     try:
         async with engine.begin() as connection:
+            database_name = await connection.scalar(text("SELECT current_database()"))
+            assert isinstance(database_name, str)
+            database = connection.dialect.identifier_preparer.quote(database_name)
             role_exists = await connection.scalar(
                 text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
                 {"role": APP_ROLE},
@@ -256,6 +259,7 @@ async def _create_app_role(database_url: str) -> None:
             await connection.execute(
                 text(f"CREATE ROLE {APP_ROLE} LOGIN PASSWORD '{APP_PASSWORD}' NOSUPERUSER")
             )
+            await connection.execute(text(f"GRANT CONNECT ON DATABASE {database} TO {APP_ROLE}"))
             await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}"))
             await connection.execute(
                 text(

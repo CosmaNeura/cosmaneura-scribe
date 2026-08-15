@@ -12,6 +12,9 @@ managed identities and short-lived Entra tokens.
 - Use only synthetic or de-identified records for the first smoke test.
 - Do not apply a plan containing replacement or deletion of an existing resource.
 - Keep all three PostgreSQL feature flags false until the relevant stage is approved.
+- Run bootstrap only in a drained maintenance window: no API traffic and no transcription
+  execution may be active. Bootstrap revokes each application's current privileges before
+  re-granting its reviewed set, and PostgreSQL evaluates privileges per statement.
 
 ## 1. Confirm East Coast provisioning access
 
@@ -75,6 +78,12 @@ is created; bootstrap maps it to a separate Entra database role with only the co
 transcript reads, transcript/audit inserts, and session/job updates required by transcription. It
 has no upload-grant, idempotency, delivery, delete, or DDL privilege. The job does not print tokens,
 connection strings, patient data, transcript data, SAS URLs, or object names.
+
+Bootstrap also revokes default privileges on future tables, sequences, and routines from `PUBLIC`
+and both application identities before migrations run. It deliberately does not grant blanket
+future access: every migration that adds an object needed by the API or worker must update the
+corresponding explicit grant list and bootstrap must run again. A future migration owner must have
+the same deny-by-default settings installed because PostgreSQL default privileges are owner-scoped.
 
 ## 4. Switch the API
 
