@@ -21,13 +21,13 @@ deployed backend fails in ways CI never sees.
 
 Composition after 15 commits:
 
-| Area | Lines | Share |
+| Area | Lines | Share of 6,263 |
 |---|---:|---:|
-| `infra/` (OpenTofu) | 1,326 | 22% |
-| `docs/` (runbooks + ADRs) | 878 | 15% |
-| `services/` (the product) | 2,414 | 41% |
-| `tests/` | 1,190 | 20% |
-| `alembic/` | 455 | 8% |
+| `services/` (the product) | 2,414 | 38.5% |
+| `infra/` (OpenTofu) | 1,326 | 21.2% |
+| `tests/` | 1,190 | 19.0% |
+| `docs/` (runbooks + ADRs) | 878 | 14.0% |
+| `alembic/` | 455 | 7.3% |
 
 Of the 2,414 service lines, **zero** implement speech-to-text, diarization, speaker-role labeling,
 quality gates, or retention — the four things `docs/PLAN.md` names as the P0 slice and the reason
