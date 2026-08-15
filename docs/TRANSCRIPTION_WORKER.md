@@ -1,7 +1,8 @@
 # Transcription worker
 
-The worker turns one uploaded, consented capture session into one durable transcript. It is a
-library boundary today; no public route or Azure job trigger is enabled by this change.
+The worker turns one uploaded, consented capture session into one durable transcript. Its first
+trigger is a manual Azure Container Apps Job. The job definition and activation are separate and
+both are false by default; there is no public route, schedule, queue trigger, or ingress.
 
 ## Processing sequence
 
@@ -28,17 +29,60 @@ call.
 
 ## Implemented assembly boundary
 
-`EncryptedBlobAudioTrackAssembler` now:
+`EncryptedBlobAudioTrackAssembler`:
 
-- use managed identity and private Blob connectivity;
-- download only object IDs registered to the tenant/session lease;
-- verify ciphertext size and SHA-256 metadata before decryption;
-- unwrap one immutable client-generated session DEK through Key Vault `unwrapkey`;
-- assemble ordered channel tracks in encrypted ephemeral storage;
-- return no blob URL, object path, transcript, or patient value in logs or errors; and
-- securely clean temporary material when its async context exits.
+- uses managed identity and private Blob connectivity;
+- downloads only object IDs registered to the tenant/session lease;
+- verifies ciphertext size and SHA-256 metadata before decryption;
+- unwraps one immutable client-generated session DEK through Key Vault `unwrapkey`;
+- assembles ordered channel tracks in encrypted ephemeral storage;
+- returns no blob URL, object path, transcript, or patient value in logs or errors; and
+- securely cleans temporary material when its async context exits.
 
-The implementation remains inactive: no route, queue, or Container Apps Job calls the worker. A
-later activation change must construct the adapter with the repository provider and configured
-encrypted temporary directory, and must separately verify RBAC, private networking, retry costs,
-and operational alerts.
+The Container Apps Job mounts an Azure platform-encrypted `EmptyDir`; assembled track files remain
+application-encrypted inside it. The runner constructs the production repository, assembler, and
+Speech adapter only after its raw enable gate and exactly two positional tenant/session UUIDs
+validate. It closes all three clients and invokes cancellation-shielded assembly cleanup on every
+exit path, including SIGTERM and SIGINT.
+
+## Deployment and activation
+
+The controls are deliberately staged:
+
+```hcl
+deploy_transcription_job = false
+enable_transcription_job = false
+```
+
+1. Provision and bootstrap PostgreSQL, switch the API to it, and build an image tagged with the
+   exact lowercase 40-character commit SHA.
+2. Keep `deploy_database_migration_job = true`, set `deploy_transcription_job = true`, keep
+   `enable_transcription_job = false`, and apply.
+   This creates the dedicated identity, its ACR pull role, and the dormant manual job. Re-run the
+   database migration job so bootstrap maps that identity to the narrow transcription database
+   role. A disabled execution fails with a fixed nonzero exit before parsing targets or constructing
+   clients.
+3. Separately provision private Azure AI Speech, private DNS, and the synthetic acceptance path.
+4. Set the reviewed Speech endpoint/resource ID and `enable_transcription_job = true`. The plan
+   must add only the job revision plus Blob Reader, key-scoped Crypto User, and Speech User roles.
+   Apply only after reviewing those scopes. This repository grants no identity permission to start
+   a job execution.
+5. Start one target through an approved operator's existing ARM access. Do not override the enable
+   flag at execution time:
+
+   ```bash
+   az containerapp job start \
+     --resource-group <scribe-resource-group> \
+     --name <transcription-job-name> \
+     --container-name worker \
+     --args <tenant-uuid> <session-uuid>
+   ```
+
+The template has parallelism one, completion count one, and zero Container Apps retries. A
+retryable durable record is retried by manually starting the same tenant/session again; the worker
+enforces a maximum of three database-recorded attempts. Never start concurrent executions for the
+same session.
+
+To deactivate, set `enable_transcription_job = false` and apply. That restores the raw fail gate
+and removes all three worker data-plane assignments while retaining the inspectable job and ACR
+pull role. Stop any execution already in progress separately before relying on that rollback.

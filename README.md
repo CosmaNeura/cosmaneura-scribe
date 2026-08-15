@@ -32,9 +32,11 @@ The currently deployed revision remains on the in-memory repository until that c
   retries, channel role priors, metadata-only quality gates, and idempotent transcript persistence
 - Per-session client-generated audio keys, immutable wrapped-key custody, and lease-bound private
   Blob assembly with encrypted ephemeral tracks
+- False-by-default manual Container Apps Job with a dedicated identity, one-target execution,
+  cancellation cleanup, zero platform retries, and least-privilege activation roles
 
-Activation still requires the dedicated worker identity and manual trigger, private Azure AI
-Speech connectivity, and a live synthetic round-trip. Those controls remain disabled by default.
+Activation still requires an approved infrastructure apply, private Azure AI Speech connectivity,
+and a live synthetic round-trip. The job deployment and execution gates remain disabled by default.
 
 ## Run locally
 

@@ -69,8 +69,12 @@ az containerapp job start \
 
 Inspect only operational status and sanitized application output. A successful run creates or
 verifies the runtime identity's Entra database principal, upgrades to Alembic `head`, and grants the
-runtime role its minimal table privileges. It does not print tokens, connection strings, patient
-data, transcript data, SAS URLs, or object names.
+runtime role its minimal table privileges. If `deploy_transcription_job = true`, the same definition
+also passes the distinct worker identity to bootstrap. Re-run the migration job after that identity
+is created; bootstrap maps it to a separate Entra database role with only the consent/chunk/key/
+transcript reads, transcript/audit inserts, and session/job updates required by transcription. It
+has no upload-grant, idempotency, delivery, delete, or DDL privilege. The job does not print tokens,
+connection strings, patient data, transcript data, SAS URLs, or object names.
 
 ## 4. Switch the API
 

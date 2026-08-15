@@ -14,6 +14,11 @@ output "key_vault_uri" {
   value = azurerm_key_vault.scribe.vault_uri
 }
 
+output "audio_encryption_key_id" {
+  description = "Versionless data-plane ID of the RSA-3072 session-key wrapping key."
+  value       = azurerm_key_vault_key.audio.versionless_id
+}
+
 output "runtime_managed_identity_client_id" {
   value = azurerm_user_assigned_identity.runtime.client_id
 }
@@ -66,4 +71,25 @@ output "postgres_database_name" {
 
 output "database_migration_job_name" {
   value = var.deploy_database_migration_job ? azurerm_container_app_job.database_migrations[0].name : null
+}
+
+output "transcription_job_name" {
+  value = var.deploy_transcription_job ? azurerm_container_app_job.transcription[0].name : null
+}
+
+output "transcription_managed_identity_client_id" {
+  value = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].client_id : null
+}
+
+output "transcription_managed_identity_principal_id" {
+  description = "Entra object ID used by PostgreSQL bootstrap and data-plane role assignments."
+  value       = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].principal_id : null
+}
+
+output "transcription_managed_identity_name" {
+  value = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].name : null
+}
+
+output "transcription_managed_identity_id" {
+  value = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].id : null
 }

@@ -38,7 +38,8 @@ the dedicated resource group, VNet and subnets, internal Container Apps environm
 private endpoints, storage, Key Vault, registry, logging, runtime identity, and role assignments.
 It showed no development resources, PostgreSQL server, migration job, API, peering, DNS cutover, or
 customer traffic. This is a design check only; approval still requires a full refreshed plan using
-the production backend and current name/capacity checks.
+the production backend and current name/capacity checks. It predates the protected RSA wrapping key
+resource and must not be used as the expected count for the next plan.
 
 ## Safety invariants
 
@@ -47,7 +48,8 @@ the production backend and current name/capacity checks.
 - The production API cannot be deployed with the process-memory repository. Terraform fails the
   plan unless `use_postgres_repository = true`.
 - PostgreSQL creation, migration-job creation, repository cutover, API deployment, peering, Entra
-  enforcement, and platform handoff remain independent flags.
+  enforcement, platform handoff, transcription-job deployment, and transcription activation remain
+  independent flags.
 - Production never receives customer traffic through the development Scribe environment.
 - Storage and Key Vault public access remain disabled and access remains managed-identity based.
 - A production image uses an immutable Git commit tag built in the production ACR.
@@ -67,7 +69,9 @@ the production backend and current name/capacity checks.
    Container Apps DNS zone.
 7. Enable inbound Entra enforcement, run synthetic private-network and tenant-isolation tests, then
    enable the platform caller.
-8. Customer traffic requires a final production-readiness review and explicit approval.
+8. Deploy the manual transcription job disabled. After private Speech and the live synthetic
+   round-trip pass, separately enable its three data-plane roles and runner gate.
+9. Customer traffic requires a final production-readiness review and explicit approval.
 
 ## Rollback
 

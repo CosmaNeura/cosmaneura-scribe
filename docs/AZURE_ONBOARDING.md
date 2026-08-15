@@ -172,12 +172,16 @@ without credentials in environment variables. See
 
 Initial scribe roles, scoped to the exact resource:
 
-- Storage Blob Data Contributor on the scribe storage account. This also permits generation of a
-  short-lived user-delegation SAS for one encrypted object.
-- Key Vault Secrets User on the scribe vault when the service must resolve a secret.
-- Service Bus Data Sender/Receiver only on the topics/subscriptions the process uses.
+- The API gets Storage Blob Data Contributor on the scribe storage account. This permits generation
+  of a short-lived user-delegation SAS for one encrypted object.
+- The API gets Key Vault Reader on only the RSA wrapping key so it can publish public material. It
+  receives no unwrap operation.
+- The separately gated transcription identity gets container-scoped Storage Blob Data Reader,
+  key-scoped Key Vault Crypto User, and account-scoped Cognitive Services Speech User only when the
+  manual job is enabled.
 - PostgreSQL runtime access is created inside the database by a separate migration identity; the
-  API identity is not an Entra database administrator.
+  API and transcription identities are distinct roles and neither is an Entra database
+  administrator.
 
 The scribe API now uses `DefaultAzureCredential` and generates a user-delegation SAS rather than
 using an account key. Microsoft documents this pattern at

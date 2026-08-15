@@ -11,10 +11,14 @@ virtual_network_address_space            = ["10.42.0.0/16"]
 private_endpoint_subnet_address_prefixes = ["10.42.1.0/24"]
 container_apps_subnet_address_prefixes   = ["10.42.2.0/23"]
 
-container_registry_name  = "replacewithgloballyuniqueacr"
-deploy_container_app     = false
+container_registry_name    = "replacewithgloballyuniqueacr"
+deploy_container_app       = false
 container_image_repository = "cosmaneura-scribe-api"
 container_image_tag        = "replace-with-commit-sha-after-acr-build"
+
+deploy_postgres_foundation    = false
+deploy_database_migration_job = false
+use_postgres_repository       = false
 
 # Enable only after the Entra app role is assigned and the master endpoint is configured.
 enable_master_platform_handoff = false
@@ -31,3 +35,10 @@ trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
 # production customer-traffic destination.
 connect_parallel_platform_vnet = false
 parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"
+
+# Manual transcription remains doubly gated. Provision the job only after PostgreSQL and a
+# full-SHA image exists; enable it only after the separate private Speech foundation is accepted.
+deploy_transcription_job = false
+enable_transcription_job = false
+azure_speech_endpoint     = "https://replace-with-private-speech.cognitiveservices.azure.com"
+azure_speech_resource_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-scribe-development/providers/Microsoft.CognitiveServices/accounts/replace-with-private-speech"
