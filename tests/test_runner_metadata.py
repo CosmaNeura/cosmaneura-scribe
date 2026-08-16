@@ -64,3 +64,66 @@ def test_metadata_writes_the_pinned_manifest_shape(tmp_path: Path) -> None:
         "state_lineage": lineage,
         "state_serial": 27,
     }
+
+
+def test_plan_error_classifier_emits_only_fixed_classes(tmp_path: Path) -> None:
+    unsafe = "canary-token https://unsafe.example.invalid body=private"
+    cases = {
+        "PlanTargetOrConfigurationFailed": (
+            "Error: Moved resource instances excluded by targeting " + unsafe
+        ),
+        "PlanProviderRegistrationFailed": (
+            "MissingSubscriptionRegistration: register the resource provider " + unsafe
+        ),
+        "PlanKeyVaultNetworkOrDnsFailed": (
+            "azurerm_key_vault_key.audio: ForbiddenByFirewall status code 403 " + unsafe
+        ),
+        "PlanApiReadFailed": ("Microsoft.App/containerApps/read AuthorizationFailed " + unsafe),
+        "PlanIdentityOrRbacFailed": "AuthorizationFailed: caller is not authorized " + unsafe,
+        "PlanFailed": "unrecognized provider failure " + unsafe,
+    }
+
+    for expected, log_text in cases.items():
+        plan_log = tmp_path / f"{expected}.log"
+        plan_log.write_text(log_text, encoding="utf-8")
+
+        result = _run("classify-plan-error", str(plan_log))
+
+        assert result.returncode == 0
+        assert result.stdout == f"{expected}\n"
+        assert result.stderr == ""
+        assert "canary" not in result.stdout
+        assert "unsafe" not in result.stdout
+
+
+def test_plan_error_classifier_precedence_is_fail_closed(tmp_path: Path) -> None:
+    plan_log = tmp_path / "mixed.log"
+    plan_log.write_text(
+        "azurerm_key_vault_key.audio ForbiddenByConnection status code 403",
+        encoding="utf-8",
+    )
+
+    result = _run("classify-plan-error", str(plan_log))
+
+    assert result.returncode == 0
+    assert result.stdout == "PlanKeyVaultNetworkOrDnsFailed\n"
+    assert result.stderr == ""
+
+
+def test_plan_error_classifier_uses_only_the_bounded_tail(tmp_path: Path) -> None:
+    plan_log = tmp_path / "large.log"
+    plan_log.write_bytes(b"AuthorizationFailed" + b"x" * (1024 * 1024) + b"unknown-tail\xff")
+
+    result = _run("classify-plan-error", str(plan_log))
+
+    assert result.returncode == 0
+    assert result.stdout == "PlanFailed\n"
+    assert result.stderr == ""
+
+
+def test_plan_error_classifier_rejects_missing_log_without_detail(tmp_path: Path) -> None:
+    result = _run("classify-plan-error", str(tmp_path / "missing.log"))
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == ""

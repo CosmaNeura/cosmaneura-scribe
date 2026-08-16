@@ -61,23 +61,24 @@ locals {
 
   private_terraform_runner_common_env = merge(
     {
-      ARM_CLIENT_ID                       = var.deploy_private_terraform_runner ? azurerm_user_assigned_identity.private_terraform_runner[0].client_id : "disabled"
-      ARM_RESOURCE_PROVIDER_REGISTRATIONS = "none"
-      ARM_SUBSCRIPTION_ID                 = var.subscription_id
-      ARM_TENANT_ID                       = var.tenant_id
-      ARM_USE_MSI                         = "true"
-      AZURE_CONFIG_DIR                    = "/tmp/.azure"
-      TF_CLI_CONFIG_FILE                  = "/workspace/infra/runner/tofurc"
-      TF_IN_AUTOMATION                    = "true"
-      TF_RUNNER_ENABLED                   = tostring(var.enable_private_terraform_runner)
-      TF_RUNNER_EXPECTED_PLAN_SHA256      = "review-required"
-      TF_RUNNER_EXPECTED_STATE_LINEAGE    = "review-required"
-      TF_RUNNER_EXPECTED_STATE_SERIAL     = "review-required"
-      TF_STATE_RESOURCE_GROUP             = var.enable_private_terraform_runner ? var.terraform_state_resource_group_name : "disabled"
-      TF_STATE_STORAGE_ACCOUNT            = var.enable_private_terraform_runner ? var.terraform_state_storage_account_name : "disabled"
-      TF_STATE_CONTAINER                  = var.enable_private_terraform_runner ? var.terraform_state_container_name : "disabled"
-      TF_STATE_KEY                        = var.enable_private_terraform_runner ? var.terraform_state_key : "disabled"
-      TF_RUNNER_PLAN_BLOB                 = var.enable_private_terraform_runner ? var.private_terraform_plan_blob_name : "disabled.tfplan"
+      ARM_CLIENT_ID                                       = var.deploy_private_terraform_runner ? azurerm_user_assigned_identity.private_terraform_runner[0].client_id : "disabled"
+      ARM_PROVIDER_ENHANCED_VALIDATION_RESOURCE_PROVIDERS = "false"
+      ARM_RESOURCE_PROVIDER_REGISTRATIONS                 = "none"
+      ARM_SUBSCRIPTION_ID                                 = var.subscription_id
+      ARM_TENANT_ID                                       = var.tenant_id
+      ARM_USE_MSI                                         = "true"
+      AZURE_CONFIG_DIR                                    = "/tmp/.azure"
+      TF_CLI_CONFIG_FILE                                  = "/workspace/infra/runner/tofurc"
+      TF_IN_AUTOMATION                                    = "true"
+      TF_RUNNER_ENABLED                                   = tostring(var.enable_private_terraform_runner)
+      TF_RUNNER_EXPECTED_PLAN_SHA256                      = "review-required"
+      TF_RUNNER_EXPECTED_STATE_LINEAGE                    = "review-required"
+      TF_RUNNER_EXPECTED_STATE_SERIAL                     = "review-required"
+      TF_STATE_RESOURCE_GROUP                             = var.enable_private_terraform_runner ? var.terraform_state_resource_group_name : "disabled"
+      TF_STATE_STORAGE_ACCOUNT                            = var.enable_private_terraform_runner ? var.terraform_state_storage_account_name : "disabled"
+      TF_STATE_CONTAINER                                  = var.enable_private_terraform_runner ? var.terraform_state_container_name : "disabled"
+      TF_STATE_KEY                                        = var.enable_private_terraform_runner ? var.terraform_state_key : "disabled"
+      TF_RUNNER_PLAN_BLOB                                 = var.enable_private_terraform_runner ? var.private_terraform_plan_blob_name : "disabled.tfplan"
     },
     {
       for name, value in local.private_terraform_runner_tf_variables :
