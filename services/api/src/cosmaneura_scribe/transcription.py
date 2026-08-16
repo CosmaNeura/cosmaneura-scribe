@@ -15,6 +15,13 @@ from azure.ai.transcription.models import (
     TranscriptionOptions,
     TranscriptionResult,
 )
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    DecodeError,
+    HttpResponseError,
+    ServiceRequestError,
+    ServiceResponseError,
+)
 from azure.identity.aio import DefaultAzureCredential
 
 from .schemas import CaptureChannel
@@ -98,6 +105,35 @@ class TranscriptionInputError(ValueError):
     """Sanitized failure raised when an assembled audio track cannot be read."""
 
 
+class AzureSpeechProviderError(RuntimeError):
+    """Fixed-code Azure Speech failure safe for durable state and logs."""
+
+
+def _azure_speech_error_code(error: Exception) -> str:
+    if isinstance(error, ClientAuthenticationError) and error.response is None:
+        return "speech_credential_unavailable"
+    if isinstance(error, ServiceRequestError):
+        return "speech_service_transport_error"
+    if isinstance(error, (ServiceResponseError, DecodeError)):
+        return "speech_service_response_error"
+    if isinstance(error, HttpResponseError):
+        status_code = error.status_code
+        if status_code == 401:
+            return "speech_authentication_rejected"
+        if status_code == 403:
+            return "speech_authorization_rejected"
+        if status_code == 404:
+            return "speech_api_unavailable"
+        if status_code in {400, 415, 422}:
+            return "speech_request_rejected"
+        if status_code in {408, 429}:
+            return "speech_service_throttled"
+        if status_code is not None and status_code >= 500:
+            return "speech_service_unavailable"
+        return "speech_service_response_error"
+    return "speech_provider_unavailable"
+
+
 class AzureSpeechTranscriber:
     def __init__(
         self,
@@ -170,6 +206,14 @@ class AzureSpeechTranscriber:
                     )
             except OSError:
                 raise TranscriptionInputError("audio track unavailable") from None
+            except (
+                ClientAuthenticationError,
+                DecodeError,
+                HttpResponseError,
+                ServiceRequestError,
+                ServiceResponseError,
+            ) as error:
+                raise AzureSpeechProviderError(_azure_speech_error_code(error)) from None
 
             duration_ms = max(duration_ms, result.duration_milliseconds)
             for phrase in result.phrases:

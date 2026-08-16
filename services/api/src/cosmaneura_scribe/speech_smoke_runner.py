@@ -12,7 +12,11 @@ from time import perf_counter
 from .safe_logging import configure_standalone_logging, log_event
 from .settings import Settings, get_settings
 from .speech_private_network import PrivateSpeechEndpointUnavailable
-from .transcription import SpeechToTextProvider, build_speech_to_text_provider
+from .transcription import (
+    AzureSpeechProviderError,
+    SpeechToTextProvider,
+    build_speech_to_text_provider,
+)
 from .transcription_benchmark import (
     BenchmarkManifest,
     BenchmarkResult,
@@ -41,6 +45,16 @@ SMOKE_ERROR_CLASSES = {
     "speech_smoke_acceptance_failed": "SpeechSmokeAcceptanceFailed",
     "speech_smoke_cleanup_failed": "SpeechSmokeCleanupFailed",
     "speech_private_endpoint_unavailable": "SpeechPrivateEndpointUnavailable",
+    "speech_credential_unavailable": "SpeechCredentialUnavailable",
+    "speech_service_transport_error": "SpeechServiceTransportError",
+    "speech_service_response_error": "SpeechServiceResponseError",
+    "speech_authentication_rejected": "SpeechAuthenticationRejected",
+    "speech_authorization_rejected": "SpeechAuthorizationRejected",
+    "speech_api_unavailable": "SpeechApiUnavailable",
+    "speech_request_rejected": "SpeechRequestRejected",
+    "speech_service_throttled": "SpeechServiceThrottled",
+    "speech_service_unavailable": "SpeechServiceUnavailable",
+    "speech_provider_unavailable": "SpeechProviderUnavailable",
 }
 
 SettingsFactory = Callable[[], Settings]
@@ -191,6 +205,15 @@ async def run_speech_smoke(
             duration_ms=(perf_counter() - started) * 1000,
         )
         raise SpeechSmokeRunnerError("speech_private_endpoint_unavailable") from None
+    except AzureSpeechProviderError as exc:
+        code = str(exc)
+        safe_code = code if code in SMOKE_ERROR_CLASSES else "speech_provider_unavailable"
+        log_event(
+            action="speech_smoke.failed",
+            error_class=SMOKE_ERROR_CLASSES[safe_code],
+            duration_ms=(perf_counter() - started) * 1000,
+        )
+        raise SpeechSmokeRunnerError(safe_code) from None
     except SpeechSmokeRunnerError as exc:
         log_event(
             action="speech_smoke.failed",
