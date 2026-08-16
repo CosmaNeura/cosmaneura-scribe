@@ -14,15 +14,24 @@ lowercase full commit SHA. ADR 0014 owns the private resource, DNS guard, and sy
 path.
 
 The job has no ingress, schedule, event scale rule, queue consumer, or principal authorized by this
-configuration to start executions. An operator with separately governed Azure control-plane access
-starts one ARM execution and supplies exactly two positional arguments: tenant UUID and session
-UUID. The base job template contains no arguments. A custom parser emits only fixed error codes and
-never echoes values. The runner reads the raw enable variable before loading `Settings`, parsing
-UUIDs, opening PostgreSQL, or constructing any Blob, Key Vault, or Speech client. A disabled
-execution therefore emits one fixed metadata-only event and exits nonzero even if arguments are
-absent or invalid. Accidental starts are visible while remaining incapable of touching custody.
-Container Apps start permission can override a job's image, command, arguments, and environment,
-so it is treated as trusted code execution under the worker identity and is not granted here.
+configuration to start executions. The intended execution supplies exactly two positional
+arguments: tenant UUID and session UUID. The base job template contains no arguments. A custom
+parser emits only fixed error codes and never echoes values. The runner reads the raw enable
+variable before loading `Settings`, parsing UUIDs, opening PostgreSQL, or constructing any Blob,
+Key Vault, or Speech client. A disabled execution therefore emits one fixed metadata-only event and
+exits nonzero even if arguments are absent or invalid. Accidental starts are visible while
+remaining incapable of touching custody. Container Apps start permission can override a job's
+image, command, arguments, and environment, so it is treated as trusted code execution under the
+worker identity and is not granted here.
+
+A live dormant-job probe disproved the assumption that an args-only container override merges with
+the deployed template. The `az containerapp job start` call used `--container-name smoke` and
+`--args <uuid> <uuid>`. Azure returned `ContainerAppImageRequired` because the replacement
+container had no `Image` property. Clinical activation therefore remains blocked until a reviewed
+operator helper submits and verifies a complete execution template, preferably with `--yaml`, that
+preserves the exact deployed image, command, environment, CPU and memory resources, and volume
+mount while injecting only the two UUID arguments. Supplying ad hoc `--image` or `--command` flags
+is not an acceptable repair because other security-critical template fields could be omitted.
 
 Container Apps parallelism and completion count are both one, and platform retries are zero. The
 durable PostgreSQL transcription record remains the retry authority: the application worker permits
@@ -55,7 +64,9 @@ and fixed error classes.
   callable. Turning on the Boolean alone is insufficient unless all private dependencies and roles
   are present.
 - Every execution is intentionally narrow and auditable, but an operator must supply the two UUIDs
-  and start each retry manually until a later reviewed trigger replaces this one.
+  through the reviewed full-template helper and start each retry manually until a later reviewed
+  trigger replaces this one. No clinical execution may start before that helper is implemented and
+  validated.
 - The Speech account, its private endpoint and DNS, and the synthetic live acceptance test are
   implemented separately by ADR 0014. The worker derives its endpoint and role scope from that
   owned foundation rather than accepting free-form identifiers.
