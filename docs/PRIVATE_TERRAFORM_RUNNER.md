@@ -36,13 +36,14 @@ delete only the plan pair after a successful apply.
 
 Enablement also creates the temporary custom state role definition and adds two TCP/443 rules to
 the existing Container Apps subnet NSG: `AzureResourceManager` and `Storage.NorthCentralUS`. The
-runner sets `ARM_RESOURCE_PROVIDER_REGISTRATIONS=none`; all providers must already be registered,
-and the identity has no authority to register one. The immutable image includes the locked AzureRM
-provider in a fail-closed filesystem mirror, so runtime initialization does not require public
-OpenTofu Registry egress. The rules apply to the shared ACA subnet, while Azure RBAC still denies
-other workload identities access; this wider network reach is why Phase A must remove both rules
-immediately. Phase A also removes the five enabled assignments and custom role. Phase B then
-deletes `AcrPull`, both jobs, and the identity.
+runner sets `ARM_RESOURCE_PROVIDER_REGISTRATIONS=none` and
+`ARM_PROVIDER_ENHANCED_VALIDATION_RESOURCE_PROVIDERS=false`; all providers must already be
+registered, and the identity has no authority to register or enumerate providers at subscription
+scope. The immutable image includes the locked AzureRM provider in a fail-closed filesystem mirror,
+so runtime initialization does not require public OpenTofu Registry egress. The rules apply to the
+shared ACA subnet, while Azure RBAC still denies other workload identities access; this wider
+network reach is why Phase A must remove both rules immediately. Phase A also removes the five
+enabled assignments and custom role. Phase B then deletes `AcrPull`, both jobs, and the identity.
 
 A Container Apps Job start permission is code-execution authority because a start request can
 replace the deployed container template. Do not grant a person, runtime, or generic automation
@@ -160,6 +161,12 @@ its SHA-256 and the exact pre-plan state lineage/serial, and logs only fixed act
 detailed-exit code, plan hash, lineage, and serial. Initialization, plan, and provider error details
 remain in the ephemeral container and are not copied to Log Analytics. No state, key material, plan
 body, token, object location, or variable value is logged.
+
+If planning fails, the runner reads only a bounded tail of its ephemeral provider log and emits one
+fixed class: target/configuration, provider registration, Key Vault network/DNS, API read,
+identity/RBAC, or generic plan failure. It never emits the matched text, status, URL, provider
+response, resource name, or log fragment. A class is diagnostic evidence only; it never authorizes
+an automatic role, network, target, or configuration change.
 
 A no-change plan is a hard stop: it is not uploaded or applied. Re-verify live state and close or
 redesign the one-time repair instead of forcing a no-op execution.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,13 +10,15 @@ NETWORK = ROOT / "infra" / "network_security.tf"
 MAIN = ROOT / "infra" / "main.tf"
 DOCKERFILE = ROOT / "infra" / "runner" / "Dockerfile"
 TOFU_CONFIG = ROOT / "infra" / "runner" / "tofurc"
+RUN_SCRIPT = ROOT / "infra" / "runner" / "run.sh"
 
 
 def test_private_runner_manifest_is_closed_and_current() -> None:
     runner = RUNNER.read_text(encoding="utf-8")
     variables = VARIABLES.read_text(encoding="utf-8")
 
-    assert 'ARM_RESOURCE_PROVIDER_REGISTRATIONS = "none"' in runner
+    assert re.search(r'ARM_PROVIDER_ENHANCED_VALIDATION_RESOURCE_PROVIDERS\s*=\s*"false"', runner)
+    assert re.search(r'ARM_RESOURCE_PROVIDER_REGISTRATIONS\s*=\s*"none"', runner)
     assert "ARM_SKIP_PROVIDER_REGISTRATION" not in runner
     for flag in (
         "deploy_delivery_reconciler_job",
@@ -107,8 +110,32 @@ def test_runner_uses_a_baked_fail_closed_provider_mirror() -> None:
     assert "command -v python3" in dockerfile
     assert "command -v awk" not in dockerfile
     assert "command -v jq" not in dockerfile
-    assert 'TF_CLI_CONFIG_FILE                  = "/workspace/infra/runner/tofurc"' in runner
+    assert re.search(r'TF_CLI_CONFIG_FILE\s*=\s*"/workspace/infra/runner/tofurc"', runner)
     assert "tofu providers mirror -platform=linux_amd64 /opt/tofu/providers" in dockerfile
     assert "filesystem_mirror" in tofu_config
     assert 'include = ["registry.opentofu.org/hashicorp/azurerm"]' in tofu_config
     assert "direct" not in tofu_config
+
+
+def test_runner_classifies_plan_failures_without_emitting_provider_output() -> None:
+    script = RUN_SCRIPT.read_text(encoding="utf-8")
+
+    assert "classify-plan-error /tmp/tofu-plan.log 2>/dev/null" in script
+    assert "*) classify_plan_failure ;;" in script
+    assert '*) plan_error_class="PlanFailed" ;;' in script
+    for error_class in (
+        "PlanTargetOrConfigurationFailed",
+        "PlanProviderRegistrationFailed",
+        "PlanKeyVaultNetworkOrDnsFailed",
+        "PlanApiReadFailed",
+        "PlanIdentityOrRbacFailed",
+        "PlanFailed",
+    ):
+        assert error_class in script
+    assert ">/tmp/tofu-plan.log 2>&1" in script
+    for unsafe_command in (
+        "cat /tmp/tofu-plan.log",
+        "grep /tmp/tofu-plan.log",
+        "tail /tmp/tofu-plan.log",
+    ):
+        assert unsafe_command not in script

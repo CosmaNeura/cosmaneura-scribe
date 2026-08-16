@@ -23,6 +23,23 @@ fail() {
   exit 1
 }
 
+classify_plan_failure() {
+  plan_error_class="$(
+    python3 /workspace/infra/runner/metadata.py \
+      classify-plan-error /tmp/tofu-plan.log 2>/dev/null
+  )" || plan_error_class=""
+  case "$plan_error_class" in
+    PlanTargetOrConfigurationFailed | \
+      PlanProviderRegistrationFailed | \
+      PlanKeyVaultNetworkOrDnsFailed | \
+      PlanApiReadFailed | \
+      PlanIdentityOrRbacFailed | \
+      PlanFailed) ;;
+    *) plan_error_class="PlanFailed" ;;
+  esac
+  fail "$plan_error_class"
+}
+
 trap cleanup EXIT
 trap 'cleanup; exit 130' HUP INT TERM
 
@@ -136,7 +153,7 @@ if [ "$TF_RUNNER_ACTION" = "plan" ]; then
   case "$plan_exit_code" in
     0) fail "NoChanges" ;;
     2) ;;
-    *) fail "PlanFailed" ;;
+    *) classify_plan_failure ;;
   esac
 
   if ! tofu state pull > /tmp/post-plan-state.json 2>/dev/null; then
