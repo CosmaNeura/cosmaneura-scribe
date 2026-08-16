@@ -8,6 +8,7 @@ dependencies = [
   "alembic>=1.14,<2",
   "asyncpg>=0.30,<1",
   "azure-ai-transcription>=1,<2",
+  "azure-core[aio]>=1.30,<2",
   "azure-identity>=1.24,<2",
   "azure-storage-blob>=12.26,<13",
   "cryptography>=44,<51",
