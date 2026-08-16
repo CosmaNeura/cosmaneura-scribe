@@ -46,6 +46,10 @@ by `key_version`. A bind rejected because a cached version rotated causes one au
 and rewrap with a new idempotency key. The private RSA material and unwrap permission remain only in
 Key Vault and the separately gated transcription identity.
 
+The pre-client live route proof is governed separately by ADR 0017. Its one-shot private job uses
+the exact platform workflow UAMI and validates only fixed public-key metadata; it is not a client,
+BFF, upload edge, or clinical-capture activation.
+
 ### Bind one client-generated key before capture
 
 After the server has accepted an all-party consent record and created a session, the client:

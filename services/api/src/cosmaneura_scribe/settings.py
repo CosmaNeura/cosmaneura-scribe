@@ -12,6 +12,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .audio_keys import versionless_key_id
 
+_PRIVATE_API_IPV4_NETWORKS = (
+    IPv4Network("10.0.0.0/8"),
+    IPv4Network("172.16.0.0/12"),
+    IPv4Network("192.168.0.0/16"),
+)
+
 
 def _is_exact_azure_speech_endpoint(value: AnyHttpUrl) -> bool:
     parsed = urlsplit(str(value))
@@ -61,6 +67,12 @@ class Settings(BaseSettings):
     entra_tenant_id: UUID | None = None
     workflow_api_audience: str | None = Field(default=None, min_length=1)
     trusted_platform_client_id: UUID | None = None
+    private_api_acceptance_enabled: bool = False
+    private_api_acceptance_invocation_enabled: bool = False
+    private_api_acceptance_base_url: AnyHttpUrl | None = None
+    private_api_acceptance_tenant_id: UUID | None = None
+    private_api_acceptance_private_endpoint_cidrs: tuple[IPv4Network | IPv6Network, ...] = ()
+    private_api_acceptance_timeout_seconds: float = Field(default=15, ge=1, le=60)
 
     master_platform_handoff_enabled: bool = False
     master_platform_base_url: AnyHttpUrl | None = None
@@ -177,6 +189,56 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "workflow_api_audience must be the v2 API application client ID UUID"
                 ) from exc
+        if (
+            self.private_api_acceptance_invocation_enabled
+            and not self.private_api_acceptance_enabled
+        ):
+            raise ValueError(
+                "private_api_acceptance_invocation_enabled requires private_api_acceptance_enabled"
+            )
+        if self.private_api_acceptance_enabled:
+            if (
+                self.private_api_acceptance_base_url is None
+                or self.private_api_acceptance_tenant_id is None
+                or self.private_api_acceptance_tenant_id.int == 0
+                or self.managed_identity_client_id is None
+                or self.workflow_api_audience is None
+                or not self.private_api_acceptance_private_endpoint_cidrs
+            ):
+                raise ValueError(
+                    "private API acceptance requires its base URL, nonzero synthetic tenant, "
+                    "private address, managed identity client ID, and workflow API audience"
+                )
+            parsed_acceptance_url = urlsplit(str(self.private_api_acceptance_base_url))
+            if (
+                parsed_acceptance_url.scheme != "https"
+                or parsed_acceptance_url.username is not None
+                or parsed_acceptance_url.password is not None
+                or parsed_acceptance_url.port is not None
+                or parsed_acceptance_url.path not in {"", "/"}
+                or parsed_acceptance_url.query
+                or parsed_acceptance_url.fragment
+            ):
+                raise ValueError("private_api_acceptance_base_url must be an exact HTTPS origin")
+            try:
+                UUID(self.workflow_api_audience)
+            except ValueError as exc:
+                raise ValueError(
+                    "private API acceptance requires the bare workflow API client ID UUID"
+                ) from exc
+            acceptance_networks = self.private_api_acceptance_private_endpoint_cidrs
+            if (
+                len(acceptance_networks) != 1
+                or not isinstance(acceptance_networks[0], IPv4Network)
+                or acceptance_networks[0].prefixlen != 32
+                or not any(
+                    acceptance_networks[0].subnet_of(private_network)
+                    for private_network in _PRIVATE_API_IPV4_NETWORKS
+                )
+            ):
+                raise ValueError(
+                    "private API acceptance requires one exact private environment host CIDR"
+                )
         if self.transcription_backend == "azure":
             if self.azure_speech_endpoint is None:
                 raise ValueError(

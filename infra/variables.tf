@@ -455,6 +455,14 @@ variable "enable_private_terraform_runner" {
         var.enable_workflow_authentication &&
         var.workflow_api_audience == "57264fe1-6a4a-4946-8412-e0be18805977" &&
         var.trusted_platform_client_id == "c7bae168-fbf5-4658-b0d9-dd4b5373a1be" &&
+        var.deploy_private_api_acceptance_job &&
+        (
+          var.private_terraform_reconciliation_completed ||
+          (
+            !var.enable_private_api_acceptance_job &&
+            !var.allow_private_api_acceptance_invocation
+          )
+        ) &&
         !var.enable_master_platform_handoff &&
         !var.connect_parallel_platform_vnet &&
         var.deploy_private_speech_foundation &&
@@ -474,7 +482,7 @@ variable "enable_private_terraform_runner" {
         var.log_analytics_daily_quota_gb == 0.5
       )
     )
-    error_message = "the temporary runner requires the immutable reviewed live manifest: API image 804c4ba with exact workflow audience/caller and handoff disabled; dormant Speech smoke deployed; Speech invocation, clinical transcription, delivery reconciliation, PostgreSQL, peering, budget, baseline, and diagnostics disabled; LAW held at 30 days/0.5 GiB"
+    error_message = "the temporary runner requires the immutable reviewed live manifest: API image 804c4ba with exact workflow audience/caller and handoff disabled; the API acceptance job deployed with both gates closed until private_terraform_reconciliation_completed=true; dormant Speech smoke deployed; Speech invocation, clinical transcription, delivery reconciliation, PostgreSQL, peering, budget, baseline, and diagnostics disabled; LAW held at 30 days/0.5 GiB"
   }
 }
 

@@ -9,6 +9,18 @@ from uuid import UUID
 
 LOGGER_NAME = "cosmaneura_scribe"
 LOG_FIELD_ALLOWLIST = frozenset({"action", "entity_id", "tenant_id", "error_class", "duration_ms"})
+PRIVATE_API_ACCEPTANCE_RESULT_FIELD_ALLOWLIST = frozenset(
+    {
+        "action",
+        "algorithm",
+        "duration_ms",
+        "http_status",
+        "key_operations",
+        "key_size_bits",
+        "kty",
+        "key_version_present",
+    }
+)
 
 _SAFE_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _LOGGER = logging.getLogger(LOGGER_NAME)
@@ -28,6 +40,22 @@ def configure_standalone_logging() -> None:
         _LOGGER.addHandler(handler)
     _LOGGER.setLevel(logging.INFO)
     _LOGGER.propagate = False
+
+
+def configure_private_api_acceptance_logging() -> None:
+    """Expose only the safe Scribe logger in the public-key acceptance process."""
+
+    configure_standalone_logging()
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(logging.NullHandler())
+    root.setLevel(logging.CRITICAL + 1)
+    for namespace in ("azure", "httpcore", "httpx"):
+        external = logging.getLogger(namespace)
+        external.handlers.clear()
+        external.addHandler(logging.NullHandler())
+        external.propagate = False
+        external.disabled = True
 
 
 def log_event(
@@ -58,3 +86,23 @@ def log_event(
     }
     level = logging.WARNING if error_class is not None else logging.INFO
     _LOGGER.log(level, json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+def log_private_api_acceptance_result(*, duration_ms: int | float) -> None:
+    """Emit only the fixed metadata proven by the private API acceptance job."""
+
+    if isinstance(duration_ms, bool) or not math.isfinite(duration_ms) or duration_ms < 0:
+        raise ValueError("Structured log duration_ms must be a nonnegative finite number")
+    payload: dict[str, object] = {
+        "action": "private_api_acceptance.completed",
+        "algorithm": "RSA-OAEP-256",
+        "duration_ms": round(duration_ms, 3),
+        "http_status": 200,
+        "key_operations": ["wrapKey"],
+        "key_size_bits": 3072,
+        "kty": "RSA",
+        "key_version_present": True,
+    }
+    if frozenset(payload) != PRIVATE_API_ACCEPTANCE_RESULT_FIELD_ALLOWLIST:
+        raise RuntimeError("private API acceptance log schema is not closed")
+    _LOGGER.log(logging.INFO, json.dumps(payload, sort_keys=True, separators=(",", ":")))
