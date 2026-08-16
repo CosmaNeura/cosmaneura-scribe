@@ -429,7 +429,6 @@ def test_concurrent_http_and_reconciler_claim_one_postgres_delivery(
             database_max_overflow=0,
         )
     )
-    session, original = asyncio.run(_seed_retryable_delivery(provider, tenant_id))
     claim_policy = DeliveryClaimPolicy(retry_delay=timedelta(seconds=1))
     coordinated = CoordinatedProvider(provider, ConcurrentClaimGate())
     handoff = RecordingDeliveryHandoff()
@@ -446,28 +445,35 @@ def test_concurrent_http_and_reconciler_claim_one_postgres_delivery(
 
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                http_future = executor.submit(
-                    client.post,
-                    f"/v1/sessions/{session.id}/deliver",
-                    headers={
-                        "X-Tenant-ID": str(tenant_id),
-                        "Idempotency-Key": "postgres-delivery-race-0001",
-                    },
+            try:
+                session, original = client.portal.call(
+                    _seed_retryable_delivery,
+                    provider,
+                    tenant_id,
                 )
-                reconciler_future = executor.submit(
-                    client.portal.call,
-                    partial(reconciler.reconcile, tenant_id=tenant_id),
-                )
-                http_response = http_future.result(timeout=15)
-                reconcile_result = reconciler_future.result(timeout=15)
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    http_future = executor.submit(
+                        client.post,
+                        f"/v1/sessions/{session.id}/deliver",
+                        headers={
+                            "X-Tenant-ID": str(tenant_id),
+                            "Idempotency-Key": "postgres-delivery-race-0001",
+                        },
+                    )
+                    reconciler_future = executor.submit(
+                        client.portal.call,
+                        partial(reconciler.reconcile, tenant_id=tenant_id),
+                    )
+                    http_response = http_future.result(timeout=15)
+                    reconcile_result = reconciler_future.result(timeout=15)
 
-            async def read_delivery() -> TranscriptDelivery | None:
-                async with provider.transaction(tenant_id) as store:
-                    return await store.get_delivery(tenant_id, original.id)
+                async def read_delivery() -> TranscriptDelivery | None:
+                    async with provider.transaction(tenant_id) as store:
+                        return await store.get_delivery(tenant_id, original.id)
 
-            persisted = client.portal.call(read_delivery)
-            client.portal.call(coordinated.close)
+                persisted = client.portal.call(read_delivery)
+            finally:
+                client.portal.call(coordinated.close)
     finally:
         app.dependency_overrides.clear()
 
@@ -493,53 +499,53 @@ def test_postgres_claim_uses_database_time_for_fresh_and_stale_pending(
             database_ssl=False,
         )
     )
-    _, delivery = asyncio.run(_seed_retryable_delivery(provider, tenant_id))
 
     async def exercise() -> tuple[DeliveryAttempt | None, DeliveryAttempt | None]:
-        async with provider.engine.begin() as connection:
-            await connection.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(tenant_id)},
-            )
-            await connection.execute(
-                text(
-                    "UPDATE transcript_deliveries "
-                    "SET status = 'pending', updated_at = statement_timestamp() "
-                    "WHERE tenant_id = :tenant_id AND id = :delivery_id"
-                ),
-                {"tenant_id": tenant_id, "delivery_id": delivery.id},
-            )
-        async with provider.transaction(tenant_id) as store:
-            fresh = await store.claim_delivery_attempt(
-                tenant_id,
-                delivery_id=delivery.id,
-                policy=DeliveryClaimPolicy(pending_timeout=timedelta(minutes=5)),
-            )
-        async with provider.engine.begin() as connection:
-            await connection.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(tenant_id)},
-            )
-            await connection.execute(
-                text(
-                    "UPDATE transcript_deliveries "
-                    "SET updated_at = statement_timestamp() - INTERVAL '10 minutes' "
-                    "WHERE tenant_id = :tenant_id AND id = :delivery_id"
-                ),
-                {"tenant_id": tenant_id, "delivery_id": delivery.id},
-            )
-        async with provider.transaction(tenant_id) as store:
-            stale = await store.claim_delivery_attempt(
-                tenant_id,
-                delivery_id=delivery.id,
-                policy=DeliveryClaimPolicy(pending_timeout=timedelta(minutes=5)),
-            )
-        return fresh, stale
+        try:
+            _, delivery = await _seed_retryable_delivery(provider, tenant_id)
+            async with provider.engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        "UPDATE transcript_deliveries "
+                        "SET status = 'pending', updated_at = statement_timestamp() "
+                        "WHERE tenant_id = :tenant_id AND id = :delivery_id"
+                    ),
+                    {"tenant_id": tenant_id, "delivery_id": delivery.id},
+                )
+            async with provider.transaction(tenant_id) as store:
+                fresh = await store.claim_delivery_attempt(
+                    tenant_id,
+                    delivery_id=delivery.id,
+                    policy=DeliveryClaimPolicy(pending_timeout=timedelta(minutes=5)),
+                )
+            async with provider.engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        "UPDATE transcript_deliveries "
+                        "SET updated_at = statement_timestamp() - INTERVAL '10 minutes' "
+                        "WHERE tenant_id = :tenant_id AND id = :delivery_id"
+                    ),
+                    {"tenant_id": tenant_id, "delivery_id": delivery.id},
+                )
+            async with provider.transaction(tenant_id) as store:
+                stale = await store.claim_delivery_attempt(
+                    tenant_id,
+                    delivery_id=delivery.id,
+                    policy=DeliveryClaimPolicy(pending_timeout=timedelta(minutes=5)),
+                )
+            return fresh, stale
+        finally:
+            await provider.close()
 
-    try:
-        fresh, stale = asyncio.run(exercise())
-    finally:
-        asyncio.run(provider.close())
+    fresh, stale = asyncio.run(exercise())
 
     assert fresh is None
     assert stale is not None
@@ -562,65 +568,63 @@ def test_delivery_reconciler_operates_with_only_approved_column_grants(
             database_ssl=False,
         )
     )
-    restricted_provider: PostgresRepositoryProvider | None = None
 
     async def exercise() -> None:
-        nonlocal restricted_provider
-        async with admin_engine.begin() as connection:
-            await connection.execute(text(f"CREATE ROLE {role_name} NOLOGIN NOSUPERUSER"))
-        grant_settings = Settings(
-            repository_backend="postgres",
-            database_url=admin_url,
-            database_name=database_name,
-            database_ssl=False,
-            database_delivery_reconciler_principal_name=role_name,
-            database_delivery_reconciler_principal_object_id=uuid4(),
-        )
-        await database_bootstrap._grant_delivery_reconciler_permissions(grant_settings)
-
-        restricted_engine = create_async_engine(
-            admin_url,
-            connect_args={
-                "ssl": False,
-                "server_settings": {"role": role_name},
-            },
-            pool_size=1,
-            max_overflow=0,
-        )
-        restricted_provider = PostgresRepositoryProvider(restricted_engine)
-        tenant_id = uuid4()
-        session, delivery = await _seed_retryable_delivery(app_provider, tenant_id)
-        handoff = RecordingDeliveryHandoff()
-        reconciler = DeliveryReconciler(
-            repositories=restricted_provider,
-            handoff=handoff,
-            claim_policy=DeliveryClaimPolicy(retry_delay=timedelta(seconds=1)),
-            maximum_deliveries=1,
-        )
-
-        result = await reconciler.reconcile(tenant_id=tenant_id)
-        assert result.claimed == 1
-        assert result.delivered == 1
-        assert len(handoff.requests) == 1
-        async with app_provider.transaction(tenant_id) as store:
-            persisted = await store.get_delivery(tenant_id, delivery.id)
-            persisted_session = await store.get_session(tenant_id, session.id)
-        assert persisted is not None
-        assert persisted.status == DeliveryStatus.DELIVERED
-        assert persisted_session is not None
-        assert persisted_session.status == SessionStatus.HANDED_OFF
-
-    try:
-        asyncio.run(exercise())
-    finally:
-        if restricted_provider is not None:
-            asyncio.run(restricted_provider.close())
-        asyncio.run(app_provider.close())
-
-        async def cleanup() -> None:
+        role_created = False
+        restricted_provider: PostgresRepositoryProvider | None = None
+        try:
             async with admin_engine.begin() as connection:
-                await connection.execute(text(f"DROP OWNED BY {role_name}"))
-                await connection.execute(text(f"DROP ROLE IF EXISTS {role_name}"))
+                await connection.execute(text(f"CREATE ROLE {role_name} NOLOGIN NOSUPERUSER"))
+            role_created = True
+            grant_settings = Settings(
+                repository_backend="postgres",
+                database_url=admin_url,
+                database_name=database_name,
+                database_ssl=False,
+                database_delivery_reconciler_principal_name=role_name,
+                database_delivery_reconciler_principal_object_id=uuid4(),
+            )
+            await database_bootstrap._grant_delivery_reconciler_permissions(grant_settings)
+
+            restricted_engine = create_async_engine(
+                admin_url,
+                connect_args={
+                    "ssl": False,
+                    "server_settings": {"role": role_name},
+                },
+                pool_size=1,
+                max_overflow=0,
+            )
+            restricted_provider = PostgresRepositoryProvider(restricted_engine)
+            tenant_id = uuid4()
+            session, delivery = await _seed_retryable_delivery(app_provider, tenant_id)
+            handoff = RecordingDeliveryHandoff()
+            reconciler = DeliveryReconciler(
+                repositories=restricted_provider,
+                handoff=handoff,
+                claim_policy=DeliveryClaimPolicy(retry_delay=timedelta(seconds=1)),
+                maximum_deliveries=1,
+            )
+
+            result = await reconciler.reconcile(tenant_id=tenant_id)
+            assert result.claimed == 1
+            assert result.delivered == 1
+            assert len(handoff.requests) == 1
+            async with app_provider.transaction(tenant_id) as store:
+                persisted = await store.get_delivery(tenant_id, delivery.id)
+                persisted_session = await store.get_session(tenant_id, session.id)
+            assert persisted is not None
+            assert persisted.status == DeliveryStatus.DELIVERED
+            assert persisted_session is not None
+            assert persisted_session.status == SessionStatus.HANDED_OFF
+        finally:
+            if restricted_provider is not None:
+                await restricted_provider.close()
+            await app_provider.close()
+            if role_created:
+                async with admin_engine.begin() as connection:
+                    await connection.execute(text(f"DROP OWNED BY {role_name}"))
+                    await connection.execute(text(f"DROP ROLE IF EXISTS {role_name}"))
             await admin_engine.dispose()
 
-        asyncio.run(cleanup())
+    asyncio.run(exercise())
