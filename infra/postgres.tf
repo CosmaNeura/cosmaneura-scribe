@@ -229,6 +229,22 @@ resource "azurerm_container_app_job" "database_migrations" {
           value = azurerm_user_assigned_identity.transcription[0].principal_id
         }
       }
+
+      dynamic "env" {
+        for_each = var.enable_delivery_reconciler_job ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_DATABASE_DELIVERY_RECONCILER_PRINCIPAL_NAME"
+          value = azurerm_user_assigned_identity.delivery_reconciler[0].name
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_delivery_reconciler_job ? [1] : []
+        content {
+          name  = "COSMANEURA_SCRIBE_DATABASE_DELIVERY_RECONCILER_PRINCIPAL_OBJECT_ID"
+          value = azurerm_user_assigned_identity.delivery_reconciler[0].principal_id
+        }
+      }
     }
   }
 

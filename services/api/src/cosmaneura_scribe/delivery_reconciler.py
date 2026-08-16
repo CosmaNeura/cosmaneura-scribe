@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from uuid import UUID
 
 from .canonical_json import canonical_sha256
@@ -12,30 +11,33 @@ from .handoff import (
     HandoffRejectedError,
     HandoffRetryableError,
     MasterPlatformHandoff,
-    to_master_platform_payload,
+    to_master_platform_payload_parts,
 )
-from .repository import RepositoryProvider
+from .repository import (
+    DeliveryClaimPolicy,
+    DeliverySessionSyncResult,
+    DeliverySuccessConflictError,
+    RepositoryProvider,
+)
 from .safe_logging import log_event
 from .schemas import (
+    DeliveryAttempt,
     DeliveryStatus,
     MasterTranscriptDeliveryRequest,
     SessionStatus,
     TranscriptDelivery,
 )
-from .session_state_v1 import can_transition_session
 
 
 async def complete_delivery_failure(
     repositories: RepositoryProvider,
     *,
     tenant_id: UUID,
-    attempted: TranscriptDelivery,
+    attempted: DeliveryAttempt,
     failure_status: DeliveryStatus,
     error_code: str,
     audit_action: str,
-    now: datetime | None = None,
-) -> TranscriptDelivery:
-    completed_at = now or datetime.now(UTC)
+) -> DeliveryAttempt:
     async with repositories.transaction(tenant_id) as store:
         failed = await store.complete_delivery_failure(
             tenant_id,
@@ -43,7 +45,6 @@ async def complete_delivery_failure(
             expected_attempt_count=attempted.attempt_count,
             failure_status=failure_status,
             error_code=error_code,
-            now=completed_at,
         )
         if failed is not None:
             await store.audit(
@@ -53,7 +54,7 @@ async def complete_delivery_failure(
                 entity_id=attempted.id,
             )
             return failed
-        current = await store.get_delivery(tenant_id, attempted.id)
+        current = await store.get_delivery_attempt(tenant_id, attempted.id)
         if current is None:
             raise RuntimeError("delivery receipt is unavailable")
         return current
@@ -63,29 +64,26 @@ async def complete_delivery_success(
     repositories: RepositoryProvider,
     *,
     tenant_id: UUID,
-    attempted: TranscriptDelivery,
+    attempted: DeliveryAttempt,
     platform_transcript_id: str,
-    now: datetime | None = None,
-) -> TranscriptDelivery:
-    completed_at = now or datetime.now(UTC)
+) -> DeliveryAttempt:
     async with repositories.transaction(tenant_id) as store:
-        delivered = await store.complete_delivery_success(
+        completion = await store.complete_delivery_success(
             tenant_id,
             attempted.id,
+            expected_payload_sha256=attempted.payload_sha256,
             platform_transcript_id=platform_transcript_id,
-            now=completed_at,
         )
-        if delivered is not None:
+        if completion is None:
+            raise RuntimeError("delivery receipt is unavailable")
+        delivered = completion.delivery
+        if completion.changed:
             await store.audit(
                 tenant_id=tenant_id,
                 action="transcript.delivered",
                 entity_type="transcript_delivery",
                 entity_id=attempted.id,
             )
-        else:
-            delivered = await store.get_delivery(tenant_id, attempted.id)
-            if delivered is None:
-                raise RuntimeError("delivery receipt is unavailable")
 
     await synchronize_delivery_session(
         repositories,
@@ -99,12 +97,15 @@ async def synchronize_delivery_session(
     repositories: RepositoryProvider,
     *,
     tenant_id: UUID,
-    delivery: TranscriptDelivery,
+    delivery: DeliveryAttempt | TranscriptDelivery,
 ) -> bool:
     try:
         async with repositories.transaction(tenant_id) as store:
-            session = await store.lock_session(tenant_id, delivery.session_id)
-            if session is None:
+            result = await store.synchronize_delivery_session(
+                tenant_id,
+                delivery.session_id,
+            )
+            if result == DeliverySessionSyncResult.SESSION_UNAVAILABLE:
                 log_event(
                     action="delivery.session_sync_skipped",
                     tenant_id=tenant_id,
@@ -112,9 +113,12 @@ async def synchronize_delivery_session(
                     error_class="SessionUnavailable",
                 )
                 return False
-            if session.status == SessionStatus.HANDED_OFF:
+            if result in {
+                DeliverySessionSyncResult.SYNCHRONIZED,
+                DeliverySessionSyncResult.ALREADY_SYNCHRONIZED,
+            }:
                 return True
-            if not can_transition_session(session.status, SessionStatus.HANDED_OFF):
+            if result == DeliverySessionSyncResult.SESSION_STATE_CONFLICT:
                 log_event(
                     action="delivery.session_sync_skipped",
                     tenant_id=tenant_id,
@@ -122,17 +126,7 @@ async def synchronize_delivery_session(
                     error_class="SessionStateConflict",
                 )
                 return False
-            await store.update_session(
-                tenant_id,
-                session.model_copy(update={"status": SessionStatus.HANDED_OFF}),
-            )
-            await store.audit(
-                tenant_id=tenant_id,
-                action="transcript.delivery_session_synchronized",
-                entity_type="scribe_session",
-                entity_id=session.id,
-            )
-            return True
+            raise RuntimeError("delivery session synchronization returned an invalid result")
     except Exception as exc:
         log_event(
             action="delivery.session_sync_failed",
@@ -161,42 +155,39 @@ class DeliveryReconciler:
         repositories: RepositoryProvider,
         handoff: MasterPlatformHandoff,
         consent_policy: ConsentPolicy | None = None,
+        claim_policy: DeliveryClaimPolicy | None = None,
+        maximum_deliveries: int = 25,
     ) -> None:
+        if maximum_deliveries < 1 or maximum_deliveries > 100:
+            raise ValueError("delivery reconciliation maximum must be between 1 and 100")
         self._repositories = repositories
         self._handoff = handoff
         self._consent_policy = consent_policy or ConsentPolicy()
+        self._claim_policy = claim_policy or DeliveryClaimPolicy()
+        self._maximum_deliveries = maximum_deliveries
 
     async def reconcile(
         self,
         *,
         tenant_id: UUID,
-        stale_before: datetime,
-        limit: int = 25,
-        now: datetime | None = None,
     ) -> DeliveryReconcileResult:
-        if limit < 1 or limit > 100:
-            raise ValueError("delivery reconciliation limit must be between 1 and 100")
-        claimed_at = now or datetime.now(UTC)
-        async with self._repositories.transaction(tenant_id) as store:
-            claimed = await store.claim_stale_deliveries(
-                tenant_id,
-                stale_before=stale_before,
-                now=claimed_at,
-                limit=limit,
-            )
-            for attempt in claimed:
-                await store.audit(
-                    tenant_id=tenant_id,
-                    action="transcript.delivery_attempted",
-                    entity_type="transcript_delivery",
-                    entity_id=attempt.id,
-                )
-
+        claimed_count = 0
         delivered_count = 0
         retryable_count = 0
         terminal_count = 0
         skipped_count = 0
-        for attempt in claimed:
+        attempted_delivery_ids: set[UUID] = set()
+        for _ in range(self._maximum_deliveries):
+            async with self._repositories.transaction(tenant_id) as store:
+                attempt = await store.claim_delivery_attempt(
+                    tenant_id,
+                    policy=self._claim_policy,
+                    excluded_delivery_ids=frozenset(attempted_delivery_ids),
+                )
+                if attempt is None:
+                    break
+            attempted_delivery_ids.add(attempt.id)
+            claimed_count += 1
             payload, preparation_error = await self._prepare_payload(
                 tenant_id=tenant_id,
                 attempt=attempt,
@@ -236,12 +227,29 @@ class DeliveryReconciler:
                         audit_action="transcript.delivery_rejected",
                     )
                 else:
-                    outcome = await complete_delivery_success(
-                        self._repositories,
-                        tenant_id=tenant_id,
-                        attempted=attempt,
-                        platform_transcript_id=platform_result.transcript_id,
-                    )
+                    try:
+                        outcome = await complete_delivery_success(
+                            self._repositories,
+                            tenant_id=tenant_id,
+                            attempted=attempt,
+                            platform_transcript_id=platform_result.transcript_id,
+                        )
+                    except DeliverySuccessConflictError:
+                        async with self._repositories.transaction(tenant_id) as store:
+                            await store.audit(
+                                tenant_id=tenant_id,
+                                action="transcript.delivery_success_conflict",
+                                entity_type="transcript_delivery",
+                                entity_id=attempt.id,
+                            )
+                        log_event(
+                            action="delivery.success_conflict",
+                            tenant_id=tenant_id,
+                            entity_id=attempt.id,
+                            error_class="DeliverySuccessConflict",
+                        )
+                        skipped_count += 1
+                        continue
 
             if outcome.status == DeliveryStatus.DELIVERED:
                 delivered_count += 1
@@ -253,7 +261,7 @@ class DeliveryReconciler:
                 skipped_count += 1
 
         return DeliveryReconcileResult(
-            claimed=len(claimed),
+            claimed=claimed_count,
             delivered=delivered_count,
             retryable=retryable_count,
             terminal=terminal_count,
@@ -264,10 +272,11 @@ class DeliveryReconciler:
         self,
         *,
         tenant_id: UUID,
-        attempt: TranscriptDelivery,
+        attempt: DeliveryAttempt,
     ) -> tuple[MasterTranscriptDeliveryRequest | None, str | None]:
         async with self._repositories.transaction(tenant_id) as store:
-            session = await store.lock_session(tenant_id, attempt.session_id)
+            source = await store.delivery_payload_source(tenant_id, attempt.session_id)
+            session = source.session
             if session is None:
                 return None, "session_unavailable"
             if session.status not in {
@@ -275,18 +284,26 @@ class DeliveryReconciler:
                 SessionStatus.HANDED_OFF,
             }:
                 return None, "session_not_deliverable"
-            consent = await store.get_consent(tenant_id, session.consent_record_id)
+            consent = source.consent
             if consent is None:
                 return None, "consent_unavailable"
+            if consent.id != session.consent_record_id:
+                return None, "consent_invalid"
             try:
-                self._consent_policy.validate_session(consent, session)
+                self._consent_policy.validate_delivery_source(consent, session)
             except ConsentError:
                 return None, "consent_invalid"
-            transcript = await store.transcript_for(tenant_id, attempt.session_id)
+            transcript = source.transcript
             if transcript is None:
                 return None, "transcript_unavailable"
+            if transcript.session_id != attempt.session_id:
+                return None, "transcript_unavailable"
             try:
-                payload = to_master_platform_payload(session, transcript)
+                payload = to_master_platform_payload_parts(
+                    encounter_id=session.appointment_id,
+                    session_id=session.id,
+                    segments=transcript.segments,
+                )
             except ValueError:
                 return None, "payload_invalid"
             if canonical_sha256(payload) != attempt.payload_sha256:

@@ -319,6 +319,64 @@ class DeliveryStatus(StrEnum):
     TERMINAL = "terminal"
 
 
+class DeliverySessionSource(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    appointment_id: ExternalEntityId
+    practitioner_id: ExternalEntityId
+    patient_id: ExternalEntityId
+    consent_record_id: UUID
+    modality: CaptureModality
+    status: SessionStatus
+
+
+class DeliveryConsentSource(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    appointment_id: ExternalEntityId
+    practitioner_id: ExternalEntityId
+    patient_id: ExternalEntityId
+    modality: CaptureModality
+    all_parties_consented: bool
+    revoked_at: datetime | None = None
+
+
+class DeliveryTranscriptSource(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    session_id: UUID
+    segments: list[TranscriptSegment] = Field(
+        min_length=1,
+        max_length=MAX_TRANSCRIPT_SEGMENTS,
+        repr=False,
+    )
+
+
+class DeliveryPayloadSource(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    session: DeliverySessionSource | None = None
+    consent: DeliveryConsentSource | None = None
+    transcript: DeliveryTranscriptSource | None = None
+
+
+class DeliveryAttempt(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    session_id: UUID
+    idempotency_key: str = Field(min_length=8, max_length=255)
+    payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: DeliveryStatus
+    attempt_count: int = Field(ge=0)
+    platform_transcript_id: ExternalEntityId | None = None
+    last_error_code: str | None = Field(default=None, max_length=64)
+    updated_at: datetime
+
+
 class TranscriptDelivery(BaseModel):
     model_config = ConfigDict(frozen=True)
 
