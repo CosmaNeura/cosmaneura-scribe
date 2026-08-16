@@ -1,6 +1,6 @@
 # ADR 0015: Gate manual delivery reconciliation on identity and claim fixes
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
@@ -35,7 +35,7 @@ principals into one. It would also give a background repair process the API's br
 Azure authority. Shipping a dedicated job before the master and claim fixes would instead expose
 duplicate-delivery races. Neither choice is acceptable.
 
-## Proposed decision
+## Decision
 
 Do not add a runner, job, role assignment, schedule, or activation setting until the following
 cross-repository prerequisites are merged and accepted.
@@ -105,7 +105,7 @@ transcript text, encounter display data, tokens, endpoints, URLs, or payloads.
 
 ### Add a dedicated, false-by-default manual job only after those fixes
 
-The eventual trigger will be an Azure Container Apps Job controlled by two independent settings,
+The trigger is an Azure Container Apps Job controlled by two independent settings,
 both defaulting to false:
 
 - `deploy_delivery_reconciler_job` creates the manual job, its dedicated user-assigned identity,
@@ -229,7 +229,8 @@ transcripts, or audit evidence and never reintroduces physical-caller-scoped uni
   schedule.
 - Activation requires coordinated master-platform, Scribe, Entra, PostgreSQL, and private-network
   changes plus a live synthetic proof.
-- This ADR adds no runner, Container Apps Job, role assignment, database grant, schedule, client,
-  clinical transcription enablement, or `PLAN.md` change.
+- The runner, manual job, dedicated identity, and narrow database grants remain false by default;
+  this adds no start assignment, schedule, client, clinical transcription enablement, or
+  `PLAN.md` change.
 - ADR 0016 continues to own the separate authenticated client-capture path; client completion does
   not start this reconciler or a transcription job.
