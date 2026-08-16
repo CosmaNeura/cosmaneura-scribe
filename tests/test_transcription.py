@@ -18,6 +18,7 @@ from azure.core.exceptions import (
     ServiceResponseError,
 )
 from cosmaneura_scribe.schemas import CaptureChannel
+from cosmaneura_scribe.settings import Settings
 from cosmaneura_scribe.transcription import (
     AudioTrack,
     AzureSpeechProviderError,
@@ -123,6 +124,20 @@ class FakeEndpointGuard:
         self.calls += 1
         if self.failure is not None:
             raise self.failure
+
+
+def test_azure_adapter_constructs_async_managed_identity_transport() -> None:
+    provider = AzureSpeechTranscriber.from_settings(
+        Settings(
+            managed_identity_client_id=uuid4(),
+            transcription_backend="azure",
+            azure_speech_endpoint="https://cosmaneura-scribe-test.cognitiveservices.azure.com",
+            azure_speech_private_endpoint_cidrs=("10.42.1.6/32",),
+        )
+    )
+
+    assert provider.name == "azure_ai_speech"
+    asyncio.run(provider.close())
 
 
 def test_azure_adapter_preserves_channel_speaker_and_timing_without_repr_leak(
