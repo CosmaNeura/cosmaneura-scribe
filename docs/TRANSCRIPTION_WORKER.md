@@ -72,23 +72,26 @@ enable_transcription_job = false
    and PostgreSQL checks privileges per statement.
 3. Follow `SPEECH_PRIVATE_ACCEPTANCE.md` to provision the owned private Azure AI Speech foundation,
    deploy its dormant smoke job, and record a successful two-case synthetic execution.
-4. Set `enable_transcription_job = true`. The plan must derive the endpoint/private-IP guard from
-   the owned account and add only the job revision plus Blob Reader, key-scoped Crypto User, and
-   Speech User roles.
-   Apply only after reviewing those scopes. Azure data-plane role assignments are eventually
-   consistent; wait for all three assignments to appear for the worker identity and propagate
-   before the first execution. Treat an initial `403` as propagation delay and never widen a role
-   to bypass it. This repository grants no identity permission to start a job execution.
-5. Start one target through an approved operator's existing ARM access. Do not override the enable
-   flag at execution time:
-
-   ```bash
-   az containerapp job start \
-     --resource-group <scribe-resource-group> \
-     --name <transcription-job-name> \
-     --container-name worker \
-     --args <tenant-uuid> <session-uuid>
-   ```
+4. Keep `enable_transcription_job = false`. Activation remains blocked until a reviewed operator
+   helper submits and verifies a full execution template while changing only the two positional
+   tenant/session UUID arguments. A live probe against the dormant smoke job proved that
+   `az containerapp job start --container-name smoke --args <uuid> <uuid>` does not merge the
+   arguments into the deployed container. Azure returned `ContainerAppImageRequired` because the
+   replacement container had no `Image` property.
+5. The helper should use a complete `--yaml` execution template and preserve the deployed worker's
+   exact image, command, environment, CPU and memory resources, and volume mount. Do not construct
+   an ad hoc start command by adding only `--image`, `--command`, or both; omitted template fields
+   can discard security-critical settings. The full-template workflow has not yet been implemented
+   or verified, so this runbook intentionally provides no clinical start command.
+6. After that helper passes review and live synthetic validation, set
+   `enable_transcription_job = true`. The plan must derive the endpoint/private-IP guard from the
+   owned account and add only the job revision plus Blob Reader, key-scoped Crypto User, and Speech
+   User roles. Apply only after reviewing those scopes. Azure data-plane role assignments are
+   eventually consistent; wait for all three assignments to appear for the worker identity and
+   propagate before the first execution. Treat an initial `403` as propagation delay and never
+   widen a role to bypass it. This repository grants no identity permission to start a job
+   execution. Use only the reviewed helper to start one target through an approved operator's
+   existing ARM access, and never override the enable flag at execution time.
 
 The template has parallelism one, completion count one, and zero Container Apps retries. A
 retryable durable record is retried by manually starting the same tenant/session again; the worker

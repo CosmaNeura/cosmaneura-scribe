@@ -152,10 +152,12 @@ Wait for all three role assignments to appear for the worker and propagate befor
 first execution; an initial `403` is a reason to wait and retry, not to widen permissions. Run the
 database bootstrap job only in a drained maintenance window with no API traffic or transcription
 execution because it revokes current privileges before restoring the reviewed grant sets.
-Terraform grants no caller permission to start the job. Supply tenant and session UUIDs only as ARM
-execution overrides by following
-[`../docs/TRANSCRIPTION_WORKER.md`](../docs/TRANSCRIPTION_WORKER.md). Container Apps retries are
-zero; PostgreSQL permits at most three durable manual attempts.
+Terraform grants no caller permission to start the job. Activation remains blocked until the
+reviewed full-template operator helper described in
+[`../docs/TRANSCRIPTION_WORKER.md`](../docs/TRANSCRIPTION_WORKER.md) preserves every deployed
+container field and injects only the tenant and session UUID arguments. An args-only Container Apps
+override does not merge with the base template. Container Apps retries are zero; PostgreSQL permits
+at most three durable manual attempts.
 
 Decommissioning is also explicit: disable the runner and data roles, use a separately reviewed
 migration-administrator procedure to revoke and drop the dedicated PostgreSQL role, and only then
