@@ -31,28 +31,38 @@ Key Vault, an RSA-3072 wrapping key, private endpoints, a runtime managed identi
 least-privilege data-plane roles. The runtime can read only the key's public metadata; it cannot
 unwrap a session key.
 
-The wrapping key is a private Key Vault data-plane resource and depends on the vault private
-endpoint. Run applies from an approved private-network runner that can resolve and reach the vault;
-an ordinary public GitHub runner cannot create or reconcile it. Before the first key plan, grant the
-exact Terraform deployment service principal **Key Vault Crypto Officer**
-(`14b46e9e-c2b7-41b4-b07b-48a6ebf60603`) on this vault only, wait for RBAC propagation, and verify
-the principal from the same private runner. Keep that narrowly scoped grant while Terraform manages
-the key; Azure subscription Owner or Contributor alone has no Key Vault data-plane key permission.
+The wrapping key is a second-stage private Key Vault data-plane resource. The vault, private
+endpoint, and DNS link must exist before the key plan; do not include the key in an empty foundation
+apply. Run key applies from an approved private-network runner that can resolve and reach the vault;
+an ordinary public GitHub runner cannot create or reconcile it. The approved one-time bootstrap uses
+the false-default, dedicated plan/apply jobs in
+[`../docs/PRIVATE_TERRAFORM_RUNNER.md`](../docs/PRIVATE_TERRAFORM_RUNNER.md). Its vault-scoped
+**Key Vault Crypto Officer** and RBAC Administrator assignments, exact-API Container Apps
+Contributor assignment, exact-object state data role/ABAC assignment, and resource-group Reader
+exist only for the key/role/API proof window. State deletion and unrelated Blob objects are denied.
+Provider auto-registration is disabled, and two temporary NSG rules permit only ARM and the North
+Central US state service over TCP/443. The image uses its locked local provider mirror and does not
+need public provider-registry egress. Phase A removes those five enabled assignments, the custom
+role, and both rules; Phase B removes `AcrPull`, the jobs, and the identity. Azure subscription
+Owner or Contributor alone has no Key Vault data-plane key permission. No API or worker identity
+may substitute for the deployment identity.
 
 The Container Apps slice adds a dedicated delegated subnet, ACR, Log Analytics, and an internal
 workload-profile environment. Deployment is intentionally two-stage so Azure never receives a
 reference to an image that does not yet exist:
 
-The dedicated Log Analytics workspace retains operational records for 90 days and has no daily
-ingestion cap, avoiding silent audit loss during an incident. Before applying, configure an Azure
-Cost Management budget and ingestion-cost alert, then monitor the workspace `Usage` table; cost
-monitoring replaces the unsafe hard cap. This 90-day operational workspace is not the seven-year
-audit archive; the retention slice must add a separately reviewed immutable archive.
+Observability activates in three reviewed stages. The initial configuration retains 30 days and a
+temporary 0.5-GiB daily cap. This is an explicit audit-loss exception, not the accepted baseline.
 
-`log_analytics_retention_in_days` and `log_analytics_daily_quota_gb` expose those environment
-values for staged reconciliation; their reviewed defaults remain `90` and `-1`. Preserving a
-finite live cap while budget/alert ownership is unresolved is a temporary, explicit exception: it
-must be recorded as an audit-loss risk and must not be mistaken for the accepted baseline.
+1. Set `enable_development_cost_guardrails = true` with the existing, verified Azure Monitor action
+   group resource ID. This creates the approved `$100/month` resource-group budget with both 80%
+   actual and 80% forecast notifications. It does not create or copy an email receiver.
+2. Set `enable_log_analytics_audit_baseline = true`,
+   `log_analytics_retention_in_days = 90`, and `log_analytics_daily_quota_gb = -1`. Validation blocks
+   this step until the budget gate is active. The uncapped 90-day workspace avoids silent audit loss
+   during an incident; monitor its `Usage` table. It is not a long-term immutable audit archive.
+3. Enable scrubbed data-plane diagnostics only after the first two stages and the transformation
+   proof below pass.
 
 Blob and Key Vault data-plane diagnostics have an additional false-by-default gate:
 
@@ -60,7 +70,8 @@ Blob and Key Vault data-plane diagnostics have an additional false-by-default ga
 enable_phi_safe_data_plane_diagnostics = false
 ```
 
-Keep it false for the first workspace apply. Enabling it creates a `WorkspaceTransforms` DCR,
+Validation keeps it false until the budget and workspace-baseline gates are active. Enabling it
+creates a `WorkspaceTransforms` DCR,
 attaches it to the existing workspace, and only then enables `StorageRead`, `StorageWrite`,
 `StorageDelete`, `Transaction`, Key Vault `AuditEvent`, and `AllMetrics`. The Blob transform drops
 `Uri`, `ObjectKey`, `SourceUri`, and `DestinationUri` before `StorageBlobLogs` ingestion. Key Vault
@@ -209,3 +220,16 @@ and runs exactly two hash-pinned synthetic cases. Follow
 [`../docs/SPEECH_PRIVATE_ACCEPTANCE.md`](../docs/SPEECH_PRIVATE_ACCEPTANCE.md) before activating the
 clinical transcription job. Retention automation and deployment identities follow in later
 reviewed slices.
+
+The temporary private Terraform runner is independently false by default:
+
+```hcl
+deploy_private_terraform_runner = false
+enable_private_terraform_runner = false
+```
+
+It is only a one-time private key, runtime-role, and API reconciliation. Follow the complete state
+snapshot, key/moved-role/API saved-plan review, fixed-start, proof, five enabled-assignment/custom
+role/temporary-egress Phase A revocation, `AcrPull`/job/identity Phase B deletion, and replacement
+requirements in
+[`../docs/PRIVATE_TERRAFORM_RUNNER.md`](../docs/PRIVATE_TERRAFORM_RUNNER.md).

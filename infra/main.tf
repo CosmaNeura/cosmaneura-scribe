@@ -13,6 +13,9 @@ locals {
   resource_group_location = var.create_resource_group ? (
     azurerm_resource_group.scribe[0].location
   ) : data.azurerm_resource_group.scribe[0].location
+  resource_group_id = var.create_resource_group ? (
+    azurerm_resource_group.scribe[0].id
+  ) : data.azurerm_resource_group.scribe[0].id
   tags = merge(var.tags, {
     environment = var.environment
   })
