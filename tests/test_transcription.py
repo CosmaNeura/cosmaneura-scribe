@@ -10,9 +10,17 @@ from azure.ai.transcription.models import (
     TranscriptionContent,
     TranscriptionResult,
 )
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    DecodeError,
+    HttpResponseError,
+    ServiceRequestError,
+    ServiceResponseError,
+)
 from cosmaneura_scribe.schemas import CaptureChannel
 from cosmaneura_scribe.transcription import (
     AudioTrack,
+    AzureSpeechProviderError,
     AzureSpeechTranscriber,
     SttResult,
     SttSegment,
@@ -68,6 +76,16 @@ class FakeAzureClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class FailingAzureClient(FakeAzureClient):
+    def __init__(self, failure: Exception) -> None:
+        super().__init__([])
+        self.failure = failure
+
+    async def transcribe(self, body: TranscriptionContent, **kwargs: object) -> TranscriptionResult:
+        del body, kwargs
+        raise self.failure
 
 
 class FakeProvider:
@@ -210,6 +228,81 @@ def test_missing_audio_error_does_not_expose_local_path(tmp_path: Path) -> None:
 
     assert str(exception.value) == "audio track unavailable"
     assert "sensitive-patient" not in repr(exception.value)
+
+
+class _Response:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        self.reason = "unsafe response detail"
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (
+            ClientAuthenticationError(message="unsafe credential detail"),
+            "speech_credential_unavailable",
+        ),
+        (
+            ServiceRequestError("unsafe transport detail"),
+            "speech_service_transport_error",
+        ),
+        (
+            ServiceResponseError("unsafe response detail"),
+            "speech_service_response_error",
+        ),
+        (DecodeError("unsafe decode detail"), "speech_service_response_error"),
+        (
+            HttpResponseError(
+                message="unsafe request detail",
+                response=_Response(400),  # type: ignore[arg-type]
+            ),
+            "speech_request_rejected",
+        ),
+        (
+            HttpResponseError(
+                message="unsafe authorization detail",
+                response=_Response(403),  # type: ignore[arg-type]
+            ),
+            "speech_authorization_rejected",
+        ),
+        (
+            HttpResponseError(
+                message="unsafe throttle detail",
+                response=_Response(429),  # type: ignore[arg-type]
+            ),
+            "speech_service_throttled",
+        ),
+        (
+            HttpResponseError(
+                message="unsafe server detail",
+                response=_Response(503),  # type: ignore[arg-type]
+            ),
+            "speech_service_unavailable",
+        ),
+    ],
+)
+def test_azure_adapter_maps_provider_failures_to_fixed_codes_without_detail(
+    tmp_path: Path,
+    failure: Exception,
+    expected_code: str,
+) -> None:
+    audio_path = tmp_path / "sensitive-audio-name.wav"
+    audio_path.write_bytes(b"fixture")
+    provider = AzureSpeechTranscriber(FailingAzureClient(failure), max_speakers=4)
+    request = TranscriptionRequest(
+        session_id=uuid4(),
+        consent_record_id=uuid4(),
+        language_code="en-US",
+        tracks=(AudioTrack(uuid4(), CaptureChannel.MIXED, audio_path),),
+    )
+
+    with pytest.raises(AzureSpeechProviderError, match=f"^{expected_code}$") as caught:
+        asyncio.run(provider.transcribe(request))
+
+    representation = repr(caught.value)
+    assert "unsafe" not in representation
+    assert "sensitive-audio-name" not in representation
 
 
 def test_azure_adapter_checks_private_endpoint_before_each_egress(tmp_path: Path) -> None:

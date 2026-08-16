@@ -23,7 +23,7 @@ from cosmaneura_scribe.speech_smoke_runner import (
     _load_validated_manifest,
     run_speech_smoke,
 )
-from cosmaneura_scribe.transcription import SpeechToTextProvider
+from cosmaneura_scribe.transcription import AzureSpeechProviderError, SpeechToTextProvider
 from cosmaneura_scribe.transcription_benchmark import BenchmarkResult
 
 
@@ -243,6 +243,74 @@ async def test_speech_smoke_preserves_private_endpoint_failure_class(
     assert len(events) == 1
     assert events[0]["action"] == "speech_smoke.failed"
     assert events[0]["error_class"] == "SpeechPrivateEndpointUnavailable"
+
+
+@pytest.mark.asyncio
+async def test_speech_smoke_preserves_fixed_provider_failure_without_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = FakeProvider()
+    events: list[dict[str, object]] = []
+
+    async def benchmark(_: object, __: SpeechToTextProvider) -> list[BenchmarkResult]:
+        raise AzureSpeechProviderError("speech_service_transport_error")
+
+    def capture_event(**event: object) -> None:
+        events.append(event)
+
+    monkeypatch.setattr(speech_smoke_runner, "log_event", capture_event)
+
+    with pytest.raises(
+        SpeechSmokeRunnerError,
+        match="^speech_service_transport_error$",
+    ) as caught:
+        await run_speech_smoke(
+            environ={SPEECH_SMOKE_ENABLED_ENV: "true"},
+            settings_factory=_enabled_settings,
+            provider_factory=lambda _: provider,
+            benchmark=benchmark,
+        )
+
+    assert provider.closed is True
+    assert events == [
+        {
+            "action": "speech_smoke.failed",
+            "error_class": "SpeechServiceTransportError",
+            "duration_ms": events[0]["duration_ms"],
+        }
+    ]
+    assert "unsafe" not in repr(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_speech_smoke_replaces_unknown_provider_failure_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = FakeProvider()
+    events: list[dict[str, object]] = []
+
+    async def benchmark(_: object, __: SpeechToTextProvider) -> list[BenchmarkResult]:
+        raise AzureSpeechProviderError("unsafe provider detail")
+
+    monkeypatch.setattr(
+        speech_smoke_runner,
+        "log_event",
+        lambda **event: events.append(event),
+    )
+
+    with pytest.raises(
+        SpeechSmokeRunnerError,
+        match="^speech_provider_unavailable$",
+    ) as caught:
+        await run_speech_smoke(
+            environ={SPEECH_SMOKE_ENABLED_ENV: "true"},
+            settings_factory=_enabled_settings,
+            provider_factory=lambda _: provider,
+            benchmark=benchmark,
+        )
+
+    assert events[0]["error_class"] == "SpeechProviderUnavailable"
+    assert "unsafe" not in repr(caught.value)
 
 
 def test_speech_smoke_main_emits_success_info_event_once(
