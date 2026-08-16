@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     master_platform_base_url: AnyHttpUrl | None = None
     master_platform_scope: str | None = None
     master_platform_timeout_seconds: float = Field(default=15, ge=1, le=60)
+    delivery_pending_timeout_seconds: int = Field(default=300, ge=30, le=86_400)
+    delivery_retry_delay_seconds: int = Field(default=60, ge=1, le=86_400)
+    delivery_reconciler_max_deliveries: int = Field(default=25, ge=1, le=100)
+    delivery_reconciler_job_enabled: bool = False
 
     repository_backend: Literal["memory", "postgres"] = "memory"
     database_url: SecretStr | None = None
@@ -80,6 +84,8 @@ class Settings(BaseSettings):
     database_runtime_principal_object_id: UUID | None = None
     database_transcription_principal_name: str | None = None
     database_transcription_principal_object_id: UUID | None = None
+    database_delivery_reconciler_principal_name: str | None = None
+    database_delivery_reconciler_principal_object_id: UUID | None = None
 
     transcription_backend: Literal["none", "azure"] = "none"
     azure_speech_endpoint: AnyHttpUrl | None = None
@@ -123,6 +129,29 @@ class Settings(BaseSettings):
             ):
                 raise ValueError(
                     "the transcription database principal must be distinct from the runtime"
+                )
+        if (self.database_delivery_reconciler_principal_name is None) != (
+            self.database_delivery_reconciler_principal_object_id is None
+        ):
+            raise ValueError(
+                "database_delivery_reconciler_principal_name and "
+                "database_delivery_reconciler_principal_object_id must be configured together"
+            )
+        if self.database_delivery_reconciler_principal_name is not None:
+            principal_names = {
+                self.database_runtime_principal_name,
+                self.database_transcription_principal_name,
+            }
+            principal_object_ids = {
+                self.database_runtime_principal_object_id,
+                self.database_transcription_principal_object_id,
+            }
+            if (
+                self.database_delivery_reconciler_principal_name in principal_names
+                or self.database_delivery_reconciler_principal_object_id in principal_object_ids
+            ):
+                raise ValueError(
+                    "the delivery reconciler database principal must be distinct from other roles"
                 )
         if self.master_platform_handoff_enabled:
             if self.master_platform_base_url is None or self.master_platform_scope is None:
@@ -176,6 +205,15 @@ class Settings(BaseSettings):
             if self.audio_assembly_encrypted_temp_directory is None:
                 raise ValueError(
                     "audio_assembly_encrypted_temp_directory is required for the transcription job"
+                )
+        if self.delivery_reconciler_job_enabled:
+            if self.repository_backend != "postgres":
+                raise ValueError("the delivery reconciler job requires the PostgreSQL repository")
+            if not self.master_platform_handoff_enabled:
+                raise ValueError("the delivery reconciler job requires master platform handoff")
+            if self.managed_identity_client_id is None:
+                raise ValueError(
+                    "managed_identity_client_id is required for the delivery reconciler job"
                 )
         if self.speech_smoke_enabled:
             if self.transcription_backend != "azure":

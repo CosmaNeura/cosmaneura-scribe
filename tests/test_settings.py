@@ -121,6 +121,42 @@ def test_transcription_database_principal_requires_complete_identity() -> None:
         )
 
 
+def test_delivery_reconciler_database_principal_is_complete_and_distinct() -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(database_delivery_reconciler_principal_name="scribe-delivery-reconciler")
+
+    shared_object_id = uuid4()
+    with pytest.raises(ValidationError, match="must be distinct"):
+        Settings(
+            database_runtime_principal_name="scribe-runtime",
+            database_runtime_principal_object_id=shared_object_id,
+            database_delivery_reconciler_principal_name="scribe-delivery-reconciler",
+            database_delivery_reconciler_principal_object_id=shared_object_id,
+        )
+
+
+def test_enabled_delivery_reconciler_job_requires_closed_dependencies() -> None:
+    configuration: dict[str, object] = {
+        "managed_identity_client_id": uuid4(),
+        "repository_backend": "postgres",
+        "database_url": "postgresql+asyncpg://test:test@localhost/scribe",
+        "database_ssl": False,
+        "master_platform_handoff_enabled": True,
+        "master_platform_base_url": "https://platform.internal.example",
+        "master_platform_scope": "api://platform/.default",
+        "delivery_reconciler_job_enabled": True,
+    }
+    for overrides, expected_error in (
+        ({"repository_backend": "memory"}, "PostgreSQL repository"),
+        ({"master_platform_handoff_enabled": False}, "master platform handoff"),
+        ({"managed_identity_client_id": None}, "managed_identity_client_id"),
+    ):
+        with pytest.raises(ValidationError, match=expected_error):
+            Settings(**(configuration | overrides))
+
+    assert Settings(**configuration).delivery_reconciler_job_enabled is True
+
+
 def test_enabled_transcription_job_requires_closed_production_dependencies(
     tmp_path: Path,
 ) -> None:

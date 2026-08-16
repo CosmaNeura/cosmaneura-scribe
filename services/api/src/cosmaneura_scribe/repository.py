@@ -5,7 +5,8 @@ import copy
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
@@ -15,7 +16,12 @@ from .schemas import (
     CaptureChannel,
     CaptureSession,
     ConsentRecord,
+    DeliveryAttempt,
+    DeliveryConsentSource,
+    DeliveryPayloadSource,
+    DeliverySessionSource,
     DeliveryStatus,
+    DeliveryTranscriptSource,
     SessionAudioKey,
     SessionStatus,
     Transcript,
@@ -32,6 +38,10 @@ class IdempotencyConflictError(ValueError):
 
 class IdempotencyClaimUnavailableError(RuntimeError):
     """A concurrent idempotency claim could not yet be observed safely."""
+
+
+class DeliverySuccessConflictError(RuntimeError):
+    """A remote success disagrees with the delivery receipt's durable binding."""
 
 
 @dataclass(frozen=True)
@@ -55,7 +65,38 @@ class AudioAssemblyManifest:
     chunks: tuple[AudioChunk, ...] = field(repr=False)
 
 
+@dataclass(frozen=True)
+class DeliveryClaimPolicy:
+    pending_timeout: timedelta = timedelta(minutes=5)
+    retry_delay: timedelta = timedelta(minutes=1)
+
+    def __post_init__(self) -> None:
+        if self.pending_timeout <= timedelta(0) or self.retry_delay <= timedelta(0):
+            raise ValueError("delivery claim delays must be positive")
+
+
+@dataclass(frozen=True)
+class DeliverySuccessCompletion:
+    delivery: DeliveryAttempt
+    changed: bool
+
+
+class DeliverySessionSyncResult(StrEnum):
+    SYNCHRONIZED = "synchronized"
+    ALREADY_SYNCHRONIZED = "already_synchronized"
+    SESSION_UNAVAILABLE = "session_unavailable"
+    SESSION_STATE_CONFLICT = "session_state_conflict"
+
+
 class Repository(Protocol):
+    async def get_idempotency(
+        self,
+        *,
+        tenant_id: UUID,
+        operation: str,
+        key: str,
+    ) -> IdempotencyRecord | None: ...
+
     async def claim_idempotency(
         self,
         *,
@@ -156,6 +197,10 @@ class Repository(Protocol):
         self, tenant_id: UUID, delivery_id: UUID
     ) -> TranscriptDelivery | None: ...
 
+    async def get_delivery_attempt(
+        self, tenant_id: UUID, delivery_id: UUID
+    ) -> DeliveryAttempt | None: ...
+
     async def delivery_for(
         self, tenant_id: UUID, session_id: UUID
     ) -> TranscriptDelivery | None: ...
@@ -165,19 +210,23 @@ class Repository(Protocol):
     async def claim_delivery_attempt(
         self,
         tenant_id: UUID,
-        delivery_id: UUID,
         *,
-        now: datetime,
-    ) -> TranscriptDelivery | None: ...
+        policy: DeliveryClaimPolicy,
+        delivery_id: UUID | None = None,
+        excluded_delivery_ids: frozenset[UUID] = frozenset(),
+    ) -> DeliveryAttempt | None: ...
 
-    async def claim_stale_deliveries(
+    async def delivery_payload_source(
         self,
         tenant_id: UUID,
-        *,
-        stale_before: datetime,
-        now: datetime,
-        limit: int,
-    ) -> list[TranscriptDelivery]: ...
+        session_id: UUID,
+    ) -> DeliveryPayloadSource: ...
+
+    async def synchronize_delivery_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> DeliverySessionSyncResult: ...
 
     async def complete_delivery_failure(
         self,
@@ -187,17 +236,16 @@ class Repository(Protocol):
         expected_attempt_count: int,
         failure_status: DeliveryStatus,
         error_code: str,
-        now: datetime,
-    ) -> TranscriptDelivery | None: ...
+    ) -> DeliveryAttempt | None: ...
 
     async def complete_delivery_success(
         self,
         tenant_id: UUID,
         delivery_id: UUID,
         *,
+        expected_payload_sha256: str,
         platform_transcript_id: str,
-        now: datetime,
-    ) -> TranscriptDelivery | None: ...
+    ) -> DeliverySuccessCompletion | None: ...
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID
@@ -293,6 +341,15 @@ class InMemoryRepository:
         if previous.request_fingerprint != request_fingerprint:
             raise IdempotencyConflictError
         return previous.entity_id
+
+    async def get_idempotency(
+        self,
+        *,
+        tenant_id: UUID,
+        operation: str,
+        key: str,
+    ) -> IdempotencyRecord | None:
+        return self.idempotency.get((tenant_id, operation, key))
 
     async def get_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None:
         return self.consents.get((tenant_id, consent_id))
@@ -502,6 +559,18 @@ class InMemoryRepository:
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
         return self.deliveries.get((tenant_id, delivery_id))
 
+    async def get_delivery_attempt(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+    ) -> DeliveryAttempt | None:
+        delivery = await self.get_delivery(tenant_id, delivery_id)
+        return (
+            DeliveryAttempt.model_validate(delivery.model_dump())
+            if delivery is not None
+            else None
+        )
+
     async def delivery_for(self, tenant_id: UUID, session_id: UUID) -> TranscriptDelivery | None:
         delivery_id = self.delivery_by_session.get((tenant_id, session_id))
         if delivery_id is None:
@@ -515,16 +584,38 @@ class InMemoryRepository:
     async def claim_delivery_attempt(
         self,
         tenant_id: UUID,
-        delivery_id: UUID,
         *,
-        now: datetime,
-    ) -> TranscriptDelivery | None:
-        current = await self.get_delivery(tenant_id, delivery_id)
-        if current is None or current.status not in {
-            DeliveryStatus.PENDING,
-            DeliveryStatus.RETRYABLE,
-        }:
+        policy: DeliveryClaimPolicy,
+        delivery_id: UUID | None = None,
+        excluded_delivery_ids: frozenset[UUID] = frozenset(),
+    ) -> DeliveryAttempt | None:
+        now = datetime.now(UTC)
+        candidates = sorted(
+            (
+                delivery
+                for (row_tenant, row_id), delivery in self.deliveries.items()
+                if row_tenant == tenant_id
+                and (delivery_id is None or row_id == delivery_id)
+                and row_id not in excluded_delivery_ids
+                and (
+                    (
+                        delivery.status == DeliveryStatus.PENDING
+                        and (
+                            delivery.attempt_count == 0
+                            or delivery.updated_at <= now - policy.pending_timeout
+                        )
+                    )
+                    or (
+                        delivery.status == DeliveryStatus.RETRYABLE
+                        and delivery.updated_at <= now - policy.retry_delay
+                    )
+                )
+            ),
+            key=lambda delivery: (delivery.updated_at, delivery.id),
+        )
+        if not candidates:
             return None
+        current = candidates[0]
         claimed = current.model_copy(
             update={
                 "status": DeliveryStatus.PENDING,
@@ -533,39 +624,80 @@ class InMemoryRepository:
                 "updated_at": now,
             }
         )
-        self.deliveries[(tenant_id, delivery_id)] = claimed
-        return claimed
+        self.deliveries[(tenant_id, current.id)] = claimed
+        await self.audit(
+            tenant_id=tenant_id,
+            action="transcript.delivery_attempted",
+            entity_type="transcript_delivery",
+            entity_id=claimed.id,
+        )
+        return DeliveryAttempt.model_validate(claimed.model_dump())
 
-    async def claim_stale_deliveries(
+    async def delivery_payload_source(
         self,
         tenant_id: UUID,
-        *,
-        stale_before: datetime,
-        now: datetime,
-        limit: int,
-    ) -> list[TranscriptDelivery]:
-        if limit < 1 or limit > 100:
-            raise ValueError("delivery reconciliation limit must be between 1 and 100")
-        candidates = sorted(
-            (
-                delivery
-                for (row_tenant, _), delivery in self.deliveries.items()
-                if row_tenant == tenant_id
-                and delivery.status in {DeliveryStatus.PENDING, DeliveryStatus.RETRYABLE}
-                and delivery.updated_at <= stale_before
+        session_id: UUID,
+    ) -> DeliveryPayloadSource:
+        session = self.sessions.get((tenant_id, session_id))
+        if session is None:
+            return DeliveryPayloadSource()
+        consent = self.consents.get((tenant_id, session.consent_record_id))
+        transcript_id = self.transcript_by_session.get((tenant_id, session_id))
+        transcript = (
+            self.transcripts.get((tenant_id, transcript_id)) if transcript_id is not None else None
+        )
+        return DeliveryPayloadSource(
+            session=DeliverySessionSource.model_validate(
+                session.model_dump(exclude={"created_at"})
             ),
-            key=lambda delivery: (delivery.updated_at, delivery.id),
-        )[:limit]
-        claimed: list[TranscriptDelivery] = []
-        for delivery in candidates:
-            attempt = await self.claim_delivery_attempt(
-                tenant_id,
-                delivery.id,
-                now=now,
-            )
-            if attempt is not None:
-                claimed.append(attempt)
-        return claimed
+            consent=(
+                DeliveryConsentSource.model_validate(
+                    consent.model_dump(
+                        include={
+                            "id",
+                            "appointment_id",
+                            "practitioner_id",
+                            "patient_id",
+                            "modality",
+                            "all_parties_consented",
+                            "revoked_at",
+                        }
+                    )
+                )
+                if consent is not None
+                else None
+            ),
+            transcript=(
+                DeliveryTranscriptSource.model_validate(
+                    transcript.model_dump(include={"id", "session_id", "segments"})
+                )
+                if transcript is not None
+                else None
+            ),
+        )
+
+    async def synchronize_delivery_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> DeliverySessionSyncResult:
+        session = self.sessions.get((tenant_id, session_id))
+        if session is None:
+            return DeliverySessionSyncResult.SESSION_UNAVAILABLE
+        if session.status == SessionStatus.HANDED_OFF:
+            return DeliverySessionSyncResult.ALREADY_SYNCHRONIZED
+        if not can_transition_session(session.status, SessionStatus.HANDED_OFF):
+            return DeliverySessionSyncResult.SESSION_STATE_CONFLICT
+        self.sessions[(tenant_id, session_id)] = session.model_copy(
+            update={"status": SessionStatus.HANDED_OFF}
+        )
+        await self.audit(
+            tenant_id=tenant_id,
+            action="transcript.delivery_session_synchronized",
+            entity_type="scribe_session",
+            entity_id=session_id,
+        )
+        return DeliverySessionSyncResult.SYNCHRONIZED
 
     async def complete_delivery_failure(
         self,
@@ -575,8 +707,7 @@ class InMemoryRepository:
         expected_attempt_count: int,
         failure_status: DeliveryStatus,
         error_code: str,
-        now: datetime,
-    ) -> TranscriptDelivery | None:
+    ) -> DeliveryAttempt | None:
         if failure_status not in {DeliveryStatus.RETRYABLE, DeliveryStatus.TERMINAL}:
             raise ValueError("delivery failure status must be retryable or terminal")
         current = await self.get_delivery(tenant_id, delivery_id)
@@ -590,33 +721,45 @@ class InMemoryRepository:
             update={
                 "status": failure_status,
                 "last_error_code": error_code,
-                "updated_at": now,
+                "updated_at": datetime.now(UTC),
             }
         )
         self.deliveries[(tenant_id, delivery_id)] = failed
-        return failed
+        return DeliveryAttempt.model_validate(failed.model_dump())
 
     async def complete_delivery_success(
         self,
         tenant_id: UUID,
         delivery_id: UUID,
         *,
+        expected_payload_sha256: str,
         platform_transcript_id: str,
-        now: datetime,
-    ) -> TranscriptDelivery | None:
+    ) -> DeliverySuccessCompletion | None:
         current = await self.get_delivery(tenant_id, delivery_id)
-        if current is None or current.status == DeliveryStatus.DELIVERED:
+        if current is None:
             return None
+        if current.payload_sha256 != expected_payload_sha256:
+            raise DeliverySuccessConflictError("delivery_success_conflict")
+        if current.status == DeliveryStatus.DELIVERED:
+            if current.platform_transcript_id != platform_transcript_id:
+                raise DeliverySuccessConflictError("delivery_success_conflict")
+            return DeliverySuccessCompletion(
+                delivery=DeliveryAttempt.model_validate(current.model_dump()),
+                changed=False,
+            )
         delivered = current.model_copy(
             update={
                 "status": DeliveryStatus.DELIVERED,
                 "platform_transcript_id": platform_transcript_id,
                 "last_error_code": None,
-                "updated_at": now,
+                "updated_at": datetime.now(UTC),
             }
         )
         self.deliveries[(tenant_id, delivery_id)] = delivered
-        return delivered
+        return DeliverySuccessCompletion(
+            delivery=DeliveryAttempt.model_validate(delivered.model_dump()),
+            changed=True,
+        )
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID

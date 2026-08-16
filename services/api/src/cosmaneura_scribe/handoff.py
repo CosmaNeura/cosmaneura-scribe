@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, Protocol
+from uuid import UUID
 
 import httpx
 from azure.core.exceptions import AzureError
@@ -16,6 +18,7 @@ from .schemas import (
     MasterTranscriptSegment,
     SpeakerRole,
     Transcript,
+    TranscriptSegment,
 )
 from .settings import Settings
 
@@ -154,10 +157,23 @@ def build_master_platform_handoff(settings: Settings) -> MasterPlatformHandoff:
 def to_master_platform_payload(
     session: CaptureSession, transcript: Transcript
 ) -> MasterTranscriptDeliveryRequest:
-    return MasterTranscriptDeliveryRequest(
+    return to_master_platform_payload_parts(
         encounter_id=session.appointment_id,
-        scribe_session_id=session.id,
-        duration_seconds=(max(segment.end_ms for segment in transcript.segments) + 999) // 1000,
+        session_id=session.id,
+        segments=transcript.segments,
+    )
+
+
+def to_master_platform_payload_parts(
+    *,
+    encounter_id: str,
+    session_id: UUID,
+    segments: Sequence[TranscriptSegment],
+) -> MasterTranscriptDeliveryRequest:
+    return MasterTranscriptDeliveryRequest(
+        encounter_id=encounter_id,
+        scribe_session_id=session_id,
+        duration_seconds=(max(segment.end_ms for segment in segments) + 999) // 1000,
         segments=[
             MasterTranscriptSegment(
                 speaker=ROLE_LABELS[segment.speaker_role],
@@ -165,7 +181,7 @@ def to_master_platform_payload(
                 start_ms=segment.start_ms,
                 end_ms=segment.end_ms,
             )
-            for segment in transcript.segments
+            for segment in segments
         ],
     )
 

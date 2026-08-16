@@ -16,9 +16,14 @@ from cosmaneura_scribe.main import (
     app,
     get_audio_encryption_key_provider,
     get_consent_policy,
+    get_delivery_claim_policy,
     get_master_platform_handoff,
 )
-from cosmaneura_scribe.repository import RepositoryProvider
+from cosmaneura_scribe.repository import (
+    DeliveryClaimPolicy,
+    DeliverySuccessConflictError,
+    RepositoryProvider,
+)
 from cosmaneura_scribe.schemas import (
     AudioEncryptionPublicKey,
     CaptureChannel,
@@ -733,12 +738,44 @@ def test_master_platform_delivery_is_source_agnostic_and_idempotent(
     assert actions.count("transcript.delivered") == 1
 
 
+def test_delivered_same_key_replay_precedes_mutable_consent_guards(
+    handoff_client: tuple[TestClient, RecordingHandoff],
+) -> None:
+    client, handoff = handoff_client
+    tenant_id = uuid4()
+    _, session = create_ready_transcript(client, tenant_id, key_suffix="durable-replay")
+    url = f"/v1/sessions/{session['id']}/deliver"
+    original_headers = headers(tenant_id, "delivery-durable-replay-0001")
+    accepted = client.post(url, headers=original_headers)
+    assert accepted.status_code == 200
+
+    class RejectSessionConsentPolicy:
+        def validate_session(self, *_: object) -> None:
+            raise ConsentError("consent_invalid")
+
+    app.dependency_overrides[get_consent_policy] = RejectSessionConsentPolicy
+    replay = client.post(url, headers=original_headers)
+    new_request = client.post(
+        url,
+        headers=headers(tenant_id, "delivery-durable-replay-new-key-0001"),
+    )
+
+    assert replay.status_code == 200
+    assert replay.json() == accepted.json()
+    assert new_request.status_code == 409
+    assert new_request.json() == {"detail": "consent_invalid"}
+    assert len(handoff.requests) == 1
+
+
 def test_retryable_delivery_records_failure_and_reuses_outbound_key(
     client: TestClient,
     repository_backend: RepositoryBackend,
 ) -> None:
     handoff = RecordingHandoff(failures=1)
     app.dependency_overrides[get_master_platform_handoff] = lambda: handoff
+    app.dependency_overrides[get_delivery_claim_policy] = lambda: DeliveryClaimPolicy(
+        retry_delay=timedelta(microseconds=1)
+    )
     tenant_id = uuid4()
     _, session = create_ready_transcript(client, tenant_id)
     url = f"/v1/sessions/{session['id']}/deliver"
@@ -829,12 +866,12 @@ def test_delivery_reconciler_retries_stale_receipt_with_the_stable_outbound_key(
     reconciler = DeliveryReconciler(
         repositories=repository_backend.provider,
         handoff=handoff,
+        claim_policy=DeliveryClaimPolicy(retry_delay=timedelta(microseconds=1)),
+        maximum_deliveries=1,
     )
     result = repository_backend.run(
         reconciler.reconcile,
         tenant_id=tenant_id,
-        stale_before=datetime.now(UTC) + timedelta(minutes=1),
-        limit=1,
     )
 
     persisted = repository_backend.delivery_for(tenant_id, session_id)
@@ -845,6 +882,38 @@ def test_delivery_reconciler_retries_stale_receipt_with_the_stable_outbound_key(
     assert persisted.attempt_count == 2
     assert len(handoff.requests) == 2
     assert len(set(handoff.idempotency_keys)) == 1
+
+
+def test_delivery_reconciler_never_reclaims_one_receipt_twice_in_a_run(
+    client: TestClient,
+    repository_backend: RepositoryBackend,
+) -> None:
+    handoff = RecordingHandoff(failures=10)
+    app.dependency_overrides[get_master_platform_handoff] = lambda: handoff
+    tenant_id = uuid4()
+    _, session_data = create_ready_transcript(client, tenant_id, key_suffix="one-run")
+    session_id = UUID(str(session_data["id"]))
+    first = client.post(
+        f"/v1/sessions/{session_id}/deliver",
+        headers=headers(tenant_id, "delivery-reconciler-one-run-0001"),
+    )
+    assert first.status_code == 503
+
+    reconciler = DeliveryReconciler(
+        repositories=repository_backend.provider,
+        handoff=handoff,
+        claim_policy=DeliveryClaimPolicy(retry_delay=timedelta(microseconds=1)),
+        maximum_deliveries=3,
+    )
+    result = repository_backend.run(reconciler.reconcile, tenant_id=tenant_id)
+
+    persisted = repository_backend.delivery_for(tenant_id, session_id)
+    assert result.claimed == 1
+    assert result.retryable == 1
+    assert len(handoff.requests) == 2
+    assert persisted is not None
+    assert persisted.status == DeliveryStatus.RETRYABLE
+    assert persisted.attempt_count == 2
 
 
 def test_delivery_reconciler_rejects_payload_hash_drift_without_network_call(
@@ -876,13 +945,12 @@ def test_delivery_reconciler_rejects_payload_hash_drift_without_network_call(
     reconciler = DeliveryReconciler(
         repositories=repository_backend.provider,
         handoff=handoff,
+        claim_policy=DeliveryClaimPolicy(retry_delay=timedelta(microseconds=1)),
+        maximum_deliveries=1,
     )
     result = repository_backend.run(
         reconciler.reconcile,
         tenant_id=tenant_id,
-        stale_before=now,
-        limit=1,
-        now=now,
     )
 
     persisted = repository_backend.delivery_for(tenant_id, session_id)
@@ -893,7 +961,7 @@ def test_delivery_reconciler_rejects_payload_hash_drift_without_network_call(
     assert handoff.requests == []
 
 
-def test_stale_delivery_claims_are_tenant_scoped_oldest_first_and_bounded(
+def test_delivery_claims_are_tenant_scoped_oldest_first_and_one_at_a_time(
     client: TestClient,
     repository_backend: RepositoryBackend,
 ) -> None:
@@ -939,24 +1007,29 @@ def test_stale_delivery_claims_are_tenant_scoped_oldest_first_and_bounded(
         updated_at=now - timedelta(hours=1),
     )
 
-    async def seed_and_claim() -> list[TranscriptDelivery]:
+    async def seed_and_claim() -> tuple[TranscriptDelivery | None, TranscriptDelivery | None]:
         async with repository_backend.provider.transaction(tenant_id) as store:
             for delivery in deliveries:
                 await store.add_delivery(tenant_id, delivery)
         async with repository_backend.provider.transaction(other_tenant_id) as store:
             await store.add_delivery(other_tenant_id, other_delivery)
         async with repository_backend.provider.transaction(tenant_id) as store:
-            return await store.claim_stale_deliveries(
+            first = await store.claim_delivery_attempt(
                 tenant_id,
-                stale_before=now - timedelta(minutes=5),
-                now=now,
-                limit=2,
+                policy=DeliveryClaimPolicy(retry_delay=timedelta(minutes=5)),
             )
+        async with repository_backend.provider.transaction(tenant_id) as store:
+            second = await store.claim_delivery_attempt(
+                tenant_id,
+                policy=DeliveryClaimPolicy(retry_delay=timedelta(minutes=5)),
+            )
+        return first, second
 
-    claimed = repository_backend.run(seed_and_claim)
+    first, second = repository_backend.run(seed_and_claim)
 
-    assert {delivery.id for delivery in claimed} == {deliveries[0].id, deliveries[1].id}
-    assert all(delivery.attempt_count == 2 for delivery in claimed)
+    assert first is not None and first.id == deliveries[0].id
+    assert second is not None and second.id == deliveries[1].id
+    assert first.attempt_count == second.attempt_count == 2
     third = repository_backend.delivery_for(tenant_id, sessions[2])
     fresh = repository_backend.delivery_for(tenant_id, sessions[3])
     other = repository_backend.delivery_for(other_tenant_id, other_session)
@@ -987,7 +1060,11 @@ def test_delivery_completion_fencing_prevents_late_failure_regression(
     async def race() -> tuple[TranscriptDelivery | None, TranscriptDelivery | None]:
         async with repository_backend.provider.transaction(tenant_id) as store:
             await store.add_delivery(tenant_id, delivery)
-            newer = await store.claim_delivery_attempt(tenant_id, delivery.id, now=now)
+            newer = await store.claim_delivery_attempt(
+                tenant_id,
+                delivery_id=delivery.id,
+                policy=DeliveryClaimPolicy(pending_timeout=timedelta(minutes=1)),
+            )
             assert newer is not None and newer.attempt_count == 2
             failed = await store.complete_delivery_failure(
                 tenant_id,
@@ -995,14 +1072,13 @@ def test_delivery_completion_fencing_prevents_late_failure_regression(
                 expected_attempt_count=2,
                 failure_status=DeliveryStatus.RETRYABLE,
                 error_code="platform_http_503",
-                now=now + timedelta(seconds=1),
             )
             assert failed is not None
             succeeded = await store.complete_delivery_success(
                 tenant_id,
                 delivery.id,
+                expected_payload_sha256=delivery.payload_sha256,
                 platform_transcript_id="ai_visit_transcript_fenced",
-                now=now + timedelta(seconds=2),
             )
             late_failure = await store.complete_delivery_failure(
                 tenant_id,
@@ -1010,9 +1086,8 @@ def test_delivery_completion_fencing_prevents_late_failure_regression(
                 expected_attempt_count=1,
                 failure_status=DeliveryStatus.RETRYABLE,
                 error_code="late_failure",
-                now=now + timedelta(seconds=3),
             )
-            return succeeded, late_failure
+            return succeeded.delivery if succeeded is not None else None, late_failure
 
     succeeded, late_failure = repository_backend.run(race)
     persisted = repository_backend.delivery_for(tenant_id, session_id)
@@ -1021,4 +1096,90 @@ def test_delivery_completion_fencing_prevents_late_failure_regression(
     assert succeeded.status == DeliveryStatus.DELIVERED
     assert succeeded.attempt_count == 2
     assert late_failure is None
-    assert persisted == succeeded
+    assert persisted is not None
+    assert persisted.model_dump(exclude={"created_at"}) == succeeded.model_dump()
+
+
+def test_fresh_pending_delivery_cannot_be_reclaimed(
+    client: TestClient,
+    repository_backend: RepositoryBackend,
+) -> None:
+    tenant_id = uuid4()
+    _, session_data = create_ready_transcript(client, tenant_id)
+    session_id = UUID(str(session_data["id"]))
+    now = datetime.now(UTC)
+    delivery = TranscriptDelivery(
+        id=uuid4(),
+        session_id=session_id,
+        idempotency_key=f"scribe-{session_id}-v1",
+        payload_sha256="d" * 64,
+        status=DeliveryStatus.PENDING,
+        attempt_count=1,
+        created_at=now,
+        updated_at=now,
+    )
+
+    async def claim() -> TranscriptDelivery | None:
+        async with repository_backend.provider.transaction(tenant_id) as store:
+            await store.add_delivery(tenant_id, delivery)
+            return await store.claim_delivery_attempt(
+                tenant_id,
+                delivery_id=delivery.id,
+                policy=DeliveryClaimPolicy(pending_timeout=timedelta(minutes=5)),
+            )
+
+    assert repository_backend.run(claim) is None
+    assert repository_backend.delivery_for(tenant_id, session_id) == delivery
+
+
+def test_repeated_success_is_monotonic_and_conflicting_remote_id_is_rejected(
+    client: TestClient,
+    repository_backend: RepositoryBackend,
+) -> None:
+    tenant_id = uuid4()
+    _, session_data = create_ready_transcript(client, tenant_id)
+    session_id = UUID(str(session_data["id"]))
+    now = datetime.now(UTC)
+    delivery = TranscriptDelivery(
+        id=uuid4(),
+        session_id=session_id,
+        idempotency_key=f"scribe-{session_id}-v1",
+        payload_sha256="e" * 64,
+        status=DeliveryStatus.PENDING,
+        attempt_count=1,
+        created_at=now,
+        updated_at=now,
+    )
+
+    async def complete() -> tuple[TranscriptDelivery, bool]:
+        async with repository_backend.provider.transaction(tenant_id) as store:
+            await store.add_delivery(tenant_id, delivery)
+            first = await store.complete_delivery_success(
+                tenant_id,
+                delivery.id,
+                expected_payload_sha256=delivery.payload_sha256,
+                platform_transcript_id="ai_visit_transcript_stable",
+            )
+            assert first is not None and first.changed
+            replay = await store.complete_delivery_success(
+                tenant_id,
+                delivery.id,
+                expected_payload_sha256=delivery.payload_sha256,
+                platform_transcript_id="ai_visit_transcript_stable",
+            )
+            assert replay is not None
+            with pytest.raises(DeliverySuccessConflictError, match="delivery_success_conflict"):
+                await store.complete_delivery_success(
+                    tenant_id,
+                    delivery.id,
+                    expected_payload_sha256=delivery.payload_sha256,
+                    platform_transcript_id="ai_visit_transcript_conflict",
+                )
+            return replay.delivery, replay.changed
+
+    replayed, changed = repository_backend.run(complete)
+    persisted = repository_backend.delivery_for(tenant_id, session_id)
+    assert changed is False
+    assert replayed.platform_transcript_id == "ai_visit_transcript_stable"
+    assert persisted is not None
+    assert persisted.model_dump(exclude={"created_at"}) == replayed.model_dump()

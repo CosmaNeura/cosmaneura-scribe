@@ -29,6 +29,10 @@ def _database_principals(settings: Settings) -> tuple[_DatabasePrincipal, ...]:
     transcription_object_id = settings.database_transcription_principal_object_id
     if transcription_name is not None and transcription_object_id is not None:
         principals.append(_DatabasePrincipal(transcription_name, transcription_object_id))
+    reconciler_name = settings.database_delivery_reconciler_principal_name
+    reconciler_object_id = settings.database_delivery_reconciler_principal_object_id
+    if reconciler_name is not None and reconciler_object_id is not None:
+        principals.append(_DatabasePrincipal(reconciler_name, reconciler_object_id))
     return tuple(principals)
 
 
@@ -194,6 +198,73 @@ async def _grant_transcription_permissions(settings: Settings) -> None:
         await provider.close()
 
 
+async def _grant_delivery_reconciler_permissions(settings: Settings) -> None:
+    role_name = settings.database_delivery_reconciler_principal_name
+    if role_name is None:
+        return
+
+    provider = build_postgres_provider(settings)
+    try:
+        async with provider.engine.begin() as connection:
+            role = _quoted_identifier(connection, role_name)
+            database = _quoted_identifier(connection, settings.database_name)
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON DATABASE {database} FROM {role}")
+            )
+            await connection.execute(text(f"REVOKE ALL PRIVILEGES ON SCHEMA public FROM {role}"))
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM {role}")
+            )
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM {role}")
+            )
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM {role}")
+            )
+            await connection.execute(text(f"GRANT CONNECT ON DATABASE {database} TO {role}"))
+            await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            await connection.execute(
+                text(
+                    "GRANT SELECT (id, tenant_id, appointment_id, practitioner_id, patient_id, "
+                    "modality, all_parties_consented, revoked_at) "
+                    f"ON consent_records TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT SELECT (id, tenant_id, appointment_id, practitioner_id, patient_id, "
+                    f"consent_record_id, modality, status) ON scribe_sessions TO {role}"
+                )
+            )
+            await connection.execute(
+                text(f"GRANT SELECT (id, tenant_id, session_id, segments) ON transcripts TO {role}")
+            )
+            await connection.execute(
+                text(
+                    "GRANT SELECT (id, tenant_id, session_id, idempotency_key, payload_sha256, "
+                    "status, attempt_count, platform_transcript_id, last_error_code, updated_at) "
+                    f"ON transcript_deliveries TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT UPDATE (status, attempt_count, platform_transcript_id, "
+                    f"last_error_code, updated_at) ON transcript_deliveries TO {role}"
+                )
+            )
+            await connection.execute(
+                text(f"GRANT UPDATE (status) ON scribe_sessions TO {role}")
+            )
+            await connection.execute(
+                text(
+                    "GRANT INSERT (id, tenant_id, action, entity_type, entity_id) "
+                    f"ON audit_events TO {role}"
+                )
+            )
+    finally:
+        await provider.close()
+
+
 async def bootstrap_database(settings: Settings | None = None) -> None:
     settings = settings or get_settings()
     if settings.repository_backend != "postgres":
@@ -203,6 +274,7 @@ async def bootstrap_database(settings: Settings | None = None) -> None:
     await upgrade_database(settings)
     await _grant_runtime_permissions(settings)
     await _grant_transcription_permissions(settings)
+    await _grant_delivery_reconciler_permissions(settings)
 
 
 def main() -> None:

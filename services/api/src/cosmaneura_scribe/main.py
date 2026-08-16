@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from time import perf_counter
 from typing import Annotated
@@ -36,6 +36,8 @@ from .handoff import (
     to_master_platform_payload,
 )
 from .repository import (
+    DeliveryClaimPolicy,
+    DeliverySuccessConflictError,
     IdempotencyClaimUnavailableError,
     IdempotencyConflictError,
     InMemoryRepository,
@@ -55,8 +57,10 @@ from .schemas import (
     CaptureSession,
     ConsentCreate,
     ConsentRecord,
+    DeliveryAttempt,
     DeliveryStatus,
     LegacyTranscriptPayload,
+    MasterTranscriptDeliveryRequest,
     SessionAudioKey,
     SessionAudioKeyCreate,
     SessionAudioKeyReceipt,
@@ -165,6 +169,14 @@ def get_audio_encryption_key_provider() -> AudioEncryptionKeyProvider:
     return build_audio_encryption_key_provider(get_settings())
 
 
+def get_delivery_claim_policy() -> DeliveryClaimPolicy:
+    settings = get_settings()
+    return DeliveryClaimPolicy(
+        pending_timeout=timedelta(seconds=settings.delivery_pending_timeout_seconds),
+        retry_delay=timedelta(seconds=settings.delivery_retry_delay_seconds),
+    )
+
+
 TenantId = Annotated[UUID, Depends(get_verified_tenant_id)]
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=255)]
 Provider = Annotated[RepositoryProvider, Depends(get_repository_provider)]
@@ -190,6 +202,7 @@ EncryptionKeys = Annotated[
     AudioEncryptionKeyProvider,
     Depends(get_audio_encryption_key_provider),
 ]
+DeliveryPolicy = Annotated[DeliveryClaimPolicy, Depends(get_delivery_claim_policy)]
 
 
 def _fingerprint(payload: object) -> str:
@@ -778,81 +791,102 @@ async def deliver_transcript_to_master_platform(
     provider: Provider,
     policy: Policy,
     handoff: Handoff,
+    claim_policy: DeliveryPolicy,
 ) -> TranscriptDelivery:
     # Commit the attempt before making the network call. A crash after this
     # point leaves a pending receipt that is safe to retry with the same key.
-    attempted: TranscriptDelivery | None = None
+    attempted: DeliveryAttempt | None = None
     delivered_replay: TranscriptDelivery | None = None
+    payload: MasterTranscriptDeliveryRequest | None = None
     async with provider.transaction(tenant_id) as store:
-        session = await store.lock_session(tenant_id, session_id)
-        if session is None:
-            raise HTTPException(status_code=404, detail="Capture session not found.")
-        await _assert_session_consent(store, tenant_id, session, policy)
-        transcript = await store.transcript_for(tenant_id, session_id)
-        if transcript is None or session.status not in {
-            SessionStatus.TRANSCRIPT_READY,
-            SessionStatus.HANDED_OFF,
-        }:
-            raise HTTPException(status_code=409, detail="Transcript is not ready for delivery.")
-
-        payload = to_master_platform_payload(session, transcript)
-        payload_fingerprint = _fingerprint(payload)
-        delivery = await store.delivery_for(tenant_id, session_id)
-        is_new_delivery = delivery is None
-        now = datetime.now(UTC)
-        if delivery is None:
-            delivery = TranscriptDelivery(
-                id=uuid4(),
-                session_id=session_id,
-                idempotency_key=f"scribe-{session_id}-v1",
-                payload_sha256=payload_fingerprint,
-                status=DeliveryStatus.PENDING,
-                attempt_count=0,
-                created_at=now,
-                updated_at=now,
-            )
-
-        previous_id = await _idempotent_entity(
-            store,
-            tenant_id,
-            "transcript.deliver",
-            idempotency_key,
-            payload_fingerprint,
-            delivery.id,
+        previous_idempotency = await store.get_idempotency(
+            tenant_id=tenant_id,
+            operation="transcript.deliver",
+            key=idempotency_key,
         )
-        if previous_id is not None:
-            previous = await store.get_delivery(tenant_id, previous_id)
-            if previous is None:
-                raise HTTPException(status_code=500, detail="Delivery receipt is unavailable.")
-            delivery = previous
-            is_new_delivery = False
-
-        if delivery.payload_sha256 != payload_fingerprint:
-            raise HTTPException(
-                status_code=409,
-                detail="The session delivery is bound to a different transcript.",
+        if previous_idempotency is not None:
+            previous_delivery = await store.get_delivery(
+                tenant_id,
+                previous_idempotency.entity_id,
             )
-        if delivery.status == DeliveryStatus.DELIVERED:
-            delivered_replay = delivery
-        elif delivery.status == DeliveryStatus.TERMINAL:
-            response.status_code = status.HTTP_409_CONFLICT
-            return delivery
-        else:
-            if is_new_delivery:
-                attempted = delivery.model_copy(
-                    update={
-                        "status": DeliveryStatus.PENDING,
-                        "attempt_count": 1,
-                        "last_error_code": None,
-                        "updated_at": now,
-                    }
+            if previous_delivery is None:
+                raise HTTPException(status_code=500, detail="Delivery receipt is unavailable.")
+            if previous_delivery.status == DeliveryStatus.DELIVERED:
+                if (
+                    previous_delivery.session_id != session_id
+                    or previous_idempotency.request_fingerprint
+                    != previous_delivery.payload_sha256
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Idempotency-Key was already used with a different request.",
+                    )
+                delivered_replay = previous_delivery
+
+        if delivered_replay is None:
+            session = await store.lock_session(tenant_id, session_id)
+            if session is None:
+                raise HTTPException(status_code=404, detail="Capture session not found.")
+            await _assert_session_consent(store, tenant_id, session, policy)
+            transcript = await store.transcript_for(tenant_id, session_id)
+            if transcript is None or session.status not in {
+                SessionStatus.TRANSCRIPT_READY,
+                SessionStatus.HANDED_OFF,
+            }:
+                raise HTTPException(status_code=409, detail="Transcript is not ready for delivery.")
+
+            payload = to_master_platform_payload(session, transcript)
+            payload_fingerprint = _fingerprint(payload)
+            delivery = await store.delivery_for(tenant_id, session_id)
+            is_new_delivery = delivery is None
+            now = datetime.now(UTC)
+            if delivery is None:
+                delivery = TranscriptDelivery(
+                    id=uuid4(),
+                    session_id=session_id,
+                    idempotency_key=f"scribe-{session_id}-v1",
+                    payload_sha256=payload_fingerprint,
+                    status=DeliveryStatus.PENDING,
+                    attempt_count=0,
+                    created_at=now,
+                    updated_at=now,
                 )
-                await store.add_delivery(tenant_id, attempted)
+
+            previous_id = await _idempotent_entity(
+                store,
+                tenant_id,
+                "transcript.deliver",
+                idempotency_key,
+                payload_fingerprint,
+                delivery.id,
+            )
+            if previous_id is not None:
+                previous = await store.get_delivery(tenant_id, previous_id)
+                if previous is None:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Delivery receipt is unavailable.",
+                    )
+                delivery = previous
+                is_new_delivery = False
+
+            if delivery.payload_sha256 != payload_fingerprint:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The session delivery is bound to a different transcript.",
+                )
+            if delivery.status == DeliveryStatus.DELIVERED:
+                delivered_replay = delivery
+            elif delivery.status == DeliveryStatus.TERMINAL:
+                response.status_code = status.HTTP_409_CONFLICT
+                return delivery
             else:
+                if is_new_delivery:
+                    await store.add_delivery(tenant_id, delivery)
                 attempted = await store.claim_delivery_attempt(
                     tenant_id,
-                    delivery.id,
-                    now=now,
+                    policy=claim_policy,
+                    delivery_id=delivery.id,
                 )
                 if attempted is None:
                     current = await store.get_delivery(tenant_id, delivery.id)
@@ -870,16 +904,8 @@ async def deliver_transcript_to_master_platform(
                         raise HTTPException(
                             status_code=status.HTTP_409_CONFLICT,
                             detail="Delivery attempt is already being processed.",
-                            headers={"Retry-After": "0"},
+                            headers={"Retry-After": "1"},
                         )
-            if attempted is not None:
-                await store.audit(
-                    tenant_id=tenant_id,
-                    action="transcript.delivery_attempted",
-                    entity_type="transcript_delivery",
-                    entity_id=delivery.id,
-                )
-
     if delivered_replay is not None:
         await synchronize_delivery_session(
             provider,
@@ -890,6 +916,8 @@ async def deliver_transcript_to_master_platform(
 
     if attempted is None:
         raise RuntimeError("delivery attempt is unavailable")
+    if payload is None:
+        raise RuntimeError("delivery payload is unavailable")
 
     try:
         platform_result = await handoff.deliver(payload, idempotency_key=attempted.idempotency_key)
@@ -912,7 +940,7 @@ async def deliver_transcript_to_master_platform(
             response.status_code = status.HTTP_409_CONFLICT
         else:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return failed
+        return await _require_delivery_receipt(provider, tenant_id, failed.id)
     except (HandoffConflictError, HandoffRejectedError) as exc:
         failed = await complete_delivery_failure(
             provider,
@@ -932,11 +960,37 @@ async def deliver_transcript_to_master_platform(
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         else:
             response.status_code = status.HTTP_409_CONFLICT
-        return failed
+        return await _require_delivery_receipt(provider, tenant_id, failed.id)
 
-    return await complete_delivery_success(
-        provider,
-        tenant_id=tenant_id,
-        attempted=attempted,
-        platform_transcript_id=platform_result.transcript_id,
-    )
+    try:
+        delivered = await complete_delivery_success(
+            provider,
+            tenant_id=tenant_id,
+            attempted=attempted,
+            platform_transcript_id=platform_result.transcript_id,
+        )
+        return await _require_delivery_receipt(provider, tenant_id, delivered.id)
+    except DeliverySuccessConflictError:
+        async with provider.transaction(tenant_id) as store:
+            await store.audit(
+                tenant_id=tenant_id,
+                action="transcript.delivery_success_conflict",
+                entity_type="transcript_delivery",
+                entity_id=attempted.id,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Delivery success conflicts with the durable receipt.",
+        ) from None
+
+
+async def _require_delivery_receipt(
+    provider: RepositoryProvider,
+    tenant_id: UUID,
+    delivery_id: UUID,
+) -> TranscriptDelivery:
+    async with provider.transaction(tenant_id) as store:
+        delivery = await store.get_delivery(tenant_id, delivery_id)
+    if delivery is None:
+        raise HTTPException(status_code=500, detail="Delivery receipt is unavailable.")
+    return delivery
