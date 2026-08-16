@@ -16,3 +16,5 @@ infra/*.tfstate.*
 infra/backend.hcl
 infra/*.auto.tfvars
 infra/tfplan*
+infra/*.tfplan
+infra/*.tfplan.*

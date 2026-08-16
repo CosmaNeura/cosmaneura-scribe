@@ -1,6 +1,6 @@
 # ADR 0013: Retain by policy and erase with a separate authority
 
-**Status:** Proposed
+**Status:** Accepted (design only; enforcement remains disabled)
 
 ## Context
 
@@ -16,7 +16,19 @@ service without deleting a shared Key Vault version. It is the first erasure act
 claim that old database backups or Blob versions have already expired. Restore procedures must
 replay acknowledged erasure intents before restored data can serve traffic.
 
-## Proposed decision
+## Decision
+
+The master platform is the sole legal clinical record. Scribe is a bounded processing and delivery
+system, not a second legal record, and must not retain a transcript or session for seven years only
+because the master record does. A successful master acknowledgement is therefore a required anchor
+for Scribe's operational retention policy. Exact jurisdiction- and tenant-specific operational
+deadlines still require legal approval before enforcement.
+
+After a record reaches `live_absent`, every recoverable Scribe copy must reach
+`physically_expired` within **14 calendar days**. This includes Blob versions/snapshots and soft
+delete, PostgreSQL backups and replicas, and any other Scribe-controlled recovery copy. A hold or
+failed acknowledgement prevents live erasure from beginning; it does not silently redefine the
+14-day clock after live erasure is recorded.
 
 PostgreSQL is the source of truth for retention deadlines, holds, and purge progress. Add a
 false-by-default Container Apps retention job with independent report and enforce gates. Report mode
@@ -47,15 +59,16 @@ The initial policy is:
 | Wrapped session DEK and encrypted raw audio | 30 calendar days after a terminal session or successful handoff | No hold, no active lease, no pending delivery |
 | Abandoned or failed capture audio | 30 calendar days after the last custody activity | No hold and no live capture/transcription lease |
 | Upload grants, chunk metadata, idempotency records, transcription jobs, and delivery receipts | 90 calendar days after their dependent workflow is terminal | Audio purge confirmed; no replay or delivery remains possible |
-| Transcript and session | Seven calendar years from the later approved encounter/closure anchor or record creation | No hold; legal schedule approved for the tenant and jurisdiction |
+| Transcript and session | Operationally bounded after confirmed successful master handoff; no seven-year Scribe default | No hold; master acknowledgement and tenant/jurisdiction policy approved |
 | Consent evidence and audit record | Seven calendar years from their own legally approved effective dates | No hold; every referencing session deadline has passed |
 | Retention actions and erasure tombstones | Seven calendar years after the action | Never removed in the same run as the records they attest |
 
-These are conservative product defaults, not legal advice. Enforcement remains false until counsel
-confirms whether the master platform or Scribe is the legal record, the jurisdictional start event,
-minor-patient rules, and any tenant-specific extension. A configured tenant policy may extend a
-deadline but cannot shorten the approved baseline without a separately reviewed policy version.
-Calendar arithmetic, not a fixed day count, determines the seven-year deadline.
+These are conservative product defaults, not legal advice. The sole-record boundary and 14-day
+physical-expiry SLA are approved. Enforcement remains false until counsel confirms the operational
+transcript/session deadline after handoff, jurisdictional start events, minor-patient rules, and any
+tenant-specific extension. A configured tenant policy may extend an approved deadline but cannot
+shorten it without a separately reviewed policy version. Calendar arithmetic, not a fixed day
+count, determines every multi-year evidence deadline.
 Implementation persists the approved terminal/closure timestamp instead of inferring it from the
 current session status. Consent remains until its own deadline and all referencing-session
 deadlines pass; audit retention starts at `occurred_at` or a later legally required effective date.
@@ -83,9 +96,9 @@ Enforcement runs in this order:
    transcript.
 4. After Blob absence is confirmed, delete upload-grant and chunk metadata. Delete operational job,
    idempotency, and delivery rows only after their 90-day replay window.
-5. At the approved clinical-record deadline, delete the transcript and session in foreign-key order,
-   delete consent only when no retained session references it, and retire old audit rows only after a
-   later retention event records the purge.
+5. At the approved Scribe operational deadline after master acknowledgement, delete the transcript
+   and session in foreign-key order, delete consent only when no retained session references it, and
+   retire old audit rows only after a later retention event records the purge.
 
 Azure Storage lifecycle management is a backstop, not the authority. It may delete only versions
 tagged `purge-approved` by the retention workflow and may never apply an unconditional container-age
@@ -99,8 +112,9 @@ equivalent opaque locators in the protected tombstone.
 A restore is quarantined until the externally durable erasure-intent feed has been replayed through
 a high-water mark newer than the backup recovery point and the retention report is clean. Acceptance
 injects failure at every intent, acknowledgement, wrapped-key deletion, Blob deletion, and progress
-boundary. Activation also requires an approved numeric physical-purge SLA and a real-account test
-covering base blobs, versions, snapshots, and lifecycle-tag behavior.
+boundary. Activation also requires a real-account test proving the approved 14-calendar-day
+physical-purge SLA across base blobs, versions, snapshots, backups, replicas, and lifecycle-tag
+behavior.
 
 Key rotation is reference-driven. New sessions bind only the current enabled RSA wrapping-key
 version. A rotated version remains enabled while any `session_audio_keys` row references it and until
@@ -130,8 +144,9 @@ database, a report-only production-equivalent run, and a restore drill. Acceptan
 - an in-use Key Vault version cannot be disabled or deleted; and
 - logs and diagnostics contain only fixed codes, counts, policy versions, and opaque IDs.
 
-Until those checks and the legal schedule are approved, this ADR authorizes design work only. It
-does not enable a lifecycle policy, retention job, deletion endpoint, or additional database grant.
+Until those checks and the remaining legal schedule are approved, this ADR authorizes design work
+only. It does not enable a lifecycle policy, retention job, deletion endpoint, or additional
+database grant.
 
 ## Consequences
 
@@ -139,5 +154,6 @@ does not enable a lifecycle policy, retention job, deletion endpoint, or additio
 - Online cryptographic unavailability occurs before slower Blob and backup cleanup.
 - The design preserves legal holds and process-restart safety, but adds a retention ledger, an
   external tombstone durability requirement, and restore-runbook work.
-- Seven-year storage may be unnecessary if the master platform is the sole legal record; confirming
-  that boundary can materially reduce Scribe's PHI footprint before enforcement is built.
+- The approved sole-record boundary removes a seven-year Scribe clinical-copy default and materially
+  reduces Scribe's PHI footprint, while consent/audit evidence remains subject to its own schedule.
+- Physical recovery copies must expire no later than 14 calendar days after live erasure.

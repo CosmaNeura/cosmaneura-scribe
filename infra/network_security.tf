@@ -160,6 +160,22 @@ resource "azurerm_network_security_group" "container_apps" {
     destination_address_prefix = "AzureContainerRegistry"
   }
 
+  dynamic "security_rule" {
+    for_each = var.enable_private_terraform_runner ? [1] : []
+
+    content {
+      name                       = "AllowTemporaryTerraformArmOutbound"
+      priority                   = 255
+      direction                  = "Outbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_range          = "*"
+      destination_port_range     = "443"
+      source_address_prefix      = "*"
+      destination_address_prefix = "AzureResourceManager"
+    }
+  }
+
   security_rule {
     name                       = "AllowEastUsStorageOutbound"
     priority                   = 260
@@ -170,6 +186,22 @@ resource "azurerm_network_security_group" "container_apps" {
     destination_port_range     = "443"
     source_address_prefix      = "*"
     destination_address_prefix = "Storage.EastUS"
+  }
+
+  dynamic "security_rule" {
+    for_each = var.enable_private_terraform_runner ? [1] : []
+
+    content {
+      name                       = "AllowTemporaryTerraformStateOutbound"
+      priority                   = 265
+      direction                  = "Outbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_range          = "*"
+      destination_port_range     = "443"
+      source_address_prefix      = "*"
+      destination_address_prefix = "Storage.NorthCentralUS"
+    }
   }
 
   security_rule {

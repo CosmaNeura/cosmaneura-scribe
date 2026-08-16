@@ -109,3 +109,26 @@ output "speech_smoke_job_name" {
 output "speech_smoke_managed_identity_client_id" {
   value = var.deploy_speech_smoke_job ? azurerm_user_assigned_identity.speech_smoke[0].client_id : null
 }
+
+output "development_budget_id" {
+  description = "Approved development resource-group budget when its explicit notification gate is enabled."
+  value       = var.enable_development_cost_guardrails ? azurerm_consumption_budget_resource_group.development[0].id : null
+}
+
+output "private_terraform_runner_identity_client_id" {
+  description = "Temporary private Terraform runner client ID; null after required teardown."
+  value       = var.deploy_private_terraform_runner ? azurerm_user_assigned_identity.private_terraform_runner[0].client_id : null
+}
+
+output "private_terraform_runner_identity_principal_id" {
+  description = "Temporary principal used to audit and revoke every runner assignment."
+  value       = var.deploy_private_terraform_runner ? azurerm_user_assigned_identity.private_terraform_runner[0].principal_id : null
+}
+
+output "private_terraform_runner_job_names" {
+  description = "Fixed manual plan/apply job names; no caller start permission is created by this configuration."
+  value = var.deploy_private_terraform_runner ? {
+    for action, job in azurerm_container_app_job.private_terraform_runner :
+    action => job.name
+  } : {}
+}

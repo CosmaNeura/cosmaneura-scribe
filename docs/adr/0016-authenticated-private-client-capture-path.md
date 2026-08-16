@@ -1,6 +1,6 @@
 # ADR 0016: Route authenticated capture through the platform and a private Blob edge
 
-**Status:** Proposed
+**Status:** Accepted (implementation and clinical capture remain disabled)
 
 ## Context
 
@@ -19,7 +19,7 @@ cannot encrypt a final ADR 0011 envelope until it knows the server-issued object
 AES-GCM additional authenticated data (AAD). After that grant expires, the API cannot issue a new
 credential for the same object. Those are protocol gaps, not client retry bugs.
 
-## Proposed decision
+## Decision
 
 ### Keep user authentication and workload identity at the platform boundary
 
@@ -208,8 +208,8 @@ remaining assembly budget.
 
 ## Rollout and rollback
 
-1. Accept this ADR and resolve the decisions below. Do not add client implementation while it is
-   proposed.
+1. Record the accepted defaults below. Do not add client implementation in this infrastructure
+   slice.
 2. Add the reservation/refresh/receipt/capability contract, one generated protocol source, and
    Python/TypeScript golden vectors. Prove every mutation with HTTP-level PostgreSQL/RLS tests and
    cross-process retries. Keep capture flags false.
@@ -228,26 +228,21 @@ delete the wrapping key, identities, reservations, or receipts as a rollback mec
 failure stops capture and preserves the encrypted queue for governed recovery; it never enables a
 public Blob endpoint or plaintext fallback.
 
-## Decisions required before acceptance
+## Accepted rollout defaults
 
-1. **Upload edge:** Approve Front Door Premium with a Private Link Blob origin as the production
-   ciphertext path, or choose the API-mediated streaming gateway? **Recommendation:** Front Door,
-   contingent on the real private-origin/SAS/log-scrubbing proof and an approved cost/service review;
-   use the gateway only if a gate fails.
-2. **Offline consent bound:** What capture-authorization lease and reservation window may continue
-   during a network outage? **Recommendation:** no offline start, a renewable 15-minute lease, and
-   a 15-minute pre-reservation window; pause visibly at expiry.
-3. **Web key recovery:** May supported browsers persist a non-extractable origin-bound WebCrypto
-   session key, acknowledging that same-origin script can still use it? **Recommendation:** yes only
-   on the tested browser allowlist; otherwise recover uploads of completed envelopes but do not
-   resume recording after refresh/crash.
-4. **Clinical duration:** What maximum single- and two-channel visit durations must the first pilot
-   support? **Recommendation:** require streaming assembly sufficient for a 60-minute two-channel
-   visit before clinical capture rather than raising the current 1-GiB job's memory limit by guess.
-5. **Abandoned device custody:** How long may an encrypted, unregistered local queue survive failed
-   upload, and must managed-device policy be mandatory? **Recommendation:** 24 hours with prominent
-   recovery warnings and metadata-only support escalation, then policy-driven purge; MDM remains
-   optional for the first controlled pilot but becomes tenant-configurable.
+1. **Upload edge:** Azure Front Door Premium with a Private Link Blob origin is the production
+   ciphertext path, contingent on the real private-origin/SAS/log-scrubbing proof and an approved
+   cost/service review. Use the API-mediated gateway only if a gate fails.
+2. **Offline consent bound:** Capture cannot start offline. Use a renewable 15-minute lease and a
+   15-minute pre-reservation window, and pause visibly at expiry.
+3. **Web key recovery:** A supported browser may persist a non-extractable origin-bound WebCrypto
+   session key only on the tested browser allowlist. Otherwise recover completed-envelope uploads
+   but do not resume recording after refresh or crash.
+4. **Clinical duration:** Clinical capture requires streaming assembly sufficient for a 60-minute,
+   two-channel visit; do not raise the current 1-GiB job's memory limit by guess.
+5. **Abandoned device custody:** Keep an encrypted, unregistered local queue for at most 24 hours,
+   with prominent recovery warnings and metadata-only support escalation, then policy-driven purge.
+   MDM remains optional for the first controlled pilot and becomes tenant-configurable.
 
 ## Consequences
 

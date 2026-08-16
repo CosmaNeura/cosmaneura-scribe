@@ -8,10 +8,14 @@ create_resource_group = true
 # These names were available on 2026-08-14 but remain unreserved until a reviewed apply.
 storage_account_name     = "cosmaneurascribeprod"
 key_vault_name           = "cosmaneura-scribe-prod"
-container_registry_name  = "cosmaneurascribeprod"
+container_registry_name = "cosmaneurascribeprod"
+
+# Production cost/retention approval is separate. Keep the staged workspace and diagnostics off.
+enable_development_cost_guardrails     = false
+enable_log_analytics_audit_baseline    = false
 enable_phi_safe_data_plane_diagnostics = false
-log_analytics_retention_in_days = 90
-log_analytics_daily_quota_gb    = -1
+log_analytics_retention_in_days         = 30
+log_analytics_daily_quota_gb            = 0.5
 
 # Production is isolated from development's 10.42.0.0/16 boundary.
 virtual_network_address_space            = ["10.44.0.0/16"]
@@ -28,6 +32,10 @@ deploy_speech_smoke_job           = false
 enable_speech_smoke_job           = false
 deploy_transcription_job          = false
 enable_transcription_job          = false
+deploy_delivery_reconciler_job    = false
+enable_delivery_reconciler_job    = false
+deploy_private_terraform_runner   = false
+enable_private_terraform_runner   = false
 use_postgres_repository           = false
 container_image_repository        = "cosmaneura-scribe-api"
 container_image_tag               = "not-deployed"
