@@ -233,3 +233,29 @@ snapshot, key/moved-role/API saved-plan review, fixed-start, proof, five enabled
 role/temporary-egress Phase A revocation, `AcrPull`/job/identity Phase B deletion, and replacement
 requirements in
 [`../docs/PRIVATE_TERRAFORM_RUNNER.md`](../docs/PRIVATE_TERRAFORM_RUNNER.md).
+
+The authenticated private public-key route has a separate, one-shot acceptance job. It uses the
+exact existing platform workflow UAMI, a digest-pinned image and fixed command, and only a temporary
+registry-scoped `AcrPull`; it receives no Key Vault role. Deployment, enablement, and invocation are
+independently false by default:
+
+```hcl
+deploy_private_api_acceptance_job       = false
+enable_private_api_acceptance_job       = false
+allow_private_api_acceptance_invocation = false
+```
+
+The runner proves the API hostname resolves only to the existing Container Apps environment's
+private static address before obtaining a token, then emits only fixed key metadata. Before its
+dormant deployment, enumerate inherited and direct job start/update authority, record the one
+approved operator and maintenance window, and choose a new unused private-plan object name. The
+dormant rollout also refreshes both temporary Terraform runner jobs and replaces only the
+exact-object state assignment needed to rotate the plan/manifest paths. Wait for that assignment to
+propagate and take a fresh state snapshot before reconciliation planning.
+
+After the reviewed key/API plan applies, open the two acceptance gates only with
+`private_terraform_reconciliation_completed = true`, execute once without start-time overrides,
+and verify the effective execution template and Activity Log. Close the gates, then remove the job
+and its temporary `AcrPull` in the same Phase A plan that revokes the temporary Terraform roles and
+NSG rules. Follow ADR 0017 and the API-route section of
+[`../docs/PRIVATE_TERRAFORM_RUNNER.md`](../docs/PRIVATE_TERRAFORM_RUNNER.md).

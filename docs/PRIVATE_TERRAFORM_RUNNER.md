@@ -247,10 +247,11 @@ temporary job may plan or apply its own removal.
 
 1. Confirm both temporary jobs have no active execution. An active execution is a stop condition.
 2. **Phase A — revoke privilege and commit state.** Keep
-   `deploy_private_terraform_runner = true`, set `enable_private_terraform_runner = false`, and use
-   an external saved plan to disable both jobs; destroy the five enabled assignments and custom
-   state role; and remove both temporary NSG rules. Keep the identity, jobs, and `AcrPull` until this
-   apply has committed state successfully.
+   `deploy_private_terraform_runner = true`, set `enable_private_terraform_runner = false`, close
+   both acceptance gates, and set `deploy_private_api_acceptance_job = false`. Use an external
+   saved plan to remove the acceptance job and its temporary `AcrPull`; disable both Terraform jobs;
+   destroy the five enabled assignments and custom state role; and remove both temporary NSG rules.
+   Keep the Terraform identity, jobs, and their `AcrPull` until this apply has committed state.
 
    ```bash
    tofu plan \
@@ -262,12 +263,15 @@ temporary job may plan or apply its own removal.
      -target=azurerm_role_assignment.private_terraform_runner_resource_reader \
      -target=azurerm_role_assignment.private_terraform_runner_state \
      -target=azurerm_role_assignment.private_terraform_runner_vault_rbac_admin \
-     -target=azurerm_role_definition.private_terraform_runner_state
+     -target=azurerm_role_definition.private_terraform_runner_state \
+     -target=azurerm_container_app_job.private_api_acceptance \
+     -target=azurerm_role_assignment.private_api_acceptance_acr
    tofu apply private-runner-revoke.tfplan
    ```
 
-3. Prove Phase A state advanced with unchanged lineage, both jobs are disabled, the five enabled
-   assignments and custom role are absent, and the NSG has neither
+3. Prove Phase A state advanced with unchanged lineage, both Terraform jobs are disabled, the
+   acceptance job and its `AcrPull` are absent, the five enabled assignments and custom role are
+   absent, and the NSG has neither
    `AllowTemporaryTerraformArmOutbound` nor `AllowTemporaryTerraformStateOutbound`. Only `AcrPull`
    may remain.
 4. **Phase B — delete the dormant bootstrap.** Set
@@ -304,17 +308,81 @@ the approved reconciliation window and are revoked afterward. It must run full s
 state-lock, private-DNS, no-secret-log, and teardown acceptance. It must never reuse an API, worker,
 platform, or smoke-test identity and must not receive a generic ACA job-start grant.
 
-## Separate API-route acceptance follow-up
+## Separate API-route acceptance job
 
-Do not attach the broad Terraform identity to an API test. A later, separate PR may add a
-false-default one-shot acceptance job in the existing private Container Apps environment with:
+Do not attach the broad Terraform identity to an API test. ADR 0017 defines a separate one-shot job
+in the existing private Container Apps environment. Its deployment, enablement, and invocation
+gates all default to false. It attaches the exact externally owned platform workflow UAMI, checks
+that identity's client ID against `trusted_platform_client_id`, and grants only temporary `AcrPull`
+on the exact Scribe registry. The existing `Scribe.Workflow.Access` application role is its only API
+authorization; it receives no Azure Key Vault role.
 
-- the exact existing platform workflow UAMI as its sole identity;
-- a fixed, immutable image and command with no start-time template overrides;
-- only the existing `Scribe.Workflow.Access` application role and no Azure Key Vault role;
-- the private API origin, tenant, and audience as non-secret configuration; and
-- one metadata-only result containing HTTP status, `kty`, algorithm, key size, declared operations,
-  and presence of a key-version identifier—never the JWK modulus, token, URL, tenant data, or body.
+Build the API image from the reviewed acceptance commit and record both its source SHA and registry
+digest. Configure the exact existing platform workflow identity resource ID and one synthetic
+practice-tenant UUID. Before deployment, enumerate every inherited and direct principal that can
+start or update the exact future job. Record the approved operator object ID and maintenance window;
+do not proceed with any unreviewed principal. The stack grants no start role, but inherited
+subscription authority can still replace the execution template, so the raw invocation gate is not
+an Azure control-plane boundary.
 
-That job must remain undeployed and disabled until its fixed invocation authority is reviewed. No
-generic job-start role is authorized by this runbook.
+For this one-time rollout, choose a new unused plan-object name before planning and set:
+
+```hcl
+deploy_private_api_acceptance_job       = true
+enable_private_api_acceptance_job       = false
+allow_private_api_acceptance_invocation = false
+private_terraform_reconciliation_completed = false
+```
+
+Because the temporary Terraform runner is already live, the reviewed dormant-rollout plan may only:
+
+- add the dormant acceptance job and its exact-registry `AcrPull`;
+- update both temporary Terraform jobs and their UAMI provenance to the newly merged, digest-pinned
+  runner image/configuration; and
+- replace the exact state-object role assignment solely to rotate the old plan/manifest paths to
+  the new unique pair. Scope, principal, role definition, condition version, state path, workspace
+  list prefix, and state-delete denial must remain identical.
+
+No API, wrapping-key, runtime-role, NSG, budget, Speech, PostgreSQL, transcription, delivery,
+handoff, peering, or diagnostics action is accepted. After apply, wait for the replacement ABAC
+assignment to propagate, prove backend init/state pull, and take a fresh state snapshot. Only that
+post-rollout serial may be used by the private reconciliation plan. Changing Terraform state between
+reconciliation review and apply makes the saved plan stale and is prohibited.
+
+After the key/API apply succeeds, set `enable_private_api_acceptance_job = true` and
+`allow_private_api_acceptance_invocation = true`, and set the validation-only external attestation
+`private_terraform_reconciliation_completed = true`. The temporary runner embeds the immutable
+dormant acceptance manifest, so review and apply only the expected acceptance-job template update.
+Terraform derives the stable private API origin and exact Container Apps environment static IP
+`/32`. Read the job back and verify its sole identity, digest-pinned image, fixed command, both raw
+gates, audience, synthetic tenant, private address, CPU/memory, manual trigger, timeout, and zero
+retry still match. Wait for the temporary `AcrPull` assignment to propagate.
+
+The recorded operator starts exactly one execution without an image, command, argument,
+environment, resource, or identity override:
+
+```bash
+az containerapp job start \
+  --name cosmaneura-scribe-dev-api-proof \
+  --resource-group cosmaneura-scribe-development \
+  --output none
+```
+
+The runner rejects every argument, verifies DNS resolves exclusively to the derived private `/32`
+before requesting a token, uses only the exact UAMI through `ManagedIdentityCredential`, disables
+redirects and proxy-environment trust, and bounds the response to 8 KiB. Success is one fixed record
+containing only HTTP 200, RSA, RSA-OAEP-256, 3072 bits, `wrapKey`, key-version presence, and duration.
+It never logs the JWK modulus, exponent, key-version value, token, URL, tenant, DNS answer, or body.
+
+Immediately after start, read the effective execution template and prove image, command, arguments,
+environment, resources, and identity equal the reviewed job. Query Activity Log and accept only the
+recorded operator's no-override start/update sequence in the approved window. Any second execution,
+different caller, or template difference is an incident and a stop.
+
+After recording success, close the invocation and enable gates and apply that acceptance-job
+template update. Confirm no execution remains active. Phase A above must then set
+`deploy_private_api_acceptance_job = false` while setting
+`enable_private_terraform_runner = false`; the same reviewed plan removes the acceptance job and
+its temporary `AcrPull` while revoking the Terraform runner's five enabled assignments, custom role,
+and temporary NSG rules. The external platform identity and app-role assignment remain. No generic
+job-start role is authorized by this runbook.

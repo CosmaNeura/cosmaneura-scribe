@@ -42,6 +42,17 @@ enable_workflow_authentication = false
 workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
 trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
 
+# One-shot proof of the authenticated private public-key route. Deploy dormant first; enable and
+# open the invocation gate only for the separately reviewed execution, then remove the job.
+deploy_private_api_acceptance_job       = false
+enable_private_api_acceptance_job       = false
+allow_private_api_acceptance_invocation = false
+private_terraform_reconciliation_completed = false
+platform_workflow_identity_resource_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.ManagedIdentity/userAssignedIdentities/cosmaneura-prod-scribe-workflow"
+private_api_acceptance_tenant_id         = "00000000-0000-0000-0000-000000000000"
+private_api_acceptance_image_tag         = "replace-with-acceptance-commit-sha"
+private_api_acceptance_image_digest      = "sha256:replace-with-acceptance-image-digest"
+
 # Synthetic private-connectivity planning only. Leave false until the platform VNet exists and
 # both enabled plans receive separate approval. The development Scribe environment is not a
 # production customer-traffic destination.
