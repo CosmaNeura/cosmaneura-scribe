@@ -85,6 +85,10 @@ owns dual-channel microphone/system-audio capture for virtual visits.
 The current client boundaries are in `apps/web-capture`, `apps/mobile-capture`,
 `apps/review-ui`, and `apps/desktop-companion`.
 
+The proposed authenticated key, encrypted upload, offline recovery, and private Blob edge path is
+documented in
+[`docs/adr/0016-authenticated-private-client-capture-path.md`](docs/adr/0016-authenticated-private-client-capture-path.md).
+
 The transcription worker orchestration and inactive encrypted Blob assembly boundary are documented
 in [`docs/TRANSCRIPTION_WORKER.md`](docs/TRANSCRIPTION_WORKER.md).
 
