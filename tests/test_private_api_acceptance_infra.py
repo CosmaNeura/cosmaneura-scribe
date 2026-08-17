@@ -93,6 +93,8 @@ def test_runtime_reader_uses_the_versionless_wrapping_key_scope() -> None:
         "principal_id                     = "
         "azurerm_user_assigned_identity.runtime.principal_id" in role
     )
+    assert "skip_service_principal_aad_check = true" in role
+    assert "ignore_changes = [skip_service_principal_aad_check]" in role
     assert "Crypto" not in role
 
 

@@ -183,4 +183,10 @@ resource "azurerm_role_assignment" "runtime_audio_key_reader" {
   principal_id                     = azurerm_user_assigned_identity.runtime.principal_id
   principal_type                   = "ServicePrincipal"
   skip_service_principal_aad_check = true
+
+  lifecycle {
+    # This flag is a create-time AAD propagation bypass, not an Azure role property.
+    # Imported assignments read it as null and AzureRM does not support updating it.
+    ignore_changes = [skip_service_principal_aad_check]
+  }
 }
