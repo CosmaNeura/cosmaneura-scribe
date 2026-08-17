@@ -38,11 +38,14 @@ an ordinary public GitHub runner cannot create or reconcile it. The approved one
 the false-default, dedicated plan/apply jobs in
 [`../docs/PRIVATE_TERRAFORM_RUNNER.md`](../docs/PRIVATE_TERRAFORM_RUNNER.md). Its vault-scoped
 **Key Vault Crypto Officer** and RBAC Administrator assignments, exact-API Container Apps
-Contributor assignment, exact-object state data role/ABAC assignment, and resource-group Reader
-exist only for the key/role/API proof window. State deletion and unrelated Blob objects are denied.
+Contributor assignment, exact-environment Container Apps Contributor assignment, exact-runtime-UAMI
+Managed Identity Operator assignment, exact-object state data role/ABAC assignment, and
+resource-group Reader exist only for the key/role/API proof window. The two linked-resource roles
+allow Azure's full Container App PUT to reattach the unchanged environment and UAMI; both are scoped
+to their exact leaf resources. State deletion and unrelated Blob objects are denied.
 Provider auto-registration is disabled, and two temporary NSG rules permit only ARM and the North
 Central US state service over TCP/443. The image uses its locked local provider mirror and does not
-need public provider-registry egress. Phase A removes those five enabled assignments, the custom
+need public provider-registry egress. Phase A removes those seven enabled assignments, the custom
 role, and both rules; Phase B removes `AcrPull`, the jobs, and the identity. Azure subscription
 Owner or Contributor alone has no Key Vault data-plane key permission. No API or worker identity
 may substitute for the deployment identity.
@@ -229,7 +232,7 @@ enable_private_terraform_runner = false
 ```
 
 It is only a one-time private key, runtime-role, and API reconciliation. Follow the complete state
-snapshot, key/moved-role/API saved-plan review, fixed-start, proof, five enabled-assignment/custom
+snapshot, key/moved-role/API saved-plan review, fixed-start, proof, seven enabled-assignment/custom
 role/temporary-egress Phase A revocation, `AcrPull`/job/identity Phase B deletion, and replacement
 requirements in
 [`../docs/PRIVATE_TERRAFORM_RUNNER.md`](../docs/PRIVATE_TERRAFORM_RUNNER.md).

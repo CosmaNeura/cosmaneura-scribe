@@ -23,12 +23,17 @@ runner principal:
 | Existing remote-state Blob container | Temporary Scribe state-object data role | Terraform-created; no fixed ID | List only the exact OpenTofu workspace prefix; lease/read/write the exact state object without delete; and read/write/delete only the exact reviewer-hash-pinned plan and manifest |
 | Scribe development Key Vault | Key Vault Crypto Officer | `14b46e9e-c2b7-41b4-b07b-48a6ebf60603` | Create and reconcile the RSA-3072 wrapping key over the private endpoint |
 | Exact `cosmaneura-scribe-dev-api` resource | Container Apps Contributor | `358470bc-b998-42bd-ab17-a7e34c199c0f` | Update only the existing API revision with auth and key configuration |
+| Exact API runtime UAMI | Managed Identity Operator | `f1a07417-d97a-45cb-824c-7a7467783830` | Permit the full Container App PUT to reattach the existing workload and registry identity |
+| Exact Scribe managed environment | Container Apps Contributor | `358470bc-b998-42bd-ab17-a7e34c199c0f` | Permit only the environment read/join check required by the full Container App PUT |
 | Scribe development Key Vault | Role Based Access Control Administrator | `f58310d9-a9f6-439a-9e8d-f62e7b41a168` | Delete the obsolete vault-wide Secrets User assignment and create the key-scoped Reader assignment |
 
 There is no resource-group Contributor, Owner, User Access Administrator, subscription-wide
 assignment, application role, or permission to start another Container Apps Job. The RBAC
-Administrator assignment is deliberately limited to the one vault; the Container Apps assignment
-is limited to the one API. The state assignment has an Azure ABAC condition for exactly
+Administrator assignment is deliberately limited to the one vault; the two Container Apps
+assignments are limited to the exact API and exact environment. Managed Identity Operator is
+limited to the existing API runtime UAMI. At those leaf scopes, the linked-resource assignments
+cannot create, update, or delete another app, environment, or identity. The state assignment has an
+Azure ABAC condition for exactly
 `terraform_state_key`, `private_terraform_plan_blob_name`, and its `.manifest.json` companion. The
 only list request allowed is OpenTofu's exact `${terraform_state_key}env:` workspace prefix. It
 cannot access unrelated state objects, cannot delete the state object or its snapshot, and can
@@ -46,8 +51,8 @@ subscription scope. The immutable image includes the locked AzureRM provider in 
 filesystem mirror, so runtime initialization does not require public OpenTofu Registry egress. The
 rules apply to the shared ACA subnet, while Azure RBAC still denies other workload identities
 access; this wider network reach is why Phase A must remove both rules immediately. Phase A also
-removes the five enabled assignments and custom role. Phase B then deletes `AcrPull`, both jobs, and
-the identity.
+removes the seven enabled assignments and custom role. Phase B then deletes `AcrPull`, both jobs,
+and the identity.
 
 Before initializing OpenTofu, the runner performs one silent Azure Resource Manager token preflight
 through that CLI session. Failure emits only `AzureCliTokenPreflightFailed`; no token or CLI error
@@ -122,8 +127,8 @@ tofu apply private-runner-bootstrap.tfplan
 Then populate the exact backend and plan-object inputs and set
 `enable_private_terraform_runner = true`. A second reviewed targeted plan may update only the two
 job templates and existing Container Apps NSG, create the temporary state role definition, and add
-the five assignments in the table above. The NSG update may add only the two temporary rules named
-above. Wait for RBAC propagation and verify the principal has exactly six assignments including
+the seven assignments in the table above. The NSG update may add only the two temporary rules named
+above. Wait for RBAC propagation and verify the principal has exactly eight assignments including
 `AcrPull` before starting either job.
 
 The enable gate also pins the one-time live manifest: API image tag
@@ -235,6 +240,27 @@ rejects replay. Verify both blobs are absent. A post-apply artifact-deletion err
 cleanup task, not permission to rerun the already-applied plan. Logs contain only fixed result
 metadata and approved hash/lineage/serial.
 
+An apply failure is terminal for that saved artifact. The runner classifies only fixed, bounded
+failure classes from the private log and deletes the raw log before exiting; it never emits provider
+text. Immediately reset all reviewer pins, pull and protect the new state, compare every planned
+resource with live Azure, and record any partial commit. Never rerun the old plan even if its two
+objects remain. Keep the stale pair only as a collision guard until an externally reviewed outer
+plan has rotated both job templates and the exact-object ABAC condition to a new unique path; then
+delete only the old pair and verify absence. A recovery plan must bind the current serial and include
+only the still-missing action.
+
+The first full API PUT stopped immediately after a successful `listSecrets`, before Azure recorded
+`Microsoft.App/containerApps/write`. Azure did not retain the raw failure body, so the evidence
+cannot identify which linked-resource check rejected the request first. AzureRM's full-model update
+path resends both the unchanged UAMI and managed-environment links, and Azure requires the two
+permissions in the authority table to authorize those links. A recovery rollout therefore adds
+both exact assignments to avoid a sequential second failure; this remains unverified until a live
+PUT succeeds. The rollout may otherwise update only the two runner jobs and runner provenance to the
+repaired digest and replace the state-object assignment solely to rotate to a new plan/manifest
+pair. Wait for both assignments to propagate before starting the plan job. The fresh private plan
+must show the already-created key and key-scoped Reader as no-op and only the live API update as an
+action. Any other action is a stop.
+
 Do not use `-lock=false`, `state rm`, `state mv`, import, backend migration, force-unlock, local
 state, an account key, a SAS, a client secret, or command-line variable values in this workflow.
 
@@ -258,7 +284,7 @@ temporary job may plan or apply its own removal.
    `deploy_private_terraform_runner = true`, set `enable_private_terraform_runner = false`, close
    both acceptance gates, and set `deploy_private_api_acceptance_job = false`. Use an external
    saved plan to remove the acceptance job and its temporary `AcrPull`; disable both Terraform jobs;
-   destroy the five enabled assignments and custom state role; and remove both temporary NSG rules.
+   destroy the seven enabled assignments and custom state role; and remove both temporary NSG rules.
    Keep the Terraform identity, jobs, and their `AcrPull` until this apply has committed state.
 
    ```bash
@@ -267,8 +293,10 @@ temporary job may plan or apply its own removal.
      -target=azurerm_container_app_job.private_terraform_runner \
      -target=azurerm_network_security_group.container_apps \
      -target=azurerm_role_assignment.private_terraform_runner_api_contributor \
+     -target=azurerm_role_assignment.private_terraform_runner_environment_join \
      -target=azurerm_role_assignment.private_terraform_runner_key_officer \
      -target=azurerm_role_assignment.private_terraform_runner_resource_reader \
+     -target=azurerm_role_assignment.private_terraform_runner_runtime_identity_operator \
      -target=azurerm_role_assignment.private_terraform_runner_state \
      -target=azurerm_role_assignment.private_terraform_runner_vault_rbac_admin \
      -target=azurerm_role_definition.private_terraform_runner_state \
@@ -278,7 +306,7 @@ temporary job may plan or apply its own removal.
    ```
 
 3. Prove Phase A state advanced with unchanged lineage, both Terraform jobs are disabled, the
-   acceptance job and its `AcrPull` are absent, the five enabled assignments and custom role are
+   acceptance job and its `AcrPull` are absent, the seven enabled assignments and custom role are
    absent, and the NSG has neither
    `AllowTemporaryTerraformArmOutbound` nor `AllowTemporaryTerraformStateOutbound`. Only `AcrPull`
    may remain.
@@ -296,7 +324,8 @@ temporary job may plan or apply its own removal.
    ```
 
 5. Query assignments by the recorded principal object ID at the registry, resource group, state
-   container, vault, and exact API resource. All six assignments must be absent. Confirm both job
+   container, vault, exact API, exact environment, and runtime-UAMI resources. All eight assignments
+   must be absent. Confirm both job
    resources, the managed identity, custom state role definition, and both temporary NSG rules no
    longer exist and no execution remains active.
 6. Pull the post-teardown state through the normal backend, verify its lineage/serial and SHA-256,
@@ -391,6 +420,6 @@ After recording success, close the invocation and enable gates and apply that ac
 template update. Confirm no execution remains active. Phase A above must then set
 `deploy_private_api_acceptance_job = false` while setting
 `enable_private_terraform_runner = false`; the same reviewed plan removes the acceptance job and
-its temporary `AcrPull` while revoking the Terraform runner's five enabled assignments, custom role,
+its temporary `AcrPull` while revoking the Terraform runner's seven enabled assignments, custom role,
 and temporary NSG rules. The external platform identity and app-role assignment remain. No generic
 job-start role is authorized by this runbook.
