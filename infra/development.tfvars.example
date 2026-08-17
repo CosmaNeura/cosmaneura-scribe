@@ -11,10 +11,26 @@ virtual_network_address_space            = ["10.42.0.0/16"]
 private_endpoint_subnet_address_prefixes = ["10.42.1.0/24"]
 container_apps_subnet_address_prefixes   = ["10.42.2.0/23"]
 
-container_registry_name  = "replacewithgloballyuniqueacr"
-deploy_container_app     = false
+container_registry_name = "replacewithgloballyuniqueacr"
+
+# Stage 1: enable the approved $100/month budget only after verifying this existing action group.
+# Stage 2: enable the 90-day/no-cap workspace baseline. Stage 3: enable scrubbed data-plane logs.
+enable_development_cost_guardrails = false
+development_budget_notification_action_group_ids = [
+  "/subscriptions/BAB2A709-1FCB-4C87-A9FC-802F7477EC13/resourceGroups/cosmaneura-prod/providers/microsoft.insights/actionGroups/cosmaneura-ops-alerts",
+]
+enable_log_analytics_audit_baseline   = false
+enable_phi_safe_data_plane_diagnostics = false
+log_analytics_retention_in_days        = 30
+log_analytics_daily_quota_gb           = 0.5
+
+deploy_container_app       = false
 container_image_repository = "cosmaneura-scribe-api"
 container_image_tag        = "replace-with-commit-sha-after-acr-build"
+
+deploy_postgres_foundation    = false
+deploy_database_migration_job = false
+use_postgres_repository       = false
 
 # Enable only after the Entra app role is assigned and the master endpoint is configured.
 enable_master_platform_handoff = false
@@ -26,8 +42,46 @@ enable_workflow_authentication = false
 workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
 trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
 
+# One-shot proof of the authenticated private public-key route. Deploy dormant first; enable and
+# open the invocation gate only for the separately reviewed execution, then remove the job.
+deploy_private_api_acceptance_job       = false
+enable_private_api_acceptance_job       = false
+allow_private_api_acceptance_invocation = false
+private_terraform_reconciliation_completed = false
+platform_workflow_identity_resource_id  = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.ManagedIdentity/userAssignedIdentities/cosmaneura-prod-scribe-workflow"
+private_api_acceptance_tenant_id         = "00000000-0000-0000-0000-000000000000"
+private_api_acceptance_image_tag         = "replace-with-acceptance-commit-sha"
+private_api_acceptance_image_digest      = "sha256:replace-with-acceptance-image-digest"
+
 # Synthetic private-connectivity planning only. Leave false until the platform VNet exists and
 # both enabled plans receive separate approval. The development Scribe environment is not a
 # production customer-traffic destination.
 connect_parallel_platform_vnet = false
 parallel_platform_vnet_id      = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/cosmaneura-prod/providers/Microsoft.Network/virtualNetworks/cosmaneura-prod-parallel-vnet"
+
+# Private Speech and its pinned synthetic acceptance job remain independently false by default.
+deploy_private_speech_foundation = false
+deploy_speech_smoke_job          = false
+enable_speech_smoke_job          = false
+
+# Temporary private Terraform key-bootstrap runner. Follow PRIVATE_TERRAFORM_RUNNER.md; never
+# enable it before the image, backend values, unique plan object, and teardown window are reviewed.
+deploy_private_terraform_runner = false
+enable_private_terraform_runner = false
+private_terraform_runner_image_tag = "replace-with-runner-commit-sha"
+private_terraform_runner_image_digest = "sha256:replace-with-runner-image-digest"
+terraform_state_container_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/replace-state-rg/providers/Microsoft.Storage/storageAccounts/replacestateaccount/blobServices/default/containers/tfstate"
+terraform_state_resource_group_name  = "replace-state-rg"
+terraform_state_storage_account_name = "replacestateaccount"
+terraform_state_container_name       = "tfstate"
+terraform_state_key                  = "cosmaneura-scribe/development.tfstate"
+private_terraform_plan_blob_name     = "plans/replace-with-change-id.tfplan"
+
+# Manual transcription remains doubly gated and cannot be enabled before the owned private Speech
+# foundation exists and its synthetic smoke execution passes.
+deploy_transcription_job = false
+enable_transcription_job = false
+
+# Delivery reconciliation is a separate, manual job and remains undeployed and disabled here.
+deploy_delivery_reconciler_job = false
+enable_delivery_reconciler_job = false

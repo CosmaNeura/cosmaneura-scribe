@@ -118,3 +118,32 @@ async def test_http_handoff_classifies_platform_unavailability_without_body() ->
 
     assert caught.value.code == "platform_http_503"
     assert "must not appear" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_http_handoff_sanitizes_protocol_errors() -> None:
+    credential = StaticCredential()
+    sensitive = "protocol-detail-must-not-escape"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError(sensitive, request=request)
+
+    async with httpx.AsyncClient(
+        base_url="https://platform.internal.example",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        handoff = HttpMasterPlatformHandoff(
+            base_url="https://platform.internal.example",
+            scope="api://platform/.default",
+            timeout_seconds=5,
+            credential=credential,  # type: ignore[arg-type]
+            client=client,
+        )
+        with pytest.raises(HandoffRetryableError) as caught:
+            await handoff.deliver(_payload(), idempotency_key="stable-key-3000")
+
+    assert caught.value.code == "transport_unavailable"
+    assert str(caught.value) == "transport_unavailable"
+    assert sensitive not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__

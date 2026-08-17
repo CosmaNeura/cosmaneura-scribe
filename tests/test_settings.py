@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,23 @@ def test_managed_identity_client_id_is_nonsecret_configuration() -> None:
     client_id = uuid4()
     settings = Settings(managed_identity_client_id=client_id)
     assert settings.managed_identity_client_id == client_id
+
+
+def test_audio_assembly_configuration_is_explicit_and_bounded(tmp_path: Path) -> None:
+    settings = Settings(
+        audio_encryption_key_id="https://scribe-test.vault.azure.net/keys/scribe-audio",
+        audio_assembly_encrypted_temp_directory=tmp_path,
+        audio_assembly_max_plaintext_bytes=1_000_000,
+    )
+
+    assert str(settings.audio_encryption_key_id).startswith("https://scribe-test.vault.azure.net/")
+    assert settings.audio_assembly_encrypted_temp_directory == tmp_path
+
+    with pytest.raises(ValidationError, match="greater than or equal to 1000000"):
+        Settings(audio_assembly_max_plaintext_bytes=999_999)
+
+    with pytest.raises(ValidationError, match="versionless Azure Key Vault key ID"):
+        Settings(audio_encryption_key_id="https://attacker.invalid/keys/scribe-audio")
 
 
 def test_postgres_managed_identity_requires_host_and_user() -> None:
@@ -79,3 +97,153 @@ def test_workflow_authentication_configuration_contains_no_secret() -> None:
 
     assert settings.workflow_authentication_enabled is True
     assert "secret" not in settings.model_dump()
+
+
+def test_transcription_database_principal_requires_complete_identity() -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(database_transcription_principal_name="scribe-transcription")
+
+    shared_object_id = uuid4()
+    with pytest.raises(ValidationError, match="must be distinct"):
+        Settings(
+            database_runtime_principal_name="scribe-runtime",
+            database_runtime_principal_object_id=shared_object_id,
+            database_transcription_principal_name="scribe-transcription",
+            database_transcription_principal_object_id=shared_object_id,
+        )
+
+    with pytest.raises(ValidationError, match="must be distinct"):
+        Settings(
+            database_runtime_principal_name="scribe-runtime",
+            database_runtime_principal_object_id=uuid4(),
+            database_transcription_principal_name="scribe-runtime",
+            database_transcription_principal_object_id=uuid4(),
+        )
+
+
+def test_delivery_reconciler_database_principal_is_complete_and_distinct() -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(database_delivery_reconciler_principal_name="scribe-delivery-reconciler")
+
+    shared_object_id = uuid4()
+    with pytest.raises(ValidationError, match="must be distinct"):
+        Settings(
+            database_runtime_principal_name="scribe-runtime",
+            database_runtime_principal_object_id=shared_object_id,
+            database_delivery_reconciler_principal_name="scribe-delivery-reconciler",
+            database_delivery_reconciler_principal_object_id=shared_object_id,
+        )
+
+
+def test_enabled_delivery_reconciler_job_requires_closed_dependencies() -> None:
+    configuration: dict[str, object] = {
+        "managed_identity_client_id": uuid4(),
+        "repository_backend": "postgres",
+        "database_url": "postgresql+asyncpg://test:test@localhost/scribe",
+        "database_ssl": False,
+        "master_platform_handoff_enabled": True,
+        "master_platform_base_url": "https://platform.internal.example",
+        "master_platform_scope": "api://platform/.default",
+        "delivery_reconciler_job_enabled": True,
+    }
+    for overrides, expected_error in (
+        ({"repository_backend": "memory"}, "PostgreSQL repository"),
+        ({"master_platform_handoff_enabled": False}, "master platform handoff"),
+        ({"managed_identity_client_id": None}, "managed_identity_client_id"),
+    ):
+        with pytest.raises(ValidationError, match=expected_error):
+            Settings(**(configuration | overrides))
+
+    assert Settings(**configuration).delivery_reconciler_job_enabled is True
+
+
+def test_enabled_transcription_job_requires_closed_production_dependencies(
+    tmp_path: Path,
+) -> None:
+    configuration: dict[str, object] = {
+        "managed_identity_client_id": uuid4(),
+        "storage_backend": "azure",
+        "storage_account_url": "https://scribetest.blob.core.windows.net",
+        "audio_encryption_key_id": "https://scribe-test.vault.azure.net/keys/scribe-audio",
+        "audio_assembly_encrypted_temp_directory": tmp_path,
+        "repository_backend": "postgres",
+        "database_url": "postgresql+asyncpg://test:test@localhost/scribe",
+        "database_ssl": False,
+        "transcription_backend": "azure",
+        "azure_speech_endpoint": "https://scribe-test.cognitiveservices.azure.com",
+        "azure_speech_private_endpoint_cidrs": ("10.42.1.7/32",),
+        "transcription_job_enabled": True,
+    }
+    missing_dependency_cases = (
+        ({"repository_backend": "memory"}, "PostgreSQL repository"),
+        ({"storage_backend": "memory"}, "Azure storage backend"),
+        ({"transcription_backend": "none"}, "Azure transcription backend"),
+        ({"azure_speech_endpoint": None}, "azure_speech_endpoint"),
+        ({"azure_speech_private_endpoint_cidrs": ()}, "private_endpoint_cidrs"),
+        ({"managed_identity_client_id": None}, "managed_identity_client_id"),
+        ({"audio_encryption_key_id": None}, "audio_encryption_key_id"),
+        ({"audio_assembly_encrypted_temp_directory": None}, "encrypted_temp_directory"),
+    )
+    for overrides, expected_error in missing_dependency_cases:
+        with pytest.raises(ValidationError, match=expected_error):
+            Settings(**(configuration | overrides))
+
+    settings = Settings(**configuration)
+
+    assert settings.transcription_job_enabled is True
+    assert settings.transcription_job_language_code == "en-US"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    (
+        "http://scribe-test.cognitiveservices.azure.com",
+        "https://example.com",
+        "https://user@scribe-test.cognitiveservices.azure.com",
+        "https://scribe-test.cognitiveservices.azure.com:8443",
+        "https://scribe-test.cognitiveservices.azure.com/path",
+        "https://scribe-test.cognitiveservices.azure.com?query=true",
+        "https://scribe-test.cognitiveservices.azure.com#fragment",
+        "https://nested.scribe-test.cognitiveservices.azure.com",
+    ),
+)
+def test_azure_transcription_rejects_non_exact_speech_origins(endpoint: str) -> None:
+    with pytest.raises(ValidationError, match="exact Azure Cognitive Services HTTPS origin"):
+        Settings(
+            transcription_backend="azure",
+            azure_speech_endpoint=endpoint,
+            azure_speech_private_endpoint_cidrs=("10.42.1.7/32",),
+        )
+
+
+def test_enabled_speech_smoke_requires_private_azure_and_managed_identity() -> None:
+    configuration: dict[str, object] = {
+        "managed_identity_client_id": uuid4(),
+        "transcription_backend": "azure",
+        "azure_speech_endpoint": "https://scribe-test.cognitiveservices.azure.com",
+        "azure_speech_private_endpoint_cidrs": ("10.42.1.7/32",),
+        "speech_smoke_enabled": True,
+    }
+    with pytest.raises(ValidationError, match="Azure transcription backend"):
+        Settings(**(configuration | {"transcription_backend": "none"}))
+    with pytest.raises(ValidationError, match="managed_identity_client_id"):
+        Settings(**(configuration | {"managed_identity_client_id": None}))
+
+    assert Settings(**configuration).speech_smoke_enabled is True
+
+
+def test_private_speech_cidrs_parse_from_container_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "COSMANEURA_SCRIBE_AZURE_SPEECH_PRIVATE_ENDPOINT_CIDRS",
+        '["10.42.1.7/32"]',
+    )
+
+    settings = Settings(
+        _env_file=None,
+        transcription_backend="azure",
+        azure_speech_endpoint="https://scribe-test.cognitiveservices.azure.com",
+    )
+
+    assert str(settings.azure_speech_private_endpoint_cidrs[0]) == "10.42.1.7/32"

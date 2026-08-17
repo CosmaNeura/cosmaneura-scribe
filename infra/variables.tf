@@ -1,13 +1,11 @@
 variable "subscription_id" {
   description = "Azure subscription containing the development environment."
   type        = string
-  sensitive   = true
 }
 
 variable "tenant_id" {
   description = "Microsoft Entra tenant ID."
   type        = string
-  sensitive   = true
 }
 
 variable "environment" {
@@ -84,6 +82,133 @@ variable "container_registry_name" {
   validation {
     condition     = can(regex("^[a-zA-Z0-9]{5,50}$", var.container_registry_name))
     error_message = "container_registry_name must contain 5-50 alphanumeric characters"
+  }
+}
+
+variable "enable_phi_safe_data_plane_diagnostics" {
+  description = "Enable Blob and Key Vault audit diagnostics only after cost alerts and the reviewed Log Analytics baseline are active."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.enable_phi_safe_data_plane_diagnostics ||
+      (
+        var.enable_development_cost_guardrails &&
+        var.enable_log_analytics_audit_baseline
+      )
+    )
+    error_message = "enable_phi_safe_data_plane_diagnostics requires the development budget alerts and reviewed Log Analytics baseline"
+  }
+}
+
+variable "enable_development_cost_guardrails" {
+  description = "Create the approved development resource-group budget and its actual/forecast notifications."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_development_cost_guardrails || var.environment == "development"
+    error_message = "the approved $100 cost guardrail in this slice is development-only"
+  }
+}
+
+variable "development_monthly_budget_usd" {
+  description = "Approved monthly development resource-group budget in USD."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.development_monthly_budget_usd == 100
+    error_message = "development_monthly_budget_usd is pinned to the approved $100 threshold"
+  }
+}
+
+variable "development_budget_start_date" {
+  description = "First UTC day of the month when the approved development budget begins."
+  type        = string
+  default     = "2026-08-01T00:00:00Z"
+
+  validation {
+    condition     = can(regex("^[0-9]{4}-[0-9]{2}-01T00:00:00Z$", var.development_budget_start_date))
+    error_message = "development_budget_start_date must be the first UTC day of a month in RFC3339 form"
+  }
+}
+
+variable "development_budget_notification_action_group_ids" {
+  description = "Existing enabled Azure Monitor action groups for the 80% actual and forecast development budget alerts."
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = (
+      !var.enable_development_cost_guardrails ||
+      (
+        length(var.development_budget_notification_action_group_ids) > 0 &&
+        alltrue([
+          for action_group_id in var.development_budget_notification_action_group_ids :
+          can(regex(
+            "^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/[Mm]icrosoft\\.[Ii]nsights/actionGroups/[^/]+$",
+            action_group_id,
+          ))
+        ])
+      )
+    )
+    error_message = "enabling development cost guardrails requires at least one explicit Azure Monitor action-group resource ID"
+  }
+}
+
+variable "enable_log_analytics_audit_baseline" {
+  description = "Activate the reviewed 90-day, uncapped operational workspace only after development cost guardrails are active."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.enable_log_analytics_audit_baseline ||
+      var.enable_development_cost_guardrails
+    )
+    error_message = "enable_log_analytics_audit_baseline requires enable_development_cost_guardrails=true"
+  }
+}
+
+variable "log_analytics_retention_in_days" {
+  description = "Operational Log Analytics retention; 30 days while staged, exactly 90 days when the reviewed audit baseline is enabled."
+  type        = number
+  default     = 30
+
+  validation {
+    condition = (
+      (
+        !var.enable_log_analytics_audit_baseline &&
+        var.log_analytics_retention_in_days == 30
+      ) ||
+      (
+        var.enable_log_analytics_audit_baseline &&
+        var.log_analytics_retention_in_days == 90
+      )
+    )
+    error_message = "Log Analytics retention must be 30 days while staged and 90 days when the reviewed audit baseline is enabled"
+  }
+}
+
+variable "log_analytics_daily_quota_gb" {
+  description = "Daily Log Analytics cap: 0.5 GiB while staged and -1 only after the reviewed audit baseline and cost alerts are enabled."
+  type        = number
+  default     = 0.5
+
+  validation {
+    condition = (
+      (
+        !var.enable_log_analytics_audit_baseline &&
+        var.log_analytics_daily_quota_gb == 0.5
+      ) ||
+      (
+        var.enable_log_analytics_audit_baseline &&
+        var.log_analytics_daily_quota_gb == -1
+      )
+    )
+    error_message = "Log Analytics daily quota must be 0.5 while staged and -1 when the reviewed audit baseline is enabled"
   }
 }
 
@@ -218,6 +343,269 @@ variable "use_postgres_repository" {
   validation {
     condition     = !var.use_postgres_repository || var.deploy_postgres_foundation
     error_message = "use_postgres_repository requires deploy_postgres_foundation=true"
+  }
+}
+
+variable "deploy_transcription_job" {
+  description = "Create the manual transcription job and its dedicated managed identity."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.deploy_transcription_job ||
+      (
+        var.deploy_postgres_foundation &&
+        can(regex("^[0-9a-f]{40}$", var.container_image_tag))
+      )
+    )
+    error_message = "deploy_transcription_job requires PostgreSQL and a lowercase 40-character commit SHA image tag"
+  }
+}
+
+variable "enable_transcription_job" {
+  description = "Enable one-target manual transcription executions and their data-plane roles."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.enable_transcription_job ||
+      (
+        var.deploy_transcription_job &&
+        var.deploy_database_migration_job &&
+        var.use_postgres_repository &&
+        var.deploy_private_speech_foundation
+      )
+    )
+    error_message = "enable_transcription_job requires the deployed migration, transcription, private Speech foundation, and PostgreSQL API cutover"
+  }
+}
+
+variable "deploy_private_speech_foundation" {
+  description = "Create the dedicated private Speech account, DNS, endpoint, and safe diagnostics."
+  type        = bool
+  default     = false
+}
+
+variable "deploy_speech_smoke_job" {
+  description = "Create the manual two-case synthetic Speech acceptance job and identity."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.deploy_speech_smoke_job ||
+      (
+        var.deploy_private_speech_foundation &&
+        can(regex("^[0-9a-f]{40}$", var.container_image_tag))
+      )
+    )
+    error_message = "deploy_speech_smoke_job requires the private Speech foundation and a lowercase 40-character commit SHA image tag"
+  }
+}
+
+variable "enable_speech_smoke_job" {
+  description = "Allow the pinned synthetic smoke job to call the private Speech account."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_speech_smoke_job || var.deploy_speech_smoke_job
+    error_message = "enable_speech_smoke_job requires deploy_speech_smoke_job=true"
+  }
+}
+
+variable "deploy_private_terraform_runner" {
+  description = "Create the temporary, manual private plan/apply jobs and their dedicated managed identity."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.deploy_private_terraform_runner ||
+      (
+        var.environment == "development" &&
+        var.create_resource_group &&
+        can(regex("^[0-9a-f]{40}$", var.private_terraform_runner_image_tag)) &&
+        can(regex("^sha256:[0-9a-f]{64}$", var.private_terraform_runner_image_digest))
+      )
+    )
+    error_message = "the temporary Terraform runner is development-only, requires the existing Terraform-owned resource group, and requires a lowercase 40-character source commit plus sha256 image digest"
+  }
+}
+
+variable "enable_private_terraform_runner" {
+  description = "Temporarily grant the private runner its five narrow enabled roles and permit its fixed plan/apply entrypoints to authenticate."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_private_terraform_runner || var.deploy_private_terraform_runner
+    error_message = "enable_private_terraform_runner requires deploy_private_terraform_runner=true"
+  }
+
+  validation {
+    condition = (
+      !var.enable_private_terraform_runner ||
+      (
+        var.deploy_container_app &&
+        var.container_image_repository == "cosmaneura-scribe-api" &&
+        var.container_image_tag == "804c4bacd692bc157ab101ff5055d999e00a37cc" &&
+        var.enable_workflow_authentication &&
+        var.workflow_api_audience == "57264fe1-6a4a-4946-8412-e0be18805977" &&
+        var.trusted_platform_client_id == "c7bae168-fbf5-4658-b0d9-dd4b5373a1be" &&
+        var.deploy_private_api_acceptance_job &&
+        (
+          var.private_terraform_reconciliation_completed ||
+          (
+            !var.enable_private_api_acceptance_job &&
+            !var.allow_private_api_acceptance_invocation
+          )
+        ) &&
+        !var.enable_master_platform_handoff &&
+        !var.connect_parallel_platform_vnet &&
+        var.deploy_private_speech_foundation &&
+        var.deploy_speech_smoke_job &&
+        !var.enable_speech_smoke_job &&
+        !var.deploy_postgres_foundation &&
+        !var.deploy_database_migration_job &&
+        !var.use_postgres_repository &&
+        !var.deploy_transcription_job &&
+        !var.enable_transcription_job &&
+        !var.deploy_delivery_reconciler_job &&
+        !var.enable_delivery_reconciler_job &&
+        !var.enable_development_cost_guardrails &&
+        !var.enable_log_analytics_audit_baseline &&
+        !var.enable_phi_safe_data_plane_diagnostics &&
+        var.log_analytics_retention_in_days == 30 &&
+        var.log_analytics_daily_quota_gb == 0.5
+      )
+    )
+    error_message = "the temporary runner requires the immutable reviewed live manifest: API image 804c4ba with exact workflow audience/caller and handoff disabled; the API acceptance job deployed with both gates closed until private_terraform_reconciliation_completed=true; dormant Speech smoke deployed; Speech invocation, clinical transcription, delivery reconciliation, PostgreSQL, peering, budget, baseline, and diagnostics disabled; LAW held at 30 days/0.5 GiB"
+  }
+}
+
+variable "private_terraform_runner_image_repository" {
+  description = "Repository path in the Scribe ACR for the dedicated OpenTofu runner image."
+  type        = string
+  default     = "cosmaneura-scribe-terraform-runner"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]+(?:[._/-][a-z0-9]+)*$", var.private_terraform_runner_image_repository))
+    error_message = "private_terraform_runner_image_repository must be a lowercase ACR repository path"
+  }
+}
+
+variable "private_terraform_runner_image_tag" {
+  description = "Source commit SHA used to build the dedicated private runner image; the deployment itself is digest-pinned."
+  type        = string
+  default     = "not-deployed"
+}
+
+variable "private_terraform_runner_image_digest" {
+  description = "Immutable sha256 digest of the dedicated private runner image."
+  type        = string
+  default     = "not-deployed"
+}
+
+variable "terraform_state_container_resource_id" {
+  description = "Exact remote-state Blob container assignment scope; ABAC limits the temporary runner to the state, plan, and manifest object paths."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_private_terraform_runner ||
+      (
+        can(regex(
+          "^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/[Mm]icrosoft\\.[Ss]torage/storageAccounts/[^/]+/blobServices/default/containers/[^/]+$",
+          var.terraform_state_container_resource_id,
+        )) &&
+        lower(var.terraform_state_container_resource_id) == lower(
+          "/subscriptions/${var.subscription_id}/resourceGroups/${var.terraform_state_resource_group_name}/providers/Microsoft.Storage/storageAccounts/${var.terraform_state_storage_account_name}/blobServices/default/containers/${var.terraform_state_container_name}"
+        )
+      )
+    )
+    error_message = "terraform_state_container_resource_id must exactly match the enabled runner backend subscription, resource group, account, and container"
+  }
+}
+
+variable "terraform_state_resource_group_name" {
+  description = "Remote-state resource group name passed to the runner's AzureRM backend."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_private_terraform_runner ||
+      can(regex("^[A-Za-z0-9._()\\-]{1,90}$", var.terraform_state_resource_group_name))
+    )
+    error_message = "terraform_state_resource_group_name must be a valid Azure resource group name when the private runner is enabled"
+  }
+}
+
+variable "terraform_state_storage_account_name" {
+  description = "Remote-state storage account name passed to the runner's AzureRM backend."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_private_terraform_runner ||
+      can(regex("^[a-z0-9]{3,24}$", var.terraform_state_storage_account_name))
+    )
+    error_message = "terraform_state_storage_account_name must be a valid storage account name when the private runner is enabled"
+  }
+}
+
+variable "terraform_state_container_name" {
+  description = "Remote-state container name used by the runner for both state and the reviewed saved plan."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_private_terraform_runner ||
+      can(regex("^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$", var.terraform_state_container_name))
+    )
+    error_message = "terraform_state_container_name must be a valid Blob container name when the private runner is enabled"
+  }
+}
+
+variable "terraform_state_key" {
+  description = "Existing Scribe development state blob key; this workflow never migrates or replaces it."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_private_terraform_runner ||
+      (
+        can(regex("^[A-Za-z0-9][A-Za-z0-9._/-]*$", var.terraform_state_key)) &&
+        !strcontains(var.terraform_state_key, "..")
+      )
+    )
+    error_message = "terraform_state_key must name the existing state blob without traversal when the private runner is enabled"
+  }
+}
+
+variable "private_terraform_plan_blob_name" {
+  description = "Unique .tfplan object name bound to reviewer-pinned content and state metadata before apply."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = (
+      !var.enable_private_terraform_runner ||
+      (
+        can(regex("^[a-z0-9][a-z0-9._/-]*\\.tfplan$", var.private_terraform_plan_blob_name)) &&
+        !strcontains(var.private_terraform_plan_blob_name, "..") &&
+        var.private_terraform_plan_blob_name != var.terraform_state_key &&
+        "${var.private_terraform_plan_blob_name}.manifest.json" != var.terraform_state_key
+      )
+    )
+    error_message = "private_terraform_plan_blob_name must be a unique lowercase .tfplan path without traversal and must not collide with the state object"
   }
 }
 

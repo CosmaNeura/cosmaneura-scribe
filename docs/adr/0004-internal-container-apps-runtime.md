@@ -21,9 +21,18 @@ produce inconsistent session state.
   enable registry administrator credentials.
 - Scale the development API from zero to at most one replica until PostgreSQL-backed repositories
   replace process memory.
-- Send platform and application logs to a dedicated 30-day Log Analytics workspace capped at
-  0.5 GB/day. The application continues to prohibit transcript, audio, patient, and object-location
-  logging.
+- Send platform and application logs to a dedicated 90-day Log Analytics workspace. Do not set a
+  daily ingestion cap because silently dropping audit records during an incident is unsafe; use
+  Cost Management budgets, ingestion alerts, and `Usage` monitoring instead. This workspace is not
+  the separately required seven-year immutable audit archive.
+- Gate explicit Blob operation and Key Vault audit diagnostics off until the workspace exists and
+  an ingestion transform is attached. The transform drops Blob URI and object-key fields before
+  storage; activation requires synthetic proof of zero transformation errors and zero populated
+  object-location fields. Diagnostic categories exclude payload content and key material, and the
+  application continues to prohibit transcript, audio, patient, and object-location logging.
+- Associate default-deny NSGs with the private-endpoint and delegated Container Apps subnets.
+  Permit only private-endpoint HTTPS plus Microsoft's documented workload-profile ingress,
+  platform service tags, Azure DNS, private HTTPS, and PostgreSQL paths.
 
 ## Consequences
 

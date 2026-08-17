@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -18,7 +19,14 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .repository import (
+    AudioAssemblyManifest,
+    DeliveryClaimPolicy,
+    DeliverySessionSyncResult,
+    DeliverySuccessCompletion,
+    DeliverySuccessConflictError,
+    IdempotencyClaimUnavailableError,
     IdempotencyConflictError,
+    IdempotencyRecord,
     Repository,
     UploadGrantRecord,
 )
@@ -26,8 +34,16 @@ from .schemas import (
     AudioChunk,
     CaptureSession,
     ConsentRecord,
+    DeliveryAttempt,
+    DeliveryConsentSource,
+    DeliveryPayloadSource,
+    DeliverySessionSource,
+    DeliveryStatus,
+    DeliveryTranscriptSource,
+    SessionAudioKey,
     Transcript,
     TranscriptDelivery,
+    TranscriptionJob,
 )
 from .settings import Settings
 
@@ -71,6 +87,27 @@ class PostgresRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def get_idempotency(
+        self,
+        *,
+        tenant_id: UUID,
+        operation: str,
+        key: str,
+    ) -> IdempotencyRecord | None:
+        row = await self._one_or_none(
+            """
+            SELECT request_fingerprint, entity_id
+            FROM idempotency_records
+            WHERE tenant_id = :tenant_id
+              AND operation = :operation
+              AND idempotency_key = :idempotency_key
+            """,
+            tenant_id=tenant_id,
+            operation=operation,
+            idempotency_key=key,
+        )
+        return IdempotencyRecord(**row) if row is not None else None
+
     async def claim_idempotency(
         self,
         *,
@@ -80,6 +117,10 @@ class PostgresRepository:
         request_fingerprint: str,
         entity_id: UUID,
     ) -> UUID | None:
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"{tenant_id}:{operation}:{key}"},
+        )
         inserted = await self._session.execute(
             text(
                 """
@@ -123,8 +164,10 @@ class PostgresRepository:
                 )
             )
             .mappings()
-            .one()
+            .one_or_none()
         )
+        if previous is None:
+            raise IdempotencyClaimUnavailableError
         if previous["request_fingerprint"] != request_fingerprint:
             raise IdempotencyConflictError
         return previous["entity_id"]
@@ -225,6 +268,84 @@ class PostgresRepository:
                 """
             ),
             {"tenant_id": tenant_id, "id": session.id, "status": session.status.value},
+        )
+
+    async def get_session_audio_key(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> SessionAudioKey | None:
+        row = await self._one_or_none(
+            """
+            SELECT session_id, key_version, wrapped_dek, created_at
+            FROM session_audio_keys
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        return SessionAudioKey.model_validate(row) if row is not None else None
+
+    async def add_session_audio_key(
+        self,
+        tenant_id: UUID,
+        audio_key: SessionAudioKey,
+    ) -> bool:
+        inserted = await self._session.execute(
+            text(
+                """
+                INSERT INTO session_audio_keys (
+                    tenant_id, session_id, key_version, wrapped_dek, created_at
+                ) VALUES (
+                    :tenant_id, :session_id, :key_version, :wrapped_dek, :created_at
+                )
+                ON CONFLICT (tenant_id, session_id) DO NOTHING
+                RETURNING session_id
+                """
+            ),
+            {"tenant_id": tenant_id, **audio_key.model_dump(mode="python")},
+        )
+        return inserted.scalar_one_or_none() is not None
+
+    async def get_audio_assembly_manifest(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+    ) -> AudioAssemblyManifest | None:
+        row = await self._one_or_none(
+            """
+            SELECT audio_key.session_id, audio_key.key_version,
+                   audio_key.wrapped_dek, audio_key.created_at
+            FROM session_audio_keys AS audio_key
+            JOIN scribe_sessions AS session
+              ON session.tenant_id = audio_key.tenant_id
+             AND session.id = audio_key.session_id
+            JOIN transcription_jobs AS job
+              ON job.tenant_id = session.tenant_id
+             AND job.session_id = session.id
+            WHERE audio_key.tenant_id = :tenant_id
+              AND audio_key.session_id = :session_id
+              AND session.status = 'processing'
+              AND job.id = :job_id
+              AND job.status = 'processing'
+              AND job.lease_token = :lease_token
+              AND job.lease_until > :now
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            job_id=job_id,
+            lease_token=lease_token,
+            now=now,
+        )
+        if row is None:
+            return None
+        return AudioAssemblyManifest(
+            audio_key=SessionAudioKey.model_validate(row),
+            chunks=tuple(await self.chunks_for(tenant_id, session_id)),
         )
 
     async def get_chunk(self, tenant_id: UUID, chunk_id: UUID) -> AudioChunk | None:
@@ -360,6 +481,160 @@ class PostgresRepository:
         )
         return Transcript.model_validate(row) if row is not None else None
 
+    async def transcription_job_for(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> TranscriptionJob | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, session_id, status, attempt_count, lease_token, lease_until,
+                   last_error_code, created_at, updated_at
+            FROM transcription_jobs
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        return TranscriptionJob.model_validate(row) if row is not None else None
+
+    async def claim_transcription_job(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        job_id: UUID,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+        max_attempts: int,
+    ) -> TranscriptionJob | None:
+        row = (
+            (
+                await self._session.execute(
+                    text(
+                        """
+                        INSERT INTO transcription_jobs (
+                            id, tenant_id, session_id, status, attempt_count,
+                            lease_token, lease_until, created_at, updated_at
+                        ) VALUES (
+                            :id, :tenant_id, :session_id, 'processing', 1,
+                            :lease_token, :lease_until, :now, :now
+                        )
+                        ON CONFLICT (tenant_id, session_id) DO UPDATE
+                        SET status = 'processing',
+                            attempt_count = CASE
+                                WHEN transcription_jobs.status = 'terminal' THEN 1
+                                ELSE transcription_jobs.attempt_count + 1
+                            END,
+                            lease_token = EXCLUDED.lease_token,
+                            lease_until = EXCLUDED.lease_until,
+                            last_error_code = NULL,
+                            updated_at = EXCLUDED.updated_at
+                        WHERE (
+                            transcription_jobs.attempt_count < :max_attempts
+                            AND (
+                                transcription_jobs.status = 'retryable'
+                                OR (
+                                    transcription_jobs.status = 'processing'
+                                    AND transcription_jobs.lease_until <= :now
+                                )
+                            )
+                          )
+                          OR (
+                            transcription_jobs.status = 'terminal'
+                            AND EXISTS (
+                                SELECT 1
+                                FROM scribe_sessions
+                                WHERE scribe_sessions.tenant_id = :tenant_id
+                                  AND scribe_sessions.id = :session_id
+                                  AND scribe_sessions.status = 'uploaded'
+                            )
+                          )
+                        RETURNING id, session_id, status, attempt_count, lease_token,
+                                  lease_until, last_error_code, created_at, updated_at
+                        """
+                    ),
+                    {
+                        "id": job_id,
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "lease_token": lease_token,
+                        "lease_until": lease_until,
+                        "now": now,
+                        "max_attempts": max_attempts,
+                    },
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return TranscriptionJob.model_validate(dict(row)) if row is not None else None
+
+    async def update_transcription_job(
+        self,
+        tenant_id: UUID,
+        job: TranscriptionJob,
+        *,
+        expected_lease_token: UUID,
+    ) -> bool:
+        updated = await self._session.execute(
+            text(
+                """
+                UPDATE transcription_jobs
+                SET status = :status,
+                    attempt_count = :attempt_count,
+                    lease_token = :lease_token,
+                    lease_until = :lease_until,
+                    last_error_code = :last_error_code,
+                    updated_at = :updated_at
+                WHERE tenant_id = :tenant_id
+                  AND id = :id
+                  AND status = 'processing'
+                  AND lease_token = :expected_lease_token
+                RETURNING id
+                """
+            ),
+            {
+                **job.model_dump(mode="python"),
+                "tenant_id": tenant_id,
+                "status": job.status.value,
+                "expected_lease_token": expected_lease_token,
+            },
+        )
+        return updated.scalar_one_or_none() is not None
+
+    async def renew_transcription_job(
+        self,
+        tenant_id: UUID,
+        job_id: UUID,
+        *,
+        lease_token: UUID,
+        now: datetime,
+        lease_until: datetime,
+    ) -> bool:
+        renewed = await self._session.execute(
+            text(
+                """
+                UPDATE transcription_jobs
+                SET lease_until = :lease_until,
+                    updated_at = :now
+                WHERE tenant_id = :tenant_id
+                  AND id = :id
+                  AND status = 'processing'
+                  AND lease_token = :lease_token
+                  AND lease_until > :now
+                RETURNING id
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "id": job_id,
+                "lease_token": lease_token,
+                "now": now,
+                "lease_until": lease_until,
+            },
+        )
+        return renewed.scalar_one_or_none() is not None
+
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
         row = await self._one_or_none(
             """
@@ -373,6 +648,23 @@ class PostgresRepository:
             id=delivery_id,
         )
         return TranscriptDelivery.model_validate(row) if row is not None else None
+
+    async def get_delivery_attempt(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+    ) -> DeliveryAttempt | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, session_id, idempotency_key, payload_sha256, status,
+                   attempt_count, platform_transcript_id, last_error_code, updated_at
+            FROM transcript_deliveries
+            WHERE tenant_id = :tenant_id AND id = :id
+            """,
+            tenant_id=tenant_id,
+            id=delivery_id,
+        )
+        return DeliveryAttempt.model_validate(row) if row is not None else None
 
     async def delivery_for(self, tenant_id: UUID, session_id: UUID) -> TranscriptDelivery | None:
         row = await self._one_or_none(
@@ -410,25 +702,286 @@ class PostgresRepository:
             },
         )
 
-    async def update_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
+    async def claim_delivery_attempt(
+        self,
+        tenant_id: UUID,
+        *,
+        policy: DeliveryClaimPolicy,
+        delivery_id: UUID | None = None,
+        excluded_delivery_ids: frozenset[UUID] = frozenset(),
+    ) -> DeliveryAttempt | None:
+        delivery_filter = "AND delivery.id = :delivery_id" if delivery_id is not None else ""
+        exclusion_filter = (
+            "AND NOT (delivery.id = ANY(CAST(:excluded_delivery_ids AS uuid[])))"
+            if excluded_delivery_ids
+            else ""
+        )
+        row = (
+            (
+                await self._session.execute(
+                    text(
+                        f"""
+                        WITH claim_clock AS (
+                            SELECT statement_timestamp() AS claimed_at
+                        ), candidate AS (
+                            SELECT delivery.id
+                            FROM transcript_deliveries AS delivery
+                            CROSS JOIN claim_clock
+                            WHERE delivery.tenant_id = :tenant_id
+                              {delivery_filter}
+                              {exclusion_filter}
+                              AND (
+                                  (
+                                      delivery.status = 'pending'
+                                      AND delivery.attempt_count = 0
+                                  )
+                                  OR (
+                                      delivery.status = 'pending'
+                                      AND delivery.attempt_count > 0
+                                      AND delivery.updated_at <= claim_clock.claimed_at -
+                                          make_interval(
+                                              secs => CAST(
+                                                  :pending_timeout_seconds AS double precision
+                                              )
+                                          )
+                                  )
+                                  OR (
+                                      delivery.status = 'retryable'
+                                      AND delivery.updated_at <= claim_clock.claimed_at -
+                                          make_interval(
+                                              secs => CAST(
+                                                  :retry_delay_seconds AS double precision
+                                              )
+                                          )
+                                  )
+                              )
+                            ORDER BY delivery.updated_at, delivery.id
+                            FOR UPDATE OF delivery SKIP LOCKED
+                            LIMIT 1
+                        )
+                        UPDATE transcript_deliveries AS delivery
+                        SET status = 'pending',
+                            attempt_count = delivery.attempt_count + 1,
+                            last_error_code = NULL,
+                            updated_at = claim_clock.claimed_at
+                        FROM candidate, claim_clock
+                        WHERE delivery.tenant_id = :tenant_id
+                          AND delivery.id = candidate.id
+                        RETURNING delivery.id, delivery.session_id, delivery.idempotency_key,
+                                  delivery.payload_sha256, delivery.status,
+                                  delivery.attempt_count, delivery.platform_transcript_id,
+                                  delivery.last_error_code, delivery.updated_at
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "delivery_id": delivery_id,
+                        "excluded_delivery_ids": list(excluded_delivery_ids),
+                        "pending_timeout_seconds": policy.pending_timeout.total_seconds(),
+                        "retry_delay_seconds": policy.retry_delay.total_seconds(),
+                    },
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        claimed = DeliveryAttempt.model_validate(row)
+        await self.audit(
+            tenant_id=tenant_id,
+            action="transcript.delivery_attempted",
+            entity_type="transcript_delivery",
+            entity_id=claimed.id,
+        )
+        return claimed
+
+    async def delivery_payload_source(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> DeliveryPayloadSource:
+        session_row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                   modality, status
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        if session_row is None:
+            return DeliveryPayloadSource()
+        session = DeliverySessionSource.model_validate(session_row)
+        consent_row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, modality,
+                   all_parties_consented, revoked_at
+            FROM consent_records
+            WHERE tenant_id = :tenant_id AND id = :consent_id
+            """,
+            tenant_id=tenant_id,
+            consent_id=session.consent_record_id,
+        )
+        transcript_row = await self._one_or_none(
+            """
+            SELECT id, session_id, segments
+            FROM transcripts
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        return DeliveryPayloadSource(
+            session=session,
+            consent=(
+                DeliveryConsentSource.model_validate(consent_row)
+                if consent_row is not None
+                else None
+            ),
+            transcript=(
+                DeliveryTranscriptSource.model_validate(transcript_row)
+                if transcript_row is not None
+                else None
+            ),
+        )
+
+    async def synchronize_delivery_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> DeliverySessionSyncResult:
+        row = await self._one_or_none(
+            """
+            SELECT status
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+            FOR UPDATE
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        if row is None:
+            return DeliverySessionSyncResult.SESSION_UNAVAILABLE
+        if row["status"] == "handed_off":
+            return DeliverySessionSyncResult.ALREADY_SYNCHRONIZED
+        if row["status"] != "transcript_ready":
+            return DeliverySessionSyncResult.SESSION_STATE_CONFLICT
         await self._session.execute(
             text(
                 """
-                UPDATE transcript_deliveries
-                SET status = :status,
-                    attempt_count = :attempt_count,
-                    platform_transcript_id = :platform_transcript_id,
-                    last_error_code = :last_error_code,
-                    updated_at = :updated_at
-                WHERE tenant_id = :tenant_id AND id = :id
+                UPDATE scribe_sessions
+                SET status = 'handed_off'
+                WHERE tenant_id = :tenant_id
+                  AND id = :session_id
+                  AND status = 'transcript_ready'
                 """
             ),
-            {
-                **delivery.model_dump(mode="python"),
-                "tenant_id": tenant_id,
-                "status": delivery.status.value,
-            },
+            {"tenant_id": tenant_id, "session_id": session_id},
         )
+        await self.audit(
+            tenant_id=tenant_id,
+            action="transcript.delivery_session_synchronized",
+            entity_type="scribe_session",
+            entity_id=session_id,
+        )
+        return DeliverySessionSyncResult.SYNCHRONIZED
+
+    async def complete_delivery_failure(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        expected_attempt_count: int,
+        failure_status: DeliveryStatus,
+        error_code: str,
+    ) -> DeliveryAttempt | None:
+        if failure_status not in {DeliveryStatus.RETRYABLE, DeliveryStatus.TERMINAL}:
+            raise ValueError("delivery failure status must be retryable or terminal")
+        row = (
+            (
+                await self._session.execute(
+                    text(
+                        """
+                        UPDATE transcript_deliveries
+                        SET status = :status,
+                            last_error_code = :last_error_code,
+                            updated_at = statement_timestamp()
+                        WHERE tenant_id = :tenant_id
+                          AND id = :id
+                          AND status = 'pending'
+                          AND attempt_count = :expected_attempt_count
+                        RETURNING id, session_id, idempotency_key, payload_sha256, status,
+                                  attempt_count, platform_transcript_id, last_error_code, updated_at
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "id": delivery_id,
+                        "status": failure_status.value,
+                        "last_error_code": error_code,
+                        "expected_attempt_count": expected_attempt_count,
+                    },
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return DeliveryAttempt.model_validate(row) if row is not None else None
+
+    async def complete_delivery_success(
+        self,
+        tenant_id: UUID,
+        delivery_id: UUID,
+        *,
+        expected_payload_sha256: str,
+        platform_transcript_id: str,
+    ) -> DeliverySuccessCompletion | None:
+        row = (
+            (
+                await self._session.execute(
+                    text(
+                        """
+                        UPDATE transcript_deliveries
+                        SET status = 'delivered',
+                            platform_transcript_id = :platform_transcript_id,
+                            last_error_code = NULL,
+                            updated_at = statement_timestamp()
+                        WHERE tenant_id = :tenant_id
+                          AND id = :id
+                          AND payload_sha256 = :expected_payload_sha256
+                          AND status <> 'delivered'
+                        RETURNING id, session_id, idempotency_key, payload_sha256, status,
+                                  attempt_count, platform_transcript_id, last_error_code, updated_at
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "id": delivery_id,
+                        "expected_payload_sha256": expected_payload_sha256,
+                        "platform_transcript_id": platform_transcript_id,
+                    },
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is not None:
+            return DeliverySuccessCompletion(
+                delivery=DeliveryAttempt.model_validate(row),
+                changed=True,
+            )
+        current = await self.get_delivery_attempt(tenant_id, delivery_id)
+        if current is None:
+            return None
+        if (
+            current.payload_sha256 != expected_payload_sha256
+            or current.status != DeliveryStatus.DELIVERED
+            or current.platform_transcript_id != platform_transcript_id
+        ):
+            raise DeliverySuccessConflictError("delivery_success_conflict")
+        return DeliverySuccessCompletion(delivery=current, changed=False)
 
     async def audit(
         self, *, tenant_id: UUID, action: str, entity_type: str, entity_id: UUID

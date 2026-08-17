@@ -69,6 +69,9 @@ token from the attached Scribe managed identity.
 6. Expand the pilot by account. The current upload/AssemblyAI and legacy handoff paths remain
    available until acceptance metrics support retirement.
 
-If delivery returns `retryable`, correct connectivity or availability and retry the same session;
-Scribe automatically reuses its outbound idempotency key. A `terminal` result requires inspection
-of the sanitized error code and an explicit operator decision before retrying.
+If delivery returns `retryable`, Scribe's tenant-scoped `DeliveryReconciler` can claim only a
+bounded batch of stale `pending` or `retryable` receipts and automatically reuses each outbound
+idempotency key. The reconciler is implemented but not yet attached to a scheduler or route; until
+that activation decision is implemented, correct connectivity or availability and re-POST the same
+session. A `terminal` result requires inspection of the sanitized error code and an explicit
+operator decision before retrying.

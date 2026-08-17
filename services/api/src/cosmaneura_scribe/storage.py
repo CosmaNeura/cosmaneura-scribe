@@ -41,7 +41,7 @@ class InMemoryAudioStorage:
         expires_at: datetime | None = None,
     ) -> AudioUploadGrant:
         expires_at = expires_at or datetime.now(UTC) + self._ttl
-        path = _blob_name(tenant_id, session_id, object_id, request)
+        path = blob_name(tenant_id, session_id, object_id, request)
         return AudioUploadGrant(
             object_id=object_id,
             session_id=session_id,
@@ -94,11 +94,11 @@ class AzureBlobAudioStorage:
             key_start_time=now - timedelta(minutes=5),
             key_expiry_time=expires_at,
         )
-        blob_name = _blob_name(tenant_id, session_id, object_id, request)
+        object_name = blob_name(tenant_id, session_id, object_id, request)
         sas = generate_blob_sas(
             account_name=self._account_name,
             container_name=self._container_name,
-            blob_name=blob_name,
+            blob_name=object_name,
             user_delegation_key=delegation_key,
             permission=BlobSasPermissions(create=True, write=True),
             start=now - timedelta(minutes=5),
@@ -106,7 +106,7 @@ class AzureBlobAudioStorage:
         )
         blob_url = self._client.get_blob_client(
             container=self._container_name,
-            blob=blob_name,
+            blob=object_name,
         ).url
         return AudioUploadGrant(
             object_id=object_id,
@@ -128,7 +128,7 @@ def build_audio_storage(settings: Settings) -> AudioStorage:
     return InMemoryAudioStorage(settings)
 
 
-def _blob_name(
+def blob_name(
     tenant_id: UUID,
     session_id: UUID,
     object_id: UUID,

@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "deidentified": true,
+  "cases": [
+    {
+      "case_id": "sample-001",
+      "consent_record_id": "34cd02f4-c465-4c58-a429-78ffd92e7524",
+      "consent_verified": true,
+      "source_kind": "synthetic",
+      "audio_path": "audio/sample-001.wav",
+      "reference_path": "references/sample-001.txt",
+      "language_code": "en-US",
+      "channel": "mixed"
+    },
+    {
+      "case_id": "sample-002",
+      "consent_record_id": "1253029c-83b7-4896-a258-88cad84574a8",
+      "consent_verified": true,
+      "source_kind": "synthetic",
+      "audio_path": "audio/sample-002.wav",
+      "reference_path": "references/sample-002.txt",
+      "language_code": "en-US",
+      "channel": "mixed"
+    }
+  ]
+}

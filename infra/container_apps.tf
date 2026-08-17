@@ -20,8 +20,13 @@ resource "azurerm_log_analytics_workspace" "scribe" {
   location            = local.resource_group_location
 
   sku               = "PerGB2018"
-  retention_in_days = 30
-  daily_quota_gb    = 0.5
+  retention_in_days = var.log_analytics_retention_in_days
+  daily_quota_gb    = var.log_analytics_daily_quota_gb
+  data_collection_rule_id = (
+    var.enable_phi_safe_data_plane_diagnostics
+    ? azurerm_monitor_data_collection_rule.phi_safe_workspace[0].id
+    : null
+  )
 
   tags = local.tags
 }
@@ -64,6 +69,10 @@ resource "azurerm_container_app_environment" "scribe" {
     name                  = "Consumption"
     workload_profile_type = "Consumption"
   }
+
+  depends_on = [
+    azurerm_subnet_network_security_group_association.container_apps,
+  ]
 
   tags = local.tags
 }
@@ -207,7 +216,12 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "COSMANEURA_SCRIBE_STORAGE_CONTAINER_NAME"
-        value = azurerm_storage_container.audio.name
+        value = local.audio_container_name
+      }
+
+      env {
+        name  = "COSMANEURA_SCRIBE_AUDIO_ENCRYPTION_KEY_ID"
+        value = azurerm_key_vault_key.audio.versionless_id
       }
 
       dynamic "env" {
@@ -278,6 +292,7 @@ resource "azurerm_container_app" "api" {
   depends_on = [
     azurerm_private_endpoint.audio_blob,
     azurerm_role_assignment.runtime_acr,
+    azurerm_role_assignment.runtime_audio_key_reader,
   ]
 
   tags = local.tags

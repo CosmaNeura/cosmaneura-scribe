@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from .session_state_v1 import SessionStatus
+from .transcript_constraints import (
+    MAX_TRANSCRIPT_CONTENT_CHARS,
+    MAX_TRANSCRIPT_DURATION_MS,
+    MAX_TRANSCRIPT_SEGMENTS,
+    validate_transcript_segments,
+)
 
 ExternalEntityId = Annotated[str, Field(min_length=1, max_length=128)]
 
@@ -27,11 +44,18 @@ class ConsentCreate(BaseModel):
     practitioner_id: ExternalEntityId
     patient_id: ExternalEntityId
     modality: CaptureModality
-    participant_regions: set[str] = Field(min_length=1)
+    participant_regions: set[str] = Field(
+        min_length=1,
+        json_schema_extra={"minItems": 1, "uniqueItems": True},
+    )
     method: ConsentMethod
     all_parties_consented: bool
     granted_at: datetime
     evidence_object_id: UUID | None = None
+
+    @field_serializer("participant_regions")
+    def serialize_participant_regions(self, regions: set[str]) -> list[str]:
+        return sorted(regions)
 
     @model_validator(mode="after")
     def validate_granted_at(self) -> ConsentCreate:
@@ -46,16 +70,6 @@ class ConsentRecord(ConsentCreate):
     id: UUID
     policy_version: str
     revoked_at: datetime | None = None
-
-
-class SessionStatus(StrEnum):
-    CREATED = "created"
-    CAPTURING = "capturing"
-    UPLOADED = "uploaded"
-    PROCESSING = "processing"
-    TRANSCRIPT_READY = "transcript_ready"
-    HANDED_OFF = "handed_off"
-    FAILED = "failed"
 
 
 class SessionCreate(BaseModel):
@@ -112,6 +126,80 @@ class AudioUploadGrant(BaseModel):
     expires_at: datetime
 
 
+class RsaPublicJwk(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kty: Literal["RSA"] = "RSA"
+    n: str = Field(pattern=r"^[A-Za-z0-9_-]+$", min_length=512, max_length=512)
+    e: str = Field(pattern=r"^[A-Za-z0-9_-]+$", min_length=1, max_length=16)
+    alg: Literal["RSA-OAEP-256"] = "RSA-OAEP-256"
+    ext: Literal[True] = True
+    key_ops: tuple[Literal["wrapKey"], ...] = ("wrapKey",)
+
+    @field_validator("n")
+    @classmethod
+    def modulus_is_rsa_3072(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(
+                value + "=" * (-len(value) % 4),
+                altchars=b"-_",
+                validate=True,
+            )
+        except binascii.Error:
+            raise ValueError("n must be unpadded base64url") from None
+        if len(decoded) != 384:
+            raise ValueError("n must contain one RSA-3072 modulus")
+        return value
+
+
+class AudioEncryptionPublicKey(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    key_version: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    algorithm: Literal["RSA-OAEP-256"] = "RSA-OAEP-256"
+    public_jwk: RsaPublicJwk
+
+
+class SessionAudioKeyCreate(BaseModel):
+    key_version: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    wrapped_dek: str = Field(
+        pattern=r"^[A-Za-z0-9_-]+$",
+        min_length=512,
+        max_length=512,
+        repr=False,
+    )
+
+    @field_validator("wrapped_dek")
+    @classmethod
+    def wrapped_dek_is_valid_base64url(cls, value: str) -> str:
+        try:
+            decoded = base64.b64decode(
+                value + "=" * (-len(value) % 4),
+                altchars=b"-_",
+                validate=True,
+            )
+        except binascii.Error:
+            raise ValueError("wrapped_dek must be unpadded base64url") from None
+        if len(decoded) != 384:
+            raise ValueError("wrapped_dek must contain one RSA-3072 wrapped key")
+        return value
+
+
+class SessionAudioKey(SessionAudioKeyCreate):
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    created_at: datetime
+
+
+class SessionAudioKeyReceipt(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    key_version: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    created_at: datetime
+
+
 class SpeakerRole(StrEnum):
     CLINICIAN = "clinician"
     PATIENT = "patient"
@@ -119,25 +207,36 @@ class SpeakerRole(StrEnum):
     UNKNOWN = "unknown"
 
 
-class TranscriptSegment(BaseModel):
-    speaker_id: str = Field(min_length=1, max_length=80)
-    speaker_role: SpeakerRole
-    content: str = Field(min_length=1)
+class TimedTranscriptSegment(BaseModel):
+    content: str = Field(min_length=1, max_length=MAX_TRANSCRIPT_CONTENT_CHARS)
     start_ms: int = Field(ge=0)
     end_ms: int = Field(gt=0)
-    confidence: float | None = Field(default=None, ge=0, le=1)
 
     @model_validator(mode="after")
-    def timestamps_are_ordered(self) -> TranscriptSegment:
+    def timestamps_are_ordered(self) -> TimedTranscriptSegment:
         if self.end_ms <= self.start_ms:
             raise ValueError("end_ms must be greater than start_ms")
         return self
 
 
+class TranscriptSegment(TimedTranscriptSegment):
+    speaker_id: str = Field(min_length=1, max_length=80)
+    speaker_role: SpeakerRole
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class TranscriptCreate(BaseModel):
     language_code: str = Field(default="en-US", min_length=2, max_length=16)
     stt_provider: str = Field(min_length=1, max_length=40)
-    segments: list[TranscriptSegment] = Field(min_length=1)
+    segments: list[TranscriptSegment] = Field(
+        min_length=1,
+        max_length=MAX_TRANSCRIPT_SEGMENTS,
+    )
+
+    @model_validator(mode="after")
+    def validate_segment_sequence(self) -> TranscriptCreate:
+        validate_transcript_segments(self.segments)
+        return self
 
 
 class Transcript(TranscriptCreate):
@@ -146,6 +245,27 @@ class Transcript(TranscriptCreate):
     id: UUID
     session_id: UUID
     created_at: datetime
+
+
+class TranscriptionJobStatus(StrEnum):
+    PROCESSING = "processing"
+    RETRYABLE = "retryable"
+    COMPLETED = "completed"
+    TERMINAL = "terminal"
+
+
+class TranscriptionJob(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    session_id: UUID
+    status: TranscriptionJobStatus
+    attempt_count: int = Field(ge=1)
+    lease_token: UUID | None = Field(default=None, repr=False)
+    lease_until: datetime | None = None
+    last_error_code: str | None = Field(default=None, max_length=64)
+    created_at: datetime
+    updated_at: datetime
 
 
 class LegacyTranscriptEntry(BaseModel):
@@ -163,31 +283,26 @@ class LegacyTranscriptPayload(BaseModel):
     transcript_data: list[LegacyTranscriptEntry]
 
 
-class MasterTranscriptSegment(BaseModel):
+class MasterTranscriptSegment(TimedTranscriptSegment):
     speaker: Literal["Doctor", "Patient", "Other", "Unknown"]
-    content: str = Field(min_length=1, max_length=100_000)
-    start_ms: int = Field(ge=0)
-    end_ms: int = Field(gt=0)
-
-    @model_validator(mode="after")
-    def timestamps_are_ordered(self) -> MasterTranscriptSegment:
-        if self.end_ms <= self.start_ms:
-            raise ValueError("end_ms must be greater than start_ms")
-        return self
 
 
 class MasterTranscriptDeliveryRequest(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     encounter_id: ExternalEntityId
     scribe_session_id: UUID
-    duration_seconds: int = Field(ge=0, le=86_400)
-    segments: list[MasterTranscriptSegment] = Field(min_length=1, max_length=10_000)
+    duration_seconds: int = Field(ge=0, le=MAX_TRANSCRIPT_DURATION_MS // 1000)
+    segments: list[MasterTranscriptSegment] = Field(
+        min_length=1,
+        max_length=MAX_TRANSCRIPT_SEGMENTS,
+    )
 
     @model_validator(mode="after")
     def segments_are_ordered(self) -> MasterTranscriptDeliveryRequest:
-        starts = [segment.start_ms for segment in self.segments]
-        if starts != sorted(starts):
-            raise ValueError("segments must be in nondecreasing time order")
+        validate_transcript_segments(
+            self.segments,
+            duration_ms=self.duration_seconds * 1000,
+        )
         return self
 
 
@@ -202,6 +317,64 @@ class DeliveryStatus(StrEnum):
     RETRYABLE = "retryable"
     DELIVERED = "delivered"
     TERMINAL = "terminal"
+
+
+class DeliverySessionSource(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    appointment_id: ExternalEntityId
+    practitioner_id: ExternalEntityId
+    patient_id: ExternalEntityId
+    consent_record_id: UUID
+    modality: CaptureModality
+    status: SessionStatus
+
+
+class DeliveryConsentSource(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    appointment_id: ExternalEntityId
+    practitioner_id: ExternalEntityId
+    patient_id: ExternalEntityId
+    modality: CaptureModality
+    all_parties_consented: bool
+    revoked_at: datetime | None = None
+
+
+class DeliveryTranscriptSource(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    session_id: UUID
+    segments: list[TranscriptSegment] = Field(
+        min_length=1,
+        max_length=MAX_TRANSCRIPT_SEGMENTS,
+        repr=False,
+    )
+
+
+class DeliveryPayloadSource(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    session: DeliverySessionSource | None = None
+    consent: DeliveryConsentSource | None = None
+    transcript: DeliveryTranscriptSource | None = None
+
+
+class DeliveryAttempt(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    session_id: UUID
+    idempotency_key: str = Field(min_length=8, max_length=255)
+    payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: DeliveryStatus
+    attempt_count: int = Field(ge=0)
+    platform_transcript_id: ExternalEntityId | None = None
+    last_error_code: str | None = Field(default=None, max_length=64)
+    updated_at: datetime
 
 
 class TranscriptDelivery(BaseModel):
@@ -227,3 +400,17 @@ class AuditEvent(BaseModel):
     entity_type: str
     entity_id: UUID
     occurred_at: datetime
+
+
+class TokenDiagnostics(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    signature_valid: bool
+    lifetime_valid: bool
+    token_version_v2: bool
+    issuer_valid: bool
+    audience_valid: bool
+    tenant_valid: bool
+    idtyp_app: bool
+    azp_valid: bool
+    role_present: bool

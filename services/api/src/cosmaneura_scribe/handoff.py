@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, Protocol
+from uuid import UUID
 
 import httpx
 from azure.core.exceptions import AzureError
@@ -16,12 +18,11 @@ from .schemas import (
     MasterTranscriptSegment,
     SpeakerRole,
     Transcript,
+    TranscriptSegment,
 )
 from .settings import Settings
 
-ROLE_LABELS: dict[
-    SpeakerRole, Literal["Doctor", "Patient", "Other", "Unknown"]
-] = {
+ROLE_LABELS: dict[SpeakerRole, Literal["Doctor", "Patient", "Other", "Unknown"]] = {
     SpeakerRole.CLINICIAN: "Doctor",
     SpeakerRole.PATIENT: "Patient",
     SpeakerRole.OTHER: "Other",
@@ -111,8 +112,8 @@ class HttpMasterPlatformHandoff:
                 },
                 json=payload.model_dump(mode="json"),
             )
-        except (AzureError, httpx.TimeoutException, httpx.NetworkError) as exc:
-            raise HandoffRetryableError("transport_unavailable") from exc
+        except (AzureError, httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError):
+            raise HandoffRetryableError("transport_unavailable") from None
 
         if response.status_code in {200, 201}:
             try:
@@ -156,10 +157,23 @@ def build_master_platform_handoff(settings: Settings) -> MasterPlatformHandoff:
 def to_master_platform_payload(
     session: CaptureSession, transcript: Transcript
 ) -> MasterTranscriptDeliveryRequest:
-    return MasterTranscriptDeliveryRequest(
+    return to_master_platform_payload_parts(
         encounter_id=session.appointment_id,
-        scribe_session_id=session.id,
-        duration_seconds=(max(segment.end_ms for segment in transcript.segments) + 999) // 1000,
+        session_id=session.id,
+        segments=transcript.segments,
+    )
+
+
+def to_master_platform_payload_parts(
+    *,
+    encounter_id: str,
+    session_id: UUID,
+    segments: Sequence[TranscriptSegment],
+) -> MasterTranscriptDeliveryRequest:
+    return MasterTranscriptDeliveryRequest(
+        encounter_id=encounter_id,
+        scribe_session_id=session_id,
+        duration_seconds=(max(segment.end_ms for segment in segments) + 999) // 1000,
         segments=[
             MasterTranscriptSegment(
                 speaker=ROLE_LABELS[segment.speaker_role],
@@ -167,7 +181,7 @@ def to_master_platform_payload(
                 start_ms=segment.start_ms,
                 end_ms=segment.end_ms,
             )
-            for segment in transcript.segments
+            for segment in segments
         ],
     )
 

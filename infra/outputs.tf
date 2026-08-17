@@ -14,6 +14,11 @@ output "key_vault_uri" {
   value = azurerm_key_vault.scribe.vault_uri
 }
 
+output "audio_encryption_key_id" {
+  description = "Versionless data-plane ID of the RSA-3072 session-key wrapping key."
+  value       = azurerm_key_vault_key.audio.versionless_id
+}
+
 output "runtime_managed_identity_client_id" {
   value = azurerm_user_assigned_identity.runtime.client_id
 }
@@ -66,4 +71,64 @@ output "postgres_database_name" {
 
 output "database_migration_job_name" {
   value = var.deploy_database_migration_job ? azurerm_container_app_job.database_migrations[0].name : null
+}
+
+output "transcription_job_name" {
+  value = var.deploy_transcription_job ? azurerm_container_app_job.transcription[0].name : null
+}
+
+output "transcription_managed_identity_client_id" {
+  value = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].client_id : null
+}
+
+output "transcription_managed_identity_principal_id" {
+  description = "Entra object ID used by PostgreSQL bootstrap and data-plane role assignments."
+  value       = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].principal_id : null
+}
+
+output "transcription_managed_identity_name" {
+  value = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].name : null
+}
+
+output "transcription_managed_identity_id" {
+  value = var.deploy_transcription_job ? azurerm_user_assigned_identity.transcription[0].id : null
+}
+
+output "speech_account_endpoint" {
+  value = var.deploy_private_speech_foundation ? azurerm_cognitive_account.speech[0].endpoint : null
+}
+
+output "speech_private_endpoint_ip" {
+  value = var.deploy_private_speech_foundation ? azurerm_private_endpoint.speech[0].private_service_connection[0].private_ip_address : null
+}
+
+output "speech_smoke_job_name" {
+  value = var.deploy_speech_smoke_job ? azurerm_container_app_job.speech_smoke[0].name : null
+}
+
+output "speech_smoke_managed_identity_client_id" {
+  value = var.deploy_speech_smoke_job ? azurerm_user_assigned_identity.speech_smoke[0].client_id : null
+}
+
+output "development_budget_id" {
+  description = "Approved development resource-group budget when its explicit notification gate is enabled."
+  value       = var.enable_development_cost_guardrails ? azurerm_consumption_budget_resource_group.development[0].id : null
+}
+
+output "private_terraform_runner_identity_client_id" {
+  description = "Temporary private Terraform runner client ID; null after required teardown."
+  value       = var.deploy_private_terraform_runner ? azurerm_user_assigned_identity.private_terraform_runner[0].client_id : null
+}
+
+output "private_terraform_runner_identity_principal_id" {
+  description = "Temporary principal used to audit and revoke every runner assignment."
+  value       = var.deploy_private_terraform_runner ? azurerm_user_assigned_identity.private_terraform_runner[0].principal_id : null
+}
+
+output "private_terraform_runner_job_names" {
+  description = "Fixed manual plan/apply job names; no caller start permission is created by this configuration."
+  value = var.deploy_private_terraform_runner ? {
+    for action, job in azurerm_container_app_job.private_terraform_runner :
+    action => job.name
+  } : {}
 }
