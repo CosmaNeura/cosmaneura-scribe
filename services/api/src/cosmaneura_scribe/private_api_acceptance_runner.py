@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from .safe_logging import (
     configure_private_api_acceptance_logging,
     log_event,
+    log_private_api_acceptance_readiness,
     log_private_api_acceptance_result,
 )
 from .schemas import AudioEncryptionPublicKey
@@ -69,6 +70,9 @@ _ERROR_CLASSES = {
     "private_api_acceptance_private_endpoint_unavailable": (
         "PrivateApiAcceptancePrivateEndpointUnavailable"
     ),
+    "private_api_acceptance_readiness_deadline_exhausted": (
+        "PrivateApiAcceptanceReadinessDeadlineExhausted"
+    ),
     "private_api_acceptance_response_invalid": "PrivateApiAcceptanceResponseInvalid",
     "private_api_acceptance_response_too_large": "PrivateApiAcceptanceResponseTooLarge",
 }
@@ -77,6 +81,8 @@ SettingsFactory = Callable[[], Settings]
 AcceptanceExecution = Callable[[Settings], Awaitable[PrivateApiAcceptanceResult]]
 JobRun = Callable[[], Awaitable[PrivateApiAcceptanceResult]]
 AddressResolver = Callable[[str], Awaitable[Sequence[str]]]
+Clock = Callable[[], float]
+Sleeper = Callable[[float], Awaitable[None]]
 
 
 class PrivateApiAcceptanceRunnerError(RuntimeError):
@@ -159,7 +165,10 @@ async def execute_private_api_acceptance(
     *,
     credential: AcceptanceCredential | None = None,
     client: httpx.AsyncClient | None = None,
+    readiness_client: httpx.AsyncClient | None = None,
     resolver: AddressResolver | None = None,
+    clock: Clock | None = None,
+    sleeper: Sleeper | None = None,
 ) -> PrivateApiAcceptanceResult:
     if (
         settings.managed_identity_client_id is None
@@ -171,16 +180,36 @@ async def execute_private_api_acceptance(
         raise PrivateApiAcceptanceRunnerError("private_api_acceptance_configuration_invalid")
     await _verify_private_api_dns(settings, resolver=resolver)
 
-    active_credential: AcceptanceCredential = credential or ManagedIdentityCredential(
-        client_id=str(settings.managed_identity_client_id)
-    )
-    active_client = client or httpx.AsyncClient(
-        base_url=str(settings.private_api_acceptance_base_url).rstrip("/"),
+    base_url = str(settings.private_api_acceptance_base_url).rstrip("/")
+    active_readiness_client = readiness_client or httpx.AsyncClient(
+        base_url=base_url,
         timeout=settings.private_api_acceptance_timeout_seconds,
         trust_env=False,
         follow_redirects=False,
     )
     try:
+        await _wait_for_private_api_readiness(
+            settings,
+            active_readiness_client,
+            clock=clock or perf_counter,
+            sleeper=sleeper or asyncio.sleep,
+        )
+    finally:
+        await _close_without_cancellation(active_readiness_client, None)
+
+    await _verify_private_api_dns(settings, resolver=resolver)
+    active_client = client or httpx.AsyncClient(
+        base_url=base_url,
+        timeout=settings.private_api_acceptance_timeout_seconds,
+        trust_env=False,
+        follow_redirects=False,
+    )
+    active_credential = credential
+    try:
+        if active_credential is None:
+            active_credential = ManagedIdentityCredential(
+                client_id=str(settings.managed_identity_client_id)
+            )
         try:
             access_token = await active_credential.get_token(
                 f"api://{settings.workflow_api_audience}/.default"
@@ -191,21 +220,93 @@ async def execute_private_api_acceptance(
             ) from None
 
         try:
-            async with active_client.stream(
-                "GET",
-                "/v1/audio-encryption-key",
-                headers={
-                    "Authorization": f"Bearer {access_token.token}",
-                    "X-Tenant-ID": str(settings.private_api_acceptance_tenant_id),
-                },
-            ) as response:
-                return await _validated_result(response)
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError):
+            async with asyncio.timeout(settings.private_api_acceptance_timeout_seconds):
+                async with active_client.stream(
+                    "GET",
+                    "/v1/audio-encryption-key",
+                    headers={
+                        "Authorization": f"Bearer {access_token.token}",
+                        "X-Tenant-ID": str(settings.private_api_acceptance_tenant_id),
+                    },
+                ) as response:
+                    return await _validated_result(response)
+        except (TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError):
             raise PrivateApiAcceptanceRunnerError(
                 "private_api_acceptance_network_unavailable"
             ) from None
     finally:
         await _close_without_cancellation(active_client, active_credential)
+
+
+async def _wait_for_private_api_readiness(
+    settings: Settings,
+    client: httpx.AsyncClient,
+    *,
+    clock: Clock,
+    sleeper: Sleeper,
+) -> None:
+    deadline_seconds = settings.private_api_acceptance_readiness_deadline_seconds
+    poll_interval_seconds = settings.private_api_acceptance_readiness_poll_interval_seconds
+    started_at = clock()
+    polls = 0
+    consecutive_ready = 0
+    log_private_api_acceptance_readiness(
+        action="private_api_acceptance.readiness_started",
+        poll_count=0,
+        elapsed_ms=0,
+    )
+
+    try:
+        async with asyncio.timeout(deadline_seconds):
+            while True:
+                elapsed_seconds = clock() - started_at
+                remaining_seconds = deadline_seconds - elapsed_seconds
+                if remaining_seconds <= 0:
+                    raise TimeoutError
+
+                polls += 1
+                ready = False
+                try:
+                    async with client.stream(
+                        "GET",
+                        "/healthz",
+                        timeout=min(
+                            settings.private_api_acceptance_timeout_seconds,
+                            remaining_seconds,
+                        ),
+                    ) as response:
+                        ready = response.status_code == 200
+                except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError):
+                    ready = False
+
+                elapsed_seconds = clock() - started_at
+                if elapsed_seconds >= deadline_seconds:
+                    raise TimeoutError
+
+                if ready:
+                    consecutive_ready += 1
+                else:
+                    consecutive_ready = 0
+                if consecutive_ready == 2:
+                    log_private_api_acceptance_readiness(
+                        action="private_api_acceptance.readiness_succeeded",
+                        poll_count=polls,
+                        elapsed_ms=elapsed_seconds * 1000,
+                    )
+                    return
+
+                remaining_seconds = deadline_seconds - elapsed_seconds
+                await sleeper(min(poll_interval_seconds, remaining_seconds))
+    except TimeoutError:
+        elapsed_seconds = clock() - started_at
+        log_private_api_acceptance_readiness(
+            action="private_api_acceptance.readiness_deadline_exhausted",
+            poll_count=polls,
+            elapsed_ms=elapsed_seconds * 1000,
+        )
+        raise PrivateApiAcceptanceRunnerError(
+            "private_api_acceptance_readiness_deadline_exhausted"
+        ) from None
 
 
 async def _validated_result(response: httpx.Response) -> PrivateApiAcceptanceResult:
@@ -283,11 +384,14 @@ async def _verify_private_api_dns(
 
 async def _close_without_cancellation(
     client: httpx.AsyncClient,
-    credential: AcceptanceCredential,
+    credential: AcceptanceCredential | None,
 ) -> None:
     async def close_all() -> None:
         failed = False
-        for close in (client.aclose, credential.close):
+        closes = [client.aclose]
+        if credential is not None:
+            closes.append(credential.close)
+        for close in closes:
             try:
                 await close()
             except Exception:

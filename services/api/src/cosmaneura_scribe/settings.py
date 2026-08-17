@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     private_api_acceptance_tenant_id: UUID | None = None
     private_api_acceptance_private_endpoint_cidrs: tuple[IPv4Network | IPv6Network, ...] = ()
     private_api_acceptance_timeout_seconds: float = Field(default=60, ge=1, le=60)
+    private_api_acceptance_readiness_deadline_seconds: Literal[180] = 180
+    private_api_acceptance_readiness_poll_interval_seconds: Literal[5] = 5
 
     master_platform_handoff_enabled: bool = False
     master_platform_base_url: AnyHttpUrl | None = None
