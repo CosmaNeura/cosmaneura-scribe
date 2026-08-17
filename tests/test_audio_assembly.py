@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import json
+import struct
 import wave
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,9 +19,12 @@ from cosmaneura_scribe.audio_assembly import (
     AudioAssemblyError,
     EncryptedAudioTrackReader,
     EncryptedBlobAudioTrackAssembler,
-    EncryptedChunkHeader,
     KeyVaultSessionKeyUnwrapper,
+    _write_wave_chunks,
     chunk_additional_data,
+)
+from cosmaneura_scribe.capture_protocol_v1 import (
+    EncryptedChunkHeader,
     encode_envelope,
 )
 from cosmaneura_scribe.repository import AudioAssemblyManifest
@@ -99,14 +103,35 @@ class StaticCredential:
         self.closed = True
 
 
-def _wave_bytes(frames: bytes) -> bytes:
+def _wave_bytes(
+    frames: bytes,
+    *,
+    channels: int = 1,
+    sample_width: int = 2,
+    frame_rate: int = 16_000,
+) -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(16_000)
+        audio.setnchannels(channels)
+        audio.setsampwidth(sample_width)
+        audio.setframerate(frame_rate)
         audio.writeframes(frames)
     return output.getvalue()
+
+
+def _compressed_wave_bytes() -> bytes:
+    frames = b"\x00" * 16
+    return b"".join(
+        (
+            b"RIFF",
+            struct.pack("<I", 36 + len(frames)),
+            b"WAVEfmt ",
+            struct.pack("<IHHIIHH", 16, 6, 1, 16_000, 16_000, 1, 8),
+            b"data",
+            struct.pack("<I", len(frames)),
+            frames,
+        )
+    )
 
 
 def _chunk(
@@ -348,6 +373,37 @@ def test_encrypted_track_reader_repr_omits_path(tmp_path: Path) -> None:
     )
 
     assert str(sensitive_path) not in repr(reader)
+
+
+@pytest.mark.parametrize(
+    ("channels", "sample_width", "frame_rate"),
+    ((2, 2, 16_000), (1, 1, 16_000), (1, 2, 48_000)),
+)
+def test_wave_assembly_rejects_media_outside_the_capture_profile(
+    channels: int,
+    sample_width: int,
+    frame_rate: int,
+) -> None:
+    chunk = bytearray(
+        _wave_bytes(
+            b"\x00" * 12,
+            channels=channels,
+            sample_width=sample_width,
+            frame_rate=frame_rate,
+        )
+    )
+
+    with pytest.raises(AudioAssemblyError) as caught:
+        _write_wave_chunks([chunk], io.BytesIO())
+
+    assert str(caught.value) == "audio_wave_media_profile_unsupported"
+
+
+def test_wave_assembly_rejects_compressed_wav() -> None:
+    with pytest.raises(AudioAssemblyError) as caught:
+        _write_wave_chunks([bytearray(_compressed_wave_bytes())], io.BytesIO())
+
+    assert str(caught.value) == "audio_wave_invalid"
 
 
 @pytest.mark.asyncio

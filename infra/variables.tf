@@ -270,6 +270,23 @@ variable "enable_workflow_authentication" {
   default     = false
 }
 
+variable "enable_capture_protocol" {
+  description = "Expose the offline-safe capture lease, reservation, authorization, and receipt contract. Remains false until PostgreSQL and the platform BFF are ready."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      !var.enable_capture_protocol ||
+      (
+        var.enable_workflow_authentication &&
+        var.use_postgres_repository
+      )
+    )
+    error_message = "enable_capture_protocol requires workflow authentication and the PostgreSQL repository"
+  }
+}
+
 variable "workflow_api_audience" {
   description = "Scribe API application client ID accepted in v2 access-token aud claims."
   type        = string
@@ -453,6 +470,7 @@ variable "enable_private_terraform_runner" {
         var.container_image_repository == "cosmaneura-scribe-api" &&
         var.container_image_tag == "804c4bacd692bc157ab101ff5055d999e00a37cc" &&
         var.enable_workflow_authentication &&
+        !var.enable_capture_protocol &&
         var.workflow_api_audience == "57264fe1-6a4a-4946-8412-e0be18805977" &&
         var.trusted_platform_client_id == "c7bae168-fbf5-4658-b0d9-dd4b5373a1be" &&
         var.deploy_private_api_acceptance_job &&

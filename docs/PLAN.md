@@ -40,6 +40,9 @@ stay in the existing Cosmaneura engine.
   idempotent transcript persistence
 - Client-generated session-key custody, private encrypted Blob assembly, and a manual-only,
   false-by-default Container Apps transcription job with a dedicated least-privilege identity
+- False-default capture protocol v1 with renewable leases, canonical chunk reservations,
+  refreshable upload authorization, receipt lookup, capability bootstrap, and generated
+  Python/TypeScript framing and AAD implementations pinned by cross-language golden vectors
 
 ## Next P0 slice
 

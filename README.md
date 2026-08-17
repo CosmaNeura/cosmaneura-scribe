@@ -32,6 +32,9 @@ The currently deployed revision remains on the in-memory repository until that c
   retries, channel role priors, metadata-only quality gates, and idempotent transcript persistence
 - Per-session client-generated audio keys, immutable wrapped-key custody, and lease-bound private
   Blob assembly with encrypted ephemeral tracks
+- False-default v1 capture prerequisites: renewable leases, canonical offline-safe chunk
+  reservations, refreshable one-object upload authorization, registration receipts, capability
+  bootstrap, and generated Python/TypeScript wire implementations with shared golden vectors
 - False-by-default manual Container Apps Job with a dedicated identity, one-target execution,
   cancellation cleanup, zero platform retries, and least-privilege activation roles
 - Terraform-owned private Azure AI Speech foundation and a separate false-default manual smoke job
@@ -94,6 +97,9 @@ documented in
 [`docs/adr/0016-authenticated-private-client-capture-path.md`](docs/adr/0016-authenticated-private-client-capture-path.md).
 The single-codebase decision and its distinct PWA/native custody profiles are recorded in
 [`docs/adr/0018-capacitor-capture-companion.md`](docs/adr/0018-capacitor-capture-companion.md).
+The disabled server-side lease, reservation, receipt, capability, and generated wire contract is
+recorded in
+[`docs/adr/0019-versioned-offline-capture-protocol.md`](docs/adr/0019-versioned-offline-capture-protocol.md).
 
 The transcription worker orchestration and inactive encrypted Blob assembly boundary are documented
 in [`docs/TRANSCRIPTION_WORKER.md`](docs/TRANSCRIPTION_WORKER.md).

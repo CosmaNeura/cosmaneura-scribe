@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Protocol
 from uuid import UUID
 
+from .capture_protocol_v1 import (
+    CAPTURE_LEASE_TTL_SECONDS,
+    MAX_AGGREGATE_PLAINTEXT_BYTES,
+    MAX_CHUNKS,
+    MAX_RESERVATIONS_PER_BATCH,
+    PROTOCOL_VERSION,
+    RESERVATION_PLAINTEXT_BUDGET_BYTES,
+)
 from .schemas import (
     AudioChunk,
     AuditEvent,
@@ -44,6 +53,27 @@ class DeliverySuccessConflictError(RuntimeError):
     """A remote success disagrees with the delivery receipt's durable binding."""
 
 
+class CaptureLeaseConflictError(RuntimeError):
+    """A capture lease could not be issued or renewed under the expected fence."""
+
+
+class CaptureReservationLimitError(RuntimeError):
+    """A reservation batch would exceed a server-owned capture limit."""
+
+
+class CaptureFinalizationError(RuntimeError):
+    """A capture cannot be finalized with the registered channel sequences."""
+
+
+MAXIMUM_CAPTURE_LEASE_DURATION = timedelta(seconds=CAPTURE_LEASE_TTL_SECONDS)
+
+
+def _capture_expiry(now: datetime, duration: timedelta) -> datetime:
+    if duration <= timedelta(0) or duration > MAXIMUM_CAPTURE_LEASE_DURATION:
+        raise ValueError("capture authorization duration must be between zero and 15 minutes")
+    return now + duration
+
+
 @dataclass(frozen=True)
 class IdempotencyRecord:
     request_fingerprint: str
@@ -57,6 +87,115 @@ class UploadGrantRecord:
     sequence_number: int
     channel: CaptureChannel
     expires_at: datetime
+
+
+class CaptureLeaseCloseReason(StrEnum):
+    SESSION_COMPLETED = "session_completed"
+    CONSENT_REVOKED = "consent_revoked"
+    CAPTURE_STOPPED = "capture_stopped"
+    SESSION_FAILED = "session_failed"
+
+
+@dataclass(frozen=True)
+class CaptureLeaseRecord:
+    lease_id: UUID
+    session_id: UUID
+    generation: int
+    issued_at: datetime
+    renewed_at: datetime
+    expires_at: datetime
+    closed_at: datetime | None = None
+    close_reason: CaptureLeaseCloseReason | None = None
+
+
+@dataclass(frozen=True)
+class CaptureLeaseReceipt:
+    id: UUID
+    lease_id: UUID
+    session_id: UUID
+    generation: int
+    issued_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class CaptureContext:
+    session: CaptureSession
+    consent: ConsentRecord
+    audio_key: SessionAudioKey | None
+    lease: CaptureLeaseRecord | None
+
+
+@dataclass(frozen=True)
+class ChunkReservationDraft:
+    object_id: UUID
+    sequence_number: int
+    channel: CaptureChannel
+    protocol_version: str
+    additional_data: bytes = field(repr=False)
+    plaintext_budget_bytes: int
+
+
+@dataclass(frozen=True)
+class ChunkReservationRecord:
+    object_id: UUID
+    session_id: UUID
+    sequence_number: int
+    channel: CaptureChannel
+    protocol_version: str
+    additional_data: bytes = field(repr=False)
+    plaintext_budget_bytes: int
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class ChunkReservationBatch:
+    id: UUID
+    session_id: UUID
+    lease_id: UUID
+    lease_generation: int
+    requested_protocol_version: str
+    created_at: datetime
+    capture_authorized_until: datetime
+    reservations: tuple[ChunkReservationRecord, ...] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class UploadAuthorizationReceipt:
+    id: UUID
+    session_id: UUID
+    reservation_object_id: UUID
+    issued_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class ChunkReceipt:
+    reservation: ChunkReservationRecord
+    registration: AudioChunk | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class CaptureReservationUsage:
+    reservation_count: int
+    plaintext_budget_bytes: int
+    next_sequence_numbers: Mapping[CaptureChannel, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+
+@dataclass(frozen=True)
+class CaptureChannelFinalizationDraft:
+    channel: CaptureChannel
+    last_sequence_number: int
+
+
+@dataclass(frozen=True)
+class CaptureChannelFinalization:
+    session_id: UUID
+    channel: CaptureChannel
+    last_sequence_number: int
+    finalized_at: datetime
 
 
 @dataclass(frozen=True)
@@ -130,6 +269,139 @@ class Repository(Protocol):
         tenant_id: UUID,
         audio_key: SessionAudioKey,
     ) -> bool: ...
+
+    async def lock_capture_context(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> CaptureContext | None: ...
+
+    async def get_capture_lease(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> CaptureLeaseRecord | None: ...
+
+    async def get_capture_lease_receipt(
+        self,
+        tenant_id: UUID,
+        receipt_id: UUID,
+    ) -> CaptureLeaseReceipt | None: ...
+
+    async def issue_capture_lease(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        lease_id: UUID,
+        receipt_id: UUID,
+        duration: timedelta,
+    ) -> CaptureLeaseReceipt | None: ...
+
+    async def renew_capture_lease(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        expected_lease_id: UUID,
+        expected_generation: int,
+        receipt_id: UUID,
+        duration: timedelta,
+    ) -> CaptureLeaseReceipt | None: ...
+
+    async def close_capture_lease(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        expected_lease_id: UUID,
+        expected_generation: int,
+        reason: CaptureLeaseCloseReason,
+    ) -> bool: ...
+
+    async def get_chunk_reservation_batch(
+        self,
+        tenant_id: UUID,
+        batch_id: UUID,
+    ) -> ChunkReservationBatch | None: ...
+
+    async def create_chunk_reservation_batch(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        batch_id: UUID,
+        lease_id: UUID,
+        lease_generation: int,
+        requested_protocol_version: str,
+        drafts: tuple[ChunkReservationDraft, ...],
+        maximum_batch_size: int,
+        maximum_chunks: int,
+        maximum_plaintext_bytes: int,
+    ) -> ChunkReservationBatch: ...
+
+    async def get_chunk_reservation(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        object_id: UUID,
+    ) -> ChunkReservationRecord | None: ...
+
+    async def capture_reservation_usage(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> CaptureReservationUsage: ...
+
+    async def get_upload_authorization_receipt(
+        self,
+        tenant_id: UUID,
+        receipt_id: UUID,
+    ) -> UploadAuthorizationReceipt | None: ...
+
+    async def is_upload_authorization_active(
+        self,
+        tenant_id: UUID,
+        receipt_id: UUID,
+    ) -> bool: ...
+
+    async def add_upload_authorization_receipt(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        object_id: UUID,
+        *,
+        receipt_id: UUID,
+        duration: timedelta,
+    ) -> UploadAuthorizationReceipt | None: ...
+
+    async def get_chunk_receipt(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        object_id: UUID,
+    ) -> ChunkReceipt | None: ...
+
+    async def add_reserved_chunk(
+        self,
+        tenant_id: UUID,
+        chunk: AudioChunk,
+        *,
+        protocol_version: str,
+    ) -> bool: ...
+
+    async def finalize_capture_channels(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        declarations: tuple[CaptureChannelFinalizationDraft, ...],
+    ) -> tuple[CaptureChannelFinalization, ...]: ...
+
+    async def capture_finalizations_for(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> tuple[CaptureChannelFinalization, ...]: ...
 
     async def get_audio_assembly_manifest(
         self,
@@ -265,6 +537,24 @@ class InMemoryRepository:
     consents: dict[tuple[UUID, UUID], ConsentRecord] = field(default_factory=lambda: {})
     sessions: dict[tuple[UUID, UUID], CaptureSession] = field(default_factory=lambda: {})
     session_audio_keys: dict[tuple[UUID, UUID], SessionAudioKey] = field(default_factory=lambda: {})
+    capture_leases: dict[tuple[UUID, UUID], CaptureLeaseRecord] = field(
+        default_factory=lambda: {}
+    )
+    capture_lease_receipts: dict[tuple[UUID, UUID], CaptureLeaseReceipt] = field(
+        default_factory=lambda: {}
+    )
+    chunk_reservations: dict[tuple[UUID, UUID], ChunkReservationRecord] = field(
+        default_factory=lambda: {}
+    )
+    chunk_reservation_batches: dict[tuple[UUID, UUID], ChunkReservationBatch] = field(
+        default_factory=lambda: {}
+    )
+    upload_authorization_receipts: dict[tuple[UUID, UUID], UploadAuthorizationReceipt] = field(
+        default_factory=lambda: {}
+    )
+    capture_finalizations: dict[
+        tuple[UUID, UUID, CaptureChannel], CaptureChannelFinalization
+    ] = field(default_factory=lambda: {})
     chunks: dict[tuple[UUID, UUID], AudioChunk] = field(default_factory=lambda: {})
     upload_grants: dict[tuple[UUID, UUID], UploadGrantRecord] = field(default_factory=lambda: {})
     transcripts: dict[tuple[UUID, UUID], Transcript] = field(default_factory=lambda: {})
@@ -287,6 +577,12 @@ class InMemoryRepository:
                 copy.deepcopy(self.consents),
                 copy.deepcopy(self.sessions),
                 copy.deepcopy(self.session_audio_keys),
+                copy.deepcopy(self.capture_leases),
+                copy.deepcopy(self.capture_lease_receipts),
+                copy.deepcopy(self.chunk_reservations),
+                copy.deepcopy(self.chunk_reservation_batches),
+                copy.deepcopy(self.upload_authorization_receipts),
+                copy.deepcopy(self.capture_finalizations),
                 copy.deepcopy(self.chunks),
                 copy.deepcopy(self.upload_grants),
                 copy.deepcopy(self.transcripts),
@@ -305,6 +601,12 @@ class InMemoryRepository:
                     self.consents,
                     self.sessions,
                     self.session_audio_keys,
+                    self.capture_leases,
+                    self.capture_lease_receipts,
+                    self.chunk_reservations,
+                    self.chunk_reservation_batches,
+                    self.upload_authorization_receipts,
+                    self.capture_finalizations,
                     self.chunks,
                     self.upload_grants,
                     self.transcripts,
@@ -393,6 +695,548 @@ class InMemoryRepository:
             return False
         self.session_audio_keys[row_key] = audio_key
         return True
+
+    async def lock_capture_context(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> CaptureContext | None:
+        # The in-memory transaction lock is the canonical consent/session lock.
+        session = self.sessions.get((tenant_id, session_id))
+        if session is None:
+            return None
+        consent = self.consents.get((tenant_id, session.consent_record_id))
+        if consent is None:
+            return None
+        return CaptureContext(
+            session=session,
+            consent=consent,
+            audio_key=self.session_audio_keys.get((tenant_id, session_id)),
+            lease=self.capture_leases.get((tenant_id, session_id)),
+        )
+
+    async def get_capture_lease(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> CaptureLeaseRecord | None:
+        return self.capture_leases.get((tenant_id, session_id))
+
+    async def get_capture_lease_receipt(
+        self,
+        tenant_id: UUID,
+        receipt_id: UUID,
+    ) -> CaptureLeaseReceipt | None:
+        return self.capture_lease_receipts.get((tenant_id, receipt_id))
+
+    async def issue_capture_lease(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        lease_id: UUID,
+        receipt_id: UUID,
+        duration: timedelta,
+    ) -> CaptureLeaseReceipt | None:
+        row_key = (tenant_id, session_id)
+        context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is None
+            or context.audio_key is None
+            or not context.consent.all_parties_consented
+            or context.consent.revoked_at is not None
+            or context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}
+            or row_key in self.capture_leases
+        ):
+            return None
+        now = datetime.now(UTC)
+        expires_at = _capture_expiry(now, duration)
+        lease = CaptureLeaseRecord(
+            lease_id=lease_id,
+            session_id=session_id,
+            generation=1,
+            issued_at=now,
+            renewed_at=now,
+            expires_at=expires_at,
+        )
+        receipt = CaptureLeaseReceipt(
+            id=receipt_id,
+            lease_id=lease_id,
+            session_id=session_id,
+            generation=1,
+            issued_at=now,
+            expires_at=expires_at,
+        )
+        self.capture_leases[row_key] = lease
+        self.capture_lease_receipts[(tenant_id, receipt_id)] = receipt
+        return receipt
+
+    async def renew_capture_lease(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        expected_lease_id: UUID,
+        expected_generation: int,
+        receipt_id: UUID,
+        duration: timedelta,
+    ) -> CaptureLeaseReceipt | None:
+        context = await self.lock_capture_context(tenant_id, session_id)
+        current = context.lease if context is not None else None
+        if (
+            context is None
+            or context.audio_key is None
+            or not context.consent.all_parties_consented
+            or context.consent.revoked_at is not None
+            or context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}
+            or current is None
+            or current.lease_id != expected_lease_id
+            or current.generation != expected_generation
+            or current.closed_at is not None
+        ):
+            return None
+        now = datetime.now(UTC)
+        expires_at = _capture_expiry(now, duration)
+        renewed = CaptureLeaseRecord(
+            lease_id=current.lease_id,
+            session_id=current.session_id,
+            generation=current.generation + 1,
+            issued_at=current.issued_at,
+            renewed_at=now,
+            expires_at=expires_at,
+        )
+        receipt = CaptureLeaseReceipt(
+            id=receipt_id,
+            lease_id=renewed.lease_id,
+            session_id=renewed.session_id,
+            generation=renewed.generation,
+            issued_at=now,
+            expires_at=expires_at,
+        )
+        self.capture_leases[(tenant_id, session_id)] = renewed
+        self.capture_lease_receipts[(tenant_id, receipt_id)] = receipt
+        return receipt
+
+    async def close_capture_lease(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        expected_lease_id: UUID,
+        expected_generation: int,
+        reason: CaptureLeaseCloseReason,
+    ) -> bool:
+        current = self.capture_leases.get((tenant_id, session_id))
+        if (
+            current is None
+            or current.lease_id != expected_lease_id
+            or current.generation != expected_generation
+            or current.closed_at is not None
+        ):
+            return False
+        self.capture_leases[(tenant_id, session_id)] = CaptureLeaseRecord(
+            lease_id=current.lease_id,
+            session_id=current.session_id,
+            generation=current.generation,
+            issued_at=current.issued_at,
+            renewed_at=current.renewed_at,
+            expires_at=current.expires_at,
+            closed_at=datetime.now(UTC),
+            close_reason=reason,
+        )
+        return True
+
+    async def get_chunk_reservation_batch(
+        self,
+        tenant_id: UUID,
+        batch_id: UUID,
+    ) -> ChunkReservationBatch | None:
+        return self.chunk_reservation_batches.get((tenant_id, batch_id))
+
+    async def create_chunk_reservation_batch(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        batch_id: UUID,
+        lease_id: UUID,
+        lease_generation: int,
+        requested_protocol_version: str,
+        drafts: tuple[ChunkReservationDraft, ...],
+        maximum_batch_size: int,
+        maximum_chunks: int,
+        maximum_plaintext_bytes: int,
+    ) -> ChunkReservationBatch:
+        if (
+            not drafts
+            or maximum_batch_size < 1
+            or len(drafts) > maximum_batch_size
+            or maximum_batch_size > MAX_RESERVATIONS_PER_BATCH
+            or maximum_chunks < 1
+            or maximum_chunks > MAX_CHUNKS
+            or maximum_plaintext_bytes < 1
+            or maximum_plaintext_bytes > MAX_AGGREGATE_PLAINTEXT_BYTES
+        ):
+            raise CaptureReservationLimitError
+        positions = {(draft.channel, draft.sequence_number) for draft in drafts}
+        if len(positions) != len(drafts):
+            raise CaptureReservationLimitError
+        if requested_protocol_version != PROTOCOL_VERSION or any(
+            draft.protocol_version != PROTOCOL_VERSION
+            or draft.sequence_number < 0
+            or draft.sequence_number >= MAX_CHUNKS
+            or not 1 <= len(draft.additional_data) <= 1_024
+            or draft.plaintext_budget_bytes != RESERVATION_PLAINTEXT_BUDGET_BYTES
+            for draft in drafts
+        ):
+            raise CaptureReservationLimitError
+
+        context = await self.lock_capture_context(tenant_id, session_id)
+        lease = context.lease if context is not None else None
+        now = datetime.now(UTC)
+        if (
+            context is None
+            or context.audio_key is None
+            or not context.consent.all_parties_consented
+            or context.consent.revoked_at is not None
+            or context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}
+            or lease is None
+            or lease.lease_id != lease_id
+            or lease.generation != lease_generation
+            or lease.closed_at is not None
+            or lease.expires_at <= now
+        ):
+            raise CaptureLeaseConflictError
+
+        existing_positions = {
+            (reservation.channel, reservation.sequence_number)
+            for (row_tenant, _), reservation in self.chunk_reservations.items()
+            if row_tenant == tenant_id and reservation.session_id == session_id
+        }
+        next_by_channel = {
+            channel: (
+                max(
+                    (
+                        sequence
+                        for current_channel, sequence in existing_positions
+                        if current_channel == channel
+                    ),
+                    default=-1,
+                )
+                + 1
+            )
+            for channel in CaptureChannel
+        }
+        for channel in CaptureChannel:
+            requested_new = sorted(
+                draft.sequence_number
+                for draft in drafts
+                if draft.channel == channel
+                and (channel, draft.sequence_number) not in existing_positions
+            )
+            if requested_new != list(
+                range(next_by_channel[channel], next_by_channel[channel] + len(requested_new))
+            ):
+                raise CaptureReservationLimitError
+
+        canonical: list[ChunkReservationRecord] = []
+        new_drafts: list[ChunkReservationDraft] = []
+        for draft in drafts:
+            existing = next(
+                (
+                    reservation
+                    for (row_tenant, _), reservation in self.chunk_reservations.items()
+                    if row_tenant == tenant_id
+                    and reservation.session_id == session_id
+                    and reservation.sequence_number == draft.sequence_number
+                    and reservation.channel == draft.channel
+                ),
+                None,
+            )
+            if existing is not None:
+                canonical.append(existing)
+                continue
+            object_collision = self.chunk_reservations.get((tenant_id, draft.object_id))
+            if object_collision is not None:
+                raise CaptureReservationLimitError
+            new_drafts.append(draft)
+            canonical.append(
+                ChunkReservationRecord(
+                    object_id=draft.object_id,
+                    session_id=session_id,
+                    sequence_number=draft.sequence_number,
+                    channel=draft.channel,
+                    protocol_version=draft.protocol_version,
+                    additional_data=draft.additional_data,
+                    plaintext_budget_bytes=draft.plaintext_budget_bytes,
+                    created_at=now,
+                )
+            )
+
+        usage = await self.capture_reservation_usage(tenant_id, session_id)
+        if usage.reservation_count + len(new_drafts) > maximum_chunks or (
+            usage.plaintext_budget_bytes
+            + sum(draft.plaintext_budget_bytes for draft in new_drafts)
+            > maximum_plaintext_bytes
+        ):
+            raise CaptureReservationLimitError
+        for record in canonical:
+            self.chunk_reservations.setdefault((tenant_id, record.object_id), record)
+        batch = ChunkReservationBatch(
+            id=batch_id,
+            session_id=session_id,
+            lease_id=lease_id,
+            lease_generation=lease_generation,
+            requested_protocol_version=requested_protocol_version,
+            created_at=now,
+            capture_authorized_until=lease.expires_at,
+            reservations=tuple(canonical),
+        )
+        self.chunk_reservation_batches[(tenant_id, batch_id)] = batch
+        return batch
+
+    async def get_chunk_reservation(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        object_id: UUID,
+    ) -> ChunkReservationRecord | None:
+        reservation = self.chunk_reservations.get((tenant_id, object_id))
+        if reservation is None or reservation.session_id != session_id:
+            return None
+        return reservation
+
+    async def capture_reservation_usage(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> CaptureReservationUsage:
+        reservations = [
+            reservation
+            for (row_tenant, _), reservation in self.chunk_reservations.items()
+            if row_tenant == tenant_id and reservation.session_id == session_id
+        ]
+        return CaptureReservationUsage(
+            reservation_count=len(reservations),
+            plaintext_budget_bytes=sum(
+                reservation.plaintext_budget_bytes for reservation in reservations
+            ),
+            next_sequence_numbers=MappingProxyType(
+                {
+                    channel: (
+                        max(
+                            (
+                                reservation.sequence_number
+                                for reservation in reservations
+                                if reservation.channel == channel
+                            ),
+                            default=-1,
+                        )
+                        + 1
+                    )
+                    for channel in CaptureChannel
+                }
+            ),
+        )
+
+    async def get_upload_authorization_receipt(
+        self,
+        tenant_id: UUID,
+        receipt_id: UUID,
+    ) -> UploadAuthorizationReceipt | None:
+        return self.upload_authorization_receipts.get((tenant_id, receipt_id))
+
+    async def is_upload_authorization_active(
+        self,
+        tenant_id: UUID,
+        receipt_id: UUID,
+    ) -> bool:
+        receipt = self.upload_authorization_receipts.get((tenant_id, receipt_id))
+        return receipt is not None and receipt.expires_at > datetime.now(UTC)
+
+    async def add_upload_authorization_receipt(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        object_id: UUID,
+        *,
+        receipt_id: UUID,
+        duration: timedelta,
+    ) -> UploadAuthorizationReceipt | None:
+        context = await self.lock_capture_context(tenant_id, session_id)
+        reservation = await self.get_chunk_reservation(tenant_id, session_id, object_id)
+        if (
+            context is None
+            or context.audio_key is None
+            or not context.consent.all_parties_consented
+            or context.consent.revoked_at is not None
+            or context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}
+            or context.lease is None
+            or context.lease.closed_at is not None
+            or reservation is None
+            or any(
+                row_tenant == tenant_id and chunk.object_id == object_id
+                for (row_tenant, _), chunk in self.chunks.items()
+            )
+        ):
+            return None
+        now = datetime.now(UTC)
+        if any(
+            row_tenant == tenant_id
+            and receipt.reservation_object_id == object_id
+            and receipt.expires_at > now
+            for (row_tenant, _), receipt in self.upload_authorization_receipts.items()
+        ):
+            return None
+        receipt = UploadAuthorizationReceipt(
+            id=receipt_id,
+            session_id=session_id,
+            reservation_object_id=object_id,
+            issued_at=now,
+            expires_at=_capture_expiry(now, duration),
+        )
+        self.upload_authorization_receipts[(tenant_id, receipt_id)] = receipt
+        return receipt
+
+    async def get_chunk_receipt(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        object_id: UUID,
+    ) -> ChunkReceipt | None:
+        reservation = await self.get_chunk_reservation(tenant_id, session_id, object_id)
+        if reservation is None:
+            return None
+        registration = next(
+            (
+                chunk
+                for (row_tenant, _), chunk in self.chunks.items()
+                if row_tenant == tenant_id and chunk.object_id == object_id
+            ),
+            None,
+        )
+        return ChunkReceipt(reservation=reservation, registration=registration)
+
+    async def add_reserved_chunk(
+        self,
+        tenant_id: UUID,
+        chunk: AudioChunk,
+        *,
+        protocol_version: str,
+    ) -> bool:
+        context = await self.lock_capture_context(tenant_id, chunk.session_id)
+        reservation = await self.get_chunk_reservation(
+            tenant_id, chunk.session_id, chunk.object_id
+        )
+        if (
+            context is None
+            or context.audio_key is None
+            or not context.consent.all_parties_consented
+            or context.consent.revoked_at is not None
+            or context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}
+            or context.lease is None
+            or context.lease.closed_at is not None
+            or reservation is None
+            or reservation.sequence_number != chunk.sequence_number
+            or reservation.channel != chunk.channel
+            or reservation.protocol_version != protocol_version
+            or not any(
+                row_tenant == tenant_id
+                and receipt.reservation_object_id == chunk.object_id
+                for (row_tenant, _), receipt in self.upload_authorization_receipts.items()
+            )
+        ):
+            return False
+        if any(
+            row_tenant == tenant_id
+            and (
+                current.object_id == chunk.object_id
+                or (
+                    current.session_id == chunk.session_id
+                    and current.sequence_number == chunk.sequence_number
+                    and current.channel == chunk.channel
+                )
+            )
+            for (row_tenant, _), current in self.chunks.items()
+        ):
+            return False
+        self.chunks[(tenant_id, chunk.id)] = chunk
+        return True
+
+    async def finalize_capture_channels(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        declarations: tuple[CaptureChannelFinalizationDraft, ...],
+    ) -> tuple[CaptureChannelFinalization, ...]:
+        if not declarations or len({item.channel for item in declarations}) != len(declarations):
+            raise CaptureFinalizationError
+        declared = {item.channel: item.last_sequence_number for item in declarations}
+        if any(last < 0 or last >= MAX_CHUNKS for last in declared.values()):
+            raise CaptureFinalizationError
+        existing = await self.capture_finalizations_for(tenant_id, session_id)
+        if existing:
+            if {
+                item.channel: item.last_sequence_number for item in existing
+            } != declared:
+                raise CaptureFinalizationError
+            return existing
+
+        context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is None
+            or context.audio_key is None
+            or not context.consent.all_parties_consented
+            or context.consent.revoked_at is not None
+            or context.session.status != SessionStatus.CAPTURING
+            or context.lease is None
+            or context.lease.closed_at is not None
+        ):
+            raise CaptureFinalizationError
+        chunks = await self.chunks_for(tenant_id, session_id)
+        grouped: dict[CaptureChannel, list[int]] = {}
+        for chunk in chunks:
+            reservation = await self.get_chunk_reservation(
+                tenant_id, session_id, chunk.object_id
+            )
+            if (
+                reservation is None
+                or reservation.sequence_number != chunk.sequence_number
+                or reservation.channel != chunk.channel
+            ):
+                raise CaptureFinalizationError
+            grouped.setdefault(chunk.channel, []).append(chunk.sequence_number)
+        if set(grouped) != set(declared):
+            raise CaptureFinalizationError
+        for channel, last_sequence_number in declared.items():
+            if sorted(grouped[channel]) != list(range(last_sequence_number + 1)):
+                raise CaptureFinalizationError
+
+        now = datetime.now(UTC)
+        result = tuple(
+            CaptureChannelFinalization(
+                session_id=session_id,
+                channel=channel,
+                last_sequence_number=declared[channel],
+                finalized_at=now,
+            )
+            for channel in CaptureChannel
+            if channel in declared
+        )
+        for item in result:
+            self.capture_finalizations[(tenant_id, session_id, item.channel)] = item
+        return result
+
+    async def capture_finalizations_for(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> tuple[CaptureChannelFinalization, ...]:
+        return tuple(
+            self.capture_finalizations[(tenant_id, session_id, channel)]
+            for channel in CaptureChannel
+            if (tenant_id, session_id, channel) in self.capture_finalizations
+        )
 
     async def get_audio_assembly_manifest(
         self,

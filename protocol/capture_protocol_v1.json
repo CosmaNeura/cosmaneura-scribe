@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additional_authenticated_data": {
+    "base64url_padding": false,
+    "encoding": "utf-8",
+    "fields": [
+      "channel",
+      "object_id",
+      "sequence_number",
+      "session_id",
+      "tenant_id"
+    ],
+    "serialization": "canonical-json"
+  },
+  "channels": [
+    "microphone",
+    "system_audio",
+    "mixed"
+  ],
+  "encryption": {
+    "algorithm": "A256GCM",
+    "authentication_tag_bytes": 16,
+    "envelope": {
+      "header_length_encoding": "uint32-big-endian",
+      "magic_ascii": "CSCRIBE1",
+      "max_complete_envelope_bytes": 327680,
+      "max_header_bytes": 4096
+    },
+    "nonce_bytes": 12
+  },
+  "limits": {
+    "capture_lease_seconds": 900,
+    "max_aggregate_plaintext_bytes": 67108864,
+    "max_chunks_per_session": 1000,
+    "max_reservation_batch_size": 90,
+    "reservation_plaintext_budget_bytes": 327680,
+    "reservation_window_seconds": 900,
+    "target_chunk_duration_seconds": 10,
+    "upload_concurrency": 2
+  },
+  "media_profile": {
+    "channels": 1,
+    "codec": "pcm_s16le",
+    "compression_type": "NONE",
+    "container": "wav",
+    "media_type": "audio/wav",
+    "sample_rate_hz": 16000,
+    "sample_width_bytes": 2,
+    "standard_wave_header_bytes": 44
+  },
+  "protocol_version": "1.0",
+  "source_schema_version": 1
+}

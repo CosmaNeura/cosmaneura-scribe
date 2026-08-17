@@ -1,0 +1,14 @@
+{
+  "name": "@cosmaneura-scribe/capture-protocol",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/generated.ts",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "npm@11.5.2",
+  "scripts": {
+    "test:golden": "node test/golden-vectors.mjs"
+  }
+}

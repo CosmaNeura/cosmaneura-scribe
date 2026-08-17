@@ -42,6 +42,10 @@ enable_workflow_authentication = false
 workflow_api_audience          = "00000000-0000-0000-0000-000000000000"
 trusted_platform_client_id     = "00000000-0000-0000-0000-000000000000"
 
+# Phase 1 server contract only. Keep false until PostgreSQL, the BFF, and synthetic protocol
+# acceptance are separately deployed and approved.
+enable_capture_protocol = false
+
 # One-shot proof of the authenticated private public-key route. Deploy dormant first; enable and
 # open the invocation gate only for the separately reviewed execution, then remove the job.
 deploy_private_api_acceptance_job       = false

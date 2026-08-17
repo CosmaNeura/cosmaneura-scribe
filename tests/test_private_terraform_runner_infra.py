@@ -41,6 +41,9 @@ def test_private_runner_manifest_is_closed_and_current() -> None:
     assert "2ae856ade789aed0abcef834b0f4ef84a51ef855" not in variables
     assert "var.deploy_private_api_acceptance_job" in variables
     assert "var.private_terraform_reconciliation_completed" in variables
+    assert "enable_capture_protocol" in runner
+    assert re.search(r"enable_capture_protocol\s*=\s*jsonencode\(false\)", runner)
+    assert "!var.enable_capture_protocol" in variables
     assert "!var.enable_private_api_acceptance_job" in variables
     assert "!var.allow_private_api_acceptance_invocation" in variables
     for runner_input in (

@@ -62,6 +62,7 @@ class Settings(BaseSettings):
         ge=1_000_000,
         le=128 * 1_024 * 1_024,
     )
+    capture_protocol_enabled: bool = False
 
     workflow_authentication_enabled: bool = False
     entra_tenant_id: UUID | None = None
@@ -191,6 +192,12 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "workflow_api_audience must be the v2 API application client ID UUID"
                 ) from exc
+        if self.capture_protocol_enabled and (
+            not self.workflow_authentication_enabled or self.repository_backend != "postgres"
+        ):
+            raise ValueError(
+                "capture_protocol_enabled requires workflow authentication and PostgreSQL"
+            )
         if (
             self.private_api_acceptance_invocation_enabled
             and not self.private_api_acceptance_enabled

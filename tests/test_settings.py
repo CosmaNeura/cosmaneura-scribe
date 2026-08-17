@@ -99,6 +99,15 @@ def test_workflow_authentication_configuration_contains_no_secret() -> None:
     assert "secret" not in settings.model_dump()
 
 
+def test_capture_protocol_is_false_by_default() -> None:
+    settings = Settings()
+
+    assert settings.capture_protocol_enabled is False
+
+    with pytest.raises(ValidationError, match="requires workflow authentication and PostgreSQL"):
+        Settings(capture_protocol_enabled=True)
+
+
 def test_transcription_database_principal_requires_complete_identity() -> None:
     with pytest.raises(ValidationError, match="must be configured together"):
         Settings(database_transcription_principal_name="scribe-transcription")

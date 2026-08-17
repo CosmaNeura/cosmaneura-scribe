@@ -1,0 +1,60 @@
+{
+  "protocol_version": "1.0",
+  "source_sha256": "99464b452b51dcdb813d65a513c48fc878425f672ef0ea06096367e24331b8ed",
+  "vectors": [
+    {
+      "expected": {
+        "aad_base64url": "eyJjaGFubmVsIjoibWljcm9waG9uZSIsIm9iamVjdF9pZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwMyIsInNlcXVlbmNlX251bWJlciI6MCwic2Vzc2lvbl9pZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwMiIsInRlbmFudF9pZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwMSJ9",
+        "aad_utf8": "{\"channel\":\"microphone\",\"object_id\":\"018f0000-0000-7000-8000-000000000003\",\"sequence_number\":0,\"session_id\":\"018f0000-0000-7000-8000-000000000002\",\"tenant_id\":\"018f0000-0000-7000-8000-000000000001\"}",
+        "envelope_base64url": "Q1NDUklCRTEAAABreyJjb250ZW50X2VuY3J5cHRpb24iOiJBMjU2R0NNIiwibWVkaWFfdHlwZSI6ImF1ZGlvL3dhdiIsIm5vbmNlIjoiQUFFQ0F3UUZCZ2NJQ1FvTCIsInNjaGVtYV92ZXJzaW9uIjoiMS4wIn0AAQIDBAUGBwgJCgsMDQ4P",
+        "envelope_sha256": "337a76efb8bbf9c5ed7cc44168ba5329edc88c4ccc90585a7bf026ff07bb649b"
+      },
+      "input": {
+        "channel": "microphone",
+        "ciphertext_hex": "000102030405060708090a0b0c0d0e0f",
+        "nonce_hex": "000102030405060708090a0b",
+        "object_id": "018f0000-0000-7000-8000-000000000003",
+        "sequence_number": 0,
+        "session_id": "018f0000-0000-7000-8000-000000000002",
+        "tenant_id": "018f0000-0000-7000-8000-000000000001"
+      },
+      "name": "capture-chunk-1"
+    },
+    {
+      "expected": {
+        "aad_base64url": "eyJjaGFubmVsIjoic3lzdGVtX2F1ZGlvIiwib2JqZWN0X2lkIjoiMTIzZTQ1NjctZTg5Yi00MmQzLWE0NTYtNDI2NjE0MTc0MDAyIiwic2VxdWVuY2VfbnVtYmVyIjo0Miwic2Vzc2lvbl9pZCI6IjEyM2U0NTY3LWU4OWItNDJkMy1hNDU2LTQyNjYxNDE3NDAwMSIsInRlbmFudF9pZCI6IjEyM2U0NTY3LWU4OWItNDJkMy1hNDU2LTQyNjYxNDE3NDAwMCJ9",
+        "aad_utf8": "{\"channel\":\"system_audio\",\"object_id\":\"123e4567-e89b-42d3-a456-426614174002\",\"sequence_number\":42,\"session_id\":\"123e4567-e89b-42d3-a456-426614174001\",\"tenant_id\":\"123e4567-e89b-42d3-a456-426614174000\"}",
+        "envelope_base64url": "Q1NDUklCRTEAAABreyJjb250ZW50X2VuY3J5cHRpb24iOiJBMjU2R0NNIiwibWVkaWFfdHlwZSI6ImF1ZGlvL3dhdiIsIm5vbmNlIjoiX183OV9QdjYtZmozOXZYMCIsInNjaGVtYV92ZXJzaW9uIjoiMS4wIn3_7t3Mu6qZiHdmVUQzIhEAqrvM3Q",
+        "envelope_sha256": "fb647643595ac21fe739a2644b4bbd3881284af923021c6d55072b2c18804fba"
+      },
+      "input": {
+        "channel": "system_audio",
+        "ciphertext_hex": "ffeeddccbbaa99887766554433221100aabbccdd",
+        "nonce_hex": "fffefdfcfbfaf9f8f7f6f5f4",
+        "object_id": "123e4567-e89b-42d3-a456-426614174002",
+        "sequence_number": 42,
+        "session_id": "123e4567-e89b-42d3-a456-426614174001",
+        "tenant_id": "123e4567-e89b-42d3-a456-426614174000"
+      },
+      "name": "capture-chunk-2"
+    },
+    {
+      "expected": {
+        "aad_base64url": "eyJjaGFubmVsIjoibWl4ZWQiLCJvYmplY3RfaWQiOiJkZGRkZGRkZC1kZGRkLTRkZGQtOWRkZC1kZGRkZGRkZGRkZGQiLCJzZXF1ZW5jZV9udW1iZXIiOjk5OSwic2Vzc2lvbl9pZCI6ImVlZWVlZWVlLWVlZWUtNGVlZS1hZWVlLWVlZWVlZWVlZWVlZSIsInRlbmFudF9pZCI6ImZmZmZmZmZmLWZmZmYtNGZmZi1iZmZmLWZmZmZmZmZmZmZmZiJ9",
+        "aad_utf8": "{\"channel\":\"mixed\",\"object_id\":\"dddddddd-dddd-4ddd-9ddd-dddddddddddd\",\"sequence_number\":999,\"session_id\":\"eeeeeeee-eeee-4eee-aeee-eeeeeeeeeeee\",\"tenant_id\":\"ffffffff-ffff-4fff-bfff-ffffffffffff\"}",
+        "envelope_base64url": "Q1NDUklCRTEAAABreyJjb250ZW50X2VuY3J5cHRpb24iOiJBMjU2R0NNIiwibWVkaWFfdHlwZSI6ImF1ZGlvL3dhdiIsIm5vbmNlIjoiRUNBd1FGQmdjSUNRb0xEQSIsInNjaGVtYV92ZXJzaW9uIjoiMS4wIn0BI0VniavN7wEjRWeJq83v",
+        "envelope_sha256": "012b08f381a2e98a54a9277457fb24242996da7927c6561f74efcab445b48027"
+      },
+      "input": {
+        "channel": "mixed",
+        "ciphertext_hex": "0123456789abcdef0123456789abcdef",
+        "nonce_hex": "102030405060708090a0b0c0",
+        "object_id": "dddddddd-dddd-4ddd-9ddd-dddddddddddd",
+        "sequence_number": 999,
+        "session_id": "eeeeeeee-eeee-4eee-aeee-eeeeeeeeeeee",
+        "tenant_id": "ffffffff-ffff-4fff-bfff-ffffffffffff"
+      },
+      "name": "capture-chunk-3"
+    }
+  ]
+}

@@ -103,6 +103,183 @@ print(json.dumps({"status_code": response.status_code, "body": response.json()},
 """
 
 
+CAPTURE_REQUEST_PROGRAM = r"""
+import base64
+import json
+import os
+from uuid import UUID
+
+from cosmaneura_scribe.main import (
+    app,
+    get_audio_encryption_key_provider,
+    get_repository_provider,
+)
+from cosmaneura_scribe.postgres_repository import build_postgres_provider
+from cosmaneura_scribe.schemas import AudioEncryptionPublicKey, RsaPublicJwk
+from cosmaneura_scribe.service_auth import get_verified_tenant_id
+from cosmaneura_scribe.settings import Settings, get_settings
+from fastapi.testclient import TestClient
+
+
+def base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+class KeyProvider:
+    async def get_public_key(self):
+        return AudioEncryptionPublicKey(
+            key_version="capture-cross-process-v1",
+            public_jwk=RsaPublicJwk(n=base64url(b"\x80" + b"m" * 383), e="AQAB"),
+        )
+
+    def versioned_key_id(self, key_version):
+        if key_version != "capture-cross-process-v1":
+            return None
+        return f"https://scribe-test.vault.azure.net/keys/audio/{key_version}"
+
+    async def close(self):
+        return None
+
+
+tenant_id = UUID(os.environ["SCRIBE_TEST_TENANT_ID"])
+action = os.environ["SCRIBE_TEST_CAPTURE_ACTION"]
+provider = build_postgres_provider(
+    Settings(
+        repository_backend="postgres",
+        database_url=os.environ["SCRIBE_TEST_APP_DATABASE_URL"],
+        database_ssl=False,
+        database_pool_size=1,
+        database_max_overflow=0,
+    )
+)
+app.dependency_overrides[get_repository_provider] = lambda: provider
+app.dependency_overrides[get_verified_tenant_id] = lambda: tenant_id
+app.dependency_overrides[get_settings] = lambda: Settings(
+    capture_protocol_enabled=True,
+    repository_backend="postgres",
+    database_url=os.environ["SCRIBE_TEST_APP_DATABASE_URL"],
+    database_ssl=False,
+    workflow_authentication_enabled=True,
+    entra_tenant_id="00000000-0000-4000-8000-000000000001",
+    workflow_api_audience="00000000-0000-4000-8000-000000000002",
+    trusted_platform_client_id="00000000-0000-4000-8000-000000000003",
+)
+app.dependency_overrides[get_audio_encryption_key_provider] = KeyProvider
+headers = lambda key: {"X-Tenant-ID": str(tenant_id), "Idempotency-Key": key}
+
+try:
+    with TestClient(app) as client:
+        identity = {
+            "appointment_id": "appointment-capture-cross-process",
+            "practitioner_id": "practitioner-capture-cross-process",
+            "patient_id": "patient-capture-cross-process",
+            "modality": "in_person",
+        }
+        consent = client.post(
+            "/v1/consents",
+            headers=headers("capture-consent-cross-process"),
+            json={
+                **identity,
+                "participant_regions": ["FL"],
+                "method": "verbal_attestation",
+                "all_parties_consented": True,
+                "granted_at": "2026-08-17T12:00:00Z",
+            },
+        ).json()
+        session = client.post(
+            "/v1/sessions",
+            headers=headers("capture-session-cross-process"),
+            json={**identity, "consent_record_id": consent["id"]},
+        ).json()
+        client.post(
+            f"/v1/sessions/{session['id']}/audio-key",
+            headers=headers("capture-audio-key-cross-process"),
+            json={
+                "key_version": "capture-cross-process-v1",
+                "wrapped_dek": base64url(b"w" * 384),
+            },
+        )
+        lease_response = client.post(
+            f"/v1/sessions/{session['id']}/capture-lease",
+            headers=headers("capture-lease-cross-process"),
+            json={"protocol_version": "1.0"},
+        )
+        target = lease_response
+        lease = lease_response.json()
+
+        if action != "lease":
+            renewal = client.post(
+                f"/v1/sessions/{session['id']}/capture-leases/{lease['lease_id']}/renew",
+                headers=headers("capture-renew-cross-process"),
+                json={"protocol_version": "1.0", "expected_generation": 1},
+            )
+            target = renewal
+            lease = renewal.json()
+
+        if action not in {"lease", "renew"}:
+            reservation = client.post(
+                f"/v1/sessions/{session['id']}/chunk-reservations",
+                headers=headers("capture-reserve-cross-process"),
+                json={
+                    "protocol_version": "1.0",
+                    "capture_lease_id": lease["lease_id"],
+                    "capture_lease_generation": lease["generation"],
+                    "channel": "microphone",
+                    "first_sequence_number": 0,
+                    "count": 1,
+                },
+            )
+            target = reservation
+            reserved = reservation.json()["reservations"][0]
+
+        if action in {"authorize", "register", "complete"}:
+            authorization = client.post(
+                f"/v1/sessions/{session['id']}/chunks/{reserved['object_id']}"
+                "/upload-authorization",
+                headers=headers("capture-authorize-cross-process"),
+                json={"protocol_version": "1.0"},
+            )
+            target = authorization
+
+        if action in {"register", "complete"}:
+            registration = client.post(
+                f"/v1/sessions/{session['id']}/chunks",
+                headers=headers("capture-register-cross-process"),
+                json={
+                    "sequence_number": 0,
+                    "channel": "microphone",
+                    "object_id": reserved["object_id"],
+                    "sha256": "a" * 64,
+                    "ciphertext_size_bytes": 320128,
+                },
+            )
+            target = registration
+
+        if action == "complete":
+            target = client.post(
+                f"/v1/sessions/{session['id']}/capture-complete",
+                headers=headers("capture-complete-cross-process"),
+                json={
+                    "protocol_version": "1.0",
+                    "capture_lease_id": lease["lease_id"],
+                    "capture_lease_generation": lease["generation"],
+                    "channels": [
+                        {"channel": "microphone", "final_sequence_number": 0}
+                    ],
+                },
+            )
+        body = target.json()
+        if isinstance(body, dict):
+            body.pop("upload_url", None)
+        result = {"status_code": target.status_code, "body": body}
+        client.portal.call(provider.close)
+finally:
+    app.dependency_overrides.clear()
+
+print(json.dumps(result, sort_keys=True))
+"""
+
+
 def _request_consent_in_fresh_process(
     *,
     app_url: str,
@@ -137,6 +314,42 @@ def _request_consent_in_fresh_process(
     return json.loads(completed.stdout)
 
 
+def _request_capture_action_in_fresh_process(
+    *,
+    app_url: str,
+    tenant_id: str,
+    action: str,
+    hash_seed: str,
+) -> dict[str, Any]:
+    root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    source_path = str(root / "services" / "api" / "src")
+    existing_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        source_path
+        if not existing_pythonpath
+        else os.pathsep.join((source_path, existing_pythonpath))
+    )
+    environment.update(
+        {
+            "PYTHONHASHSEED": hash_seed,
+            "SCRIBE_TEST_APP_DATABASE_URL": app_url,
+            "SCRIBE_TEST_TENANT_ID": tenant_id,
+            "SCRIBE_TEST_CAPTURE_ACTION": action,
+        }
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", CAPTURE_REQUEST_PROGRAM],
+        cwd=root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
 @pytest.mark.postgres
 def test_consent_replay_survives_provider_restart_in_a_new_process(
     postgres_urls: tuple[str, str],
@@ -158,6 +371,44 @@ def test_consent_replay_survives_provider_restart_in_a_new_process(
     assert first["status_code"] == 201
     assert replay["status_code"] == 201
     assert replay["body"]["id"] == first["body"]["id"]
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    ("action", "expected_status"),
+    [
+        ("lease", 201),
+        ("renew", 200),
+        ("reserve", 201),
+        ("authorize", 201),
+        ("register", 201),
+        ("complete", 200),
+    ],
+)
+def test_capture_mutation_replay_survives_provider_restart_in_a_new_process(
+    postgres_urls: tuple[str, str],
+    action: str,
+    expected_status: int,
+) -> None:
+    _, app_url = postgres_urls
+    tenant_id = str(uuid4())
+
+    first = _request_capture_action_in_fresh_process(
+        app_url=app_url,
+        tenant_id=tenant_id,
+        action=action,
+        hash_seed="1",
+    )
+    replay = _request_capture_action_in_fresh_process(
+        app_url=app_url,
+        tenant_id=tenant_id,
+        action=action,
+        hash_seed="2",
+    )
+
+    assert first["status_code"] == expected_status
+    assert replay["status_code"] == expected_status
+    assert replay["body"] == first["body"]
 
 
 class ConcurrentClaimGate:

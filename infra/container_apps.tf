@@ -159,6 +159,11 @@ resource "azurerm_container_app" "api" {
         value = tostring(var.enable_workflow_authentication)
       }
 
+      env {
+        name  = "COSMANEURA_SCRIBE_CAPTURE_PROTOCOL_ENABLED"
+        value = tostring(var.enable_capture_protocol)
+      }
+
       dynamic "env" {
         for_each = var.enable_workflow_authentication ? [1] : []
         content {
