@@ -295,6 +295,39 @@ async def test_private_api_proof_checks_dns_then_uses_exact_identity_scope_and_r
 
 
 @pytest.mark.asyncio
+async def test_default_request_timeout_covers_one_scale_to_zero_cold_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _enabled_settings()
+    credential = StaticCredential()
+    captured_client_options: dict[str, object] = {}
+    real_async_client = httpx.AsyncClient
+
+    def client_factory(**options: object) -> httpx.AsyncClient:
+        captured_client_options.update(options)
+        return real_async_client(
+            **options,
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json=_public_key_payload())
+            ),
+        )
+
+    monkeypatch.setattr(private_api_acceptance_runner.httpx, "AsyncClient", client_factory)
+
+    result = await execute_private_api_acceptance(
+        settings,
+        credential=credential,
+        resolver=lambda _: _async_addresses(PRIVATE_API_IP),
+    )
+
+    assert result == EXPECTED_RESULT
+    assert settings.private_api_acceptance_timeout_seconds == 60
+    assert captured_client_options["timeout"] == 60
+    assert captured_client_options["trust_env"] is False
+    assert captured_client_options["follow_redirects"] is False
+
+
+@pytest.mark.asyncio
 async def test_dns_must_resolve_only_to_the_exact_private_environment_ip() -> None:
     credential = StaticCredential()
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
@@ -575,6 +608,9 @@ def test_acceptance_logging_suppresses_third_party_warning_details(
 
 
 def test_settings_require_all_three_gates_and_one_exact_private_host() -> None:
+    assert Settings().private_api_acceptance_timeout_seconds == 60
+    with pytest.raises(ValidationError, match="less than or equal to 60"):
+        Settings(private_api_acceptance_timeout_seconds=60.1)
     with pytest.raises(ValidationError, match="requires private_api_acceptance_enabled"):
         Settings(private_api_acceptance_invocation_enabled=True)
     with pytest.raises(ValidationError, match="requires its base URL"):
