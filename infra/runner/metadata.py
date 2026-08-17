@@ -87,6 +87,17 @@ PLAN_IDENTITY_OR_RBAC_MARKERS = (
     "unsupportedapiversion",
     "could not acquire access token",
 )
+APPLY_LINKED_AUTHORIZATION_MARKERS = (
+    "linkedauthorizationfailed",
+    "microsoft.managedidentity/userassignedidentities/assign/action",
+    "microsoft.app/managedenvironments/join/action",
+)
+APPLY_API_UPDATE_MARKERS = (
+    "azurerm_container_app.api",
+    "microsoft.app/containerapps/write",
+    "creating container app",
+    "updating container app",
+)
 
 
 def _fail() -> NoReturn:
@@ -141,12 +152,16 @@ def _contains_storage_data_plane_context(text: str) -> bool:
     )
 
 
-def _classify_plan_error(path: str) -> None:
+def _read_bounded_log(path: str) -> str:
     with Path(path).open("rb") as stream:
         stream.seek(0, 2)
         size = stream.tell()
         stream.seek(max(0, size - MAX_PLAN_LOG_BYTES))
-        text = stream.read(MAX_PLAN_LOG_BYTES).decode("utf-8", errors="replace").casefold()
+        return stream.read(MAX_PLAN_LOG_BYTES).decode("utf-8", errors="replace").casefold()
+
+
+def _classify_plan_error(path: str) -> None:
+    text = _read_bounded_log(path)
 
     error_class = "PlanFailed"
     if _contains_any(text, PLAN_TARGET_OR_CONFIGURATION_MARKERS):
@@ -169,6 +184,30 @@ def _classify_plan_error(path: str) -> None:
     print(error_class)
 
 
+def _classify_apply_error(path: str) -> None:
+    text = _read_bounded_log(path)
+
+    error_class = "ApplyFailed"
+    if _contains_any(text, PLAN_TARGET_OR_CONFIGURATION_MARKERS):
+        error_class = "ApplyTargetOrConfigurationFailed"
+    elif _contains_any(text, APPLY_LINKED_AUTHORIZATION_MARKERS):
+        error_class = "ApplyLinkedResourceAuthorizationFailed"
+    elif _contains_any(text, PLAN_KEY_VAULT_MARKERS) and _contains_any(
+        text, PLAN_NETWORK_OR_DNS_MARKERS
+    ):
+        error_class = "ApplyKeyVaultNetworkOrDnsFailed"
+    elif _contains_storage_data_plane_context(text) and (
+        _contains_any(text, PLAN_IDENTITY_OR_RBAC_MARKERS)
+        or _contains_any(text, PLAN_NETWORK_OR_DNS_MARKERS)
+    ):
+        error_class = "ApplyStorageDataPlaneFailed"
+    elif _contains_any(text, APPLY_API_UPDATE_MARKERS):
+        error_class = "ApplyApiUpdateFailed"
+    elif _contains_any(text, PLAN_IDENTITY_OR_RBAC_MARKERS):
+        error_class = "ApplyIdentityOrRbacFailed"
+    print(error_class)
+
+
 def main(arguments: list[str]) -> None:
     try:
         if len(arguments) == 4 and arguments[0] == "read-field":
@@ -179,6 +218,9 @@ def main(arguments: list[str]) -> None:
             return
         if len(arguments) == 2 and arguments[0] == "classify-plan-error":
             _classify_plan_error(arguments[1])
+            return
+        if len(arguments) == 2 and arguments[0] == "classify-apply-error":
+            _classify_apply_error(arguments[1])
             return
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         _fail()

@@ -220,6 +220,26 @@ resource "azurerm_role_assignment" "private_terraform_runner_api_contributor" {
   skip_service_principal_aad_check = true
 }
 
+resource "azurerm_role_assignment" "private_terraform_runner_runtime_identity_operator" {
+  count = var.enable_private_terraform_runner ? 1 : 0
+
+  scope                            = azurerm_user_assigned_identity.runtime.id
+  role_definition_id               = "/subscriptions/${var.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/f1a07417-d97a-45cb-824c-7a7467783830"
+  principal_id                     = azurerm_user_assigned_identity.private_terraform_runner[0].principal_id
+  principal_type                   = "ServicePrincipal"
+  skip_service_principal_aad_check = true
+}
+
+resource "azurerm_role_assignment" "private_terraform_runner_environment_join" {
+  count = var.enable_private_terraform_runner ? 1 : 0
+
+  scope                            = azurerm_container_app_environment.scribe.id
+  role_definition_id               = "/subscriptions/${var.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/358470bc-b998-42bd-ab17-a7e34c199c0f"
+  principal_id                     = azurerm_user_assigned_identity.private_terraform_runner[0].principal_id
+  principal_type                   = "ServicePrincipal"
+  skip_service_principal_aad_check = true
+}
+
 resource "azurerm_role_assignment" "private_terraform_runner_vault_rbac_admin" {
   count = var.enable_private_terraform_runner ? 1 : 0
 
@@ -282,8 +302,10 @@ resource "azurerm_container_app_job" "private_terraform_runner" {
     azurerm_network_security_group.container_apps,
     azurerm_role_assignment.private_terraform_runner_acr,
     azurerm_role_assignment.private_terraform_runner_api_contributor,
+    azurerm_role_assignment.private_terraform_runner_environment_join,
     azurerm_role_assignment.private_terraform_runner_key_officer,
     azurerm_role_assignment.private_terraform_runner_resource_reader,
+    azurerm_role_assignment.private_terraform_runner_runtime_identity_operator,
     azurerm_role_assignment.private_terraform_runner_state,
     azurerm_role_assignment.private_terraform_runner_vault_rbac_admin,
   ]

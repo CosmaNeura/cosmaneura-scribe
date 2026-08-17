@@ -182,3 +182,59 @@ def test_plan_error_classifier_rejects_missing_log_without_detail(tmp_path: Path
     assert result.returncode == 1
     assert result.stdout == ""
     assert result.stderr == ""
+
+
+def test_apply_error_classifier_emits_only_fixed_classes(tmp_path: Path) -> None:
+    unsafe = "canary-token https://unsafe.example.invalid body=private"
+    cases = {
+        "ApplyTargetOrConfigurationFailed": "Error: invalid target " + unsafe,
+        "ApplyLinkedResourceAuthorizationFailed": (
+            "LinkedAuthorizationFailed: Microsoft.ManagedIdentity/"
+            "userAssignedIdentities/assign/action " + unsafe
+        ),
+        "ApplyKeyVaultNetworkOrDnsFailed": (
+            "azurerm_key_vault_key.audio ForbiddenByFirewall " + unsafe
+        ),
+        "ApplyStorageDataPlaneFailed": (
+            'retrieving Account "example" for Container "audio": '
+            "AuthorizationPermissionMismatch " + unsafe
+        ),
+        "ApplyApiUpdateFailed": "updating Container App: request rejected " + unsafe,
+        "ApplyIdentityOrRbacFailed": "AuthorizationFailed: caller is not authorized " + unsafe,
+        "ApplyFailed": "unrecognized provider failure " + unsafe,
+    }
+
+    for expected, log_text in cases.items():
+        apply_log = tmp_path / f"{expected}.log"
+        apply_log.write_text(log_text, encoding="utf-8")
+
+        result = _run("classify-apply-error", str(apply_log))
+
+        assert result.returncode == 0
+        assert result.stdout == f"{expected}\n"
+        assert result.stderr == ""
+        assert "canary" not in result.stdout
+        assert "unsafe" not in result.stdout
+
+
+def test_apply_error_classifier_prioritizes_linked_authorization(tmp_path: Path) -> None:
+    apply_log = tmp_path / "linked-auth.log"
+    apply_log.write_text(
+        "updating Container App: LinkedAuthorizationFailed "
+        "Microsoft.App/managedEnvironments/join/action status code: 403",
+        encoding="utf-8",
+    )
+
+    result = _run("classify-apply-error", str(apply_log))
+
+    assert result.returncode == 0
+    assert result.stdout == "ApplyLinkedResourceAuthorizationFailed\n"
+    assert result.stderr == ""
+
+
+def test_apply_error_classifier_rejects_missing_log_without_detail(tmp_path: Path) -> None:
+    result = _run("classify-apply-error", str(tmp_path / "missing.log"))
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == ""

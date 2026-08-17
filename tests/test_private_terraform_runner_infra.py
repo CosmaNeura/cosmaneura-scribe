@@ -135,6 +135,37 @@ def test_temporary_network_access_is_enable_gated() -> None:
         assert f'destination_address_prefix = "{service_tag}"' in network[gate_start:rule_end]
 
 
+def test_private_runner_linked_resource_permissions_are_exact_and_temporary() -> None:
+    runner = RUNNER.read_text(encoding="utf-8")
+
+    identity_start = runner.index(
+        'resource "azurerm_role_assignment" "private_terraform_runner_runtime_identity_operator"'
+    )
+    identity_end = runner.index("\n}\n", identity_start)
+    identity_role = runner[identity_start:identity_end]
+    assert "count = var.enable_private_terraform_runner ? 1 : 0" in identity_role
+    assert (
+        "scope                            = azurerm_user_assigned_identity.runtime.id"
+        in identity_role
+    )
+    assert "f1a07417-d97a-45cb-824c-7a7467783830" in identity_role
+
+    environment_start = runner.index(
+        'resource "azurerm_role_assignment" "private_terraform_runner_environment_join"'
+    )
+    environment_end = runner.index("\n}\n", environment_start)
+    environment_role = runner[environment_start:environment_end]
+    assert "count = var.enable_private_terraform_runner ? 1 : 0" in environment_role
+    assert (
+        "scope                            = azurerm_container_app_environment.scribe.id"
+        in environment_role
+    )
+    assert "358470bc-b998-42bd-ab17-a7e34c199c0f" in environment_role
+
+    assert "azurerm_role_assignment.private_terraform_runner_runtime_identity_operator" in runner
+    assert "azurerm_role_assignment.private_terraform_runner_environment_join" in runner
+
+
 def test_private_key_keeps_private_network_dependencies() -> None:
     main = MAIN.read_text(encoding="utf-8")
     key_start = main.index('resource "azurerm_key_vault_key" "audio"')
@@ -191,5 +222,30 @@ def test_runner_classifies_plan_failures_without_emitting_provider_output() -> N
         "cat /tmp/tofu-plan.log",
         "grep /tmp/tofu-plan.log",
         "tail /tmp/tofu-plan.log",
+    ):
+        assert unsafe_command not in script
+
+
+def test_runner_classifies_apply_failures_without_emitting_provider_output() -> None:
+    script = RUN_SCRIPT.read_text(encoding="utf-8")
+
+    assert "classify-apply-error /tmp/tofu-apply.log 2>/dev/null" in script
+    assert "classify_apply_failure" in script
+    assert '*) apply_error_class="ApplyFailed" ;;' in script
+    for error_class in (
+        "ApplyTargetOrConfigurationFailed",
+        "ApplyLinkedResourceAuthorizationFailed",
+        "ApplyKeyVaultNetworkOrDnsFailed",
+        "ApplyStorageDataPlaneFailed",
+        "ApplyApiUpdateFailed",
+        "ApplyIdentityOrRbacFailed",
+        "ApplyFailed",
+    ):
+        assert error_class in script
+    assert ">/tmp/tofu-apply.log 2>&1" in script
+    for unsafe_command in (
+        "cat /tmp/tofu-apply.log",
+        "grep /tmp/tofu-apply.log",
+        "tail /tmp/tofu-apply.log",
     ):
         assert unsafe_command not in script

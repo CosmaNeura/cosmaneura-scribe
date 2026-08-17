@@ -41,6 +41,24 @@ classify_plan_failure() {
   fail "$plan_error_class"
 }
 
+classify_apply_failure() {
+  apply_error_class="$(
+    python3 /workspace/infra/runner/metadata.py \
+      classify-apply-error /tmp/tofu-apply.log 2>/dev/null
+  )" || apply_error_class=""
+  case "$apply_error_class" in
+    ApplyTargetOrConfigurationFailed | \
+      ApplyLinkedResourceAuthorizationFailed | \
+      ApplyKeyVaultNetworkOrDnsFailed | \
+      ApplyStorageDataPlaneFailed | \
+      ApplyApiUpdateFailed | \
+      ApplyIdentityOrRbacFailed | \
+      ApplyFailed) ;;
+    *) apply_error_class="ApplyFailed" ;;
+  esac
+  fail "$apply_error_class"
+}
+
 trap cleanup EXIT
 trap 'cleanup; exit 130' HUP INT TERM
 
@@ -294,7 +312,7 @@ if ! tofu apply \
   -no-color \
   /tmp/candidate.tfplan >/tmp/tofu-apply.log 2>&1
 then
-  fail "ApplyFailed"
+  classify_apply_failure
 fi
 
 if ! tofu state pull > /tmp/post-apply-state.json 2>/dev/null; then
