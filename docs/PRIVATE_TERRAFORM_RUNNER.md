@@ -410,6 +410,10 @@ before requesting a token, uses only the exact UAMI through `ManagedIdentityCred
 redirects and proxy-environment trust, and bounds the response to 8 KiB. Success is one fixed record
 containing only HTTP 200, RSA, RSA-OAEP-256, 3072 bits, `wrapKey`, key-version presence, and duration.
 It never logs the JWK modulus, exponent, key-version value, token, URL, tenant, DNS answer, or body.
+The reviewed image's `Settings` default is the single authority for a 60-second HTTP timeout; there
+is no parallel Terraform or job-environment timeout setting. That budget permits one scale-to-zero
+API cold start inside the separate 300-second job timeout. It does not retry the request, and the
+Container Apps Job retry limit remains zero.
 
 Immediately after start, read the effective execution template and prove image, command, arguments,
 environment, resources, and identity equal the reviewed job. Query Activity Log and accept only the

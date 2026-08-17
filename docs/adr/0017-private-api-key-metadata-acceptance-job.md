@@ -42,6 +42,13 @@ requires HTTP 200 and the exact `AudioEncryptionPublicKey` schema, and proves RS
 emits one constant metadata record containing only status, key type, algorithm, size, operations,
 version presence, and duration. Failures emit only fixed classes.
 
+The application `Settings` model is the single authority for a 60-second HTTP timeout, which is
+also its enforced maximum. Terraform does not duplicate it as a job environment value. This budget
+covers one scale-to-zero API cold start within the job's separate 300-second execution timeout; it
+does not add an application retry, and the Container Apps Job retry limit remains zero. The earlier
+15-second budget expired while Container Apps was still pulling and starting the API replica, with
+zero requests reaching the API.
+
 ## Rollout and removal
 
 1. Before deployment, enumerate every inherited or direct principal that can start or update the
@@ -69,6 +76,8 @@ version presence, and duration. Failures emit only fixed classes.
 - The acceptance path uses the real caller identity without widening its access to Key Vault.
 - The job can prove private DNS, Entra authorization, API routing, and public-key metadata, but it
   cannot prove future platform-VNet peering; that remains a separate network acceptance.
+- The 60-second request budget allows one scale-to-zero cold start but no retry; a timeout remains a
+  failed one-shot execution that requires closing the gates and a separately reviewed next attempt.
 - Leaving the job or `AcrPull` assignment deployed after the proof is a failed teardown condition.
 - A second execution requires reopening a reviewed invocation gate; the job itself has no schedule
   or durable authority to start.
