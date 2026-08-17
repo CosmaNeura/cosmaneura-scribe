@@ -216,7 +216,7 @@ resource "azurerm_container_app" "api" {
 
       env {
         name  = "COSMANEURA_SCRIBE_STORAGE_CONTAINER_NAME"
-        value = azurerm_storage_container.audio.name
+        value = local.audio_container_name
       }
 
       env {
