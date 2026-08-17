@@ -6,7 +6,8 @@
 | Second — 2026-08-15 | `codex/scribe-stt-mobile-roadmap` at `ad5a579` | STT slice added; all defects untouched; 5 new findings |
 | Third — 2026-08-15 | `main` at `4f11b94` | All 8 defects fixed and verified. 5 new findings, none blocking. |
 | Fourth — 2026-08-15 | `main` at `d57d721` | Audio key custody and the production assembler. Strongest work in the series. 6 new findings, none blocking. |
-| **Fifth — 2026-08-15** | **PR #5, `agent/scribe-transcription-job` at `2db0624` (open)** | **Infrastructure finally moves. Dormant manual job trigger. 6 new findings, none blocking merge.** |
+| Fifth — 2026-08-15 | PR #5, `agent/scribe-transcription-job` at `2db0624` (open) | Infrastructure finally moves. Dormant manual job trigger. 6 new findings, none blocking merge. |
+| **Sixth — 2026-08-17** | **`main` at `8546a41` (PRs #5–#20)** | **Every open finding closed. Two real runtime bugs found by live probing. No new defects.** |
 
 Findings marked **[verified]** were reproduced or exercised in this working tree. Findings marked
 **[read]** come from code inspection without a live Azure target.
@@ -15,8 +16,8 @@ Findings marked **[verified]** were reproduced or exercised in this working tree
 
 ## 0. Current pass
 
-Section 8 is the fifth review, of open PR #5. Section 7 is the fourth. Sections 1–6 are the third and
-remain accurate: no defect they closed has reopened.
+Section 9 is the sixth review and supersedes the open-finding lists in every earlier section.
+Sections 1–8 are retained as the record of how each defect was found and verified.
 
 ---
 
@@ -456,3 +457,113 @@ Nothing here blocks merge. N-17 blocks *enabling*, and the PR already keeps both
 sequencing is right. The remaining infrastructure findings from earlier rounds — `sensitive = true`,
 storage and Key Vault diagnostics, `ALTER DEFAULT PRIVILEGES`, NSGs, the Log Analytics quota, the
 client upload path, and retention — are untouched and still stand.
+
+---
+
+## 9. Sixth review — PRs #5 through #20
+
+**Target:** `main` at `8546a41`. Sixteen pull requests merged since the fourth review: 89 files,
++10,914 / −408 lines. **No branch is unmerged** — this is a clean stopping point.
+
+### Gates, run locally
+
+```
+297 passed, 0 skipped        (PostgreSQL 16 attached; 237 passed / 60 skipped without)
+ruff / pyright / check_phi_logs / check_secrets / check_adr_numbers   PASS
+openapi.json   in sync
+```
+
+Not run: `tofu fmt -check` and `tofu validate` — no OpenTofu or Terraform in this environment. CI
+runs both. At this diff size I read the new modules, ADRs, and runbooks closely and scanned the
+Terraform; I did not review all 10,914 lines line by line.
+
+### Every open finding is closed
+
+| # | Finding | Resolution |
+|---|---|---|
+| N-6 | Migration 0005 imported live code unpinned | v1 predicate and status values now pinned by tests |
+| N-8 | `DeliveryReconciler` had no trigger | Gated manual job, ADR 0015 |
+| N-11 | `EncryptedAudioTrackReader.path` unmasked | `field(repr=False)` added |
+| N-12 | Assembly ceiling stated only in bytes | ADR 0011 and the runbook now say "about 35 minutes of one-channel audio or about 17 minutes of a two-channel virtual visit" |
+| N-16 | `httpx.ProtocolError` uncaught | All three call sites now catch it |
+| N-17 | Key Vault Reader assumption unverified | Documented and verified; API still holds Reader only, not Crypto User |
+| N-18 | No propagation note on enable | "Treat an initial `403` as propagation delay and never widen a role to bypass it" |
+| N-19 | `job start --args` semantics unverified | **Live-probed. The concern was correct** — see below |
+| N-20 | Migration job could strip live privileges | "Run bootstrap only in a drained maintenance window with no API traffic or transcription execution" |
+| N-21 | Enable flag is an interlock, not a boundary | Stated in ADR 0012 and again in `PRIVATE_TERRAFORM_RUNNER.md`: "A Container Apps Job start permission is code-execution authority" |
+| N-22 | No key rotation policy | ADR 0013 covers rotation alongside retention and erasure |
+| I-1 | `sensitive = true` redacting reviewable plans | Removed |
+| I-3 | No storage/Key Vault diagnostics | `infra/diagnostics.tf` |
+| I-4 | No retention | ADR 0013, **design only, enforcement disabled** — correctly staged |
+| I-5 | No NSGs | `infra/network_security.tf`: deny-all inbound and outbound, with service-tag-scoped egress |
+| I-6 | Log Analytics quota hardcoded | Parameterized |
+| I-7 | No `ALTER DEFAULT PRIVILEGES` | Added |
+| I-8 | No Speech resource | `infra/speech.tf`, ADR 0014 |
+
+### Two real bugs found by live probing — the most valuable outcome of the series
+
+Both are in the class no test can catch, because every test uses a fake client.
+
+**1. The async Azure transport was missing.** A live token probe on the exact merged image failed
+with `ImportError: aiohttp package is not installed`, *before* managed-identity acquisition. Every
+async Azure call — Blob, Key Vault, Identity — would have failed at runtime. The fix adds
+`azure-core[aio]` and a constructor regression test. The commit body is exactly the honesty the
+standing rules ask for: "the corrected image has not yet been deployed or wire-verified."
+
+**2. `az containerapp job start --args` does not merge.** Azure returned
+`ContainerAppImageRequired` because the replacement container had no `Image` property — confirming
+the concern raised in the fifth review. The response is the right one: rather than guessing at a
+patched command, the runbook now says the full-template workflow "has not yet been implemented or
+verified, so this runbook intentionally provides no clinical start command," and activation is
+blocked behind a reviewed operator helper.
+
+The lesson also propagated. Every `az containerapp job start` in the repository now runs with no
+overrides at all — the Speech smoke job and the private Terraform runner both explicitly say to
+start "without command, argument, image, or environment overrides."
+
+### Tests Codex could not run, run here
+
+Three commits noted that PostgreSQL was unavailable locally, including the delivery claim fencing
+fix. Against a real PostgreSQL 16, those 23 tests all pass:
+
+```
+tests/test_endpoint_postgres.py + test_delivery_reconciler_runner.py + test_database_bootstrap.py
+23 passed
+```
+
+### New surface, sampled
+
+Five ADRs (0013 retention/erasure/rotation, 0014 private Speech, 0015 reconciler trigger, 0016
+client capture path, 0017 API key-metadata acceptance) and seven new Terraform files. Spot checks:
+
+- **NSG rules are tight.** Private-endpoint subnet allows inbound 443 from `VirtualNetwork` only,
+  with deny-all inbound at 4095 and deny-all outbound at 4096. The Container Apps subnet allows only
+  the documented ACA requirements plus service-tag-scoped egress to
+  `MicrosoftContainerRegistry`, `AzureFrontDoor.FirstParty`, `AzureActiveDirectory`, `AzureMonitor`,
+  and `AzureContainerRegistry`. The one broad-sounding rule, `AllowTemporaryTerraformArmOutbound`,
+  is `dynamic` on `enable_private_terraform_runner` — it does not exist while the runner is off.
+- **The private Terraform runner is a Container Apps Job, not a VM.** No public IP, no SSH, image
+  pinned by digest as well as tag. Its powerful roles — Key Vault Crypto Officer, Key Vault Data
+  Access Administrator, Container App Contributor, and a custom state-blob role with only
+  `data_actions` — are all resource-scoped and gated on `enable_private_terraform_runner`. The RG
+  role is Reader, not Contributor.
+
+### No new defects
+
+I did not find a defect in this round worth reporting as one. The residual items are all
+governance or sequencing, and all are already written down:
+
+- **Retention enforcement remains the one P0 responsibility without an implementation.** ADR 0013 is
+  labeled "design only; enforcement remains disabled," and its reasoning is sound — an unconditional
+  Blob age rule cannot see a legal hold, an active session, a transcription lease, or a pending
+  delivery, and giving the API or worker `DELETE` would collapse custody and erasure into the same
+  identities. Correct to stage; still the gap.
+- **The security model now rests on who holds ARM start permission on three jobs.** The transcription
+  worker, the Speech smoke job, and the Terraform runner are each code-execution authority under a
+  privileged identity. The repository grants no such permission and says so in two places. That is
+  the right boundary — it is also a governance decision that lives outside this repo, and it should
+  be written down wherever those grants are actually administered.
+- **The product still cannot transcribe an encounter end to end.** Activation is blocked on the
+  operator helper that submits a full `--yaml` execution template, and on wire-verifying the
+  aiohttp-corrected image. Both are small and well specified. Five reviews ago the blocker was "there
+  is no speech-to-text at all."
