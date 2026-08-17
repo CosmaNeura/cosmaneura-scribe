@@ -5,8 +5,9 @@ locals {
     staging     = "stg"
     production  = "prod"
   }[var.environment]
-  container_app_name  = "cosmaneura-scribe-${local.environment_short}-api"
-  speech_account_name = "cosmaneura-scribe-${local.environment_short}-speech"
+  container_app_name   = "cosmaneura-scribe-${local.environment_short}-api"
+  audio_container_name = "audio"
+  speech_account_name  = "cosmaneura-scribe-${local.environment_short}-speech"
   resource_group_name = var.create_resource_group ? (
     azurerm_resource_group.scribe[0].name
   ) : data.azurerm_resource_group.scribe[0].name
@@ -76,7 +77,7 @@ resource "azurerm_storage_account" "audio" {
 }
 
 resource "azurerm_storage_container" "audio" {
-  name                  = "audio"
+  name                  = local.audio_container_name
   storage_account_id    = azurerm_storage_account.audio.id
   container_access_type = "private"
 }
@@ -85,7 +86,7 @@ resource "azurerm_key_vault" "scribe" {
   name                = var.key_vault_name
   resource_group_name = local.resource_group_name
   location            = local.resource_group_location
-  tenant_id           = var.tenant_id
+  tenant_id           = sensitive(var.tenant_id)
 
   sku_name                      = "standard"
   rbac_authorization_enabled    = true

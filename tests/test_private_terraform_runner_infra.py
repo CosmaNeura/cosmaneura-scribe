@@ -11,6 +11,7 @@ MAIN = ROOT / "infra" / "main.tf"
 DOCKERFILE = ROOT / "infra" / "runner" / "Dockerfile"
 TOFU_CONFIG = ROOT / "infra" / "runner" / "tofurc"
 RUN_SCRIPT = ROOT / "infra" / "runner" / "run.sh"
+CONTAINER_APPS = ROOT / "infra" / "container_apps.tf"
 
 
 def test_private_runner_manifest_is_closed_and_current() -> None:
@@ -19,6 +20,16 @@ def test_private_runner_manifest_is_closed_and_current() -> None:
 
     assert re.search(r'ARM_PROVIDER_ENHANCED_VALIDATION_RESOURCE_PROVIDERS\s*=\s*"false"', runner)
     assert re.search(r'ARM_RESOURCE_PROVIDER_REGISTRATIONS\s*=\s*"none"', runner)
+    assert re.search(r'ARM_USE_CLI\s*=\s*"true"', runner)
+    assert re.search(r'ARM_USE_MSI\s*=\s*"false"', runner)
+    assert "ARM_MSI_API_VERSION" not in runner
+    assert "use_msi              = true" in RUN_SCRIPT.read_text(encoding="utf-8")
+    run_script = RUN_SCRIPT.read_text(encoding="utf-8")
+    assert "az account get-access-token" in run_script
+    assert '--subscription "$ARM_SUBSCRIPTION_ID"' in run_script
+    assert "--resource https://management.azure.com/" in run_script
+    assert "--output none >/dev/null 2>&1" in run_script
+    assert 'fail "AzureCliTokenPreflightFailed"' in run_script
     assert "ARM_SKIP_PROVIDER_REGISTRATION" not in runner
     for flag in (
         "deploy_delivery_reconciler_job",
@@ -32,6 +43,44 @@ def test_private_runner_manifest_is_closed_and_current() -> None:
     assert "var.private_terraform_reconciliation_completed" in variables
     assert "!var.enable_private_api_acceptance_job" in variables
     assert "!var.allow_private_api_acceptance_invocation" in variables
+    for runner_input in (
+        "deploy_private_terraform_runner",
+        "enable_private_terraform_runner",
+        "private_terraform_reconciliation_completed",
+        "private_terraform_runner_image_repository",
+        "private_terraform_runner_image_tag",
+        "private_terraform_runner_image_digest",
+        "terraform_state_container_resource_id",
+        "terraform_state_resource_group_name",
+        "terraform_state_storage_account_name",
+        "terraform_state_container_name",
+        "terraform_state_key",
+        "private_terraform_plan_blob_name",
+    ):
+        assert runner_input in runner
+    assert re.search(r"deploy_private_terraform_runner\s*=\s*jsonencode\(true\)", runner)
+    assert re.search(r"enable_private_terraform_runner\s*=\s*jsonencode\(true\)", runner)
+    assert re.search(
+        r"private_terraform_reconciliation_completed\s*=\s*jsonencode\(false\)", runner
+    )
+
+
+def test_key_vault_tenant_id_preserves_sensitive_state_metadata() -> None:
+    main = MAIN.read_text(encoding="utf-8")
+    vault_start = main.index('resource "azurerm_key_vault" "scribe"')
+    vault_end = main.index('resource "azurerm_key_vault_key" "audio"', vault_start)
+
+    assert "tenant_id           = sensitive(var.tenant_id)" in main[vault_start:vault_end]
+
+
+def test_api_uses_constant_audio_container_name_without_data_plane_dependency() -> None:
+    main = MAIN.read_text(encoding="utf-8")
+    container_apps = CONTAINER_APPS.read_text(encoding="utf-8")
+
+    assert 'audio_container_name = "audio"' in main
+    assert "name                  = local.audio_container_name" in main
+    assert "value = local.audio_container_name" in container_apps
+    assert "value = azurerm_storage_container.audio.name" not in container_apps
 
 
 def test_state_role_is_data_only_and_exact_object_conditioned() -> None:
@@ -131,6 +180,7 @@ def test_runner_classifies_plan_failures_without_emitting_provider_output() -> N
         "PlanTargetOrConfigurationFailed",
         "PlanProviderRegistrationFailed",
         "PlanKeyVaultNetworkOrDnsFailed",
+        "PlanStorageDataPlaneReadFailed",
         "PlanApiReadFailed",
         "PlanIdentityOrRbacFailed",
         "PlanFailed",

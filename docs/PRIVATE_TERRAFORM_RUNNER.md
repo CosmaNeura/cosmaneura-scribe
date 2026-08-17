@@ -37,13 +37,21 @@ delete only the plan pair after a successful apply.
 Enablement also creates the temporary custom state role definition and adds two TCP/443 rules to
 the existing Container Apps subnet NSG: `AzureResourceManager` and `Storage.NorthCentralUS`. The
 runner sets `ARM_RESOURCE_PROVIDER_REGISTRATIONS=none` and
-`ARM_PROVIDER_ENHANCED_VALIDATION_RESOURCE_PROVIDERS=false`; all providers must already be
-registered, and the identity has no authority to register or enumerate providers at subscription
-scope. The immutable image includes the locked AzureRM provider in a fail-closed filesystem mirror,
-so runtime initialization does not require public OpenTofu Registry egress. The rules apply to the
-shared ACA subnet, while Azure RBAC still denies other workload identities access; this wider
-network reach is why Phase A must remove both rules immediately. Phase A also removes the five
-enabled assignments and custom role. Phase B then deletes `AcrPull`, both jobs, and the identity.
+`ARM_PROVIDER_ENHANCED_VALIDATION_RESOURCE_PROVIDERS=false`. The Azure backend continues to use the
+dedicated managed identity directly. The AzureRM provider uses only the authenticated Azure CLI
+session created by the fixed `az login --identity --client-id` step; direct AzureRM MSI is disabled
+because the provider's ACA flow does not send the platform-required identity header. All providers
+must already be registered, and the identity has no authority to register or enumerate providers at
+subscription scope. The immutable image includes the locked AzureRM provider in a fail-closed
+filesystem mirror, so runtime initialization does not require public OpenTofu Registry egress. The
+rules apply to the shared ACA subnet, while Azure RBAC still denies other workload identities
+access; this wider network reach is why Phase A must remove both rules immediately. Phase A also
+removes the five enabled assignments and custom role. Phase B then deletes `AcrPull`, both jobs, and
+the identity.
+
+Before initializing OpenTofu, the runner performs one silent Azure Resource Manager token preflight
+through that CLI session. Failure emits only `AzureCliTokenPreflightFailed`; no token or CLI error
+text is logged.
 
 A Container Apps Job start permission is code-execution authority because a start request can
 replace the deployed container template. Do not grant a person, runtime, or generic automation
@@ -163,10 +171,10 @@ remain in the ephemeral container and are not copied to Log Analytics. No state,
 body, token, object location, or variable value is logged.
 
 If planning fails, the runner reads only a bounded tail of its ephemeral provider log and emits one
-fixed class: target/configuration, provider registration, Key Vault network/DNS, API read,
-identity/RBAC, or generic plan failure. It never emits the matched text, status, URL, provider
-response, resource name, or log fragment. A class is diagnostic evidence only; it never authorizes
-an automatic role, network, target, or configuration change.
+fixed class: target/configuration, provider registration, Key Vault network/DNS, Storage data-plane
+read, API read, identity/RBAC, or generic plan failure. It never emits the matched text, status, URL,
+provider response, resource name, or log fragment. A class is diagnostic evidence only; it never
+authorizes an automatic role, network, target, or configuration change.
 
 A no-change plan is a hard stop: it is not uploaded or applied. Re-verify live state and close or
 redesign the one-time repair instead of forcing a no-op execution.

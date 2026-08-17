@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,9 +100,12 @@ def test_private_runner_manifest_carries_every_acceptance_input() -> None:
     ):
         assert variable in configuration
 
-    assert "deploy_private_api_acceptance_job       = jsonencode(true)" in configuration
-    assert "enable_private_api_acceptance_job       = jsonencode(false)" in configuration
-    assert "allow_private_api_acceptance_invocation = jsonencode(false)" in configuration
+    assert re.search(r"deploy_private_api_acceptance_job\s*=\s*jsonencode\(true\)", configuration)
+    assert re.search(r"enable_private_api_acceptance_job\s*=\s*jsonencode\(false\)", configuration)
+    assert re.search(
+        r"allow_private_api_acceptance_invocation\s*=\s*jsonencode\(false\)",
+        configuration,
+    )
     assert "var.enable_private_api_acceptance_job" not in configuration
     assert "var.allow_private_api_acceptance_invocation" not in configuration
 

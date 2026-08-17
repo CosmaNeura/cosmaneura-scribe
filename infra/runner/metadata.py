@@ -34,6 +34,11 @@ PLAN_KEY_VAULT_MARKERS = (
     "keyvault",
     "vault.azure.net",
 )
+PLAN_STORAGE_DATA_PLANE_MARKERS = (
+    "azurerm_storage_container.audio",
+    "storage container",
+    "blob service",
+)
 PLAN_NETWORK_OR_DNS_MARKERS = (
     "forbiddenbyfirewall",
     "forbiddenbyconnection",
@@ -49,6 +54,8 @@ PLAN_NETWORK_OR_DNS_MARKERS = (
     "tls handshake timeout",
     "client timeout",
     "context deadline exceeded",
+    "operation timed out",
+    "connection timed out",
 )
 PLAN_API_READ_MARKERS = (
     "microsoft.app/containerapps/read",
@@ -63,12 +70,22 @@ PLAN_IDENTITY_OR_RBAC_MARKERS = (
     "statuscode=403",
     "status code 401",
     "status code 403",
+    "status code: 401",
+    "status code: 403",
+    "unexpected status 401",
+    "unexpected status 403",
+    "received http status 401",
+    "received http status 403",
+    "authorizationpermissionmismatch",
+    "this request is not authorized",
     "unauthorized",
     "managed identity credential unavailable",
     "managedidentitycredential authentication failed",
     "failed to acquire token",
     "token acquisition failed",
     "authentication failed",
+    "unsupportedapiversion",
+    "could not acquire access token",
 )
 
 
@@ -118,6 +135,12 @@ def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _contains_storage_data_plane_context(text: str) -> bool:
+    return _contains_any(text, PLAN_STORAGE_DATA_PLANE_MARKERS) or (
+        "retrieving account" in text and "for container" in text
+    )
+
+
 def _classify_plan_error(path: str) -> None:
     with Path(path).open("rb") as stream:
         stream.seek(0, 2)
@@ -134,6 +157,11 @@ def _classify_plan_error(path: str) -> None:
         text, PLAN_NETWORK_OR_DNS_MARKERS
     ):
         error_class = "PlanKeyVaultNetworkOrDnsFailed"
+    elif _contains_storage_data_plane_context(text) and (
+        _contains_any(text, PLAN_IDENTITY_OR_RBAC_MARKERS)
+        or _contains_any(text, PLAN_NETWORK_OR_DNS_MARKERS)
+    ):
+        error_class = "PlanStorageDataPlaneReadFailed"
     elif _contains_any(text, PLAN_API_READ_MARKERS):
         error_class = "PlanApiReadFailed"
     elif _contains_any(text, PLAN_IDENTITY_OR_RBAC_MARKERS):

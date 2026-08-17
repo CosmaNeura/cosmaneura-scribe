@@ -32,6 +32,7 @@ classify_plan_failure() {
     PlanTargetOrConfigurationFailed | \
       PlanProviderRegistrationFailed | \
       PlanKeyVaultNetworkOrDnsFailed | \
+      PlanStorageDataPlaneReadFailed | \
       PlanApiReadFailed | \
       PlanIdentityOrRbacFailed | \
       PlanFailed) ;;
@@ -113,6 +114,14 @@ if ! az login \
   --output none >/dev/null 2>&1
 then
   fail "ManagedIdentityAuthenticationFailed"
+fi
+
+if ! az account get-access-token \
+  --subscription "$ARM_SUBSCRIPTION_ID" \
+  --resource https://management.azure.com/ \
+  --output none >/dev/null 2>&1
+then
+  fail "AzureCliTokenPreflightFailed"
 fi
 
 if ! tofu init \

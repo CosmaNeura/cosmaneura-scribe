@@ -78,6 +78,10 @@ def test_plan_error_classifier_emits_only_fixed_classes(tmp_path: Path) -> None:
         "PlanKeyVaultNetworkOrDnsFailed": (
             "azurerm_key_vault_key.audio: ForbiddenByFirewall status code 403 " + unsafe
         ),
+        "PlanStorageDataPlaneReadFailed": (
+            'retrieving Account "example" for Container "audio": '
+            "AuthorizationPermissionMismatch status code: 403 " + unsafe
+        ),
         "PlanApiReadFailed": ("Microsoft.App/containerApps/read AuthorizationFailed " + unsafe),
         "PlanIdentityOrRbacFailed": "AuthorizationFailed: caller is not authorized " + unsafe,
         "PlanFailed": "unrecognized provider failure " + unsafe,
@@ -108,6 +112,57 @@ def test_plan_error_classifier_precedence_is_fail_closed(tmp_path: Path) -> None
     assert result.returncode == 0
     assert result.stdout == "PlanKeyVaultNetworkOrDnsFailed\n"
     assert result.stderr == ""
+
+
+def test_plan_error_classifier_covers_aca_msi_api_failure(tmp_path: Path) -> None:
+    plan_log = tmp_path / "aca-msi.log"
+    plan_log.write_text(
+        "UnsupportedApiVersion: could not acquire access token "
+        "https://unsafe.example.invalid body=private",
+        encoding="utf-8",
+    )
+
+    result = _run("classify-plan-error", str(plan_log))
+
+    assert result.returncode == 0
+    assert result.stdout == "PlanIdentityOrRbacFailed\n"
+    assert result.stderr == ""
+    assert "unsafe" not in result.stdout
+
+
+def test_plan_error_classifier_covers_aca_identity_header_failure(tmp_path: Path) -> None:
+    plan_log = tmp_path / "aca-header.log"
+    plan_log.write_text(
+        "ManagedIdentityAuthorizer received HTTP status 403 "
+        "https://unsafe.example.invalid body=private",
+        encoding="utf-8",
+    )
+
+    result = _run("classify-plan-error", str(plan_log))
+
+    assert result.returncode == 0
+    assert result.stdout == "PlanIdentityOrRbacFailed\n"
+    assert result.stderr == ""
+    assert "unsafe" not in result.stdout
+
+
+def test_plan_error_classifier_covers_storage_timeout_without_leaking_detail(
+    tmp_path: Path,
+) -> None:
+    plan_log = tmp_path / "storage-timeout.log"
+    plan_log.write_text(
+        'azurerm_storage_container.audio retrieving Account "secret" for Container "audio": '
+        "operation timed out https://unsafe.example.invalid",
+        encoding="utf-8",
+    )
+
+    result = _run("classify-plan-error", str(plan_log))
+
+    assert result.returncode == 0
+    assert result.stdout == "PlanStorageDataPlaneReadFailed\n"
+    assert result.stderr == ""
+    assert "secret" not in result.stdout
+    assert "unsafe" not in result.stdout
 
 
 def test_plan_error_classifier_uses_only_the_bounded_tail(tmp_path: Path) -> None:
