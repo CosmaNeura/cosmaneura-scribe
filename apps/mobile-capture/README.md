@@ -1,8 +1,15 @@
-# Scribe mobile capture
+# Transitional Scribe mobile-capture planning stub
 
-P1b is a dedicated React Native application for iOS and Android, delivered through signed native
-builds rather than a webview wrapper. It shares TypeScript contracts and visual tokens with web,
-while native modules own audio capture, background execution, secure storage, and network recovery.
+This directory does not contain an application. Phase 2 will fold these P1b requirements into the
+single Capacitor source tree at `apps/capture/`, then remove this stub. It must not become a
+separate React Native client.
+
+The native profiles are signed Capacitor iOS and Android shells. Every authenticated API/control
+operation goes through the master platform BFF, and the profiles consume the same generated
+capture-protocol package as the PWA. WebCrypto runs the protocol while a key is active in the
+packaged first-party webview; native modules own raw-PCM audio capture, background execution, OS
+secure storage, and network recovery. Device-bound Keychain/Keystore wrapping must not be described
+as hardware-backed without platform-specific proof.
 
 Acceptance requirements include:
 

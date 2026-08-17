@@ -38,10 +38,12 @@ the expected answer; report blockers as specific asks. Additions for this workst
     must consume the generated/pinned protocol package. Re-implementing envelope framing, AAD
     encoding, JSON ordering, enums, or limits by hand in the client is rejected — ADR 0016 says so
     explicitly.
-12. **No lossy audio, no format guessing.** The server assembler accepts uncompressed WAV
-    (PCM16 mono 16 kHz for in-person capture) and rejects everything else. If no maintained
-    Capacitor plugin yields chunked raw PCM, write a small custom Capacitor plugin (Swift/Kotlin)
-    rather than adopting an unmaintained plugin or transcoding AAC into WAV.
+12. **No lossy audio, no format guessing.** Phase 0 confirmed that the current server assembler
+    accepts uncompressed WAV and enforces consistency across chunks, but does not yet enforce mono,
+    16-bit samples, or 16 kHz. Phase 1 must make PCM16 mono 16 kHz authoritative in the capability
+    contract and enforce it before client implementation. If no maintained Capacitor plugin yields
+    chunked raw PCM, write a small custom Capacitor plugin (Swift/Kotlin) rather than adopting an
+    unmaintained plugin or relabeling lossy audio as WAV.
 13. **Each phase is one PR with all gates green** — the full Python suite with PostgreSQL, ruff,
     pyright, the three guard scripts, OpenAPI parity, `tofu fmt`/`validate`, and (from Phase 2) the
     new TypeScript lint/test/build gates. Do not start phase N+1 in phase N's PR.
@@ -81,11 +83,11 @@ sufficient for offline recovery." Build the contract ADR 0016 specifies, flags f
    reservation window, upload concurrency. Clients hard-code none of these.
 5. **The capture-lease**: short-lived (15-minute default per ADR 0016's accepted defaults),
    renewable only through revalidation, required before recording starts.
-6. **One versioned capture-protocol source.** Promote `encode_envelope` and the AAD encoders into a
-   versioned protocol module that yields the Python implementation and a generated/pinned TypeScript
-   implementation, with **cross-language golden vectors** committed and tested on both sides. If full
-   code generation is disproportionate, a single spec + two thin implementations is acceptable only
-   with the vectors pinning both; propose which in the ADR and say why.
+6. **One versioned capture-protocol source.** Promote `encode_envelope` and the client AAD encoder
+   into a versioned protocol module that yields the Python implementation and a generated/pinned
+   TypeScript implementation, with **cross-language golden vectors** committed and tested on both
+   sides. Independently maintained thin implementations are not an allowed fallback. The
+   server-only `track_additional_data` encoder is not part of the client package.
 
 Every mutation gets HTTP-level PostgreSQL/RLS tests and a cross-process idempotent-retry test, per
 the existing harness. Migrations reversible. OpenAPI regenerated.

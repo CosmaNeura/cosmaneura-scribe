@@ -7,6 +7,7 @@ locals {
   }[var.environment]
   container_app_name   = "cosmaneura-scribe-${local.environment_short}-api"
   audio_container_name = "audio"
+  audio_key_name       = "session-audio-wrapping"
   speech_account_name  = "cosmaneura-scribe-${local.environment_short}-speech"
   resource_group_name = var.create_resource_group ? (
     azurerm_resource_group.scribe[0].name
@@ -20,6 +21,10 @@ locals {
   tags = merge(var.tags, {
     environment = var.environment
   })
+}
+
+locals {
+  audio_key_versionless_resource_id = "${azurerm_key_vault.scribe.id}/keys/${local.audio_key_name}"
 }
 
 resource "azurerm_resource_group" "scribe" {
@@ -98,7 +103,7 @@ resource "azurerm_key_vault" "scribe" {
 }
 
 resource "azurerm_key_vault_key" "audio" {
-  name         = "session-audio-wrapping"
+  name         = local.audio_key_name
   key_vault_id = azurerm_key_vault.scribe.id
   key_type     = "RSA"
   key_size     = 3072
@@ -173,9 +178,15 @@ resource "azurerm_role_assignment" "runtime_audio" {
 }
 
 resource "azurerm_role_assignment" "runtime_audio_key_reader" {
-  scope                            = azurerm_key_vault_key.audio.resource_id
+  scope                            = local.audio_key_versionless_resource_id
   role_definition_id               = "/subscriptions/${var.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/21090545-7ca7-4776-b22c-e363652d74d2"
   principal_id                     = azurerm_user_assigned_identity.runtime.principal_id
   principal_type                   = "ServicePrincipal"
   skip_service_principal_aad_check = true
+
+  lifecycle {
+    # This flag is a create-time AAD propagation bypass, not an Azure role property.
+    # Imported assignments read it as null and AzureRM does not support updating it.
+    ignore_changes = [skip_service_principal_aad_check]
+  }
 }

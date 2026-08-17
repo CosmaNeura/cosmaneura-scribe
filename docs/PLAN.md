@@ -10,10 +10,12 @@ stay in the existing Cosmaneura engine.
 
 1. **P0 pipeline:** consent, private Blob ingestion, orchestration, pluggable STT, role labeling,
    quality gates, and note-engine handoff behind the current upload UX.
-2. **P1a web capture:** responsive browser/PWA capture for computers and exam-room tablets with
-   VAD, encrypted chunks, foreground reconnect/resume, and review.
-3. **P1b mobile capture:** dedicated React Native iOS/Android application with native audio,
-   background/lock handling, encrypted offline queue/resume, local purge, and review.
+2. **P1a web capture profile:** the `apps/capture/` Capacitor source tree delivered as a responsive
+   browser/PWA experience for computers and exam-room tablets, with a tested foreground raw-PCM
+   adapter, VAD, encrypted chunks, reconnect/resume, and review.
+3. **P1b native capture profiles:** the same `apps/capture/` source tree delivered as signed
+   iOS/Android shells, with native raw-PCM audio, secure storage, background/lock handling,
+   encrypted offline queue/resume, local purge, and platform-specific acceptance evidence.
 4. **P2 virtual:** Tauri macOS/Windows companion with separate microphone and system-audio channels.
 5. **P3 phone:** Azure Communication Services consent IVR and recording.
 6. **P4 real-time:** streaming STT and draft notes within 60 seconds of visit end.
@@ -50,8 +52,11 @@ stay in the existing Cosmaneura engine.
    test.
 5. Provision the dedicated private Azure Speech resource and run the two-case synthetic live
    round-trip before activating the already defined manual transcription job.
-6. Build P1a web capture first, then P1b mobile capture as a dedicated iOS/Android application;
-   neither is a thin wrapper around the other.
+6. After the server protocol and private acceptance gates pass, scaffold the single Capacitor
+   companion at `apps/capture/` and fold the `apps/web-capture` and `apps/mobile-capture` planning
+   stubs into it. Deliver the P1a PWA and P1b native profiles from that source tree, with all
+   authenticated API/control operations routed through the master platform BFF, without collapsing
+   their distinct custody and acceptance requirements.
 
 ## Required external decisions
 

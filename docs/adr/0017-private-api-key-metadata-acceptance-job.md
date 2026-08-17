@@ -118,3 +118,28 @@ check is readiness; the authenticated probe stays single-attempt so its result r
 - Existing inherited subscription authority is not narrowed by this stack. The short deployment
   window, exact operator record, no-override execution, Activity Log proof, and immediate removal
   are mandatory compensating controls.
+
+## Follow-up correction: versionless reader scope
+
+The first governed live probe reached the API but returned HTTP 503 because Key Vault denied the
+API's `keyget`. Terraform had placed the read-only **Key Vault Reader** assignment on one versioned
+key resource while application configuration correctly used the versionless key URI. Reading the
+versionless public-JWK metadata therefore fell outside the assigned scope. Crypto User, Crypto
+Officer, and unwrap permission are neither required nor authorized.
+
+The permanent runtime assignment is corrected to the explicit versionless ARM resource
+`<vault-resource-id>/keys/session-audio-wrapping`, using the same Reader role and runtime principal.
+That scope is derived from the vault ARM ID and one authoritative key-name local; it deliberately
+does not reference the Key Vault data-plane key resource. This keeps the repair target graph on the
+ARM control plane after the wrapping key is already proven to exist. A fresh environment must still
+stage and prove private key creation before applying this assignment.
+
+Because the broad private Terraform runner and all of its temporary authority were removed, this
+follow-up does not recreate them by default. An external operator uses a refresh-enabled saved plan
+targeted only at the Reader replacement, dormant acceptance job, and its temporary exact-registry
+`AcrPull`. After independent plan review, apply, and RBAC propagation, a second saved plan may only
+open the acceptance job's two gates. The same no-override operator then runs exactly one execution.
+Pass or fail, the gates close immediately and a final saved plan deletes the job and `AcrPull`.
+Every run gets a post-run state check; a stale or partial plan artifact is never reused. Recreating
+the private Terraform runner is a separately reviewed fallback only if the external ARM-only plan
+is demonstrably unavailable.

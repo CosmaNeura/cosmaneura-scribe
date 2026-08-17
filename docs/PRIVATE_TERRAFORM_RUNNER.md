@@ -439,3 +439,36 @@ template update. Confirm no execution remains active. Phase A above must then se
 its temporary `AcrPull` while revoking the Terraform runner's seven enabled assignments, custom role,
 and temporary NSG rules. The external platform identity and app-role assignment remain. No generic
 job-start role is authorized by this runbook.
+
+## Post-teardown versionless-reader follow-up
+
+The 2026-08-17 acceptance run proved readiness and Entra authorization but exposed a narrower
+Key Vault scope defect: the API was configured with the versionless wrapping-key URI while its
+read-only `Key Vault Reader` assignment was attached to one key version. The original private
+Terraform runner, its eight assignments, custom state role, and two temporary NSG rules are now
+absent and remain absent throughout this follow-up.
+
+Use an external operator and saved, refresh-enabled plans. Keep
+`deploy_private_terraform_runner = false` and `enable_private_terraform_runner = false`. The first
+plan may only replace `runtime_audio_key_reader` with the same role and principal at the explicit
+versionless ARM key scope, and create the acceptance job dormant plus its exact-registry `AcrPull`.
+The expected logical boundary is three creates and one destroy: replacement role create/destroy,
+job create, and `AcrPull` create. The wrapping key, API, NSG, runner resources, every other role,
+and every product feature must be no-op.
+
+Protect a fresh state snapshot and confirm the plan's lineage and serial immediately before apply.
+After applying, prove the old version-specific assignment is absent, the new scope ends exactly in
+`/keys/session-audio-wrapping`, and the API runtime principal has no Crypto role. The separate
+transcription-worker identity and its existing unwrap permission are outside this follow-up. Wait
+for propagation. A second saved plan may update only the job to open its enablement and invocation
+gates. Read back the exact immutable digest, identity, command, environment, manual trigger,
+300-second job timeout, and zero retry; then run once with no start-time override and apply the same
+acceptance rules above.
+
+Close both gates immediately after the terminal result. A final saved plan must destroy only the
+acceptance job and its temporary `AcrPull`; the versionless Reader remains as the API's permanent
+least-privilege metadata permission. Confirm plan/manifest objects are absent, the backend lineage
+is unchanged, all runner resources and temporary NSG rules remain absent, and the platform identity
+has no Scribe-side Azure role. A failed plan may still refresh-write state, and plan/manifest
+publication is not atomic, so every attempt requires a post-run state check; any partial artifact
+is deleted by exact object name and the next attempt uses a new unique name.
