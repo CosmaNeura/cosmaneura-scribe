@@ -20,22 +20,38 @@ phone size (390×844), plus one tablet artboard for the exam-room kiosk case.
 
 ## Who this is for (do not design for a generic "doctor")
 
-The customer is a faith-driven private practice or small telehealth network physician — the
-concrete reference customer is a ~300-provider Catholic telehealth network:
+The product is **Cosmas** by CosmaNeura. Brand line: *"AI that gives Catholic doctors their time
+back without compromising their mission."* The beachhead customer is a Catholic physician in
+independent private practice; the concrete reference customer is a ~300-provider Catholic
+telehealth network.
 
-- They practice across specialties, mostly **telehealth video visits**, some in-person. They are
-  not tech-forward; the app must feel as simple as a phone call.
-- Their unpaid evenings are spent on documentation. Notes must be completed within **24–48 hours**
-  or the visit isn't billable. Missing structured facts — visit length, place of service, patient
-  location, consent confirmation — are the top reason notes fail billing review.
-- They are mission-driven and relationship-centered: the visit is a personal, often pastoral
-  encounter. Anything that makes the patient feel surveilled or the physician feel like a data
-  clerk is a design failure. Tone: calm, warm, reverent of the encounter; never gamified, never
-  "AI-magic" flashy.
-- Trust is the product. Consent, recording state, and "where is my audio going" must always be
-  legible at a glance. This differentiates us from the EHR vendor's built-in ambient AI
-  (athenahealth is shipping one): we are the scribe that respects the encounter and the
-  physician's conscience.
+Design persona — **Dr. Maria Lopez**: 38, solo family-medicine physician for 8 years, married,
+two young kids. Her day: 1 hr chart review, 6 hrs patient visits, 2 hrs admin — plus another hour
+of notes at home in the evening ("pajama time"). Her stated fears: burnout from documentation
+burden, falling behind AI-enabled competitors, financial instability of independent practice, and
+*"being forced to compromise Catholic values by generic AI tools."* Her priorities rank patient
+care and work-life balance far above tooling.
+
+What that means for the design:
+
+- Mostly **telehealth video visits**, some in-person. Not tech-forward; the app must feel as
+  simple as a phone call. The office manager is the adoption champion — "simple onboarding,
+  minimal training" is a buying criterion, and physicians self-evaluate the product in a 2-week
+  trial during real visits, so the first-run experience must succeed with zero training.
+- Notes must be completed within **24–48 hours** or the visit isn't billable. Missing structured
+  facts — visit length, place of service, patient location, consent confirmation — are the top
+  reason notes fail billing review. Physicians lose ~$125K/yr to undercoding "because rushing
+  through notes"; the capture app's job is making complete capture effortless.
+- Mission-driven and relationship-centered: the visit is a personal, often pastoral encounter.
+  Anything that makes the patient feel surveilled or the physician feel like a data clerk is a
+  design failure. Tone: calm, warm, reverent of the encounter; never gamified, never "AI-magic"
+  flashy. The company's own competitive frame: *"Values alignment is a selection criterion, not a
+  feature."*
+- Trust is the product. Their top adoption concerns are note accuracy, workflow disruption, and
+  data privacy — so consent, recording state, and "where is my audio going" must always be
+  legible at a glance. This differentiates Cosmas from generic scribes (Freed, Heidi, DeepScribe,
+  Abridge, Nuance DAX) and from the EHR vendor's built-in ambient AI (athenahealth is shipping
+  one): we are the scribe that respects the encounter and the physician's conscience.
 
 ## What the app actually does (fixed scope — do not invent features)
 
@@ -81,10 +97,10 @@ Cosmaneura platform, not here. Screens to design, in order:
 - **One-hand, glanceable, interruptible.** Physicians tap between patients, in hallways, mid-call.
   Primary actions bottom-third, large targets, no nested menus on the critical path.
 - **Visual language:** unhurried and clinical-calm — generous whitespace, a warm neutral base
-  with one deep accent (Cosmaneura brand if available; otherwise a deep teal/navy), humanist
-  sans, soft depth, no glassmorphism, no consumer-health cheerfulness. It should feel like a
-  well-made instrument, closer to a stethoscope than a startup app. Both light and dark (dark
-  matters for dim exam rooms and evening use).
+  with one deep accent (Cosmas/CosmaNeura brand if available; otherwise a deep teal/navy),
+  humanist sans, soft depth, no glassmorphism, no consumer-health cheerfulness. It should feel
+  like a well-made instrument, closer to a stethoscope than a startup app. Both light and dark
+  (dark matters for dim exam rooms and for Dr. Lopez's evening "pajama time" review).
 - **States are the design.** For every screen, the loading / offline / error / empty states are
   first-class artboards or callouts, not afterthoughts — Codex will build exactly what's drawn.
 - Annotate each artboard with a short label naming the screen and state (e.g. "Recording —
