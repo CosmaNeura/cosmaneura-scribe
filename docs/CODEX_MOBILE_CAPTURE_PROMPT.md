@@ -54,22 +54,14 @@ the expected answer; report blockers as specific asks. Additions for this workst
    mobile workstream does not start while vault Crypto Officer sits on a wedged runner.
 2. Read `CLAUDE.md`, ADRs 0009, 0011, 0012, 0013, 0016, `docs/TRANSCRIPTION_WORKER.md`, and the
    envelope/AAD functions in `audio_assembly.py`. Do not modify existing behavior in this phase.
-3. Write **ADR 0018: Capacitor supersedes the React Native decision in ADR 0009**. It must record,
-   honestly:
-   - The reason: one TypeScript codebase for P1a web/PWA and P1b native shells, sharing the
-     generated protocol package — collapsing two client builds into one.
-   - **The custody model change.** ADR 0016 assumed native mobile crypto in native modules backed by
-     Keychain/Keystore. In Capacitor, the DEK lives in WebCrypto inside a first-party-only webview
-     (`capacitor://localhost`, no third-party script), with the at-rest wrapping key in
-     Keychain/Keystore via a native secure-storage plugin, cloud backup disabled. State plainly that
-     this is stronger than general web custody and weaker than pure-native custody, and that
-     ADR 0009's "the mobile app is not a webview" sentence is superseded.
-   - What survives from ADR 0009 unchanged: platform-specific acceptance tests for background/lock/
-     route changes, signed builds, encrypted offline queue, local purge, and no PHI in analytics,
-     crash reporting, or notifications.
-4. Decide and record where the app lives — recommend `apps/capture/` in this repository, since the
-   golden vectors and generated protocol package live here and the existing `apps/` stubs already
-   mark the boundary. Fold the `apps/web-capture` and `apps/mobile-capture` README stubs into it.
+3. **ADR 0018 already exists** (`docs/adr/0018-capacitor-capture-companion.md`): it records the
+   Capacitor decision, the honest custody-model change (WebCrypto in a first-party-only webview,
+   at-rest key in Keychain/Keystore, stronger than general web and weaker than pure-native), what
+   survives from ADR 0009, and the app location. Read it. Verify during your exploration that its
+   claims hold against the codebase; extend it rather than rewriting, and report anything it gets
+   wrong as a finding rather than silently diverging.
+4. The app location is decided in ADR 0018: `apps/capture/` in this repository. Fold the
+   `apps/web-capture` and `apps/mobile-capture` README stubs into it during Phase 2.
 
 ## Phase 1 — Server prerequisites (ADR 0016 rollout step 2; this repo, Python)
 

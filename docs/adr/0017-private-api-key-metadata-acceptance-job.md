@@ -42,12 +42,43 @@ requires HTTP 200 and the exact `AudioEncryptionPublicKey` schema, and proves RS
 emits one constant metadata record containing only status, key type, algorithm, size, operations,
 version presence, and duration. Failures emit only fixed classes.
 
-The application `Settings` model is the single authority for a 60-second HTTP timeout, which is
-also its enforced maximum. Terraform does not duplicate it as a job environment value. This budget
-covers one scale-to-zero API cold start within the job's separate 300-second execution timeout; it
-does not add an application retry, and the Container Apps Job retry limit remains zero. The earlier
-15-second budget expired while Container Apps was still pulling and starting the API replica, with
-zero requests reaching the API.
+The application `Settings` model is the single authority for the probe's HTTP timeout, which is
+also its enforced maximum. Terraform does not duplicate it as a job environment value. The
+Container Apps Job retry limit remains zero and the authenticated probe gains no retry.
+
+**Correction (2026-08-17).** This ADR originally claimed the 60-second budget "covers one
+scale-to-zero API cold start." A live execution disproved that: Container Apps internal ingress
+answered with a non-200 before any replica existed, while API request metrics stayed at zero. The
+earlier 15-second budget had already expired during image pull and start with zero requests
+reaching the API. A gateway that answers early with an error cannot be outwaited, so no client
+timeout value covers cold start. The two-phase contract below replaces that assumption.
+
+## Amendment (2026-08-17): two-phase acceptance contract
+
+Acceptance is split into two phases so cold start is handled where it occurs — the platform — while
+the thing under test keeps its zero-retry proof.
+
+1. **Readiness phase.** Bounded polling of the unauthenticated, ops-open `/healthz` route.
+   Ingress-layer non-200 responses and transport errors count as "not ready yet," never as
+   acceptance failures. Readiness requires two consecutive 200 responses. The poll interval and a
+   hard overall deadline are pinned in `Settings` as the single authority (suggested: 240 seconds
+   of polling inside the job's 300-second execution budget). Exhausting the deadline emits its own
+   fixed failure code, distinct from every probe failure class. The readiness result records only
+   poll count and elapsed milliseconds as numbers.
+2. **Probe phase.** The authenticated `GET /v1/audio-encryption-key` request, exactly as specified
+   above: single attempt, no retry, unchanged response validation and failure classification. If
+   readiness passed and the probe fails, that is a real finding about the thing under test.
+
+A prewarm or minimum-replica window was considered and rejected: scale-to-zero is the deployed
+configuration, so acceptance must test that shape rather than a prewarmed one production does not
+run; a prewarm would mutate the API's scaling through Terraform and require a revert apply; and the
+zero-retry principle exists to keep failures of the thing under test unmasked — cold-start ingress
+behavior is the platform, not the thing under test. Retrying the unauthenticated health poll is
+readiness; the authenticated probe stays single-attempt so its result remains unambiguous.
+
+Status of this amendment: decision accepted; implementation pending. The runner change, its
+Settings-pinned constants, tests, and the structured readiness events land with the implementing
+commit.
 
 ## Rollout and removal
 

@@ -40,10 +40,12 @@ The new contract has two phases:
    **single attempt, no retry, unchanged classification.** If readiness passed and the probe fails,
    that is a real finding about the thing under test.
 
-Amend ADR 0017 in the same change: record the two-phase contract, correct the disproven
-cold-start-coverage claim, and state why prewarm was rejected. Emit distinct fixed structured events
-for readiness-started, readiness-succeeded (with poll count and elapsed time as numbers), and
-readiness-deadline-exhausted. No URL, endpoint, or DNS answer in any of them.
+ADR 0017 has already been amended to record this decision — the amendment corrects the disproven
+cold-start-coverage claim, specifies both phases, and states why prewarm was rejected. Read it and
+implement to it; extend the amendment only if implementation reveals a gap, and say what changed.
+Emit distinct fixed structured events for readiness-started, readiness-succeeded (with poll count
+and elapsed time as numbers), and readiness-deadline-exhausted. No URL, endpoint, or DNS answer in
+any of them.
 
 ## Standing rules — unchanged, plus one
 

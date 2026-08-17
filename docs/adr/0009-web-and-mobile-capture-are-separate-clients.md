@@ -1,6 +1,9 @@
 # ADR 0009: Web and mobile capture are separate first-class clients
 
-**Status:** Accepted
+**Status:** Accepted; superseded in part by ADR 0018 (2026-08-17) — the React Native framework
+choice and the "the mobile app is not a webview" constraint are replaced by a single Capacitor
+codebase. The custody, acceptance-testing, offline-queue, purge, and no-PHI-in-telemetry
+requirements in this ADR remain binding.
 
 ## Decision
 
