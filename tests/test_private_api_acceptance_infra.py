@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 JOB = ROOT / "infra" / "private_api_acceptance_job.tf"
 RUNNER = ROOT / "infra" / "private_terraform_runner.tf"
 RUN_SCRIPT = ROOT / "infra" / "runner" / "run.sh"
+MAIN = ROOT / "infra" / "main.tf"
 
 
 def test_job_is_manual_digest_pinned_bounded_and_false_by_default() -> None:
@@ -64,6 +65,35 @@ def test_only_temporary_acr_pull_is_granted_and_no_key_vault_role_exists() -> No
         "Contributor",
     ):
         assert forbidden not in configuration
+
+
+def test_runtime_reader_uses_the_versionless_wrapping_key_scope() -> None:
+    configuration = MAIN.read_text(encoding="utf-8")
+
+    assert re.search(
+        r'audio_key_name\s*=\s*"session-audio-wrapping"',
+        configuration,
+    )
+    assert (
+        'audio_key_versionless_resource_id = "${azurerm_key_vault.scribe.id}/keys/'
+        '${local.audio_key_name}"' in configuration
+    )
+    assert "name         = local.audio_key_name" in configuration
+
+    role = configuration.split(
+        'resource "azurerm_role_assignment" "runtime_audio_key_reader" {',
+        maxsplit=1,
+    )[1].split("}\n", maxsplit=1)[0]
+    assert "scope                            = local.audio_key_versionless_resource_id" in role
+    assert "azurerm_key_vault_key.audio.resource_id" not in role
+    assert "azurerm_key_vault_key.audio" not in role
+    assert "/versions/" not in role
+    assert "21090545-7ca7-4776-b22c-e363652d74d2" in role
+    assert (
+        "principal_id                     = "
+        "azurerm_user_assigned_identity.runtime.principal_id" in role
+    )
+    assert "Crypto" not in role
 
 
 def test_runtime_receives_only_gates_and_derived_nonsecret_inputs() -> None:

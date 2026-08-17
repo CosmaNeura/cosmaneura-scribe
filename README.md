@@ -74,20 +74,26 @@ Calls in the opposite direction—from the master platform into Scribe—use a s
 allowed to supply practice-tenant context. Follow
 [`docs/PLATFORM_WORKFLOW_AUTH.md`](docs/PLATFORM_WORKFLOW_AUTH.md) for the rollout.
 
-## Capture clients
+## Capture companion
 
-Web and mobile capture are separate P1 applications sharing one generated API client and encrypted
-chunk protocol. The responsive web application targets foreground capture on computers and exam
-room tablets. The React Native iOS/Android application adds native background/lock handling,
-encrypted offline queuing, reconnect/resume, and local purge. The desktop companion remains P2 and
-owns dual-channel microphone/system-audio capture for virtual visits.
+The planned P1 recording companion is one Capacitor application at `apps/capture/`. One TypeScript
+source tree will ship as a foreground browser/PWA experience for computers and exam-room tablets
+and as signed iOS/Android shells with native audio, secure storage, background/lock handling,
+encrypted offline queuing, reconnect/resume, and local purge. Each platform keeps its own custody
+promises and acceptance evidence.
 
-The current client boundaries are in `apps/web-capture`, `apps/mobile-capture`,
-`apps/review-ui`, and `apps/desktop-companion`.
+Every authenticated API and control operation goes through the master platform BFF; only immutable
+ciphertext uses the separately governed ADR 0016 upload edge. The companion does not receive a
+Scribe workload token, trust client-supplied tenant context, or call the private Scribe API
+directly. The existing `apps/web-capture` and `apps/mobile-capture` directories are planning stubs;
+Phase 2 will fold their requirements into `apps/capture/` rather than create separate applications.
+`apps/review-ui` and the P2 `apps/desktop-companion` remain separate boundaries.
 
 The proposed authenticated key, encrypted upload, offline recovery, and private Blob edge path is
 documented in
 [`docs/adr/0016-authenticated-private-client-capture-path.md`](docs/adr/0016-authenticated-private-client-capture-path.md).
+The single-codebase decision and its distinct PWA/native custody profiles are recorded in
+[`docs/adr/0018-capacitor-capture-companion.md`](docs/adr/0018-capacitor-capture-companion.md).
 
 The transcription worker orchestration and inactive encrypted Blob assembly boundary are documented
 in [`docs/TRANSCRIPTION_WORKER.md`](docs/TRANSCRIPTION_WORKER.md).

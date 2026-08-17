@@ -262,3 +262,11 @@ and verify the effective execution template and Activity Log. Close the gates, t
 and its temporary `AcrPull` in the same Phase A plan that revokes the temporary Terraform roles and
 NSG rules. Follow ADR 0017 and the API-route section of
 [`../docs/PRIVATE_TERRAFORM_RUNNER.md`](../docs/PRIVATE_TERRAFORM_RUNNER.md).
+
+After that runner teardown, the versionless Key Vault Reader correction uses the external
+saved-plan follow-up documented in the same runbook. It does not recreate the private Terraform
+runner: the only temporary resources are the dormant acceptance job and its exact-registry
+`AcrPull`; the permanent change is the same read-only role moved from one key version to the
+versionless key ARM scope. Crypto User/Officer on the API runtime principal, runner roles, and
+temporary NSG rules are forbidden; the transcription worker's separately scoped unwrap permission
+is unchanged.
