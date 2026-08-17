@@ -1,124 +1,123 @@
 # Prompt to push to Codex
 
-Revised 2026-08-17 against `main` at `8546a41`, after PRs #5–#20 merged. Paste everything between
-the rules. It replaces the standing operating instructions, not `CLAUDE.md` — `CLAUDE.md`'s hard
-rules still bind.
+Written 2026-08-17 against `main` at `7423f7f` and your pause-point status report. Paste everything
+between the rules. It replaces the standing operating instructions, not `CLAUDE.md` — `CLAUDE.md`'s
+hard rules still bind.
 
 ---
 
-Every finding from six reviews is closed. More importantly, the two most valuable things this round
-were found by probing the platform rather than by reading code: the missing `azure-core[aio]`
-transport, which would have failed every async Azure call at runtime while all 297 tests passed, and
-the proof that `az containerapp job start --args` does not merge into the deployed container. Both
-were invisible to the test suite because every test uses a fake client.
+Your status report was verified against the repository and is accurate on every claim checkable from
+here. The response pattern through the two failed live checks was exactly right: you did not widen a
+gate, did not bolt a retry onto the authenticated probe to force a pass, reported both failures with
+metrics, and escalated the blocker as a decision instead of routing around it. PR #23's commit body
+saying plainly "the authenticated live retry remains unverified" is the standard — keep it.
 
-Your response to the second one was the right one — you removed the clinical start command instead of
-guessing at a patched version, said so in the runbook, and then propagated the lesson so that every
-job start in the repository now runs with no overrides. Keep doing exactly that.
+One correction to the record: ADR 0017 wrote "the 60-second timeout covers one scale-to-zero API
+cold start," and your second live check disproved that within hours. The ingress rejected the
+request before the API saw it, with API request metrics at zero. Timeout was never the axis — a
+gateway that answers early with an error cannot be outwaited. The amendment below fixes the ADR.
 
-One correction to your own record: three commits noted that PostgreSQL was unavailable locally,
-including the delivery claim fencing fix. I ran those 23 tests against a real PostgreSQL 16 and they
-all pass.
+## The decision you asked for
 
-## Standing rules for this and every following round
+**Change the acceptance readiness contract. Do not add a prewarm/minimum-replica window.**
 
-1. **Fix before you extend.** A known reproducible defect outranks any new slice.
-2. **A slice is not done until the behavior is proven on the path that runs in Azure.**
-3. **Never introduce a second definition of a rule.**
-4. **No unhandled exception may reach a client.**
-5. **Assume every request is a retry, and that the previous attempt hit a different process.**
-6. **A README "What works now" bullet means a user can do the thing.**
-7. **When you cannot verify something, say so** in the commit body and in your reply.
-8. **Report blockers instead of routing around them.**
-9. **An assumption about an Azure role, API, or CLI flag is not verified until something real
-   returned the expected answer.** This rule has now paid for itself twice. Extend it: when a probe
-   disproves an assumption, check whether the same assumption appears anywhere else in the
-   repository before moving on — as you did with the job-start overrides.
+Reasons, so the ADR amendment can record them: scale-to-zero is the deployed configuration and any
+real caller must tolerate cold start, so acceptance should test that shape rather than a prewarmed
+one production does not run; a prewarm window would mutate the API's scaling through a runner whose
+apply pins are currently `review-required` and would need a revert apply afterward; and the
+zero-retry principle survives intact, because it exists to keep failures of the thing under test
+unmasked — cold-start ingress behavior is the platform, not the thing under test.
 
-## The goal for this round
+The new contract has two phases:
 
-Transcribe one synthetic encounter end to end, in Azure, and record the evidence. Everything below
-exists to get there. Nothing new gets built until it works.
+1. **Readiness phase.** Bounded polling of `/healthz` — unauthenticated, ops-open by design.
+   Ingress-layer non-200s and transport errors count as "not ready yet," never as acceptance
+   failures. Require two consecutive 200s. Hard overall deadline that fits inside the job's
+   300-second execution budget (suggest 240 seconds of polling at a fixed interval; pick the
+   numbers deliberately and pin them in Settings and tests, as you did the 60-second timeout).
+   Exhausting the deadline is its own fixed failure code, distinct from probe failure.
+2. **Probe phase.** The authenticated `GET /v1/audio-encryption-key`, exactly as it is today:
+   **single attempt, no retry, unchanged classification.** If readiness passed and the probe fails,
+   that is a real finding about the thing under test.
 
-### 1. Wire-verify the corrected image
+Amend ADR 0017 in the same change: record the two-phase contract, correct the disproven
+cold-start-coverage claim, and state why prewarm was rejected. Emit distinct fixed structured events
+for readiness-started, readiness-succeeded (with poll count and elapsed time as numbers), and
+readiness-deadline-exhausted. No URL, endpoint, or DNS answer in any of them.
 
-`azure-core[aio]` is in the lock file but the corrected image "has not yet been deployed or
-wire-verified" — your words. Build it, deploy it, and prove managed-identity acquisition and one
-real Key Vault call succeed on the deployed revision. Paste the actual output.
+## Standing rules — unchanged, plus one
 
-While you are there, make the same live call that N-17 turned on: `GET /v1/audio-encryption-key`
-against the deployed API with only key-scoped Key Vault Reader assigned. If Reader turns out to be
-insufficient, say so and propose the narrowest role that works — do not widen to Crypto User, which
-would give the API unwrap permission.
+Rules 1–9 from the previous round stand as written. One addition:
 
-### 2. Build the operator start helper
+10. **A privileged grant outlives its justification the moment the work pauses.** Temporary
+    role assignments and NSG rules get a stated expiry tied to a milestone, and the expiry is
+    honored even when the milestone slips.
 
-Activation is blocked on it, and the runbook correctly refuses to publish a start command until it
-exists.
+## Work queue, in order
 
-It must submit a complete `--yaml` execution template that preserves the deployed worker's exact
-image, command, environment, CPU and memory, and volume mount, changing only the two positional
-tenant and session UUIDs. Do not let it construct a command by adding `--image` or `--command` to a
-partial override — omitted template fields can silently discard security-critical settings, which is
-the whole reason the direct command was withdrawn.
+### 1. Implement the two-phase acceptance contract
 
-Verify it against the dormant job first, where a disabled execution must still fail closed. Then
-document it, and only then set `enable_transcription_job = true`.
+As specified above. Local suite, guards, `tofu fmt`, `tofu validate` all green before the live run.
 
-### 3. Run the acceptance path
+### 2. Run the acceptance path live, once
 
-- Follow `SPEECH_PRIVATE_ACCEPTANCE.md`: provision the private Speech foundation, run the two-case
-  synthetic smoke job, and record the `speech_smoke.completed` event and both WER figures.
-- Then run one full synthetic encounter: consent, session, audio key, encrypted chunks, complete,
-  transcription job, transcript, and delivery. Paste the fixed structured events at each boundary.
-- Confirm no transcript text, name, DOB, blob name, object path, SAS URL, token, or DNS answer
-  appears anywhere in Container Apps or Log Analytics output for that run.
+- Re-enable the acceptance gates, run one execution, and capture the readiness metrics (poll count,
+  elapsed seconds) and the authenticated probe result.
+- This completes the Key Vault Reader / JWK proof that both failed checks left incomplete. If the
+  probe fails for a *role* reason, say so and propose the narrowest sufficient role — do not widen
+  to Crypto User, which would give the API unwrap permission.
+- Then set both gates false again.
 
-This is the first time the product will have done its job. Treat the evidence as the deliverable.
+### 3. Revoke the temporary runner privileges — this round, regardless of outcome
 
-### 4. Then implement retention
+The eight temporary assignments (including vault Crypto Officer and RBAC Administrator) and the two
+temporary NSG egress rules are the most privileged idle credential set in the estate, attached to a
+runner that currently cannot apply. Once step 2 has run — pass or fail — revoke them and remove the
+gated rules. Re-granting is a documented procedure now; holding them "until things resolve" is the
+pattern rule 10 exists to stop. If step 2 cannot run at all this round, revoke anyway and say so.
 
-ADR 0013 is accepted as design with enforcement disabled, and its reasoning is right — an
-unconditional Blob age rule cannot see a legal hold, an active session, a transcription lease, or a
-pending delivery. It is now the one P0 responsibility in `docs/PLAN.md` with no implementation.
+Also resolve or explicitly park the runner itself: the `review-required` apply pins mean it is
+deployed but unusable. Either repair the pin workflow behind its existing gates, or set
+`deploy_private_terraform_runner = false` until it is needed again. State which and why.
 
-Build it to that ADR, behind its own false-by-default flag, with erasure under a separate principal.
-Do not widen the API or worker identities to include `DELETE`. Cryptographic erasure of the
-`session_audio_keys` row is the primitive; make the ordering explicit for the case where audio is
-erased while a delivery receipt is still pending.
+### 4. Commit the evidence
 
-### Things not to do this round
+The protected change record under `/private/tmp/...` survives only as long as that machine does.
+The acceptance evidence is metadata-only by design — fixed events, hashes, state serials, no PHI.
+Commit a sanitized copy into the repository (suggest `docs/change-records/2026-08-16-private-api-acceptance/`
+with a short README), and state in it which artifacts were withheld and why. Terraform state serial
+48 and the staleness of all saved plans belong in that record too.
 
-- Do not start the capture clients. ADR 0016 defines the path; implementation waits until an
-  encounter has been transcribed end to end.
-- Do not add environments, regions, or peering.
-- Do not add another dormant component. Three are already implemented and gated; finish activating
-  one before adding a fourth.
-- Do not mark `docs/PLAN.md` items complete. Report status in your reply; I will update the plan.
-- Do not touch the credential model, RLS policies, staged-flag structure, the leased worker design,
-  the canonicalizer, the test harness, the audio key custody design, or the NSG rules. They are right.
+### 5. The master-platform side
 
-### One thing to write down outside the code
+Draft PR #121 (`51bfb997`) in the master repository was not reviewed here — this session has no
+access to that repo. Report its CI outcome, and confirm the timeout alignment does not import the
+same disproven assumption: if the master's client also fronts a scale-to-zero Container App, its
+contract needs the same readiness/probe split, not just a longer timeout. Say whether it does.
 
-The security model now rests on who holds ARM start permission for three jobs — the transcription
-worker, the Speech smoke job, and the Terraform runner. Each is code-execution authority under a
-privileged identity, and this repository correctly grants none of it. Say so wherever those grants
-are actually administered, not only in `PRIVATE_TERRAFORM_RUNNER.md`. If that place does not exist
-yet, tell me and I will create it.
+## Things not to do this round
 
-### Report back with
+- Do not add a prewarm or minimum-replica change to the API. The decision above is the decision.
+- Do not add retries to the authenticated probe, the transcription job, or the reconciler.
+- Do not start the capture clients or add environments, regions, or peering.
+- Do not add another dormant component; the acceptance path is the one being finished.
+- Do not touch the credential model, RLS policies, staged flags, worker design, canonicalizer, test
+  harness, audio key custody, or NSG deny-all structure. They are right.
 
-1. Every command you ran and its actual output — `pytest` with the PostgreSQL-backed runs, `ruff`,
-   `pyright`, the three guard scripts, `generate_openapi`, `tofu fmt -check`, `tofu validate`,
-   `tofu plan`.
-2. For section 1: the deployed-revision probe output and the live `GET /v1/audio-encryption-key`
-   response.
-3. For section 3: the structured events from the synthetic encounter, and the log search you ran to
-   confirm no PHI appears.
-4. Anything you did not complete, and precisely why.
-5. Every decision you need from me, phrased as a specific question with the options and your
+## Report back with
+
+1. Every command you ran and its actual output — the full local gate set, plus the live acceptance
+   execution's structured events with the readiness poll count and elapsed time.
+2. The live authenticated probe result — the JWK metadata response shape (no key material beyond
+   the public modulus it already returns) or the exact failure classification.
+3. Confirmation, with the role-assignment listing, that the temporary grants and NSG rules are gone.
+4. The committed change-record path.
+5. PR #121 status and the readiness-assumption answer for the master side.
+6. Anything you did not complete, and precisely why.
+7. Every decision you need from me, phrased as a specific question with options and your
    recommendation.
 
 ---
 
-Supporting evidence and file-level detail: [`CODEX_BACKEND_REVIEW.md`](CODEX_BACKEND_REVIEW.md).
+Supporting evidence and file-level detail: [`CODEX_BACKEND_REVIEW.md`](CODEX_BACKEND_REVIEW.md),
+section 10.

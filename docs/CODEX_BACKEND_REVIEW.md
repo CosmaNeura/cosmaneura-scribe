@@ -7,7 +7,8 @@
 | Third — 2026-08-15 | `main` at `4f11b94` | All 8 defects fixed and verified. 5 new findings, none blocking. |
 | Fourth — 2026-08-15 | `main` at `d57d721` | Audio key custody and the production assembler. Strongest work in the series. 6 new findings, none blocking. |
 | Fifth — 2026-08-15 | PR #5, `agent/scribe-transcription-job` at `2db0624` (open) | Infrastructure finally moves. Dormant manual job trigger. 6 new findings, none blocking merge. |
-| **Sixth — 2026-08-17** | **`main` at `8546a41` (PRs #5–#20)** | **Every open finding closed. Two real runtime bugs found by live probing. No new defects.** |
+| Sixth — 2026-08-17 | `main` at `8546a41` (PRs #5–#20) | Every open finding closed. Two real runtime bugs found by live probing. No new defects. |
+| **Seventh — 2026-08-17** | **`main` at `7423f7f` (PRs #21–#23) + Codex status report** | **Report verified accurate. Blocker diagnosed: cold-start ingress rejection, not timeout. One standing-credential risk.** |
 
 Findings marked **[verified]** were reproduced or exercised in this working tree. Findings marked
 **[read]** come from code inspection without a live Azure target.
@@ -567,3 +568,97 @@ governance or sequencing, and all are already written down:
   operator helper that submits a full `--yaml` execution template, and on wire-verifying the
   aiohttp-corrected image. Both are small and well specified. Five reviews ago the blocker was "there
   is no speech-to-text at all."
+
+---
+
+## 10. Seventh review — PRs #21–#23 and the pause-point status report
+
+**Target:** `main` at `7423f7f` (three repair PRs since the sixth review), plus Codex's own status
+report delivered at the pause point. This pass cross-checks the report against the repository and
+assesses the stated blocker.
+
+### Gates, run locally
+
+```
+308 passed, 0 skipped        (PostgreSQL 16 attached; was 297)
+ruff / pyright / check_phi_logs / check_secrets / check_adr_numbers   PASS
+openapi.json   in sync
+```
+
+### The report is accurate on every claim checkable from here
+
+- PR #23 is merged and is `7423f7f`; the fix is exactly as described — the single Settings-owned
+  HTTP timeout raised to its 60-second maximum, **no HTTP or job retries added**, pinned by tests
+  and recorded in ADR 0017.
+- No branch is unmerged; no verified code remains only local, as stated.
+- The commit bodies continue the honesty discipline: PR #23's own body says "the authenticated live
+  retry remains unverified: both acceptance gates are closed and no retry was performed."
+
+Outside-repo claims (Azure image/auth state, Terraform serial 48, the two failed live checks) are
+not verifiable from this session and are taken as reported. The master-platform draft PR #121 is in
+a repository not attached to this session and was not reviewed.
+
+### The blocker, diagnosed
+
+The two failed checks tell one story:
+
+1. The 15-second request lost the scale-from-zero race — so the timeout was raised to 60 seconds.
+2. The 60-second request received an **ingress rejection before reaching the API**, with API request
+   metrics at zero while the replica started.
+
+That second result disproves the assumption ADR 0017 line 47 wrote down: "covers one scale-to-zero
+API cold start." Azure Container Apps internal ingress (Envoy) does not reliably hold a connection
+open while a scale-from-zero replica starts — it can answer early with a non-200 before any replica
+exists. **Timeout was never the axis.** No client-side timeout value fixes a gateway that answers
+early with an error, which is why the report correctly concludes "a longer client timeout alone does
+not solve it."
+
+### The decision, with recommendation
+
+The report asks: reviewed prewarm/minimum-replica window, or change the acceptance readiness
+contract. **Recommendation: change the contract.** Split acceptance into two phases:
+
+1. **Readiness phase** — bounded polling of `/healthz` (unauthenticated, ops-open by design),
+   treating ingress-layer non-200s and transport errors as "not ready yet," until two consecutive
+   200s or a hard overall deadline (e.g. 240 s inside the job's 300 s budget).
+2. **Probe phase** — the authenticated `GET /v1/audio-encryption-key`, **single attempt, unchanged**.
+
+Why this over prewarm:
+
+- Scale-to-zero is the deployed configuration; any real caller must tolerate cold start. A prewarm
+  window would test a configuration that production does not run.
+- Prewarm mutates the API's scaling through Terraform — via a runner whose apply pins are currently
+  `review-required` — and needs a revert apply afterward. The contract change is code plus one
+  enable-flag apply.
+- It preserves the zero-retry principle where it matters. The no-retry rule exists so failures of
+  the *thing under test* are not masked. Cold-start ingress behavior is the platform, not the thing
+  under test. Retrying the unauthenticated health poll is readiness; the authenticated probe stays
+  single-attempt so its result remains unambiguous.
+- ADR 0017 must be amended to record the two-phase contract and to correct the disproven
+  60-second-covers-cold-start claim.
+
+### R-1 — Standing privileged credentials on a wedged runner [reported, accepted as fact]
+
+Eight temporary role assignments — including Key Vault **Crypto Officer** and **RBAC
+Administrator** — plus two temporary NSG egress rules remain attached to a Terraform runner that has
+no active executions and cannot apply (`review-required` pins). That is the most privileged idle
+credential set in the estate, held by the one component currently unable to do its job.
+
+The report itself says they should be revoked once the acceptance path resolves. Make that a
+deadline, not an intention: resolve acceptance in the next round and revoke at round end regardless
+of outcome. Re-granting is now a documented procedure, so revocation is cheap to undo.
+
+### R-2 — Evidence lives in a temp directory [reported]
+
+The protected change record sits under `/private/tmp/...` on the operator machine. The acceptance
+evidence is metadata-only by design (fixed events, hashes, serials — no PHI), so a sanitized copy
+belongs in the repository where it survives the machine. One directory, one README, committed.
+
+### State of the goal
+
+The single goal of the last prompt — one synthetic encounter end to end — was not reached, and the
+reason is exactly the kind the process is designed to surface: a real platform behavior, found by a
+real probe, that no test could see and that invalidated a written assumption within hours of it
+being written. The response pattern held at every step: no gate was widened, no retry was bolted on
+to force a pass, both failures were reported with metrics, and the blocker was escalated as a
+decision rather than routed around.
