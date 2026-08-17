@@ -204,3 +204,97 @@ az storage blob exists --auth-mode login --account-name cosmaneuratfstate \
 ```
 
 Actual output from each command: `false`.
+
+## Phase 0 versionless-Reader follow-up
+
+The following representative sanitized ledger covers the 2026-08-17 corrective follow-up. Protected plans, state, rendered JSON, and logs remained outside the repository at mode `0600`.
+
+```text
+tofu plan -refresh=true ... \
+  -target=azurerm_role_assignment.runtime_audio_key_reader \
+  -target=azurerm_role_assignment.private_api_acceptance_acr \
+  -target=azurerm_container_app_job.private_api_acceptance \
+  -out=<phase0-dormant-s56.tfplan>
+tofu apply ... <phase0-dormant-s56.tfplan>
+```
+
+Actual result: plan SHA-256 `8aaeb1c30b8617cb8e2905e2c13dc356a3254ba1f653e18a5aa673f6f401a0f3`; planned `3 added, 0 changed, 1 destroyed`. The dormant proof job and exact-registry `AcrPull` were created with both gates false. Azure also created the replacement versionless **Key Vault Reader**, but the provider connection reset before Terraform recorded that assignment. The backend advanced from serial `56` to `58`; execution stopped and no probe was started.
+
+```text
+tofu plan -refresh=true ... -out=<phase0-reader-import-s58.tfplan>
+tofu apply ... <phase0-reader-import-s58.tfplan>
+```
+
+Actual result: plan SHA-256 `c3572470fff26f6f2ba7d1c1f9e191c869c88fbde153e7cbfd4f062779d837a1`; exactly one declarative import of the existing assignment and one provider-state-only update, with no add or destroy. The import persisted, then the provider rejected updating the create-only `skip_service_principal_aad_check` flag. State advanced from serial `58` to `59`. Live scope, role, and principal were unchanged.
+
+```text
+tofu plan -refresh=true ... \
+  -target=azurerm_role_assignment.runtime_audio_key_reader \
+  -out=<phase0-reader-convergence-s59.tfplan>
+```
+
+Actual result: plan SHA-256 `8ccbc05fcb70fa262376d4fbe4157eea5defb6e022b3aba429ef4e7e72d5fec1`; `No changes. Your infrastructure matches the configuration.` The lifecycle rule ignores only the provider-only create flag; the configured fresh-create value remains `true`.
+
+```text
+tofu plan -refresh=true ... \
+  -target=azurerm_container_app_job.private_api_acceptance \
+  -out=<phase0-enable-s59.tfplan>
+tofu apply ... <phase0-enable-s59.tfplan>
+```
+
+Actual result: plan SHA-256 `c5004effd7a5aa27a17987d8fd1febec2aefe85f3824907915781c534c53f753`; `Apply complete! Resources: 0 added, 1 changed, 0 destroyed.` Only the two raw gates and five derived non-secret inputs changed. State advanced from serial `59` to `60`.
+
+```text
+az containerapp job start --name cosmaneura-scribe-dev-api-proof \
+  --resource-group cosmaneura-scribe-development --output none
+```
+
+Actual result: exactly one no-override execution. The effective execution template retained the reviewed digest, exact platform workflow UAMI, fixed command, empty arguments, manual trigger, retry limit `0`, and 300-second job bound. Terminal status was `Succeeded`. The Activity Log contained one successful start correlation in the approved operator window. Fixed metadata events:
+
+```json
+{"action":"private_api_acceptance.readiness_started","elapsed_ms":0,"error_class":null,"poll_count":0}
+{"action":"private_api_acceptance.readiness_succeeded","elapsed_ms":39194.165,"error_class":null,"poll_count":2}
+{"action":"private_api_acceptance.completed","algorithm":"RSA-OAEP-256","duration_ms":45388.916,"http_status":200,"key_operations":["wrapKey"],"key_size_bits":3072,"key_version_present":true,"kty":"RSA"}
+```
+
+```text
+tofu plan -refresh=true ... \
+  -target=azurerm_container_app_job.private_api_acceptance \
+  -out=<phase0-close-s60.tfplan>
+tofu apply ... <phase0-close-s60.tfplan>
+```
+
+Actual result: plan SHA-256 `a6ec73e3269f0e2f4fed59f29cc314ce4bde028ba39eef17f9d9246bedfb7cb3`; `Apply complete! Resources: 0 added, 1 changed, 0 destroyed.` Only the two gates closed and the five enable-only inputs were removed. State advanced from serial `60` to `61`. Live read-back showed both gates `false`, manual trigger, retry limit `0`, and the single execution terminal `Succeeded`.
+
+```text
+tofu plan -refresh=true ... \
+  -target=azurerm_container_app_job.private_api_acceptance \
+  -target=azurerm_role_assignment.private_api_acceptance_acr \
+  -out=<phase0-teardown-s61.tfplan>
+tofu apply ... <phase0-teardown-s61.tfplan>
+```
+
+Actual result: plan SHA-256 `b90073542fa69777485e35fd09951429ba9ba90fd23f8123374a710a8a03f2e5`; `Apply complete! Resources: 0 added, 0 changed, 2 destroyed.` Only the dormant proof job and the platform identity's exact-registry `AcrPull` were deleted. State advanced from serial `61` to `62`.
+
+```text
+tofu state pull | jq '{lineage,serial}'
+```
+
+Actual output: lineage `9cc263b9-f1e2-dfc8-4a33-a67cb73459a6`, serial `62`.
+
+```text
+az containerapp job list --resource-group cosmaneura-scribe-development ...
+az role assignment list --assignee-object-id <platform-workflow-principal> --all ...
+az identity list --resource-group cosmaneura-scribe-development ...
+az role definition list --name <temporary-state-role-id> ...
+az network nsg show --resource-group cosmaneura-scribe-development ...
+az storage blob list --account-name cosmaneuratfstate \
+  --container-name cosmaneura-tfstate --prefix plans/private-key-api- ...
+```
+
+Actual results:
+
+- the jobs collection contained only the dormant Speech smoke job;
+- the platform workflow principal had no remaining Azure role assignment in the Scribe environment;
+- the temporary Terraform runner identity, plan/apply jobs, custom state role, both temporary NSG rules, and private-plan object prefix all returned empty lists;
+- the API runtime retained `AcrPull`, `Storage Blob Data Contributor`, and the built-in **Key Vault Reader** exactly at `/keys/session-audio-wrapping`; it had no Key Vault Crypto role.
