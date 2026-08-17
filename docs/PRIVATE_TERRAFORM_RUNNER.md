@@ -405,15 +405,27 @@ az containerapp job start \
   --output none
 ```
 
-The runner rejects every argument, verifies DNS resolves exclusively to the derived private `/32`
-before requesting a token, uses only the exact UAMI through `ManagedIdentityCredential`, disables
-redirects and proxy-environment trust, and bounds the response to 8 KiB. Success is one fixed record
-containing only HTTP 200, RSA, RSA-OAEP-256, 3072 bits, `wrapKey`, key-version presence, and duration.
-It never logs the JWK modulus, exponent, key-version value, token, URL, tenant, DNS answer, or body.
-The reviewed image's `Settings` default is the single authority for a 60-second HTTP timeout; there
-is no parallel Terraform or job-environment timeout setting. That budget permits one scale-to-zero
-API cold start inside the separate 300-second job timeout. It does not retry the request, and the
-Container Apps Job retry limit remains zero.
+The runner rejects every argument and first verifies DNS resolves exclusively to the derived
+private `/32`. It then polls the unauthenticated `/healthz` route every five seconds under a strict
+180-second deadline and requires two consecutive 200 responses. Ingress-layer non-200 responses
+and transport failures reset the readiness streak. The runner emits only the fixed readiness
+started, succeeded, or deadline-exhausted events, with numeric poll count and elapsed milliseconds;
+it never logs status, URL, endpoint, DNS answer, or body.
+
+After readiness succeeds, the runner closes the unauthenticated client, repeats the exact `/32`
+DNS proof, creates the exact UAMI `ManagedIdentityCredential`, and performs one authenticated
+`GET /v1/audio-encryption-key`. The credentialed client shares no cookies or connection state with
+readiness, disables redirects and proxy-environment trust, and bounds the decoded response to 8
+KiB. Success is one fixed record containing only HTTP 200, RSA, RSA-OAEP-256, 3072 bits, `wrapKey`,
+key-version presence, and duration. It never logs the JWK modulus, exponent, key-version value,
+token, URL, tenant, DNS answer, or body.
+
+`Settings` is the sole authority for the fixed 180-second readiness deadline, five-second interval,
+and strict 60-second probe bound; Terraform and the job environment do not duplicate them. Those
+bounds deliberately leave 60 seconds of the unchanged 300-second job limit for process startup,
+DNS, token acquisition, cleanup, and logging. Neither phase prewarms the API or changes its
+scale-to-zero configuration. The authenticated request is never retried, and the Container Apps
+Job retry limit remains zero.
 
 Immediately after start, read the effective execution template and prove image, command, arguments,
 environment, resources, and identity equal the reviewed job. Query Activity Log and accept only the

@@ -32,9 +32,10 @@ commit. Its command is fixed to the acceptance module, which rejects every argum
 
 Terraform derives the stable API ingress origin and the Container Apps environment static IP. The
 runner first requires every DNS answer to equal that exact private `/32`; it obtains no token if
-private DNS is unavailable or resolves elsewhere. It then uses `ManagedIdentityCredential` with
-the exact platform identity client ID and requests only the Scribe API's `/.default` scope. The
-single request carries a configured synthetic practice-tenant UUID.
+private DNS is unavailable or resolves elsewhere. It handles platform cold start through the
+bounded readiness phase below, closes that unauthenticated client, and repeats the exact DNS check
+before creating `ManagedIdentityCredential`. It requests only the Scribe API's `/.default` scope.
+The single authenticated request carries a configured synthetic practice-tenant UUID.
 
 The runner disables redirects and proxy-environment trust, bounds the decoded response to 8 KiB,
 requires HTTP 200 and the exact `AudioEncryptionPublicKey` schema, and proves RSA-3072,
@@ -42,12 +43,44 @@ requires HTTP 200 and the exact `AudioEncryptionPublicKey` schema, and proves RS
 emits one constant metadata record containing only status, key type, algorithm, size, operations,
 version presence, and duration. Failures emit only fixed classes.
 
-The application `Settings` model is the single authority for a 60-second HTTP timeout, which is
-also its enforced maximum. Terraform does not duplicate it as a job environment value. This budget
-covers one scale-to-zero API cold start within the job's separate 300-second execution timeout; it
-does not add an application retry, and the Container Apps Job retry limit remains zero. The earlier
-15-second budget expired while Container Apps was still pulling and starting the API replica, with
-zero requests reaching the API.
+The application `Settings` model is the single authority for the probe's HTTP timeout, which is
+also its enforced maximum. Terraform does not duplicate it as a job environment value. The
+Container Apps Job retry limit remains zero and the authenticated probe gains no retry.
+
+**Correction (2026-08-17).** This ADR originally claimed the 60-second budget "covers one
+scale-to-zero API cold start." A live execution disproved that: Container Apps internal ingress
+answered with a non-200 before any replica existed, while API request metrics stayed at zero. The
+earlier 15-second budget had already expired during image pull and start with zero requests
+reaching the API. A gateway that answers early with an error cannot be outwaited, so no client
+timeout value covers cold start. The two-phase contract below replaces that assumption.
+
+## Amendment (2026-08-17): two-phase acceptance contract
+
+Acceptance is split into two phases so cold start is handled where it occurs—the platform—while
+the thing under test keeps its zero-retry proof.
+
+1. **Readiness phase.** Poll the unauthenticated, ops-open `/healthz` route. Ingress-layer non-200
+   responses and transport errors mean "not ready yet," never an acceptance failure. Readiness
+   requires two consecutive 200 responses. `Settings` pins a five-second interval and a strict
+   180-second overall deadline. The runner summarizes the phase with fixed started, succeeded, or
+   deadline-exhausted events containing only poll count and elapsed milliseconds. Deadline
+   exhaustion has its own fixed failure class.
+2. **Probe phase.** Close the readiness client, repeat the exact private-DNS check, then make the
+   authenticated `GET /v1/audio-encryption-key` exactly as specified above: one token request, one
+   HTTP attempt, no retry, and unchanged response validation and failure classification.
+
+The amendment proposed up to 240 seconds of readiness inside the 300-second job budget.
+Implementation uses 180 seconds because the authenticated probe has its own strict 60-second bound
+and process startup, two DNS checks, managed-identity token acquisition, cleanup, and terminal
+logging also have to fit within the unchanged 300-second job timeout. The readiness and probe
+clients are separate so cookies or connection state from unauthenticated polling cannot cross into
+the credentialed phase. Terraform does not duplicate the 180-second or five-second constants.
+
+A prewarm or minimum-replica window was considered and rejected: scale-to-zero is the deployed
+configuration, so acceptance must test that shape rather than a prewarmed one production does not
+run; a prewarm would mutate API scaling and require a revert apply; and the zero-retry principle
+exists to keep failures of the thing under test unmasked. Repeating the unauthenticated health
+check is readiness; the authenticated probe stays single-attempt so its result remains unambiguous.
 
 ## Rollout and removal
 
@@ -76,8 +109,9 @@ zero requests reaching the API.
 - The acceptance path uses the real caller identity without widening its access to Key Vault.
 - The job can prove private DNS, Entra authorization, API routing, and public-key metadata, but it
   cannot prove future platform-VNet peering; that remains a separate network acceptance.
-- The 60-second request budget allows one scale-to-zero cold start but no retry; a timeout remains a
-  failed one-shot execution that requires closing the gates and a separately reviewed next attempt.
+- The bounded readiness phase tolerates scale-to-zero ingress behavior. After readiness succeeds,
+  any authenticated-probe timeout or failure remains a failed one-shot execution that requires
+  closing the gates and a separately reviewed next attempt.
 - Leaving the job or `AcrPull` assignment deployed after the proof is a failed teardown condition.
 - A second execution requires reopening a reviewed invocation gate; the job itself has no schedule
   or durable authority to start.

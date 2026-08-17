@@ -21,6 +21,18 @@ PRIVATE_API_ACCEPTANCE_RESULT_FIELD_ALLOWLIST = frozenset(
         "key_version_present",
     }
 )
+PRIVATE_API_ACCEPTANCE_READINESS_FIELD_ALLOWLIST = frozenset(
+    {"action", "elapsed_ms", "error_class", "poll_count"}
+)
+
+_PRIVATE_API_ACCEPTANCE_READINESS_ACTIONS = {
+    "private_api_acceptance.readiness_started": None,
+    "private_api_acceptance.readiness_succeeded": None,
+    "private_api_acceptance.readiness_deadline_exhausted": (
+        "PrivateApiAcceptanceReadinessDeadlineExhausted"
+    ),
+}
+_PRIVATE_API_ACCEPTANCE_READINESS_MAX_POLLS = 36
 
 _SAFE_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _LOGGER = logging.getLogger(LOGGER_NAME)
@@ -106,3 +118,34 @@ def log_private_api_acceptance_result(*, duration_ms: int | float) -> None:
     if frozenset(payload) != PRIVATE_API_ACCEPTANCE_RESULT_FIELD_ALLOWLIST:
         raise RuntimeError("private API acceptance log schema is not closed")
     _LOGGER.log(logging.INFO, json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+def log_private_api_acceptance_readiness(
+    *,
+    action: str,
+    poll_count: object,
+    elapsed_ms: int | float,
+) -> None:
+    """Emit only fixed readiness lifecycle metadata."""
+
+    if action not in _PRIVATE_API_ACCEPTANCE_READINESS_ACTIONS:
+        raise ValueError("Private API readiness action must be a fixed safe label")
+    if (
+        not isinstance(poll_count, int)
+        or isinstance(poll_count, bool)
+        or not 0 <= poll_count <= _PRIVATE_API_ACCEPTANCE_READINESS_MAX_POLLS
+    ):
+        raise ValueError("Structured log poll_count must be a bounded nonnegative integer")
+    if isinstance(elapsed_ms, bool) or not math.isfinite(elapsed_ms) or elapsed_ms < 0:
+        raise ValueError("Structured log elapsed_ms must be a nonnegative finite number")
+    error_class = _PRIVATE_API_ACCEPTANCE_READINESS_ACTIONS[action]
+    payload: dict[str, object] = {
+        "action": action,
+        "elapsed_ms": round(elapsed_ms, 3),
+        "error_class": error_class,
+        "poll_count": poll_count,
+    }
+    if frozenset(payload) != PRIVATE_API_ACCEPTANCE_READINESS_FIELD_ALLOWLIST:
+        raise RuntimeError("private API readiness log schema is not closed")
+    level = logging.WARNING if error_class is not None else logging.INFO
+    _LOGGER.log(level, json.dumps(payload, sort_keys=True, separators=(",", ":")))
