@@ -76,6 +76,28 @@ test("isolates iOS Keychain integration tests in a simulator-only host", async (
   assert.match(swiftPackage, /targets:\s*\["CosmaneuraSecureQueue"\]/u);
 });
 
+test("runs native secure-storage behavior on hosted emulators", async () => {
+  const workflow = await source("../../../../../.github/workflows/ci.yml");
+  const gradleWrapper = await source(
+    "../../../android/gradle/wrapper/gradle-wrapper.properties",
+  );
+
+  assert.match(workflow, /Test iOS secure queue/u);
+  assert.match(workflow, /Test Android secure queue on API 36/u);
+  assert.match(workflow, /system-images;android-36;google_apis;x86_64/u);
+  assert.match(workflow, /connectedDebugAndroidTest/u);
+  assert.match(workflow, /\/dev\/kvm/u);
+  assert.match(workflow, /-no-metrics/u);
+  assert.match(workflow, /export ANDROID_AVD_HOME="\$\{avd_home\}"/u);
+  assert.match(workflow, /ANDROID_AVD_HOME.*avd_name.*\.ini/u);
+  assert.match(workflow, /timeout 180s "\$\{adb_path\}" wait-for-device/u);
+  assert.doesNotMatch(workflow, /android-emulator-runner/u);
+  assert.match(
+    gradleWrapper,
+    /distributionSha256Sum=ed1a8d686605fd7c23bdf62c7fc7add1c5b23b2bbc3721e661934ef4a4911d7c/u,
+  );
+});
+
 test("keeps the bridge narrow and contains no native logging calls", async () => {
   const capacitorConfig = await source("../../../capacitor.config.ts");
   const definitions = await source("../src/definitions.ts");

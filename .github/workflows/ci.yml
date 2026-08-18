@@ -70,6 +70,8 @@ jobs:
           node-version: '24.5.0'
       - run: npm install --global npm@11.5.2
       - run: npm ci
+      - name: Audit production npm dependencies
+        run: npm audit --omit=dev --audit-level=moderate
       - run: npm run check:api
       - run: npm run test:golden
       - run: npm run lint
@@ -80,6 +82,7 @@ jobs:
   capture-android:
     needs: capture-web
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -98,6 +101,84 @@ jobs:
           :cosmaneura-scribe-capacitor-secure-queue:testDebugUnitTest
           :app:assembleDebug
         working-directory: apps/capture/android
+      - name: Enable Android emulator hardware acceleration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -e /dev/kvm ]]; then
+            echo "::error::GitHub runner does not expose /dev/kvm"
+            exit 1
+          fi
+          sudo chmod 0666 /dev/kvm
+      - name: Test Android secure queue on API 36
+        shell: bash
+        working-directory: apps/capture/android
+        run: |
+          set -euo pipefail
+
+          sdkmanager_path="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          avdmanager_path="${ANDROID_HOME}/cmdline-tools/latest/bin/avdmanager"
+          emulator_path="${ANDROID_HOME}/emulator/emulator"
+          adb_path="${ANDROID_HOME}/platform-tools/adb"
+          system_image="system-images;android-36;google_apis;x86_64"
+          avd_name="cosmaneura-api36"
+          avd_home="${RUNNER_TEMP}/cosmaneura-api36-avd"
+          mkdir -p "${avd_home}"
+          export ANDROID_AVD_HOME="${avd_home}"
+
+          "${sdkmanager_path}" --install "${system_image}"
+          printf 'no\n' | "${avdmanager_path}" create avd \
+            --force \
+            --name "${avd_name}" \
+            --package "${system_image}" \
+            --device pixel_2
+          if [[ ! -f "${ANDROID_AVD_HOME}/${avd_name}.ini" ]]; then
+            echo "::error::avdmanager did not create the expected API 36 AVD metadata"
+            exit 1
+          fi
+
+          cleanup() {
+            "${adb_path}" emu kill >/dev/null 2>&1 || true
+            kill "${emulator_pid:-}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          nohup "${emulator_path}" \
+            -avd "${avd_name}" \
+            -no-window \
+            -no-snapshot \
+            -noaudio \
+            -no-metrics \
+            -no-boot-anim \
+            -accel on \
+            -gpu swiftshader_indirect \
+            >"${RUNNER_TEMP}/cosmaneura-api36-emulator.log" 2>&1 &
+          emulator_pid=$!
+
+          if ! timeout 180s "${adb_path}" wait-for-device; then
+            echo "::error::API 36 emulator did not become visible to adb within 180 seconds"
+            tail -80 "${RUNNER_TEMP}/cosmaneura-api36-emulator.log"
+            exit 1
+          fi
+          boot_completed=""
+          for _attempt in $(seq 1 60); do
+            boot_completed="$("${adb_path}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            if [[ "${boot_completed}" == "1" ]]; then
+              break
+            fi
+            sleep 5
+          done
+          if [[ "${boot_completed}" != "1" ]]; then
+            echo "::error::API 36 emulator did not boot within 300 seconds"
+            tail -80 "${RUNNER_TEMP}/cosmaneura-api36-emulator.log"
+            exit 1
+          fi
+
+          "${adb_path}" shell settings put global window_animation_scale 0
+          "${adb_path}" shell settings put global transition_animation_scale 0
+          "${adb_path}" shell settings put global animator_duration_scale 0
+          ./gradlew --no-daemon \
+            :cosmaneura-scribe-capacitor-secure-queue:connectedDebugAndroidTest
 
   capture-ios:
     needs: capture-web

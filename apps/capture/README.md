@@ -114,4 +114,5 @@ npm run cap:sync:check:android
 Capacitor 8.5.0 has no `cap sync --dry-run`. CI therefore runs the real platform sync on a clean
 checkout and fails if tracked or untracked native files change. iOS sync/build validation requires a
 macOS runner with Xcode 26 or newer. Android validation requires JDK 21, Android SDK 36, and the
-project's committed Gradle wrapper. Simulator and physical-device evidence belongs to Phase 3.
+project's committed Gradle wrapper; CI runs the SecureQueue integration suite on an API 36 emulator.
+Physical-device and minimum-supported-OS evidence belongs to Phase 3.
