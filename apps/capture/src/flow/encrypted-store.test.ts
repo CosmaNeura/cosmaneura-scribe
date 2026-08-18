@@ -20,7 +20,7 @@ describe("EncryptedIndexedDbFlowStore", () => {
       crypto: TEST_CRYPTO,
     });
     const preparation = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       startedAt: "2026-08-18T12:00:00.000Z",
       consentIdempotencyKey: "consent-session-0001",
       completeIdempotencyKey: "complete-session-0001",
@@ -63,7 +63,7 @@ describe("EncryptedIndexedDbFlowStore", () => {
       crypto: TEST_CRYPTO,
     });
     const active = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       sessionId: SESSION_ID,
       lease: {
         protocol_version: "1.0" as const,
@@ -74,6 +74,8 @@ describe("EncryptedIndexedDbFlowStore", () => {
         issued_at: "2026-08-18T12:00:00.000Z",
         expires_at: "2026-08-18T12:15:00.000Z",
       },
+      captureAuthorizedUntil: null,
+      aggregatePlaintextBudgetBytes: 67_108_864,
       phase: "ready" as const,
       completeIdempotencyKey: "complete-session-0001",
       recordedChunks: 0,
@@ -87,6 +89,18 @@ describe("EncryptedIndexedDbFlowStore", () => {
       phase: "uploading",
       recordedChunks: 1,
     });
+    await store.putActiveCaptureState({
+      ...active,
+      phase: "paused",
+      recordedChunks: 1,
+      captureAuthorizedUntil: "2026-08-18T12:15:00.000Z",
+    });
+    await expect(store.putActiveCaptureState({
+      ...active,
+      phase: "paused",
+      recordedChunks: 1,
+      captureAuthorizedUntil: "2026-08-18T12:14:59.000Z",
+    })).rejects.toThrow("active_capture_conflict");
     await store.clearCompletedCapture(SESSION_ID);
     await expect(store.getActiveCaptureState()).resolves.toBeNull();
     store.close();
@@ -132,7 +146,7 @@ describe("EncryptedIndexedDbFlowStore", () => {
       crypto: TEST_CRYPTO,
     });
     await store.putSessionKeyCandidate({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sessionId: SESSION_ID,
       keyVersion: wrapped.keyVersion,
       wrappedDek: wrapped.wrappedDek,
@@ -141,7 +155,11 @@ describe("EncryptedIndexedDbFlowStore", () => {
     }, wrapped.key);
 
     const restoredKey = await store.getSessionKey(SESSION_ID);
-    expect(restoredKey).toMatchObject({ extractable: false, type: "secret" });
+    expect(restoredKey).toMatchObject({
+      extractable: false,
+      type: "secret",
+      usages: ["encrypt"],
+    });
     await expect(store.getSessionKeyState(SESSION_ID)).resolves.toMatchObject({
       state: "pending",
       keyVersion: wrapped.keyVersion,
@@ -154,7 +172,7 @@ describe("EncryptedIndexedDbFlowStore", () => {
 
 function testIntent(): ReservationIntent {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     intentId: "microphone:0",
     sessionId: SESSION_ID,
     idempotencyKey: "reservation-intent-0001",

@@ -17,7 +17,8 @@ export interface CaptureSourceStartOptions {
 export type CaptureSourceInterruptionCode =
   | "audio_context_suspended"
   | "audio_device_disconnected"
-  | "audio_route_changed";
+  | "audio_route_changed"
+  | "capture_backgrounded";
 
 export type CaptureSourceErrorCode =
   | "capture_source_stalled"

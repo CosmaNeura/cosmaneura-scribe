@@ -4,9 +4,9 @@ import { HttpCaptureBff } from "./bff/http-client";
 import { BffCaptureQueueTransport } from "./bff/queue-transport";
 import { HttpCiphertextUploadTarget } from "./bff/upload-target";
 import {
-  SilentSyntheticCaptureSource,
   type CaptureSource,
 } from "./capture";
+import { createCaptureSource } from "./capture-source-factory";
 import {
   CaptureFlowController,
   EncryptedIndexedDbFlowStore,
@@ -24,14 +24,6 @@ const SYNTHETIC_ENCOUNTER = Object.freeze({
   participantRegions: ["US-NY"],
 });
 
-interface BrowserMicrophoneModule {
-  readonly BrowserMicrophoneCaptureSource: new () => CaptureSource;
-}
-
-const microphoneSourceModules = import.meta.glob<BrowserMicrophoneModule>(
-  "./audio/browser-microphone-source.ts",
-);
-
 class CaptureApp extends LitElement {
   #busy = false;
   #consented = false;
@@ -48,6 +40,7 @@ class CaptureApp extends LitElement {
     queuedChunks: 0,
     elapsedSeconds: 0,
     remainingBudgetSeconds: null,
+    remainingAuthoritySeconds: null,
     transcriptionStatus: null,
     transcript: null,
   };
@@ -86,14 +79,20 @@ class CaptureApp extends LitElement {
       <div class="shell">
         <header>
           <span class="brand">Cosmaneura Capture</span>
-          <span class="status" data-testid="synthetic-only">Synthetic preview</span>
+          <span class="status" data-testid="synthetic-only">
+            ${this.#sourceKind === "microphone"
+              ? "Synthetic data · Microphone test"
+              : "Synthetic data · Silent source"}
+          </span>
         </header>
         <main>
           <p class="eyebrow">Phase 3 foreground flow</p>
           <h1>Consented recording, safely staged</h1>
           <p class="intro">
-            This preview uses synthetic identifiers and a silent generated source. It never connects
-            to a patient, Scribe, Azure Speech, or a clinical tenant.
+            ${this.#sourceKind === "microphone"
+              ? "This preview uses synthetic identifiers with an explicitly enabled foreground microphone test adapter."
+              : "This preview uses synthetic identifiers and a silent generated source; microphone access is disabled by default."}
+            It never connects to a patient, Scribe, Azure Speech, or a clinical tenant.
           </p>
 
           <section class="flow-card" aria-labelledby="consent-title">
@@ -131,15 +130,19 @@ class CaptureApp extends LitElement {
               <h2 id="record-title">Record</h2>
               <p>
                 ${this.#sourceKind === "microphone"
-                  ? "Foreground microphone capture is active for this synthetic preview."
-                  : "The microphone adapter is not present in this build; the button emits valid silent WAV."}
+                  ? "The foreground microphone test adapter is explicitly enabled for synthetic test data."
+                  : "Microphone capture is disabled; the button emits valid silent WAV chunks."}
+                The initial server-authorized recording window is fixed and is not renewed in this
+                preview.
               </p>
             </div>
             <div class="record-actions">
               <button
                 data-testid="record-button"
                 class="record-button"
-                aria-label="Start synthetic recording"
+                aria-label=${this.#sourceKind === "microphone"
+                  ? "Start foreground microphone test recording"
+                  : "Start silent synthetic recording"}
                 ?disabled=${this.#snapshot.state !== "ready" || this.#busy}
                 @click=${this.#record}
               >
@@ -175,6 +178,12 @@ class CaptureApp extends LitElement {
                   ? "not loaded"
                   : formatDuration(this.#snapshot.remainingBudgetSeconds)}
               </dd>
+              <dt>Current authorized recording window</dt>
+              <dd data-testid="authority-window">
+                ${this.#snapshot.remainingAuthoritySeconds === null
+                  ? "not loaded"
+                  : formatDuration(this.#snapshot.remainingAuthoritySeconds)}
+              </dd>
               <dt>Reserved queue window</dt>
               <dd data-testid="queue-status">${queueStatus(this.#snapshot)}</dd>
               <dt>Transcription</dt>
@@ -185,6 +194,13 @@ class CaptureApp extends LitElement {
             ${this.#snapshot.remainingBudgetSeconds !== null &&
             this.#snapshot.remainingBudgetSeconds <= 300
               ? html`<p class="budget-warning">Recording budget is nearly exhausted.</p>`
+              : ""}
+            ${this.#snapshot.remainingAuthoritySeconds !== null &&
+            this.#snapshot.remainingAuthoritySeconds <= 300
+              ? html`<p class="budget-warning">
+                  The current recording authorization window expires soon. Stop and upload before
+                  it closes.
+                </p>`
               : ""}
             ${this.#snapshot.state === "processing"
               ? html`
@@ -323,12 +339,4 @@ function displayTranscriptionStatus(snapshot: CaptureFlowSnapshot): string {
   const status = snapshot.transcriptionStatus?.status;
   if (status === undefined) return "not requested";
   return status === "completed" ? "ready" : status;
-}
-
-async function createCaptureSource(): Promise<CaptureSource> {
-  const loadMicrophoneSource =
-    microphoneSourceModules["./audio/browser-microphone-source.ts"];
-  if (loadMicrophoneSource === undefined) return new SilentSyntheticCaptureSource();
-  const module = await loadMicrophoneSource();
-  return new module.BrowserMicrophoneCaptureSource();
 }

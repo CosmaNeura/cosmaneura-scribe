@@ -223,6 +223,45 @@ describe("CaptureQueue", () => {
     harness.storage.close();
   });
 
+  it("honors a lower server-configured upload concurrency", async () => {
+    const harness = await createHarness();
+    harness.queue.configureUploadConcurrency(1);
+    for (let sequence = 0; sequence < 3; sequence += 1) {
+      const reservation = makeReservation(sequence);
+      await harness.queue.reserve(reservation, "reservation-batch-0001");
+      await harness.queue.encrypt(reservation.objectId, makeEnvelope(sequence + 50));
+    }
+
+    let active = 0;
+    let maximumActive = 0;
+    let uploadCalls = 0;
+    const transport = successfulTransport(() => harness.now.value, {
+      upload: async () => {
+        uploadCalls += 1;
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await Promise.resolve();
+        active -= 1;
+      },
+    });
+
+    await harness.queue.drainOnce(transport);
+    expect(maximumActive).toBe(1);
+    expect(uploadCalls).toBe(3);
+    harness.storage.close();
+  });
+
+  it("rejects invalid runtime upload concurrency", async () => {
+    const harness = await createHarness();
+    expect(() => harness.queue.configureUploadConcurrency(0)).toThrow(
+      "invalid_upload_concurrency",
+    );
+    expect(() => harness.queue.configureUploadConcurrency(3)).toThrow(
+      "invalid_upload_concurrency",
+    );
+    harness.storage.close();
+  });
+
   it("serializes drains across queue instances sharing one origin", async () => {
     const previousLocks = Object.getOwnPropertyDescriptor(globalThis.navigator, "locks");
     let lockHeld = false;

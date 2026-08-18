@@ -59,4 +59,21 @@ describe("SilentSyntheticCaptureSource", () => {
       onChunk: async () => undefined,
     })).rejects.toThrow("server-advertised envelope limit");
   });
+
+  it("stops at the capability chunk ceiling", async () => {
+    vi.useFakeTimers();
+    const source = new SilentSyntheticCaptureSource();
+    const chunks: number[] = [];
+
+    await source.start({
+      capabilities: { ...capabilities, max_chunks: 2 },
+      onChunk: async (chunk) => {
+        chunks.push(chunk.sequenceNumber);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(capabilities.target_chunk_duration_ms * 3);
+    await source.stop();
+
+    expect(chunks).toEqual([0, 1]);
+  });
 });

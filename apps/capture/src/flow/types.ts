@@ -6,7 +6,7 @@ import type {
   SessionCreate,
 } from "../bff/contracts";
 
-export const FLOW_RECORD_SCHEMA_VERSION = 1 as const;
+export const FLOW_RECORD_SCHEMA_VERSION = 2 as const;
 
 export type ActiveCapturePhase =
   | "ready"
@@ -54,6 +54,10 @@ export interface ActiveCaptureState {
   readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION;
   readonly sessionId: string;
   readonly lease: CaptureLeaseReceipt;
+  /** Exact server receipt value. Null only while the first reservation mutation is pending. */
+  readonly captureAuthorizedUntil: string | null;
+  /** Initial aggregate plaintext budget from the capability bootstrap. */
+  readonly aggregatePlaintextBudgetBytes: number;
   readonly phase: ActiveCapturePhase;
   readonly completeIdempotencyKey: string;
   readonly recordedChunks: number;

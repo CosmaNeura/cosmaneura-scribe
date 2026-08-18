@@ -16,7 +16,12 @@ import type {
   Transcript,
 } from "../bff/contracts";
 import { BffResponseError } from "../bff/http-client";
-import type { CaptureSource, CapturedWavChunk } from "../capture";
+import type {
+  CapturedWavChunk,
+  CaptureSource,
+  CaptureSourceErrorCode,
+  CaptureSourceInterruptionCode,
+} from "../capture";
 import { QueueInvariantError } from "../queue/errors";
 import type { CaptureQueue } from "../queue/capture-queue";
 import type { CaptureQueueTransport, ChunkReservation } from "../queue/types";
@@ -47,6 +52,7 @@ export interface CaptureFlowSnapshot {
   readonly queuedChunks: number;
   readonly elapsedSeconds: number;
   readonly remainingBudgetSeconds: number | null;
+  readonly remainingAuthoritySeconds: number | null;
   readonly transcriptionStatus: CaptureTranscriptionStatus | null;
   readonly transcript: Transcript | null;
 }
@@ -60,6 +66,8 @@ export interface CaptureFlowControllerOptions {
   readonly crypto?: Crypto;
   readonly now?: () => Date;
   readonly idFactory?: () => string;
+  readonly scheduleTimeout?: (callback: () => void, delayMs: number) => unknown;
+  readonly cancelTimeout?: (handle: unknown) => void;
 }
 
 type SnapshotListener = (snapshot: CaptureFlowSnapshot) => void;
@@ -73,6 +81,8 @@ export class CaptureFlowController {
   readonly #crypto: Crypto;
   readonly #now: () => Date;
   readonly #idFactory: () => string;
+  readonly #scheduleTimeout: (callback: () => void, delayMs: number) => unknown;
+  readonly #cancelTimeout: (handle: unknown) => void;
   readonly #listeners = new Set<SnapshotListener>();
   readonly #reservations = new Map<number, ChunkReservation>();
 
@@ -81,6 +91,14 @@ export class CaptureFlowController {
   #lease: CaptureLeaseReceipt | null = null;
   #sessionId: string | null = null;
   #recordedPlaintextBytes = 0;
+  #sourcePausedBySignal = false;
+  #sourcePausePersistence: Promise<void> | null = null;
+  #sourceStarted = false;
+  #recordingAbortController: AbortController | null = null;
+  #chunkPersistence: Promise<void> = Promise.resolve();
+  #authorityExpiryRequested = false;
+  #authorityTimeout: unknown = null;
+  #authorityExpiryTask: Promise<void> | null = null;
   #snapshot: CaptureFlowSnapshot = {
     state: "idle",
     statusCode: "synthetic_preview_idle",
@@ -89,6 +107,7 @@ export class CaptureFlowController {
     queuedChunks: 0,
     elapsedSeconds: 0,
     remainingBudgetSeconds: null,
+    remainingAuthoritySeconds: null,
     transcriptionStatus: null,
     transcript: null,
   };
@@ -102,6 +121,10 @@ export class CaptureFlowController {
     this.#crypto = options.crypto ?? globalThis.crypto;
     this.#now = options.now ?? (() => new Date());
     this.#idFactory = options.idFactory ?? (() => this.#crypto.randomUUID());
+    this.#scheduleTimeout = options.scheduleTimeout ?? ((callback, delayMs) =>
+      globalThis.setTimeout(callback, delayMs));
+    this.#cancelTimeout = options.cancelTimeout ?? ((handle) =>
+      globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>));
     if (this.#crypto?.subtle === undefined) {
       throw new QueueInvariantError("webcrypto_unavailable");
     }
@@ -140,12 +163,14 @@ export class CaptureFlowController {
       const keyState = await this.#flowStore.getSessionKeyState(active.sessionId);
       if (keyState === null) throw new QueueInvariantError("session_key_missing");
       await this.#bindStoredSessionKey(keyState);
-      this.#capabilities = await this.#bff.getCapabilities(active.sessionId);
-      await this.#recoverReservationIntents();
+      this.#setCapabilities(await this.#bff.getCapabilities(active.sessionId));
+      if (this.#canCreateOrRecoverReservations()) {
+        await this.#recoverReservationIntents();
+      }
       let records = (await this.#queue.list()).filter(
         (record) => record.reservation.sessionId === active.sessionId,
       );
-      if (records.length === 0) {
+      if (records.length === 0 && this.#canCreateOrRecoverReservations()) {
         await this.#reserveInitialWindow();
         records = (await this.#queue.list()).filter(
           (record) => record.reservation.sessionId === active.sessionId,
@@ -170,20 +195,24 @@ export class CaptureFlowController {
         recordedPlaintextBytes: this.#recordedPlaintextBytes,
       };
       await this.#flowStore.putActiveCaptureState(this.#activeState);
-      if (active.phase === "recording") await this.#saveActivePhase("paused");
+      const capturePhase =
+        active.phase === "ready" || active.phase === "recording" || active.phase === "paused";
+      const authorityExpired = capturePhase && !this.#hasActiveCaptureAuthority();
+      if (active.phase === "recording" || authorityExpired) {
+        await this.#saveActivePhase("paused");
+      }
       const phase = this.#requireActiveState().phase;
       this.#setSnapshot({
         state: restoredSnapshotState(phase),
-        statusCode: restoredStatusCode(phase),
+        statusCode: authorityExpired ? "capture_authority_expired" : restoredStatusCode(phase),
         sessionId: active.sessionId,
         recordedChunks,
         queuedChunks: records.length,
         elapsedSeconds: captureSeconds(this.#requireCapabilities(), recordedChunks),
-        remainingBudgetSeconds: remainingBudgetSeconds(
-          this.#requireCapabilities(),
-          recordedChunks,
-        ),
+        remainingBudgetSeconds: this.#remainingAggregateBudgetSeconds(recordedChunks),
+        remainingAuthoritySeconds: this.#remainingCaptureSeconds(recordedChunks),
       });
+      if (phase === "ready" && !authorityExpired) this.#armAuthorityDeadline();
       return true;
     } catch (error) {
       this.#fail();
@@ -263,7 +292,7 @@ export class CaptureFlowController {
     this.#setSnapshot({ sessionId: session.id });
 
     await this.#bindSessionKey(session.id);
-    this.#capabilities = await this.#bff.getCapabilities(session.id);
+    this.#setCapabilities(await this.#bff.getCapabilities(session.id));
     if (preparation.leaseRequest === null || preparation.leaseIdempotencyKey === null) {
       preparation = {
         ...preparation,
@@ -289,6 +318,9 @@ export class CaptureFlowController {
       schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
       sessionId: session.id,
       lease: this.#lease,
+      captureAuthorizedUntil: null,
+      aggregatePlaintextBudgetBytes:
+        this.#requireCapabilities().remaining_aggregate_plaintext_bytes,
       phase: "ready",
       completeIdempotencyKey: preparation.completeIdempotencyKey,
       recordedChunks: 0,
@@ -298,33 +330,59 @@ export class CaptureFlowController {
     await this.#flowStore.putActiveCaptureState(this.#activeState);
     await this.#recoverReservationIntents();
     if (this.#reservations.size === 0) await this.#reserveInitialWindow();
+    if (!this.#hasActiveCaptureAuthority()) {
+      await this.#pauseForExpiredAuthority();
+      throw new QueueInvariantError("capture_authority_expired");
+    }
     this.#setSnapshot({
       state: "ready",
       statusCode: "synthetic_preview_ready",
-      remainingBudgetSeconds: remainingBudgetSeconds(this.#requireCapabilities(), 0),
+      remainingBudgetSeconds: this.#remainingAggregateBudgetSeconds(0),
+      remainingAuthoritySeconds: this.#remainingCaptureSeconds(0),
     });
+    this.#armAuthorityDeadline();
   }
 
   public async startRecording(): Promise<void> {
     this.#requireState("ready");
-    const capabilities = this.#requireCapabilities();
+    if (!this.#hasActiveCaptureAuthority()) {
+      await this.#pauseForExpiredAuthority();
+      throw new QueueInvariantError("capture_authority_expired");
+    }
+    this.#clearAuthorityTimeout();
+    const capabilities = this.#captureCapabilitiesForReservedWindow();
+    this.#sourcePausedBySignal = false;
+    this.#sourcePausePersistence = null;
+    this.#sourceStarted = false;
+    this.#authorityExpiryRequested = false;
+    this.#recordingAbortController = new AbortController();
     await this.#saveActivePhase("recording");
+    if (this.#authorityExpiryRequested || !this.#hasActiveCaptureAuthority()) {
+      await this.#authorityExpiryTask;
+      this.#authorityExpiryRequested = true;
+      this.#recordingAbortController = null;
+      if (this.#snapshot.state !== "paused") await this.#pauseForExpiredAuthority();
+      throw new QueueInvariantError("capture_authority_expired");
+    }
     this.#setSnapshot({ state: "recording", statusCode: "synthetic_preview_recording" });
+    this.#armAuthorityDeadline();
     try {
       await this.#source.start({
         capabilities,
         onChunk: async (chunk) => this.#acceptChunk(chunk),
-        onInterruption: (code) => {
-          this.#setSnapshot({ state: "paused", statusCode: code });
-          void this.#saveActivePhase("paused").catch(() => this.#fail());
-        },
-        onError: (code) => {
-          this.#setSnapshot({ state: "error", statusCode: code });
-          void this.#saveActivePhase("paused").catch(() => this.#fail());
-        },
+        onInterruption: (code) => this.#pauseAfterSourceSignal(code),
+        onError: (code) => this.#pauseAfterSourceSignal(code),
+        signal: this.#recordingAbortController.signal,
       });
+      this.#sourceStarted = true;
+      if (this.#recordingAbortController.signal.aborted) {
+        await this.#source.stop();
+        this.#sourceStarted = false;
+      }
     } catch (error) {
-      this.#fail();
+      this.#clearAuthorityTimeout();
+      this.#sourceStarted = false;
+      if (!this.#sourcePausedBySignal) this.#fail();
       throw error;
     }
   }
@@ -334,7 +392,16 @@ export class CaptureFlowController {
       throw new QueueInvariantError("capture_state_conflict");
     }
     try {
-      await this.#source.stop();
+      this.#clearAuthorityTimeout();
+      await this.#authorityExpiryTask;
+      try {
+        await this.#source.stop();
+      } catch (error) {
+        if (!this.#sourcePausedBySignal) throw error;
+      }
+      this.#sourceStarted = false;
+      this.#recordingAbortController = null;
+      await this.#sourcePausePersistence;
       if (this.#snapshot.recordedChunks < 1) {
         throw new QueueInvariantError("capture_has_no_chunks");
       }
@@ -523,6 +590,27 @@ export class CaptureFlowController {
     batch: ChunkReservationBatchReceipt,
     idempotencyKey: string,
   ): Promise<void> {
+    if (
+      batch.protocol_version !== PROTOCOL_VERSION ||
+      batch.session_id !== this.#requireSessionId() ||
+      Number.isNaN(Date.parse(batch.capture_authorized_until))
+    ) {
+      throw new QueueInvariantError("invalid_capture_authority");
+    }
+    const active = this.#requireActiveState();
+    if (
+      active.captureAuthorizedUntil !== null &&
+      active.captureAuthorizedUntil !== batch.capture_authorized_until
+    ) {
+      throw new QueueInvariantError("capture_authority_conflict");
+    }
+    if (active.captureAuthorizedUntil === null) {
+      this.#activeState = {
+        ...active,
+        captureAuthorizedUntil: batch.capture_authorized_until,
+      };
+      await this.#flowStore.putActiveCaptureState(this.#activeState);
+    }
     for (const remote of batch.reservations) {
       const reservation: ChunkReservation = {
         protocolVersion: remote.protocol_version,
@@ -540,6 +628,28 @@ export class CaptureFlowController {
   }
 
   async #acceptChunk(chunk: CapturedWavChunk): Promise<void> {
+    const task = this.#chunkPersistence.then(async () => {
+      try {
+        if (this.#authorityExpiryRequested) {
+          throw new QueueInvariantError("capture_authority_expired");
+        }
+        await this.#acceptChunkAndPersist(chunk);
+      } finally {
+        chunk.wavBytes.fill(0);
+      }
+    });
+    this.#chunkPersistence = task.catch(() => undefined);
+    return task;
+  }
+
+  async #acceptChunkAndPersist(chunk: CapturedWavChunk): Promise<void> {
+    if (this.#snapshot.state !== "recording") {
+      throw new QueueInvariantError("capture_state_conflict");
+    }
+    if (!this.#hasActiveCaptureAuthority()) {
+      await this.#pauseForExpiredAuthority();
+      throw new QueueInvariantError("capture_authority_expired");
+    }
     const reservation = this.#reservations.get(chunk.sequenceNumber);
     if (reservation === undefined) throw new QueueInvariantError("chunk_not_reserved");
     const capabilities = this.#requireCapabilities();
@@ -547,7 +657,7 @@ export class CaptureFlowController {
       throw new QueueInvariantError("capture_chunk_duration_exceeded");
     }
     const nextPlaintextBytes = this.#recordedPlaintextBytes + chunk.wavBytes.byteLength;
-    if (nextPlaintextBytes > capabilities.remaining_aggregate_plaintext_bytes) {
+    if (nextPlaintextBytes > this.#requireActiveState().aggregatePlaintextBudgetBytes) {
       throw new QueueInvariantError("capture_budget_exhausted");
     }
     const key = await this.#flowStore.getSessionKey(this.#requireSessionId());
@@ -596,8 +706,161 @@ export class CaptureFlowController {
     this.#setSnapshot({
       recordedChunks,
       elapsedSeconds: captureSeconds(capabilities, recordedChunks),
-      remainingBudgetSeconds: remainingBudgetSeconds(capabilities, recordedChunks),
+      remainingBudgetSeconds: this.#remainingAggregateBudgetSeconds(recordedChunks),
+      remainingAuthoritySeconds: this.#remainingCaptureSeconds(recordedChunks),
     });
+  }
+
+  #setCapabilities(capabilities: CaptureCapabilities): void {
+    this.#queue.configureUploadConcurrency(capabilities.upload_concurrency);
+    this.#capabilities = capabilities;
+  }
+
+  #canCreateOrRecoverReservations(): boolean {
+    const active = this.#requireActiveState();
+    if (Date.parse(active.lease.expires_at) <= this.#now().getTime()) return false;
+    return (
+      active.captureAuthorizedUntil === null ||
+      Date.parse(active.captureAuthorizedUntil) > this.#now().getTime()
+    );
+  }
+
+  #hasActiveCaptureAuthority(): boolean {
+    const deadline = this.#captureAuthorityDeadline();
+    return deadline !== null && deadline > this.#now().getTime() && this.#reservations.size > 0;
+  }
+
+  #captureAuthorityDeadline(): number | null {
+    const active = this.#requireActiveState();
+    if (active.captureAuthorizedUntil === null) return null;
+    return Math.min(
+      Date.parse(active.lease.expires_at),
+      Date.parse(active.captureAuthorizedUntil),
+    );
+  }
+
+  #captureCapabilitiesForReservedWindow(): CaptureCapabilities {
+    const capabilities = this.#requireCapabilities();
+    const deadline = this.#captureAuthorityDeadline();
+    if (deadline === null) throw new QueueInvariantError("capture_authority_missing");
+    const windowChunks = Math.floor(
+      Math.max(0, deadline - this.#now().getTime()) /
+        capabilities.target_chunk_duration_ms,
+    );
+    const aggregateRemainingBytes = Math.max(
+      0,
+      this.#requireActiveState().aggregatePlaintextBudgetBytes - this.#recordedPlaintextBytes,
+    );
+    const budgetChunks = Math.floor(aggregateRemainingBytes / capabilities.max_envelope_bytes);
+    const maxChunks = Math.min(
+      capabilities.max_chunks,
+      this.#reservations.size,
+      windowChunks,
+      budgetChunks,
+    );
+    if (!Number.isSafeInteger(maxChunks) || maxChunks < 1) {
+      throw new QueueInvariantError("capture_authority_expired");
+    }
+    return {
+      ...capabilities,
+      max_chunks: maxChunks,
+      remaining_aggregate_plaintext_bytes: Math.min(
+        aggregateRemainingBytes,
+        maxChunks * capabilities.max_envelope_bytes,
+      ),
+    };
+  }
+
+  #remainingCaptureSeconds(recordedChunks: number): number {
+    const capabilities = this.#requireCapabilities();
+    const deadline = this.#captureAuthorityDeadline();
+    if (deadline === null) return 0;
+    const remainingReservedChunks = Math.max(0, this.#reservations.size - recordedChunks);
+    const reservedSeconds = Math.floor(
+      (remainingReservedChunks * capabilities.target_chunk_duration_ms) / 1_000,
+    );
+    const authoritySeconds = Math.max(
+      0,
+      Math.floor((deadline - this.#now().getTime()) / 1_000),
+    );
+    return Math.min(reservedSeconds, authoritySeconds);
+  }
+
+  #remainingAggregateBudgetSeconds(recordedChunks: number): number {
+    const capabilities = this.#requireCapabilities();
+    const budgetChunks = Math.min(
+      capabilities.max_chunks,
+      Math.floor(
+        this.#requireActiveState().aggregatePlaintextBudgetBytes /
+          capabilities.max_envelope_bytes,
+      ),
+    );
+    return Math.max(
+      0,
+      Math.floor(
+        ((budgetChunks - recordedChunks) * capabilities.target_chunk_duration_ms) / 1_000,
+      ),
+    );
+  }
+
+  async #pauseForExpiredAuthority(): Promise<void> {
+    await this.#saveActivePhase("paused");
+    this.#setSnapshot({
+      state: "paused",
+      statusCode: "capture_authority_expired",
+      remainingAuthoritySeconds: 0,
+    });
+  }
+
+  #armAuthorityDeadline(): void {
+    this.#clearAuthorityTimeout();
+    const deadline = this.#captureAuthorityDeadline();
+    if (deadline === null) return;
+    const delayMs = Math.max(0, deadline - this.#now().getTime());
+    this.#authorityTimeout = this.#scheduleTimeout(() => {
+      this.#authorityTimeout = null;
+      this.#authorityExpiryRequested = true;
+      const task = this.#expireCaptureAuthority();
+      this.#authorityExpiryTask = task;
+      void task
+        .catch(() => this.#fail())
+        .finally(() => {
+          if (this.#authorityExpiryTask === task) this.#authorityExpiryTask = null;
+        });
+    }, delayMs);
+  }
+
+  #clearAuthorityTimeout(): void {
+    if (this.#authorityTimeout === null) return;
+    this.#cancelTimeout(this.#authorityTimeout);
+    this.#authorityTimeout = null;
+  }
+
+  async #expireCaptureAuthority(): Promise<void> {
+    if (this.#snapshot.state !== "ready" && this.#snapshot.state !== "recording") return;
+    const wasRecording = this.#snapshot.state === "recording";
+    if (wasRecording) {
+      this.#sourcePausedBySignal = true;
+      this.#recordingAbortController?.abort();
+      await this.#chunkPersistence;
+    }
+    await this.#pauseForExpiredAuthority();
+    if (wasRecording && this.#sourceStarted) {
+      await this.#source.stop();
+      this.#sourceStarted = false;
+    }
+  }
+
+  #pauseAfterSourceSignal(
+    code: CaptureSourceErrorCode | CaptureSourceInterruptionCode,
+  ): void {
+    if (this.#snapshot.state !== "recording" || this.#authorityExpiryRequested) return;
+    this.#clearAuthorityTimeout();
+    this.#sourcePausedBySignal = true;
+    this.#setSnapshot({ state: "paused", statusCode: code });
+    const persistence = this.#saveActivePhase("paused");
+    this.#sourcePausePersistence = persistence;
+    void persistence.catch(() => this.#fail());
   }
 
   #operationKey(operation: string): string {
@@ -634,6 +897,9 @@ export class CaptureFlowController {
   }
 
   #fail(): void {
+    this.#clearAuthorityTimeout();
+    this.#authorityExpiryRequested = true;
+    this.#recordingAbortController?.abort();
     this.#setSnapshot({ state: "error", statusCode: "synthetic_preview_failed" });
   }
 
@@ -673,22 +939,4 @@ function restoredStatusCode(phase: ActiveCapturePhase): string {
 
 function captureSeconds(capabilities: CaptureCapabilities, recordedChunks: number): number {
   return Math.floor((recordedChunks * capabilities.target_chunk_duration_ms) / 1_000);
-}
-
-function remainingBudgetSeconds(
-  capabilities: CaptureCapabilities,
-  recordedChunks: number,
-): number {
-  const budgetChunks = Math.min(
-    capabilities.max_chunks,
-    Math.floor(
-      capabilities.remaining_aggregate_plaintext_bytes / capabilities.max_envelope_bytes,
-    ),
-  );
-  return Math.max(
-    0,
-    Math.floor(
-      ((budgetChunks - recordedChunks) * capabilities.target_chunk_duration_ms) / 1_000,
-    ),
-  );
 }

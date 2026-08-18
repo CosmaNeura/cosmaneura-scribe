@@ -49,7 +49,11 @@ export class SilentSyntheticCaptureSource implements CaptureSource {
             wavBytes,
           }))
           .then(() => {
-            if (this.#active) schedule();
+            if (this.#sequenceNumber >= options.capabilities.max_chunks) {
+              this.#active = false;
+            } else if (this.#active) {
+              schedule();
+            }
           }, (error: unknown) => {
             this.#active = false;
             throw error;

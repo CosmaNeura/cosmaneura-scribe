@@ -93,6 +93,7 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     if (existing !== null && existing.sessionId !== state.sessionId) {
       throw new QueueInvariantError("active_capture_conflict");
     }
+    if (existing !== null) assertActiveCaptureProgression(existing, state);
     const sealed = await this.#seal("active", state);
     const transaction = this.#database.transaction(FLOW_RECORD_STORE, "readwrite");
     transaction.objectStore(FLOW_RECORD_STORE).put(sealed);
@@ -160,7 +161,7 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     key: CryptoKey,
   ): Promise<void> {
     assertSessionKeyState(state);
-    assertAesKey(key, "invalid_session_dek");
+    assertSessionDek(key);
     const storageKey = `session:${state.sessionId}`;
     const sealed = await this.#seal(storageKey, state);
     const transaction = this.#database.transaction(
@@ -188,7 +189,7 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     key: CryptoKey,
   ): Promise<void> {
     assertSessionKeyState(state);
-    assertAesKey(key, "invalid_session_dek");
+    assertSessionDek(key);
     if (state.state !== "pending") {
       throw new QueueInvariantError("invalid_session_key_state");
     }
@@ -224,7 +225,7 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     await done;
     if (value === undefined) return null;
     if (!isCryptoKey(value)) throw new QueueInvariantError("invalid_session_dek");
-    assertAesKey(value, "invalid_session_dek");
+    assertSessionDek(value);
     return value;
   }
 
@@ -474,6 +475,10 @@ function assertActiveCaptureState(value: unknown): asserts value is ActiveCaptur
     value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION ||
     typeof value.sessionId !== "string" ||
     !isRecord(value.lease) ||
+    (value.captureAuthorizedUntil !== null &&
+      typeof value.captureAuthorizedUntil !== "string") ||
+    !Number.isSafeInteger(value.aggregatePlaintextBudgetBytes) ||
+    (value.aggregatePlaintextBudgetBytes as number) < 1 ||
     !isActiveCapturePhase(value.phase) ||
     typeof value.completeIdempotencyKey !== "string" ||
     !Number.isSafeInteger(value.recordedChunks) ||
@@ -489,7 +494,30 @@ function assertActiveCaptureState(value: unknown): asserts value is ActiveCaptur
   if (Number.isNaN(Date.parse(value.startedAt))) {
     throw new QueueInvariantError("invalid_active_capture_state");
   }
+  if (
+    value.captureAuthorizedUntil !== null &&
+    Number.isNaN(Date.parse(value.captureAuthorizedUntil))
+  ) {
+    throw new QueueInvariantError("invalid_active_capture_state");
+  }
   assertLease(value.lease, value.sessionId);
+}
+
+function assertActiveCaptureProgression(
+  existing: ActiveCaptureState,
+  replacement: ActiveCaptureState,
+): void {
+  if (
+    JSON.stringify(existing.lease) !== JSON.stringify(replacement.lease) ||
+    existing.completeIdempotencyKey !== replacement.completeIdempotencyKey ||
+    existing.startedAt !== replacement.startedAt ||
+    existing.aggregatePlaintextBudgetBytes !== replacement.aggregatePlaintextBudgetBytes ||
+    !nullableStable(existing.captureAuthorizedUntil, replacement.captureAuthorizedUntil) ||
+    replacement.recordedChunks < existing.recordedChunks ||
+    replacement.recordedPlaintextBytes < existing.recordedPlaintextBytes
+  ) {
+    throw new QueueInvariantError("active_capture_conflict");
+  }
 }
 
 function assertLease(value: Record<string, unknown>, sessionId: string): void {
@@ -553,6 +581,20 @@ function assertAesKey(key: CryptoKey, code: string): void {
     !key.usages.includes("decrypt")
   ) {
     throw new QueueInvariantError(code);
+  }
+}
+
+function assertSessionDek(key: CryptoKey): void {
+  const algorithm = key.algorithm as AesKeyAlgorithm;
+  if (
+    key.type !== "secret" ||
+    key.extractable ||
+    algorithm.name !== "AES-GCM" ||
+    algorithm.length !== 256 ||
+    key.usages.length !== 1 ||
+    key.usages[0] !== "encrypt"
+  ) {
+    throw new QueueInvariantError("invalid_session_dek");
   }
 }
 

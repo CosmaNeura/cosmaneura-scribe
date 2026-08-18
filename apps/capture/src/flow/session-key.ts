@@ -28,7 +28,7 @@ export async function createWrappedSessionKey(
       raw,
       { name: "AES-GCM", length: 256 },
       true,
-      ["encrypt", "decrypt"],
+      ["encrypt"],
     );
     const wrappingKey = await crypto.subtle.importKey(
       "jwk",
@@ -51,7 +51,7 @@ export async function createWrappedSessionKey(
       raw,
       { name: "AES-GCM", length: 256 },
       false,
-      ["encrypt", "decrypt"],
+      ["encrypt"],
     );
     return {
       key,
