@@ -101,6 +101,44 @@ describe("CaptureQueue", () => {
     harness.storage.close();
   });
 
+  it("retries a transient receipt failure without terminalizing the chunk", async () => {
+    const harness = await createHarness({ baseRetryMs: 100, random: () => 0 });
+    const reservation = makeReservation(0);
+    await harness.queue.reserve(reservation, "reservation-batch-0001");
+    await harness.queue.encrypt(reservation.objectId, makeEnvelope(2));
+
+    let receiptAttempt = 0;
+    const transport = successfulTransport(() => harness.now.value, {
+      receipt: async () => {
+        receiptAttempt += 1;
+        if (receiptAttempt === 1) {
+          throw new QueueTransportError("retryable", "bff_temporarily_unavailable");
+        }
+        return { state: "reserved" };
+      },
+    });
+
+    const first = await harness.queue.drainOnce(transport);
+    expect(first.items[0]).toMatchObject({
+      outcome: "deferred",
+      code: "bff_temporarily_unavailable",
+    });
+    const deferred = await harness.queue.get(reservation.objectId);
+    expect(deferred?.state).toBe("uploading");
+    expect(deferred?.retry.upload).toMatchObject({
+      attempts: 1,
+      notBeforeEpochMs: 50,
+      terminalCode: null,
+    });
+
+    harness.now.value = 50;
+    const second = await harness.queue.drainOnce(transport);
+    expect(second.items[0]).toMatchObject({ outcome: "registered" });
+    expect(receiptAttempt).toBe(3);
+    expect((await harness.queue.get(reservation.objectId))?.state).toBe("registered");
+    harness.storage.close();
+  });
+
   it("rotates only the expired authorization key while retaining object, AAD, and bytes", async () => {
     const harness = await createHarness();
     const reservation = makeReservation(0);
@@ -387,6 +425,7 @@ function queueOptions(now: { value: number }) {
 }
 
 interface TransportOverrides {
+  readonly receipt?: CaptureQueueTransport["getReceipt"];
   readonly authorize?: CaptureQueueTransport["authorizeUpload"];
   readonly upload?: CaptureQueueTransport["upload"];
   readonly register?: CaptureQueueTransport["register"];
@@ -399,12 +438,15 @@ function successfulTransport(
 ): CaptureQueueTransport {
   const registered = new Map<string, RegistrationReceipt>();
   return {
-    getReceipt: vi.fn(async (reservation) => {
-      const receipt = registered.get(reservation.objectId);
-      return receipt === undefined || overrides.receiptAlwaysReserved === true
-        ? { state: "reserved" as const }
-        : { state: "registered" as const, registration: receipt };
-    }),
+    getReceipt: vi.fn(
+      overrides.receipt ??
+        (async (reservation) => {
+          const receipt = registered.get(reservation.objectId);
+          return receipt === undefined || overrides.receiptAlwaysReserved === true
+            ? { state: "reserved" as const }
+            : { state: "registered" as const, registration: receipt };
+        }),
+    ),
     authorizeUpload: vi.fn(
       overrides.authorize ??
         (async (_sessionId, objectId): Promise<UploadAuthorization> => ({

@@ -196,8 +196,11 @@ function sameRemoteReservation(
 
 function mapBffFailure(error: unknown, mutation: boolean): QueueTransportError {
   if (error instanceof BffResponseError) {
-    if (mutation && error.status >= 200 && error.status < 300) {
-      return new QueueTransportError("unknown_success", "bff_result_unknown");
+    if (error.status >= 200 && error.status < 300) {
+      return new QueueTransportError(
+        mutation ? "unknown_success" : "retryable",
+        mutation ? "bff_result_unknown" : "bff_temporarily_unavailable",
+      );
     }
     if (error.code === "upload_authorization_expired") {
       return new QueueTransportError("credential_expired", "upload_credential_expired");

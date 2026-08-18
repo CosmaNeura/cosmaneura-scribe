@@ -19,6 +19,7 @@ import type {
 
 const JSON_CONTENT_TYPE = "application/json";
 const MAX_JSON_RESPONSE_BYTES = 65_536;
+const SAME_ORIGIN_VALIDATION_BASE = "https://capture.invalid";
 
 export class BffResponseError extends Error {
   public constructor(
@@ -37,7 +38,7 @@ export class HttpCaptureBff implements CaptureBff {
     private readonly fetchImplementation: typeof fetch = fetch,
     private readonly basePath = "/api/capture",
   ) {
-    if (!basePath.startsWith("/") || basePath.startsWith("//") || basePath.includes("://")) {
+    if (!isCanonicalSameOriginPath(basePath)) {
       throw new Error("capture BFF base path must be same-origin");
     }
   }
@@ -167,6 +168,36 @@ export class HttpCaptureBff implements CaptureBff {
     }
     return (await readBoundedJson(response)) as Response;
   }
+}
+
+function isCanonicalSameOriginPath(value: string): boolean {
+  if (
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    value.includes("\\") ||
+    hasControlCharacter(value)
+  ) {
+    return false;
+  }
+  try {
+    const resolved = new URL(value, SAME_ORIGIN_VALIDATION_BASE);
+    return (
+      resolved.origin === SAME_ORIGIN_VALIDATION_BASE &&
+      resolved.pathname === value &&
+      resolved.search === "" &&
+      resolved.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f)) return true;
+  }
+  return false;
 }
 
 async function readFixedErrorCode(response: Response): Promise<string | null> {

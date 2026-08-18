@@ -136,6 +136,21 @@ describe("BffCaptureQueueTransport", () => {
     });
   });
 
+  it("treats an unusable successful receipt response as retryable", async () => {
+    const getChunkReceipt = vi.fn<CaptureBff["getChunkReceipt"]>().mockRejectedValue(
+      new BffResponseError(200, null, null, "synthetic invalid response body"),
+    );
+    const transport = new BffCaptureQueueTransport(
+      bffStub({ getChunkReceipt }),
+      { putCompleteEnvelope: vi.fn().mockResolvedValue(undefined) },
+    );
+
+    await expect(transport.getReceipt(testReservation())).rejects.toMatchObject({
+      kind: "retryable",
+      code: "bff_temporarily_unavailable",
+    });
+  });
+
   it("terminalizes upload-target policy rejection before sending ciphertext", async () => {
     const fetchImplementation = vi.fn<typeof fetch>();
     const transport = new BffCaptureQueueTransport(

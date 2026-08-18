@@ -33,11 +33,13 @@ describe("HttpCaptureBff", () => {
     expect(headers.get("X-Tenant-ID")).toBeNull();
   });
 
-  it("rejects an absolute or protocol-relative BFF target", () => {
+  it("rejects non-canonical or cross-origin BFF targets", () => {
     expect(() => new HttpCaptureBff(fetch, "https://scribe.invalid")).toThrow(
       "same-origin",
     );
     expect(() => new HttpCaptureBff(fetch, "//scribe.invalid")).toThrow("same-origin");
+    expect(() => new HttpCaptureBff(fetch, "/\\scribe.invalid")).toThrow("same-origin");
+    expect(() => new HttpCaptureBff(fetch, "/api/../capture")).toThrow("same-origin");
   });
 
   it("rejects unsafe idempotency keys before a network request", async () => {
