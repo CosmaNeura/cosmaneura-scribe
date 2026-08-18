@@ -19,6 +19,24 @@ from .audio_keys import (
     build_audio_encryption_key_provider,
 )
 from .canonical_json import canonical_sha256
+from .capture_protocol_v1 import (
+    AUDIO_CHANNELS,
+    AUDIO_ENCODING,
+    CAPTURE_LEASE_TTL_SECONDS,
+    MAX_AGGREGATE_PLAINTEXT_BYTES,
+    MAX_CHUNKS,
+    MAX_ENVELOPE_BYTES,
+    MAX_RESERVATIONS_PER_BATCH,
+    MEDIA_TYPE,
+    PROTOCOL_VERSION,
+    RESERVATION_PLAINTEXT_BUDGET_BYTES,
+    RESERVATION_WINDOW_SECONDS,
+    SAMPLE_RATE_HZ,
+    TARGET_CHUNK_DURATION_MS,
+    UPLOAD_CONCURRENCY,
+    base64url_encode,
+    capture_channel_additional_data,
+)
 from .consent import ConsentError, ConsentPolicy
 from .delivery_reconciler import (
     complete_delivery_failure,
@@ -36,6 +54,14 @@ from .handoff import (
     to_master_platform_payload,
 )
 from .repository import (
+    CaptureChannelFinalizationDraft,
+    CaptureContext,
+    CaptureFinalizationError,
+    CaptureLeaseCloseReason,
+    CaptureLeaseConflictError,
+    CaptureReservationLimitError,
+    ChunkReservationDraft,
+    ChunkReservationRecord,
     DeliveryClaimPolicy,
     DeliverySuccessConflictError,
     IdempotencyClaimUnavailableError,
@@ -43,6 +69,15 @@ from .repository import (
     InMemoryRepository,
     RepositoryProvider,
     UploadGrantRecord,
+)
+from .repository import (
+    CaptureLeaseReceipt as CaptureLeaseReceiptRecord,
+)
+from .repository import (
+    ChunkReceipt as ChunkReceiptRecord,
+)
+from .repository import (
+    ChunkReservationBatch as ChunkReservationBatchRecord,
 )
 from .repository import (
     Repository as RepositoryContract,
@@ -54,7 +89,20 @@ from .schemas import (
     AudioEncryptionPublicKey,
     AudioUploadGrant,
     AudioUploadGrantRequest,
+    CaptureCapabilities,
+    CaptureCompleteRequest,
+    CaptureLeaseIssueRequest,
+    CaptureLeaseReceipt,
+    CaptureLeaseRenewRequest,
+    CaptureMediaCapabilities,
     CaptureSession,
+    ChunkReceipt,
+    ChunkRegistrationMetadata,
+    ChunkReservation,
+    ChunkReservationBatchReceipt,
+    ChunkReservationBatchRequest,
+    ChunkUploadAuthorization,
+    ChunkUploadAuthorizationRequest,
     ConsentCreate,
     ConsentRecord,
     DeliveryAttempt,
@@ -77,7 +125,7 @@ from .service_auth import (
     get_verified_tenant_id,
 )
 from .session_state_v1 import can_transition_session
-from .settings import get_settings
+from .settings import Settings, get_settings
 from .storage import AudioStorage, build_audio_storage
 
 
@@ -203,10 +251,19 @@ EncryptionKeys = Annotated[
     Depends(get_audio_encryption_key_provider),
 ]
 DeliveryPolicy = Annotated[DeliveryClaimPolicy, Depends(get_delivery_claim_policy)]
+RuntimeSettings = Annotated[Settings, Depends(get_settings)]
 
 
 def _fingerprint(payload: object) -> str:
     return canonical_sha256(payload)
+
+
+def _require_capture_protocol(settings: Settings) -> None:
+    if not settings.capture_protocol_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Capture protocol is disabled.",
+        )
 
 
 async def _idempotent_entity(
@@ -280,6 +337,101 @@ async def _assert_session_consent(
         )
     except ConsentError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _assert_capture_context(
+    context: CaptureContext,
+    policy: ConsentPolicy,
+    *,
+    require_audio_key: bool = True,
+) -> None:
+    try:
+        policy.validate_session(
+            context.consent,
+            SessionCreate(
+                appointment_id=context.session.appointment_id,
+                practitioner_id=context.session.practitioner_id,
+                patient_id=context.session.patient_id,
+                consent_record_id=context.session.consent_record_id,
+                modality=context.session.modality,
+            ),
+        )
+    except ConsentError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if require_audio_key and context.audio_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Register the session audio key before capture.",
+        )
+
+
+async def _capture_context_or_404(
+    store: RepositoryContract,
+    tenant_id: UUID,
+    session_id: UUID,
+    policy: ConsentPolicy,
+    *,
+    require_audio_key: bool = True,
+) -> CaptureContext:
+    context = await store.lock_capture_context(tenant_id, session_id)
+    if context is None:
+        raise HTTPException(status_code=404, detail="Capture session not found.")
+    _assert_capture_context(context, policy, require_audio_key=require_audio_key)
+    return context
+
+
+def _capture_lease_response(record: CaptureLeaseReceiptRecord) -> CaptureLeaseReceipt:
+    return CaptureLeaseReceipt(
+        protocol_version=PROTOCOL_VERSION,
+        receipt_id=record.id,
+        lease_id=record.lease_id,
+        session_id=record.session_id,
+        generation=record.generation,
+        issued_at=record.issued_at,
+        expires_at=record.expires_at,
+    )
+
+
+def _reservation_response(record: ChunkReservationRecord) -> ChunkReservation:
+    return ChunkReservation(
+        protocol_version=PROTOCOL_VERSION,
+        object_id=record.object_id,
+        session_id=record.session_id,
+        channel=record.channel,
+        sequence_number=record.sequence_number,
+        additional_authenticated_data=base64url_encode(record.additional_data),
+        created_at=record.created_at,
+    )
+
+
+def _reservation_batch_response(
+    record: ChunkReservationBatchRecord,
+) -> ChunkReservationBatchReceipt:
+    return ChunkReservationBatchReceipt(
+        protocol_version=PROTOCOL_VERSION,
+        batch_id=record.id,
+        session_id=record.session_id,
+        capture_authorized_until=record.capture_authorized_until,
+        reservations=tuple(_reservation_response(item) for item in record.reservations),
+    )
+
+
+def _chunk_receipt_response(record: ChunkReceiptRecord) -> ChunkReceipt:
+    registration = (
+        ChunkRegistrationMetadata(
+            chunk_id=record.registration.id,
+            sha256=record.registration.sha256,
+            ciphertext_size_bytes=record.registration.ciphertext_size_bytes,
+            registered_at=record.registration.registered_at,
+        )
+        if record.registration is not None
+        else None
+    )
+    return ChunkReceipt(
+        reservation=_reservation_response(record.reservation),
+        state="registered" if registration is not None else "reserved",
+        registration=registration,
+    )
 
 
 @app.get("/healthz", tags=["operations"])
@@ -487,6 +639,366 @@ async def bind_session_audio_key(
     return _audio_key_receipt(audio_key)
 
 
+@app.get(
+    "/v1/sessions/{session_id}/capture-capabilities",
+    response_model=CaptureCapabilities,
+)
+async def get_capture_capabilities(
+    session_id: UUID,
+    response: Response,
+    tenant_id: TenantId,
+    provider: Provider,
+    policy: Policy,
+    settings: RuntimeSettings,
+) -> CaptureCapabilities:
+    _require_capture_protocol(settings)
+    async with provider.transaction(tenant_id) as store:
+        await _capture_context_or_404(
+            store,
+            tenant_id,
+            session_id,
+            policy,
+            require_audio_key=False,
+        )
+        usage = await store.capture_reservation_usage(tenant_id, session_id)
+    response.headers["Cache-Control"] = "no-store"
+    return CaptureCapabilities(
+        protocol_version=PROTOCOL_VERSION,
+        media=CaptureMediaCapabilities(
+            media_type=MEDIA_TYPE,
+            encoding=AUDIO_ENCODING,
+            channels=AUDIO_CHANNELS,
+            sample_rate_hz=SAMPLE_RATE_HZ,
+        ),
+        target_chunk_duration_ms=TARGET_CHUNK_DURATION_MS,
+        max_envelope_bytes=MAX_ENVELOPE_BYTES,
+        max_chunks=MAX_CHUNKS,
+        remaining_aggregate_plaintext_bytes=max(
+            0,
+            MAX_AGGREGATE_PLAINTEXT_BYTES - usage.plaintext_budget_bytes,
+        ),
+        capture_lease_ttl_seconds=CAPTURE_LEASE_TTL_SECONDS,
+        reservation_window_seconds=RESERVATION_WINDOW_SECONDS,
+        max_reservations_per_batch=MAX_RESERVATIONS_PER_BATCH,
+        upload_concurrency=UPLOAD_CONCURRENCY,
+    )
+
+
+@app.post(
+    "/v1/sessions/{session_id}/capture-lease",
+    response_model=CaptureLeaseReceipt,
+    status_code=201,
+)
+async def issue_capture_lease(
+    session_id: UUID,
+    payload: CaptureLeaseIssueRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: Provider,
+    policy: Policy,
+    settings: RuntimeSettings,
+) -> CaptureLeaseReceipt:
+    _require_capture_protocol(settings)
+    receipt_id = uuid4()
+    lease_id = uuid4()
+    async with provider.transaction(tenant_id) as store:
+        previous_id = await _idempotent_entity(
+            store,
+            tenant_id,
+            f"capture.lease.issue:{session_id}",
+            idempotency_key,
+            _fingerprint(payload),
+            receipt_id,
+        )
+        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        if previous_id is not None:
+            previous = await store.get_capture_lease_receipt(tenant_id, previous_id)
+            if previous is None or previous.session_id != session_id:
+                raise HTTPException(status_code=500, detail="Capture lease receipt is unavailable.")
+            return _capture_lease_response(previous)
+        if context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
+            raise HTTPException(status_code=409, detail="Session is not accepting capture.")
+        if context.lease is not None:
+            raise HTTPException(status_code=409, detail="A capture lease already exists.")
+        receipt = await store.issue_capture_lease(
+            tenant_id,
+            session_id,
+            lease_id=lease_id,
+            receipt_id=receipt_id,
+            duration=timedelta(seconds=CAPTURE_LEASE_TTL_SECONDS),
+        )
+        if receipt is None:
+            raise HTTPException(status_code=409, detail="A capture lease already exists.")
+        await store.audit(
+            tenant_id=tenant_id,
+            action="capture_lease.issued",
+            entity_type="capture_lease",
+            entity_id=lease_id,
+        )
+        return _capture_lease_response(receipt)
+
+
+@app.post(
+    "/v1/sessions/{session_id}/capture-leases/{lease_id}/renew",
+    response_model=CaptureLeaseReceipt,
+)
+async def renew_capture_lease(
+    session_id: UUID,
+    lease_id: UUID,
+    payload: CaptureLeaseRenewRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: Provider,
+    policy: Policy,
+    settings: RuntimeSettings,
+) -> CaptureLeaseReceipt:
+    _require_capture_protocol(settings)
+    receipt_id = uuid4()
+    async with provider.transaction(tenant_id) as store:
+        previous_id = await _idempotent_entity(
+            store,
+            tenant_id,
+            f"capture.lease.renew:{session_id}:{lease_id}",
+            idempotency_key,
+            _fingerprint(payload),
+            receipt_id,
+        )
+        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        if previous_id is not None:
+            previous = await store.get_capture_lease_receipt(tenant_id, previous_id)
+            if (
+                previous is None
+                or previous.session_id != session_id
+                or previous.lease_id != lease_id
+            ):
+                raise HTTPException(status_code=500, detail="Capture lease receipt is unavailable.")
+            return _capture_lease_response(previous)
+        if context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
+            raise HTTPException(status_code=409, detail="Session is not accepting capture.")
+        receipt = await store.renew_capture_lease(
+            tenant_id,
+            session_id,
+            expected_lease_id=lease_id,
+            expected_generation=payload.expected_generation,
+            receipt_id=receipt_id,
+            duration=timedelta(seconds=CAPTURE_LEASE_TTL_SECONDS),
+        )
+        if receipt is None:
+            raise HTTPException(status_code=409, detail="Capture lease renewal was rejected.")
+        await store.audit(
+            tenant_id=tenant_id,
+            action="capture_lease.renewed",
+            entity_type="capture_lease",
+            entity_id=lease_id,
+        )
+        return _capture_lease_response(receipt)
+
+
+@app.post(
+    "/v1/sessions/{session_id}/chunk-reservations",
+    response_model=ChunkReservationBatchReceipt,
+    status_code=201,
+)
+async def reserve_audio_chunks(
+    session_id: UUID,
+    payload: ChunkReservationBatchRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: Provider,
+    policy: Policy,
+    settings: RuntimeSettings,
+) -> ChunkReservationBatchReceipt:
+    _require_capture_protocol(settings)
+    if payload.count > MAX_RESERVATIONS_PER_BATCH:
+        raise HTTPException(status_code=422, detail="Reservation batch is too large.")
+    if payload.first_sequence_number + payload.count > MAX_CHUNKS:
+        raise HTTPException(status_code=409, detail="Capture chunk limit would be exceeded.")
+    batch_id = uuid4()
+    object_ids = tuple(uuid4() for _ in range(payload.count))
+    drafts = tuple(
+        ChunkReservationDraft(
+            object_id=object_id,
+            sequence_number=payload.first_sequence_number + offset,
+            channel=payload.channel,
+            protocol_version=payload.protocol_version,
+            additional_data=capture_channel_additional_data(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                object_id=object_id,
+                sequence_number=payload.first_sequence_number + offset,
+                channel=payload.channel.value,
+            ),
+            plaintext_budget_bytes=RESERVATION_PLAINTEXT_BUDGET_BYTES,
+        )
+        for offset, object_id in enumerate(object_ids)
+    )
+    async with provider.transaction(tenant_id) as store:
+        previous_id = await _idempotent_entity(
+            store,
+            tenant_id,
+            f"capture.reservations:{session_id}",
+            idempotency_key,
+            _fingerprint(payload),
+            batch_id,
+        )
+        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        if previous_id is not None:
+            previous = await store.get_chunk_reservation_batch(tenant_id, previous_id)
+            if previous is None or previous.session_id != session_id:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Chunk reservation receipt is unavailable.",
+                )
+            return _reservation_batch_response(previous)
+        if context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
+            raise HTTPException(status_code=409, detail="Session is not accepting reservations.")
+        try:
+            batch = await store.create_chunk_reservation_batch(
+                tenant_id,
+                session_id,
+                batch_id=batch_id,
+                lease_id=payload.capture_lease_id,
+                lease_generation=payload.capture_lease_generation,
+                requested_protocol_version=payload.protocol_version,
+                drafts=drafts,
+                maximum_batch_size=MAX_RESERVATIONS_PER_BATCH,
+                maximum_chunks=MAX_CHUNKS,
+                maximum_plaintext_bytes=MAX_AGGREGATE_PLAINTEXT_BYTES,
+            )
+        except CaptureLeaseConflictError:
+            raise HTTPException(status_code=409, detail="Capture lease is not active.") from None
+        except CaptureReservationLimitError:
+            raise HTTPException(
+                status_code=409,
+                detail="Capture reservation limit exceeded.",
+            ) from None
+        await store.audit(
+            tenant_id=tenant_id,
+            action="audio_chunk_reservations.created",
+            entity_type="audio_chunk_reservation_batch",
+            entity_id=batch.id,
+        )
+        return _reservation_batch_response(batch)
+
+
+@app.post(
+    "/v1/sessions/{session_id}/chunks/{object_id}/upload-authorization",
+    response_model=ChunkUploadAuthorization,
+    status_code=201,
+)
+async def authorize_reserved_chunk_upload(
+    session_id: UUID,
+    object_id: UUID,
+    payload: ChunkUploadAuthorizationRequest,
+    response: Response,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: Provider,
+    policy: Policy,
+    audio_storage: Storage,
+    settings: RuntimeSettings,
+) -> ChunkUploadAuthorization:
+    _require_capture_protocol(settings)
+    receipt_id = uuid4()
+    async with provider.transaction(tenant_id) as store:
+        previous_id = await _idempotent_entity(
+            store,
+            tenant_id,
+            f"capture.upload-authorization:{session_id}:{object_id}",
+            idempotency_key,
+            _fingerprint(payload),
+            receipt_id,
+        )
+        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        if context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
+            raise HTTPException(status_code=409, detail="Session is closed for upload.")
+        receipt = await store.get_chunk_receipt(tenant_id, session_id, object_id)
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="Chunk reservation not found.")
+        if receipt.registration is not None:
+            raise HTTPException(status_code=409, detail="Chunk is already registered.")
+        if previous_id is not None:
+            authorization = await store.get_upload_authorization_receipt(
+                tenant_id,
+                previous_id,
+            )
+            if (
+                authorization is None
+                or authorization.session_id != session_id
+                or authorization.reservation_object_id != object_id
+            ):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Upload authorization receipt is unavailable.",
+                )
+            if not await store.is_upload_authorization_active(
+                tenant_id,
+                authorization.id,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Upload authorization expired; use a new Idempotency-Key.",
+                )
+        else:
+            authorization = await store.add_upload_authorization_receipt(
+                tenant_id,
+                session_id,
+                object_id,
+                receipt_id=receipt_id,
+                duration=timedelta(seconds=RESERVATION_WINDOW_SECONDS),
+            )
+            if authorization is None:
+                raise HTTPException(status_code=409, detail="Upload authorization was rejected.")
+            await store.audit(
+                tenant_id=tenant_id,
+                action="audio_upload_authorization.issued",
+                entity_type="audio_object",
+                entity_id=object_id,
+            )
+        grant = await audio_storage.issue_upload_grant(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            object_id=object_id,
+            request=AudioUploadGrantRequest(
+                sequence_number=receipt.reservation.sequence_number,
+                channel=receipt.reservation.channel,
+            ),
+            expires_at=authorization.expires_at,
+        )
+    response.headers["Cache-Control"] = "no-store"
+    return ChunkUploadAuthorization(
+        protocol_version=PROTOCOL_VERSION,
+        authorization_receipt_id=authorization.id,
+        object_id=object_id,
+        additional_authenticated_data=base64url_encode(receipt.reservation.additional_data),
+        upload_url=grant.upload_url,
+        expires_at=authorization.expires_at,
+    )
+
+
+@app.get(
+    "/v1/sessions/{session_id}/chunks/{object_id}",
+    response_model=ChunkReceipt,
+)
+async def get_reserved_chunk_receipt(
+    session_id: UUID,
+    object_id: UUID,
+    response: Response,
+    tenant_id: TenantId,
+    provider: Provider,
+    settings: RuntimeSettings,
+) -> ChunkReceipt:
+    _require_capture_protocol(settings)
+    async with provider.transaction(tenant_id) as store:
+        if await store.get_session(tenant_id, session_id) is None:
+            raise HTTPException(status_code=404, detail="Chunk reservation not found.")
+        receipt = await store.get_chunk_receipt(tenant_id, session_id, object_id)
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="Chunk reservation not found.")
+    response.headers["Cache-Control"] = "no-store"
+    return _chunk_receipt_response(receipt)
+
+
 @app.post(
     "/v1/sessions/{session_id}/chunks/upload-grant",
     response_model=AudioUploadGrant,
@@ -500,7 +1012,13 @@ async def issue_chunk_upload_grant(
     store: Repository,
     policy: Policy,
     audio_storage: Storage,
+    settings: RuntimeSettings,
 ) -> AudioUploadGrant:
+    if settings.capture_protocol_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Legacy upload grants are retired for the capture protocol.",
+        )
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
     if await store.get_session_audio_key(tenant_id, session_id) is None:
@@ -563,6 +1081,75 @@ async def issue_chunk_upload_grant(
     return grant
 
 
+async def _register_reserved_chunk(
+    session_id: UUID,
+    payload: AudioChunkRegister,
+    tenant_id: TenantId,
+    idempotency_key: str,
+    store: RepositoryContract,
+    policy: ConsentPolicy,
+) -> AudioChunk:
+    if payload.ciphertext_size_bytes > MAX_ENVELOPE_BYTES:
+        raise HTTPException(status_code=409, detail="Encrypted envelope exceeds protocol limit.")
+    context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+    receipt = await store.get_chunk_receipt(tenant_id, session_id, payload.object_id)
+    if receipt is None:
+        raise HTTPException(status_code=409, detail="Audio object is not reserved.")
+    if (
+        receipt.reservation.sequence_number != payload.sequence_number
+        or receipt.reservation.channel != payload.channel
+        or receipt.reservation.protocol_version != PROTOCOL_VERSION
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Audio registration does not match reservation.",
+        )
+
+    fingerprint = _fingerprint(payload)
+    operation = f"capture.chunk.register:{session_id}"
+    chunk = AudioChunk(
+        id=uuid4(), session_id=session_id, registered_at=datetime.now(UTC), **payload.model_dump()
+    )
+    entity_id = receipt.registration.id if receipt.registration is not None else chunk.id
+    previous_id = await _idempotent_entity(
+        store, tenant_id, operation, idempotency_key, fingerprint, entity_id
+    )
+    if previous_id is not None:
+        previous = await store.get_chunk(tenant_id, previous_id)
+        if previous is None:
+            raise HTTPException(status_code=500, detail="Idempotent audio chunk is unavailable.")
+        return previous
+    if receipt.registration is not None:
+        if (
+            receipt.registration.sequence_number != payload.sequence_number
+            or receipt.registration.channel != payload.channel
+            or receipt.registration.object_id != payload.object_id
+            or receipt.registration.sha256.casefold() != payload.sha256.casefold()
+            or receipt.registration.ciphertext_size_bytes != payload.ciphertext_size_bytes
+        ):
+            raise HTTPException(status_code=409, detail="Audio registration is immutable.")
+        return receipt.registration
+    if context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
+        raise HTTPException(status_code=409, detail="Session is not accepting audio chunks.")
+    if not await store.add_reserved_chunk(
+        tenant_id,
+        chunk,
+        protocol_version=PROTOCOL_VERSION,
+    ):
+        raise HTTPException(status_code=409, detail="Audio registration is immutable.")
+    await store.update_session(
+        tenant_id,
+        context.session.model_copy(update={"status": SessionStatus.CAPTURING}),
+    )
+    await store.audit(
+        tenant_id=tenant_id,
+        action="audio_chunk.registered",
+        entity_type="audio_chunk",
+        entity_id=chunk.id,
+    )
+    return chunk
+
+
 @app.post("/v1/sessions/{session_id}/chunks", response_model=AudioChunk, status_code=201)
 async def register_chunk(
     session_id: UUID,
@@ -571,7 +1158,18 @@ async def register_chunk(
     idempotency_key: IdempotencyKey,
     store: Repository,
     policy: Policy,
+    settings: RuntimeSettings,
 ) -> AudioChunk:
+    if settings.capture_protocol_enabled:
+        return await _register_reserved_chunk(
+            session_id,
+            payload,
+            tenant_id,
+            idempotency_key,
+            store,
+            policy,
+        )
+
     fingerprint = _fingerprint(payload)
     operation = f"chunk.register:{session_id}"
     chunk = AudioChunk(
@@ -624,6 +1222,104 @@ async def register_chunk(
     return chunk
 
 
+async def _complete_capture_protocol_session(
+    session_id: UUID,
+    payload: CaptureCompleteRequest,
+    tenant_id: TenantId,
+    idempotency_key: str,
+    store: RepositoryContract,
+    policy: ConsentPolicy,
+) -> CaptureSession:
+    fingerprint = _fingerprint(payload)
+    previous_id = await _idempotent_entity(
+        store,
+        tenant_id,
+        f"capture.session.complete:{session_id}",
+        idempotency_key,
+        fingerprint,
+        session_id,
+    )
+    if previous_id is not None:
+        previous = await store.get_session(tenant_id, previous_id)
+        if previous is None:
+            raise HTTPException(status_code=500, detail="Idempotent session is unavailable.")
+        await _assert_session_consent(store, tenant_id, previous, policy)
+        return previous
+
+    context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+    declarations = tuple(
+        CaptureChannelFinalizationDraft(
+            channel=item.channel,
+            last_sequence_number=item.final_sequence_number,
+        )
+        for item in payload.channels
+    )
+    if (
+        context.lease is None
+        or context.lease.lease_id != payload.capture_lease_id
+        or context.lease.generation != payload.capture_lease_generation
+    ):
+        raise HTTPException(status_code=409, detail="Capture lease fence does not match.")
+    if context.session.status == SessionStatus.UPLOADED:
+        existing = await store.capture_finalizations_for(tenant_id, session_id)
+        if {
+            item.channel: item.last_sequence_number for item in existing
+        } != {item.channel: item.last_sequence_number for item in declarations}:
+            raise HTTPException(status_code=409, detail="Capture completion is immutable.")
+        return context.session
+    if context.session.status != SessionStatus.CAPTURING:
+        raise HTTPException(status_code=409, detail="Session cannot be completed.")
+    try:
+        await store.finalize_capture_channels(tenant_id, session_id, declarations)
+    except CaptureFinalizationError:
+        raise HTTPException(
+            status_code=409,
+            detail="Registered audio channels are not contiguous.",
+        ) from None
+    if not await store.close_capture_lease(
+        tenant_id,
+        session_id,
+        expected_lease_id=payload.capture_lease_id,
+        expected_generation=payload.capture_lease_generation,
+        reason=CaptureLeaseCloseReason.SESSION_COMPLETED,
+    ):
+        raise HTTPException(status_code=409, detail="Capture lease closure was rejected.")
+    completed = context.session.model_copy(update={"status": SessionStatus.UPLOADED})
+    await store.update_session(tenant_id, completed)
+    await store.audit(
+        tenant_id=tenant_id,
+        action="scribe_session.uploaded",
+        entity_type="scribe_session",
+        entity_id=session_id,
+    )
+    return completed
+
+
+@app.post(
+    "/v1/sessions/{session_id}/capture-complete",
+    response_model=CaptureSession,
+)
+async def complete_capture_protocol_session(
+    session_id: UUID,
+    payload: CaptureCompleteRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: Provider,
+    policy: Policy,
+    settings: RuntimeSettings,
+) -> CaptureSession:
+    _require_capture_protocol(settings)
+    async with provider.transaction(tenant_id) as store:
+        return await _complete_capture_protocol_session(
+            session_id,
+            payload,
+            tenant_id,
+            idempotency_key,
+            store,
+            policy,
+        )
+
+
 @app.post("/v1/sessions/{session_id}/complete", response_model=CaptureSession)
 async def complete_session(
     session_id: UUID,
@@ -631,7 +1327,14 @@ async def complete_session(
     idempotency_key: IdempotencyKey,
     store: Repository,
     policy: Policy,
+    settings: RuntimeSettings,
 ) -> CaptureSession:
+    if settings.capture_protocol_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Legacy completion is retired for the capture protocol.",
+        )
+
     fingerprint = _fingerprint({"session_id": str(session_id)})
     previous_id = await _idempotent_entity(
         store,

@@ -38,6 +38,7 @@ locals {
     master_platform_base_url                   = var.master_platform_base_url
     master_platform_scope                      = var.master_platform_scope
     enable_workflow_authentication             = jsonencode(var.enable_workflow_authentication)
+    enable_capture_protocol                    = jsonencode(false)
     workflow_api_audience                      = var.workflow_api_audience
     trusted_platform_client_id                 = var.trusted_platform_client_id
     deploy_private_api_acceptance_job          = jsonencode(true)

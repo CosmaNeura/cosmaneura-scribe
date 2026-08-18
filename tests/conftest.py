@@ -159,6 +159,22 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     config.set_main_option("sqlalchemy.url", admin_url)
     command.downgrade(config, "base")
     command.upgrade(config, "head")
+    command.downgrade(config, "0006")
+    for table_name in (
+        "capture_leases",
+        "capture_lease_receipts",
+        "audio_chunk_reservation_batches",
+        "audio_chunk_reservations",
+        "audio_chunk_reservation_batch_items",
+        "audio_upload_authorization_receipts",
+        "capture_channel_finalizations",
+    ):
+        assert asyncio.run(_table_exists(admin_url, table_name)) is False
+    assert asyncio.run(
+        _column_exists(admin_url, "audio_chunks", "reservation_object_id")
+    ) is False
+    assert asyncio.run(_column_exists(admin_url, "audio_chunks", "protocol_version")) is False
+    command.upgrade(config, "head")
     command.downgrade(config, "0005")
     assert asyncio.run(_table_exists(admin_url, "session_audio_keys")) is False
     command.upgrade(config, "head")
@@ -236,6 +252,29 @@ async def _table_exists(database_url: str, table_name: str) -> bool:
             found = await connection.scalar(
                 text("SELECT to_regclass(:table_name) IS NOT NULL"),
                 {"table_name": f"public.{table_name}"},
+            )
+            return bool(found)
+    finally:
+        await engine.dispose()
+
+
+async def _column_exists(database_url: str, table_name: str, column_name: str) -> bool:
+    engine = create_async_engine(database_url, connect_args={"ssl": False})
+    try:
+        async with engine.connect() as connection:
+            found = await connection.scalar(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = :table_name
+                          AND column_name = :column_name
+                    )
+                    """
+                ),
+                {"table_name": table_name, "column_name": column_name},
             )
             return bool(found)
     finally:

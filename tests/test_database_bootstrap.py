@@ -28,16 +28,17 @@ class _Begin(AbstractAsyncContextManager["_Connection"]):
 
 
 class _Connection:
-    def __init__(self) -> None:
+    def __init__(self, scalar_results: list[object] | None = None) -> None:
         self.executed: list[tuple[str, dict[str, object] | None]] = []
         self.scalar_parameters: list[dict[str, object]] = []
+        self.scalar_results = scalar_results or []
         self.dialect = SimpleNamespace(
             identifier_preparer=SimpleNamespace(quote=lambda value: f'"{value}"')
         )
 
-    async def scalar(self, _: object, parameters: dict[str, object]) -> None:
+    async def scalar(self, _: object, parameters: dict[str, object]) -> object | None:
         self.scalar_parameters.append(parameters)
-        return None
+        return self.scalar_results.pop(0) if self.scalar_results else None
 
     async def execute(
         self,
@@ -144,7 +145,7 @@ async def _role_column_privileges(
 async def test_bootstrap_maps_both_dedicated_entra_principals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = _Connection()
+    connection = _Connection(scalar_results=[None, False, None, False, None, False])
     provider = _Provider(connection)
     monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
 
@@ -152,7 +153,10 @@ async def test_bootstrap_maps_both_dedicated_entra_principals(
 
     assert [item["role_name"] for item in connection.scalar_parameters] == [
         "scribe-runtime",
+        "scribe-runtime",
         "scribe-transcription",
+        "scribe-transcription",
+        "scribe-delivery-reconciler",
         "scribe-delivery-reconciler",
     ]
     create_parameters = [
@@ -165,6 +169,34 @@ async def test_bootstrap_maps_both_dedicated_entra_principals(
         "scribe-transcription",
         "scribe-delivery-reconciler",
     ]
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_rejects_an_application_role_that_was_not_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _Connection(scalar_results=[None, None])
+    provider = _Provider(connection)
+    monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
+
+    with pytest.raises(RuntimeError, match="was not created"):
+        await database_bootstrap._ensure_database_principals(_settings())
+
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_rejects_an_rls_bypassing_application_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _Connection(scalar_results=[None, True])
+    provider = _Provider(connection)
+    monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
+
+    with pytest.raises(RuntimeError, match="unsafe privileges"):
+        await database_bootstrap._ensure_database_principals(_settings())
+
     assert provider.closed is True
 
 
@@ -224,6 +256,10 @@ async def test_runtime_permissions_revoke_stale_access_before_exact_grants(
     ]
     grants = "\n".join(statements[5:])
     assert "session_audio_keys" in grants
+    assert "capture_leases" in grants
+    assert "audio_chunk_reservations" in grants
+    assert "audio_upload_authorization_receipts" in grants
+    assert "GRANT UPDATE (generation, renewed_at, expires_at, closed_at, close_reason)" in grants
     assert "GRANT INSERT ON audit_events" in grants
     assert "DELETE" not in grants
     assert provider.closed is True
@@ -333,6 +369,13 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 "session_audio_keys",
                 "transcripts",
                 "idempotency_records",
+                "capture_leases",
+                "capture_lease_receipts",
+                "audio_chunk_reservation_batches",
+                "audio_chunk_reservations",
+                "audio_chunk_reservation_batch_items",
+                "audio_upload_authorization_receipts",
+                "capture_channel_finalizations",
             )
             for privilege in ("SELECT", "INSERT")
         }
@@ -343,6 +386,15 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
         }
         | {("audit_events", "INSERT")}
     )
+    runtime_column_expected = {
+        *(("capture_leases", column, "UPDATE") for column in (
+            "generation",
+            "renewed_at",
+            "expires_at",
+            "closed_at",
+            "close_reason",
+        )),
+    }
     worker_expected = {
         (table_name, "SELECT")
         for table_name in (
@@ -476,6 +528,10 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             )
 
             assert await _role_table_privileges(connection, RUNTIME_ROLE) == runtime_expected
+            assert (
+                await _role_column_privileges(connection, RUNTIME_ROLE)
+                == runtime_column_expected
+            )
             assert await _role_table_privileges(connection, WORKER_ROLE) == worker_expected
             assert await _role_table_privileges(connection, RECONCILER_ROLE) == set()
             assert (

@@ -175,6 +175,73 @@
         "title": "AudioUploadGrantRequest",
         "type": "object"
       },
+      "CaptureCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_lease_ttl_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Capture Lease Ttl Seconds",
+            "type": "integer"
+          },
+          "max_chunks": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Chunks",
+            "type": "integer"
+          },
+          "max_envelope_bytes": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Envelope Bytes",
+            "type": "integer"
+          },
+          "max_reservations_per_batch": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Reservations Per Batch",
+            "type": "integer"
+          },
+          "media": {
+            "$ref": "#/components/schemas/CaptureMediaCapabilities"
+          },
+          "protocol_version": {
+            "const": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "remaining_aggregate_plaintext_bytes": {
+            "minimum": 0.0,
+            "title": "Remaining Aggregate Plaintext Bytes",
+            "type": "integer"
+          },
+          "reservation_window_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Reservation Window Seconds",
+            "type": "integer"
+          },
+          "target_chunk_duration_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Target Chunk Duration Ms",
+            "type": "integer"
+          },
+          "upload_concurrency": {
+            "exclusiveMinimum": 0.0,
+            "title": "Upload Concurrency",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "media",
+          "target_chunk_duration_ms",
+          "max_envelope_bytes",
+          "max_chunks",
+          "remaining_aggregate_plaintext_bytes",
+          "capture_lease_ttl_seconds",
+          "reservation_window_seconds",
+          "max_reservations_per_batch",
+          "upload_concurrency"
+        ],
+        "title": "CaptureCapabilities",
+        "type": "object"
+      },
       "CaptureChannel": {
         "enum": [
           "microphone",
@@ -183,6 +250,181 @@
         ],
         "title": "CaptureChannel",
         "type": "string"
+      },
+      "CaptureChannelCompletion": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/CaptureChannel"
+          },
+          "final_sequence_number": {
+            "exclusiveMaximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Final Sequence Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "channel",
+          "final_sequence_number"
+        ],
+        "title": "CaptureChannelCompletion",
+        "type": "object"
+      },
+      "CaptureCompleteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_lease_generation": {
+            "minimum": 1.0,
+            "title": "Capture Lease Generation",
+            "type": "integer"
+          },
+          "capture_lease_id": {
+            "format": "uuid",
+            "title": "Capture Lease Id",
+            "type": "string"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/CaptureChannelCompletion"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Channels",
+            "type": "array"
+          },
+          "protocol_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capture_lease_id",
+          "capture_lease_generation",
+          "channels"
+        ],
+        "title": "CaptureCompleteRequest",
+        "type": "object"
+      },
+      "CaptureLeaseIssueRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          }
+        },
+        "title": "CaptureLeaseIssueRequest",
+        "type": "object"
+      },
+      "CaptureLeaseReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "generation": {
+            "minimum": 1.0,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "issued_at": {
+            "format": "date-time",
+            "title": "Issued At",
+            "type": "string"
+          },
+          "lease_id": {
+            "format": "uuid",
+            "title": "Lease Id",
+            "type": "string"
+          },
+          "protocol_version": {
+            "const": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "receipt_id": {
+            "format": "uuid",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "receipt_id",
+          "lease_id",
+          "session_id",
+          "generation",
+          "issued_at",
+          "expires_at"
+        ],
+        "title": "CaptureLeaseReceipt",
+        "type": "object"
+      },
+      "CaptureLeaseRenewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_generation": {
+            "minimum": 1.0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "protocol_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_generation"
+        ],
+        "title": "CaptureLeaseRenewRequest",
+        "type": "object"
+      },
+      "CaptureMediaCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "channels": {
+            "const": 1,
+            "title": "Channels",
+            "type": "integer"
+          },
+          "encoding": {
+            "const": "pcm_s16le",
+            "title": "Encoding",
+            "type": "string"
+          },
+          "media_type": {
+            "const": "audio/wav",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "sample_rate_hz": {
+            "const": 16000,
+            "title": "Sample Rate Hz",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "media_type",
+          "encoding",
+          "channels",
+          "sample_rate_hz"
+        ],
+        "title": "CaptureMediaCapabilities",
+        "type": "object"
       },
       "CaptureModality": {
         "enum": [
@@ -246,6 +488,265 @@
           "created_at"
         ],
         "title": "CaptureSession",
+        "type": "object"
+      },
+      "ChunkReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "registration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChunkRegistrationMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reservation": {
+            "$ref": "#/components/schemas/ChunkReservation"
+          },
+          "state": {
+            "enum": [
+              "reserved",
+              "registered"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reservation",
+          "state"
+        ],
+        "title": "ChunkReceipt",
+        "type": "object"
+      },
+      "ChunkRegistrationMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk_id": {
+            "format": "uuid",
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "ciphertext_size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 327680.0,
+            "title": "Ciphertext Size Bytes",
+            "type": "integer"
+          },
+          "registered_at": {
+            "format": "date-time",
+            "title": "Registered At",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "sha256",
+          "ciphertext_size_bytes",
+          "registered_at"
+        ],
+        "title": "ChunkRegistrationMetadata",
+        "type": "object"
+      },
+      "ChunkReservation": {
+        "additionalProperties": false,
+        "properties": {
+          "additional_authenticated_data": {
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Additional Authenticated Data",
+            "type": "string"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/CaptureChannel"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          },
+          "protocol_version": {
+            "const": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "sequence_number": {
+            "minimum": 0.0,
+            "title": "Sequence Number",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "object_id",
+          "session_id",
+          "channel",
+          "sequence_number",
+          "additional_authenticated_data",
+          "created_at"
+        ],
+        "title": "ChunkReservation",
+        "type": "object"
+      },
+      "ChunkReservationBatchReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "format": "uuid",
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "capture_authorized_until": {
+            "format": "date-time",
+            "title": "Capture Authorized Until",
+            "type": "string"
+          },
+          "protocol_version": {
+            "const": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "reservations": {
+            "items": {
+              "$ref": "#/components/schemas/ChunkReservation"
+            },
+            "minItems": 1,
+            "title": "Reservations",
+            "type": "array"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "batch_id",
+          "session_id",
+          "capture_authorized_until",
+          "reservations"
+        ],
+        "title": "ChunkReservationBatchReceipt",
+        "type": "object"
+      },
+      "ChunkReservationBatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_lease_generation": {
+            "minimum": 1.0,
+            "title": "Capture Lease Generation",
+            "type": "integer"
+          },
+          "capture_lease_id": {
+            "format": "uuid",
+            "title": "Capture Lease Id",
+            "type": "string"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/CaptureChannel"
+          },
+          "count": {
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "first_sequence_number": {
+            "exclusiveMaximum": 1000.0,
+            "minimum": 0.0,
+            "title": "First Sequence Number",
+            "type": "integer"
+          },
+          "protocol_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capture_lease_id",
+          "capture_lease_generation",
+          "channel",
+          "first_sequence_number",
+          "count"
+        ],
+        "title": "ChunkReservationBatchRequest",
+        "type": "object"
+      },
+      "ChunkUploadAuthorization": {
+        "additionalProperties": false,
+        "properties": {
+          "additional_authenticated_data": {
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Additional Authenticated Data",
+            "type": "string"
+          },
+          "authorization_receipt_id": {
+            "format": "uuid",
+            "title": "Authorization Receipt Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          },
+          "protocol_version": {
+            "const": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "upload_url": {
+            "title": "Upload Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol_version",
+          "authorization_receipt_id",
+          "object_id",
+          "additional_authenticated_data",
+          "upload_url",
+          "expires_at"
+        ],
+        "title": "ChunkUploadAuthorization",
+        "type": "object"
+      },
+      "ChunkUploadAuthorizationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Protocol Version",
+            "type": "string"
+          }
+        },
+        "title": "ChunkUploadAuthorizationRequest",
         "type": "object"
       },
       "ConsentCreate": {
@@ -1327,6 +1828,375 @@
         "summary": "Bind Session Audio Key"
       }
     },
+    "/v1/sessions/{session_id}/capture-capabilities": {
+      "get": {
+        "operationId": "get_capture_capabilities_v1_sessions__session_id__capture_capabilities_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureCapabilities"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Capture Capabilities"
+      }
+    },
+    "/v1/sessions/{session_id}/capture-complete": {
+      "post": {
+        "operationId": "complete_capture_protocol_session_v1_sessions__session_id__capture_complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureSession"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Complete Capture Protocol Session"
+      }
+    },
+    "/v1/sessions/{session_id}/capture-lease": {
+      "post": {
+        "operationId": "issue_capture_lease_v1_sessions__session_id__capture_lease_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureLeaseIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureLeaseReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Issue Capture Lease"
+      }
+    },
+    "/v1/sessions/{session_id}/capture-leases/{lease_id}/renew": {
+      "post": {
+        "operationId": "renew_capture_lease_v1_sessions__session_id__capture_leases__lease_id__renew_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lease Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureLeaseRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureLeaseReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Renew Capture Lease"
+      }
+    },
+    "/v1/sessions/{session_id}/chunk-reservations": {
+      "post": {
+        "operationId": "reserve_audio_chunks_v1_sessions__session_id__chunk_reservations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkReservationBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkReservationBatchReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reserve Audio Chunks"
+      }
+    },
     "/v1/sessions/{session_id}/chunks": {
       "post": {
         "operationId": "register_chunk_v1_sessions__session_id__chunks_post",
@@ -1477,6 +2347,157 @@
           }
         ],
         "summary": "Issue Chunk Upload Grant"
+      }
+    },
+    "/v1/sessions/{session_id}/chunks/{object_id}": {
+      "get": {
+        "operationId": "get_reserved_chunk_receipt_v1_sessions__session_id__chunks__object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Reserved Chunk Receipt"
+      }
+    },
+    "/v1/sessions/{session_id}/chunks/{object_id}/upload-authorization": {
+      "post": {
+        "operationId": "authorize_reserved_chunk_upload_v1_sessions__session_id__chunks__object_id__upload_authorization_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Object Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkUploadAuthorizationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkUploadAuthorization"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Authorize Reserved Chunk Upload"
       }
     },
     "/v1/sessions/{session_id}/complete": {

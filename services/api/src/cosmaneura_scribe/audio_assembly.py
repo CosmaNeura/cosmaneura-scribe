@@ -8,7 +8,6 @@ import io
 import json
 import os
 import shutil
-import struct
 import tempfile
 import wave
 from collections import defaultdict
@@ -17,7 +16,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Literal, Protocol
+from typing import BinaryIO, Protocol
 from uuid import UUID
 
 import httpx
@@ -27,7 +26,6 @@ from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob.aio import BlobServiceClient
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .audio_keys import (
     KEY_VAULT_SCOPE,
@@ -35,6 +33,20 @@ from .audio_keys import (
     versioned_key_id,
     versionless_key_id,
 )
+from .capture_protocol_v1 import (
+    AUDIO_CHANNELS,
+    MAX_AGGREGATE_PLAINTEXT_BYTES,
+    MAX_CHUNKS,
+    MAX_ENVELOPE_BYTES,
+    MAX_HEADER_BYTES,
+    MEDIA_COMPRESSION_TYPE,
+    MEDIA_SAMPLE_WIDTH_BYTES,
+    SAMPLE_RATE_HZ,
+    capture_channel_additional_data,
+    decode_envelope,
+)
+from .capture_protocol_v1 import EncryptedChunkHeader as EncryptedChunkHeader
+from .capture_protocol_v1 import encode_envelope as encode_envelope
 from .repository import AudioAssemblyManifest, RepositoryProvider
 from .schemas import AudioChunk, AudioUploadGrantRequest, CaptureChannel, SessionAudioKey
 from .settings import Settings
@@ -42,23 +54,11 @@ from .storage import blob_name
 from .transcription import AudioTrack, AudioTrackReader
 from .transcription_worker import AudioAssemblyRequest
 
-ENVELOPE_MAGIC = b"CSCRIBE1"
-MAX_HEADER_BYTES = 4_096
-MAX_ASSEMBLY_CHUNKS = 1_000
-DEFAULT_MAXIMUM_PLAINTEXT_BYTES = 64 * 1_024 * 1_024
+DEFAULT_MAXIMUM_PLAINTEXT_BYTES = MAX_AGGREGATE_PLAINTEXT_BYTES
 
 
 class AudioAssemblyError(RuntimeError):
     """Fixed-code error safe for metadata-only operational logs."""
-
-
-class EncryptedChunkHeader(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_version: Literal["1.0"] = "1.0"
-    content_encryption: Literal["A256GCM"] = "A256GCM"
-    nonce: str = Field(pattern=r"^[A-Za-z0-9_-]+$", max_length=64)
-    media_type: Literal["audio/wav"] = "audio/wav"
 
 
 class BlobObjectReader(Protocol):
@@ -242,6 +242,14 @@ class _WaveFormat:
     compression_type: str
 
 
+ACCEPTED_WAVE_FORMAT = _WaveFormat(
+    channels=AUDIO_CHANNELS,
+    sample_width=MEDIA_SAMPLE_WIDTH_BYTES,
+    frame_rate=SAMPLE_RATE_HZ,
+    compression_type=MEDIA_COMPRESSION_TYPE,
+)
+
+
 class EncryptedBlobAudioTrackAssembler:
     def __init__(
         self,
@@ -321,7 +329,10 @@ class EncryptedBlobAudioTrackAssembler:
                 for chunk in chunks:
                     envelope = await self._reader.read(request, chunk)
                     self._verify_ciphertext(chunk, envelope)
-                    header, ciphertext = _parse_envelope(envelope)
+                    try:
+                        header, ciphertext = decode_envelope(envelope)
+                    except ValueError:
+                        raise AudioAssemblyError("audio_envelope_invalid") from None
                     try:
                         nonce = _base64url_decode(header.nonce)
                     except ValueError:
@@ -406,8 +417,10 @@ class EncryptedBlobAudioTrackAssembler:
         return dict(grouped)
 
     def _validate_resource_limits(self, manifest: AudioAssemblyManifest) -> None:
-        if not manifest.chunks or len(manifest.chunks) > MAX_ASSEMBLY_CHUNKS:
+        if not manifest.chunks or len(manifest.chunks) > MAX_CHUNKS:
             raise AudioAssemblyError("audio_chunk_limit_exceeded")
+        if any(chunk.ciphertext_size_bytes > MAX_ENVELOPE_BYTES for chunk in manifest.chunks):
+            raise AudioAssemblyError("audio_ciphertext_limit_exceeded")
         envelope_allowance = len(manifest.chunks) * (MAX_HEADER_BYTES + 128)
         if sum(chunk.ciphertext_size_bytes for chunk in manifest.chunks) > (
             self._maximum_plaintext_bytes + envelope_allowance
@@ -428,17 +441,13 @@ class EncryptedBlobAudioTrackAssembler:
 
 
 def chunk_additional_data(request: AudioAssemblyRequest, chunk: AudioChunk) -> bytes:
-    return json.dumps(
-        {
-            "channel": chunk.channel.value,
-            "object_id": str(chunk.object_id),
-            "sequence_number": chunk.sequence_number,
-            "session_id": str(request.session_id),
-            "tenant_id": str(request.tenant_id),
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
+    return capture_channel_additional_data(
+        tenant_id=request.tenant_id,
+        session_id=request.session_id,
+        object_id=chunk.object_id,
+        sequence_number=chunk.sequence_number,
+        channel=chunk.channel.value,
+    )
 
 
 def track_additional_data(request: AudioAssemblyRequest, channel: CaptureChannel) -> bytes:
@@ -451,34 +460,6 @@ def track_additional_data(request: AudioAssemblyRequest, channel: CaptureChannel
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-
-
-def encode_envelope(header: EncryptedChunkHeader, ciphertext: bytes) -> bytes:
-    encoded_header = json.dumps(
-        header.model_dump(mode="json"),
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    if len(encoded_header) > MAX_HEADER_BYTES:
-        raise ValueError("encrypted audio header is too large")
-    return ENVELOPE_MAGIC + struct.pack(">I", len(encoded_header)) + encoded_header + ciphertext
-
-
-def _parse_envelope(value: bytes) -> tuple[EncryptedChunkHeader, bytes]:
-    prefix_length = len(ENVELOPE_MAGIC) + 4
-    if len(value) <= prefix_length or not value.startswith(ENVELOPE_MAGIC):
-        raise AudioAssemblyError("audio_envelope_invalid")
-    header_length = struct.unpack(">I", value[len(ENVELOPE_MAGIC) : prefix_length])[0]
-    if header_length <= 0 or header_length > MAX_HEADER_BYTES:
-        raise AudioAssemblyError("audio_envelope_invalid")
-    header_end = prefix_length + header_length
-    if header_end >= len(value):
-        raise AudioAssemblyError("audio_envelope_invalid")
-    try:
-        header = EncryptedChunkHeader.model_validate_json(value[prefix_length:header_end])
-    except ValidationError:
-        raise AudioAssemblyError("audio_envelope_invalid") from None
-    return header, value[header_end:]
 
 
 def _write_encrypted_wave_track(
@@ -510,8 +491,11 @@ def _write_encrypted_wave_track(
 
 
 def _write_wave_chunks(chunks: list[bytearray], destination: BinaryIO) -> None:
-    expected: _WaveFormat | None = None
     with wave.open(destination, "wb") as output:
+        output.setnchannels(ACCEPTED_WAVE_FORMAT.channels)
+        output.setsampwidth(ACCEPTED_WAVE_FORMAT.sample_width)
+        output.setframerate(ACCEPTED_WAVE_FORMAT.frame_rate)
+        output.setcomptype("NONE", "not compressed")
         for value in chunks:
             try:
                 with wave.open(io.BytesIO(value), "rb") as source:
@@ -521,16 +505,8 @@ def _write_wave_chunks(chunks: list[bytearray], destination: BinaryIO) -> None:
                         frame_rate=source.getframerate(),
                         compression_type=source.getcomptype(),
                     )
-                    if current.compression_type != "NONE":
-                        raise AudioAssemblyError("audio_wave_format_unsupported")
-                    if expected is None:
-                        expected = current
-                        output.setnchannels(current.channels)
-                        output.setsampwidth(current.sample_width)
-                        output.setframerate(current.frame_rate)
-                        output.setcomptype("NONE", "not compressed")
-                    elif current != expected:
-                        raise AudioAssemblyError("audio_wave_format_mismatch")
+                    if current != ACCEPTED_WAVE_FORMAT:
+                        raise AudioAssemblyError("audio_wave_media_profile_unsupported")
                     output.writeframes(source.readframes(source.getnframes()))
             except (EOFError, wave.Error):
                 raise AudioAssemblyError("audio_wave_invalid") from None

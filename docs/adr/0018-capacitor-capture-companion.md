@@ -2,6 +2,10 @@
 
 **Status:** Accepted (implementation pending; no client code exists yet)
 
+Phase 1's server-side reservation, lease, capability, receipt, and generated wire contract is
+specified by ADR 0019. No `apps/capture/` implementation may begin until that false-default
+contract and its cross-language vectors have merged with all PostgreSQL/RLS gates green.
+
 ## Context
 
 ADR 0009 made web and mobile capture separate first-class clients, chose React Native for mobile,

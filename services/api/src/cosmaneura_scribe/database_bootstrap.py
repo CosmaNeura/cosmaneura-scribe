@@ -73,6 +73,20 @@ async def _ensure_database_principals(settings: Settings) -> None:
                             "object_id": str(principal.object_id),
                         },
                     )
+                unsafe_role = await connection.scalar(
+                    text(
+                        """
+                        SELECT rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb
+                        FROM pg_catalog.pg_roles
+                        WHERE rolname = :role_name
+                        """
+                    ),
+                    {"role_name": principal.role_name},
+                )
+                if unsafe_role is None:
+                    raise RuntimeError("Database application role was not created")
+                if unsafe_role:
+                    raise RuntimeError("Database application role has unsafe privileges")
     finally:
         await provider.close()
 
@@ -140,7 +154,17 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                 text(
                     f"GRANT SELECT, INSERT ON consent_records, audio_chunks, "
                     f"audio_upload_grants, session_audio_keys, transcripts, "
-                    f"idempotency_records TO {role}"
+                    f"idempotency_records, capture_leases, capture_lease_receipts, "
+                    f"audio_chunk_reservation_batches, audio_chunk_reservations, "
+                    f"audio_chunk_reservation_batch_items, "
+                    f"audio_upload_authorization_receipts, "
+                    f"capture_channel_finalizations TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT UPDATE (generation, renewed_at, expires_at, closed_at, close_reason) "
+                    f"ON capture_leases TO {role}"
                 )
             )
             await connection.execute(

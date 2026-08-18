@@ -16,6 +16,14 @@ from pydantic import (
     model_validator,
 )
 
+from .capture_protocol_v1 import (
+    MAX_CHUNKS,
+    MAX_ENVELOPE_BYTES,
+    MAX_RESERVATIONS_PER_BATCH,
+    PROTOCOL_VERSION,
+    CaptureChannel,
+    ProtocolVersion,
+)
 from .session_state_v1 import SessionStatus
 from .transcript_constraints import (
     MAX_TRANSCRIPT_CONTENT_CHARS,
@@ -88,10 +96,149 @@ class CaptureSession(SessionCreate):
     created_at: datetime
 
 
-class CaptureChannel(StrEnum):
-    MICROPHONE = "microphone"
-    SYSTEM_AUDIO = "system_audio"
-    MIXED = "mixed"
+class CaptureMediaCapabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    media_type: Literal["audio/wav"]
+    encoding: Literal["pcm_s16le"]
+    channels: Literal[1]
+    sample_rate_hz: Literal[16000]
+
+
+class CaptureCapabilities(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol_version: ProtocolVersion
+    media: CaptureMediaCapabilities
+    target_chunk_duration_ms: int = Field(gt=0)
+    max_envelope_bytes: int = Field(gt=0)
+    max_chunks: int = Field(gt=0)
+    remaining_aggregate_plaintext_bytes: int = Field(ge=0)
+    capture_lease_ttl_seconds: int = Field(gt=0)
+    reservation_window_seconds: int = Field(gt=0)
+    max_reservations_per_batch: int = Field(gt=0)
+    upload_concurrency: int = Field(gt=0)
+
+
+class CaptureLeaseIssueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: ProtocolVersion = PROTOCOL_VERSION
+
+
+class CaptureLeaseRenewRequest(CaptureLeaseIssueRequest):
+    expected_generation: int = Field(ge=1)
+
+
+class CaptureLeaseReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol_version: ProtocolVersion
+    receipt_id: UUID
+    lease_id: UUID
+    session_id: UUID
+    generation: int = Field(ge=1)
+    issued_at: datetime
+    expires_at: datetime
+
+
+class ChunkReservationBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: ProtocolVersion = PROTOCOL_VERSION
+    capture_lease_id: UUID
+    capture_lease_generation: int = Field(ge=1)
+    channel: CaptureChannel
+    first_sequence_number: int = Field(ge=0, lt=MAX_CHUNKS)
+    count: int = Field(ge=1, le=MAX_RESERVATIONS_PER_BATCH)
+
+
+class ChunkReservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol_version: ProtocolVersion
+    object_id: UUID
+    session_id: UUID
+    channel: CaptureChannel
+    sequence_number: int = Field(ge=0)
+    additional_authenticated_data: str = Field(
+        pattern=r"^[A-Za-z0-9_-]+$",
+        repr=False,
+    )
+    created_at: datetime
+
+
+class ChunkReservationBatchReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol_version: ProtocolVersion
+    batch_id: UUID
+    session_id: UUID
+    capture_authorized_until: datetime
+    reservations: tuple[ChunkReservation, ...] = Field(min_length=1)
+
+
+class ChunkUploadAuthorizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: ProtocolVersion = PROTOCOL_VERSION
+
+
+class ChunkUploadAuthorization(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol_version: ProtocolVersion
+    authorization_receipt_id: UUID
+    object_id: UUID
+    additional_authenticated_data: str = Field(
+        pattern=r"^[A-Za-z0-9_-]+$",
+        repr=False,
+    )
+    upload_url: str = Field(repr=False)
+    expires_at: datetime
+
+
+class ChunkRegistrationMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    chunk_id: UUID
+    sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$", repr=False)
+    ciphertext_size_bytes: int = Field(gt=0, le=MAX_ENVELOPE_BYTES)
+    registered_at: datetime
+
+
+class ChunkReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reservation: ChunkReservation
+    state: Literal["reserved", "registered"]
+    registration: ChunkRegistrationMetadata | None = None
+
+
+class CaptureChannelCompletion(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    channel: CaptureChannel
+    final_sequence_number: int = Field(ge=0, lt=MAX_CHUNKS)
+
+
+class CaptureCompleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: ProtocolVersion = PROTOCOL_VERSION
+    capture_lease_id: UUID
+    capture_lease_generation: int = Field(ge=1)
+    channels: tuple[CaptureChannelCompletion, ...] = Field(min_length=1, max_length=3)
+
+    @field_validator("channels")
+    @classmethod
+    def channels_are_unique(
+        cls,
+        value: tuple[CaptureChannelCompletion, ...],
+    ) -> tuple[CaptureChannelCompletion, ...]:
+        if len({item.channel for item in value}) != len(value):
+            raise ValueError("capture completion channels must be unique")
+        return value
 
 
 class AudioChunkRegister(BaseModel):
