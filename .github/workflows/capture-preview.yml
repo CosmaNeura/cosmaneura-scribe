@@ -1,0 +1,223 @@
+name: Capture preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: capture-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          cache: true
+          version: 2026.8.6
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          cache: gradle
+          distribution: temurin
+          java-version: '21'
+      - name: Verify pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v24.5.0"
+          test "$(npm --version)" = "11.5.2"
+      - run: npm ci
+      - name: Audit production npm dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run cap:sync:check:android
+      - name: Build debug APK
+        working-directory: apps/capture/android
+        run: ./gradlew --no-daemon :app:assembleDebug
+      - name: Verify preview artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f apps/capture/dist/index.html
+          test -f apps/capture/dist/sw.js
+          test -f apps/capture/dist/manifest.webmanifest
+          test -f apps/capture/dist/staticwebapp.config.json
+          test -f apps/capture/android/app/build/outputs/apk/debug/app-debug.apk
+          shasum -a 256 apps/capture/android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload PWA build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: capture-pwa-pr-${{ github.event.pull_request.number }}
+          path: apps/capture/dist
+          retention-days: 14
+      - name: Upload debug APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: capture-android-debug-pr-${{ github.event.pull_request.number }}
+          path: apps/capture/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+  deploy-swa:
+    if: >-
+      github.event.action != 'closed' &&
+      vars.CAPTURE_PREVIEW_SWA_ENABLED == 'true' &&
+      vars.CAPTURE_PREVIEW_SHARED_MOCK_READY == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: capture-preview
+    steps:
+      - name: Check fail-closed preview deployment gate
+        id: preview-gate
+        env:
+          ENABLED: ${{ vars.CAPTURE_PREVIEW_SWA_ENABLED }}
+          SHARED_MOCK_READY: ${{ vars.CAPTURE_PREVIEW_SHARED_MOCK_READY }}
+          SWA_TOKEN_CONFIGURED: ${{ secrets.CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=false
+          if [[ "${ENABLED}" == "true" \
+            && "${SHARED_MOCK_READY}" == "true" \
+            && "${SWA_TOKEN_CONFIGURED}" == "true" \
+            && "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
+            ready=true
+          fi
+          echo "ready=${ready}" >> "${GITHUB_OUTPUT}"
+          if [[ "${ready}" != "true" ]]; then
+            echo "SWA deployment skipped: reviewed credentials and a persistent shared mock adapter are required."
+          fi
+      - name: Download PWA build
+        if: steps.preview-gate.outputs.ready == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: capture-pwa-pr-${{ github.event.pull_request.number }}
+          path: capture-pwa
+      - name: Deploy synthetic preview to Azure Static Web Apps
+        if: steps.preview-gate.outputs.ready == 'true'
+        uses: Azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9 # v1
+        with:
+          action: upload
+          app_location: capture-pwa
+          azure_static_web_apps_api_token: ${{ secrets.CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN }}
+          production_branch: main
+          skip_app_build: true
+
+  distribute-android:
+    if: >-
+      github.event.action != 'closed' &&
+      vars.CAPTURE_PREVIEW_FIREBASE_ENABLED == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: capture-preview
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          cache: true
+          version: 2026.8.6
+      - name: Check Firebase distribution configuration
+        id: firebase-gate
+        env:
+          ENABLED: ${{ vars.CAPTURE_PREVIEW_FIREBASE_ENABLED }}
+          FIREBASE_ANDROID_APP_ID: ${{ vars.CAPTURE_PREVIEW_FIREBASE_ANDROID_APP_ID }}
+          FIREBASE_PROJECT_ID: ${{ vars.CAPTURE_PREVIEW_FIREBASE_PROJECT_ID }}
+          FIREBASE_TESTER_GROUP: ${{ vars.CAPTURE_PREVIEW_FIREBASE_TESTER_GROUP }}
+          GCP_SERVICE_ACCOUNT: ${{ vars.CAPTURE_PREVIEW_GCP_SERVICE_ACCOUNT }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.CAPTURE_PREVIEW_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=false
+          if [[ "${ENABLED}" == "true" \
+            && -n "${FIREBASE_ANDROID_APP_ID}" \
+            && -n "${FIREBASE_PROJECT_ID}" \
+            && -n "${FIREBASE_TESTER_GROUP}" \
+            && -n "${GCP_SERVICE_ACCOUNT}" \
+            && -n "${GCP_WORKLOAD_IDENTITY_PROVIDER}" \
+            && "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
+            ready=true
+          fi
+          echo "ready=${ready}" >> "${GITHUB_OUTPUT}"
+          if [[ "${ready}" != "true" ]]; then
+            echo "Firebase distribution skipped: the reviewed WIF configuration is incomplete or disabled."
+          fi
+      - name: Download debug APK
+        if: steps.firebase-gate.outputs.ready == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: capture-android-debug-pr-${{ github.event.pull_request.number }}
+          path: capture-android-debug
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        if: steps.firebase-gate.outputs.ready == 'true'
+        id: google-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          access_token_lifetime: 900s
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: false
+          project_id: ${{ vars.CAPTURE_PREVIEW_FIREBASE_PROJECT_ID }}
+          service_account: ${{ vars.CAPTURE_PREVIEW_GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+          workload_identity_provider: ${{ vars.CAPTURE_PREVIEW_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      - name: Distribute synthetic debug APK
+        if: steps.firebase-gate.outputs.ready == 'true'
+        env:
+          CAPTURE_PREVIEW_FIREBASE_ANDROID_APP_ID: ${{ vars.CAPTURE_PREVIEW_FIREBASE_ANDROID_APP_ID }}
+          CAPTURE_PREVIEW_FIREBASE_TESTER_GROUP: ${{ vars.CAPTURE_PREVIEW_FIREBASE_TESTER_GROUP }}
+          CAPTURE_PREVIEW_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/capture/src/pwa/firebase-app-distribution.mjs \
+            capture-android-debug/app-debug.apk
+
+  close-swa:
+    if: github.event.action == 'closed' && vars.CAPTURE_PREVIEW_SWA_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: capture-preview
+    steps:
+      - name: Check preview cleanup configuration
+        id: close-gate
+        env:
+          ENABLED: ${{ vars.CAPTURE_PREVIEW_SWA_ENABLED }}
+          SWA_TOKEN_CONFIGURED: ${{ secrets.CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ready=false
+          if [[ "${ENABLED}" == "true" && "${SWA_TOKEN_CONFIGURED}" == "true" ]]; then
+            ready=true
+          fi
+          echo "ready=${ready}" >> "${GITHUB_OUTPUT}"
+          if [[ "${ready}" != "true" ]]; then
+            echo "SWA preview cleanup skipped: deployment credentials are absent or disabled."
+          fi
+      - name: Close Azure Static Web Apps preview
+        if: steps.close-gate.outputs.ready == 'true'
+        uses: Azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9 # v1
+        with:
+          action: close
+          azure_static_web_apps_api_token: ${{ secrets.CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN }}
