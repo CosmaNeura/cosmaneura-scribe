@@ -662,3 +662,57 @@ real probe, that no test could see and that invalidated a written assumption wit
 being written. The response pattern held at every step: no gate was widened, no retry was bolted on
 to force a pass, both failures were reported with metrics, and the blocker was escalated as a
 decision rather than routed around.
+
+---
+
+## 11. Eighth review — PRs #26–#30: Phases 0–2 of the capture client
+
+**Target:** `main` at `c2ed0f0`. Five PRs, +24,141 lines across 191 files. No branch unmerged.
+
+### Gates, run locally
+
+```
+353 passed, 1 failed          (PostgreSQL 16 attached)
+ruff / pyright / check_phi_logs / check_secrets / check_adr_numbers   PASS
+openapi.json   in sync
+```
+
+The one failure is environmental, not a defect: `test_typescript_capture_protocol_matches_golden_vectors`
+asserts Node >= 24 and this review container has Node 22. CI pins Node 24.5.0 and passed on merge.
+The assertion failing loudly instead of skipping is itself correct behavior.
+
+### The headline: N-17 is closed with live evidence
+
+PR #26's change record documents the successful one-shot authenticated JWK metadata proof — the
+versionless Key Vault Reader fix worked, the readiness phase carried it through cold start, and
+teardown ran through state serial 62 with only the approved versionless Reader retained. The chain
+that started with "Key Vault Reader is the highest-risk unverified assumption" is now: assumption →
+live disproof (wrong scope) → narrowest correction → live proof → teardown. That is the process
+working end to end.
+
+### What Phases 1–2 delivered
+
+- **Protocol v1** (`packages/capture-protocol` + `protocol/golden`): the versioned capture protocol
+  with cross-language golden vectors, tested from both Python and TypeScript. Reservations, upload
+  authorization over a reservation, receipt lookup, capability bootstrap, and the capture lease are
+  in the API with HTTP-level PostgreSQL tests (`test_capture_protocol_api.py`, 595 lines).
+- **`apps/capture`**: Vite 8 + Lit 3 + strict TS (deliberately small — no router, no state runtime,
+  no third-party scripts), Capacitor 8.5.0 pinned as one reviewed set, iOS + Android platforms
+  generated, a custom `secure-queue` native plugin with Keychain/Keystore tests run on a real
+  Android API 36 emulator and signed iOS test host in CI, the durable queue state machine with
+  Web-Locks cross-tab coordination, a BFF client, and a mock BFF with integration tests.
+- **CI hardening** (PR #30): npm production dependency audit, Android emulator isolation.
+- Honest boundaries in the app README: 10-second chunk duration (correcting stale planning stubs),
+  pre-reservation persistence explicitly deferred to Phase 3, fail-closed on browsers without Web
+  Locks.
+
+### Assessment for the acceleration question
+
+Codex's status is accurate: secure, buildable foundation; not yet a recording app. What its 2–4
+week estimate misses is that its own Phase 2 already built the hard middle of the pipeline (queue,
+protocol, crypto plumbing, mock BFF, native custody plugin). What remains for a usable synthetic
+demo is the two ends — microphone → WAV chunks in, and CI-published builds out — plus wiring the
+existing pieces to the existing mock. Those split into four disjoint tracks that the repo's proven
+multi-agent pattern can run in parallel. The genuinely incompressible items are external: Apple
+Developer enrollment and signing, BAA/service-eligibility review, the live Front Door edge proof,
+and clinical-pilot gates.
