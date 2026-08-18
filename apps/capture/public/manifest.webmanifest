@@ -1,0 +1,17 @@
+{
+  "name": "Cosmaneura Capture",
+  "short_name": "Capture",
+  "id": "/",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f4",
+  "theme_color": "#12372d",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

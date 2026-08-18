@@ -1,0 +1,54 @@
+{
+  "name": "cosmaneura-scribe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/capture",
+    "apps/capture/native-plugins/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "npm": "11.5.2"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "^24.0.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": "11.5.2",
+      "onFail": "error"
+    }
+  },
+  "packageManager": "npm@11.5.2",
+  "scripts": {
+    "build": "npm run build --workspace @cosmaneura-scribe/capacitor-secure-queue --workspace @cosmaneura-scribe/capture",
+    "cap:sync:check:android": "node scripts/check_capacitor_sync.mjs android",
+    "cap:sync:check:ios": "node scripts/check_capacitor_sync.mjs ios",
+    "check:api": "npm run check:api --workspace @cosmaneura-scribe/capture",
+    "dev": "npm run dev --workspace @cosmaneura-scribe/capture",
+    "generate:api": "npm run generate:api --workspace @cosmaneura-scribe/capture",
+    "lint": "eslint . --max-warnings 0",
+    "mock:bff": "npm run mock:bff --workspace @cosmaneura-scribe/capture",
+    "test": "npm run test --workspaces --if-present",
+    "test:golden": "npm run test:golden --workspace @cosmaneura-scribe/capture-protocol",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.8.1",
+    "fake-indexeddb": "6.2.5",
+    "globals": "17.11.0",
+    "openapi-typescript": "7.13.0",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.67.0",
+    "vite": "8.2.1",
+    "vitest": "4.1.10"
+  }
+}

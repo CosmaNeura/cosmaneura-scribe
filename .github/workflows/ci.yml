@@ -60,3 +60,72 @@ jobs:
         working-directory: infra
       - run: tofu validate
         working-directory: infra
+
+  capture-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.5.0'
+          cache: npm
+      - run: npm install --global npm@11.5.2
+      - run: npm ci
+      - run: npm run check:api
+      - run: npm run test:golden
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  capture-android:
+    needs: capture-web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.5.0'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - run: npm install --global npm@11.5.2
+      - run: npm ci
+      - run: npm run cap:sync:check:android
+      - run: >-
+          ./gradlew --no-daemon
+          :cosmaneura-scribe-capacitor-secure-queue:testDebugUnitTest
+          :app:assembleDebug
+        working-directory: apps/capture/android
+
+  capture-ios:
+    needs: capture-web
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.5.0'
+          cache: npm
+      - run: npm install --global npm@11.5.2
+      - run: npm ci
+      - run: npm run cap:sync:check:ios
+      - name: Test iOS secure queue
+        run: >-
+          xcodebuild test
+          -scheme CosmaneuraSecureQueue
+          -configuration Debug
+          -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+          CODE_SIGNING_ALLOWED=NO
+        working-directory: apps/capture/native-plugins/secure-queue
+      - run: >-
+          xcodebuild
+          -project apps/capture/ios/App/App.xcodeproj
+          -scheme App
+          -configuration Debug
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
+          build

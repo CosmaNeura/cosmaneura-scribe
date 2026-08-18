@@ -35,6 +35,8 @@ The currently deployed revision remains on the in-memory repository until that c
 - False-default v1 capture prerequisites: renewable leases, canonical offline-safe chunk
   reservations, refreshable one-object upload authorization, registration receipts, capability
   bootstrap, and generated Python/TypeScript wire implementations with shared golden vectors
+- False-default Capacitor capture foundation shared by PWA, iOS, and Android, with a durable
+  encrypted upload queue, synthetic-only mock BFF, and device-bound native queue storage
 - False-by-default manual Container Apps Job with a dedicated identity, one-target execution,
   cancellation cleanup, zero platform retries, and least-privilege activation roles
 - Terraform-owned private Azure AI Speech foundation and a separate false-default manual smoke job
@@ -79,17 +81,17 @@ allowed to supply practice-tenant context. Follow
 
 ## Capture companion
 
-The planned P1 recording companion is one Capacitor application at `apps/capture/`. One TypeScript
-source tree will ship as a foreground browser/PWA experience for computers and exam-room tablets
-and as signed iOS/Android shells with native audio, secure storage, background/lock handling,
-encrypted offline queuing, reconnect/resume, and local purge. Each platform keeps its own custody
-promises and acceptance evidence.
+The P1 recording companion foundation is one Capacitor application at `apps/capture/`. One
+TypeScript source tree now builds as a foreground browser/PWA experience and as iOS/Android shells.
+Phase 2 provides the generated protocol client, durable encrypted queue, synthetic-only mock BFF,
+and native device-bound queue storage; recording, active DEK custody, production BFF integration,
+background audio, and clinical enablement remain deliberately unimplemented.
 
 Every authenticated API and control operation goes through the master platform BFF; only immutable
 ciphertext uses the separately governed ADR 0016 upload edge. The companion does not receive a
 Scribe workload token, trust client-supplied tenant context, or call the private Scribe API
-directly. The existing `apps/web-capture` and `apps/mobile-capture` directories are planning stubs;
-Phase 2 will fold their requirements into `apps/capture/` rather than create separate applications.
+directly. The former `apps/web-capture` and `apps/mobile-capture` planning stubs have been folded
+into `apps/capture/` rather than becoming separate applications.
 `apps/review-ui` and the P2 `apps/desktop-companion` remain separate boundaries.
 
 The proposed authenticated key, encrypted upload, offline recovery, and private Blob edge path is
