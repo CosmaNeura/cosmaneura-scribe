@@ -340,6 +340,10 @@ function testRegistrationRequest() {
 
 function bffStub(overrides: Partial<CaptureBff> = {}): CaptureBff {
   return {
+    getAudioEncryptionKey: vi.fn(),
+    createConsent: vi.fn(),
+    createSession: vi.fn(),
+    bindSessionAudioKey: vi.fn(),
     getCapabilities: vi.fn(),
     issueLease: vi.fn(),
     renewLease: vi.fn(),
@@ -348,6 +352,8 @@ function bffStub(overrides: Partial<CaptureBff> = {}): CaptureBff {
     getChunkReceipt: vi.fn(),
     registerChunk: vi.fn(),
     completeCapture: vi.fn(),
+    getTranscriptionStatus: vi.fn(),
+    getTranscript: vi.fn(),
     ...overrides,
   };
 }
