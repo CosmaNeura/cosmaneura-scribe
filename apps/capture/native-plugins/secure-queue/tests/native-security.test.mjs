@@ -21,6 +21,10 @@ test("pins the JavaScript and Apple Capacitor compatibility boundary", async () 
   assert.match(podspec, /s\.name\s+=\s+'CosmaneuraScribeCapacitorSecureQueue'/u);
   assert.match(swiftPackage, /exact:\s+"8\.5\.0"/u);
   assert.match(swiftPackage, /name:\s+"CosmaneuraScribeCapacitorSecureQueue"/u);
+  assert.match(
+    swiftPackage,
+    /\.product\(name:\s+"Cordova",\s+package:\s+"capacitor-swift-pm"\)/u,
+  );
 });
 
 test("uses device-only keys, authenticated encryption, no-backup storage, and atomic writes", async () => {

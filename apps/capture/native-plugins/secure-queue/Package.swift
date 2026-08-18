@@ -22,6 +22,7 @@ let package = Package(
             name: "CosmaneuraSecureQueue",
             dependencies: [
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
+                .product(name: "Cordova", package: "capacitor-swift-pm"),
             ],
             path: "ios/Sources/CosmaneuraSecureQueue"
         ),
