@@ -32,7 +32,7 @@ export class CapturePage {
 
   async open(expectedFlowStatus) {
     await this.page.goto("/");
-    await expect(this.syntheticOnly).toHaveText("Synthetic preview");
+    await expect(this.syntheticOnly).toHaveText("Synthetic data · Microphone test");
     await expect(this.flowStatus).toHaveText(expectedFlowStatus);
   }
 

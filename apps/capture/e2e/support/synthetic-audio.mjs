@@ -24,11 +24,41 @@ export function materializeSyntheticAudioFixture() {
     "synthetic_audio_digest_mismatch",
   );
   assertPcm16MonoWav(wav, manifest);
+  const playbackWav = expandSyntheticPlayback(wav, manifest);
 
   const runtimeDirectory = mkdtempSync(join(tmpdir(), "cosmaneura-capture-e2e-"));
   const runtimePath = join(runtimeDirectory, "synthetic-pcm16-mono-16khz.wav");
-  writeFileSync(runtimePath, wav, { mode: 0o600 });
+  writeFileSync(runtimePath, playbackWav, { mode: 0o600 });
   return runtimePath;
+}
+
+function expandSyntheticPlayback(seedWav, manifest) {
+  fixed(
+    Number.isSafeInteger(manifest.playback_repeat_count) &&
+      manifest.playback_repeat_count >= 1,
+    "synthetic_audio_repeat_count_invalid",
+  );
+  fixed(
+    manifest.playback_duration_ms === manifest.duration_ms * manifest.playback_repeat_count,
+    "synthetic_audio_playback_duration_invalid",
+  );
+  const seedPcm = seedWav.subarray(44);
+  const playback = Buffer.alloc(44 + seedPcm.length * manifest.playback_repeat_count);
+  seedWav.copy(playback, 0, 0, 44);
+  playback.writeUInt32LE(playback.length - 8, 4);
+  playback.writeUInt32LE(playback.length - 44, 40);
+  for (let index = 0; index < manifest.playback_repeat_count; index += 1) {
+    seedPcm.copy(playback, 44 + index * seedPcm.length);
+  }
+  assertPcm16MonoWav(playback, {
+    ...manifest,
+    duration_ms: manifest.playback_duration_ms,
+  });
+  fixed(
+    createHash("sha256").update(playback).digest("hex") === manifest.playback_sha256,
+    "synthetic_audio_playback_digest_mismatch",
+  );
+  return playback;
 }
 
 function assertPcm16MonoWav(wav, manifest) {

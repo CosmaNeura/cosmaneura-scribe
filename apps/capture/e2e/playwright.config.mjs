@@ -50,6 +50,10 @@ export default defineConfig({
     {
       command: "npm run dev",
       cwd: repositoryRoot,
+      env: {
+        ...process.env,
+        VITE_CAPTURE_E2E_MICROPHONE_ENABLED: "true",
+      },
       url: "http://127.0.0.1:5173",
       reuseExistingServer: false,
       timeout: 30_000,
