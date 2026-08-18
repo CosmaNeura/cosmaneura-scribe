@@ -7,9 +7,9 @@ remain false.
 
 ## Current fail-closed status
 
-PWA and APK build artifacts are always produced and retained by GitHub Actions for 14 days. Firebase
-App Distribution and Azure Static Web Apps deployment skip successfully when their explicit enable
-variables or reviewed credentials are absent.
+Successful pull-request builds produce PWA and APK artifacts retained by GitHub Actions for 14
+days. Firebase App Distribution and Azure Static Web Apps deployment skip successfully when their
+explicit enable variables or reviewed credentials are absent.
 
 Azure deployment has an additional hard gate. It remains skipped until the Azure Static Web App is
 linked to a separately reviewed deployment of the shared synthetic mock handler and
@@ -48,13 +48,19 @@ mise exec -- npm run build
 
 ## GitHub environment and Azure asks
 
-Create a protected GitHub environment named `capture-preview`, restricted to this repository's
-maintainer-reviewed branches. Configure:
+Create these repository-level variables first. They are non-secret booleans because GitHub evaluates
+job-level conditions before loading variables from a protected environment:
 
-- Environment variable `CAPTURE_PREVIEW_SWA_ENABLED=true` only after the non-production Static Web
-  App is approved.
-- Environment variable `CAPTURE_PREVIEW_SHARED_MOCK_READY=true` only after the shared mock adapter
-  and persistent-state acceptance tests pass.
+- `CAPTURE_PREVIEW_SWA_ENABLED=true` only after the non-production Static Web App is approved.
+- `CAPTURE_PREVIEW_SHARED_MOCK_READY=true` only after the shared mock adapter and persistent-state
+  acceptance tests pass.
+- `CAPTURE_PREVIEW_FIREBASE_ENABLED=true` only after the Firebase OIDC path is approved.
+
+Do not duplicate those three names as environment variables. Create a protected GitHub environment
+named `capture-preview`, restricted to this repository's maintainer-reviewed branches. Require an
+environment reviewer when a second trusted maintainer is available, and prevent self-review in that
+configuration. Configure:
+
 - Environment secret `CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN`, containing the deployment token for one
   dedicated non-production Azure Static Web App. It must not be a production Static Web App token.
 
@@ -80,15 +86,15 @@ Then create:
 
 1. A Google Cloud service account dedicated to APK distribution with
    `roles/firebaseappdistro.admin` on only that Firebase project.
-2. A Workload Identity Pool provider for GitHub Actions. Restrict its attribute condition to
-   repository `CosmaNeura/cosmaneura-scribe`, pull-request workflows, and the protected
-   `capture-preview` environment.
+2. A Workload Identity Pool provider for GitHub Actions. Map the GitHub `base_ref` claim and
+   restrict its attribute condition to repository `CosmaNeura/cosmaneura-scribe`, pull-request
+   workflows whose base branch is exactly `main`, and the protected `capture-preview`
+   environment.
 3. A `roles/iam.workloadIdentityUser` binding from that restricted provider principal to the
    distribution service account.
 
-Configure these environment variables; none contains a private credential:
+Configure these protected-environment variables; none contains a private credential:
 
-- `CAPTURE_PREVIEW_FIREBASE_ENABLED=true`
 - `CAPTURE_PREVIEW_FIREBASE_ANDROID_APP_ID` (the Firebase Android app ID, not a client secret)
 - `CAPTURE_PREVIEW_FIREBASE_PROJECT_ID`
 - `CAPTURE_PREVIEW_FIREBASE_TESTER_GROUP`
@@ -102,10 +108,12 @@ or release URLs, and receives a fifteen-minute access token only for the distrib
 distributed file is the CI-built debug APK, never a production-signed release, and its release
 notes contain only the pull-request number.
 
-The Firebase job checks out that distribution script from the pull request's reviewed base commit,
-not from the pull request head, before requesting its short-lived token. Enable distribution only
-after this workflow and script have merged to the protected base branch. Pull-request code supplies
-the already-built APK artifact but cannot replace the credential-handling script.
+The Firebase job runs only for a same-repository pull request whose base branch is exactly `main`,
+then checks out the distribution script from that protected base commit—not from the pull request
+head—before requesting its short-lived token. Enable distribution only after this workflow and
+script have merged to `main`. Pull-request code supplies the already-built APK artifact but cannot
+replace the credential-handling script. The SWA deploy and close jobs enforce the same exact-base
+rule before receiving their deployment credential.
 
 The current Gradle debug build uses the runner's ephemeral debug keystore. It supports a fresh
 synthetic installation, but a later runner's APK is not a trusted in-place update of an earlier

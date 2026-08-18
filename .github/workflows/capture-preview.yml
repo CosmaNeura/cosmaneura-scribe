@@ -69,10 +69,13 @@ jobs:
           retention-days: 14
 
   deploy-swa:
+    # Gate booleans are repository variables because job-level `if` runs before
+    # GitHub loads variables from the protected environment.
     if: >-
       github.event.action != 'closed' &&
       vars.CAPTURE_PREVIEW_SWA_ENABLED == 'true' &&
       vars.CAPTURE_PREVIEW_SHARED_MOCK_READY == 'true' &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository
     needs: build
     runs-on: ubuntu-latest
@@ -92,6 +95,7 @@ jobs:
           if [[ "${ENABLED}" == "true" \
             && "${SHARED_MOCK_READY}" == "true" \
             && "${SWA_TOKEN_CONFIGURED}" == "true" \
+            && "${{ github.event.pull_request.base.ref }}" == "main" \
             && "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
             ready=true
           fi
@@ -116,9 +120,12 @@ jobs:
           skip_app_build: true
 
   distribute-android:
+    # CAPTURE_PREVIEW_FIREBASE_ENABLED is a repository variable; credentials
+    # and identity coordinates remain scoped to the protected environment.
     if: >-
       github.event.action != 'closed' &&
       vars.CAPTURE_PREVIEW_FIREBASE_ENABLED == 'true' &&
+      github.event.pull_request.base.ref == 'main' &&
       github.event.pull_request.head.repo.full_name == github.repository
     needs: build
     runs-on: ubuntu-latest
@@ -155,6 +162,7 @@ jobs:
             && -n "${FIREBASE_TESTER_GROUP}" \
             && -n "${GCP_SERVICE_ACCOUNT}" \
             && -n "${GCP_WORKLOAD_IDENTITY_PROVIDER}" \
+            && "${{ github.event.pull_request.base.ref }}" == "main" \
             && "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
             ready=true
           fi
@@ -194,7 +202,11 @@ jobs:
             capture-android-debug/app-debug.apk
 
   close-swa:
-    if: github.event.action == 'closed' && vars.CAPTURE_PREVIEW_SWA_ENABLED == 'true'
+    if: >-
+      github.event.action == 'closed' &&
+      vars.CAPTURE_PREVIEW_SWA_ENABLED == 'true' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: capture-preview
