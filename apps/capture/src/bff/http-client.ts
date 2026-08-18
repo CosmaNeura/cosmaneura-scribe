@@ -207,12 +207,16 @@ export class HttpCaptureBff implements CaptureBff {
   }
 
   private async requestJson<Response>(path: string, init: RequestInit): Promise<Response> {
-    const response = await this.fetchImplementation(`${this.basePath}${path}`, {
-      ...init,
-      credentials: "include",
-      redirect: "error",
-      cache: "no-store",
-    });
+    const response = await this.fetchImplementation.call(
+      globalThis,
+      `${this.basePath}${path}`,
+      {
+        ...init,
+        credentials: "include",
+        redirect: "error",
+        cache: "no-store",
+      },
+    );
     if (!response.ok) {
       throw new BffResponseError(
         response.status,
