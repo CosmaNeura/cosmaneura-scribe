@@ -1,0 +1,111 @@
+:root {
+  color: #233d35;
+  background: #f6f7f4;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 20rem;
+  min-height: 100%;
+  background: #f6f7f4;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+}
+
+cosmaneura-capture {
+  display: block;
+}
+
+cosmaneura-capture .shell {
+  margin: 0 auto;
+  max-width: 42rem;
+  padding: max(1.5rem, env(safe-area-inset-top)) 1.25rem max(2rem, env(safe-area-inset-bottom));
+}
+
+cosmaneura-capture header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4rem;
+}
+
+cosmaneura-capture .brand {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+cosmaneura-capture .status {
+  background: #e3e9e5;
+  border-radius: 999px;
+  color: #365248;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.45rem 0.75rem;
+  text-transform: uppercase;
+}
+
+cosmaneura-capture main {
+  background: #ffffff;
+  border: 1px solid #dce3de;
+  border-radius: 1.25rem;
+  box-shadow: 0 1.25rem 3.5rem rgb(18 55 45 / 8%);
+  padding: clamp(1.5rem, 6vw, 3rem);
+}
+
+cosmaneura-capture h1 {
+  color: #12372d;
+  font-size: clamp(2rem, 8vw, 3.5rem);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin: 0 0 1.25rem;
+}
+
+cosmaneura-capture p {
+  color: #4e625b;
+  font-size: 1.05rem;
+  line-height: 1.6;
+  margin: 0;
+}
+
+cosmaneura-capture dl {
+  border-top: 1px solid #e6ebe7;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1fr auto;
+  margin: 2rem 0 0;
+  padding-top: 1.25rem;
+}
+
+cosmaneura-capture dt,
+cosmaneura-capture dd {
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+cosmaneura-capture dt {
+  color: #697a74;
+}
+
+cosmaneura-capture dd {
+  color: #233d35;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}

@@ -43,6 +43,9 @@ stay in the existing Cosmaneura engine.
 - False-default capture protocol v1 with renewable leases, canonical chunk reservations,
   refreshable upload authorization, receipt lookup, capability bootstrap, and generated
   Python/TypeScript framing and AAD implementations pinned by cross-language golden vectors
+- False-default Capacitor Phase 2 foundation at `apps/capture/`: shared PWA/iOS/Android shells,
+  generated API/protocol clients, an encrypted durable queue, a synthetic-only mock BFF, and
+  native device-bound queue storage with reproducible platform sync/build gates
 
 ## Next P0 slice
 
@@ -55,11 +58,10 @@ stay in the existing Cosmaneura engine.
    test.
 5. Provision the dedicated private Azure Speech resource and run the two-case synthetic live
    round-trip before activating the already defined manual transcription job.
-6. After the server protocol and private acceptance gates pass, scaffold the single Capacitor
-   companion at `apps/capture/` and fold the `apps/web-capture` and `apps/mobile-capture` planning
-   stubs into it. Deliver the P1a PWA and P1b native profiles from that source tree, with all
-   authenticated API/control operations routed through the master platform BFF, without collapsing
-   their distinct custody and acceptance requirements.
+6. Build the Phase 3 recording and active-key layers on the false-default `apps/capture/` Phase 2
+   foundation. Route every authenticated API/control operation through the master platform BFF;
+   preserve distinct PWA/native custody and acceptance requirements; do not activate a tenant until
+   raw-PCM capture, consent, DEK custody, interruption handling, and physical-device evidence pass.
 
 ## Required external decisions
 
