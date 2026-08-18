@@ -116,6 +116,8 @@ jobs:
           -scheme CosmaneuraSecureQueue
           -configuration Debug
           -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+          PRODUCT_BUNDLE_IDENTIFIER=com.cosmaneura.capture.securequeuetests
+          CODE_SIGN_ENTITLEMENTS=ios/Tests/CosmaneuraSecureQueueTests/CosmaneuraSecureQueueTests.entitlements
         working-directory: apps/capture/native-plugins/secure-queue
       - run: >-
           xcodebuild
