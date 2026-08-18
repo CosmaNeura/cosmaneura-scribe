@@ -122,6 +122,9 @@ jobs:
           adb_path="${ANDROID_HOME}/platform-tools/adb"
           system_image="system-images;android-36;google_apis;x86_64"
           avd_name="cosmaneura-api36"
+          avd_home="${RUNNER_TEMP}/cosmaneura-api36-avd"
+          mkdir -p "${avd_home}"
+          export ANDROID_AVD_HOME="${avd_home}"
 
           "${sdkmanager_path}" --install "${system_image}"
           printf 'no\n' | "${avdmanager_path}" create avd \
@@ -129,6 +132,10 @@ jobs:
             --name "${avd_name}" \
             --package "${system_image}" \
             --device pixel_2
+          if [[ ! -f "${ANDROID_AVD_HOME}/${avd_name}.ini" ]]; then
+            echo "::error::avdmanager did not create the expected API 36 AVD metadata"
+            exit 1
+          fi
 
           cleanup() {
             "${adb_path}" emu kill >/dev/null 2>&1 || true
