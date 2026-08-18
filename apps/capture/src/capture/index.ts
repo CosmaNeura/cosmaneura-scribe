@@ -2,6 +2,8 @@ export { SilentSyntheticCaptureSource } from "./synthetic-source";
 export type {
   CapturedWavChunk,
   CaptureSource,
+  CaptureSourceErrorCode,
+  CaptureSourceInterruptionCode,
   CaptureSourceStartOptions,
 } from "./source";
 export {
