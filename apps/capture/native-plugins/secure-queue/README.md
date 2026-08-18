@@ -71,11 +71,12 @@ security checks. Native CI must additionally run:
 - JDK 21, Gradle 8.14.3, Android Gradle Plugin 8.13.0, and Android SDK 36: from
   `apps/capture/android`, run
   `./gradlew :cosmaneura-scribe-capacitor-secure-queue:testDebugUnitTest :app:assembleDebug`;
-- before release, an API 36 emulator must also run
-  `./gradlew :cosmaneura-scribe-capacitor-secure-queue:connectedDebugAndroidTest`.
+- CI also runs an API 36 emulator with
+  `./gradlew :cosmaneura-scribe-capacitor-secure-queue:connectedDebugAndroidTest` to exercise the
+  real AndroidKeyStore, no-backup directory, tamper rejection, and compare-and-swap behavior.
 
 The generated app remains installable back to the declared iOS 15 and Android API 24 deployment
-floors; those floors should also receive separate device-compatibility builds before release.
+floors; those floors still require separate device-compatibility builds before release.
 
 The Android instrumentation test uses a unique test-only Keystore alias and no-backup directory.
 The iOS integration test runs inside a minimal, simulator-only, archive-excluded host with its own
