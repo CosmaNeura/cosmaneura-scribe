@@ -116,7 +116,6 @@ jobs:
           -scheme CosmaneuraSecureQueue
           -configuration Debug
           -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
-          CODE_SIGNING_ALLOWED=NO
         working-directory: apps/capture/native-plugins/secure-queue
       - run: >-
           xcodebuild
