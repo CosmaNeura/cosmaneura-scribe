@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "source_kind": "synthetic",
+  "deidentified": true,
+  "audio_format": "pcm_s16le",
+  "channels": 1,
+  "sample_rate_hz": 16000,
+  "sample_width_bytes": 2,
+  "duration_ms": 20,
+  "sha256": "6d5a57285af5ab10fd11ee5fb4f564281eac95b3131bcadad5812952a39558e1",
+  "encoded_file": "synthetic-pcm16-mono-16khz.wav.b64"
+}
