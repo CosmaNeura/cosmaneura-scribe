@@ -88,7 +88,7 @@ test("runs native secure-storage behavior on hosted emulators", async () => {
   assert.match(workflow, /connectedDebugAndroidTest/u);
   assert.match(workflow, /\/dev\/kvm/u);
   assert.match(workflow, /-no-metrics/u);
-  assert.match(workflow, /timeout 60s "\$\{adb_path\}" wait-for-device/u);
+  assert.match(workflow, /timeout 180s "\$\{adb_path\}" wait-for-device/u);
   assert.doesNotMatch(workflow, /android-emulator-runner/u);
   assert.match(
     gradleWrapper,

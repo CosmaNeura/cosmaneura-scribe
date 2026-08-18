@@ -148,7 +148,11 @@ jobs:
             >"${RUNNER_TEMP}/cosmaneura-api36-emulator.log" 2>&1 &
           emulator_pid=$!
 
-          timeout 60s "${adb_path}" wait-for-device
+          if ! timeout 180s "${adb_path}" wait-for-device; then
+            echo "::error::API 36 emulator did not become visible to adb within 180 seconds"
+            tail -80 "${RUNNER_TEMP}/cosmaneura-api36-emulator.log"
+            exit 1
+          fi
           boot_completed=""
           for _attempt in $(seq 1 60); do
             boot_completed="$("${adb_path}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
