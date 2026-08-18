@@ -1,0 +1,398 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		C0DE0000000000000000000B /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE00000000000000000008 /* AppDelegate.swift */; };
+		C0DE0000000000000000000C /* SecureQueueStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE0000000000000000000A /* SecureQueueStoreTests.swift */; };
+		C0DE00000000000000000020 /* CosmaneuraScribeCapacitorSecureQueue in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE0000000000000000001F /* CosmaneuraScribeCapacitorSecureQueue */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C0DE00000000000000000021 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C0DE00000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C0DE00000000000000000013;
+			remoteInfo = SecureQueueTestHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		C0DE00000000000000000006 /* SecureQueueTestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SecureQueueTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C0DE00000000000000000007 /* SecureQueueHostedTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SecureQueueHostedTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C0DE00000000000000000008 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		C0DE00000000000000000009 /* SecureQueueTestHost.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SecureQueueTestHost.entitlements; sourceTree = "<group>"; };
+		C0DE0000000000000000000A /* SecureQueueStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureQueueStoreTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C0DE0000000000000000000E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C0DE00000000000000000011 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C0DE00000000000000000020 /* CosmaneuraScribeCapacitorSecureQueue in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		C0DE00000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				C0DE00000000000000000005 /* SecureQueueTestHost */,
+				C0DE00000000000000000004 /* CosmaneuraSecureQueueTests */,
+				C0DE00000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C0DE00000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C0DE00000000000000000006 /* SecureQueueTestHost.app */,
+				C0DE00000000000000000007 /* SecureQueueHostedTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C0DE00000000000000000004 /* CosmaneuraSecureQueueTests */ = {
+			isa = PBXGroup;
+			children = (
+				C0DE0000000000000000000A /* SecureQueueStoreTests.swift */,
+			);
+			path = CosmaneuraSecureQueueTests;
+			sourceTree = "<group>";
+		};
+		C0DE00000000000000000005 /* SecureQueueTestHost */ = {
+			isa = PBXGroup;
+			children = (
+				C0DE00000000000000000008 /* AppDelegate.swift */,
+				C0DE00000000000000000009 /* SecureQueueTestHost.entitlements */,
+			);
+			path = SecureQueueTestHost;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C0DE00000000000000000013 /* SecureQueueTestHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C0DE00000000000000000018 /* Build configuration list for PBXNativeTarget "SecureQueueTestHost" */;
+			buildPhases = (
+				C0DE0000000000000000000D /* Sources */,
+				C0DE0000000000000000000E /* Frameworks */,
+				C0DE0000000000000000000F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SecureQueueTestHost;
+			packageProductDependencies = (
+			);
+			productName = SecureQueueTestHost;
+			productReference = C0DE00000000000000000006 /* SecureQueueTestHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+		C0DE00000000000000000014 /* SecureQueueHostedTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C0DE0000000000000000001B /* Build configuration list for PBXNativeTarget "SecureQueueHostedTests" */;
+			buildPhases = (
+				C0DE00000000000000000010 /* Sources */,
+				C0DE00000000000000000011 /* Frameworks */,
+				C0DE00000000000000000012 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C0DE00000000000000000022 /* PBXTargetDependency */,
+			);
+			name = SecureQueueHostedTests;
+			packageProductDependencies = (
+				C0DE0000000000000000001F /* CosmaneuraScribeCapacitorSecureQueue */,
+			);
+			productName = SecureQueueHostedTests;
+			productReference = C0DE00000000000000000007 /* SecureQueueHostedTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C0DE00000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					C0DE00000000000000000013 = {
+						CreatedOnToolsVersion = 26.0;
+						ProvisioningStyle = Automatic;
+					};
+					C0DE00000000000000000014 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = C0DE00000000000000000013;
+					};
+				};
+			};
+			buildConfigurationList = C0DE00000000000000000015 /* Build configuration list for PBXProject "SecureQueueHostedTests" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = C0DE00000000000000000002;
+			packageReferences = (
+				C0DE0000000000000000001E /* XCLocalSwiftPackageReference "../.." */,
+			);
+			productRefGroup = C0DE00000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C0DE00000000000000000013 /* SecureQueueTestHost */,
+				C0DE00000000000000000014 /* SecureQueueHostedTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		C0DE0000000000000000000F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C0DE00000000000000000012 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C0DE0000000000000000000D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C0DE0000000000000000000B /* AppDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C0DE00000000000000000010 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C0DE0000000000000000000C /* SecureQueueStoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C0DE00000000000000000022 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C0DE00000000000000000013 /* SecureQueueTestHost */;
+			targetProxy = C0DE00000000000000000021 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		C0DE00000000000000000016 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		C0DE00000000000000000017 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		C0DE00000000000000000019 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = SecureQueueTestHost/SecureQueueTestHost.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = SecureQueueTestHost;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.cosmaneura.capture.securequeue-test-host;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C0DE0000000000000000001A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = SecureQueueTestHost;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.cosmaneura.capture.securequeue-test-host;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		C0DE0000000000000000001C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.cosmaneura.capture.securequeue-hosted-tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SecureQueueTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SecureQueueTestHost";
+			};
+			name = Debug;
+		};
+		C0DE0000000000000000001D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.cosmaneura.capture.securequeue-hosted-tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SecureQueueTestHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SecureQueueTestHost";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C0DE00000000000000000015 /* Build configuration list for PBXProject "SecureQueueHostedTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C0DE00000000000000000016 /* Debug */,
+				C0DE00000000000000000017 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C0DE00000000000000000018 /* Build configuration list for PBXNativeTarget "SecureQueueTestHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C0DE00000000000000000019 /* Debug */,
+				C0DE0000000000000000001A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C0DE0000000000000000001B /* Build configuration list for PBXNativeTarget "SecureQueueHostedTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C0DE0000000000000000001C /* Debug */,
+				C0DE0000000000000000001D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		C0DE0000000000000000001E /* XCLocalSwiftPackageReference "../.." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C0DE0000000000000000001F /* CosmaneuraScribeCapacitorSecureQueue */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0DE0000000000000000001E /* XCLocalSwiftPackageReference "../.." */;
+			productName = CosmaneuraScribeCapacitorSecureQueue;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = C0DE00000000000000000001 /* Project object */;
+}

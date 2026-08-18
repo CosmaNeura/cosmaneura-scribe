@@ -26,10 +26,5 @@ let package = Package(
             ],
             path: "ios/Sources/CosmaneuraSecureQueue"
         ),
-        .testTarget(
-            name: "CosmaneuraSecureQueueTests",
-            dependencies: ["CosmaneuraSecureQueue"],
-            path: "ios/Tests/CosmaneuraSecureQueueTests"
-        ),
     ]
 )

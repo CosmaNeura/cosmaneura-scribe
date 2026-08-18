@@ -66,8 +66,8 @@ security checks. Native CI must additionally run:
 - Node 24.x and npm 11.5.2: `npm ci`, plugin `test`/`typecheck`, capture-app build, then the repository
   clean-sync assertion;
 - Xcode 26.x with the iOS 26 simulator runtime (iPhone 17 is Capacitor 8.5.0's own verification
-  destination): run the Swift package XCTest target on that simulator, then build the generated
-  `App` scheme for `iphonesimulator` with signing disabled;
+  destination): run the `SecureQueueHostedTests` scheme on that simulator, then build the generated
+  production `App` scheme for `iphonesimulator` with signing disabled;
 - JDK 21, Gradle 8.14.3, Android Gradle Plugin 8.13.0, and Android SDK 36: from
   `apps/capture/android`, run
   `./gradlew :cosmaneura-scribe-capacitor-secure-queue:testDebugUnitTest :app:assembleDebug`;
@@ -78,5 +78,8 @@ The generated app remains installable back to the declared iOS 15 and Android AP
 floors; those floors should also receive separate device-compatibility builds before release.
 
 The Android instrumentation test uses a unique test-only Keystore alias and no-backup directory.
-The iOS test uses a unique Keychain service and temporary backup-excluded directory. Neither suite
-uses production records or identifiers.
+The iOS integration test runs inside a minimal, simulator-only, archive-excluded host with its own
+bundle ID and default Keychain group. Each case uses a unique Keychain service and temporary
+backup-excluded directory. The host is not linked to the production app or included in the Swift
+package product. Neither suite uses production records or identifiers. Simulator CI does not
+replace physical-device and distribution-signing acceptance before release.

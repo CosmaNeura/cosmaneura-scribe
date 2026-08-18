@@ -49,6 +49,33 @@ test("uses device-only keys, authenticated encryption, no-backup storage, and at
   );
 });
 
+test("isolates iOS Keychain integration tests in a simulator-only host", async () => {
+  const hostedProject = await source(
+    "../ios/Tests/SecureQueueHostedTests.xcodeproj/project.pbxproj",
+  );
+  const hostedEntitlements = await source(
+    "../ios/Tests/SecureQueueTestHost/SecureQueueTestHost.entitlements",
+  );
+  const productionProject = await source("../../../ios/App/App.xcodeproj/project.pbxproj");
+  const productionPackage = await source("../../../ios/App/CapApp-SPM/Package.swift");
+  const swiftPackage = await source("../Package.swift");
+
+  assert.match(hostedProject, /name = SecureQueueTestHost;/u);
+  assert.match(hostedProject, /SUPPORTED_PLATFORMS = iphonesimulator;/u);
+  assert.match(hostedProject, /SKIP_INSTALL = YES;/u);
+  assert.match(hostedProject, /BUNDLE_LOADER = "\$\(TEST_HOST\)";/u);
+  assert.match(
+    hostedProject,
+    /CODE_SIGN_ENTITLEMENTS = SecureQueueTestHost\/SecureQueueTestHost\.entitlements;/u,
+  );
+  assert.match(hostedEntitlements, /<key>keychain-access-groups<\/key>/u);
+  assert.doesNotMatch(hostedEntitlements, /\*/u);
+  assert.doesNotMatch(productionProject, /SecureQueue(?:TestHost|HostedTests)/u);
+  assert.doesNotMatch(productionPackage, /SecureQueue(?:TestHost|HostedTests)/u);
+  assert.doesNotMatch(swiftPackage, /\.testTarget\(/u);
+  assert.match(swiftPackage, /targets:\s*\["CosmaneuraSecureQueue"\]/u);
+});
+
 test("keeps the bridge narrow and contains no native logging calls", async () => {
   const capacitorConfig = await source("../../../capacitor.config.ts");
   const definitions = await source("../src/definitions.ts");
