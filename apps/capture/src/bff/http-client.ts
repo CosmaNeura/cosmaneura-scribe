@@ -1,4 +1,5 @@
 import type {
+  AudioEncryptionPublicKey,
   AudioChunk,
   AudioChunkRegister,
   CaptureBff,
@@ -8,6 +9,7 @@ import type {
   CaptureLeaseReceipt,
   CaptureLeaseRenewRequest,
   CaptureSession,
+  CaptureTranscriptionStatus,
   ChunkReceipt,
   ChunkReservationBatchReceipt,
   ChunkReservationBatchRequest,
@@ -15,6 +17,12 @@ import type {
   ChunkUploadAuthorizationRequest,
   MutationOptions,
   RequestOptions,
+  ConsentCreate,
+  ConsentRecord,
+  SessionAudioKeyCreate,
+  SessionAudioKeyReceipt,
+  SessionCreate,
+  Transcript,
 } from "./contracts";
 
 const JSON_CONTENT_TYPE = "application/json";
@@ -41,6 +49,41 @@ export class HttpCaptureBff implements CaptureBff {
     if (!isCanonicalSameOriginPath(basePath)) {
       throw new Error("capture BFF base path must be same-origin");
     }
+  }
+
+  public getAudioEncryptionKey(
+    options: RequestOptions = {},
+  ): Promise<AudioEncryptionPublicKey> {
+    return this.requestJson("/audio-encryption-key", {
+      method: "GET",
+      ...signalInit(options.signal),
+    });
+  }
+
+  public createConsent(
+    request: ConsentCreate,
+    options: MutationOptions,
+  ): Promise<ConsentRecord> {
+    return this.mutate("/consents", request, options);
+  }
+
+  public createSession(
+    request: SessionCreate,
+    options: MutationOptions,
+  ): Promise<CaptureSession> {
+    return this.mutate("/sessions", request, options);
+  }
+
+  public bindSessionAudioKey(
+    sessionId: string,
+    request: SessionAudioKeyCreate,
+    options: MutationOptions,
+  ): Promise<SessionAudioKeyReceipt> {
+    return this.mutate(
+      `/sessions/${encodeURIComponent(sessionId)}/audio-key`,
+      request,
+      options,
+    );
   }
 
   public getCapabilities(
@@ -126,6 +169,26 @@ export class HttpCaptureBff implements CaptureBff {
     return this.mutate(`/sessions/${encodeURIComponent(sessionId)}/capture-complete`, request, options);
   }
 
+  public getTranscriptionStatus(
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<CaptureTranscriptionStatus> {
+    return this.requestJson(
+      `/sessions/${encodeURIComponent(sessionId)}/transcription-status`,
+      { method: "GET", ...signalInit(options.signal) },
+    );
+  }
+
+  public getTranscript(
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<Transcript> {
+    return this.requestJson(
+      `/sessions/${encodeURIComponent(sessionId)}/transcript`,
+      { method: "GET", ...signalInit(options.signal) },
+    );
+  }
+
   private mutate<Response, Request>(
     path: string,
     request: Request,
@@ -144,12 +207,16 @@ export class HttpCaptureBff implements CaptureBff {
   }
 
   private async requestJson<Response>(path: string, init: RequestInit): Promise<Response> {
-    const response = await this.fetchImplementation(`${this.basePath}${path}`, {
-      ...init,
-      credentials: "include",
-      redirect: "error",
-      cache: "no-store",
-    });
+    const response = await this.fetchImplementation.call(
+      globalThis,
+      `${this.basePath}${path}`,
+      {
+        ...init,
+        credentials: "include",
+        redirect: "error",
+        cache: "no-store",
+      },
+    );
     if (!response.ok) {
       throw new BffResponseError(
         response.status,

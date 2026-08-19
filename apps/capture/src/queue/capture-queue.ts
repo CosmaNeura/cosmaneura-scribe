@@ -55,7 +55,7 @@ export class CaptureQueue {
   readonly #now: () => number;
   readonly #random: () => number;
   readonly #idempotencyKeyFactory: () => string;
-  readonly #uploadConcurrency: number;
+  #uploadConcurrency: number;
   readonly #baseRetryMs: number;
   readonly #maxRetryMs: number;
   #draining = false;
@@ -73,13 +73,7 @@ export class CaptureQueue {
     this.#uploadConcurrency = options.uploadConcurrency ?? UPLOAD_CONCURRENCY;
     this.#baseRetryMs = options.baseRetryMs ?? DEFAULT_BASE_RETRY_MS;
     this.#maxRetryMs = options.maxRetryMs ?? DEFAULT_MAX_RETRY_MS;
-    if (
-      !Number.isSafeInteger(this.#uploadConcurrency) ||
-      this.#uploadConcurrency < 1 ||
-      this.#uploadConcurrency > UPLOAD_CONCURRENCY
-    ) {
-      throw new QueueInvariantError("invalid_upload_concurrency");
-    }
+    assertUploadConcurrency(this.#uploadConcurrency);
     if (
       !Number.isSafeInteger(this.#baseRetryMs) ||
       !Number.isSafeInteger(this.#maxRetryMs) ||
@@ -88,6 +82,13 @@ export class CaptureQueue {
     ) {
       throw new QueueInvariantError("invalid_retry_policy");
     }
+  }
+
+  /** Applies the current session capability before any queue drain begins. */
+  public configureUploadConcurrency(uploadConcurrency: number): void {
+    assertUploadConcurrency(uploadConcurrency);
+    if (this.#draining) throw new QueueInvariantError("queue_drain_in_progress");
+    this.#uploadConcurrency = uploadConcurrency;
   }
 
   /** Atomically stores a server reservation together with all stable keys. */
@@ -420,6 +421,16 @@ export class CaptureQueue {
       }
     }
     throw new QueueConcurrencyError();
+  }
+}
+
+function assertUploadConcurrency(uploadConcurrency: number): void {
+  if (
+    !Number.isSafeInteger(uploadConcurrency) ||
+    uploadConcurrency < 1 ||
+    uploadConcurrency > UPLOAD_CONCURRENCY
+  ) {
+    throw new QueueInvariantError("invalid_upload_concurrency");
   }
 }
 

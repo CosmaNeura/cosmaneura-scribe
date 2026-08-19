@@ -14,6 +14,9 @@ import type {
   CaptureLeaseRenewRequest,
   ChunkReservationBatchRequest,
   ChunkUploadAuthorizationRequest,
+  ConsentCreate,
+  SessionAudioKeyCreate,
+  SessionCreate,
 } from "../bff/contracts";
 import {
   MockBffError,
@@ -81,9 +84,49 @@ async function route(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/capture/audio-encryption-key") {
+    sendJson(response, 200, service.audioEncryptionKey());
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/capture/consents") {
+    sendJson(
+      response,
+      201,
+      service.createConsent(
+        await readJson<ConsentCreate>(request),
+        requireIdempotencyKey(request),
+      ),
+    );
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/capture/sessions") {
+    sendJson(
+      response,
+      201,
+      service.createSession(
+        await readJson<SessionCreate>(request),
+        requireIdempotencyKey(request),
+      ),
+    );
+    return;
+  }
+
   const prefix = `/api/capture/sessions/${service.sessionId}`;
   if (!url.pathname.startsWith(prefix)) throw new MockBffError(404, "session_not_found");
   const path = url.pathname.slice(prefix.length);
+
+  if (request.method === "POST" && path === "/audio-key") {
+    sendJson(
+      response,
+      201,
+      service.bindSessionAudioKey(
+        service.sessionId,
+        await readJson<SessionAudioKeyCreate>(request),
+        requireIdempotencyKey(request),
+      ),
+    );
+    return;
+  }
 
   if (request.method === "GET" && path === "/capture-capabilities") {
     sendJson(response, 200, service.capabilities());
@@ -165,6 +208,14 @@ async function route(
         requireIdempotencyKey(request),
       ),
     );
+    return;
+  }
+  if (request.method === "GET" && path === "/transcription-status") {
+    sendJson(response, 200, service.transcriptionStatus());
+    return;
+  }
+  if (request.method === "GET" && path === "/transcript") {
+    sendJson(response, 200, service.transcript());
     return;
   }
   throw new MockBffError(404, "route_not_found");

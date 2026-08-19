@@ -1,111 +1,139 @@
 :root {
-  color: #233d35;
-  background: #f6f7f4;
+  color: #1e3730;
+  background: #eef2ef;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
 
-* {
-  box-sizing: border-box;
-}
-
-html {
-  min-width: 20rem;
-  min-height: 100%;
-  background: #f6f7f4;
-}
-
-body {
-  min-height: 100vh;
-  margin: 0;
-}
-
-cosmaneura-capture {
-  display: block;
-}
-
+* { box-sizing: border-box; }
+html { min-width: 20rem; min-height: 100%; background: #eef2ef; }
+body { min-height: 100vh; margin: 0; }
+button, input, select, textarea { font: inherit; }
+button:focus-visible, input:focus-visible { outline: 0.2rem solid #337f68; outline-offset: 0.2rem; }
+cosmaneura-capture { display: block; }
 cosmaneura-capture .shell {
   margin: 0 auto;
-  max-width: 42rem;
-  padding: max(1.5rem, env(safe-area-inset-top)) 1.25rem max(2rem, env(safe-area-inset-bottom));
+  max-width: 48rem;
+  padding: max(1.25rem, env(safe-area-inset-top)) 1rem max(2rem, env(safe-area-inset-bottom));
 }
-
 cosmaneura-capture header {
   align-items: center;
   display: flex;
   justify-content: space-between;
-  margin-bottom: 4rem;
+  margin-bottom: 2rem;
 }
-
-cosmaneura-capture .brand {
-  font-size: 0.95rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
+cosmaneura-capture .brand { font-size: 0.95rem; font-weight: 750; letter-spacing: 0.02em; }
 cosmaneura-capture .status {
-  background: #e3e9e5;
+  background: #fff0c9;
+  border: 1px solid #efd58b;
   border-radius: 999px;
-  color: #365248;
-  font-size: 0.75rem;
-  font-weight: 700;
-  padding: 0.45rem 0.75rem;
+  color: #684d08;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0.45rem 0.7rem;
   text-transform: uppercase;
 }
-
-cosmaneura-capture main {
-  background: #ffffff;
-  border: 1px solid #dce3de;
-  border-radius: 1.25rem;
-  box-shadow: 0 1.25rem 3.5rem rgb(18 55 45 / 8%);
-  padding: clamp(1.5rem, 6vw, 3rem);
+cosmaneura-capture main { display: grid; gap: 1rem; }
+cosmaneura-capture .eyebrow, cosmaneura-capture .step {
+  color: #3a6f5f;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin: 0 0 0.35rem;
+  text-transform: uppercase;
 }
-
 cosmaneura-capture h1 {
-  color: #12372d;
-  font-size: clamp(2rem, 8vw, 3.5rem);
-  letter-spacing: -0.04em;
-  line-height: 1;
-  margin: 0 0 1.25rem;
+  color: #103b30;
+  font-size: clamp(2.15rem, 9vw, 4rem);
+  letter-spacing: -0.045em;
+  line-height: 0.98;
+  margin: 0;
 }
-
-cosmaneura-capture p {
-  color: #4e625b;
+cosmaneura-capture .intro {
+  color: #536860;
   font-size: 1.05rem;
   line-height: 1.6;
-  margin: 0;
+  margin: 0 0 0.75rem;
+  max-width: 42rem;
 }
-
+cosmaneura-capture .flow-card {
+  background: #ffffff;
+  border: 1px solid #d6e0da;
+  border-radius: 1.1rem;
+  box-shadow: 0 1.25rem 3.5rem rgb(18 55 45 / 5%);
+  display: grid;
+  gap: 1.1rem;
+  padding: clamp(1.25rem, 5vw, 2rem);
+}
+cosmaneura-capture h2, cosmaneura-capture h3 { color: #12372d; margin: 0; }
+cosmaneura-capture .flow-card p { color: #536860; line-height: 1.55; margin: 0.45rem 0 0; }
+cosmaneura-capture .consent-control {
+  align-items: flex-start;
+  background: #f5f8f6;
+  border-radius: 0.8rem;
+  display: flex;
+  gap: 0.8rem;
+  line-height: 1.4;
+  padding: 1rem;
+}
+cosmaneura-capture .consent-control input { height: 1.35rem; margin: 0.1rem 0 0; width: 1.35rem; }
+cosmaneura-capture button {
+  border: 0;
+  border-radius: 0.8rem;
+  cursor: pointer;
+  font-weight: 800;
+  min-height: 3rem;
+  padding: 0.8rem 1rem;
+}
+cosmaneura-capture button:disabled { cursor: not-allowed; opacity: 0.45; }
+cosmaneura-capture .primary { background: #145c49; color: #ffffff; }
+cosmaneura-capture .secondary { background: #e5ece8; color: #1e493d; }
+cosmaneura-capture .record-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 1rem; }
+cosmaneura-capture .record-button {
+  align-items: center;
+  background: #a52026;
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-flex;
+  gap: 0.7rem;
+  min-height: 4.5rem;
+  padding: 1rem 1.5rem;
+}
+cosmaneura-capture .record-button span {
+  background: currentColor;
+  border-radius: 50%;
+  height: 1rem;
+  width: 1rem;
+}
 cosmaneura-capture dl {
-  border-top: 1px solid #e6ebe7;
+  border-top: 1px solid #e0e7e3;
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: 1fr auto;
-  margin: 2rem 0 0;
-  padding-top: 1.25rem;
-}
-
-cosmaneura-capture dt,
-cosmaneura-capture dd {
-  font-size: 0.85rem;
+  grid-template-columns: minmax(0, 1fr) auto;
   margin: 0;
+  padding-top: 1rem;
 }
-
-cosmaneura-capture dt {
-  color: #697a74;
+cosmaneura-capture dt, cosmaneura-capture dd { font-size: 0.9rem; margin: 0; }
+cosmaneura-capture dt { color: #64766f; }
+cosmaneura-capture dd { font-variant-numeric: tabular-nums; font-weight: 750; text-align: right; }
+cosmaneura-capture .transcript {
+  background: #f5f8f6;
+  border-left: 0.25rem solid #337f68;
+  padding: 1rem;
 }
-
-cosmaneura-capture dd {
-  color: #233d35;
-  font-variant-numeric: tabular-nums;
-  font-weight: 650;
+cosmaneura-capture .fixed-status {
+  color: #687a73;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
-
-button,
-input,
-select,
-textarea {
-  font: inherit;
+@media (min-width: 40rem) {
+  cosmaneura-capture .shell { padding-inline: 1.5rem; }
+  cosmaneura-capture .recorder {
+    align-items: center;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
 }

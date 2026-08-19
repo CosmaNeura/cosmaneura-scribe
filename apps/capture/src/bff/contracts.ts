@@ -1,6 +1,13 @@
 import type { components } from "../generated/capture-api";
 
 export type CaptureCapabilities = components["schemas"]["CaptureCapabilities"];
+export type AudioEncryptionPublicKey = components["schemas"]["AudioEncryptionPublicKey"];
+export type ConsentCreate = components["schemas"]["ConsentCreate"];
+export type ConsentRecord = components["schemas"]["ConsentRecord"];
+export type SessionCreate = components["schemas"]["SessionCreate"];
+export type SessionAudioKeyCreate = components["schemas"]["SessionAudioKeyCreate"];
+export type SessionAudioKeyReceipt = components["schemas"]["SessionAudioKeyReceipt"];
+export type Transcript = components["schemas"]["Transcript"];
 export type CaptureLeaseIssueRequest = components["schemas"]["CaptureLeaseIssueRequest"];
 export type CaptureLeaseRenewRequest = components["schemas"]["CaptureLeaseRenewRequest"];
 export type CaptureLeaseReceipt = components["schemas"]["CaptureLeaseReceipt"];
@@ -27,6 +34,14 @@ export interface RequestOptions {
 }
 
 export interface CaptureBff {
+  getAudioEncryptionKey(options?: RequestOptions): Promise<AudioEncryptionPublicKey>;
+  createConsent(request: ConsentCreate, options: MutationOptions): Promise<ConsentRecord>;
+  createSession(request: SessionCreate, options: MutationOptions): Promise<CaptureSession>;
+  bindSessionAudioKey(
+    sessionId: string,
+    request: SessionAudioKeyCreate,
+    options: MutationOptions,
+  ): Promise<SessionAudioKeyReceipt>;
   getCapabilities(
     sessionId: string,
     options?: RequestOptions,
@@ -68,6 +83,18 @@ export interface CaptureBff {
     request: CaptureCompleteRequest,
     options: MutationOptions,
   ): Promise<CaptureSession>;
+  getTranscriptionStatus(
+    sessionId: string,
+    options?: RequestOptions,
+  ): Promise<CaptureTranscriptionStatus>;
+  getTranscript(sessionId: string, options?: RequestOptions): Promise<Transcript>;
+}
+
+export interface CaptureTranscriptionStatus {
+  readonly session_id: string;
+  readonly status: "not_requested" | "queued" | "processing" | "completed" | "terminal";
+  readonly transcript_available: boolean;
+  readonly updated_at: string;
 }
 
 export interface CiphertextUploadTarget {

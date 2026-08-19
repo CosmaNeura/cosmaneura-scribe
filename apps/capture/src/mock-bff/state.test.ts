@@ -7,6 +7,41 @@ import { MockBffError, MockCaptureService, MockDroppedResponseError } from "./st
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("MockCaptureService", () => {
+  it("gates a lease on consent, session creation, and an immutable key receipt", () => {
+    const service = new MockCaptureService();
+    expect(() =>
+      service.issueLease({ protocol_version: "1.0" }, "lease-key-00000001"),
+    ).toThrowError(new MockBffError(409, "audio_key_required"));
+
+    const consent = service.createConsent({
+      appointment_id: "synthetic-appointment",
+      practitioner_id: "synthetic-practitioner",
+      patient_id: "synthetic-patient",
+      modality: "in_person",
+      method: "verbal_attestation",
+      all_parties_consented: true,
+      participant_regions: ["US-NY"],
+      granted_at: "2026-08-18T12:00:00.000Z",
+      evidence_object_id: null,
+    }, "consent-key-000001");
+    const session = service.createSession({
+      appointment_id: consent.appointment_id,
+      practitioner_id: consent.practitioner_id,
+      patient_id: consent.patient_id,
+      consent_record_id: consent.id,
+      modality: consent.modality,
+    }, "session-key-000001");
+    const published = service.audioEncryptionKey();
+    service.bindSessionAudioKey(session.id, {
+      key_version: published.key_version,
+      wrapped_dek: "a".repeat(512),
+    }, "bind-key-0000001");
+
+    expect(
+      service.issueLease({ protocol_version: "1.0" }, "lease-key-00000002"),
+    ).toMatchObject({ session_id: session.id, generation: 1 });
+  });
+
   it("replays a committed mutation after a synthetic lost response", () => {
     const service = createService();
     service.enqueueFault({ operation: "issue-lease", phase: "after-commit" });
@@ -142,6 +177,7 @@ function createService(now?: () => Date): MockCaptureService {
   let identifier = 1;
   return new MockCaptureService({
     sessionId: SESSION_ID,
+    requirePreparation: false,
     ...(now === undefined ? {} : { now }),
     idFactory: () =>
       `00000000-0000-4000-8000-${String(identifier++).padStart(12, "0")}`,

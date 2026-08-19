@@ -17,6 +17,7 @@ describe("HttpCaptureBff", () => {
     );
 
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    expect(fetchImplementation.mock.contexts[0]).toBe(globalThis);
     const [url, init] = fetchImplementation.mock.calls[0] ?? [];
     expect(url).toBe(
       "/api/capture/sessions/11111111-1111-4111-8111-111111111111/capture-lease",

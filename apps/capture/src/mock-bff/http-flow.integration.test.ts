@@ -24,7 +24,10 @@ const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("synthetic capture flow over HTTP", () => {
   it("reserves, durably queues, uploads, registers, purges, and completes", async () => {
-    const server = createMockBffServer({ sessionId: SESSION_ID });
+    const server = createMockBffServer({
+      sessionId: SESSION_ID,
+      requirePreparation: false,
+    });
     const origin = await listenOnEphemeralLoopback(server);
     const indexedDB = new IDBFactory();
     const databaseName = TEST_CRYPTO.randomUUID();
