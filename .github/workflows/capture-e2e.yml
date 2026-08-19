@@ -1,0 +1,32 @@
+name: Capture browser E2E
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-recording-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.5.0'
+      - run: npm install --global npm@11.5.2
+      - run: npm ci
+      - run: npm ci
+        working-directory: apps/capture/e2e
+      - name: Verify pinned Playwright dependency tree
+        run: npm ls --all
+        working-directory: apps/capture/e2e
+      - name: Install pinned Chromium and system dependencies
+        run: npx --no-install playwright install --with-deps chromium
+        working-directory: apps/capture/e2e
+      - name: Run synthetic record-to-complete recovery flow
+        run: npm test
+        working-directory: apps/capture/e2e
