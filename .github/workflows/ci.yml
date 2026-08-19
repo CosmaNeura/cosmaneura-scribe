@@ -136,6 +136,17 @@ jobs:
             echo "::error::avdmanager did not create the expected API 36 AVD metadata"
             exit 1
           fi
+          avd_config="${ANDROID_AVD_HOME}/${avd_name}.avd/config.ini"
+          if [[ ! -f "${avd_config}" ]]; then
+            echo "::error::avdmanager did not create the expected API 36 AVD configuration"
+            exit 1
+          fi
+          if grep -q '^disk\.dataPartition\.size=' "${avd_config}"; then
+            sed -i 's/^disk\.dataPartition\.size=.*/disk.dataPartition.size=2048M/' "${avd_config}"
+          else
+            printf '%s\n' 'disk.dataPartition.size=2048M' >> "${avd_config}"
+          fi
+          grep -Fxq 'disk.dataPartition.size=2048M' "${avd_config}"
 
           cleanup() {
             "${adb_path}" emu kill >/dev/null 2>&1 || true
