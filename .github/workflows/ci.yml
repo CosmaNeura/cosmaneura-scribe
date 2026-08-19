@@ -145,6 +145,7 @@ jobs:
 
           nohup "${emulator_path}" \
             -avd "${avd_name}" \
+            -partition-size 2048 \
             -no-window \
             -no-snapshot \
             -noaudio \
