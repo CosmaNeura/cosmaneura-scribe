@@ -101,6 +101,30 @@ jobs:
           :cosmaneura-scribe-capacitor-secure-queue:testDebugUnitTest
           :app:assembleDebug
         working-directory: apps/capture/android
+      - name: Free hosted-runner space for the API 36 emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          android_sdk_root="$(realpath -- "${ANDROID_HOME}")"
+          if [[ "${android_sdk_root}" != "/usr/local/lib/android/sdk" ]]; then
+            echo "::error::Unexpected hosted-runner Android SDK path"
+            exit 1
+          fi
+          ndk_directory="${android_sdk_root}/ndk"
+          if [[ -L "${ndk_directory}" ]]; then
+            echo "::error::Refusing to remove a symlinked NDK directory"
+            exit 1
+          fi
+          if [[ -d "${ndk_directory}" ]]; then
+            du -sh "${ndk_directory}"
+            sudo rm -rf -- /usr/local/lib/android/sdk/ndk
+          fi
+          df -h /
+          available_kib="$(df --output=avail -k / | tail -1 | tr -d ' ')"
+          if (( available_kib < 10485760 )); then
+            echo "::error::Hosted runner has less than 10 GiB free for the API 36 emulator"
+            exit 1
+          fi
       - name: Enable Android emulator hardware acceleration
         shell: bash
         run: |
