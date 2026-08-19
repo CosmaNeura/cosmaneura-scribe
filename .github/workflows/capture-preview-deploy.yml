@@ -1,0 +1,218 @@
+name: Deploy capture demo
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+concurrency:
+  group: capture-preview-live
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: >-
+      vars.CAPTURE_PREVIEW_DEPLOY_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.DEPLOY_SHA }}
+      - name: Require the exact current main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${DEPLOY_SHA}"
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          test "${current_main}" = "${DEPLOY_SHA}"
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          cache: true
+          version: 2026.8.6
+      - name: Verify pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v24.5.0"
+          test "$(npm --version)" = "11.5.2"
+      - run: npm ci
+      - name: Audit production npm dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - name: Build dormant synthetic PWA
+        env:
+          VITE_CAPTURE_E2E_MICROPHONE_ENABLED: 'false'
+          VITE_CAPTURE_PREVIEW_PERSISTENT_ENABLED: 'true'
+        run: npm run build --workspace @cosmaneura-scribe/capture
+      - run: npm run check:preview-bundle
+      - name: Build Azure Function package
+        run: npm run build:capture-preview-api
+      - name: Verify and archive deployment inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f apps/capture/dist/index.html
+          test -f apps/capture/dist/staticwebapp.config.json
+          test -f apps/capture-preview-api/dist-package/host.json
+          test -f apps/capture-preview-api/dist-package/index.js
+          test -f apps/capture-preview-api/scripts/smoke.mjs
+          mkdir -p capture-preview-function
+          (
+            cd apps/capture-preview-api/dist-package
+            zip -q -r "${GITHUB_WORKSPACE}/capture-preview-function/function.zip" .
+          )
+          shasum -a 256 capture-preview-function/function.zip
+      - name: Upload PWA deployment input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: capture-preview-pwa-${{ env.DEPLOY_SHA }}
+          path: apps/capture/dist
+          retention-days: 7
+      - name: Upload Function deployment input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: capture-preview-function-${{ env.DEPLOY_SHA }}
+          path: capture-preview-function/function.zip
+          retention-days: 7
+      - name: Upload metadata-only smoke gate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: capture-preview-smoke-${{ env.DEPLOY_SHA }}
+          path: apps/capture-preview-api/scripts/smoke.mjs
+          retention-days: 7
+
+  deploy-function:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: capture-preview
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: capture-preview-function-${{ env.DEPLOY_SHA }}
+          path: function-package
+      - name: Authenticate to the dedicated preview identity
+        uses: Azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.CAPTURE_PREVIEW_AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.CAPTURE_PREVIEW_AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.CAPTURE_PREVIEW_AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy exact Function package
+        uses: Azure/functions-action@c5060b3b8bb1ebbcb531abd00c822ecbaa8ea656 # v1
+        with:
+          app-name: ${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}
+          package: function-package/function.zip
+
+  deploy-web:
+    needs: [build, deploy-function]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: capture-preview
+      url: https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: capture-preview-pwa-${{ env.DEPLOY_SHA }}
+          path: capture-preview-pwa
+      - name: Authenticate to the dedicated preview identity
+        uses: Azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.CAPTURE_PREVIEW_AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.CAPTURE_PREVIEW_AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.CAPTURE_PREVIEW_AZURE_SUBSCRIPTION_ID }}
+      - name: Get an ephemeral SWA deployment token
+        id: swa-token
+        env:
+          RESOURCE_GROUP: ${{ vars.CAPTURE_PREVIEW_RESOURCE_GROUP }}
+          SWA_NAME: ${{ vars.CAPTURE_PREVIEW_SWA_NAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          deployment_value="$(az staticwebapp secrets list \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${SWA_NAME}" \
+            --query properties.apiKey \
+            --output tsv)"
+          test -n "${deployment_value}"
+          echo "::add-mask::${deployment_value}"
+          printf 'token=%s\n' "${deployment_value}" >> "${GITHUB_OUTPUT}"
+      - name: Deploy exact prebuilt PWA to the stable synthetic site
+        uses: Azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9 # v1
+        with:
+          action: upload
+          app_location: capture-preview-pwa
+          azure_static_web_apps_api_token: ${{ steps.swa-token.outputs.token }}
+          production_branch: main
+          skip_app_build: true
+
+  accept:
+    needs: [build, deploy-web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: capture-preview
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+      FUNCTION_APP: ${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}
+      PREVIEW_URL: https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}/
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: capture-preview-smoke-${{ env.DEPLOY_SHA }}
+          path: smoke
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          cache: true
+          version: 2026.8.6
+      - name: Run metadata-only synthetic acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          direct_status="$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --max-time 30 \
+            "https://${FUNCTION_APP}.azurewebsites.net/api/capture/health")"
+          case "${direct_status}" in
+            401|403) ;;
+            *) echo 'Direct Function endpoint was not access-denied.' >&2; exit 1 ;;
+          esac
+          node smoke/smoke.mjs "${PREVIEW_URL}"
+          {
+            echo '### Synthetic capture demo deployed'
+            echo
+            echo "- Commit: \`${DEPLOY_SHA}\`"
+            echo "- URL: ${PREVIEW_URL}"
+            echo '- Microphone capture: disabled'
+            echo '- Clinical connections: none'
+          } >> "${GITHUB_STEP_SUMMARY}"

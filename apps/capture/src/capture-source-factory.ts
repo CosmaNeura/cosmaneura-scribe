@@ -15,16 +15,19 @@ export interface CaptureSourceFactoryOptions {
   readonly microphoneModuleLoader?: BrowserMicrophoneModuleLoader | null;
 }
 
-const microphoneSourceModules = import.meta.glob<BrowserMicrophoneModule>(
-  "./audio/browser-microphone-source.ts",
-);
-
 /**
  * The microphone path is a test-only, compile-time opt-in. Merely adding the
  * adapter module to a build can never activate microphone access.
  */
 export const MICROPHONE_TEST_CAPTURE_ENABLED =
   import.meta.env.VITE_CAPTURE_E2E_MICROPHONE_ENABLED === "true";
+
+// A literal false build-time branch lets Rollup remove both the adapter and its
+// AudioWorklet asset from dormant preview artifacts. Tests inject a loader.
+const bundledMicrophoneModuleLoader: BrowserMicrophoneModuleLoader | undefined =
+  MICROPHONE_TEST_CAPTURE_ENABLED
+    ? () => import("./audio/browser-microphone-source.ts")
+    : undefined;
 
 export async function createCaptureSource(
   options: CaptureSourceFactoryOptions = {},
@@ -35,7 +38,7 @@ export async function createCaptureSource(
   const loadMicrophoneSource = options.microphoneModuleLoader === null
     ? undefined
     : options.microphoneModuleLoader ??
-      microphoneSourceModules["./audio/browser-microphone-source.ts"];
+      bundledMicrophoneModuleLoader;
   if (loadMicrophoneSource === undefined) {
     throw new Error("microphone_test_adapter_unavailable");
   }

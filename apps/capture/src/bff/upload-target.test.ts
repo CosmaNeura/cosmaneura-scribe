@@ -50,6 +50,29 @@ describe("HttpCiphertextUploadTarget", () => {
     expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
+  it("moves a same-origin preview receipt from the URL fragment into a request header", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(null, { status: 201 }),
+    );
+    const target = new HttpCiphertextUploadTarget(
+      ["https://preview.example.test"],
+      fetchImplementation,
+    );
+    const receipt = "11111111-1111-4111-8111-111111111111";
+
+    await target.putCompleteEnvelope(
+      `https://preview.example.test/api/capture/preview/uploads/scope/object#receipt=${receipt}`,
+      new Uint8Array([1]),
+    );
+
+    const [url, init] = fetchImplementation.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "https://preview.example.test/api/capture/preview/uploads/scope/object",
+    );
+    expect(new Headers(init?.headers).get("X-Capture-Upload-Receipt")).toBe(receipt);
+    expect(init).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer" });
+  });
+
   it("rejects insecure non-loopback allowlist origins", () => {
     expect(
       () => new HttpCiphertextUploadTarget(["http://upload.example.test"]),

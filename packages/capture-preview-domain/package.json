@@ -1,0 +1,20 @@
+{
+  "name": "@cosmaneura-scribe/capture-preview-domain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "engines": {
+    "node": ">=24.0.0 <25",
+    "npm": "11.5.2"
+  },
+  "packageManager": "npm@11.5.2",
+  "scripts": {
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cosmaneura-scribe/capture-protocol": "1.0.0"
+  }
+}

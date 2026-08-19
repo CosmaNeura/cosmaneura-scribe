@@ -7,6 +7,7 @@ export default tseslint.config(
     ignores: [
       ".venv/**",
       "**/dist/**",
+      "**/dist-package/**",
       "**/node_modules/**",
       "apps/capture/android/**",
       "apps/capture/ios/**",

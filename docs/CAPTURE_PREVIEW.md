@@ -1,122 +1,153 @@
-# Capture preview and test distribution
+# Synthetic capture demo
 
-The preview pipeline builds the PWA and a debug Android APK for every pull request. It is
-synthetic-only: it does not activate clinical capture, connect to Scribe, accept patient data, or
-carry production credentials. The existing false-default application and infrastructure gates
-remain false.
+This environment is a disposable, non-production demonstration of the capture workflow. It accepts
+only the fixed synthetic encounter compiled into the preview domain. It has no platform BFF,
+clinical authentication, Scribe API, production storage, Speech, Key Vault, PostgreSQL, retention,
+or patient-data connection. Real microphone capture is disabled by the build gate and
+the site-wide browser Permissions Policy.
 
-## Current fail-closed status
+The shareable deliverable is one stable Azure Static Web Apps URL. Pull requests still build and
+test the PWA and debug APK, but they do not receive a live API. Azure does not support linking a
+bring-your-own Function backend to Static Web Apps pull-request environments. Pretending those
+URLs are end-to-end previews would fail after the first API call; provisioning a full cloud stack
+per pull request is intentionally out of scope.
 
-Successful pull-request builds produce PWA and APK artifacts retained by GitHub Actions for 14
-days. Firebase App Distribution and Azure Static Web Apps deployment skip successfully when their
-explicit enable variables or reviewed credentials are absent.
+## Security and persistence boundary
 
-Azure deployment has an additional hard gate. It remains skipped until the Azure Static Web App is
-linked to a separately reviewed deployment of the shared synthetic mock handler and
-`CAPTURE_PREVIEW_SHARED_MOCK_READY` is explicitly set to `true`. The backend must reuse the shared
-mock contract; it must not duplicate route semantics. Until that work is present and proven, the
-repository does not claim a navigable end-to-end HTTPS preview.
+The stable site links one dedicated Azure Function. The Function uses its own managed identity to
+access one serverless Cosmos DB container; it has no key or connection string. The browser must
+first bootstrap an opaque, `HttpOnly`, `Secure`, `SameSite=Strict` preview cookie. The API hashes
+the canonical SWA host and cookie into the Cosmos partition key, so separate browsers cannot see or
+mutate one another's state. State and encrypted synthetic envelopes expire automatically.
 
-The mock backend must keep its synthetic workflow state outside an Azure Functions process. The
-state must survive function cold starts, horizontal scale, browser navigation, and an expected
-browser/app relaunch for the same preview session. It must be isolated by pull request, bounded in
-size, expire automatically when the preview closes, and reject non-synthetic input. An in-memory
-module singleton or mutable service-worker state does not meet this requirement.
+The hosted profile is deliberately smaller than the protocol ceiling: at most six ten-second
+chunks. Requests are runtime-validated against the exact synthetic appointment, practitioner, and
+patient identifiers. The public RSA key is a committed public-only test value; no private key is
+deployed. Mutation idempotency, upload authorization, immutable envelope registration, completion,
+and transcript status survive Function cold starts and scale-out. Upload capabilities are returned
+only to the browser; Cosmos retains their digest, not the raw receipt or URL. Every committed
+mutation adds one bounded metadata-only audit event.
 
-## PWA cache boundary
+The Function host rejects bodies above 384 KiB before invocation, and each route applies a smaller
+streaming limit. At most 250 new anonymous browser scopes may be created per UTC day; an existing
+cookie scope can still refresh after that ceiling. This bounds public-demo state growth without
+introducing an identity or collecting a client IP address.
 
-`vite-plugin-pwa` is pinned and generates an exact-origin service worker. It precaches only emitted
-static HTML, JavaScript, CSS, images, fonts, and the web manifest. There are no runtime cache rules.
-The build fails if the precache manifest contains an absolute URL, query string, fragment,
-`/api/**`, or `/mock-upload/**`. Navigation fallback also excludes those network paths.
+The service worker precaches only emitted static assets. It has no runtime cache and excludes
+`/api/**`. API responses, cookies, capabilities, encrypted queue records, uploads, transcripts, and
+IndexedDB contents are never service-worker cache entries. The hosted response policy disables the
+microphone even if a future JavaScript regression attempted to request it.
 
-Consequently, API responses, upload capabilities, encrypted envelopes, queue records, IndexedDB
-contents, tokens, identifiers, and transcript data are never service-worker cache entries. The
-JavaScript implementation of the encrypted queue is part of the signed static application bundle;
-the queue's mutable records are not.
+Do not enter real names, identifiers, audio, or other patient information into this site. The API
+rejects non-synthetic encounter values, but that is a guardrail rather than permission for clinical
+use.
 
-Local verification uses the pinned `mise.toml` toolchain:
+## Repository workflows
 
-```sh
-mise install
-mise exec -- npm ci
-mise exec -- npm run lint
-mise exec -- npm run typecheck
-mise exec -- npm test
-mise exec -- npm run build
-```
+`.github/workflows/capture-preview.yml` is unprivileged. A same-repository pull request receives a
+tested PWA artifact and an ephemeral-debug-signed APK artifact for 14 days. It receives no Azure
+identity, deployment token, or cloud state access.
 
-## GitHub environment and Azure asks
+`.github/workflows/capture-preview-deploy.yml` runs only after the required `CI` workflow succeeds
+for the exact current `main` commit and the repository variable
+`CAPTURE_PREVIEW_DEPLOY_ENABLED=true`. Its build job has no cloud identity. Separate deployment
+jobs download only the prebuilt Function ZIP or static directory, authenticate through GitHub OIDC,
+and deploy to the protected `capture-preview` environment. The SWA token is fetched from Azure at
+runtime, masked immediately, and is never stored as a GitHub secret. A final metadata-only smoke
+gate exercises the linked HTTPS API.
 
-Create these repository-level variables first. They are non-secret booleans because GitHub evaluates
-job-level conditions before loading variables from a protected environment:
+Firebase distribution is not part of this Azure deployment. The debug APK remains available as a
+GitHub Actions artifact. Stable non-production signing and managed tester distribution can be
+reviewed separately; no production signing material belongs in this environment.
 
-- `CAPTURE_PREVIEW_SWA_ENABLED=true` only after the non-production Static Web App is approved.
-- `CAPTURE_PREVIEW_SHARED_MOCK_READY=true` only after the shared mock adapter and persistent-state
-  acceptance tests pass.
-- `CAPTURE_PREVIEW_FIREBASE_ENABLED=true` only after the Firebase OIDC path is approved.
+## Terraform state bootstrap
 
-Do not duplicate those three names as environment variables. Create a protected GitHub environment
-named `capture-preview`, restricted to this repository's maintainer-reviewed branches. Require an
-environment reviewer when a second trusted maintainer is available, and prevent self-review in that
-configuration. Configure:
+The preview is an independent OpenTofu root under `infra/preview/`. It must never share state with
+the regulated Scribe development graph. Bootstrap one dedicated state account before the first
+`tofu init`:
 
-- Environment secret `CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN`, containing the deployment token for one
-  dedicated non-production Azure Static Web App. It must not be a production Static Web App token.
+- resource group: `cosmaneura-capture-preview-state`
+- storage account: `cosmaneurapreviewtf`
+- private container: `tfstate`
+- backend key: `capture-preview/synthetic.tfstate`
+- Microsoft Entra data-plane authentication only; shared-key access disabled
+- blob versioning, container soft delete, and blob soft delete enabled
 
-The Azure resource must provide pull-request preview environments over HTTPS and an exact-origin
-`/api` route for the shared synthetic mock. Its state store must be synthetic-only and use managed
-identity rather than a credential embedded in the client or repository. Apply automatic TTL/reset
-per pull request and deny public administrative access. The preview environment must contain no
-production BFF, Scribe, Storage, Speech, Key Vault, or patient-data connection.
+The bootstrap account is intentionally outside the state it stores. Grant the operator `Storage
+Blob Data Contributor` on only the `tfstate` container. Do not create an account key, SAS, service
+principal secret, or local state workaround. Copy `infra/preview/backend.hcl.example` to the
+gitignored `infra/preview/backend.hcl` and use the exact reviewed values.
 
-The workflow never gives the deployment token to build or test steps, and the token-bearing Azure
-action receives only the already-built static directory; the token-bearing job does not check out
-pull-request source. It does not build or deploy API source.
-Deploy the linked mock backend through its own reviewed, identity-federated workflow before setting
-the readiness variable. Fork pull requests receive build artifacts but cannot deploy. Closing a
-pull request closes its Static Web Apps preview when the deployment token and enable variable are
-present.
+Every infrastructure change follows the saved-plan workflow: protected state snapshot, binary plan,
+human and JSON review, exact SHA-256, immediate lineage/serial recheck, apply that binary once, then
+live/state reconciliation. A plan containing a destroy, a production connection, or a wider role
+assignment is rejected. The only subscription-level object is the custom role definition whose
+assignable scope is the dedicated preview resource group; every workload resource and every role
+assignment remains inside that boundary.
 
-## Firebase App Distribution asks
+## GitHub environment configuration
 
-Use a dedicated non-production Firebase project and register the Android application ID
-`com.cosmaneura.capture`. Create an approved tester group containing only synthetic-preview users.
-Then create:
+Create the GitHub environment `capture-preview` and restrict deployments to `main`. Add no
+environment secret. Configure these non-secret environment variables from the reviewed Terraform
+outputs:
 
-1. A Google Cloud service account dedicated to APK distribution with
-   `roles/firebaseappdistro.admin` on only that Firebase project.
-2. A Workload Identity Pool provider for GitHub Actions. Map the GitHub `base_ref` claim and
-   restrict its attribute condition to repository `CosmaNeura/cosmaneura-scribe`, pull-request
-   workflows whose base branch is exactly `main`, and the protected `capture-preview`
-   environment.
-3. A `roles/iam.workloadIdentityUser` binding from that restricted provider principal to the
-   distribution service account.
+- `CAPTURE_PREVIEW_AZURE_CLIENT_ID`
+- `CAPTURE_PREVIEW_AZURE_TENANT_ID`
+- `CAPTURE_PREVIEW_AZURE_SUBSCRIPTION_ID`
+- `CAPTURE_PREVIEW_RESOURCE_GROUP`
+- `CAPTURE_PREVIEW_FUNCTION_APP_NAME`
+- `CAPTURE_PREVIEW_SWA_NAME`
+- `CAPTURE_PREVIEW_SWA_HOSTNAME`
 
-Configure these protected-environment variables; none contains a private credential:
+The deploy identity has a federated credential whose exact subject is
+`repo:CosmaNeura/cosmaneura-scribe:environment:capture-preview`. It receives only Function-package
+deployment on the exact Function, Blob Data Contributor on only its private package container, and
+SWA token retrieval on the exact Static Web App. It is not the Function runtime identity and has no
+Cosmos data access or role-assignment authority.
 
-- `CAPTURE_PREVIEW_FIREBASE_ANDROID_APP_ID` (the Firebase Android app ID, not a client secret)
-- `CAPTURE_PREVIEW_FIREBASE_PROJECT_ID`
-- `CAPTURE_PREVIEW_FIREBASE_TESTER_GROUP`
-- `CAPTURE_PREVIEW_GCP_SERVICE_ACCOUNT` (service-account email)
-- `CAPTURE_PREVIEW_GCP_WORKLOAD_IDENTITY_PROVIDER` (full provider resource name)
+Keep the repository variable `CAPTURE_PREVIEW_DEPLOY_ENABLED=false` until infrastructure and role
+propagation are verified. Set it to `true` immediately before merging the reviewed implementation,
+so the successful `main` CI run triggers the first deployment. Set
+`CAPTURE_PREVIEW_SHARED_MOCK_READY=true` only after the live acceptance below passes; this second
+variable records readiness and is not a bypass for the deployment gates.
 
-GitHub exchanges its short-lived OIDC identity at runtime. Do not add a Firebase token or service
-account JSON secret. A bounded, dependency-free Node script calls only the official Firebase App
-Distribution REST origin; it validates every returned resource name, never prints the access token
-or release URLs, and receives a fifteen-minute access token only for the distribution step. The
-distributed file is the CI-built debug APK, never a production-signed release, and its release
-notes contain only the pull-request number.
+## Live acceptance
 
-The Firebase job runs only for a same-repository pull request whose base branch is exactly `main`,
-then checks out the distribution script from that protected base commit—not from the pull request
-head—before requesting its short-lived token. Enable distribution only after this workflow and
-script have merged to `main`. Pull-request code supplies the already-built APK artifact but cannot
-replace the credential-handling script. The SWA deploy and close jobs enforce the same exact-base
-rule before receiving their deployment credential.
+The initial deployment is accepted only when all of these checks pass with fixed, metadata-only
+output:
 
-The current Gradle debug build uses the runner's ephemeral debug keystore. It supports a fresh
-synthetic installation, but a later runner's APK is not a trusted in-place update of an earlier
-one; testers must uninstall the earlier preview first. Stable update testing requires a separately
-approved non-production signing key, protected signing job, and version-code policy. Those are not
-part of this workflow, and no production signing material may be substituted.
+1. The direct `azurewebsites.net` Function endpoint returns `401` or `403`; only the linked SWA
+   origin reaches the API.
+2. SWA root and `/api/capture/preview/health` return HTTPS success with `no-store` API headers.
+3. Two clean browser profiles receive isolated sessions and cannot read one another's receipts.
+4. A silent synthetic record-to-transcript run completes through consent, session, wrapped-DEK
+   receipt, lease, reservation, encrypted upload, registration, completion, and transcript.
+5. A Function restart between committed mutations preserves exact idempotent replay.
+6. Changed-body idempotency reuse, expired upload authorization, malformed envelope, oversized
+   request, missing cookie, wrong origin, and non-synthetic encounter values fail closed.
+7. Cosmos contains only bounded synthetic documents with the expected partition key and TTL; the
+   encrypted envelope is removed after registration.
+8. Azure and GitHub logs contain no request body, cookie, idempotency key, upload capability,
+   wrapped DEK, envelope bytes, transcript content, or user-entered values.
+9. The browser never requests microphone permission and the deployed CSP/Permissions Policy keeps
+   microphone access disabled.
+
+Only after these pass may the stable URL be shared as a synthetic demo. This is not an operational
+or clinical acceptance. Real platform auth/BFF, private upload edge, PostgreSQL, transcription
+trigger/status, consent revocation, retention controls, signed native releases, and physical-device
+evidence remain later gates.
+
+## Disable and recover
+
+Set `CAPTURE_PREVIEW_DEPLOY_ENABLED=false` to stop deployments. Stop the Function first to remove
+API access while preserving evidence; keep the SWA link in place so its AuthV2 protection remains
+installed. Unlink only after the Function is stopped and its direct endpoint is confirmed closed.
+If the API behaves unexpectedly, do not
+retry mutations blindly: close access, preserve metadata-only logs, inspect Cosmos/state, fix in a
+new reviewed PR, and redeploy one exact `main` commit.
+
+For final teardown, first disable deployment, stop the Function, and confirm its direct endpoint is
+closed. Only then may a separately reviewed destroy plan remove the SWA link/site, Function,
+identities, Cosmos database/account, storage, and resource group. Delete the GitHub environment
+variables and repository gates last. The dedicated state account is retained until final state and
+deletion evidence are verified, then removed explicitly.

@@ -1,0 +1,8 @@
+.terraform/
+backend.hcl
+*.auto.tfvars
+*.tfplan
+*.tfplan.*
+*.tfstate
+*.tfstate.*
+tfplan*

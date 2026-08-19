@@ -1,0 +1,8 @@
+# Bootstrap this backend separately before initializing this root. The state
+# includes the SWA deployment key and disabled service-account keys even
+# though none is output, so do not reuse the broader Scribe state boundary.
+resource_group_name  = "cosmaneura-capture-preview-state"
+storage_account_name = "cosmaneurapreviewtf"
+container_name       = "tfstate"
+key                  = "capture-preview/synthetic.tfstate"
+use_azuread_auth     = true

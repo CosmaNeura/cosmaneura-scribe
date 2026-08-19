@@ -10,7 +10,7 @@
   "globalHeaders": {
     "Content-Security-Policy": "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; manifest-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'",
     "Cross-Origin-Opener-Policy": "same-origin",
-    "Permissions-Policy": "camera=(), geolocation=(), microphone=(self), payment=(), usb=()",
+    "Permissions-Policy": "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff"
   },
