@@ -6,6 +6,7 @@ const APP_ID = "1:123456789:android:abcdef1234567890";
 const APP_RESOURCE = `projects/123456789/apps/${APP_ID}`;
 const OPERATION_NAME = `${APP_RESOURCE}/releases/release-one/operations/operation-one`;
 const RELEASE_NAME = `${APP_RESOURCE}/releases/release-one`;
+const SYNTHETIC_ACCESS_TOKEN = "your-synthetic-access-token";
 
 describe("Firebase preview distribution", () => {
   it("uploads, polls, annotates, and distributes one synthetic APK", async () => {
@@ -23,7 +24,7 @@ describe("Firebase preview distribution", () => {
     const sleep = vi.fn(async () => undefined);
 
     await publishFirebaseBinary({
-      accessToken: "synthetic-access-token-value",
+      accessToken: SYNTHETIC_ACCESS_TOKEN,
       androidAppId: APP_ID,
       apkBytes: new Uint8Array([1, 2, 3]),
       pullRequestNumber: "42",
@@ -38,7 +39,7 @@ describe("Firebase preview distribution", () => {
       `https://firebaseappdistribution.googleapis.com/upload/v1/projects/123456789/apps/${encodeURIComponent(APP_ID)}/releases:upload?uploadType=media`,
     );
     expect(fetchImplementation.mock.calls[0][1].headers.Authorization).toBe(
-      "Bearer synthetic-access-token-value",
+      `Bearer ${SYNTHETIC_ACCESS_TOKEN}`,
     );
     expect(fetchImplementation.mock.calls[2][1].body).toBe(
       JSON.stringify({
@@ -56,7 +57,7 @@ describe("Firebase preview distribution", () => {
 
     await expect(
       publishFirebaseBinary({
-        accessToken: "synthetic-access-token-value",
+        accessToken: SYNTHETIC_ACCESS_TOKEN,
         androidAppId: "1:123456789:web:abcdef1234567890",
         apkBytes: new Uint8Array([1]),
         pullRequestNumber: "42",
@@ -74,7 +75,7 @@ describe("Firebase preview distribution", () => {
 
     await expect(
       publishFirebaseBinary({
-        accessToken: "synthetic-access-token-value",
+        accessToken: SYNTHETIC_ACCESS_TOKEN,
         androidAppId: APP_ID,
         apkBytes: new Uint8Array([1]),
         pullRequestNumber: "42",
