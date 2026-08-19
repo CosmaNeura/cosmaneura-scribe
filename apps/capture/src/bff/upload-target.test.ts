@@ -23,6 +23,7 @@ describe("HttpCiphertextUploadTarget", () => {
     );
 
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    expect(fetchImplementation.mock.contexts[0]).toBe(globalThis);
     const [url, init] = fetchImplementation.mock.calls[0] ?? [];
     expect(String(url)).toBe("https://upload.example.test/chunks/object?sig=synthetic");
     expect(init).toMatchObject({

@@ -2,8 +2,9 @@
 
 `apps/capture` is the single P1 capture client for the web/PWA, iOS, and Android. Its permanent
 identity is **Cosmaneura Capture** with native application ID `com.cosmaneura.capture`. The current
-Phase 2 build is a foundation only: clinical capture is false by default, recording controls are not
-implemented, and no tenant or production route is enabled.
+Phase 3 is being built as a synthetic, false-gated preview: the consent-to-transcript screen and
+durable recovery flow are implemented against the local mock BFF, but no tenant, production route,
+microphone, or clinical capture flag is enabled.
 
 ## Deliberately small web layer
 
@@ -31,9 +32,9 @@ regenerate both native projects in the same reviewed change.
   Do not duplicate its envelope framing, AAD encoding, JSON ordering, enums, or limits in app code.
   Protocol v1 currently requires PCM16 mono 16 kHz WAV with a **10-second** target chunk duration;
   the superseded planning stubs' 30–60-second language was stale.
-- Consent accepted by the server, session creation, DEK binding, and a valid capture lease must all
-  precede recording. The product flow remains disabled until Phase 3 implements and proves those
-  gates.
+- Consent accepted by the server, session creation, DEK binding, and a valid capture lease all
+  precede the synthetic record control. Production activation remains blocked on the real platform
+  BFF, private upload edge, native DEK custody, microphone/device evidence, and reviewed flags.
 - No audio, raw DEK, upload credential, token, object path, patient display value, transcript text,
   or patient identifier may enter logs, analytics, crash reports, notifications, unencrypted local
   storage, or service-worker caches. Local history is metadata-only. Transcript display is read-only
@@ -45,11 +46,12 @@ regenerate both native projects in the same reviewed change.
   cannot multiply the server-advertised upload concurrency. Browser runtimes without that primitive
   fail closed; their support requires a separately reviewed coordinator.
 
-The Phase 2 queue begins only after the server returns a canonical reservation. It does not yet
-orchestrate the pre-reservation request. Before Phase 3 sends that mutation, it must durably persist
-the reservation idempotency key and request intent so a crash or lost response can replay the exact
-request. The post-response `reserved` record is not evidence that this activation prerequisite has
-been implemented.
+The Phase 3 flow encrypts and persists the exact reservation idempotency key and request body before
+the reservation mutation. A lost response or process restart replays that immutable intent, then the
+canonical reservation is stored with the queue record. Active session, lease, completion key, and
+chunk progress are encrypted locally so a reload pauses capture safely or resumes queued work. After
+the read-only synthetic transcript is available, the active session fence and local DEK are removed
+atomically. This is recovery evidence for the synthetic PWA path, not production activation.
 
 ## Web and native profiles
 
@@ -59,6 +61,11 @@ offline/retry and refresh recovery within bounded limits, and use a tested raw-P
 such as an `AudioWorklet`. Lossy `MediaRecorder` output must not be relabeled as WAV. Browser clients
 must not promise lock-screen or unrestricted background recording. Their active DEK is a
 non-extractable, origin-bound WebCrypto key; the PWA has no native secure-storage claim.
+
+The initial Track B screen deliberately uses a capability-driven silent PCM16 WAV source. It is
+visibly labelled synthetic and exercises consent, session/key binding, leasing, durable reservation,
+encrypt-then-queue, upload/registration, completion, status, and read-only transcript states without
+opening a microphone. Track A supplies the separately reviewed foreground `AudioWorklet` adapter.
 
 The native profiles are signed Capacitor shells. WebCrypto executes the protocol in the packaged
 first-party webview while native modules own raw-PCM capture, background/lock behavior, OS secure

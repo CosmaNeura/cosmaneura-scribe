@@ -55,7 +55,7 @@ export class HttpCiphertextUploadTarget implements CiphertextUploadTarget {
 
     const body = new ArrayBuffer(envelope.byteLength);
     new Uint8Array(body).set(envelope);
-    const response = await this.fetchImplementation(target, {
+    const response = await this.fetchImplementation.call(globalThis, target, {
       method: "PUT",
       body,
       headers: { "Content-Type": "application/octet-stream" },
