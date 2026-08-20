@@ -152,10 +152,14 @@ export class CosmosPreviewRepository implements PreviewRepository {
     try {
       const response = await this.#container
         .item(previewEnvelopeId(objectId), scopeId)
-        .read<PreviewEnvelope>();
+        .read<PreviewEnvelope & CosmosResource>();
       return response.resource === undefined
         ? null
-        : validatePreviewEnvelope(response.resource, scopeId, objectId);
+        : validatePreviewEnvelope(
+            stripCosmosMetadata(response.resource),
+            scopeId,
+            objectId,
+          );
     } catch (error) {
       if (cosmosStatus(error) === 404) return null;
       throw error;
@@ -181,10 +185,8 @@ export class CosmosPreviewRepository implements PreviewRepository {
   }
 }
 
-function stripCosmosMetadata(
-  resource: PreviewScopeState & CosmosResource,
-): PreviewScopeState {
-  const clone = structuredClone(resource) as PreviewScopeState & Record<string, unknown>;
+function stripCosmosMetadata<T extends object>(resource: T & CosmosResource): T {
+  const clone = structuredClone(resource) as T & Record<string, unknown>;
   delete clone._etag;
   delete clone._rid;
   delete clone._self;
