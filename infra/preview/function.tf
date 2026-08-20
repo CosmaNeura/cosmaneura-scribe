@@ -43,6 +43,26 @@ resource "azurerm_linux_function_app" "preview_api" {
     WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID = azurerm_user_assigned_identity.runtime.id
   }
 
+  # The SWA backend registration enables the Azure Static Web Apps provider,
+  # but Azure defaults unauthenticated direct requests to a redirect. Own the
+  # complete fail-closed policy here so the public Function hostname returns a
+  # hard 401 and only requests authenticated by the linked SWA are admitted.
+  auth_settings_v2 {
+    auth_enabled           = true
+    runtime_version        = "~1"
+    require_authentication = true
+    require_https          = true
+    unauthenticated_action = "Return401"
+
+    azure_static_web_app_v2 {
+      client_id = azurerm_static_web_app.preview.default_host_name
+    }
+
+    login {
+      token_store_enabled = false
+    }
+  }
+
   site_config {
     always_on                = false
     app_scale_limit          = var.function_maximum_instance_count
@@ -66,11 +86,7 @@ resource "azurerm_linux_function_app" "preview_api" {
   ]
 
   lifecycle {
-    # Linking the Function as a SWA backend deliberately installs AuthV2 with
-    # the Azure Static Web Apps provider. The registration resource owns that
-    # generated configuration so direct Function calls remain authenticated.
     ignore_changes = [
-      auth_settings_v2,
       # The pinned deployment action owns the immutable package URL; Terraform
       # owns the identity used to read it and every other app setting.
       app_settings["WEBSITE_RUN_FROM_PACKAGE"],

@@ -20,6 +20,13 @@ first bootstrap an opaque, `HttpOnly`, `Secure`, `SameSite=Strict` preview cooki
 the canonical SWA host and cookie into the Cosmos partition key, so separate browsers cannot see or
 mutate one another's state. State and encrypted synthetic envelopes expire automatically.
 
+The linked Function's AuthV2 policy is owned explicitly by OpenTofu. It trusts only the exact SWA
+hostname as its Azure Static Web Apps client, requires HTTPS and authentication, disables the token
+store, and returns a hard `401` for direct unauthenticated requests. A redirect or an unavailable
+`503` is not accepted as proof that direct access is closed. Because Azure writes AuthV2 while
+creating a brand-new backend link, bootstrap acceptance may require a second fresh, independently
+reviewed in-place plan to converge this policy before any code is deployed.
+
 The hosted profile is deliberately smaller than the protocol ceiling: at most six ten-second
 chunks. Requests are runtime-validated against the exact synthetic appointment, practitioner, and
 patient identifiers. The public RSA key is a committed public-only test value; no private key is

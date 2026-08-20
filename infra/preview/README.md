@@ -56,12 +56,20 @@ no private egress in this small preview slice. Both disable reusable local crede
 only Microsoft Entra/managed-identity authorization. This is acceptable only for synthetic data;
 it is not the future private clinical upload edge.
 
-The Function's direct hostname is public at the network layer. Creating the SWA Function
-registration installs App Service AuthV2 for the Azure Static Web Apps provider, so clients use
-only the exact-origin `https://<swa-host>/api/**` route. AzureRM 4.81.0 registers the Function with
-the stable default environment. `preview_environments_enabled=false` is intentional: pull requests
-remain static build/test artifacts and only a protected trusted-main workflow may update the live
-synthetic demo URL.
+The Function's direct hostname is public at the network layer. The SWA Function registration
+enables the App Service AuthV2 Azure Static Web Apps provider, while this root explicitly owns the
+rest of the fail-closed policy: authentication and HTTPS are required, the provider client ID is
+the exact SWA hostname, token storage is disabled, and unauthenticated direct requests return a
+hard `401` rather than redirecting. AzureRM 4.81.0 registers the Function with the stable default
+environment. `preview_environments_enabled=false` is intentional: pull requests remain static
+build/test artifacts and only a protected trusted-main workflow may update the live synthetic demo
+URL.
+
+On a brand-new graph, Azure writes the provider configuration when it creates the backend
+registration after the Function. The mandatory post-apply ARM/direct-endpoint check must therefore
+confirm the complete AuthV2 document. If Azure has replaced any Terraform-owned value, stop before
+code deployment and use a second freshly saved, independently reviewed in-place plan to converge
+the policy; never reuse the bootstrap plan or accept a redirect as proof of denial.
 
 The Function action writes immutable packages only to the private `github-actions-deploy`
 container. The runtime user-assigned identity is the named Blob reader for the action-owned package

@@ -137,6 +137,19 @@ run "synthetic_preview_security_boundaries" {
 
   assert {
     condition = (
+      azurerm_linux_function_app.preview_api.auth_settings_v2[0].auth_enabled == true &&
+      azurerm_linux_function_app.preview_api.auth_settings_v2[0].runtime_version == "~1" &&
+      azurerm_linux_function_app.preview_api.auth_settings_v2[0].require_authentication == true &&
+      azurerm_linux_function_app.preview_api.auth_settings_v2[0].require_https == true &&
+      azurerm_linux_function_app.preview_api.auth_settings_v2[0].unauthenticated_action == "Return401" &&
+      azurerm_linux_function_app.preview_api.auth_settings_v2[0].azure_static_web_app_v2[0].client_id == azurerm_static_web_app.preview.default_host_name &&
+      azurerm_linux_function_app.preview_api.auth_settings_v2[0].login[0].token_store_enabled == false
+    )
+    error_message = "AuthV2 must reject direct unauthenticated requests and trust only the exact linked SWA hostname."
+  }
+
+  assert {
+    condition = (
       azurerm_linux_function_app.preview_api.ftp_publish_basic_authentication_enabled == false &&
       azurerm_linux_function_app.preview_api.webdeploy_publish_basic_authentication_enabled == false
     )

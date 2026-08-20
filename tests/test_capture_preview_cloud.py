@@ -8,6 +8,7 @@ PR_WORKFLOW = ROOT / ".github" / "workflows" / "capture-preview.yml"
 DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "capture-preview-deploy.yml"
 STATIC_CONFIG = ROOT / "apps" / "capture" / "public" / "staticwebapp.config.json"
 RUNBOOK = ROOT / "docs" / "CAPTURE_PREVIEW.md"
+PREVIEW_FUNCTION = ROOT / "infra" / "preview" / "function.tf"
 
 
 def test_pull_request_preview_has_no_cloud_credential_or_deployment_job() -> None:
@@ -81,3 +82,32 @@ def test_hosted_demo_policy_is_synthetic_and_microphone_disabled() -> None:
     assert "Real microphone capture is disabled by the build gate" in runbook
     assert "no platform BFF" in runbook
     assert "CAPTURE_PREVIEW_DEPLOY_ENABLED=false" in runbook
+
+
+def test_preview_function_authv2_fails_closed_on_direct_requests() -> None:
+    function = PREVIEW_FUNCTION.read_text(encoding="utf-8")
+
+    auth_match = re.search(
+        r"auth_settings_v2\s*\{(?P<body>.*?)\n\s*\}\n\n\s*site_config",
+        function,
+        re.DOTALL,
+    )
+    assert auth_match is not None
+    auth = auth_match.group("body")
+
+    for required in (
+        "auth_enabled           = true",
+        'runtime_version        = "~1"',
+        "require_authentication = true",
+        "require_https          = true",
+        'unauthenticated_action = "Return401"',
+        "client_id = azurerm_static_web_app.preview.default_host_name",
+        "token_store_enabled = false",
+    ):
+        assert required in auth
+
+    lifecycle_match = re.search(
+        r"lifecycle\s*\{(?P<body>.*?)\n\s*\}", function, re.DOTALL
+    )
+    assert lifecycle_match is not None
+    assert "auth_settings_v2" not in lifecycle_match.group("body")
