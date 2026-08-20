@@ -44,7 +44,7 @@ effect.
 - a runtime user-assigned identity with only the exact Cosmos container item role and the
   HTTP-only Function host's minimum Blob Data Owner role on its dedicated storage account;
 - a GitHub deployment user-assigned identity federated only to
-  `repo:CosmaNeura/cosmaneura-scribe:environment:capture-preview`;
+  `repo:CosmaNeura@186940615/cosmaneura-scribe@1333303738:environment:capture-preview`;
 - exact-resource deployment roles: Website Contributor on the single Function, Blob Data
   Contributor on only its private `github-actions-deploy` container, and a custom SWA role limited
   to reading that one site's deployment token; and
@@ -64,6 +64,11 @@ hard `401` rather than redirecting. AzureRM 4.81.0 registers the Function with t
 environment. `preview_environments_enabled=false` is intentional: pull requests remain static
 build/test artifacts and only a protected trusted-main workflow may update the live synthetic demo
 URL.
+
+The GitHub OIDC subject pins GitHub's immutable organization-owner and repository IDs in addition
+to the protected environment. The ID-qualified prefix must match the repository's live
+`sub_claim_prefix`; a name-only subject is intentionally rejected by Azure and must never be used
+as a fallback.
 
 On a brand-new graph, Azure writes the provider configuration when it creates the backend
 registration after the Function. The mandatory post-apply ARM/direct-endpoint check must therefore

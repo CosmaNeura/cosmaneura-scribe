@@ -183,8 +183,8 @@ run "synthetic_preview_security_boundaries" {
   }
 
   assert {
-    condition     = azurerm_federated_identity_credential.github_environment.subject == "repo:CosmaNeura/cosmaneura-scribe:environment:capture-preview"
-    error_message = "Azure federation must trust only the protected capture-preview GitHub environment."
+    condition     = azurerm_federated_identity_credential.github_environment.subject == "repo:CosmaNeura@186940615/cosmaneura-scribe@1333303738:environment:capture-preview"
+    error_message = "Azure federation must trust only the immutable repository IDs and protected capture-preview GitHub environment."
   }
 
   assert {

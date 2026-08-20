@@ -107,10 +107,12 @@ outputs:
 - `CAPTURE_PREVIEW_SWA_HOSTNAME`
 
 The deploy identity has a federated credential whose exact subject is
-`repo:CosmaNeura/cosmaneura-scribe:environment:capture-preview`. It receives only Function-package
-deployment on the exact Function, Blob Data Contributor on only its private package container, and
-SWA token retrieval on the exact Static Web App. It is not the Function runtime identity and has no
-Cosmos data access or role-assignment authority.
+`repo:CosmaNeura@186940615/cosmaneura-scribe@1333303738:environment:capture-preview`. The embedded
+owner and repository IDs are GitHub's immutable subject prefix; a name-only subject does not match
+the token GitHub issues. The identity receives only Function-package deployment on the exact
+Function, Blob Data Contributor on only its private package container, and SWA token retrieval on
+the exact Static Web App. It is not the Function runtime identity and has no Cosmos data access or
+role-assignment authority.
 
 Keep the repository variable `CAPTURE_PREVIEW_DEPLOY_ENABLED=false` until infrastructure and role
 propagation are verified. Set it to `true` immediately before merging the reviewed implementation,

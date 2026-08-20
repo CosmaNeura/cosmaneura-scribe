@@ -55,14 +55,14 @@ variable "resource_suffix" {
   }
 }
 
-variable "github_repository" {
-  description = "Exact GitHub owner/repository trusted by the deployment identity."
+variable "github_oidc_repository_subject" {
+  description = "Exact immutable owner@owner_id/repository@repository_id prefix issued by GitHub OIDC."
   type        = string
-  default     = "CosmaNeura/cosmaneura-scribe"
+  default     = "CosmaNeura@186940615/cosmaneura-scribe@1333303738"
 
   validation {
-    condition     = var.github_repository == "CosmaNeura/cosmaneura-scribe"
-    error_message = "This preview deployment identity is restricted to CosmaNeura/cosmaneura-scribe."
+    condition     = var.github_oidc_repository_subject == "CosmaNeura@186940615/cosmaneura-scribe@1333303738"
+    error_message = "This preview deployment identity is restricted to the immutable CosmaNeura/cosmaneura-scribe owner and repository IDs."
   }
 }
 
