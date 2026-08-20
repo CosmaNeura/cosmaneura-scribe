@@ -5,6 +5,7 @@
   "type": "module",
   "workspaces": [
     "apps/capture",
+    "apps/capture-preview-api",
     "apps/capture/native-plugins/*",
     "packages/*"
   ],
@@ -27,13 +28,16 @@
   "packageManager": "npm@11.5.2",
   "scripts": {
     "build": "npm run build --workspace @cosmaneura-scribe/capacitor-secure-queue --workspace @cosmaneura-scribe/capture",
+    "build:capture-preview-api": "node apps/capture-preview-api/scripts/build-package.mjs",
     "cap:sync:check:android": "node scripts/check_capacitor_sync.mjs android",
     "cap:sync:check:ios": "node scripts/check_capacitor_sync.mjs ios",
     "check:api": "npm run check:api --workspace @cosmaneura-scribe/capture",
+    "check:preview-bundle": "npm run check:preview-bundle --workspace @cosmaneura-scribe/capture",
     "dev": "npm run dev --workspace @cosmaneura-scribe/capture",
     "generate:api": "npm run generate:api --workspace @cosmaneura-scribe/capture",
     "lint": "eslint . --max-warnings 0",
     "mock:bff": "npm run mock:bff --workspace @cosmaneura-scribe/capture",
+    "smoke:capture-preview-api": "node apps/capture-preview-api/scripts/smoke.mjs",
     "test": "npm run test --workspaces --if-present",
     "test:golden": "npm run test:golden --workspace @cosmaneura-scribe/capture-protocol",
     "typecheck": "npm run typecheck --workspaces --if-present"

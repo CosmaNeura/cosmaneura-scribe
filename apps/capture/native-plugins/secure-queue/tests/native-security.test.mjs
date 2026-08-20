@@ -87,8 +87,11 @@ test("runs native secure-storage behavior on hosted emulators", async () => {
   assert.match(workflow, /system-images;android-36;google_apis;x86_64/u);
   assert.match(workflow, /connectedDebugAndroidTest/u);
   assert.match(workflow, /\/dev\/kvm/u);
+  assert.match(workflow, /sudo rm -rf -- \/usr\/local\/lib\/android\/sdk\/ndk/u);
+  assert.match(workflow, /available_kib < 10485760/u);
   assert.match(workflow, /-no-metrics/u);
   assert.match(workflow, /-partition-size 2048/u);
+  assert.match(workflow, /disk\.dataPartition\.size=2048M/u);
   assert.match(workflow, /export ANDROID_AVD_HOME="\$\{avd_home\}"/u);
   assert.match(workflow, /ANDROID_AVD_HOME.*avd_name.*\.ini/u);
   assert.match(workflow, /timeout 180s "\$\{adb_path\}" wait-for-device/u);

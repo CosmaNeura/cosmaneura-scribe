@@ -43,22 +43,27 @@ export class HttpCiphertextUploadTarget implements CiphertextUploadTarget {
     } catch {
       throw new UploadTargetPolicyError();
     }
+    const receipt = parsePreviewReceipt(target.hash);
     if (
       !this.allowedOrigins.has(target.origin) ||
       target.protocol !== "https:" && !isLoopback(target.hostname) ||
       target.username !== "" ||
       target.password !== "" ||
-      target.hash !== ""
+      (target.hash !== "" && receipt === null)
     ) {
       throw new UploadTargetPolicyError();
     }
 
     const body = new ArrayBuffer(envelope.byteLength);
     new Uint8Array(body).set(envelope);
+    target.hash = "";
     const response = await this.fetchImplementation.call(globalThis, target, {
       method: "PUT",
       body,
-      headers: { "Content-Type": "application/octet-stream" },
+      headers: {
+        "Content-Type": "application/octet-stream",
+        ...(receipt === null ? {} : { "X-Capture-Upload-Receipt": receipt }),
+      },
       credentials: "omit",
       redirect: "error",
       cache: "no-store",
@@ -74,6 +79,11 @@ export class HttpCiphertextUploadTarget implements CiphertextUploadTarget {
       );
     }
   }
+}
+
+function parsePreviewReceipt(hash: string): string | null {
+  const match = /^#receipt=([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/u.exec(hash);
+  return match?.[1] ?? null;
 }
 
 function normalizeAllowedOrigin(value: string): string {

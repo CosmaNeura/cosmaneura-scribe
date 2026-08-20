@@ -1,0 +1,15 @@
+subscription_id = "<azure-subscription-uuid>"
+tenant_id       = "<microsoft-entra-tenant-uuid>"
+
+# Availability-checked and frozen for this environment.
+resource_suffix = "p8x6m2"
+
+resource_group_name = "cosmaneura-capture-preview-development"
+location            = "eastus2"
+
+# Use the first UTC day of the current month when the budget is created.
+budget_start_date = "2026-08-01T00:00:00Z"
+
+# Optional. Leave empty to create the budget with a disabled, no-contact
+# notification until an existing reviewed action group is selected.
+budget_notification_action_group_ids = []

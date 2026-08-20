@@ -16,6 +16,7 @@ import {
 } from "./flow";
 import { CaptureQueue } from "./queue";
 import { EncryptedIndexedDbQueueStorage } from "./storage";
+import { bootstrapCapturePreview } from "./preview/bootstrap";
 
 const SYNTHETIC_ENCOUNTER = Object.freeze({
   appointmentId: "synthetic-appointment",
@@ -61,6 +62,7 @@ class CaptureApp extends LitElement {
 
   protected override firstUpdated(): void {
     void this.#run(async () => {
+      await bootstrapCapturePreview();
       this.#releaseCaptureFlowLock = await acquireCaptureFlowLock();
       const controller = await this.#getController();
       const restored = await controller.restore();

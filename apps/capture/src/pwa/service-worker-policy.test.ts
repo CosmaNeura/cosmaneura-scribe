@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -38,4 +40,17 @@ describe("capture PWA service-worker policy", () => {
       expect(NAVIGATION_FALLBACK_DENYLIST.some((pattern) => pattern.test(path))).toBe(true);
     },
   );
+
+  it("keeps the hosted synthetic preview microphone-disabled", async () => {
+    const raw = await readFile(
+      new URL("../../public/staticwebapp.config.json", import.meta.url),
+      "utf8",
+    );
+    const config = JSON.parse(raw) as {
+      readonly globalHeaders?: Readonly<Record<string, string>>;
+    };
+
+    expect(config.globalHeaders?.["Permissions-Policy"]).toContain("microphone=()");
+    expect(config.globalHeaders?.["Permissions-Policy"]).not.toContain("microphone=(self)");
+  });
 });

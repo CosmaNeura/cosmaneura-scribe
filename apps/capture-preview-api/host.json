@@ -1,0 +1,27 @@
+{
+  "version": "2.0",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true
+      },
+      "enableDependencyTracking": false,
+      "enablePerformanceCountersCollection": false,
+      "enableLiveMetricsFilters": true
+    },
+    "logLevel": {
+      "default": "Warning",
+      "Function": "Warning",
+      "Host.Aggregator": "None",
+      "Host.Results": "None"
+    }
+  },
+  "extensions": {
+    "http": {
+      "routePrefix": "api",
+      "maxOutstandingRequests": 64,
+      "maxConcurrentRequests": 16,
+      "dynamicThrottlesEnabled": true
+    }
+  }
+}

@@ -101,6 +101,30 @@ jobs:
           :cosmaneura-scribe-capacitor-secure-queue:testDebugUnitTest
           :app:assembleDebug
         working-directory: apps/capture/android
+      - name: Free hosted-runner space for the API 36 emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          android_sdk_root="$(realpath -- "${ANDROID_HOME}")"
+          if [[ "${android_sdk_root}" != "/usr/local/lib/android/sdk" ]]; then
+            echo "::error::Unexpected hosted-runner Android SDK path"
+            exit 1
+          fi
+          ndk_directory="${android_sdk_root}/ndk"
+          if [[ -L "${ndk_directory}" ]]; then
+            echo "::error::Refusing to remove a symlinked NDK directory"
+            exit 1
+          fi
+          if [[ -d "${ndk_directory}" ]]; then
+            du -sh "${ndk_directory}"
+            sudo rm -rf -- /usr/local/lib/android/sdk/ndk
+          fi
+          df -h /
+          available_kib="$(df --output=avail -k / | tail -1 | tr -d ' ')"
+          if (( available_kib < 10485760 )); then
+            echo "::error::Hosted runner has less than 10 GiB free for the API 36 emulator"
+            exit 1
+          fi
       - name: Enable Android emulator hardware acceleration
         shell: bash
         run: |
@@ -136,6 +160,17 @@ jobs:
             echo "::error::avdmanager did not create the expected API 36 AVD metadata"
             exit 1
           fi
+          avd_config="${ANDROID_AVD_HOME}/${avd_name}.avd/config.ini"
+          if [[ ! -f "${avd_config}" ]]; then
+            echo "::error::avdmanager did not create the expected API 36 AVD configuration"
+            exit 1
+          fi
+          if grep -q '^disk\.dataPartition\.size=' "${avd_config}"; then
+            sed -i 's/^disk\.dataPartition\.size=.*/disk.dataPartition.size=2048M/' "${avd_config}"
+          else
+            printf '%s\n' 'disk.dataPartition.size=2048M' >> "${avd_config}"
+          fi
+          grep -Fxq 'disk.dataPartition.size=2048M' "${avd_config}"
 
           cleanup() {
             "${adb_path}" emu kill >/dev/null 2>&1 || true

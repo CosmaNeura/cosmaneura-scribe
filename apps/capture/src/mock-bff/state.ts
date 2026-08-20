@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   AUDIO_CHANNELS,
@@ -18,6 +18,10 @@ import {
   encodeChunkAdditionalDataBase64Url,
 } from "@cosmaneura-scribe/capture-protocol";
 import type { CaptureChannel } from "@cosmaneura-scribe/capture-protocol";
+import {
+  SYNTHETIC_KEY_VERSION,
+  SYNTHETIC_PUBLIC_KEY,
+} from "@cosmaneura-scribe/capture-preview-domain";
 
 import type {
   AudioEncryptionPublicKey,
@@ -69,9 +73,6 @@ export interface MockCaptureServiceOptions {
   readonly idFactory?: () => string;
   readonly requirePreparation?: boolean;
 }
-
-const SYNTHETIC_KEY_VERSION = "synthetic-wrapping-key-v1";
-const SYNTHETIC_PUBLIC_KEY = createSyntheticPublicKey();
 
 interface ReservationRecord {
   readonly objectId: string;
@@ -149,7 +150,14 @@ export class MockCaptureService {
   }
 
   public audioEncryptionKey(): AudioEncryptionPublicKey {
-    return structuredClone(SYNTHETIC_PUBLIC_KEY);
+    return {
+      key_version: SYNTHETIC_PUBLIC_KEY.key_version,
+      algorithm: SYNTHETIC_PUBLIC_KEY.algorithm,
+      public_jwk: {
+        ...SYNTHETIC_PUBLIC_KEY.public_jwk,
+        key_ops: ["wrapKey"],
+      },
+    };
   }
 
   public createConsent(request: ConsentCreate, idempotencyKey: string): ConsentRecord {
@@ -574,26 +582,6 @@ export class MockCaptureService {
   private assertOpen(): void {
     if (this.completed) throw new MockBffError(409, "session_closed");
   }
-}
-
-function createSyntheticPublicKey(): AudioEncryptionPublicKey {
-  const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 3_072 });
-  const jwk = publicKey.export({ format: "jwk" });
-  if (jwk.kty !== "RSA" || jwk.n === undefined || jwk.e === undefined) {
-    throw new Error("failed to create the synthetic wrapping key");
-  }
-  return {
-    key_version: SYNTHETIC_KEY_VERSION,
-    algorithm: "RSA-OAEP-256",
-    public_jwk: {
-      kty: "RSA",
-      n: jwk.n,
-      e: jwk.e,
-      alg: "RSA-OAEP-256",
-      ext: true,
-      key_ops: ["wrapKey"],
-    },
-  };
 }
 
 function addSeconds(value: Date, seconds: number): Date {
