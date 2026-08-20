@@ -9,6 +9,8 @@ DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "capture-preview-deploy.yml"
 STATIC_CONFIG = ROOT / "apps" / "capture" / "public" / "staticwebapp.config.json"
 RUNBOOK = ROOT / "docs" / "CAPTURE_PREVIEW.md"
 PREVIEW_FUNCTION = ROOT / "infra" / "preview" / "function.tf"
+PREVIEW_MAIN = ROOT / "infra" / "preview" / "main.tf"
+PREVIEW_VARIABLES = ROOT / "infra" / "preview" / "variables.tf"
 
 
 def test_pull_request_preview_has_no_cloud_credential_or_deployment_job() -> None:
@@ -60,6 +62,20 @@ def test_live_deploy_is_bound_to_successful_current_main_and_oidc_environment() 
     assert "secrets." not in workflow
     assert "client-secret" not in workflow
     assert "CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN" not in workflow
+
+
+def test_preview_oidc_subject_uses_github_immutable_repository_ids() -> None:
+    main = PREVIEW_MAIN.read_text(encoding="utf-8")
+    variables = PREVIEW_VARIABLES.read_text(encoding="utf-8")
+    immutable_prefix = "CosmaNeura@186940615/cosmaneura-scribe@1333303738"
+
+    assert (
+        'subject                   = "repo:${var.github_oidc_repository_subject}'
+        ':environment:${var.github_environment}"'
+        in main
+    )
+    assert f'default     = "{immutable_prefix}"' in variables
+    assert "var.github_repository}" not in main
 
 
 def test_every_deployment_action_is_immutably_pinned() -> None:
