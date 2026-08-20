@@ -158,12 +158,19 @@ run "synthetic_preview_security_boundaries" {
 
   assert {
     condition = (
+      azurerm_linux_function_app.preview_api.storage_account_name == azurerm_storage_account.function_host.name &&
+      azurerm_linux_function_app.preview_api.storage_uses_managed_identity == true &&
+      !contains(keys(azurerm_linux_function_app.preview_api.app_settings), "AzureWebJobsStorage__accountName") &&
+      azurerm_linux_function_app.preview_api.app_settings["AzureWebJobsStorage__clientId"] == azurerm_user_assigned_identity.runtime.client_id &&
+      azurerm_linux_function_app.preview_api.app_settings["AzureWebJobsStorage__credential"] == "managedidentity" &&
+      !contains(keys(azurerm_linux_function_app.preview_api.app_settings), "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING") &&
+      !contains(keys(azurerm_linux_function_app.preview_api.app_settings), "WEBSITE_CONTENTSHARE") &&
       azurerm_linux_function_app.preview_api.app_settings.CAPTURE_PREVIEW_ALLOWED_HOSTS == azurerm_static_web_app.preview.default_host_name &&
       azurerm_linux_function_app.preview_api.app_settings.CAPTURE_PREVIEW_MANAGED_IDENTITY_CLIENT_ID == azurerm_user_assigned_identity.runtime.client_id &&
       azurerm_linux_function_app.preview_api.app_settings.FUNCTIONS_REQUEST_BODY_SIZE_LIMIT == "393216" &&
       azurerm_linux_function_app.preview_api.app_settings.WEBSITE_RUN_FROM_PACKAGE_BLOB_MI_RESOURCE_ID == azurerm_user_assigned_identity.runtime.id
     )
-    error_message = "The Function must bind its allowed host and Cosmos credential selection to Terraform-owned resources."
+    error_message = "The Function must use keyless host storage without Azure Files content settings and bind its allowed host and Cosmos identity to Terraform-owned resources."
   }
 
   assert {

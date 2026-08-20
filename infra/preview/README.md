@@ -73,9 +73,14 @@ the policy; never reuse the bootstrap plan or accept a redirect as proof of deni
 
 The Function action writes immutable packages only to the private `github-actions-deploy`
 container. The runtime user-assigned identity is the named Blob reader for the action-owned package
-URL; OpenTofu ignores drift only for that generated URL and continues to own every other app
-setting. Do not apply a blanket age-based lifecycle rule to this container: it cannot distinguish
-the currently active package. Any later cleanup must retain the active and rollback packages.
+URL. The only lifecycle exceptions are that action-owned package URL and AzureRM's non-readable
+content-share suppression switch; every actual app setting remains owned. AzureRM injects and
+consumes the managed-identity host-storage account name through the resource's top-level storage
+fields, so it is intentionally not duplicated in `app_settings`. The content-share switch remains
+configured `true` for every create or replacement. Tests pin the managed-identity credential/client
+ID and prohibit Azure Files content-share settings. Do not apply a blanket age-based lifecycle rule
+to the package container: it cannot distinguish the currently active package. Any later cleanup
+must retain the active and rollback packages.
 
 ## Review and apply
 

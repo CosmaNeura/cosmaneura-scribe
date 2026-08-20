@@ -30,7 +30,6 @@ resource "azurerm_linux_function_app" "preview_api" {
   }
 
   app_settings = {
-    "AzureWebJobsStorage__accountName"           = azurerm_storage_account.function_host.name
     "AzureWebJobsStorage__clientId"              = azurerm_user_assigned_identity.runtime.client_id
     "AzureWebJobsStorage__credential"            = "managedidentity"
     AZURE_CLIENT_ID                              = azurerm_user_assigned_identity.runtime.client_id
@@ -87,6 +86,10 @@ resource "azurerm_linux_function_app" "preview_api" {
 
   lifecycle {
     ignore_changes = [
+      # AzureRM uses this create/update-only switch to omit Azure Files content
+      # settings but cannot read it back from ARM. Keep the configured true
+      # value for every create/replacement and ignore only its fictitious drift.
+      content_share_force_disabled,
       # The pinned deployment action owns the immutable package URL; Terraform
       # owns the identity used to read it and every other app setting.
       app_settings["WEBSITE_RUN_FROM_PACKAGE"],

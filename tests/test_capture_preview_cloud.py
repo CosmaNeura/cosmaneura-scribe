@@ -110,4 +110,24 @@ def test_preview_function_authv2_fails_closed_on_direct_requests() -> None:
         r"lifecycle\s*\{(?P<body>.*?)\n\s*\}", function, re.DOTALL
     )
     assert lifecycle_match is not None
-    assert "auth_settings_v2" not in lifecycle_match.group("body")
+    lifecycle = lifecycle_match.group("body")
+    assert "auth_settings_v2" not in lifecycle
+    assert "content_share_force_disabled," in lifecycle
+    assert 'app_settings["WEBSITE_RUN_FROM_PACKAGE"],' in lifecycle
+
+
+def test_preview_function_host_storage_is_keyless_and_provider_normalized() -> None:
+    function = PREVIEW_FUNCTION.read_text(encoding="utf-8")
+    app_settings_match = re.search(
+        r"app_settings\s*=\s*\{(?P<body>.*?)\n\s*\}", function, re.DOTALL
+    )
+    assert app_settings_match is not None
+    app_settings = app_settings_match.group("body")
+
+    assert "AzureWebJobsStorage__accountName" not in app_settings
+    assert '"AzureWebJobsStorage__credential"' in app_settings
+    assert '"AzureWebJobsStorage__clientId"' in app_settings
+    assert "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING" not in app_settings
+    assert "WEBSITE_CONTENTSHARE" not in app_settings
+    assert "storage_uses_managed_identity = true" in function
+    assert "content_share_force_disabled  = true" in function
