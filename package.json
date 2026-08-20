@@ -37,7 +37,6 @@
     "generate:api": "npm run generate:api --workspace @cosmaneura-scribe/capture",
     "lint": "eslint . --max-warnings 0",
     "mock:bff": "npm run mock:bff --workspace @cosmaneura-scribe/capture",
-    "smoke:capture-preview-api": "node apps/capture-preview-api/scripts/smoke.mjs",
     "test": "npm run test --workspaces --if-present",
     "test:golden": "npm run test:golden --workspace @cosmaneura-scribe/capture-protocol",
     "typecheck": "npm run typecheck --workspaces --if-present"

@@ -98,10 +98,14 @@ npm run test:golden
 npm run lint
 npm run typecheck
 npm test
-npm run build
+DEPLOY_SHA="$(git rev-parse HEAD)" npm run build
 npm run dev
 npm run mock:bff
 ```
+
+Production-style builds require the exact source commit so the emitted static deployment
+attestation cannot claim an unknown revision. Development-server and test commands do not require
+this value.
 
 The mock BFF uses synthetic data only and exists for local protocol-flow testing. Run it beside the
 Vite server; Vite proxies same-origin `/api/capture` and `/mock-upload` requests to the loopback mock
@@ -111,6 +115,7 @@ Native platforms are committed under `ios/` and `android/`. Synchronize them wit
 commands after the web build:
 
 ```sh
+export DEPLOY_SHA="$(git rev-parse HEAD)"
 npm run build
 npm run cap:sync:ios --workspace @cosmaneura-scribe/capture
 npm run cap:sync:android --workspace @cosmaneura-scribe/capture

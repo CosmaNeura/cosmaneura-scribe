@@ -1,0 +1,102 @@
+name: Capture preview manual acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact lowercase 40-character current main commit to accept
+        required: true
+        type: string
+      authorization:
+        description: Explicitly authorize bounded synthetic mutations
+        required: true
+        default: not-authorized
+        type: choice
+        options:
+          - not-authorized
+          - synthetic-only
+
+concurrency:
+  group: capture-preview-live
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  accept:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      inputs.authorization == 'synthetic-only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: capture-preview
+    env:
+      DEPLOY_SHA: ${{ inputs.source_sha }}
+      FUNCTION_APP: ${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}
+      CAPTURE_PREVIEW_EXPECTED_FUNCTION_ORIGIN: https://${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}.azurewebsites.net
+      CAPTURE_PREVIEW_EXPECTED_SWA_ORIGIN: https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}
+    steps:
+      - name: Validate the requested source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${DEPLOY_SHA}" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.DEPLOY_SHA }}
+      - name: Require the exact current main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${DEPLOY_SHA}"
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          test "${current_main}" = "${DEPLOY_SHA}"
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          cache: true
+          version: 2026.8.6
+      - name: Install the pinned acceptance-runner dependency graph
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Require direct Function access denial
+        shell: bash
+        run: |
+          set -euo pipefail
+          direct_status="$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --max-time 30 \
+            "https://${FUNCTION_APP}.azurewebsites.net/api/capture/health")"
+          if ! test "${direct_status}" = "401"; then
+            echo 'Direct Function endpoint did not return the exact AuthV2 401 denial.' >&2
+            exit 1
+          fi
+      - name: Run committed exact-deployment synthetic acceptance
+        env:
+          CAPTURE_PREVIEW_ACCEPTANCE_AUTHORIZED: synthetic-only
+          CAPTURE_PREVIEW_DEPLOYED_SHA: ${{ env.DEPLOY_SHA }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/capture-preview-api/scripts/acceptance.mjs --dry-run
+          node apps/capture-preview-api/scripts/acceptance.mjs \
+            --execute-live \
+            --expected-sha "${DEPLOY_SHA}"
+      - name: Record bounded manual result
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Manual synthetic acceptance passed'
+            echo
+            echo "- Commit: \`${DEPLOY_SHA}\`"
+            echo '- Readiness variable: unchanged'
+            echo '- Function restart: not performed'
+            echo '- Clinical connections: none'
+          } >> "${GITHUB_STEP_SUMMARY}"

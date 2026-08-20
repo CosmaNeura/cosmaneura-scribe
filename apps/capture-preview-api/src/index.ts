@@ -9,11 +9,14 @@ import {
 import { CosmosPreviewRepository } from "./cosmos-repository";
 import { readConfiguration } from "./configuration";
 
+declare const __CAPTURE_PREVIEW_DEPLOY_SHA__: string;
+
 const configuration = readConfiguration(process.env);
 const repository = new CosmosPreviewRepository(configuration);
 const handle = createPreviewRequestHandler(new PreviewCaptureDomain(repository), {
   allowedHosts: configuration.allowedHosts,
   allowedHostSuffixes: [],
+  deploymentSourceSha: __CAPTURE_PREVIEW_DEPLOY_SHA__,
 });
 
 app.http("capturePreview", {

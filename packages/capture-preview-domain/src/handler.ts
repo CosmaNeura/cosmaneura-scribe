@@ -19,12 +19,14 @@ const UPLOAD_PREFIX = "/api/capture/preview/uploads/";
 const MAX_JSON_BYTES = 65_536;
 const COOKIE_VALUE = /^[A-Za-z0-9_-]{43}$/u;
 const SCOPE_ID = /^[0-9a-f]{64}$/u;
+const SOURCE_SHA = /^[0-9a-f]{40}$/u;
 const HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/u;
 
 export interface PreviewRequestHandlerOptions {
   readonly allowedHosts?: readonly string[];
   readonly allowedHostSuffixes?: readonly string[];
   readonly cookieFactory?: () => string;
+  readonly deploymentSourceSha?: string;
 }
 
 export function createPreviewRequestHandler(
@@ -34,6 +36,9 @@ export function createPreviewRequestHandler(
   const allowedHosts = new Set(options.allowedHosts ?? []);
   const allowedHostSuffixes = options.allowedHostSuffixes ?? [".azurestaticapps.net"];
   const cookieFactory = options.cookieFactory ?? (() => randomBytes(32).toString("base64url"));
+  const deploymentAttestation = options.deploymentSourceSha === undefined
+    ? null
+    : createDeploymentAttestation(options.deploymentSourceSha);
 
   return async (request: Request): Promise<Response> => {
     try {
@@ -43,6 +48,10 @@ export function createPreviewRequestHandler(
       if (request.method === "GET" && url.pathname === `${CONTROL_PREFIX}/preview/health`) {
         await domain.health();
         return jsonResponse(200, { status: "ok", mode: "synthetic" });
+      }
+      if (request.method === "GET" && url.pathname === `${CONTROL_PREFIX}/preview/deployment`) {
+        if (deploymentAttestation === null) throw new Error("deployment attestation is unavailable");
+        return jsonResponse(200, deploymentAttestation);
       }
       if (request.method === "POST" && url.pathname === `${CONTROL_PREFIX}/preview/bootstrap`) {
         await requireEmptyBody(request);
@@ -218,6 +227,18 @@ export function createPreviewRequestHandler(
         detail: { code: "preview_internal_error", message: "synthetic preview request failed" },
       });
     }
+  };
+}
+
+function createDeploymentAttestation(sourceSha: string): JsonValue {
+  if (!SOURCE_SHA.test(sourceSha)) {
+    throw new Error("deployment source SHA must be an exact lowercase 40-character Git commit SHA");
+  }
+  return {
+    schema_version: 1,
+    source_sha: sourceSha,
+    mode: "synthetic",
+    microphone_enabled: false,
   };
 }
 

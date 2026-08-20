@@ -15,8 +15,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      DEPLOY_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.DEPLOY_SHA }}
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           cache: true
@@ -52,6 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f apps/capture/dist/index.html
+          test -f apps/capture/dist/capture-preview-deployment.json
           test -f apps/capture/dist/sw.js
           test -f apps/capture/dist/manifest.webmanifest
           test -f apps/capture/dist/staticwebapp.config.json

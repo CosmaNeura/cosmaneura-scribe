@@ -10,6 +10,8 @@
   },
   "packageManager": "npm@11.5.2",
   "scripts": {
+    "acceptance:dry": "node scripts/acceptance.mjs --dry-run",
+    "acceptance:live": "node scripts/acceptance.mjs --execute-live",
     "build": "node scripts/build-package.mjs",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
