@@ -15,6 +15,7 @@ import { InMemoryPreviewRepository } from "./repository";
 
 const ORIGIN = "https://preview.example.test";
 const COOKIE_VALUE = "a".repeat(43);
+const DEPLOY_SHA = "0123456789abcdef0123456789abcdef01234567";
 
 describe("persistent synthetic capture preview", () => {
   it("survives a new process facade and completes upload, registration, and transcript", async () => {
@@ -368,10 +369,20 @@ describe("persistent synthetic capture preview", () => {
     const handle = createPreviewRequestHandler(new PreviewCaptureDomain(repository), {
       allowedHosts: ["preview.example.test", "other.example.test"],
       cookieFactory: () => COOKIE_VALUE,
+      deploymentSourceSha: DEPLOY_SHA,
     });
     const health = await handle(request("/api/capture/preview/health"));
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({ status: "ok", mode: "synthetic" });
+    const deployment = await handle(request("/api/capture/preview/deployment"));
+    expect(deployment.status).toBe(200);
+    expect(deployment.headers.get("cache-control")).toBe("no-store");
+    expect(await deployment.json()).toEqual({
+      schema_version: 1,
+      source_sha: DEPLOY_SHA,
+      mode: "synthetic",
+      microphone_enabled: false,
+    });
     await handle(request("/api/capture/preview/bootstrap", { method: "POST" }));
 
     expect((await handle(request("/api/capture/audio-encryption-key"))).status).toBe(401);
@@ -379,6 +390,14 @@ describe("persistent synthetic capture preview", () => {
       headers: { Cookie: `__Host-capture_preview=${COOKIE_VALUE}` },
       origin: "https://other.example.test",
     }))).status).toBe(401);
+  });
+
+  it("rejects an invalid deployment source SHA before serving requests", () => {
+    const repository = new InMemoryPreviewRepository();
+    expect(() => createPreviewRequestHandler(new PreviewCaptureDomain(repository), {
+      allowedHosts: ["preview.example.test"],
+      deploymentSourceSha: "not-a-commit",
+    })).toThrow("deployment source SHA must be an exact lowercase 40-character Git commit SHA");
   });
 
   it("strictly rejects unknown fields and non-synthetic identifiers", async () => {
@@ -496,6 +515,7 @@ function handler(repository: InMemoryPreviewRepository) {
   return createPreviewRequestHandler(new PreviewCaptureDomain(repository), {
     allowedHosts: ["preview.example.test"],
     cookieFactory: () => COOKIE_VALUE,
+    deploymentSourceSha: DEPLOY_SHA,
   });
 }
 

@@ -73,10 +73,18 @@ jobs:
         run: |
           set -euo pipefail
           test -f apps/capture/dist/index.html
+          test -f apps/capture/dist/capture-preview-deployment.json
+          jq --exit-status --arg source_sha "${DEPLOY_SHA}" '
+            type == "object" and
+            (keys == ["microphone_enabled", "mode", "schema_version", "source_sha"]) and
+            .schema_version == 1 and
+            .source_sha == $source_sha and
+            .mode == "synthetic" and
+            .microphone_enabled == false
+          ' apps/capture/dist/capture-preview-deployment.json >/dev/null
           test -f apps/capture/dist/staticwebapp.config.json
           test -f apps/capture-preview-api/dist-package/host.json
           test -f apps/capture-preview-api/dist-package/index.js
-          test -f apps/capture-preview-api/scripts/smoke.mjs
           mkdir -p capture-preview-function
           (
             cd apps/capture-preview-api/dist-package
@@ -98,14 +106,6 @@ jobs:
           name: capture-preview-function-${{ env.DEPLOY_SHA }}
           path: capture-preview-function/function.zip
           retention-days: 7
-      - name: Upload metadata-only smoke gate
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          if-no-files-found: error
-          name: capture-preview-smoke-${{ env.DEPLOY_SHA }}
-          path: apps/capture-preview-api/scripts/smoke.mjs
-          retention-days: 7
-
   deploy-function:
     needs: build
     runs-on: ubuntu-latest
@@ -186,20 +186,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: capture-preview
+    permissions:
+      contents: read
     env:
       DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
       FUNCTION_APP: ${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}
       PREVIEW_URL: https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}/
+      CAPTURE_PREVIEW_EXPECTED_FUNCTION_ORIGIN: https://${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}.azurewebsites.net
+      CAPTURE_PREVIEW_EXPECTED_SWA_ORIGIN: https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          name: capture-preview-smoke-${{ env.DEPLOY_SHA }}
-          path: smoke
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.DEPLOY_SHA }}
+      - name: Require the exact current main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${DEPLOY_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "${DEPLOY_SHA}"
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          test "${current_main}" = "${DEPLOY_SHA}"
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:
           cache: true
           version: 2026.8.6
-      - name: Run metadata-only synthetic acceptance
+      - name: Install the pinned acceptance-runner dependency graph
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Require direct Function access denial
         shell: bash
         run: |
           set -euo pipefail
@@ -210,11 +227,25 @@ jobs:
             --write-out '%{http_code}' \
             --max-time 30 \
             "https://${FUNCTION_APP}.azurewebsites.net/api/capture/health")"
-          case "${direct_status}" in
-            401|403) ;;
-            *) echo 'Direct Function endpoint was not access-denied.' >&2; exit 1 ;;
-          esac
-          node smoke/smoke.mjs "${PREVIEW_URL}"
+          if ! test "${direct_status}" = "401"; then
+            echo 'Direct Function endpoint did not return the exact AuthV2 401 denial.' >&2
+            exit 1
+          fi
+      - name: Run committed exact-deployment synthetic acceptance
+        env:
+          CAPTURE_PREVIEW_ACCEPTANCE_AUTHORIZED: synthetic-only
+          CAPTURE_PREVIEW_DEPLOYED_SHA: ${{ env.DEPLOY_SHA }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/capture-preview-api/scripts/acceptance.mjs --dry-run
+          node apps/capture-preview-api/scripts/acceptance.mjs \
+            --execute-live \
+            --expected-sha "${DEPLOY_SHA}"
+      - name: Record accepted synthetic deployment
+        shell: bash
+        run: |
+          set -euo pipefail
           {
             echo '### Synthetic capture demo deployed'
             echo

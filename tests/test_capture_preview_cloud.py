@@ -6,8 +6,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PR_WORKFLOW = ROOT / ".github" / "workflows" / "capture-preview.yml"
 DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "capture-preview-deploy.yml"
+ACCEPT_WORKFLOW = ROOT / ".github" / "workflows" / "capture-preview-acceptance.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 STATIC_CONFIG = ROOT / "apps" / "capture" / "public" / "staticwebapp.config.json"
+VITE_CONFIG = ROOT / "apps" / "capture" / "vite.config.ts"
+PREVIEW_BUNDLE_CHECK = ROOT / "apps" / "capture" / "scripts" / "check-preview-bundle.mjs"
 RUNBOOK = ROOT / "docs" / "CAPTURE_PREVIEW.md"
 PREVIEW_FUNCTION = ROOT / "infra" / "preview" / "function.tf"
 PREVIEW_MAIN = ROOT / "infra" / "preview" / "main.tf"
@@ -59,13 +62,80 @@ def test_live_deploy_is_bound_to_successful_current_main_and_oidc_environment() 
         "Azure/functions-action@",
         "az staticwebapp secrets list",
         "::add-mask::",
-        "smoke/smoke.mjs",
+        "capture-preview-deployment.json",
+        "apps/capture-preview-api/scripts/acceptance.mjs --dry-run",
+        "npm ci --ignore-scripts --no-audit --no-fund",
+        '--expected-sha "${DEPLOY_SHA}"',
     ):
         assert required in workflow
 
     assert "secrets." not in workflow
     assert "client-secret" not in workflow
     assert "CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN" not in workflow
+    assert "smoke:capture-preview-api" not in workflow
+
+    accept_job = workflow.split("\n  accept:\n", 1)[1]
+    assert "actions/checkout@" in accept_job
+    assert 'ref: ${{ env.DEPLOY_SHA }}' in accept_job
+    assert 'test "${current_main}" = "${DEPLOY_SHA}"' in accept_job
+    assert "CAPTURE_PREVIEW_ACCEPTANCE_AUTHORIZED: synthetic-only" in accept_job
+    assert (
+        "CAPTURE_PREVIEW_EXPECTED_FUNCTION_ORIGIN: "
+        "https://${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}.azurewebsites.net"
+    ) in accept_job
+    assert (
+        "CAPTURE_PREVIEW_EXPECTED_SWA_ORIGIN: "
+        "https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}"
+    ) in accept_job
+    assert "id-token: write" not in accept_job
+    assert 'test "${direct_status}" = "401"' in accept_job
+    assert accept_job.index("exact AuthV2 401 denial") < accept_job.index(
+        "--execute-live"
+    )
+    assert "401|403" not in accept_job
+
+
+def test_manual_acceptance_is_dormant_protected_and_has_no_cloud_identity() -> None:
+    workflow = ACCEPT_WORKFLOW.read_text(encoding="utf-8")
+
+    for required in (
+        "workflow_dispatch:",
+        "group: capture-preview-live",
+        "authorization:",
+        "not-authorized",
+        "synthetic-only",
+        "environment: capture-preview",
+        "github.ref == 'refs/heads/main'",
+        "permissions:\n  contents: read",
+        '[[ "${DEPLOY_SHA}" =~ ^[0-9a-f]{40}$ ]]',
+        'test "${current_main}" = "${DEPLOY_SHA}"',
+        'test "${direct_status}" = "401"',
+        "CAPTURE_PREVIEW_ACCEPTANCE_AUTHORIZED: synthetic-only",
+        "CAPTURE_PREVIEW_EXPECTED_FUNCTION_ORIGIN: "
+        "https://${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}.azurewebsites.net",
+        "CAPTURE_PREVIEW_EXPECTED_SWA_ORIGIN: "
+        "https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}",
+        "npm ci --ignore-scripts --no-audit --no-fund",
+        "apps/capture-preview-api/scripts/acceptance.mjs --dry-run",
+        '--expected-sha "${DEPLOY_SHA}"',
+        "Readiness variable: unchanged",
+        "Function restart: not performed",
+    ):
+        assert required in workflow
+
+    for forbidden in (
+        "schedule:",
+        "push:",
+        "pull_request:",
+        "id-token: write",
+        "Azure/login@",
+        "az functionapp restart",
+        "CAPTURE_PREVIEW_SHARED_MOCK_READY=true",
+        "secrets.",
+        "401|403",
+        "smoke:capture-preview-api",
+    ):
+        assert forbidden not in workflow
 
 
 def test_preview_oidc_subject_uses_github_immutable_repository_ids() -> None:
@@ -83,8 +153,15 @@ def test_preview_oidc_subject_uses_github_immutable_repository_ids() -> None:
 
 
 def test_every_deployment_action_is_immutably_pinned() -> None:
-    workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-    action_references = re.findall(r"^\s*-?\s*uses:\s*([^\s#]+)", workflow, re.MULTILINE)
+    workflows = (
+        DEPLOY_WORKFLOW.read_text(encoding="utf-8"),
+        ACCEPT_WORKFLOW.read_text(encoding="utf-8"),
+    )
+    action_references = [
+        reference
+        for workflow in workflows
+        for reference in re.findall(r"^\s*-?\s*uses:\s*([^\s#]+)", workflow, re.MULTILINE)
+    ]
 
     assert action_references
     for reference in action_references:
@@ -93,6 +170,7 @@ def test_every_deployment_action_is_immutably_pinned() -> None:
 
 def test_hosted_demo_policy_is_synthetic_and_microphone_disabled() -> None:
     static_config = STATIC_CONFIG.read_text(encoding="utf-8")
+    vite_config = VITE_CONFIG.read_text(encoding="utf-8")
     runbook = RUNBOOK.read_text(encoding="utf-8")
 
     assert "microphone=()" in static_config
@@ -102,6 +180,35 @@ def test_hosted_demo_policy_is_synthetic_and_microphone_disabled() -> None:
     assert "Real microphone capture is disabled by the build gate" in runbook
     assert "no platform BFF" in runbook
     assert "CAPTURE_PREVIEW_DEPLOY_ENABLED=false" in runbook
+    assert '"route": "/capture-preview-deployment.json"' in static_config
+    assert '"Cache-Control": "no-store"' in static_config
+    assert 'globIgnores: ["**/*.map", DEPLOYMENT_ATTESTATION_PATH]' in vite_config
+    assert 'schema_version: 1' in vite_config
+    assert 'mode: "synthetic"' in vite_config
+    assert 'microphone_enabled: false' in vite_config
+
+
+def test_deployment_attestation_is_exact_and_build_injected() -> None:
+    builder = PREVIEW_API_BUILDER.read_text(encoding="utf-8")
+    vite_config = VITE_CONFIG.read_text(encoding="utf-8")
+    deploy_workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    pr_workflow = PR_WORKFLOW.read_text(encoding="utf-8")
+    bundle_check = PREVIEW_BUNDLE_CHECK.read_text(encoding="utf-8")
+
+    for source in (builder, vite_config):
+        assert "DEPLOY_SHA" in source
+        assert "^[0-9a-f]{40}$" in source
+
+    assert "__CAPTURE_PREVIEW_DEPLOY_SHA__" in builder
+    assert "JSON.stringify(deploySha)" in builder
+    assert "schema_version: 1" in vite_config
+    assert "github.event.workflow_run.head_sha" in deploy_workflow
+    assert ci_workflow.count("DEPLOY_SHA: ${{ github.sha }}") == 3
+    assert "github.event.pull_request.head.sha" in pr_workflow
+    assert "ref: ${{ env.DEPLOY_SHA }}" in pr_workflow
+    assert "attestation.source_sha !== sourceSha" in bundle_check
+    assert "serviceWorker.includes(deploymentAttestationName)" in bundle_check
 
 
 def test_preview_function_authv2_fails_closed_on_direct_requests() -> None:

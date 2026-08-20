@@ -6,6 +6,11 @@ import { build } from "esbuild";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(packageRoot, "dist-package");
+const deploySha = process.env.DEPLOY_SHA;
+
+if (deploySha === undefined || !/^[0-9a-f]{40}$/u.test(deploySha)) {
+  throw new Error("DEPLOY_SHA must be an exact lowercase 40-character Git commit SHA");
+}
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
@@ -24,6 +29,9 @@ await build({
   legalComments: "none",
   treeShaking: true,
   external: ["@azure/functions"],
+  define: {
+    __CAPTURE_PREVIEW_DEPLOY_SHA__: JSON.stringify(deploySha),
+  },
   banner: {
     js: 'import { createRequire as __captureCreateRequire } from "node:module"; const require = __captureCreateRequire(import.meta.url);',
   },

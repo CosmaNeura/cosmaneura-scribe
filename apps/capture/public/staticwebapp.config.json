@@ -1,4 +1,14 @@
 {
+  "routes": [
+    {
+      "route": "/capture-preview-deployment.json",
+      "headers": {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff"
+      }
+    }
+  ],
   "navigationFallback": {
     "rewrite": "/index.html",
     "exclude": [

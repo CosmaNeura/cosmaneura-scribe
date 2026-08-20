@@ -45,6 +45,14 @@ The service worker precaches only emitted static assets. It has no runtime cache
 IndexedDB contents are never service-worker cache entries. The hosted response policy disables the
 microphone even if a future JavaScript regression attempted to request it.
 
+Every deploy build emits the same non-secret deployment attestation from both the static site at
+`/capture-preview-deployment.json` and the Function at
+`/api/capture/preview/deployment`. Its exact fields are `schema_version`, `source_sha`, `mode`, and
+`microphone_enabled`; the source SHA must be the lowercase 40-character commit being deployed,
+the mode is `synthetic`, and microphone access is `false`. Both responses are `no-store`, and the
+static document is explicitly excluded from the service-worker precache. A missing, malformed, or
+mismatched attestation fails acceptance rather than allowing an unknown build to be tested.
+
 Do not enter real names, identifiers, audio, or other patient information into this site. The API
 rejects non-synthetic encounter values, but that is a guardrail rather than permission for clinical
 use.
@@ -60,8 +68,20 @@ for the exact current `main` commit and the repository variable
 `CAPTURE_PREVIEW_DEPLOY_ENABLED=true`. Its build job has no cloud identity. Separate deployment
 jobs download only the prebuilt Function ZIP or static directory, authenticate through GitHub OIDC,
 and deploy to the protected `capture-preview` environment. The SWA token is fetched from Azure at
-runtime, masked immediately, and is never stored as a GitHub secret. A final metadata-only smoke
-gate exercises the linked HTTPS API.
+runtime, masked immediately, and is never stored as a GitHub secret. The acceptance job checks out
+that exact commit, proves it is still current `main`, confirms direct Function access remains denied,
+then runs the committed fast synthetic acceptance runner. That job has read-only repository
+permission and no OIDC permission. It validates both deployment attestations before its first live
+mutation and fails if the protected deployment target variables do not match the runner's fixed SWA
+and Function origins.
+
+`.github/workflows/capture-preview-acceptance.yml` is an additional manual-only path for repeating
+the same bounded fast acceptance against an exact current `main` SHA. It requires the protected
+`capture-preview` environment and an explicit `synthetic-only` dispatch choice, has no cloud
+deployment identity, does not restart infrastructure, and never changes either readiness variable.
+It is not a
+substitute for the slower restart, real-expiry, Cosmos inspection, logging, and physical-device
+evidence below.
 
 The repository, dependency installation, tests, and package build remain pinned to Node 24. The
 generated Function ZIP is separately compiled and executed in CI against Node 22, which is the
@@ -128,10 +148,17 @@ variable records readiness and is not a bypass for the deployment gates.
 
 ## Live acceptance
 
+The automatic post-deploy and protected manual workflows cover the exact-deployment attestation,
+direct-access denial, two isolated synthetic scopes, the complete encrypted synthetic capture flow,
+idempotency conflicts, and immediate malformed/oversized-envelope rejection. They intentionally do
+not wait for the real authorization-expiry window, restart the Function, inspect Cosmos documents,
+inspect platform logs, or claim shared-demo readiness. Those remaining checks stay operator-run and
+must be recorded separately.
+
 The initial deployment is accepted only when all of these checks pass with fixed, metadata-only
 output:
 
-1. The direct `azurewebsites.net` Function endpoint returns `401` or `403`; only the linked SWA
+1. The direct `azurewebsites.net` Function endpoint returns the exact AuthV2 `401`; only the linked SWA
    origin reaches the API.
 2. SWA root and `/api/capture/preview/health` return HTTPS success with `no-store` API headers.
 3. Two clean browser profiles receive isolated sessions and cannot read one another's receipts.

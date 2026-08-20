@@ -63,6 +63,8 @@ jobs:
 
   capture-web:
     runs-on: ubuntu-latest
+    env:
+      DEPLOY_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -96,6 +98,8 @@ jobs:
     needs: capture-web
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      DEPLOY_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -232,6 +236,8 @@ jobs:
   capture-ios:
     needs: capture-web
     runs-on: macos-26
+    env:
+      DEPLOY_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
