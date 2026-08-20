@@ -63,6 +63,12 @@ and deploy to the protected `capture-preview` environment. The SWA token is fetc
 runtime, masked immediately, and is never stored as a GitHub secret. A final metadata-only smoke
 gate exercises the linked HTTPS API.
 
+The repository, dependency installation, tests, and package build remain pinned to Node 24. The
+generated Function ZIP is separately compiled and executed in CI against Node 22, which is the
+final Node runtime supported by Azure's classic Linux Consumption plan. This preview-only runtime
+split is temporary; moving to Flex Consumption is a separate infrastructure migration before the
+Node 22 support window closes or this service is considered for production use.
+
 Firebase distribution is not part of this Azure deployment. The debug APK remains available as a
 GitHub Actions artifact. Stable non-production signing and managed tester distribution can be
 reviewed separately; no production signing material belongs in this environment.

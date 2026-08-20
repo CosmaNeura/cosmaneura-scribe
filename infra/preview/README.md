@@ -38,7 +38,9 @@ effect.
 
 - one dedicated resource group and a Standard Azure Static Web App with one stable default
   environment; pull requests remain artifact-only;
-- one Node 24 Linux Consumption Function and its dedicated host storage account;
+- one Node 22 Linux Consumption Function and its dedicated host storage account; the repository
+  build remains pinned to Node 24, while the generated deployment bundle targets Node 22 because
+  it is the final Node runtime supported by this hosting plan;
 - one serverless Cosmos DB SQL account, database, and `/scopeId` state container with a 24-hour
   control-state TTL; uploaded encrypted envelopes carry a one-hour item TTL;
 - a runtime user-assigned identity with only the exact Cosmos container item role and the
@@ -78,9 +80,10 @@ the policy; never reuse the bootstrap plan or accept a redirect as proof of deni
 
 The Function action writes immutable packages only to the private `github-actions-deploy`
 container. The runtime user-assigned identity is the named Blob reader for the action-owned package
-URL. The only lifecycle exceptions are that action-owned package URL and AzureRM's non-readable
-content-share suppression switch; every actual app setting remains owned. AzureRM injects and
-consumes the managed-identity host-storage account name through the resource's top-level storage
+URL. The only lifecycle exceptions are the action-owned package URL and synchronous site-update
+flag plus AzureRM's non-readable content-share suppression switch; every other app setting remains
+owned. AzureRM injects and consumes the managed-identity host-storage account name through the
+resource's top-level storage
 fields, so it is intentionally not duplicated in `app_settings`. The content-share switch remains
 configured `true` for every create or replacement. Tests pin the managed-identity credential/client
 ID and prohibit Azure Files content-share settings. Do not apply a blanket age-based lifecycle rule

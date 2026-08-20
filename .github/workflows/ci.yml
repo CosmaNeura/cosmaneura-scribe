@@ -78,6 +78,19 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npm run build:capture-preview-api
+      - name: Select the supported preview Function runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+      - name: Verify the preview Function package under Node 22
+        run: node apps/capture-preview-api/scripts/verify-runtime.mjs
+      - name: Exercise preview Function source under Node 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd apps/capture-preview-api && node ../../node_modules/vitest/vitest.mjs run)
+          (cd packages/capture-preview-domain && node ../../node_modules/vitest/vitest.mjs run)
 
   capture-android:
     needs: capture-web

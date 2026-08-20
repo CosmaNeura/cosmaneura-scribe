@@ -62,6 +62,12 @@ jobs:
       - run: npm run check:preview-bundle
       - name: Build Azure Function package
         run: npm run build:capture-preview-api
+      - name: Select the supported Linux Consumption runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.2
+      - name: Verify the Function package under Node 22
+        run: node apps/capture-preview-api/scripts/verify-runtime.mjs
       - name: Verify and archive deployment inputs
         shell: bash
         run: |
@@ -76,6 +82,7 @@ jobs:
             cd apps/capture-preview-api/dist-package
             zip -q -r "${GITHUB_WORKSPACE}/capture-preview-function/function.zip" .
           )
+          unzip -tq capture-preview-function/function.zip
           shasum -a 256 capture-preview-function/function.zip
       - name: Upload PWA deployment input
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
