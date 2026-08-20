@@ -137,6 +137,14 @@ run "synthetic_preview_security_boundaries" {
 
   assert {
     condition = (
+      azurerm_service_plan.function.sku_name == "Y1" &&
+      azurerm_linux_function_app.preview_api.site_config[0].application_stack[0].node_version == "22"
+    )
+    error_message = "Classic Linux Consumption must stay on its supported Node 22 runtime."
+  }
+
+  assert {
+    condition = (
       azurerm_linux_function_app.preview_api.auth_settings_v2[0].auth_enabled == true &&
       azurerm_linux_function_app.preview_api.auth_settings_v2[0].runtime_version == "~1" &&
       azurerm_linux_function_app.preview_api.auth_settings_v2[0].require_authentication == true &&

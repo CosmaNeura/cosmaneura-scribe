@@ -15,7 +15,10 @@ await build({
   bundle: true,
   format: "esm",
   platform: "node",
-  target: "node24",
+  // Azure's classic Linux Consumption plan supports Node 22 as its final
+  // Node runtime. The repository toolchain stays on Node 24, but this emitted
+  // package must remain executable by the hosted Node 22 worker.
+  target: "node22",
   sourcemap: false,
   minify: false,
   legalComments: "none",
@@ -42,7 +45,7 @@ await writeFile(
       private: true,
       type: "module",
       main: "index.js",
-      engines: { node: ">=24.0.0 <25" },
+      engines: { node: ">=22.0.0 <23" },
       dependencies: { "@azure/functions": "4.16.2" },
     },
     null,

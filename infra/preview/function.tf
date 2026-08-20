@@ -74,7 +74,10 @@ resource "azurerm_linux_function_app" "preview_api" {
     websockets_enabled       = false
 
     application_stack {
-      node_version = "24"
+      # Classic Linux Consumption receives no runtimes newer than Node 22.
+      # The repository build remains pinned to Node 24, while the generated
+      # deployment package is explicitly compiled and verified for Node 22.
+      node_version = "22"
     }
   }
 
@@ -90,8 +93,10 @@ resource "azurerm_linux_function_app" "preview_api" {
       # settings but cannot read it back from ARM. Keep the configured true
       # value for every create/replacement and ignore only its fictitious drift.
       content_share_force_disabled,
-      # The pinned deployment action owns the immutable package URL; Terraform
-      # owns the identity used to read it and every other app setting.
+      # The pinned deployment action owns the immutable package URL and its
+      # synchronous site-update flag. Terraform owns the identity used to read
+      # the package and every other app setting.
+      app_settings["WEBSITE_ENABLE_SYNC_UPDATE_SITE"],
       app_settings["WEBSITE_RUN_FROM_PACKAGE"],
     ]
   }

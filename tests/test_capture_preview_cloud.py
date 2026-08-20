@@ -6,11 +6,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PR_WORKFLOW = ROOT / ".github" / "workflows" / "capture-preview.yml"
 DEPLOY_WORKFLOW = ROOT / ".github" / "workflows" / "capture-preview-deploy.yml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 STATIC_CONFIG = ROOT / "apps" / "capture" / "public" / "staticwebapp.config.json"
 RUNBOOK = ROOT / "docs" / "CAPTURE_PREVIEW.md"
 PREVIEW_FUNCTION = ROOT / "infra" / "preview" / "function.tf"
 PREVIEW_MAIN = ROOT / "infra" / "preview" / "main.tf"
 PREVIEW_VARIABLES = ROOT / "infra" / "preview" / "variables.tf"
+PREVIEW_API_BUILDER = (
+    ROOT / "apps" / "capture-preview-api" / "scripts" / "build-package.mjs"
+)
 
 
 def test_pull_request_preview_has_no_cloud_credential_or_deployment_job() -> None:
@@ -129,6 +133,7 @@ def test_preview_function_authv2_fails_closed_on_direct_requests() -> None:
     lifecycle = lifecycle_match.group("body")
     assert "auth_settings_v2" not in lifecycle
     assert "content_share_force_disabled," in lifecycle
+    assert 'app_settings["WEBSITE_ENABLE_SYNC_UPDATE_SITE"],' in lifecycle
     assert 'app_settings["WEBSITE_RUN_FROM_PACKAGE"],' in lifecycle
 
 
@@ -147,3 +152,20 @@ def test_preview_function_host_storage_is_keyless_and_provider_normalized() -> N
     assert "WEBSITE_CONTENTSHARE" not in app_settings
     assert "storage_uses_managed_identity = true" in function
     assert "content_share_force_disabled  = true" in function
+
+
+def test_preview_function_uses_the_supported_linux_consumption_runtime() -> None:
+    function = PREVIEW_FUNCTION.read_text(encoding="utf-8")
+    builder = PREVIEW_API_BUILDER.read_text(encoding="utf-8")
+    deploy_workflow = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+    ci_workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'sku_name            = "Y1"' in function
+    assert 'node_version = "22"' in function
+    assert 'target: "node22"' in builder
+    assert 'engines: { node: ">=22.0.0 <23" }' in builder
+    for workflow in (deploy_workflow, ci_workflow):
+        assert "node-version: 22.23.2" in workflow
+        assert "apps/capture-preview-api/scripts/verify-runtime.mjs" in workflow
+    assert "Exercise preview Function source under Node 22" in ci_workflow
+    assert "unzip -tq capture-preview-function/function.zip" in deploy_workflow
