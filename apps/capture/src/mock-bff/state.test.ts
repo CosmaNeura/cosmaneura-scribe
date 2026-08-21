@@ -30,6 +30,7 @@ describe("MockCaptureService", () => {
       patient_id: consent.patient_id,
       consent_record_id: consent.id,
       modality: consent.modality,
+      ingest_mode: "chunk_upload",
     }, "session-key-000001");
     const published = service.audioEncryptionKey();
     service.bindSessionAudioKey(session.id, {

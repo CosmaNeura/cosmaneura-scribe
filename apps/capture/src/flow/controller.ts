@@ -269,6 +269,7 @@ export class CaptureFlowController {
           patient_id: preparation.consentRequest.patient_id,
           consent_record_id: consent.id,
           modality: "in_person",
+          ingest_mode: "chunk_upload",
         },
       };
       await this.#flowStore.putPreparationState(preparation);

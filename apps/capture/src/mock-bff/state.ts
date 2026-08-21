@@ -479,6 +479,7 @@ export class MockCaptureService {
         consent_record_id:
           this.session?.consent_record_id ?? "33333333-3333-4333-8333-333333333333",
         modality: this.session?.modality ?? "in_person",
+        ingest_mode: this.session?.ingest_mode ?? "chunk_upload",
         status: "uploaded",
         created_at: this.session?.created_at ?? this.now().toISOString(),
       };
