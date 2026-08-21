@@ -18,6 +18,7 @@ from cosmaneura_scribe.schemas import (
     CaptureSession,
     ConsentMethod,
     ConsentRecord,
+    SessionIngestMode,
     SessionStatus,
     SpeakerRole,
     Transcript,
@@ -257,6 +258,87 @@ def test_repository_persists_across_provider_restart_and_isolates_tenants(
 
 
 @pytest.mark.postgres
+def test_repository_consent_revocation_is_atomic_idempotent_and_tenant_scoped(
+    postgres_urls: tuple[str, str],
+) -> None:
+    _, app_url = postgres_urls
+    tenant_id = uuid4()
+    other_tenant_id = uuid4()
+    consent_id = uuid4()
+    granted_at = datetime.now(UTC)
+    revoked_at = granted_at + timedelta(minutes=1)
+    consent = ConsentRecord(
+        id=consent_id,
+        appointment_id="appointment-revocation",
+        practitioner_id="practitioner-revocation",
+        patient_id="patient-revocation",
+        modality=CaptureModality.VIRTUAL,
+        participant_regions={"FL"},
+        method=ConsentMethod.PRE_VISIT_FORM,
+        all_parties_consented=True,
+        granted_at=granted_at,
+        policy_version="all-party-v1",
+    )
+
+    async def scenario() -> None:
+        provider = build_postgres_provider(_settings(app_url))
+        try:
+            async with provider.transaction(tenant_id) as repository:
+                await repository.add_consent(tenant_id, consent)
+            async with provider.transaction(other_tenant_id) as repository:
+                assert (
+                    await repository.revoke_consent(
+                        other_tenant_id,
+                        consent_id,
+                        revoked_at=revoked_at,
+                    )
+                    is None
+                )
+            async with provider.transaction(tenant_id) as repository:
+                first = await repository.revoke_consent(
+                    tenant_id,
+                    consent_id,
+                    revoked_at=revoked_at,
+                )
+                assert first is not None
+                assert first.changed is True
+                assert first.consent.revoked_at == revoked_at
+            async with provider.transaction(tenant_id) as repository:
+                replay = await repository.revoke_consent(
+                    tenant_id,
+                    consent_id,
+                    revoked_at=revoked_at + timedelta(minutes=1),
+                )
+                assert replay is not None
+                assert replay.changed is False
+                assert replay.consent.revoked_at == revoked_at
+            engine = create_async_engine(app_url, connect_args={"ssl": False})
+            try:
+                with pytest.raises(DBAPIError, match="consent revocation is immutable"):
+                    async with engine.begin() as connection:
+                        await connection.execute(
+                            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                            {"tenant_id": str(tenant_id)},
+                        )
+                        await connection.execute(
+                            text(
+                                """
+                                UPDATE consent_records
+                                SET revoked_at = NULL
+                                WHERE tenant_id = :tenant_id AND id = :id
+                                """
+                            ),
+                            {"tenant_id": tenant_id, "id": consent_id},
+                        )
+            finally:
+                await engine.dispose()
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.postgres
 def test_python_session_transition_table_matches_the_database_trigger(
     postgres_urls: tuple[str, str],
 ) -> None:
@@ -348,6 +430,115 @@ def test_python_session_transition_table_matches_the_database_trigger(
                             await attempt_transition(session_id, old_status, new_status)
         finally:
             await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.postgres
+def test_database_guards_external_transcript_transition_and_immutable_ingest_mode(
+    postgres_urls: tuple[str, str],
+) -> None:
+    _, app_url = postgres_urls
+    tenant_id = uuid4()
+    consent_id = uuid4()
+
+    async def add_session_and_transition(
+        *,
+        ingest_mode: SessionIngestMode,
+        mutate_mode: bool = False,
+    ) -> None:
+        engine = create_async_engine(app_url, connect_args={"ssl": False})
+        session_id = uuid4()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO scribe_sessions (
+                            id, tenant_id, appointment_id, practitioner_id,
+                            patient_id, consent_record_id, modality, ingest_mode, status
+                        ) VALUES (
+                            :id, :tenant_id, 'appointment-external-transition',
+                            'practitioner-external-transition',
+                            'patient-external-transition', :consent_id,
+                            'virtual', :ingest_mode, 'created'
+                        )
+                        """
+                    ),
+                    {
+                        "id": session_id,
+                        "tenant_id": tenant_id,
+                        "consent_id": consent_id,
+                        "ingest_mode": ingest_mode.value,
+                    },
+                )
+                if mutate_mode:
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE scribe_sessions
+                            SET ingest_mode = 'external_async_transcript'
+                            WHERE tenant_id = :tenant_id AND id = :id
+                            """
+                        ),
+                        {"tenant_id": tenant_id, "id": session_id},
+                    )
+                else:
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE scribe_sessions
+                            SET status = 'transcript_ready'
+                            WHERE tenant_id = :tenant_id AND id = :id
+                            """
+                        ),
+                        {"tenant_id": tenant_id, "id": session_id},
+                    )
+        finally:
+            await engine.dispose()
+
+    async def scenario() -> None:
+        engine = create_async_engine(app_url, connect_args={"ssl": False})
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO consent_records (
+                            id, tenant_id, appointment_id, practitioner_id, patient_id,
+                            modality, participant_regions, method, all_parties_consented,
+                            granted_at, policy_version
+                        ) VALUES (
+                            :id, :tenant_id, 'appointment-external-transition',
+                            'practitioner-external-transition', 'patient-external-transition',
+                            'virtual', ARRAY['FL'], 'pre_visit_form', true,
+                            now(), 'all-party-v1'
+                        )
+                        """
+                    ),
+                    {"id": consent_id, "tenant_id": tenant_id},
+                )
+        finally:
+            await engine.dispose()
+
+        await add_session_and_transition(
+            ingest_mode=SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT
+        )
+        with pytest.raises(DBAPIError, match="invalid scribe session status transition"):
+            await add_session_and_transition(ingest_mode=SessionIngestMode.CHUNK_UPLOAD)
+        with pytest.raises(DBAPIError, match="scribe session ingest mode is immutable"):
+            await add_session_and_transition(
+                ingest_mode=SessionIngestMode.CHUNK_UPLOAD,
+                mutate_mode=True,
+            )
 
     asyncio.run(scenario())
 

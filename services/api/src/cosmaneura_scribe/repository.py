@@ -220,6 +220,12 @@ class DeliverySuccessCompletion:
     changed: bool
 
 
+@dataclass(frozen=True)
+class ConsentRevocationResult:
+    consent: ConsentRecord
+    changed: bool
+
+
 class DeliverySessionSyncResult(StrEnum):
     SYNCHRONIZED = "synchronized"
     ALREADY_SYNCHRONIZED = "already_synchronized"
@@ -248,7 +254,17 @@ class Repository(Protocol):
 
     async def get_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None: ...
 
+    async def lock_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None: ...
+
     async def add_consent(self, tenant_id: UUID, consent: ConsentRecord) -> None: ...
+
+    async def revoke_consent(
+        self,
+        tenant_id: UUID,
+        consent_id: UUID,
+        *,
+        revoked_at: datetime,
+    ) -> ConsentRevocationResult | None: ...
 
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None: ...
 
@@ -656,8 +672,29 @@ class InMemoryRepository:
     async def get_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None:
         return self.consents.get((tenant_id, consent_id))
 
+    async def lock_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None:
+        # The in-memory transaction lock already serializes consent reads and mutations.
+        return await self.get_consent(tenant_id, consent_id)
+
     async def add_consent(self, tenant_id: UUID, consent: ConsentRecord) -> None:
         self.consents[(tenant_id, consent.id)] = consent
+
+    async def revoke_consent(
+        self,
+        tenant_id: UUID,
+        consent_id: UUID,
+        *,
+        revoked_at: datetime,
+    ) -> ConsentRevocationResult | None:
+        row_key = (tenant_id, consent_id)
+        current = self.consents.get(row_key)
+        if current is None:
+            return None
+        if current.revoked_at is not None:
+            return ConsentRevocationResult(consent=current, changed=False)
+        revoked = current.model_copy(update={"revoked_at": revoked_at})
+        self.consents[row_key] = revoked
+        return ConsentRevocationResult(consent=revoked, changed=True)
 
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
         return self.sessions.get((tenant_id, session_id))
@@ -671,11 +708,18 @@ class InMemoryRepository:
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         current = self.sessions.get((tenant_id, session.id))
-        if current is not None and not can_transition_session(current.status, session.status):
-            raise ValueError(
-                f"invalid scribe session status transition: "
-                f"{current.status.value} -> {session.status.value}"
-            )
+        if current is not None:
+            if current.ingest_mode != session.ingest_mode:
+                raise ValueError("scribe session ingest mode is immutable")
+            if not can_transition_session(
+                current.status,
+                session.status,
+                ingest_mode=current.ingest_mode,
+            ):
+                raise ValueError(
+                    f"invalid scribe session status transition: "
+                    f"{current.status.value} -> {session.status.value}"
+                )
         self.sessions[(tenant_id, session.id)] = session
 
     async def get_session_audio_key(

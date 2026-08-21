@@ -162,6 +162,9 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                 )
             )
             await connection.execute(
+                text(f"GRANT UPDATE (revoked_at) ON consent_records TO {role}")
+            )
+            await connection.execute(
                 text(
                     "GRANT UPDATE (generation, renewed_at, expires_at, closed_at, close_reason) "
                     f"ON capture_leases TO {role}"

@@ -504,6 +504,7 @@ class TranscriptionWorker:
                 patient_id=session.patient_id,
                 consent_record_id=session.consent_record_id,
                 modality=session.modality,
+                ingest_mode=session.ingest_mode,
             ),
         )
 

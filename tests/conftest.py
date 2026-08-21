@@ -159,6 +159,9 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     config.set_main_option("sqlalchemy.url", admin_url)
     command.downgrade(config, "base")
     command.upgrade(config, "head")
+    command.downgrade(config, "0007")
+    assert asyncio.run(_column_exists(admin_url, "scribe_sessions", "ingest_mode")) is False
+    command.upgrade(config, "head")
     command.downgrade(config, "0006")
     for table_name in (
         "capture_leases",

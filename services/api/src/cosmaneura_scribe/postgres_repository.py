@@ -42,6 +42,7 @@ from .repository import (
     ChunkReservationBatch,
     ChunkReservationDraft,
     ChunkReservationRecord,
+    ConsentRevocationResult,
     DeliveryClaimPolicy,
     DeliverySessionSyncResult,
     DeliverySuccessCompletion,
@@ -257,6 +258,21 @@ class PostgresRepository:
         )
         return ConsentRecord.model_validate(row) if row is not None else None
 
+    async def lock_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, modality,
+                   participant_regions, method, all_parties_consented, granted_at,
+                   evidence_object_id, policy_version, revoked_at
+            FROM consent_records
+            WHERE tenant_id = :tenant_id AND id = :id
+            FOR UPDATE
+            """,
+            tenant_id=tenant_id,
+            id=consent_id,
+        )
+        return ConsentRecord.model_validate(row) if row is not None else None
+
     async def add_consent(self, tenant_id: UUID, consent: ConsentRecord) -> None:
         await self._session.execute(
             text(
@@ -281,11 +297,44 @@ class PostgresRepository:
             },
         )
 
+    async def revoke_consent(
+        self,
+        tenant_id: UUID,
+        consent_id: UUID,
+        *,
+        revoked_at: datetime,
+    ) -> ConsentRevocationResult | None:
+        result = await self._session.execute(
+            text(
+                """
+                UPDATE consent_records
+                SET revoked_at = :revoked_at
+                WHERE tenant_id = :tenant_id
+                  AND id = :id
+                  AND revoked_at IS NULL
+                RETURNING id, appointment_id, practitioner_id, patient_id, modality,
+                          participant_regions, method, all_parties_consented, granted_at,
+                          evidence_object_id, policy_version, revoked_at
+                """
+            ),
+            {"tenant_id": tenant_id, "id": consent_id, "revoked_at": revoked_at},
+        )
+        row = result.mappings().one_or_none()
+        if row is not None:
+            return ConsentRevocationResult(
+                consent=ConsentRecord.model_validate(row),
+                changed=True,
+            )
+        current = await self.get_consent(tenant_id, consent_id)
+        if current is None:
+            return None
+        return ConsentRevocationResult(consent=current, changed=False)
+
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
         row = await self._one_or_none(
             """
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
-                   modality, status, created_at
+                   modality, ingest_mode, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
             """,
@@ -298,7 +347,7 @@ class PostgresRepository:
         row = await self._one_or_none(
             """
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
-                   modality, status, created_at
+                   modality, ingest_mode, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
             FOR UPDATE
@@ -314,10 +363,10 @@ class PostgresRepository:
                 """
                 INSERT INTO scribe_sessions (
                     id, tenant_id, appointment_id, practitioner_id, patient_id,
-                    consent_record_id, modality, status, created_at
+                    consent_record_id, modality, ingest_mode, status, created_at
                 ) VALUES (
                     :id, :tenant_id, :appointment_id, :practitioner_id, :patient_id,
-                    :consent_record_id, :modality, :status, :created_at
+                    :consent_record_id, :modality, :ingest_mode, :status, :created_at
                 )
                 """
             ),
@@ -325,6 +374,7 @@ class PostgresRepository:
                 **session.model_dump(mode="python"),
                 "tenant_id": tenant_id,
                 "modality": session.modality.value,
+                "ingest_mode": session.ingest_mode.value,
                 "status": session.status.value,
             },
         )
@@ -392,6 +442,7 @@ class PostgresRepository:
                 scribe_session.patient_id AS session_patient_id,
                 scribe_session.consent_record_id,
                 scribe_session.modality AS session_modality,
+                scribe_session.ingest_mode AS session_ingest_mode,
                 scribe_session.status AS session_status,
                 scribe_session.created_at AS session_created_at,
                 consent.id AS consent_id,
@@ -444,6 +495,7 @@ class PostgresRepository:
                 "patient_id": row["session_patient_id"],
                 "consent_record_id": row["consent_record_id"],
                 "modality": row["session_modality"],
+                "ingest_mode": row["session_ingest_mode"],
                 "status": row["session_status"],
                 "created_at": row["session_created_at"],
             }

@@ -259,6 +259,7 @@ async def test_runtime_permissions_revoke_stale_access_before_exact_grants(
     assert "capture_leases" in grants
     assert "audio_chunk_reservations" in grants
     assert "audio_upload_authorization_receipts" in grants
+    assert "GRANT UPDATE (revoked_at) ON consent_records" in grants
     assert "GRANT UPDATE (generation, renewed_at, expires_at, closed_at, close_reason)" in grants
     assert "GRANT INSERT ON audit_events" in grants
     assert "DELETE" not in grants
@@ -387,6 +388,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
         | {("audit_events", "INSERT")}
     )
     runtime_column_expected = {
+        ("consent_records", "revoked_at", "UPDATE"),
         *(("capture_leases", column, "UPDATE") for column in (
             "generation",
             "renewed_at",

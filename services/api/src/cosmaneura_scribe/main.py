@@ -113,6 +113,7 @@ from .schemas import (
     SessionAudioKeyCreate,
     SessionAudioKeyReceipt,
     SessionCreate,
+    SessionIngestMode,
     SessionStatus,
     TokenDiagnostics,
     Transcript,
@@ -258,6 +259,13 @@ def _fingerprint(payload: object) -> str:
     return canonical_sha256(payload)
 
 
+def _session_create_fingerprint(payload: SessionCreate) -> str:
+    serialized = payload.model_dump(mode="json")
+    if payload.ingest_mode == SessionIngestMode.CHUNK_UPLOAD:
+        serialized.pop("ingest_mode")
+    return _fingerprint(serialized)
+
+
 def _require_capture_protocol(settings: Settings) -> None:
     if not settings.capture_protocol_enabled:
         raise HTTPException(
@@ -321,7 +329,7 @@ async def _assert_session_consent(
     session: CaptureSession,
     policy: ConsentPolicy,
 ) -> None:
-    consent = await store.get_consent(tenant_id, session.consent_record_id)
+    consent = await store.lock_consent(tenant_id, session.consent_record_id)
     if consent is None:
         raise HTTPException(status_code=409, detail="A valid consent record is required.")
     try:
@@ -333,6 +341,7 @@ async def _assert_session_consent(
                 patient_id=session.patient_id,
                 consent_record_id=session.consent_record_id,
                 modality=session.modality,
+                ingest_mode=session.ingest_mode,
             ),
         )
     except ConsentError as exc:
@@ -354,10 +363,12 @@ def _assert_capture_context(
                 patient_id=context.session.patient_id,
                 consent_record_id=context.session.consent_record_id,
                 modality=context.session.modality,
+                ingest_mode=context.session.ingest_mode,
             ),
         )
     except ConsentError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _require_chunk_upload_session(context.session)
     if require_audio_key and context.audio_key is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -378,6 +389,14 @@ async def _capture_context_or_404(
         raise HTTPException(status_code=404, detail="Capture session not found.")
     _assert_capture_context(context, policy, require_audio_key=require_audio_key)
     return context
+
+
+def _require_chunk_upload_session(session: CaptureSession) -> None:
+    if session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Session does not accept audio chunk capture.",
+        )
 
 
 def _capture_lease_response(record: CaptureLeaseReceiptRecord) -> CaptureLeaseReceipt:
@@ -506,6 +525,45 @@ async def create_consent(
     return record
 
 
+@app.post("/v1/consents/{consent_id}/revocations", response_model=ConsentRecord)
+async def revoke_consent(
+    consent_id: UUID,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    store: Repository,
+) -> ConsentRecord:
+    fingerprint = _fingerprint({"consent_id": str(consent_id)})
+    previous_id = await _idempotent_entity(
+        store,
+        tenant_id,
+        "consent.revoke",
+        idempotency_key,
+        fingerprint,
+        consent_id,
+    )
+    if previous_id is not None:
+        previous = await store.get_consent(tenant_id, previous_id)
+        if previous is None:
+            raise HTTPException(status_code=404, detail="Consent record not found.")
+        return previous
+
+    result = await store.revoke_consent(
+        tenant_id,
+        consent_id,
+        revoked_at=datetime.now(UTC),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Consent record not found.")
+    if result.changed:
+        await store.audit(
+            tenant_id=tenant_id,
+            action="consent.revoked",
+            entity_type="consent_record",
+            entity_id=consent_id,
+        )
+    return result.consent
+
+
 @app.post("/v1/sessions", response_model=CaptureSession, status_code=201)
 async def create_session(
     payload: SessionCreate,
@@ -514,7 +572,7 @@ async def create_session(
     store: Repository,
     policy: Policy,
 ) -> CaptureSession:
-    consent = await store.get_consent(tenant_id, payload.consent_record_id)
+    consent = await store.lock_consent(tenant_id, payload.consent_record_id)
     if consent is None:
         raise HTTPException(status_code=409, detail="A valid consent record is required.")
     try:
@@ -522,7 +580,7 @@ async def create_session(
     except ConsentError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    fingerprint = _fingerprint(payload)
+    fingerprint = _session_create_fingerprint(payload)
     session = CaptureSession(
         id=uuid4(),
         status=SessionStatus.CREATED,
@@ -585,10 +643,12 @@ async def bind_session_audio_key(
             raise HTTPException(status_code=500, detail="Idempotent audio key is unavailable.")
         replay_session = await _locked_session_or_404(store, tenant_id, previous.session_id)
         await _assert_session_consent(store, tenant_id, replay_session, policy)
+        _require_chunk_upload_session(replay_session)
         return _audio_key_receipt(previous)
 
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    _require_chunk_upload_session(session)
     existing = await store.get_session_audio_key(tenant_id, session_id)
     if existing is not None:
         if (
@@ -1021,6 +1081,7 @@ async def issue_chunk_upload_grant(
         )
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    _require_chunk_upload_session(session)
     if await store.get_session_audio_key(tenant_id, session_id) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1184,10 +1245,12 @@ async def register_chunk(
             raise HTTPException(status_code=500, detail="Idempotent audio chunk is unavailable.")
         replay_session = await _locked_session_or_404(store, tenant_id, previous.session_id)
         await _assert_session_consent(store, tenant_id, replay_session, policy)
+        _require_chunk_upload_session(replay_session)
         return previous
 
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    _require_chunk_upload_session(session)
     if await store.get_session_audio_key(tenant_id, session_id) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1244,6 +1307,7 @@ async def _complete_capture_protocol_session(
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent session is unavailable.")
         await _assert_session_consent(store, tenant_id, previous, policy)
+        _require_chunk_upload_session(previous)
         return previous
 
     context = await _capture_context_or_404(store, tenant_id, session_id, policy)
@@ -1349,10 +1413,12 @@ async def complete_session(
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent session is unavailable.")
         await _assert_session_consent(store, tenant_id, previous, policy)
+        _require_chunk_upload_session(previous)
         return previous
 
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    _require_chunk_upload_session(session)
     if await store.get_session_audio_key(tenant_id, session_id) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1408,7 +1474,9 @@ async def save_transcript(
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
     if session.status == SessionStatus.TRANSCRIPT_READY or not can_transition_session(
-        session.status, SessionStatus.TRANSCRIPT_READY
+        session.status,
+        SessionStatus.TRANSCRIPT_READY,
+        ingest_mode=session.ingest_mode,
     ):
         raise HTTPException(status_code=409, detail="Session audio is not ready for transcription.")
 

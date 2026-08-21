@@ -24,7 +24,7 @@ from .capture_protocol_v1 import (
     CaptureChannel,
     ProtocolVersion,
 )
-from .session_state_v1 import SessionStatus
+from .session_state_v1 import SessionIngestMode, SessionStatus
 from .transcript_constraints import (
     MAX_TRANSCRIPT_CONTENT_CHARS,
     MAX_TRANSCRIPT_DURATION_MS,
@@ -86,6 +86,7 @@ class SessionCreate(BaseModel):
     patient_id: ExternalEntityId
     consent_record_id: UUID
     modality: CaptureModality
+    ingest_mode: SessionIngestMode = SessionIngestMode.CHUNK_UPLOAD
 
 
 class CaptureSession(SessionCreate):

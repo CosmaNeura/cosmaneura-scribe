@@ -16,6 +16,11 @@ class SessionStatus(StrEnum):
     FAILED = "failed"
 
 
+class SessionIngestMode(StrEnum):
+    CHUNK_UPLOAD = "chunk_upload"
+    EXTERNAL_ASYNC_TRANSCRIPT = "external_async_transcript"
+
+
 SESSION_STATUS_TRANSITIONS: Final[Mapping[SessionStatus, frozenset[SessionStatus]]] = (
     MappingProxyType(
         {
@@ -41,14 +46,28 @@ SESSION_STATUS_TRANSITIONS: Final[Mapping[SessionStatus, frozenset[SessionStatus
 )
 
 
-def can_transition_session(old: SessionStatus, new: SessionStatus) -> bool:
-    return old == new or new in SESSION_STATUS_TRANSITIONS[old]
+def can_transition_session(
+    old: SessionStatus,
+    new: SessionStatus,
+    *,
+    ingest_mode: SessionIngestMode = SessionIngestMode.CHUNK_UPLOAD,
+) -> bool:
+    return (
+        old == new
+        or new in SESSION_STATUS_TRANSITIONS[old]
+        or (
+            ingest_mode == SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT
+            and old == SessionStatus.CREATED
+            and new == SessionStatus.TRANSCRIPT_READY
+        )
+    )
 
 
 def render_transition_predicate(
     *,
     old_expression: str = "OLD.status",
     new_expression: str = "NEW.status",
+    ingest_mode_expression: str | None = None,
 ) -> str:
     clauses = [f"{old_expression} = {new_expression}"]
     for old in SessionStatus:
@@ -60,6 +79,12 @@ def render_transition_predicate(
         )
         clauses.append(
             f"({old_expression} = '{old.value}' AND {new_expression} IN ({rendered_targets}))"
+        )
+    if ingest_mode_expression is not None:
+        clauses.append(
+            f"({ingest_mode_expression} = '{SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT.value}' "
+            f"AND {old_expression} = '{SessionStatus.CREATED.value}' "
+            f"AND {new_expression} = '{SessionStatus.TRANSCRIPT_READY.value}')"
         )
     return "\n                OR ".join(clauses)
 

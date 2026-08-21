@@ -458,6 +458,10 @@
             "title": "Id",
             "type": "string"
           },
+          "ingest_mode": {
+            "$ref": "#/components/schemas/SessionIngestMode",
+            "default": "chunk_upload"
+          },
           "modality": {
             "$ref": "#/components/schemas/CaptureModality"
           },
@@ -1129,6 +1133,10 @@
             "title": "Consent Record Id",
             "type": "string"
           },
+          "ingest_mode": {
+            "$ref": "#/components/schemas/SessionIngestMode",
+            "default": "chunk_upload"
+          },
           "modality": {
             "$ref": "#/components/schemas/CaptureModality"
           },
@@ -1154,6 +1162,14 @@
         ],
         "title": "SessionCreate",
         "type": "object"
+      },
+      "SessionIngestMode": {
+        "enum": [
+          "chunk_upload",
+          "external_async_transcript"
+        ],
+        "title": "SessionIngestMode",
+        "type": "string"
       },
       "SessionStatus": {
         "enum": [
@@ -1658,6 +1674,72 @@
           }
         ],
         "summary": "Create Consent"
+      }
+    },
+    "/v1/consents/{consent_id}/revocations": {
+      "post": {
+        "operationId": "revoke_consent_v1_consents__consent_id__revocations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "consent_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Consent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Revoke Consent"
       }
     },
     "/v1/diagnostics/token": {
