@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src 'self' data:; media-src 'none'; object-src 'none'; script-src 'self'; style-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cosmas Desktop Companion</title>
+    <link rel="stylesheet" href="app://cosmas/styles.css" />
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Cosmas Desktop Companion</p>
+      <h1>Visit capture</h1>
+      <p id="status" role="status" aria-live="polite">Loading local status…</p>
+      <div class="actions">
+        <button id="refresh" type="button">Check permissions</button>
+        <button id="start" type="button">Start recording</button>
+        <button id="stop" type="button">Stop recording</button>
+      </div>
+      <p class="notice">
+        Recording remains unavailable until the protected backend grants an authorized session.
+      </p>
+    </main>
+    <script src="app://cosmas/renderer.js" defer></script>
+  </body>
+</html>

@@ -1,10 +1,10 @@
 # Electron desktop companion foundation
 
 This directory contains the disabled-by-default Phase 3 foundation for an Electron desktop
-companion that will eventually host Recall.ai's Desktop Recording SDK in the Electron main process.
-It is not a recorder, is not clinically deployable, and currently uses a metadata-only mock adapter.
-It does not capture audio, receive transcripts, contact Recall, or contain a Recall workspace API
-key.
+companion and a provider-neutral Recall.ai Desktop Recording SDK adapter. It is not clinically
+deployable. The checked-in application bootstrap always constructs a disabled controller with a
+metadata-only mock adapter; it does not load or invoke the Recall SDK, capture audio, receive
+transcripts, contact Recall, or contain a Recall workspace API key.
 
 Electron is the pilot shell prioritized by central architecture ADR 0018 because Recall supports it
 directly and it removes a native process bridge from the critical path. The provider-neutral
@@ -25,21 +25,45 @@ audio only; a later Tauri/native shell remains an option when that native adapte
 Intel macOS, mobile, Teams, Meet PWA/companion mode, offline capture, video, separate participant
 tracks, automatic start, in-place pause/resume, and app-store distribution are outside the pilot.
 
-## Pinned Recall placeholders
+## Pinned and isolated desktop runtime
 
-The real main-process adapter must use exactly the pinned values in `src/config.ts`:
+The main-process adapter uses exactly the pinned values in `src/config.ts`:
 
 | Setting | Placeholder |
 | --- | --- |
 | npm package | `@recallai/desktop-sdk` |
 | pinned SDK version | `2.0.28` |
+| pinned Electron version | `43.4.1` |
+| regional SDK API | `https://us-west-2.recall.ai` |
+| automatic native restart | disabled |
 | capture output | `video_mixed_mp4: null`, `audio_mixed_mp3: {}` |
 | feature flag | `COSMAS_RECALL_DESKTOP_COMPANION_ENABLED=false` |
 
-The Recall package is deliberately absent from `package.json`. Add it only after provenance,
-integrity, license, transitive dependencies, and supported Electron-version compatibility have been
-reviewed and its exact package and native binary checksums can be locked. Do not use a floating or
-nightly version.
+Electron and Recall are deliberately isolated from the root workspace in `vendor-runtime`. This
+prevents existing web/mobile `npm ci` jobs from running desktop vendor lifecycle code. Its separate
+lock pins both exact versions and registry integrity. Never run an ordinary install in that
+directory: use `npm ci --ignore-scripts --workspaces=false --prefix
+apps/desktop-companion/vendor-runtime` in the dedicated desktop packaging lane.
+
+The upstream Recall installer is not trusted to fetch native code because it does not verify the
+published native archive. `scripts/prepare-recall-sdk.mjs` instead requires separately obtained
+registry and native archives, checks their exact SHA-256 values against
+`vendor/recall-desktop-sdk.provenance.json`, rejects unsafe archive paths, and only then extracts the
+native artifact. It also applies an exact-source patch that disables the installer, removes ambient
+`RECALL_*` forwarding, removes the Windows GStreamer override, disables automatic restarts, and
+suppresses command, event, native stdout, and native stderr payload logging. Runtime loading verifies
+the retained archives, patched files, and extracted tree again and still rejects the manifest while
+`clinicalReleaseApproved` is false.
+
+Source-only review can run without native code:
+
+```sh
+npm run vendor:recall:verify-source --workspace @cosmaneura-scribe/desktop-companion
+```
+
+The full preparation command requires `--package-archive`, `--native-archive`, and an exact
+`--platform` of `darwin-arm64` or `win32-x64`. It has intentionally not been run in this slice, and
+no native binary was invoked.
 
 Immediately before capture, an injected main-process authority must revalidate the actor, consent,
 session, `desktop_companion` source, and source lease with the Cosmas backend. Its authorization
@@ -71,8 +95,9 @@ in crash telemetry.
 Register the exported `PACKAGED_APP_SCHEME` privileges before Electron becomes ready, then serve the
 renderer only from `app://cosmas`. `file://` is not an approved production origin.
 
-The future Electron bootstrap must apply this policy before loading content. Recall SDK access and
-backend communication belong in the main process; the renderer must not receive Node, Electron,
+`main-entry.ts` registers and serves three fixed renderer assets from `app://cosmas`, applies this
+policy before loading content, and fails closed with capture hard-disabled. Recall SDK access and
+backend communication belong in the main process; the renderer does not receive Node, Electron,
 filesystem, shell, process-launch, raw network, SDK, token, or arbitrary IPC capabilities.
 
 `installElectronPreloadBridge` exposes one frozen `cosmasDesktop` object through `contextBridge`.
@@ -112,15 +137,21 @@ termination barrier. A timeout is terminal and retains any process-wide lease un
 shutdown confirms that capture is impossible. If shutdown also times out, the operating-system
 process must be terminated.
 
-The mock adapter uses synthetic identifiers and records operation names only. Tests contain no
-patient data, meeting URLs, audio, object names, or transcript text.
+The Recall adapter accepts only the opaque one-time upload token created by the server and the
+locally detected window identifier. Its init configuration explicitly selects the US West endpoint,
+sets `restartOnError: false`, and has no workspace API key. It normalizes vendor events into the
+small provider-neutral signal set and discards titles, URLs, messages, realtime payloads, and other
+vendor fields. Upload-token references are scrubbed immediately after the synchronous SDK call.
+
+Tests use only synthetic identifiers and contain no patient data, meeting URLs, audio, object names,
+or transcript text.
 
 ## Packaging constraints
 
-The real Electron packaging change must:
+The Electron release packaging change must:
 
-1. Pin Electron and the Recall SDK exactly, lock registry integrity, and produce an SBOM and signed
-   provenance attestation.
+1. Consume the isolated exact locks and reviewed provenance manifest, add a complete generated SBOM,
+   and produce a signed provenance attestation.
 2. Keep Recall and all privileged modules in the main process; bundle a small preload with only the
    reviewed bridge and a renderer with no Node polyfills.
 3. Package with ASAR integrity/fuses where supported while assuming ASAR provides no secret storage.

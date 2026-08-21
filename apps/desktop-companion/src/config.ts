@@ -10,6 +10,8 @@ export const CAPTURE_OPERATION_TIMEOUT_MS = 15 * 1000;
 export const RECALL_DESKTOP_SDK_CONFIG = Object.freeze({
   packageName: "@recallai/desktop-sdk",
   version: "2.0.28",
+  apiUrl: "https://us-west-2.recall.ai",
+  restartOnError: false,
   captureOutput: Object.freeze({
     video_mixed_mp4: null,
     audio_mixed_mp3: Object.freeze({}),

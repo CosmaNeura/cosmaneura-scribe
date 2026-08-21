@@ -2,9 +2,10 @@
 
 Review date: 2026-08-21
 
-Status: **No-go for PHI or clinical use.** This review covers the mock-only Electron foundation, not
-a packaged application or the Recall service as deployed. A BAA is necessary but does not by itself
-establish that the implemented technical workflow is HIPAA compliant.
+Status: **No-go for PHI or clinical use.** This review covers the hard-disabled Electron bootstrap,
+provider-neutral Recall adapter, and source/native provenance gate—not a packaged application or the
+Recall service as deployed. A BAA is necessary but does not by itself establish that the implemented
+technical workflow is HIPAA compliant.
 
 ## Reviewed trust boundaries
 
@@ -33,7 +34,10 @@ establish that the implemented technical workflow is HIPAA compliant.
 | Uncertain stop | Grant revoked; warning and lease retained; shutdown confirmation required | `controller.ts` |
 | Silent restart | Failed is terminal; no resume API; a stopped session consumes its grant | `controller.ts` |
 | PHI in logs | Foundation has no logging surface; tests and errors use fixed metadata | source and secret scan |
-| Supply-chain drift | Recall version/config placeholders are exact and dependency is not installed | `config.ts`, `package.json` |
+| Supply-chain drift | Isolated exact locks, independent hashes, exact-source patch, retained archives/tree receipt, clinical release false | `vendor-runtime/package-lock.json`, `vendor/recall-desktop-sdk.provenance.json` |
+| Vendor logging | Command/event payloads and native stdout/stderr removed or redacted by an exact-hash patch | `scripts/recall-vendor-patch.mjs` |
+| Ambient secrets | Vendor `RECALL_*` forwarding removed; adapter init has only region, restart, and permission keys | `recall-sdk-adapter.ts`, vendor patch |
+| Renderer bootstrap | Fixed local assets, custom protocol, CSP, denied permissions/navigation/windows/downloads | `main-entry.ts`, `electron-app.ts`, `electron-security.ts` |
 
 The tests use only synthetic identifiers and contain no audio or transcript content.
 
@@ -44,14 +48,16 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
   foundation currently provides only in-process replay defense and a deny-all default.
 - Verify that the active Recall BAA, account, data region, Desktop SDK product, subprocesses, support
   access, telemetry, and deletion behavior cover this exact workflow.
-- Pin Electron and Recall package/native artifacts with integrity hashes; complete license,
-  vulnerability, provenance, and transitive-dependency review.
-- Implement the actual main-process Recall adapter and prove that initialize cannot capture, abort is
-  idempotent, and shutdown resolves only after capture is impossible.
+- Resolve Recall's undeclared npm/native license and complete legal, vulnerability, provenance,
+  transitive-dependency, and Electron binary review. The manifest and isolated lock are not yet a
+  signed release SBOM or attestation.
+- Exercise the actual adapter against verified native artifacts on supported macOS and Windows and
+  prove that initialize cannot capture, abort is idempotent, and shutdown resolves only after capture
+  is impossible. No native artifact was downloaded or invoked in this slice.
 - Build the persistent native indicator, prevent close/minimize from hiding it, and add an operating
   system-level emergency termination path.
-- Register and serve the custom application protocol securely, apply the CSP response hook, and
-  verify every production window uses the reviewed BrowserWindow options and IPC boundary.
+- Package and inspect the implemented custom protocol/bootstrap and prove every production window
+  uses the reviewed BrowserWindow options and IPC boundary.
 - Disable or scrub crash reporting, diagnostics, analytics, dumps, screenshots, and support bundles;
   prove that tokens, meeting metadata, audio, and transcripts cannot enter them.
 - Define encrypted local storage and recovery behavior. The current foundation intentionally stores

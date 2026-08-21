@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "package": {
+    "name": "@recallai/desktop-sdk",
+    "version": "2.0.28",
+    "commitSha": "62bf3a1f8995af470272b2198f39f2f53c150fdc",
+    "registryTarballSha256": "3c427d51dae415941ec6469cc44e244d2c1d23e9a2a0cad92d6cccb04055d0de",
+    "registryIntegritySha512": "sha512-eMc8pmliWrKWb9Q9WFbcJyYpuVnuF74sZuncdsOn42YcMhWEtWc224gKAosPAqBDrqo1OxlUgPdspBiTRIf62Q==",
+    "sourceFiles": {
+      "index.d.ts": "7342d5be45cd0d72e6aee245613679cf5211cbe9898c0c40a70a3bb02bc0ae5d",
+      "index.js": "a39e7aa9b81c3458bd82a552fad256fa7f2cb6468e4b9f6ad3f73ad836c9199d",
+      "package.json": "b288358a19469093364f97b7e7f91f1bc597078b7fcb437f4b92ceb15f2748b3",
+      "setup.js": "f8ccce0f54529d436a8a629111755345da0c3f8ca5573b086785325d99b2d680"
+    },
+    "patchedFiles": {
+      "index.js": "b6aad972672ed3b743251f3aecd95977fe80e4992c705f0b16114c8089147928",
+      "setup.js": "1e88e4dc834549484044a301979e18dcbc677af5f0c577e4d60c87b4d7d7db2e"
+    }
+  },
+  "electron": {
+    "version": "43.4.1",
+    "registryIntegritySha512": "sha512-5b+EuiwkgG5iRcsEL34rimgRpkYp15SsfZOa0pC5kXs0Tb82TH4n95rpQzTZa7yRCbA7tm0WoEbuBL6NaAhAcA=="
+  },
+  "nativeArtifacts": {
+    "darwin-arm64": {
+      "sha256": "1636d46c83eb2394d6ad643aaaa59731f3f0ad39b9532d8ebeea4b3805fd44de",
+      "allowedRoots": ["Frameworks", "desktop_sdk_macos_exe"]
+    },
+    "win32-x64": {
+      "sha256": "dfffb3c7bc36bf6329cd1eb89185880fed0a633927b90f47d86d654170be0467",
+      "allowedRoots": ["agent-windows.exe", "gstreamer-1.0"]
+    }
+  },
+  "patchPolicy": {
+    "ambientRecallDebugSwitch": "disabled",
+    "ambientRecallEnvironmentForwarding": "removed",
+    "ambientWindowsGstreamerOverride": "removed",
+    "automaticRestartDefault": false,
+    "commandPayloadLogging": "suppressed",
+    "eventPayloadLogging": "suppressed",
+    "nativeDebugOutput": "disabled",
+    "nativeStdoutStderr": "suppressed-or-redacted"
+  },
+  "clinicalReleaseApproved": false
+}

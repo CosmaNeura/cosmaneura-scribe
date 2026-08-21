@@ -21,7 +21,7 @@ export const PACKAGED_APP_SCHEME = Object.freeze({
     secure: true,
     bypassCSP: false,
     allowServiceWorkers: false,
-    supportFetch: false,
+    supportFetchAPI: false,
     corsEnabled: false,
     codeCache: true,
   }),

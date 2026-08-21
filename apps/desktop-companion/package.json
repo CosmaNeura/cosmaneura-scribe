@@ -8,9 +8,13 @@
     "npm": "11.5.2"
   },
   "packageManager": "npm@11.5.2",
+  "main": "dist/main-entry.js",
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-static.mjs",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "vendor:recall:prepare": "node scripts/prepare-recall-sdk.mjs",
+    "vendor:recall:verify-source": "node scripts/prepare-recall-sdk.mjs --verify-source"
   }
 }

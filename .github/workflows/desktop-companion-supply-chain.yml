@@ -1,0 +1,56 @@
+name: Desktop companion supply chain
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/desktop-companion-supply-chain.yml
+      - apps/desktop-companion/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/desktop-companion-supply-chain.yml
+      - apps/desktop-companion/**
+
+permissions:
+  contents: read
+
+jobs:
+  verify-dormant-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.5.0'
+      - run: npm install --global npm@11.5.2
+      - name: Install isolated desktop dependencies without lifecycle scripts
+        run: >-
+          npm ci
+          --ignore-scripts
+          --workspaces=false
+          --prefix apps/desktop-companion/vendor-runtime
+      - name: Audit the complete isolated vendor graph
+        run: >-
+          npm audit
+          --audit-level=moderate
+          --workspaces=false
+          --prefix apps/desktop-companion/vendor-runtime
+      - name: Verify and patch the exact Recall JavaScript wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/desktop-companion/scripts/prepare-recall-sdk.mjs --verify-source
+          node apps/desktop-companion/scripts/prepare-recall-sdk.mjs --patch-source
+          node apps/desktop-companion/scripts/prepare-recall-sdk.mjs --verify-source
+      - name: Prove native capture remains unavailable in CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_root='apps/desktop-companion/vendor-runtime/node_modules/@recallai/desktop-sdk'
+          test ! -e "${sdk_root}/desktop_sdk_macos_exe"
+          test ! -e "${sdk_root}/agent-windows.exe"
+          test ! -e "${sdk_root}/.cosmas-provenance/receipt.json"
+          git diff --exit-code

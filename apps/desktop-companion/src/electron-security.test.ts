@@ -125,7 +125,7 @@ describe("Electron renderer security", () => {
         secure: true,
         bypassCSP: false,
         allowServiceWorkers: false,
-        supportFetch: false,
+        supportFetchAPI: false,
         corsEnabled: false,
         codeCache: true,
       },
