@@ -1,9 +1,11 @@
 # ADR 0009: Web and mobile capture are separate first-class clients
 
-**Status:** Accepted; superseded in part by ADR 0018 (2026-08-17) — the React Native framework
-choice and the "the mobile app is not a webview" constraint are replaced by a single Capacitor
-codebase. The custody, acceptance-testing, offline-queue, purge, and no-PHI-in-telemetry
-requirements in this ADR remain binding.
+**Status:** Accepted; superseded in part by local ADR 0018 (2026-08-17) and amended by central
+architecture ADR 0018 (2026-08-21). Local ADR 0018 replaces the React Native framework choice and
+the "the mobile app is not a webview" constraint with a single Capacitor codebase. Central ADR 0018
+accelerates the desktop companion with an Electron shell and replaceable mixed-audio adapter while
+retaining native dual-channel capture as the destination. The custody, acceptance-testing, offline-queue,
+purge, and no-PHI-in-telemetry requirements in this ADR remain binding where applicable.
 
 ## Decision
 
@@ -15,8 +17,10 @@ secure storage, and connectivity recovery.
 Both clients consume the same generated API contract and implement the same consent, chunk,
 idempotency, and custody state machines. They may share TypeScript packages and review components,
 but the mobile app is not a webview and the web app does not claim mobile background guarantees it
-cannot deliver. The Tauri desktop companion remains a separate P2 client for dual-channel virtual
-visit capture.
+cannot deliver. The Electron desktop companion remains a separate virtual-visit client. Its initial
+accepted adapter is online, audio-only mixed capture; native dual-channel capture remains the
+replacement destination and is not an initial-adapter guarantee. Tauri remains a later shell option
+for the native adapter rather than a requirement of the accelerated SDK pilot.
 
 ## Consequences
 
