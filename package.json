@@ -6,6 +6,7 @@
   "workspaces": [
     "apps/capture",
     "apps/capture-preview-api",
+    "apps/desktop-companion",
     "apps/capture/native-plugins/*",
     "packages/*"
   ],
