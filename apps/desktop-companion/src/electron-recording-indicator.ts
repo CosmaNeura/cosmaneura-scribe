@@ -49,6 +49,7 @@ export class ElectronTrayRecordingIndicator
   readonly #imageFactory: ElectronNativeImageFactoryPort;
   readonly #menuFactory: ElectronMenuFactoryPort;
   readonly #activateWindow: () => void;
+  readonly #emergencyStopAndQuit: () => void;
   #tray: ElectronTrayPort | null = null;
   #safetyVisible = false;
 
@@ -57,11 +58,13 @@ export class ElectronTrayRecordingIndicator
     readonly imageFactory: ElectronNativeImageFactoryPort;
     readonly menuFactory: ElectronMenuFactoryPort;
     readonly activateWindow: () => void;
+    readonly emergencyStopAndQuit: () => void;
   }) {
     this.#trayFactory = options.trayFactory;
     this.#imageFactory = options.imageFactory;
     this.#menuFactory = options.menuFactory;
     this.#activateWindow = options.activateWindow;
+    this.#emergencyStopAndQuit = options.emergencyStopAndQuit;
   }
 
   publish(snapshot: RecordingIndicatorSnapshot): Promise<void> {
@@ -96,6 +99,10 @@ export class ElectronTrayRecordingIndicator
         Object.freeze({ label: status, enabled: false }),
         Object.freeze({ type: "separator" }),
         Object.freeze({ label: "Open Cosmas", click: this.#activateWindow }),
+        Object.freeze({
+          label: "Stop capture and quit",
+          click: this.#emergencyStopAndQuit,
+        }),
       ]),
     );
     return Promise.resolve();

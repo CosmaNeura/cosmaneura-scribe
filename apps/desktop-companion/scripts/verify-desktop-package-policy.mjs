@@ -27,6 +27,7 @@ assertExactKeys(policy, [
   "application",
   "release",
   "archive",
+  "diagnostics",
   "fuses",
   "targets",
 ]);
@@ -43,6 +44,15 @@ assertExactKeys(policy.release, [
   "unsignedDistributionAllowed",
 ]);
 assertExactKeys(policy.archive, ["asarRequired", "embeddedIntegrityRequired"]);
+assertExactKeys(policy.diagnostics, [
+  "analyticsEnabled",
+  "chromiumLoggingEnabled",
+  "electronCrashReporterStarted",
+  "localElectronCrashDumpsAllowed",
+  "nodeDiagnosticReportsEnabled",
+  "remoteDebuggingEnabled",
+  "supportBundlesEnabled",
+]);
 assertExactKeys(policy.fuses, [
   "runAsNode",
   "cookieEncryption",
@@ -58,11 +68,16 @@ assertExactKeys(policy.targets["darwin-arm64"], [
   "signatureRequired",
   "notarizationRequired",
   "stapleRequired",
+  "hardenedRuntimeRequired",
+  "secureTimestampRequired",
+  "debugEntitlementDenied",
+  "expectedTeamIdentifier",
   "credentialSource",
 ]);
 assertExactKeys(policy.targets["win32-x64"], [
   "signatureRequired",
   "timestampRequired",
+  "expectedPublisherSubject",
   "credentialSource",
 ]);
 
@@ -74,6 +89,9 @@ assert(policy.application.protocol === "cosmaneura-capture");
 assert(handoffSource.includes('DESKTOP_CUSTOM_SCHEME = "cosmaneura-capture"'));
 
 for (const value of Object.values(policy.release)) {
+  assert(value === false);
+}
+for (const value of Object.values(policy.diagnostics)) {
   assert(value === false);
 }
 assert(releaseSource.includes("captureEnabled: false"));
@@ -96,8 +114,13 @@ assert(vendorPackage.devDependencies["@electron/fuses"] === "1.8.0");
 assert(policy.targets["darwin-arm64"].signatureRequired === true);
 assert(policy.targets["darwin-arm64"].notarizationRequired === true);
 assert(policy.targets["darwin-arm64"].stapleRequired === true);
+assert(policy.targets["darwin-arm64"].hardenedRuntimeRequired === true);
+assert(policy.targets["darwin-arm64"].secureTimestampRequired === true);
+assert(policy.targets["darwin-arm64"].debugEntitlementDenied === true);
+assert(policy.targets["darwin-arm64"].expectedTeamIdentifier === "UNCONFIGURED");
 assert(policy.targets["win32-x64"].signatureRequired === true);
 assert(policy.targets["win32-x64"].timestampRequired === true);
+assert(policy.targets["win32-x64"].expectedPublisherSubject === "UNCONFIGURED");
 
 process.stdout.write("Desktop package policy verified.\n");
 

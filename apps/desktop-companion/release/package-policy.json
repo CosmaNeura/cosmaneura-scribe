@@ -16,6 +16,15 @@
     "asarRequired": true,
     "embeddedIntegrityRequired": true
   },
+  "diagnostics": {
+    "analyticsEnabled": false,
+    "chromiumLoggingEnabled": false,
+    "electronCrashReporterStarted": false,
+    "localElectronCrashDumpsAllowed": false,
+    "nodeDiagnosticReportsEnabled": false,
+    "remoteDebuggingEnabled": false,
+    "supportBundlesEnabled": false
+  },
   "fuses": {
     "runAsNode": false,
     "cookieEncryption": true,
@@ -31,11 +40,16 @@
       "signatureRequired": true,
       "notarizationRequired": true,
       "stapleRequired": true,
+      "hardenedRuntimeRequired": true,
+      "secureTimestampRequired": true,
+      "debugEntitlementDenied": true,
+      "expectedTeamIdentifier": "UNCONFIGURED",
       "credentialSource": "temporary-ci-keychain"
     },
     "win32-x64": {
       "signatureRequired": true,
       "timestampRequired": true,
+      "expectedPublisherSubject": "UNCONFIGURED",
       "credentialSource": "github-oidc-azure-artifact-signing"
     }
   }

@@ -33,6 +33,7 @@ technical workflow is HIPAA compliant.
 | Hidden capture | Indicator is published before adapter start | `controller.ts` |
 | Uncertain stop | Grant revoked; warning and lease retained; shutdown confirmation required | `controller.ts` |
 | Native safety signal | Fixed-text tray status is outside the renderer; close/minimize cannot hide active or uncertain capture | `electron-recording-indicator.ts` |
+| Emergency termination | Native stop-and-quit uses trusted controller shutdown, then one-shot forced process exit after 20 seconds | `electron-shutdown.ts`, `electron-recording-indicator.ts` |
 | Silent restart | Failed is terminal; no resume API; a stopped session consumes its grant | `controller.ts` |
 | PHI in logs | Foundation has no logging surface; tests and errors use fixed metadata | source and secret scan |
 | Supply-chain drift | Isolated exact locks, independent hashes, exact-source patch, retained archives/tree receipt, clinical release false | `vendor-runtime/package-lock.json`, `vendor/recall-desktop-sdk.provenance.json` |
@@ -43,6 +44,8 @@ technical workflow is HIPAA compliant.
 | OS deep-link ingress | Exact protocol parsing, single-instance cold/warm routing, no URL logging, disabled-build no-op | `electron-deep-link.ts`, `main-entry.ts` |
 | Platform API | HTTPS origin pin, omitted cookies/referrer, no redirects/cache, bounded exact response schemas, value-free errors | `desktop-api.ts` |
 | Package hardening | Checked-in hard-off policy, complete fuse set, unsigned distribution denied, signing/notarization required | `release/package-policy.json`, `harden-electron-package.mjs` |
+| Application diagnostics | Electron Crashpad is never started; logging, NetLog, tracing, remote debugging, Node reports/inspection, analytics, and support bundles are absent or rejected before ready | `electron-diagnostics.ts`, `main-entry.ts` |
+| Signed-artifact rejection | Exact Team ID/publisher, timestamp, notarization/stapling, Gatekeeper/AuthentiCode, ASAR, and fuse checks fail closed before publication | `verify-signed-desktop-artifacts.mjs`, `verify-windows-publisher.ps1` |
 
 The tests use only synthetic identifiers and contain no audio or transcript content.
 
@@ -59,12 +62,15 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
 - Exercise the actual adapter against verified native artifacts on supported macOS and Windows and
   prove that initialize cannot capture, abort is idempotent, and shutdown resolves only after capture
   is impossible. No native artifact was downloaded or invoked in this slice.
-- Exercise the native indicator and close/minimize guard in signed macOS and Windows artifacts, and
-  add and test an operating-system-level emergency termination path.
+- Exercise the native indicator, close/minimize guard, and implemented emergency stop-and-quit path
+  in signed macOS and Windows artifacts. Prove the 20-second deadline terminates the real vendor
+  process tree and creates a reconciled uncertain outcome when graceful shutdown cannot complete.
 - Package and inspect the implemented custom protocol/bootstrap and prove every production window
   uses the reviewed BrowserWindow options and IPC boundary.
-- Disable or scrub crash reporting, diagnostics, analytics, dumps, screenshots, and support bundles;
-  prove that tokens, meeting metadata, audio, and transcripts cannot enter them.
+- Inventory and test operating-system crash facilities plus the verified native SDK for crash dumps,
+  screenshots, temporary files, and support artifacts. The application-controlled Crashpad,
+  logging, remote-debugging, analytics, and support-bundle surfaces are disabled; native/OS evidence
+  must still prove that tokens, meeting metadata, audio, and transcripts cannot enter artifacts.
 - Define encrypted local storage and recovery behavior. The current foundation intentionally stores
   no audio, transcript, upload token, or clinical note on disk.
 - Select a packaging/installer toolchain whose current dependency graph passes the audit gate, then

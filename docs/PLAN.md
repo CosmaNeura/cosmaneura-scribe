@@ -105,6 +105,21 @@ the normalized transcript remains subject to the platform's clinical-record rete
   cold/warm routing and no secret-bearing URL logging or disabled-build session work
 - PHI-safe native tray recording/uncertainty indicator plus close/minimize guard, with a checked-in
   hard-off signed-package policy and complete pre-sign Electron fuse configuration
+- Native **Stop capture and quit** routed through trusted shutdown with a one-shot forced-exit
+  deadline, plus a pre-ready no-PHI diagnostics policy that rejects logging, tracing, inspection,
+  remote-debugging, application crash dumps, analytics, and support bundles
+- Fail-closed native release verification for macOS Team ID/signature/hardened runtime/timestamp/
+  notarization/stapling and Windows publisher/signature/timestamp, with ASAR and exact-fuse checks;
+  packaging and both signing identities remain deliberately unconfigured
+
+## Current desktop critical path
+
+The next D3 item is a de-identified Apple Silicon bring-up of the real pinned Recall adapter using
+independently acquired package and native archives whose hashes match the provenance manifest. It
+must prove initialize/detect/start/stop/abort/shutdown and vendor child-process termination before
+the shell can become an operational recorder. Signing-account work and selection of a clean
+packager may continue in parallel, but neither substitutes for proving that the real capture engine
+runs safely. No real SDK start, package, clinical flag, or deployment is approved by this plan entry.
 
 ## Parallel infrastructure backlog
 

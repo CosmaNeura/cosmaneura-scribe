@@ -151,6 +151,14 @@ cold-start/`second-instance` command lines without logging their secret-bearing 
 access and backend communication belong in the main process; the renderer does not receive Node,
 Electron, filesystem, shell, process-launch, raw network, SDK, token, or arbitrary IPC capabilities.
 
+`electron-diagnostics.ts` makes the application-controlled no-PHI diagnostics policy executable
+before Electron becomes ready. The application never starts Electron Crashpad—turning upload off
+would still write local dumps—and rejects Chromium logging, NetLog, tracing, remote-debugging, Node
+inspection, diagnostic-report, and heap-snapshot launch arguments. Application analytics and
+support-bundle surfaces do not exist. Operating-system crash facilities and any native SDK dump
+behavior remain separate endpoint/native acceptance gates; this source policy does not claim to
+disable them.
+
 `installElectronPreloadBridge` exposes one frozen `cosmasDesktop` object through `contextBridge`.
 Its complete surface is `getState`, `refreshPermissions`, `start`, `stop`, and `onStateChanged`.
 Channels are fixed constants, inputs and outputs are exact-key runtime validated, payloads are
@@ -185,7 +193,12 @@ the backend session reconciled before a fresh grant is issued.
 the macOS menu bar or Windows notification area. Tooltips and menus contain only fixed status text,
 never a capture, tenant, patient, or appointment identifier. While that signal is visible, native
 window close and minimize events are prevented and the trusted window is focused. A deliberate
-application quit still enters bounded controller shutdown before the process exits.
+application quit still enters bounded controller shutdown before the process exits. The same native
+menu contains **Stop capture and quit**. That action uses the trusted shutdown boundary and applies
+a 20-second process-level deadline; if the SDK wedges, the Electron process exits with failure so
+the backend can reconcile an uncertain segment. Signed native acceptance must still prove that any
+vendor child process is owned and terminated with the application process on both operating
+systems.
 
 All native adapter lifecycle calls are bounded to 15 seconds and receive abort signals. The real
 adapter must guarantee that initialization and permission refresh cannot capture and that an
@@ -213,6 +226,28 @@ capture, and clinical approval are all false. `scripts/harden-electron-package.m
 an executable while that packaging gate is false; after a separately reviewed approval it applies
 and reads back every fuse before signing.
 
+`scripts/verify-signed-desktop-artifacts.mjs` is the post-signing, pre-publication gate. On macOS it
+requires the configured Apple Team ID, hardened runtime, secure timestamp, absence of the debug
+entitlement, strict deep code-signature validation, Gatekeeper acceptance, a valid stapled
+notarization ticket, the expected bundle ID/protocol, ASAR-only application code, and the exact fuse
+wire. On Windows it requires both the application executable and installer to pass Authenticode
+policy with no timestamp warning, match the configured publisher subject, carry a timestamp, use
+ASAR-only application code, and match the exact fuse wire. The verifier emits only a fixed pass or
+failure message. It deliberately fails now because packaging is false and both expected signing
+identities are `UNCONFIGURED`.
+
+After the separately reviewed release policy and identities are configured, run it only on a native
+release runner:
+
+```sh
+npm run release:artifacts:verify --workspace @cosmaneura-scribe/desktop-companion -- \
+  --target darwin-arm64 --application /absolute/path/Cosmas.app
+
+npm run release:artifacts:verify --workspace @cosmaneura-scribe/desktop-companion -- \
+  --target win32-x64 --application C:\\absolute\\path\\Cosmas.exe \
+  --installer C:\\absolute\\path\\CosmasSetup.exe
+```
+
 Electron Forge 7.11.2 was evaluated on 2026-08-23 but removed from the lock because its current
 packaging-only dependency graph produced high/critical audit findings. No audit exception was added.
 The isolated runtime currently retains only the official `@electron/fuses@1.8.0` hardening utility,
@@ -229,9 +264,10 @@ The signed release lane must still:
    storage.
 4. Sign and notarize the macOS app and nested native code with the minimum audio/accessibility
    entitlements; sign the Windows app, native modules, and installer.
-5. Verify the implemented native tray indicator and close/minimize guard on both operating systems.
-6. Add signed updates, downgrade protection, separate release channels, crash-report scrubbing,
-   dependency scanning, and a tested kill switch.
+5. Verify the implemented native tray indicator, close/minimize guard, emergency shutdown, native
+   child-process termination, and OS crash behavior on both operating systems.
+6. Add signed updates, downgrade protection, separate release channels, dependency scanning, and a
+   tested kill switch.
 
 ## Exit criteria
 

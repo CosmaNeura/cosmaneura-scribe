@@ -14,6 +14,7 @@ import {
   DesktopDeepLinkRouter,
   registerDesktopProtocolClient,
 } from "./electron-deep-link.js";
+import { enforceNoPhiDiagnosticPolicy } from "./electron-diagnostics.js";
 import {
   ElectronMainIpcBoundary,
   type ElectronIpcMainPort,
@@ -35,6 +36,7 @@ import {
   type ElectronNativeImagePort,
   type ElectronTrayPort,
 } from "./electron-recording-indicator.js";
+import { ElectronShutdownCoordinator } from "./electron-shutdown.js";
 import { MockDesktopCaptureAdapter } from "./mock-capture-adapter.js";
 import type { ElectronSafeStoragePort } from "./secure-state-store.js";
 import { createTrustedDesktopRuntime } from "./trusted-runtime.js";
@@ -61,6 +63,7 @@ const deepLinkIngress = new DesktopDeepLinkIngress();
 let mainWindow: ElectronBrowserWindow | null = null;
 let protocolClientRegistered = false;
 
+enforceNoPhiDiagnosticPolicy(app.commandLine, process.argv, process.execArgv);
 protocol.registerSchemesAsPrivileged([PACKAGED_APP_SCHEME]);
 
 if (requireElectronSingleInstance(app)) {
@@ -125,11 +128,19 @@ async function bootstrap(): Promise<void> {
     ENTRY_URL,
   );
 
+  let shutdownCoordinator: ElectronShutdownCoordinator | null = null;
   const indicator = new ElectronTrayRecordingIndicator({
     trayFactory: { create: (image) => new Tray(image) },
     imageFactory: nativeImage,
     menuFactory: Menu,
     activateWindow: activateMainWindow,
+    emergencyStopAndQuit: () => {
+      if (shutdownCoordinator === null) {
+        app.exit(1);
+        return;
+      }
+      shutdownCoordinator.requestEmergencyStopAndQuit();
+    },
   });
   const runtime = createTrustedDesktopRuntime({
     platformAppOrigin: DESKTOP_RELEASE_MANIFEST.platformAppOrigin,
@@ -163,20 +174,15 @@ async function bootstrap(): Promise<void> {
   );
   boundary.install();
 
-  let shutdownStarted = false;
-  installCaptureWindowGuard(window, indicator, () => shutdownStarted);
+  shutdownCoordinator = new ElectronShutdownCoordinator({
+    boundary,
+    application: app,
+  });
+  installCaptureWindowGuard(window, indicator, () =>
+    shutdownCoordinator?.isShutdownStarted() ?? true,
+  );
   app.on("before-quit", (event) => {
-    if (shutdownStarted) {
-      return;
-    }
-    shutdownStarted = true;
-    event.preventDefault();
-    void boundary
-      .shutdownFromMain("application-shutdown")
-      .finally(() => {
-        boundary.dispose();
-        app.quit();
-      });
+    shutdownCoordinator?.handleBeforeQuit(event);
   });
   window.on("closed", () => {
     mainWindow = null;
@@ -207,6 +213,9 @@ function asRendererTarget(value: unknown): ElectronRendererTarget {
 
 interface ElectronRuntime {
   readonly app: {
+    readonly commandLine: {
+      hasSwitch(name: string): boolean;
+    };
     readonly isPackaged: boolean;
     requestSingleInstanceLock(): boolean;
     setAsDefaultProtocolClient(

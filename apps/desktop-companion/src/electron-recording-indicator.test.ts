@@ -34,8 +34,10 @@ describe("native Electron recording indicator", () => {
       setToolTip: (tooltip) => tooltips.push(tooltip),
     };
     const activateWindow = vi.fn();
+    const emergencyStopAndQuit = vi.fn();
     const indicator = new ElectronTrayRecordingIndicator({
       activateWindow,
+      emergencyStopAndQuit,
       imageFactory: {
         createFromDataURL: (dataUrl): ElectronNativeImagePort => {
           images.push(dataUrl);
@@ -59,6 +61,14 @@ describe("native Electron recording indicator", () => {
     );
     clicks[0]?.();
     expect(activateWindow).toHaveBeenCalledOnce();
+    const emergencyMenuItem = menus
+      .at(-1)
+      ?.find((item) => "label" in item && item.label === "Stop capture and quit");
+    if (emergencyMenuItem === undefined || !("click" in emergencyMenuItem)) {
+      throw new Error("Missing synthetic emergency menu item");
+    }
+    emergencyMenuItem.click();
+    expect(emergencyStopAndQuit).toHaveBeenCalledOnce();
 
     await indicator.publish(active("failed"));
     expect(indicator.isSafetySignalVisible()).toBe(true);
@@ -79,6 +89,7 @@ describe("native Electron recording indicator", () => {
   it("fails closed when Electron cannot decode the indicator image", async () => {
     const indicator = new ElectronTrayRecordingIndicator({
       activateWindow: vi.fn(),
+      emergencyStopAndQuit: vi.fn(),
       imageFactory: { createFromDataURL: () => ({ isEmpty: () => true }) },
       trayFactory: {
         create: () => {
