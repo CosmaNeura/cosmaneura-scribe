@@ -16,3 +16,4 @@ export * from "./recording-lease.js";
 export * from "./recall-sdk-adapter.js";
 export * from "./recall-sdk-loader.js";
 export * from "./secure-state-store.js";
+export * from "./trusted-runtime.js";

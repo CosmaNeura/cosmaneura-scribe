@@ -10,6 +10,8 @@ The trusted main-process integration foundation now implements the exact custom-
 system-browser PKCE handoff, `/desktop/v1` token and lifecycle client, and encrypted desktop state
 store. These modules are covered by synthetic tests but are intentionally not connected to the
 hard-disabled bootstrap until the stacked platform contract and release configuration are reviewed.
+`createTrustedDesktopRuntime` composes those pieces with the capture controller and proves the full
+synthetic launch → code exchange → local start → heartbeat → local stop → durable stop-receipt flow.
 
 Electron is the pilot shell prioritized by central architecture ADR 0018 because Recall supports it
 directly and it removes a native process bridge from the critical path. The provider-neutral
