@@ -7,8 +7,9 @@ import type {
   PendingStopReceipt,
 } from "./secure-state-store.js";
 import { parseMetadataIdentifier } from "./protocol.js";
+import type { DesktopControllerLifecycle } from "./controller.js";
 
-export class DesktopLifecycleCoordinator {
+export class DesktopLifecycleCoordinator implements DesktopControllerLifecycle {
   readonly #api: DesktopApiClient;
   readonly #store: DesktopSecureStateStore;
   readonly #clock: () => Date;
@@ -30,7 +31,10 @@ export class DesktopLifecycleCoordinator {
       ((operation) => `${operation}.${generateOpaqueSecret()}`);
   }
 
-  async heartbeat(capabilityId: string, signal: AbortSignal): Promise<void> {
+  async recordingStarted(
+    capabilityId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     const state = await this.#store.load();
     const credential = state.sessionCredential;
     if (
@@ -48,6 +52,11 @@ export class DesktopLifecycleCoordinator {
   }
 
   async recordStopIntent(capabilityId: string): Promise<void> {
+    await this.prepareStop(capabilityId);
+    await this.flushPendingStops(new AbortController().signal);
+  }
+
+  async prepareStop(capabilityId: string): Promise<void> {
     const validatedCapabilityId = parseMetadataIdentifier(capabilityId);
     const state = await this.#store.load();
     const credential = state.sessionCredential;
@@ -60,10 +69,7 @@ export class DesktopLifecycleCoordinator {
       idempotencyKey: this.#idempotencyKey("stop"),
       createdAt: this.#clock().toISOString(),
     });
-    await this.#store.update((current) =>
-      appendStopReceipt(current, receipt),
-    );
-    await this.flushPendingStops(new AbortController().signal);
+    await this.#store.update((current) => appendStopReceipt(current, receipt));
   }
 
   async flushPendingStops(signal: AbortSignal): Promise<number> {

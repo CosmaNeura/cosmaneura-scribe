@@ -6,6 +6,7 @@ import { OneTimeCapabilityRegistry } from "./capture-authority.js";
 import {
   DesktopCaptureController,
   type DesktopCaptureControllerOptions,
+  type DesktopControllerLifecycle,
 } from "./controller.js";
 import { MockDesktopCaptureAdapter } from "./mock-capture-adapter.js";
 import {
@@ -244,6 +245,27 @@ class InactiveIndicatorFailure implements PersistentRecordingIndicator {
   }
 }
 
+class LifecycleProbe implements DesktopControllerLifecycle {
+  readonly calls: string[] = [];
+
+  recordingStarted(capabilityId: string, signal: AbortSignal): Promise<void> {
+    expect(signal.aborted).toBe(false);
+    this.calls.push(`recording:${capabilityId}`);
+    return Promise.resolve();
+  }
+
+  prepareStop(capabilityId: string): Promise<void> {
+    this.calls.push(`prepare:${capabilityId}`);
+    return Promise.resolve();
+  }
+
+  flushPendingStops(signal: AbortSignal): Promise<number> {
+    expect(signal.aborted).toBe(false);
+    this.calls.push("flush");
+    return Promise.resolve(1);
+  }
+}
+
 describe("DesktopCaptureController", () => {
   it("bounds non-cooperative initialization and drains queued shutdown", async () => {
     vi.useFakeTimers();
@@ -389,6 +411,66 @@ describe("DesktopCaptureController", () => {
     expect(JSON.stringify(controller.snapshot())).not.toContain(
       "test-token-test-token",
     );
+  });
+
+  it("persists cleanup before native start, heartbeats after start, and flushes after local stop", async () => {
+    const session = grant("lifecycle");
+    const decision = authorization(session, "capability-lifecycle-001");
+    const adapter = new MockDesktopCaptureAdapter("ready");
+    const lifecycle = new LifecycleProbe();
+    const controller = new DesktopCaptureController(
+      adapter,
+      new InMemoryRecordingIndicator(),
+      {
+        ...options(new StaticAuthority(decision)),
+        lifecycle,
+      },
+    );
+
+    await controller.initializeFromBackend(session, "request-init");
+    await controller.handleRendererCommand(command("start", "request-start"));
+    expect(adapter.operations).toEqual(["initialize", "start"]);
+    expect(lifecycle.calls).toEqual([
+      "prepare:capability-lifecycle-001",
+      "recording:capability-lifecycle-001",
+    ]);
+
+    await controller.handleRendererCommand(command("stop", "request-stop"));
+    expect(adapter.operations).toEqual(["initialize", "start", "stop"]);
+    expect(lifecycle.calls).toEqual([
+      "prepare:capability-lifecycle-001",
+      "recording:capability-lifecycle-001",
+      "prepare:capability-lifecycle-001",
+      "flush",
+    ]);
+  });
+
+  it("does not start native capture when durable cleanup persistence fails", async () => {
+    const session = grant("lifecycle-store-failure");
+    const adapter = new MockDesktopCaptureAdapter("ready");
+    const lifecycle: DesktopControllerLifecycle = {
+      recordingStarted: () => Promise.resolve(),
+      prepareStop: () => Promise.reject(new Error("synthetic store failure")),
+      flushPendingStops: () => Promise.resolve(0),
+    };
+    const controller = new DesktopCaptureController(
+      adapter,
+      new InMemoryRecordingIndicator(),
+      {
+        ...options(new StaticAuthority(authorization(session))),
+        lifecycle,
+      },
+    );
+
+    await controller.initializeFromBackend(session, "request-init");
+    await expect(
+      controller.handleRendererCommand(command("start", "request-start")),
+    ).rejects.toMatchObject({ code: "authority_unavailable" });
+    expect(adapter.operations).toEqual(["initialize"]);
+    expect(controller.snapshot()).toMatchObject({
+      state: "failed",
+      reasonCode: "authority_unavailable",
+    });
   });
 
   it("does not call authority until the meeting is ready", async () => {

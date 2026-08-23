@@ -110,7 +110,7 @@ describe("desktop lifecycle coordination", () => {
       store: await sessionStore(),
       idempotencyKey: () => "heartbeat.synthetic-request-001",
     });
-    await lifecycle.heartbeat(
+    await lifecycle.recordingStarted(
       "capability-synthetic-002",
       new AbortController().signal,
     );

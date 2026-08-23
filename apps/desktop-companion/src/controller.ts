@@ -48,6 +48,31 @@ export interface DesktopCaptureControllerOptions {
   readonly capabilityRegistry?: OneTimeCapabilityRegistry;
   readonly authorityTimeoutMs?: number;
   readonly captureOperationTimeoutMs?: number;
+  readonly lifecycle?: DesktopControllerLifecycle;
+}
+
+export interface DesktopControllerLifecycle {
+  recordingStarted(capabilityId: string, signal: AbortSignal): Promise<void>;
+  prepareStop(capabilityId: string): Promise<void>;
+  flushPendingStops(signal: AbortSignal): Promise<number>;
+}
+
+class NoopDesktopControllerLifecycle implements DesktopControllerLifecycle {
+  recordingStarted(capabilityId: string, signal: AbortSignal): Promise<void> {
+    void capabilityId;
+    void signal;
+    return Promise.resolve();
+  }
+
+  prepareStop(capabilityId: string): Promise<void> {
+    void capabilityId;
+    return Promise.resolve();
+  }
+
+  flushPendingStops(signal: AbortSignal): Promise<number> {
+    void signal;
+    return Promise.resolve(0);
+  }
 }
 
 export class CompanionControllerError extends Error {
@@ -70,6 +95,7 @@ export class DesktopCaptureController {
   readonly #capabilityRegistry: OneTimeCapabilityRegistry;
   readonly #authorityTimeoutMs: number;
   readonly #captureOperationTimeoutMs: number;
+  readonly #lifecycle: DesktopControllerLifecycle;
   readonly #leaseOwner: RecordingLeaseOwner = createRecordingLeaseOwner();
   readonly #listeners = new Set<(event: ControllerStateEvent) => void>();
   readonly #unsubscribeAdapter: () => void;
@@ -78,6 +104,7 @@ export class DesktopCaptureController {
   #grant: BackendCaptureGrant | null = null;
   #captureSessionId: string | null = null;
   #captureMayBeActive = false;
+  #activeCapabilityId: string | null = null;
   #leaseHeld = false;
   #closed = false;
   #operationWork: Promise<void> = Promise.resolve();
@@ -99,6 +126,7 @@ export class DesktopCaptureController {
       options.authorityTimeoutMs ?? START_AUTHORITY_TIMEOUT_MS;
     this.#captureOperationTimeoutMs =
       options.captureOperationTimeoutMs ?? CAPTURE_OPERATION_TIMEOUT_MS;
+    this.#lifecycle = options.lifecycle ?? new NoopDesktopControllerLifecycle();
     if (
       !Number.isInteger(this.#authorityTimeoutMs) ||
       this.#authorityTimeoutMs < 1 ||
@@ -260,6 +288,7 @@ export class DesktopCaptureController {
     }
     try {
       this.#capabilityRegistry.consume(capability.capabilityId);
+      this.#activeCapabilityId = capability.capabilityId;
     } catch (error) {
       wipeCaptureCapability(capability);
       const code = authorityFailureCode(error);
@@ -270,9 +299,22 @@ export class DesktopCaptureController {
     }
 
     try {
+      await this.#runBoundedLifecycleOperation(() =>
+        this.#lifecycle.prepareStop(capability.capabilityId),
+      );
+    } catch {
+      wipeCaptureCapability(capability);
+      this.#grant = null;
+      this.#releaseLease();
+      this.#transition("failed", requestId, "authority_unavailable");
+      throw new CompanionControllerError("authority_unavailable");
+    }
+
+    try {
       await this.#indicator.publish(this.#activeIndicator("recording"));
     } catch {
       wipeCaptureCapability(capability);
+      await this.#flushStopsBestEffort();
       this.#releaseLease();
       this.#grant = null;
       this.#transition("failed", requestId, "indicator_failure");
@@ -281,6 +323,7 @@ export class DesktopCaptureController {
 
     if (Date.parse(capability.expiresAt) <= this.#clock().getTime()) {
       wipeCaptureCapability(capability);
+      await this.#flushStopsBestEffort();
       try {
         await this.#indicator.publish(this.#inactiveIndicator());
         this.#releaseLease();
@@ -297,6 +340,9 @@ export class DesktopCaptureController {
     this.#captureMayBeActive = true;
     try {
       await this.#startAdapter(capability);
+      await this.#runBoundedLifecycleOperation((signal) =>
+        this.#lifecycle.recordingStarted(capability.capabilityId, signal),
+      );
       this.#transition("recording", requestId, null);
     } catch {
       wipeCaptureCapability(capability);
@@ -336,6 +382,26 @@ export class DesktopCaptureController {
     }
   }
 
+  async #runBoundedLifecycleOperation<Result>(
+    operation: (signal: AbortSignal) => Promise<Result>,
+  ): Promise<Result> {
+    const abortController = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        abortController.abort();
+        reject(new Error("Desktop lifecycle operation timed out"));
+      }, this.#captureOperationTimeoutMs);
+    });
+    try {
+      return await Promise.race([operation(abortController.signal), timedOut]);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
   async #authorizeImmediatelyBeforeStart(
     grant: BackendCaptureGrant,
   ): Promise<OneTimeCaptureCapability> {
@@ -364,6 +430,7 @@ export class DesktopCaptureController {
     if (this.#state !== "recording") {
       throw new CompanionControllerError("invalid_transition");
     }
+    await this.#prepareStopBestEffort();
     try {
       await this.#runBoundedAdapterOperation((signal) =>
         this.#adapter.stop(signal),
@@ -373,6 +440,7 @@ export class DesktopCaptureController {
       await this.#terminalFailure("adapter_failure", requestId);
       throw new CompanionControllerError("adapter_failure");
     }
+    await this.#flushStopsBestEffort();
 
     try {
       await this.#indicator.publish(this.#inactiveIndicator());
@@ -383,6 +451,7 @@ export class DesktopCaptureController {
     }
 
     this.#releaseLease();
+    this.#activeCapabilityId = null;
     this.#grant = null;
     this.#captureSessionId = null;
     this.#transition("stopped", requestId, null);
@@ -392,6 +461,7 @@ export class DesktopCaptureController {
     if (this.#closed) {
       return;
     }
+    await this.#prepareStopBestEffort();
     if (this.#captureMayBeActive) {
       try {
         await this.#runBoundedAdapterOperation((signal) =>
@@ -413,6 +483,7 @@ export class DesktopCaptureController {
       this.#transition("failed", requestId, "adapter_failure");
       throw new CompanionControllerError("adapter_failure");
     }
+    await this.#flushStopsBestEffort();
 
     this.#closed = true;
     this.#grant = null;
@@ -423,6 +494,7 @@ export class DesktopCaptureController {
       throw new CompanionControllerError("indicator_failure");
     }
     this.#releaseLease();
+    this.#activeCapabilityId = null;
     this.#captureSessionId = null;
     this.#transition("stopped", requestId, null);
     this.#unsubscribeAdapter();
@@ -451,6 +523,7 @@ export class DesktopCaptureController {
     reasonCode: FailureCode,
     requestId: string | null,
   ): Promise<void> {
+    await this.#prepareStopBestEffort();
     this.#grant = null;
     this.#transition("failed", requestId, reasonCode);
     if (this.#captureMayBeActive) {
@@ -463,7 +536,32 @@ export class DesktopCaptureController {
         // Capture is now uncertain. Keep both the lease and visible warning.
       }
     }
+    await this.#flushStopsBestEffort();
     await this.#publishFailureIndicatorBestEffort();
+  }
+
+  async #prepareStopBestEffort(): Promise<void> {
+    const capabilityId = this.#activeCapabilityId;
+    if (capabilityId === null) {
+      return;
+    }
+    try {
+      await this.#runBoundedLifecycleOperation(() =>
+        this.#lifecycle.prepareStop(capabilityId),
+      );
+    } catch {
+      // Local capture termination must continue even if receipt storage fails.
+    }
+  }
+
+  async #flushStopsBestEffort(): Promise<void> {
+    try {
+      await this.#runBoundedLifecycleOperation((signal) =>
+        this.#lifecycle.flushPendingStops(signal),
+      );
+    } catch {
+      // A durable receipt remains for startup reconciliation.
+    }
   }
 
   #requireGrant(): BackendCaptureGrant {
