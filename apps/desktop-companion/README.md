@@ -46,7 +46,7 @@ The main-process adapter uses exactly the pinned values in `src/config.ts`:
 | pinned SDK version | `2.0.28` |
 | pinned Electron version | `43.4.1` |
 | pinned fuse utility | `@electron/fuses@1.8.0` |
-| regional SDK API | `https://us-west-2.recall.ai` |
+| regional SDK API | `https://us-west-2.recall.ai` (CosmaNeura workspace) |
 | automatic native restart | disabled |
 | capture output | `video_mixed_mp4: null`, `audio_mixed_mp3: {}` |
 | checked-in release gates | product `false`, clinical `false`, packaging `false` |
@@ -120,7 +120,23 @@ npm run vendor:recall:verify-prepared --workspace @cosmaneura-scribe/desktop-com
 The full preparation command requires `--package-archive`, `--native-archive`, and an exact
 `--platform` of `darwin-arm64` or `win32-x64`. On 2026-08-23 the Apple Silicon inputs were prepared
 on the acceptance workstation and passed the independent verifier. The extracted files remain
-ignored development inputs rather than repository content, and no native binary was invoked.
+ignored development inputs rather than repository content. A separately approved, de-identified
+macOS acceptance run later initialized the native agent and confirmed the three required permission
+paths and clean shutdown; meeting detection remains incomplete because no synthetic meeting was
+visible during the bounded observation window.
+
+The scripts-only acceptance harness is deliberately absent from `main-entry.ts`, exposes no capture,
+upload, dump, or generic command, ignores all event payloads, and requires the approval argument to
+be supplied by the operator rather than embedded in the package script:
+
+```sh
+npm run vendor:recall:accept:macos --workspace @cosmaneura-scribe/desktop-companion -- \
+  --approved-deidentified-noncapture
+```
+
+Run it only on the reviewed Apple Silicon acceptance workstation using synthetic meetings. It does
+not approve capture, PHI, packaging, deployment, or release. Its five-minute detector window exits
+with a fixed category code and always attempts a bounded native shutdown.
 
 Immediately before capture, an injected main-process authority must revalidate the actor, consent,
 session, `desktop_companion` source, and source lease with the Cosmas backend. Its authorization

@@ -21,6 +21,7 @@
     "release:artifacts:verify": "node scripts/verify-signed-desktop-artifacts.mjs",
     "release:harden": "node scripts/harden-electron-package.mjs",
     "vendor:recall:prepare": "node scripts/prepare-recall-sdk.mjs",
+    "vendor:recall:accept:macos": "npm run build && vendor-runtime/node_modules/.bin/electron scripts/run-recall-macos-acceptance.mjs",
     "vendor:recall:verify-prepared": "npm run build && node dist/verify-recall-runtime-entry.js",
     "vendor:recall:verify-source": "node scripts/prepare-recall-sdk.mjs --verify-source"
   }

@@ -112,12 +112,12 @@ describe("Recall desktop adapter", () => {
         "permission_required",
       );
       expect(sdk.initOptions).toEqual({
-        api_url: RECALL_DESKTOP_API_URL,
+        apiUrl: RECALL_DESKTOP_API_URL,
         restartOnError: false,
         acquirePermissionsOnStartup: [],
       });
       expect(Object.keys(sdk.initOptions ?? {})).toEqual([
-        "api_url",
+        "apiUrl",
         "restartOnError",
         "acquirePermissionsOnStartup",
       ]);

@@ -2,8 +2,8 @@
 
 Audit date: 2026-08-23
 
-Status: **Verified development input; no-go for distribution, PHI, or execution without a separate
-native-acceptance approval.**
+Status: **Verified development input with partial de-identified native acceptance; no-go for
+distribution, PHI, capture, packaging, or deployment.**
 
 ## Inputs and integrity
 
@@ -43,10 +43,28 @@ framework, and dylib with the reviewed CosmaNeura Developer ID identity, apply t
 entitlements, sign the outer application last, notarize and staple it, and pass the checked-in
 post-sign artifact verifier. The vendor's ad-hoc/unsigned state is not an exception.
 
-## Next dynamic gate
+## Controlled dynamic acceptance
 
-A separate de-identified native-acceptance approval is required before loading the module or
-launching the agent. That run must use no real appointment or patient data, obtain any upload token
-only from the trusted backend path, and capture fixed-output evidence for initialize, permission
-handling, meeting detection, start, stop, abort, shutdown, child-process termination, local-file
-cleanup, and OS/native diagnostics. Product, clinical, packaging, and deployment gates remain off.
+The user separately approved a de-identified macOS run limited to initialization, the minimum
+permission paths, and synthetic meeting detection. The scripts-only harness reverified the full
+prepared runtime before loading it, used the pinned US West workspace URL, disabled automatic native
+restart, ignored all event payloads, exposed no recording/upload/dump/generic method, and had no
+Recall workspace key or upload token.
+
+The 2026-08-23 fixed-output evidence established:
+
+- native initialization completed with Recall 2.0.28;
+- accessibility, screen-capture, and microphone permission requests completed;
+- Recall emitted the all-permissions-granted event;
+- no meeting was detected during the bounded five-minute observation window;
+- the timeout path completed a confirmed graceful native shutdown with process exit code 0.
+
+The run initially exposed a harness-only integration defect: the immutable checked-in initialization
+constant was passed directly to Recall even though its JavaScript wrapper normalizes the region by
+mutating the caller object. The safe port now passes a fresh, mutable three-field copy, with a
+regression test proving the checked-in constant remains frozen and the vendor input does not.
+
+Meeting detection must be repeated with a visible synthetic Zoom or Google Meet window. Recording
+start, stop, abort, upload, process-tree termination under failure, local-file cleanup, and native/OS
+diagnostic behavior require separately approved later gates. Product, clinical, packaging, and
+deployment gates remain off.

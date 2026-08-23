@@ -33,7 +33,7 @@ export type RecallEventName = (typeof RECALL_EVENT_NAMES)[number];
 export type RecallPermission = (typeof REQUIRED_PERMISSIONS)[number];
 
 export interface RecallSdkInitOptions {
-  api_url: typeof RECALL_DESKTOP_API_URL;
+  apiUrl: typeof RECALL_DESKTOP_API_URL;
   restartOnError: false;
   acquirePermissionsOnStartup: [];
 }
@@ -96,7 +96,7 @@ export class RecallDesktopCaptureAdapter implements DesktopCaptureAdapter {
     try {
       await raceWithAbort(
         this.#sdk.init({
-          api_url: RECALL_DESKTOP_API_URL,
+          apiUrl: RECALL_DESKTOP_API_URL,
           restartOnError: RECALL_DESKTOP_SDK_CONFIG.restartOnError,
           acquirePermissionsOnStartup: [],
         }),

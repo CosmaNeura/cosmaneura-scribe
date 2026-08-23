@@ -62,9 +62,12 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
 - Exercise the actual adapter against verified native artifacts on supported macOS and Windows and
   prove that initialize cannot capture, abort is idempotent, and shutdown resolves only after capture
   is impossible. The 2.0.28 Apple Silicon inputs, retained archives, patched wrapper, receipt, and
-  extracted tree now pass exact-hash verification, but no native artifact has been invoked. The
-  upstream executable/top-level dylibs are ad-hoc signed and GStreamer is unsigned, so the complete
-  nested tree must be signed and verified in the final application artifact.
+  extracted tree pass exact-hash verification. The approved no-token macOS run now proves native
+  initialization, the accessibility/screen-capture/microphone permission paths, and clean shutdown;
+  its bounded detector window saw no synthetic meeting, so meeting detection and every capture
+  lifecycle check remain open. The upstream executable/top-level dylibs are ad-hoc signed and
+  GStreamer is unsigned, so the complete nested tree must be signed and verified in the final
+  application artifact.
 - Exercise the native indicator, close/minimize guard, and implemented emergency stop-and-quit path
   in signed macOS and Windows artifacts. Prove the 20-second deadline terminates the real vendor
   process tree and creates a reconciled uncertain outcome when graceful shutdown cannot complete.
