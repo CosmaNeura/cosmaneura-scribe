@@ -6,11 +6,18 @@ deployable. The checked-in application bootstrap always constructs a disabled co
 metadata-only mock adapter; it does not load or invoke the Recall SDK, capture audio, receive
 transcripts, contact Recall, or contain a Recall workspace API key.
 
+The trusted main-process integration foundation now implements the exact custom-protocol launch,
+system-browser PKCE handoff, `/desktop/v1` token and lifecycle client, and encrypted desktop state
+store. These modules are covered by synthetic tests but are intentionally not connected to the
+hard-disabled bootstrap until the stacked platform contract and release configuration are reviewed.
+
 Electron is the pilot shell prioritized by central architecture ADR 0018 because Recall supports it
 directly and it removes a native process bridge from the critical path. The provider-neutral
 `DesktopCaptureAdapter` remains the seam for the long-term native implementation that can preserve
 separately encrypted microphone and system-audio channels. The pilot Recall adapter will use mixed
-audio only; a later Tauri/native shell remains an option when that native adapter is built.
+audio only. Electron is the sole delivery framework through 2028-08-23. Tauri remains the long-term
+shell for a wholly owned native vertical stack after CosmaNeura owns the capture engine; it is not a
+parallel implementation target during this 24-month horizon.
 
 ## Supported pilot envelope
 
@@ -54,6 +61,28 @@ native artifact. It also applies an exact-source patch that disables the install
 suppresses command, event, native stdout, and native stderr payload logging. Runtime loading verifies
 the retained archives, patched files, and extracted tree again and still rejects the manifest while
 `clinicalReleaseApproved` is false.
+
+## Secure sign-in and credential storage
+
+Clinicians do not paste a password, Clerk secret, Recall key, or Azure credential into the desktop
+application. The companion receives a short-lived launch ticket from the authenticated platform,
+creates PKCE material locally, and opens the existing Cosmas sign-in/consent page in the system
+browser. The callback contains only a one-time authorization code and matching random state. The
+Electron main process exchanges that code for a short-lived desktop bearer; neither the callback nor
+the bearer crosses preload IPC into the renderer.
+
+`DesktopSecureStateStore` requires Electron `safeStorage` and has no plaintext fallback. On the
+supported platforms, the encrypted state file contains the installation secret, pending PKCE state,
+short-lived desktop session, and durable stop receipts. `NodeEncryptedStateFile` writes it atomically
+with owner-only file permissions inside an application-owned user-data subdirectory. If operating-
+system encryption is unavailable, decryption fails, or the file schema is unexpected, the companion
+fails closed and requires a new browser handoff.
+
+For development, configure only the reviewed platform application and API origins in the packaged
+build configuration. Do not put bearer tokens, launch tickets, SDK upload tokens, Clerk credentials,
+Azure credentials, or Recall workspace keys in `.env`, command-line arguments, application logs, or
+the renderer. Production signing identities are supplied only in the isolated release workflow's
+secret store and are never bundled as runtime configuration.
 
 Source-only review can run without native code:
 

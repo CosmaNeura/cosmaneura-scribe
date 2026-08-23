@@ -27,7 +27,7 @@ technical workflow is HIPAA compliant.
 | Renderer exfiltration | Local-only CSP, denied navigation/windows/downloads/permissions | `electron-security.ts` |
 | IPC confused deputy | Fixed channels, exact schemas, 16 KiB limit | `protocol.ts`, `electron-ipc.ts` |
 | Untrusted frame | Expected webContents, top-frame identity, exact `app://cosmas` origin | `electron-ipc.ts` |
-| Credential exposure | Capability is main-only, provider-neutral, one-time, and scrubbed after start | `capture-authority.ts`, `controller.ts` |
+| Credential exposure | PKCE verifier, bearer, and capability are main-only; OS encryption has no plaintext fallback; capability is scrubbed after start | `browser-handoff.ts`, `secure-state-store.ts`, `capture-authority.ts`, `controller.ts` |
 | Consent bypass | Actor, consent, session, source, and lease are revalidated immediately before start | `capture-authority.ts`, `controller.ts` |
 | Concurrent recording | Unique controller lease owner plus required Electron single-instance lock | `recording-lease.ts`, `electron-security.ts` |
 | Hidden capture | Indicator is published before adapter start | `controller.ts` |
@@ -38,6 +38,8 @@ technical workflow is HIPAA compliant.
 | Vendor logging | Command/event payloads and native stdout/stderr removed or redacted by an exact-hash patch | `scripts/recall-vendor-patch.mjs` |
 | Ambient secrets | Vendor `RECALL_*` forwarding removed; adapter init has only region, restart, and permission keys | `recall-sdk-adapter.ts`, vendor patch |
 | Renderer bootstrap | Fixed local assets, custom protocol, CSP, denied permissions/navigation/windows/downloads | `main-entry.ts`, `electron-app.ts`, `electron-security.ts` |
+| Browser handoff | Exact custom URLs, fragment-only launch material, S256 PKCE, random state, strict age/state validation | `browser-handoff.ts`, `desktop-session.ts` |
+| Platform API | HTTPS origin pin, omitted cookies/referrer, no redirects/cache, bounded exact response schemas, value-free errors | `desktop-api.ts` |
 
 The tests use only synthetic identifiers and contain no audio or transcript content.
 

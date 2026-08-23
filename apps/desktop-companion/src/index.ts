@@ -1,7 +1,11 @@
 export * from "./capture-adapter.js";
 export * from "./capture-authority.js";
+export * from "./browser-handoff.js";
 export * from "./config.js";
 export * from "./controller.js";
+export * from "./desktop-api.js";
+export * from "./desktop-lifecycle.js";
+export * from "./desktop-session.js";
 export * from "./electron-ipc.js";
 export * from "./electron-app.js";
 export * from "./electron-security.js";
@@ -11,3 +15,4 @@ export * from "./recording-indicator.js";
 export * from "./recording-lease.js";
 export * from "./recall-sdk-adapter.js";
 export * from "./recall-sdk-loader.js";
+export * from "./secure-state-store.js";

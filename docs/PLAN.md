@@ -21,7 +21,9 @@ existing Cosmaneura engine.
 4. **P2 virtual:** Electron macOS/Windows companion. The accelerated first adapter uses a pinned
    external Desktop SDK directly in the main process for online, audio-only mixed capture; native
    separate microphone/system channels remain the target adapter under central architecture ADR
-   0018's exit criteria, with a later Tauri/native shell still available if justified.
+   0018's exit criteria. Electron is the sole delivery framework through 2028-08-23. Tauri remains
+   the long-term wholly owned native-stack destination and receives no parallel delivery work
+   during this 24-month horizon (central ADR 0019 and local ADR 0020).
 5. **P3 phone:** Azure Communication Services consent IVR and recording.
 6. **P4 real-time:** streaming STT and draft notes within 60 seconds of visit end.
 

@@ -1,11 +1,12 @@
 # ADR 0009: Web and mobile capture are separate first-class clients
 
-**Status:** Accepted; superseded in part by local ADR 0018 (2026-08-17) and amended by central
+**Status:** Accepted; superseded in part by local ADR 0018 (2026-08-17), amended by central
 architecture ADR 0018 (2026-08-21). Local ADR 0018 replaces the React Native framework choice and
 the "the mobile app is not a webview" constraint with a single Capacitor codebase. Central ADR 0018
 accelerates the desktop companion with an Electron shell and replaceable mixed-audio adapter while
-retaining native dual-channel capture as the destination. The custody, acceptance-testing, offline-queue,
-purge, and no-PHI-in-telemetry requirements in this ADR remain binding where applicable.
+retaining native dual-channel capture as the destination. Central ADR 0019 and local ADR 0020 make
+Electron the sole desktop delivery framework through 2028-08-23. The custody, acceptance-testing,
+offline-queue, purge, and no-PHI-in-telemetry requirements in this ADR remain binding where applicable.
 
 ## Decision
 
@@ -19,8 +20,9 @@ idempotency, and custody state machines. They may share TypeScript packages and 
 but the mobile app is not a webview and the web app does not claim mobile background guarantees it
 cannot deliver. The Electron desktop companion remains a separate virtual-visit client. Its initial
 accepted adapter is online, audio-only mixed capture; native dual-channel capture remains the
-replacement destination and is not an initial-adapter guarantee. Tauri remains a later shell option
-for the native adapter rather than a requirement of the accelerated SDK pilot.
+replacement destination and is not an initial-adapter guarantee. Tauri remains the long-term shell
+roadmap for a wholly owned native stack, not a parallel delivery target during the 24-month Electron
+horizon.
 
 ## Consequences
 

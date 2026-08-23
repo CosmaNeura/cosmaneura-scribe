@@ -96,8 +96,9 @@ behavior pass. Parallel work uses synthetic or de-identified fixtures and false-
 
 ## Phase 0 deliverables
 
-- Architecture ADR 0018 amends ADR 0012 to use Electron for the accelerated pilot without replacing
-  the native dual-channel destination; a later Tauri/native shell remains an explicit option.
+- Architecture ADRs 0018 and 0019 make Electron the sole delivery framework through 2028-08-23.
+  Native dual-channel capture remains the destination; Tauri is retained only as the later shell for
+  a wholly owned native vertical stack and receives no parallel delivery work in this horizon.
 - `contracts/desktop-capture.md` defines authority, state, IDs, consent/source gates, tickets and
   capabilities, provider callbacks, idempotency, segment recovery, retention, and deletion proof.
 - This file freezes scope, phase ordering, parallel lanes, and the evidence matrix.
