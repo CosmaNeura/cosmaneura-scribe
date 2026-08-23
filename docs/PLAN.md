@@ -114,12 +114,14 @@ the normalized transcript remains subject to the platform's clinical-record rete
 
 ## Current desktop critical path
 
-The next D3 item is a de-identified Apple Silicon bring-up of the real pinned Recall adapter using
-independently acquired package and native archives whose hashes match the provenance manifest. It
-must prove initialize/detect/start/stop/abort/shutdown and vendor child-process termination before
-the shell can become an operational recorder. Signing-account work and selection of a clean
-packager may continue in parallel, but neither substitutes for proving that the real capture engine
-runs safely. No real SDK start, package, clinical flag, or deployment is approved by this plan entry.
+The exact 2.0.28 package and Apple Silicon native archives have now been independently acquired,
+hash-verified, safely extracted, statically inspected, and reverified against the retained receipt
+and extracted tree without loading the module. The next D3 item is a separately approved,
+de-identified dynamic bring-up of the real pinned adapter. It must prove initialize/detect/start/
+stop/abort/shutdown and vendor child-process termination before the shell can become an operational
+recorder. Signing-account work and selection of a clean packager may continue in parallel, but
+neither substitutes for proving that the real capture engine runs safely. No real SDK start,
+package, clinical flag, or deployment is approved by this plan entry.
 
 ## Parallel infrastructure backlog
 

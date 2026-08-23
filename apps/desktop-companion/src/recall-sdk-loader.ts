@@ -9,7 +9,10 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { normalizeRecallNativeArchiveEntry } from "../archive-safety.mjs";
+import {
+  isRecallNativeArchiveRootDirectory,
+  normalizeRecallNativeArchiveEntry,
+} from "../archive-safety.mjs";
 import type {
   RecallEventName,
   RecallPermission,
@@ -346,6 +349,12 @@ async function hashNativeArchive(
     file: archivePath,
     strict: true,
     onReadEntry(entry): void {
+      if (
+        entry.type === "Directory" &&
+        isRecallNativeArchiveRootDirectory(entry.path, entry.linkpath)
+      ) {
+        return;
+      }
       const normalized = normalizeRecallNativeArchiveEntry(
         entry.path,
         entry.linkpath,

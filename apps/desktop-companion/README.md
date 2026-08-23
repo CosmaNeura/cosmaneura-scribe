@@ -110,9 +110,17 @@ Source-only review can run without native code:
 npm run vendor:recall:verify-source --workspace @cosmaneura-scribe/desktop-companion
 ```
 
+After guarded preparation on a supported native workstation, rehash the retained archives,
+provenance receipt, patched wrapper, and extracted tree without loading or launching Recall:
+
+```sh
+npm run vendor:recall:verify-prepared --workspace @cosmaneura-scribe/desktop-companion
+```
+
 The full preparation command requires `--package-archive`, `--native-archive`, and an exact
-`--platform` of `darwin-arm64` or `win32-x64`. It has intentionally not been run in this slice, and
-no native binary was invoked.
+`--platform` of `darwin-arm64` or `win32-x64`. On 2026-08-23 the Apple Silicon inputs were prepared
+on the acceptance workstation and passed the independent verifier. The extracted files remain
+ignored development inputs rather than repository content, and no native binary was invoked.
 
 Immediately before capture, an injected main-process authority must revalidate the actor, consent,
 session, `desktop_companion` source, and source lease with the Cosmas backend. Its authorization

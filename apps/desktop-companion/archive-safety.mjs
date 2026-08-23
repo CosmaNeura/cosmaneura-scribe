@@ -1,5 +1,12 @@
 import { posix, win32 } from "node:path";
 
+/** A tar archive may contain one metadata-only current-directory entry. */
+export function isRecallNativeArchiveRootDirectory(archivePath, linkTarget) {
+  return (
+    (archivePath === "." || archivePath === "./") && linkTarget === undefined
+  );
+}
+
 /**
  * Normalize one native archive entry while rejecting POSIX and Windows
  * traversal. This function is shared by preparation and runtime verification.

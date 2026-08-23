@@ -14,7 +14,10 @@ import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { normalizeRecallNativeArchiveEntry } from "../archive-safety.mjs";
+import {
+  isRecallNativeArchiveRootDirectory,
+  normalizeRecallNativeArchiveEntry,
+} from "../archive-safety.mjs";
 import {
   patchRecallWrapper,
   SAFE_SETUP_SOURCE,
@@ -243,6 +246,12 @@ async function inspectArchive(archivePath, allowedRoots) {
     file: archivePath,
     strict: true,
     onReadEntry(entry) {
+      if (
+        entry.type === "Directory" &&
+        isRecallNativeArchiveRootDirectory(entry.path, entry.linkpath)
+      ) {
+        return;
+      }
       const normalized = normalizeRecallNativeArchiveEntry(
         entry.path,
         entry.linkpath,

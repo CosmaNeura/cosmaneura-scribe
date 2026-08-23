@@ -18,3 +18,8 @@ CycloneDX/SPDX artifact; this hand-maintained review input is not a substitute.
 The provenance manifest records the exact package, source, patch, and platform-native hashes. The
 preparation script retains verified input archives beside a receipt and the runtime verifier hashes
 them and the extracted tree before module loading. `clinicalReleaseApproved` remains false.
+
+The dated macOS input inspection and its non-distribution signature findings are recorded in
+[`NATIVE_ARTIFACT_AUDIT.md`](./NATIVE_ARTIFACT_AUDIT.md). The upstream executable/top-level dylibs
+are ad-hoc signed and the GStreamer framework is unsigned; every nested Mach-O must be signed by the
+CosmaNeura release identity before notarization and distribution.

@@ -10,7 +10,10 @@ import {
   loadVerifiedRecallSdk,
   type RecallNativeRuntimeEvidenceComparison,
 } from "./recall-sdk-loader.js";
-import { normalizeRecallNativeArchiveEntry } from "../archive-safety.mjs";
+import {
+  isRecallNativeArchiveRootDirectory,
+  normalizeRecallNativeArchiveEntry,
+} from "../archive-safety.mjs";
 
 const expected = Object.freeze({
   upstreamIndexHash:
@@ -165,6 +168,16 @@ describe("Recall runtime provenance", () => {
         normalizeRecallNativeArchiveEntry("Frameworks/link", target, roots),
       ).toThrow("unsafe link");
     }
+  });
+
+  it("allows only a metadata-only tar root directory entry", () => {
+    expect(isRecallNativeArchiveRootDirectory("./", undefined)).toBe(true);
+    expect(isRecallNativeArchiveRootDirectory(".", undefined)).toBe(true);
+    expect(isRecallNativeArchiveRootDirectory("../", undefined)).toBe(false);
+    expect(isRecallNativeArchiveRootDirectory("./", "Frameworks")).toBe(false);
+    expect(() =>
+      normalizeRecallNativeArchiveEntry("./", undefined, ["Frameworks"]),
+    ).toThrow("unsafe path");
   });
 
   it("rejects tampered package/native archives and every mutable tree receipt", () => {
