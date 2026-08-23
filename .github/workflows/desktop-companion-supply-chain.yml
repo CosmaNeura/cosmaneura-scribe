@@ -38,6 +38,10 @@ jobs:
           --audit-level=moderate
           --workspaces=false
           --prefix apps/desktop-companion/vendor-runtime
+      - name: Verify the hard-disabled signed-package policy
+        run: >-
+          npm run release:policy:verify
+          --workspace @cosmaneura-scribe/desktop-companion
       - name: Verify and patch the exact Recall JavaScript wrapper
         shell: bash
         run: |

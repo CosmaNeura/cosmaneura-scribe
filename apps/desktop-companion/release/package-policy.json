@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "application": {
+    "bundleIdentifier": "com.cosmaneura.desktop-companion",
+    "productName": "Cosmas Desktop Companion",
+    "main": "dist/main-entry.js",
+    "protocol": "cosmaneura-capture"
+  },
+  "release": {
+    "packagingEnabled": false,
+    "captureEnabled": false,
+    "clinicalReleaseApproved": false,
+    "unsignedDistributionAllowed": false
+  },
+  "archive": {
+    "asarRequired": true,
+    "embeddedIntegrityRequired": true
+  },
+  "fuses": {
+    "runAsNode": false,
+    "cookieEncryption": true,
+    "nodeOptionsEnvironmentVariable": false,
+    "nodeCliInspectArguments": false,
+    "embeddedAsarIntegrityValidation": true,
+    "onlyLoadAppFromAsar": true,
+    "browserProcessSpecificV8Snapshot": true,
+    "fileProtocolExtraPrivileges": false
+  },
+  "targets": {
+    "darwin-arm64": {
+      "signatureRequired": true,
+      "notarizationRequired": true,
+      "stapleRequired": true,
+      "credentialSource": "temporary-ci-keychain"
+    },
+    "win32-x64": {
+      "signatureRequired": true,
+      "timestampRequired": true,
+      "credentialSource": "github-oidc-azure-artifact-signing"
+    }
+  }
+}

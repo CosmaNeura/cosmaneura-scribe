@@ -2,6 +2,9 @@
   "name": "@cosmaneura-scribe/desktop-companion",
   "version": "0.0.0",
   "private": true,
+  "productName": "Cosmas Desktop Companion",
+  "description": "Hard-disabled CosmaNeura desktop capture companion",
+  "author": "CosmaNeura",
   "type": "module",
   "engines": {
     "node": ">=24.0.0 <25",
@@ -14,6 +17,8 @@
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "release:policy:verify": "node scripts/verify-desktop-package-policy.mjs",
+    "release:harden": "node scripts/harden-electron-package.mjs",
     "vendor:recall:prepare": "node scripts/prepare-recall-sdk.mjs",
     "vendor:recall:verify-source": "node scripts/prepare-recall-sdk.mjs --verify-source"
   }

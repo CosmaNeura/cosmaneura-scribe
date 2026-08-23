@@ -1,6 +1,6 @@
 # Desktop companion HIPAA and security review
 
-Review date: 2026-08-21
+Review date: 2026-08-23
 
 Status: **No-go for PHI or clinical use.** This review covers the hard-disabled Electron bootstrap,
 provider-neutral Recall adapter, and source/native provenance gate—not a packaged application or the
@@ -32,6 +32,7 @@ technical workflow is HIPAA compliant.
 | Concurrent recording | Unique controller lease owner plus required Electron single-instance lock | `recording-lease.ts`, `electron-security.ts` |
 | Hidden capture | Indicator is published before adapter start | `controller.ts` |
 | Uncertain stop | Grant revoked; warning and lease retained; shutdown confirmation required | `controller.ts` |
+| Native safety signal | Fixed-text tray status is outside the renderer; close/minimize cannot hide active or uncertain capture | `electron-recording-indicator.ts` |
 | Silent restart | Failed is terminal; no resume API; a stopped session consumes its grant | `controller.ts` |
 | PHI in logs | Foundation has no logging surface; tests and errors use fixed metadata | source and secret scan |
 | Supply-chain drift | Isolated exact locks, independent hashes, exact-source patch, retained archives/tree receipt, clinical release false | `vendor-runtime/package-lock.json`, `vendor/recall-desktop-sdk.provenance.json` |
@@ -39,7 +40,9 @@ technical workflow is HIPAA compliant.
 | Ambient secrets | Vendor `RECALL_*` forwarding removed; adapter init has only region, restart, and permission keys | `recall-sdk-adapter.ts`, vendor patch |
 | Renderer bootstrap | Fixed local assets, custom protocol, CSP, denied permissions/navigation/windows/downloads | `main-entry.ts`, `electron-app.ts`, `electron-security.ts` |
 | Browser handoff | Exact custom URLs, fragment-only launch material, S256 PKCE, random state, strict age/state validation | `browser-handoff.ts`, `desktop-session.ts` |
+| OS deep-link ingress | Exact protocol parsing, single-instance cold/warm routing, no URL logging, disabled-build no-op | `electron-deep-link.ts`, `main-entry.ts` |
 | Platform API | HTTPS origin pin, omitted cookies/referrer, no redirects/cache, bounded exact response schemas, value-free errors | `desktop-api.ts` |
+| Package hardening | Checked-in hard-off policy, complete fuse set, unsigned distribution denied, signing/notarization required | `release/package-policy.json`, `harden-electron-package.mjs` |
 
 The tests use only synthetic identifiers and contain no audio or transcript content.
 
@@ -56,16 +59,17 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
 - Exercise the actual adapter against verified native artifacts on supported macOS and Windows and
   prove that initialize cannot capture, abort is idempotent, and shutdown resolves only after capture
   is impossible. No native artifact was downloaded or invoked in this slice.
-- Build the persistent native indicator, prevent close/minimize from hiding it, and add an operating
-  system-level emergency termination path.
+- Exercise the native indicator and close/minimize guard in signed macOS and Windows artifacts, and
+  add and test an operating-system-level emergency termination path.
 - Package and inspect the implemented custom protocol/bootstrap and prove every production window
   uses the reviewed BrowserWindow options and IPC boundary.
 - Disable or scrub crash reporting, diagnostics, analytics, dumps, screenshots, and support bundles;
   prove that tokens, meeting metadata, audio, and transcripts cannot enter them.
 - Define encrypted local storage and recovery behavior. The current foundation intentionally stores
   no audio, transcript, upload token, or clinical note on disk.
-- Complete macOS entitlements/signing/notarization and Windows code/installer signing, signed updates,
-  downgrade protection, SBOM/provenance, release separation, and revocation procedures.
+- Select a packaging/installer toolchain whose current dependency graph passes the audit gate, then
+  complete macOS entitlements/signing/notarization and Windows code/installer signing, signed
+  updates, downgrade protection, SBOM/provenance, release separation, and revocation procedures.
 - Complete webhook authentication, replay/idempotency controls, bounded retention, delete-after-
   ingestion evidence, orphan reconciliation, and bot/desktop mutual exclusion in the backend.
 - Run synthetic Zoom and Meet tests on supported macOS and Windows versions, including permissions,

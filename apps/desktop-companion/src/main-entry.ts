@@ -1,10 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DEFAULT_COMPANION_FEATURE_CONFIG } from "./config.js";
-import { DesktopCaptureController } from "./controller.js";
+import {
+  DEFAULT_COMPANION_FEATURE_CONFIG,
+  DESKTOP_RELEASE_MANIFEST,
+  isDesktopCaptureReleaseEnabled,
+} from "./config.js";
 import { resolvePackagedRendererAsset } from "./electron-app.js";
+import {
+  DesktopDeepLinkIngress,
+  DesktopDeepLinkRouter,
+  registerDesktopProtocolClient,
+} from "./electron-deep-link.js";
 import {
   ElectronMainIpcBoundary,
   type ElectronIpcMainPort,
@@ -18,31 +27,74 @@ import {
   requireElectronSingleInstance,
   type ElectronWebContentsSecurityPort,
 } from "./electron-security.js";
+import {
+  ElectronTrayRecordingIndicator,
+  installCaptureWindowGuard,
+  type ElectronMenuFactoryPort,
+  type ElectronNativeImageFactoryPort,
+  type ElectronNativeImagePort,
+  type ElectronTrayPort,
+} from "./electron-recording-indicator.js";
 import { MockDesktopCaptureAdapter } from "./mock-capture-adapter.js";
-import { InMemoryRecordingIndicator } from "./recording-indicator.js";
+import type { ElectronSafeStoragePort } from "./secure-state-store.js";
+import { createTrustedDesktopRuntime } from "./trusted-runtime.js";
 
 const ENTRY_URL = "app://cosmas/index.html";
 const preloadPath = fileURLToPath(new URL("./preload.cjs", import.meta.url));
 const rendererRoot = fileURLToPath(new URL("./renderer/", import.meta.url));
+const mainEntryPath = fileURLToPath(import.meta.url);
 const runtimeRequire = createRequire(
   new URL("../vendor-runtime/package.json", import.meta.url),
 );
-const { app, BrowserWindow, ipcMain, protocol } = runtimeRequire(
-  "electron",
-) as ElectronRuntime;
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  nativeImage,
+  protocol,
+  safeStorage,
+  shell,
+  Tray,
+} = runtimeRequire("electron") as ElectronRuntime;
+const deepLinkIngress = new DesktopDeepLinkIngress();
+let mainWindow: ElectronBrowserWindow | null = null;
+let protocolClientRegistered = false;
 
 protocol.registerSchemesAsPrivileged([PACKAGED_APP_SCHEME]);
 
 if (requireElectronSingleInstance(app)) {
+  protocolClientRegistered = registerDesktopProtocolClient(app, {
+    isPackaged: app.isPackaged,
+    isDefaultApp:
+      (process as NodeJS.Process & { readonly defaultApp?: boolean })
+        .defaultApp === true,
+    executablePath: process.execPath,
+    entryScriptPath: mainEntryPath,
+  });
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    deepLinkIngress.acceptUrl(url);
+  });
+  app.on("second-instance", (_event, commandLine) => {
+    deepLinkIngress.acceptCommandLine(commandLine);
+    activateMainWindow();
+  });
+  deepLinkIngress.acceptCommandLine(process.argv);
   void app.whenReady().then(bootstrap).catch(() => app.exit(1));
 }
 
 async function bootstrap(): Promise<void> {
-  // This slice deliberately has no backend authority or native indicator. Even an
-  // environment variable cannot turn capture on in this build.
   const feature = DEFAULT_COMPANION_FEATURE_CONFIG;
-  if (feature.enabled) {
-    throw new Error("Desktop capture is not release-enabled");
+  const releaseApproved = isDesktopCaptureReleaseEnabled(
+    DESKTOP_RELEASE_MANIFEST,
+  );
+  const captureEnabled = feature.enabled && releaseApproved;
+  if (captureEnabled && !protocolClientRegistered) {
+    throw new Error("The desktop protocol client is unavailable");
+  }
+  if (captureEnabled) {
+    throw new Error("The mock-only Electron build cannot be release-enabled");
   }
 
   protocol.handle("app", async (request) => {
@@ -67,24 +119,52 @@ async function bootstrap(): Promise<void> {
     title: "Cosmas Desktop Companion",
     width: 760,
   });
+  mainWindow = window;
   installElectronRendererSecurity(
     window.webContents as ElectronWebContentsSecurityPort,
     ENTRY_URL,
   );
 
-  const controller = new DesktopCaptureController(
-    new MockDesktopCaptureAdapter(),
-    new InMemoryRecordingIndicator(),
-    { enabled: false },
+  const indicator = new ElectronTrayRecordingIndicator({
+    trayFactory: { create: (image) => new Tray(image) },
+    imageFactory: nativeImage,
+    menuFactory: Menu,
+    activateWindow: activateMainWindow,
+  });
+  const runtime = createTrustedDesktopRuntime({
+    platformAppOrigin: DESKTOP_RELEASE_MANIFEST.platformAppOrigin,
+    platformApiOrigin: DESKTOP_RELEASE_MANIFEST.platformApiOrigin,
+    adapter: new MockDesktopCaptureAdapter(),
+    indicator,
+    safeStorage,
+    protectedStateDirectory: join(
+      app.getPath("userData"),
+      "protected-desktop-state",
+    ),
+    browser: {
+      openExternal: async (url) => {
+        await shell.openExternal(url);
+      },
+    },
+    enabled: captureEnabled,
+  });
+  deepLinkIngress.connect(
+    new DesktopDeepLinkRouter({
+      session: runtime.session,
+      enabled: captureEnabled,
+      activateWindow: activateMainWindow,
+    }),
   );
+
   const boundary = new ElectronMainIpcBoundary(
     asIpcMainPort(ipcMain),
     asRendererTarget(window.webContents),
-    controller,
+    runtime.controller,
   );
   boundary.install();
 
   let shutdownStarted = false;
+  installCaptureWindowGuard(window, indicator, () => shutdownStarted);
   app.on("before-quit", (event) => {
     if (shutdownStarted) {
       return;
@@ -98,9 +178,23 @@ async function bootstrap(): Promise<void> {
         app.quit();
       });
   });
-  window.on("closed", () => app.quit());
-  window.once("ready-to-show", () => window.show());
+  window.on("closed", () => {
+    mainWindow = null;
+    app.quit();
+  });
+  window.once("ready-to-show", activateMainWindow);
   await window.loadURL(ENTRY_URL);
+}
+
+function activateMainWindow(): void {
+  if (mainWindow === null) {
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function asIpcMainPort(value: unknown): ElectronIpcMainPort {
@@ -113,7 +207,14 @@ function asRendererTarget(value: unknown): ElectronRendererTarget {
 
 interface ElectronRuntime {
   readonly app: {
+    readonly isPackaged: boolean;
     requestSingleInstanceLock(): boolean;
+    setAsDefaultProtocolClient(
+      protocol: string,
+      executablePath?: string,
+      args?: string[],
+    ): boolean;
+    getPath(name: "userData"): string;
     quit(): void;
     exit(code?: number): void;
     whenReady(): Promise<void>;
@@ -121,15 +222,19 @@ interface ElectronRuntime {
       event: "before-quit",
       listener: (event: { preventDefault(): void }) => void,
     ): void;
+    on(
+      event: "open-url",
+      listener: (event: { preventDefault(): void }, url: string) => void,
+    ): void;
+    on(
+      event: "second-instance",
+      listener: (event: unknown, commandLine: readonly string[]) => void,
+    ): void;
   };
-  readonly BrowserWindow: new (options: unknown) => {
-    readonly webContents: unknown;
-    loadURL(url: string): Promise<void>;
-    on(event: "closed", listener: () => void): void;
-    once(event: "ready-to-show", listener: () => void): void;
-    show(): void;
-  };
+  readonly BrowserWindow: new (options: unknown) => ElectronBrowserWindow;
   readonly ipcMain: unknown;
+  readonly Menu: ElectronMenuFactoryPort;
+  readonly nativeImage: ElectronNativeImageFactoryPort;
   readonly protocol: {
     registerSchemesAsPrivileged(schemes: readonly unknown[]): void;
     handle(
@@ -137,4 +242,24 @@ interface ElectronRuntime {
       handler: (request: { readonly url: string }) => Promise<Response>,
     ): void;
   };
+  readonly safeStorage: ElectronSafeStoragePort;
+  readonly shell: {
+    openExternal(url: string): Promise<void>;
+  };
+  readonly Tray: new (image: ElectronNativeImagePort) => ElectronTrayPort;
+}
+
+interface ElectronBrowserWindow {
+  readonly webContents: unknown;
+  focus(): void;
+  isMinimized(): boolean;
+  loadURL(url: string): Promise<void>;
+  on(event: "closed", listener: () => void): void;
+  on(
+    event: "close" | "minimize",
+    listener: (event: { preventDefault(): void }) => void,
+  ): void;
+  once(event: "ready-to-show", listener: () => void): void;
+  restore(): void;
+  show(): void;
 }

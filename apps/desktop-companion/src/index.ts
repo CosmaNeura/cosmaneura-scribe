@@ -8,6 +8,8 @@ export * from "./desktop-lifecycle.js";
 export * from "./desktop-session.js";
 export * from "./electron-ipc.js";
 export * from "./electron-app.js";
+export * from "./electron-deep-link.js";
+export * from "./electron-recording-indicator.js";
 export * from "./electron-security.js";
 export * from "./mock-capture-adapter.js";
 export * from "./protocol.js";

@@ -26,6 +26,33 @@ export const DEFAULT_COMPANION_FEATURE_CONFIG: CompanionFeatureConfig = Object.f
   enabled: false,
 });
 
+export interface DesktopReleaseManifest {
+  readonly schemaVersion: 1;
+  readonly captureEnabled: boolean;
+  readonly clinicalReleaseApproved: boolean;
+  readonly platformAppOrigin: string;
+  readonly platformApiOrigin: string;
+}
+
+/**
+ * This checked-in manifest is the only release decision consumed by the
+ * runnable Electron bootstrap. It intentionally points at non-routable
+ * origins as another barrier against accidental network use in a source build.
+ */
+export const DESKTOP_RELEASE_MANIFEST: DesktopReleaseManifest = Object.freeze({
+  schemaVersion: 1,
+  captureEnabled: false,
+  clinicalReleaseApproved: false,
+  platformAppOrigin: "https://desktop-disabled.invalid",
+  platformApiOrigin: "https://desktop-disabled.invalid",
+});
+
+export function isDesktopCaptureReleaseEnabled(
+  manifest: DesktopReleaseManifest,
+): boolean {
+  return manifest.captureEnabled && manifest.clinicalReleaseApproved;
+}
+
 export function parseCompanionFeatureFlag(value: string | undefined): CompanionFeatureConfig {
   return Object.freeze({ enabled: value === "true" });
 }

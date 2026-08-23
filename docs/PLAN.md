@@ -98,6 +98,13 @@ the normalized transcript remains subject to the platform's clinical-record rete
 - False-default Capacitor Phase 2 foundation at `apps/capture/`: shared PWA/iOS/Android shells,
   generated API/protocol clients, an encrypted durable queue, a synthetic-only mock BFF, and
   native device-bound queue storage with reproducible platform sync/build gates
+- Hard-disabled Electron bootstrap composed with the trusted browser/PKCE, encrypted state,
+  lifecycle, and platform-authority boundary while retaining the mock capture adapter and
+  non-routable platform origins
+- Strict macOS/Windows `cosmaneura-capture` launch and callback ingress with single-instance
+  cold/warm routing and no secret-bearing URL logging or disabled-build session work
+- PHI-safe native tray recording/uncertainty indicator plus close/minimize guard, with a checked-in
+  hard-off signed-package policy and complete pre-sign Electron fuse configuration
 
 ## Parallel infrastructure backlog
 

@@ -10,9 +10,18 @@ describe("packaged Electron application protocol", () => {
       new URL("./main-entry.ts", import.meta.url),
       "utf8",
     );
+    const config = await readFile(new URL("./config.ts", import.meta.url), "utf8");
     expect(source).toContain("DEFAULT_COMPANION_FEATURE_CONFIG");
+    expect(source).toContain("DESKTOP_RELEASE_MANIFEST");
+    expect(source).toContain("isDesktopCaptureReleaseEnabled");
+    expect(source).toContain("createTrustedDesktopRuntime");
+    expect(source).toContain("ElectronTrayRecordingIndicator");
+    expect(source).toContain("DesktopDeepLinkRouter");
     expect(source).toContain("new MockDesktopCaptureAdapter()");
-    expect(source).toContain("{ enabled: false }");
+    expect(source).toContain("enabled: captureEnabled");
+    expect(config).toContain("captureEnabled: false");
+    expect(config).toContain("clinicalReleaseApproved: false");
+    expect(config).toContain("https://desktop-disabled.invalid");
     expect(source).not.toContain("loadVerifiedRecallSdk");
     expect(source).not.toContain("RecallDesktopCaptureAdapter");
     expect(source).not.toContain("process.env");
