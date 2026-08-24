@@ -49,7 +49,7 @@ The main-process adapter uses exactly the pinned values in `src/config.ts`:
 | npm package | `@recallai/desktop-sdk` |
 | pinned SDK version | `2.0.28` |
 | pinned Electron version | `43.4.1` |
-| pinned fuse utility | `@electron/fuses@1.8.0` |
+| pinned fuse utility | `@electron/fuses@2.1.3` |
 | regional SDK API | `https://us-west-2.recall.ai` (CosmaNeura workspace) |
 | automatic native restart | disabled |
 | capture output | `video_mixed_mp4: null`, `audio_mixed_mp3: {}` |
@@ -94,13 +94,14 @@ Azure credentials, or Recall workspace keys in `.env`, command-line arguments, a
 the renderer. Production signing identities are supplied only in the isolated release workflow's
 secret store and are never bundled as runtime configuration.
 
-The secure credential handoff for a future signed build is:
+The secure credential handoff for the approved macOS signing/notarization lane is:
 
 1. Create separate protected GitHub Environments for macOS and Windows desktop releases with
    required reviewers. Do not use repository-wide plaintext variables for private key material.
-2. On macOS, import the Developer ID Application certificate into an ephemeral CI keychain and use
-   a `notarytool` keychain profile or App Store Connect API key held by that protected environment.
-   Never commit a `.p12`, `.p8`, keychain password, Apple password, or notarization token.
+2. On macOS, import the Developer ID Application certificate into an ephemeral Keychain and store
+   notarization credentials as a named `notarytool` Keychain profile. Never commit a `.p12`, `.p8`,
+   Keychain password, Apple password, app-specific password, or notarization token. Do not pass any
+   of those secret values on a command line.
 3. On Windows, prefer GitHub OIDC into Azure Artifact Signing so no long-lived Azure client secret
    is stored. Keep the account/profile identifiers as protected configuration and grant the release
    identity only the signing role on that profile. East-coast placement can be selected when the
@@ -250,10 +251,12 @@ or transcript text.
 `release/package-policy.json` is the machine-checked source of truth for the two supported package
 targets. It requires ASAR, embedded ASAR integrity, signed distribution, macOS notarization and
 stapling, Windows timestamping, and a complete fuse set that disables Run-as-Node, `NODE_OPTIONS`,
-CLI inspection, unexpected non-ASAR application loading, and extra `file://` privileges.
-Development-only assembly is enabled; capture, clinical approval, and unsigned distribution remain
-false. `scripts/harden-electron-package.mjs` is not part of the approved first assembly run; fuse
-mutation and external signing remain separately reviewed release actions.
+CLI inspection, unexpected non-ASAR application loading, and extra `file://` privileges, while
+explicitly retaining V8's bounds-safe WebAssembly trap handlers.
+Development-only assembly, receipt-bound fuse hardening, and the external macOS
+signing/notarization lane are enabled; capture, clinical approval, unsigned distribution,
+publication, and deployment remain false. Each lane consumes the prior lane's immutable receipt,
+copies the package to a new output root, and leaves an incomplete marker on any partial run.
 
 `scripts/assemble-electron-package.mjs` is the fail-closed unsigned assembly lane. It accepts only a
 local Electron 43.4.1 archive whose filename and official release SHA-256 match the checked-in macOS
@@ -295,6 +298,56 @@ The approved run completed on 2026-08-24 from source
 ad-hoc/linker-signed with no Team ID, and strict deep signature verification fails; this is not a
 distributable application.
 
+The fuse-hardening approval dated 2026-08-24 authorizes a copy-on-write run against that exact
+receipt. The hardener recomputes the input package, ASAR, embedded ASAR header, and Recall runtime
+hashes before changing the copied executable. It then verifies all nine fuse states and writes a
+new non-distribution receipt:
+
+```sh
+npm run release:harden --workspace @cosmaneura-scribe/desktop-companion -- \
+  --application "/absolute/unsigned/Cosmas Desktop Companion-darwin-arm64/Cosmas Desktop Companion.app" \
+  --assembly-receipt /absolute/unsigned/assembly-receipt-darwin-arm64.json \
+  --out /absolute/new/path/cosmas-hardened \
+  --source-sha 0123456789abcdef0123456789abcdef01234567
+```
+
+The separately approved external macOS lane uses exact direct development dependencies
+`@electron/osx-sign@2.7.0` and `@electron/notarize@3.1.1`. It signs the receipt-bound native
+inventory inside-out, excludes only the two retained Recall provenance archives, notarizes through
+a Keychain profile, staples, and invokes the final verifier. It deliberately refuses to start while
+the expected Team ID is `UNCONFIGURED` or the requested Developer ID identity is absent:
+
+```sh
+npm run release:sign-notarize:macos --workspace @cosmaneura-scribe/desktop-companion -- \
+  --application "/absolute/hardened/Cosmas Desktop Companion-darwin-arm64/Cosmas Desktop Companion.app" \
+  --hardening-receipt /absolute/hardened/hardening-receipt-darwin-arm64.json \
+  --identity-sha1 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \
+  --keychain /absolute/protected/cosmas-signing.keychain-db \
+  --notary-profile cosmas-notary \
+  --out /absolute/new/path/cosmas-signed \
+  --source-sha 0123456789abcdef0123456789abcdef01234567
+```
+
+For a local dry release runner, create and populate the temporary Keychain without putting secrets
+in shell history or process arguments. `-P` asks macOS SecurityAgent for the Keychain password; the
+certificate import omits `-P` so its passphrase is requested securely, and `notarytool` prompts for
+unspecified credential fields:
+
+```sh
+security create-keychain -P /absolute/protected/cosmas-signing.keychain-db
+security import /absolute/private/DeveloperIDApplication.p12 \
+  -k /absolute/protected/cosmas-signing.keychain-db -f pkcs12 -x \
+  -T /usr/bin/codesign -T /usr/bin/security
+xcrun notarytool store-credentials cosmas-notary \
+  --keychain /absolute/protected/cosmas-signing.keychain-db
+security find-identity -v -p codesigning \
+  /absolute/protected/cosmas-signing.keychain-db
+```
+
+Do not use `security create-keychain -p`, `security import -P`, `security import -A`, or
+`notarytool --password`; those forms expose or over-broaden credential access. Delete the temporary
+Keychain from the release runner after retaining only the non-secret receipts and approved artifact.
+
 `scripts/verify-signed-desktop-artifacts.mjs` is the post-signing, pre-publication gate. On macOS it
 requires the configured Apple Team ID, hardened runtime, secure timestamp, absence of the debug
 entitlement, strict deep code-signature validation, Gatekeeper acceptance, a valid stapled
@@ -304,8 +357,8 @@ application executable and installer to pass Authenticode
 policy with no timestamp warning, match the configured publisher subject, carry a timestamp, use
 ASAR-only application code, and match the exact fuse wire. The verifier emits only a fixed pass or
 failure message. It deliberately fails now because both expected signing identities are
-`UNCONFIGURED`; no signing, distribution, or deployment action is approved by the development
-assembly gate.
+`UNCONFIGURED`; the lane is implemented and approved but cannot sign until the Apple identity and
+Team ID are securely configured. Distribution and deployment remain unapproved.
 
 After the separately reviewed release policy and identities are configured, run it only on a native
 release runner:
@@ -336,10 +389,11 @@ and binaries.
 Recall's public `osx-sign` fork is deliberately absent: its unverified 2024 head is 94 commits behind
 upstream, identifies itself as a development build, and requires a prepare script. The dated evidence
 and exact integrity values are in `vendor/PACKAGER_AUDIT.md`. The first fixed-input Apple Silicon
-development assembly is approved; installer, signing, notarization, update, publishing,
-distribution, and deployment approvals all remain open.
+development assembly, receipt-bound fuse hardening, and external macOS nested-code
+signing/notarization development lanes are approved. Windows installer/signing, updates,
+publishing, distribution, clinical release, capture, and deployment remain open.
 
-The signed release lane must still:
+The broader release program must still:
 
 1. Consume the isolated exact locks and reviewed provenance manifest, add a complete generated SBOM,
    and produce a signed provenance attestation.
@@ -347,8 +401,8 @@ The signed release lane must still:
    reviewed bridge and a renderer with no Node polyfills.
 3. Package with the checked-in ASAR integrity/fuse policy while assuming ASAR provides no secret
    storage.
-4. Sign and notarize the macOS app and nested native code with the minimum audio/accessibility
-   entitlements; sign the Windows app, native modules, and installer.
+4. Complete the first Apple-credentialed macOS signing/notarization run and separately implement
+   Windows app, native-module, and installer signing.
 5. Verify the implemented native tray indicator, close/minimize guard, emergency shutdown, native
    child-process termination, and OS crash behavior on both operating systems.
 6. Add signed updates, downgrade protection, separate release channels, dependency scanning, and a

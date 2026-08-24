@@ -61,6 +61,18 @@ assertExactKeys(policy.toolchain, [
   "assemblerFrameworkResignAllowed",
   "externalSigningRequired",
   "recallOsxSignForkAllowed",
+  "fuseHardeningLaneApproved",
+  "fuseTool",
+  "fuseToolVersion",
+  "fuseToolIntegritySha512",
+  "macosSigningLaneApproved",
+  "macosNotarizationLaneApproved",
+  "macosSigner",
+  "macosSignerVersion",
+  "macosSignerIntegritySha512",
+  "macosNotarizer",
+  "macosNotarizerVersion",
+  "macosNotarizerIntegritySha512",
 ]);
 assertExactKeys(policy.electronArchives, ["version", "releaseTag", "targets"]);
 assertExactKeys(policy.electronArchives.targets, [
@@ -108,6 +120,7 @@ assertExactKeys(policy.fuses, [
   "onlyLoadAppFromAsar",
   "browserProcessSpecificV8Snapshot",
   "fileProtocolExtraPrivileges",
+  "wasmTrapHandlers",
 ]);
 assertExactKeys(policy.targets, ["darwin-arm64", "win32-x64"]);
 assertExactKeys(policy.targets["darwin-arm64"], [
@@ -156,11 +169,40 @@ assert(policy.toolchain.assemblerSigningEnabled === false);
 assert(policy.toolchain.assemblerFrameworkResignAllowed === false);
 assert(policy.toolchain.externalSigningRequired === true);
 assert(policy.toolchain.recallOsxSignForkAllowed === false);
+assert(policy.toolchain.fuseHardeningLaneApproved === true);
+assert(policy.toolchain.fuseTool === "@electron/fuses");
+assert(policy.toolchain.fuseToolVersion === "2.1.3");
+assert(
+  policy.toolchain.fuseToolIntegritySha512 ===
+    "sha512-LoKJUXNiJ4JM8IIrUltSHI+8pkogaGj5wmJx81jE/Wk3g2w1/kfMbTEKNoY5kitGE8hiC12h32R/1SlywFtxXg==",
+);
+assert(policy.toolchain.macosSigningLaneApproved === true);
+assert(policy.toolchain.macosNotarizationLaneApproved === true);
+assert(policy.toolchain.macosSigner === "@electron/osx-sign");
+assert(policy.toolchain.macosSignerVersion === "2.7.0");
+assert(
+  policy.toolchain.macosSignerIntegritySha512 ===
+    "sha512-9DGhNqKMl6ibkhUoXbN7OHX2gZznfY10L3ZwG0u6r667Kfb6kec4JEfFTXftoqzmOfZ+OzwDbr4p/nKBMHnz0g==",
+);
+assert(policy.toolchain.macosNotarizer === "@electron/notarize");
+assert(policy.toolchain.macosNotarizerVersion === "3.1.1");
+assert(
+  policy.toolchain.macosNotarizerIntegritySha512 ===
+    "sha512-uQQSlOiJnqRkTL1wlEBAxe90nVN/Fc/hEmk0bqpKk8nKjV1if/tXLHKUPePtv9Xsx90PtZU8aidx5lAiOpjkQQ==",
+);
 assert(vendorPackage.devDependencies["@electron/packager"] === "20.3.0");
+assert(vendorPackage.devDependencies["@electron/osx-sign"] === "2.7.0");
+assert(vendorPackage.devDependencies["@electron/notarize"] === "3.1.1");
 const lockPackages = vendorLock.packages;
 const packagerLock = lockPackages["node_modules/@electron/packager"];
 assert(packagerLock.version === policy.toolchain.assemblerVersion);
 assert(packagerLock.integrity === policy.toolchain.assemblerIntegritySha512);
+const signerLock = lockPackages["node_modules/@electron/osx-sign"];
+assert(signerLock.version === policy.toolchain.macosSignerVersion);
+assert(signerLock.integrity === policy.toolchain.macosSignerIntegritySha512);
+const notarizerLock = lockPackages["node_modules/@electron/notarize"];
+assert(notarizerLock.version === policy.toolchain.macosNotarizerVersion);
+assert(notarizerLock.integrity === policy.toolchain.macosNotarizerIntegritySha512);
 const installScripts = Object.entries(lockPackages)
   .filter(([, value]) => value.hasInstallScript === true)
   .map(([name]) => name);
@@ -252,9 +294,13 @@ assert(policy.fuses.embeddedAsarIntegrityValidation === true);
 assert(policy.fuses.onlyLoadAppFromAsar === true);
 assert(policy.fuses.browserProcessSpecificV8Snapshot === true);
 assert(policy.fuses.fileProtocolExtraPrivileges === false);
+assert(policy.fuses.wasmTrapHandlers === true);
 
 assert(vendorPackage.devDependencies.electron === "43.4.1");
-assert(vendorPackage.devDependencies["@electron/fuses"] === "1.8.0");
+assert(vendorPackage.devDependencies["@electron/fuses"] === "2.1.3");
+const fuseToolLock = lockPackages["node_modules/@electron/fuses"];
+assert(fuseToolLock.version === policy.toolchain.fuseToolVersion);
+assert(fuseToolLock.integrity === policy.toolchain.fuseToolIntegritySha512);
 assert(policy.targets["darwin-arm64"].signatureRequired === true);
 assert(policy.targets["darwin-arm64"].notarizationRequired === true);
 assert(policy.targets["darwin-arm64"].stapleRequired === true);

@@ -44,7 +44,8 @@ does not by itself establish that the implemented technical workflow is HIPAA co
 | Browser handoff | Exact custom URLs, fragment-only launch material, S256 PKCE, random state, strict age/state validation | `browser-handoff.ts`, `desktop-session.ts` |
 | OS deep-link ingress | Exact protocol parsing, single-instance cold/warm routing, no URL logging, disabled-build no-op | `electron-deep-link.ts`, `main-entry.ts` |
 | Platform API | HTTPS origin pin, omitted cookies/referrer, no redirects/cache, bounded exact response schemas, value-free errors | `desktop-api.ts` |
-| Package hardening | Development assembly only, complete fuse set specified, unsigned distribution denied, signing/notarization required | `release/package-policy.json`, `harden-electron-package.mjs` |
+| Package hardening | Receipt-bound copy-on-write assembly and fuse lanes; ASAR/header/runtime rehash; unsigned distribution denied | `release/package-policy.json`, `assemble-electron-package.mjs`, `harden-electron-package.mjs` |
+| macOS signing | Exact official signer/notarizer, inside-out native inventory, empty Recall entitlements, Keychain-only credentials, final Gatekeeper/staple verification | `sign-notarize-macos-package.mjs`, `verify-signed-desktop-artifacts.mjs` |
 | Application diagnostics | Electron Crashpad is never started; logging, NetLog, tracing, remote debugging, Node reports/inspection, analytics, and support bundles are absent or rejected before ready | `electron-diagnostics.ts`, `main-entry.ts` |
 | Signed-artifact rejection | Exact Team ID/publisher, timestamp, notarization/stapling, Gatekeeper/AuthentiCode, ASAR, and fuse checks fail closed before publication | `verify-signed-desktop-artifacts.mjs`, `verify-windows-publisher.ps1` |
 
@@ -84,10 +85,12 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
   vulnerability gates. The fixed-input lane completed its approved Apple Silicon development run
   from source `728c0e1f4294d3e1fd97ed46bda9c9dde13197f2`; the independently recomputed package, ASAR,
   and unpacked-runtime hashes match its receipt. macOS reports only an inherited ad-hoc/linker
-  signature with no Team ID, and strict deep verification fails. Capture, clinical use, hardening,
-  signing, distribution, and deployment remain outside that approval. Next, select macOS nested-code
-  signing/notarization and Windows installer/signing paths, signed updates, downgrade protection,
-  SBOM/provenance, release separation, and revocation.
+  signature with no Team ID, and strict deep verification fails. Copy-on-write hardening and the
+  external macOS signing/notarization lane are now approved; the latter remains fail-closed until
+  the Apple Team ID, Developer ID identity, and Keychain notary profile are configured. Capture,
+  clinical use, distribution, and deployment remain outside that approval. Next, complete the first
+  credentialed macOS run and select Windows installer/signing paths, signed updates, downgrade
+  protection, SBOM/provenance, release separation, and revocation.
 - Complete webhook authentication, replay/idempotency controls, bounded retention, delete-after-
   ingestion evidence, orphan reconciliation, and bot/desktop mutual exclusion in the backend.
 - Run synthetic Zoom and Meet tests on supported macOS and Windows versions, including permissions,

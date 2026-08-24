@@ -23,6 +23,13 @@ import {
   selectPackagerExport,
   verifyAsarIntegrityHeader,
 } from "../scripts/assemble-electron-package.mjs";
+import { parseArguments as parseHardeningArguments } from "../scripts/harden-electron-package.mjs";
+import {
+  isIgnoredProvenanceArchive,
+  isRecallRuntimeCode,
+  parseArguments as parseSigningArguments,
+  verifySigningInventory,
+} from "../scripts/sign-notarize-macos-package.mjs";
 
 describe("Electron package release policy", () => {
   it("permits development assembly while keeping capture, clinical, and distribution gates off", async () => {
@@ -58,6 +65,21 @@ describe("Electron package release policy", () => {
       assemblerFrameworkResignAllowed: false,
       externalSigningRequired: true,
       recallOsxSignForkAllowed: false,
+      fuseHardeningLaneApproved: true,
+      fuseTool: "@electron/fuses",
+      fuseToolVersion: "2.1.3",
+      fuseToolIntegritySha512:
+        "sha512-LoKJUXNiJ4JM8IIrUltSHI+8pkogaGj5wmJx81jE/Wk3g2w1/kfMbTEKNoY5kitGE8hiC12h32R/1SlywFtxXg==",
+      macosSigningLaneApproved: true,
+      macosNotarizationLaneApproved: true,
+      macosSigner: "@electron/osx-sign",
+      macosSignerVersion: "2.7.0",
+      macosSignerIntegritySha512:
+        "sha512-9DGhNqKMl6ibkhUoXbN7OHX2gZznfY10L3ZwG0u6r667Kfb6kec4JEfFTXftoqzmOfZ+OzwDbr4p/nKBMHnz0g==",
+      macosNotarizer: "@electron/notarize",
+      macosNotarizerVersion: "3.1.1",
+      macosNotarizerIntegritySha512:
+        "sha512-uQQSlOiJnqRkTL1wlEBAxe90nVN/Fc/hEmk0bqpKk8nKjV1if/tXLHKUPePtv9Xsx90PtZU8aidx5lAiOpjkQQ==",
     });
     expect(policy.electronArchives).toEqual({
       version: "43.4.1",
@@ -125,6 +147,7 @@ describe("Electron package release policy", () => {
       onlyLoadAppFromAsar: true,
       browserProcessSpecificV8Snapshot: true,
       fileProtocolExtraPrivileges: false,
+      wasmTrapHandlers: true,
     });
   });
 
@@ -143,12 +166,15 @@ describe("Electron package release policy", () => {
     expect(source).toContain('runVerified("SignTool.exe"');
     expect(source).toContain('"/tw"');
     expect(source).toContain("getCurrentFuseWire");
+    expect(source).toContain("FuseV1Options.WasmTrapHandlers");
     expect(source).toContain('join(resourcesPath, "app.asar")');
     expect(source).toContain('requireAbsent(join(resourcesPath, "app"))');
     expect(source).toContain("packagingEnabled !== true");
     expect(source).toContain("recallOsxSignForkAllowed !== false");
     expect(source).toContain("assemblerFrameworkResignAllowed !== false");
     expect(source).toContain("verifyUnpackedRuntimeBoundary(resourcesPath)");
+    expect(source).toContain("verifyEmbeddedAsarIntegrity(info, applicationPath)");
+    expect(source).toContain("ElectronAsarIntegrity");
     expect(source).not.toContain("process.env");
     expect(windowsPublisher).toContain("Get-AuthenticodeSignature -LiteralPath");
     expect(windowsPublisher).toContain("TimeStamperCertificate");
@@ -162,8 +188,152 @@ describe("Electron package release policy", () => {
     );
     expect(source).toContain("strictlyRequireAllFuses: true");
     expect(source).toContain("packagingEnabled !== true");
+    expect(source).toContain("fuseHardeningLaneApproved !== true");
     expect(source).toContain("getCurrentFuseWire");
+    expect(source).toContain("HARDENING-INCOMPLETE");
+    expect(source).toContain("assembly-receipt-darwin-arm64.json");
+    expect(source).toContain("preHardenedPackageTreeSha256");
+    expect(source).toContain("ElectronAsarIntegrity");
     expect(source).not.toContain("process.env");
+  });
+
+  it("ships a copy-on-write nested-code signing and notarization lane", async () => {
+    const source = await readFile(
+      new URL(
+        "../scripts/sign-notarize-macos-package.mjs",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const packageMetadata = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { scripts: Record<string, string> };
+    expect(source).toContain("macosSigningLaneApproved !== true");
+    expect(source).toContain("macosNotarizationLaneApproved !== true");
+    expect(source).toContain("temporary-ci-keychain");
+    expect(source).toContain("Developer ID Application:");
+    expect(source).toContain("preAutoEntitlements: false");
+    expect(source).toContain("preEmbedProvisioningProfile: false");
+    expect(source).toContain("native-darwin-arm64.tar");
+    expect(source).toContain("registry-package.tgz");
+    expect(source).toContain("entitlements: []");
+    expect(source).toContain("verifyNestedSignatures(inventory.codePaths)");
+    expect(source).toContain("keychainProfile: request.notaryProfile");
+    expect(source).toContain("SIGNING-NOTARIZATION-INCOMPLETE");
+    expect(source).toContain("distributionAllowed: false");
+    expect(source).not.toContain("process.env");
+    expect(source).not.toContain("appleIdPassword");
+    expect(source).not.toContain("appleApiKey");
+    expect(packageMetadata.scripts["release:sign-notarize:macos"]).toBe(
+      "node scripts/sign-notarize-macos-package.mjs",
+    );
+  });
+
+  it("accepts only explicit absolute hardening and signing inputs", () => {
+    expect(
+      parseHardeningArguments([
+        "--application",
+        "/private/tmp/Cosmas Desktop Companion.app",
+        "--assembly-receipt",
+        "/private/tmp/assembly-receipt-darwin-arm64.json",
+        "--out",
+        "/private/tmp/cosmas-hardened",
+        "--source-sha",
+        "a".repeat(40),
+      ]),
+    ).toMatchObject({
+      application: "/private/tmp/Cosmas Desktop Companion.app",
+      out: "/private/tmp/cosmas-hardened",
+      sourceSha: "a".repeat(40),
+    });
+    expect(() =>
+      parseHardeningArguments([
+        "--application",
+        "relative.app",
+        "--assembly-receipt",
+        "/private/tmp/receipt.json",
+        "--out",
+        "/private/tmp/output",
+        "--source-sha",
+        "a".repeat(40),
+      ]),
+    ).toThrow();
+
+    expect(
+      parseSigningArguments([
+        "--application",
+        "/private/tmp/Cosmas Desktop Companion.app",
+        "--hardening-receipt",
+        "/private/tmp/hardening-receipt-darwin-arm64.json",
+        "--identity-sha1",
+        "A".repeat(40),
+        "--keychain",
+        "/private/tmp/cosmas-signing.keychain-db",
+        "--notary-profile",
+        "cosmas-notary",
+        "--out",
+        "/private/tmp/cosmas-signed",
+        "--source-sha",
+        "b".repeat(40),
+      ]),
+    ).toMatchObject({
+      identitySha1: "A".repeat(40),
+      notaryProfile: "cosmas-notary",
+      sourceSha: "b".repeat(40),
+    });
+    expect(() =>
+      parseSigningArguments([
+        "--application",
+        "/private/tmp/Cosmas Desktop Companion.app",
+        "--hardening-receipt",
+        "/private/tmp/receipt.json",
+        "--identity-sha1",
+        "A".repeat(40),
+        "--keychain",
+        "/private/tmp/keychain",
+        "--notary-profile",
+        "profile with spaces",
+        "--out",
+        "/private/tmp/output",
+        "--source-sha",
+        "b".repeat(40),
+      ]),
+    ).toThrow();
+  });
+
+  it("ignores only the two receipt-bound Recall provenance archives", async () => {
+    const application = "/private/tmp/Cosmas Desktop Companion.app";
+    const recallRoot = join(
+      application,
+      "Contents/Resources/app.asar.unpacked/vendor-runtime/node_modules/@recallai/desktop-sdk",
+    );
+    const nativeArchive = join(
+      recallRoot,
+      ".cosmas-provenance/native-darwin-arm64.tar",
+    );
+    const registryArchive = join(
+      recallRoot,
+      ".cosmas-provenance/registry-package.tgz",
+    );
+    const archives = [nativeArchive, registryArchive];
+    const binary = join(recallRoot, "native/darwin-arm64/recallai-desktop-sdk");
+    expect(archives.every((path) => isIgnoredProvenanceArchive(application, path))).toBe(
+      true,
+    );
+    expect(isIgnoredProvenanceArchive(application, binary)).toBe(false);
+    expect(isRecallRuntimeCode(application, binary)).toBe(true);
+    await expect(
+      verifySigningInventory(application, async () => [...archives, binary]),
+    ).resolves.toMatchObject({
+      discoveredCodeObjects: 2,
+      ignoredProvenanceArchives: [
+        "Resources/app.asar.unpacked/vendor-runtime/node_modules/@recallai/desktop-sdk/.cosmas-provenance/native-darwin-arm64.tar",
+        "Resources/app.asar.unpacked/vendor-runtime/node_modules/@recallai/desktop-sdk/.cosmas-provenance/registry-package.tgz",
+      ],
+    });
+    await expect(
+      verifySigningInventory(application, async () => [nativeArchive, binary]),
+    ).rejects.toThrow();
   });
 
   it("ships a fixed-input unsigned assembler behind the packaging gate", async () => {

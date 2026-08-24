@@ -6,6 +6,9 @@ Status: review input only; not a signed release SBOM and not approved for PHI.
 | --- | --- | --- | --- | --- |
 | Electron | 43.4.1 | Desktop shell (development/runtime tooling) | MIT declared | isolated npm lock SHA-512 |
 | `@electron/packager` | 20.3.0 | Unsigned application assembly only; built-in signing disabled | BSD-2-Clause declared | isolated npm lock SHA-512 plus checked-in policy integrity |
+| `@electron/fuses` | 2.1.3 | Strict configuration and verification of all nine Electron 43 fuses | MIT declared | isolated npm lock SHA-512 plus checked-in policy integrity |
+| `@electron/osx-sign` | 2.7.0 | Receipt-bound external macOS nested-code signing only | BSD-2-Clause declared | isolated npm lock SHA-512 plus checked-in policy integrity |
+| `@electron/notarize` | 3.1.1 | Keychain-profile notarization and stapling only | MIT declared | isolated npm lock SHA-512 plus checked-in policy integrity |
 | `@recallai/desktop-sdk` | 2.0.28 / commit `62bf3a1f8995af470272b2198f39f2f53c150fdc` | Native capture wrapper | npm package does not declare a license; legal review required | npm lock SHA-512 plus independent registry tarball SHA-256 |
 | Recall macOS native archive | SDK commit above | Apple Silicon native capture process/frameworks | vendor/legal review required | SHA-256 in provenance manifest |
 | Recall Windows native archive | SDK commit above | x64 native capture process/GStreamer runtime | vendor/legal review required | SHA-256 in provenance manifest |
@@ -22,12 +25,13 @@ them and the extracted tree before module loading. `clinicalReleaseApproved` rem
 
 The dated packaging-tool comparison is recorded in [`PACKAGER_AUDIT.md`](./PACKAGER_AUDIT.md).
 The selected assembler is not authorized to sign, notarize, publish, update, or distribute. Recall's
-stale `osx-sign` fork is not in the lock; nested signing remains a separate release-gated work item.
+stale `osx-sign` fork is not in the lock. The official signer/notarizer are exact direct development
+dependencies used only by the approved external lane after a valid hardening receipt.
 The official Electron 43.4.1 macOS Apple Silicon and Windows x64 archive filenames and SHA-256
 digests are pinned in `release/package-policy.json`; the assembly script has no download path.
 Packager's macOS Framework digest/re-sign default is explicitly disabled and recorded in that policy.
-Its official signing/notarization libraries remain transitive dependencies but receive no activation
-options; the Recall signing fork is absent.
+The assembly options still provide no signing/notarization activation keys; the Recall signing fork
+is absent.
 The seven common production dependency trees and prepared Apple Silicon Recall tree also have
 checked-in content hashes; the Windows Recall tree is still `UNCONFIGURED`.
 

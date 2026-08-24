@@ -5,6 +5,7 @@ import {
   readlink,
   realpath,
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import {
   basename,
@@ -134,6 +135,7 @@ async function verifyMacApplication(requestedApplicationPath) {
     join(applicationPath, "Contents", "MacOS", executableName),
     "file",
   );
+  await verifyEmbeddedAsarIntegrity(info, applicationPath);
   await verifyPackagedApplication(applicationPath, executablePath, "mac");
 
   runVerified("codesign", ["-vvv", "--deep", "--strict", applicationPath]);
@@ -165,6 +167,26 @@ async function verifyMacApplication(requestedApplicationPath) {
   }
   runVerified("spctl", ["--assess", "--type", "execute", "--verbose=4", applicationPath]);
   runVerified("xcrun", ["stapler", "validate", applicationPath]);
+}
+
+async function verifyEmbeddedAsarIntegrity(info, applicationPath) {
+  const archivePath = await requirePathType(
+    join(applicationPath, "Contents", "Resources", "app.asar"),
+    "file",
+  );
+  const vendorRequire = createRequire(new URL("vendor-runtime/package.json", appRoot));
+  const { getRawHeader } = vendorRequire("@electron/asar");
+  const rawHeader = getRawHeader(archivePath);
+  if (typeof rawHeader?.headerString !== "string") {
+    throw new Error(FAILURE_MESSAGE);
+  }
+  const expected = createHash("sha256")
+    .update(rawHeader.headerString, "utf8")
+    .digest("hex");
+  const embedded = info.ElectronAsarIntegrity?.["Resources/app.asar"];
+  if (embedded?.algorithm !== "SHA256" || embedded?.hash !== expected) {
+    throw new Error(FAILURE_MESSAGE);
+  }
 }
 
 async function verifyWindowsArtifacts(requestedApplicationPath, requestedInstallerPath) {
@@ -300,6 +322,7 @@ async function verifyFusePolicy(executablePath) {
       FuseV1Options.GrantFileProtocolExtraPrivileges,
       policy.fuses.fileProtocolExtraPrivileges,
     ],
+    [FuseV1Options.WasmTrapHandlers, policy.fuses.wasmTrapHandlers],
   ]);
   for (const [fuse, enabled] of expected) {
     if (fuseWire[fuse] !== (enabled ? 49 : 48)) {

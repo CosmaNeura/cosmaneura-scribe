@@ -2,8 +2,8 @@
 
 Audit date: 2026-08-23
 
-Status: **`@electron/packager` selected for unsigned assembly only; the first fixed-input Apple
-Silicon development assembly is complete, while signing and distribution remain disabled.**
+Status: **`@electron/packager` remains limited to unsigned assembly; the receipt-bound fuse and
+external macOS signing/notarization lanes are approved, while distribution remains disabled.**
 
 ## Exact candidate comparison
 
@@ -44,8 +44,10 @@ SDK. The public fork was inspected but is not accepted into this lock:
 `@electron/packager` must therefore run with its signing integration disabled. A separate,
 deterministic signing lane must sign every nested Recall executable, dylib, and framework in the
 reviewed order, sign the Electron application last, notarize and staple it, and then pass
-`verify-signed-desktop-artifacts.mjs`. That lane requires its own dependency/code review and release
-approval.
+`verify-signed-desktop-artifacts.mjs`. That review is now complete for exact registry releases
+`@electron/osx-sign@2.7.0` and `@electron/notarize@3.1.1`, made direct isolated development
+dependencies. The lane remains independent of Packager and refuses to run without the exact Team
+ID, Developer ID identity, temporary Keychain, and Keychain notarization profile.
 
 Exact 20.3.0 API inspection also identified its default `asarIntegrityDigest` behavior on macOS: it
 modifies and ad-hoc re-signs the Electron Framework. The checked-in assembly options force that
@@ -77,8 +79,10 @@ and Recall runtime-tree SHA-256
 and `distributionAllowed: false`. Remaining requirements are:
 
 1. keep `captureEnabled`, `clinicalReleaseApproved`, and `unsignedDistributionAllowed` false;
-2. do not harden, sign, notarize, distribute, or deploy the output without separate approval;
-3. implement and review the external macOS/Windows signing lanes and installer choices;
+2. run the approved hardening and external macOS signing/notarization lanes only through their
+   immutable receipts and new output roots; do not distribute or deploy their outputs;
+3. securely configure the Apple Team ID, Developer ID identity, and Keychain profile for the first
+   credentialed run; separately implement Windows signing and installer choices;
 4. rerun the lock, license, vulnerability, native-content, fuse, signature, and no-PHI gates before
    any later release decision.
 

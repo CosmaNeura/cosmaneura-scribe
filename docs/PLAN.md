@@ -110,8 +110,8 @@ the normalized transcript remains subject to the platform's clinical-record rete
   remote-debugging, application crash dumps, analytics, and support bundles
 - Fail-closed native release verification for macOS Team ID/signature/hardened runtime/timestamp/
   notarization/stapling and Windows publisher/signature/timestamp, with ASAR and exact-fuse checks;
-  development-only Apple Silicon assembly is enabled while both signing identities remain
-  deliberately unconfigured
+  development-only Apple Silicon assembly and receipt-bound hardening/signing/notarization lanes are
+  enabled while both signing identities remain deliberately unconfigured
 - Guarded de-identified Recall 2.0.28 macOS initialization and permission acceptance with confirmed
   shutdown; no meeting was visible during the bounded detection window and no capture method ran
 - Dormant real-provider bootstrap behind independent product, packaging, capture, clinical,
@@ -135,9 +135,11 @@ an audited packaging toolchain and producing a signed/notarized development shel
 indicator acceptance. Packager 20.3.0 is pinned for unsigned assembly after its exact dependency
 graph passed the dated audit; its signing integration is prohibited. The approved fixed-input Apple
 Silicon assembly completed on 2026-08-24 from source `728c0e1f4294d3e1fd97ed46bda9c9dde13197f2`,
-and independent package/ASAR/runtime hashes match its unsigned, non-distributable receipt. The next
-package work is a separately reviewed nested-code hardening/signing/notarization lane. No SDK
-recording start, clinical flag, signing, distribution, or deployment is approved by this plan entry.
+and independent package/ASAR/runtime hashes match its unsigned, non-distributable receipt. The
+copy-on-write fuse-hardening and external nested-code signing/notarization lanes are now implemented
+and approved. Hardening can proceed against the retained receipt; the first credentialed signing run
+waits for the Apple Team ID, Developer ID certificate, and Keychain notary profile. No SDK recording
+start, clinical flag, distribution, or deployment is approved by this plan entry.
 
 ## Parallel infrastructure backlog
 

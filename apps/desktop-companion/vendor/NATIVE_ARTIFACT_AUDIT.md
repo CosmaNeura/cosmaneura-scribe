@@ -37,11 +37,12 @@ consistent, but `codesign --display --verbose=4` reports `Signature=adhoc` and n
 The bundled GStreamer framework is not signed. Gatekeeper does not accept the standalone native
 executable as a distributable signed artifact.
 
-This is acceptable only as a hash-pinned vendor input for controlled development. Before any signed
-artifact can leave the release runner, the packaging lane must sign every nested executable,
-framework, and dylib with the reviewed CosmaNeura Developer ID identity, apply the minimum approved
-entitlements, sign the outer application last, notarize and staple it, and pass the checked-in
-post-sign artifact verifier. The vendor's ad-hoc/unsigned state is not an exception.
+This is acceptable only as a hash-pinned vendor input for controlled development. The approved
+external lane now implements receipt-bound, inside-out signing of every discovered executable,
+framework, and dylib with empty entitlements for Recall code, signs the outer application last,
+notarizes and staples it, and invokes the checked-in post-sign verifier. It remains fail-closed until
+the reviewed CosmaNeura Developer ID identity and Team ID are configured. The vendor's
+ad-hoc/unsigned state is not an exception, and distribution remains a separate gate.
 
 ## Controlled dynamic acceptance
 
