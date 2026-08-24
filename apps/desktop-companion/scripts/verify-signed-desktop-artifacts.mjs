@@ -1,6 +1,21 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import {
+  lstat,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, extname, isAbsolute, join } from "node:path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -23,8 +38,12 @@ async function main() {
   if (
     policy.release.packagingEnabled !== true ||
     policy.toolchain.assemblerSigningEnabled !== false ||
+    policy.toolchain.assemblerFrameworkResignAllowed !== false ||
     policy.toolchain.externalSigningRequired !== true ||
-    policy.toolchain.recallOsxSignForkAllowed !== false
+    policy.toolchain.recallOsxSignForkAllowed !== false ||
+    policy.archive.smartUnpackAllowed !== false ||
+    policy.archive.unpackedRuntimePath !==
+      "vendor-runtime/node_modules/@recallai/desktop-sdk"
   ) {
     throw new Error(FAILURE_MESSAGE);
   }
@@ -204,7 +223,56 @@ async function verifyPackagedApplication(applicationRoot, executablePath, platfo
     throw new Error(FAILURE_MESSAGE);
   }
   await requireAbsent(join(resourcesPath, "app"));
+  await verifyUnpackedRuntimeBoundary(resourcesPath);
   await verifyFusePolicy(executablePath);
+}
+
+async function verifyUnpackedRuntimeBoundary(resourcesPath) {
+  const unpackedRoot = await requirePathType(
+    join(resourcesPath, "app.asar.unpacked"),
+    "directory",
+  );
+  const allowed = policy.archive.unpackedRuntimePath;
+  const allowedRoot = await requirePathType(join(unpackedRoot, allowed), "directory");
+  let containedEntryCount = 0;
+
+  const visit = async (path) => {
+    const names = (await readdir(path)).sort();
+    for (const name of names) {
+      const child = join(path, name);
+      const pathFromRoot = relative(unpackedRoot, child).split(sep).join("/");
+      if (
+        pathFromRoot !== allowed &&
+        !pathFromRoot.startsWith(`${allowed}/`) &&
+        !allowed.startsWith(`${pathFromRoot}/`)
+      ) {
+        throw new Error(FAILURE_MESSAGE);
+      }
+      const details = await lstat(child);
+      if (details.isSymbolicLink()) {
+        const target = await readlink(child);
+        if (
+          isAbsolute(target) ||
+          !isWithin(allowedRoot, resolve(dirname(child), target)) ||
+          !isWithin(allowedRoot, await realpath(child))
+        ) {
+          throw new Error(FAILURE_MESSAGE);
+        }
+        containedEntryCount += 1;
+      } else if (details.isDirectory()) {
+        await visit(child);
+      } else if (details.isFile()) {
+        containedEntryCount += 1;
+      } else {
+        throw new Error(FAILURE_MESSAGE);
+      }
+    }
+  };
+
+  await visit(unpackedRoot);
+  if (containedEntryCount === 0) {
+    throw new Error(FAILURE_MESSAGE);
+  }
 }
 
 async function verifyFusePolicy(executablePath) {
@@ -277,6 +345,16 @@ function hasCustomProtocol(info, expectedProtocol) {
 
 function isConfiguredIdentity(value) {
   return typeof value === "string" && value.length > 0 && value !== UNCONFIGURED;
+}
+
+function isWithin(root, candidate) {
+  const pathFromRoot = relative(root, candidate);
+  return (
+    pathFromRoot === "" ||
+    (pathFromRoot !== ".." &&
+      !pathFromRoot.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromRoot))
+  );
 }
 
 function parseJson(value) {

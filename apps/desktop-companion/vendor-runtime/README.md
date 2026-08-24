@@ -12,8 +12,12 @@ verifies the registry package and native archive against
 only then makes the runtime eligible for packaging.
 
 `@electron/packager` is pinned for assembly only. It must not download Electron, sign, notarize,
-publish, or update. Any future packaging script must require a separately hash-verified Electron
-archive and must keep Packager signing disabled; `release/package-policy.json` records that boundary.
+publish, or update. The checked-in assembly script requires a separately hash-verified Electron
+archive, builds an allowlisted temporary stage, and keeps Packager signing disabled;
+`release/package-policy.json` records that boundary. The false packaging gate prevents a run.
+The options also disable Packager 20.3's default macOS Framework digest embedding because that path
+modifies and ad-hoc re-signs the Electron Framework; final integrity and signing belong to the
+external release lane.
 
 The checked-in lock is supply-chain metadata, not permission to invoke the native SDK. Clinical or
 PHI use remains disabled.

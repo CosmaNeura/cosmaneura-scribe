@@ -2,6 +2,14 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
+import {
+  createPackagerOptions,
+  isSafeLockPath,
+  parseArguments,
+  selectPackagerExport,
+  verifyAsarIntegrityHeader,
+} from "../scripts/assemble-electron-package.mjs";
+
 describe("Electron package release policy", () => {
   it("requires signed distribution and keeps package and clinical gates off", async () => {
     const policy = JSON.parse(
@@ -13,6 +21,9 @@ describe("Electron package release policy", () => {
       release: Record<string, boolean>;
       application: { protocol: string };
       toolchain: Record<string, unknown>;
+      electronArchives: Record<string, unknown>;
+      runtimeTrees: Record<string, unknown>;
+      archive: Record<string, unknown>;
       diagnostics: Record<string, boolean>;
       targets: Record<string, Record<string, unknown>>;
       fuses: Record<string, boolean>;
@@ -30,8 +41,43 @@ describe("Electron package release policy", () => {
       assemblerIntegritySha512:
         "sha512-3MvgJgy6YJ5ti0oGGBKrWKdYwpTaoRrhranMDgHSQ6i5t56yZV9IRDyoXTuqBp97LiKqnZeAMe2wTcF/9+fP5g==",
       assemblerSigningEnabled: false,
+      assemblerFrameworkResignAllowed: false,
       externalSigningRequired: true,
       recallOsxSignForkAllowed: false,
+    });
+    expect(policy.electronArchives).toEqual({
+      version: "43.4.1",
+      releaseTag: "v43.4.1",
+      targets: {
+        "darwin-arm64": {
+          filename: "electron-v43.4.1-darwin-arm64.zip",
+          sha256:
+            "fe3cac8cbfd9ba1739fac6c69166cf30848741f93cbe251d800ae6ef7cebb64b",
+        },
+        "win32-x64": {
+          filename: "electron-v43.4.1-win32-x64.zip",
+          sha256:
+            "c2ef9a5f65472c34d14bd3e67b7d14e66b0c01f124aba45263d6a4232160e13a",
+        },
+      },
+    });
+    expect(policy.archive).toEqual({
+      asarRequired: true,
+      embeddedIntegrityRequired: true,
+      smartUnpackAllowed: false,
+      unpackedRuntimePath:
+        "vendor-runtime/node_modules/@recallai/desktop-sdk",
+    });
+    expect(policy.runtimeTrees).toMatchObject({
+      targets: {
+        "darwin-arm64": {
+          "node_modules/@recallai/desktop-sdk":
+            "70d2d63210f4e9b36ecdda7b441caf3707dc2f7f1653567ddf95bbc63001ce4c",
+        },
+        "win32-x64": {
+          "node_modules/@recallai/desktop-sdk": "UNCONFIGURED",
+        },
+      },
     });
     expect(Object.values(policy.diagnostics)).toEqual([
       false,
@@ -87,6 +133,8 @@ describe("Electron package release policy", () => {
     expect(source).toContain('requireAbsent(join(resourcesPath, "app"))');
     expect(source).toContain("packagingEnabled !== true");
     expect(source).toContain("recallOsxSignForkAllowed !== false");
+    expect(source).toContain("assemblerFrameworkResignAllowed !== false");
+    expect(source).toContain("verifyUnpackedRuntimeBoundary(resourcesPath)");
     expect(source).not.toContain("process.env");
     expect(windowsPublisher).toContain("Get-AuthenticodeSignature -LiteralPath");
     expect(windowsPublisher).toContain("TimeStamperCertificate");
@@ -102,5 +150,120 @@ describe("Electron package release policy", () => {
     expect(source).toContain("packagingEnabled !== true");
     expect(source).toContain("getCurrentFuseWire");
     expect(source).not.toContain("process.env");
+  });
+
+  it("ships a fixed-input unsigned assembler behind the packaging gate", async () => {
+    const source = await readFile(
+      new URL("../scripts/assemble-electron-package.mjs", import.meta.url),
+      "utf8",
+    );
+    const packageMetadata = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { scripts: Record<string, string> };
+    expect(source).toContain("policy.release.packagingEnabled !== true");
+    expect(source).toContain('electronZipDir: dirname(electronZip)');
+    expect(source).toContain("verifyRecallSdkRuntime");
+    expect(source).toContain("smartUnpack: false");
+    expect(source).toContain("asarIntegrityDigest: false");
+    expect(source).toContain("overwrite: false");
+    expect(source).toContain("ASSEMBLY-INCOMPLETE");
+    expect(source).toContain("getRawHeader");
+    expect(source).not.toContain("download:");
+    expect(source).not.toContain("osxSign:");
+    expect(source).not.toContain("osxNotarize:");
+    expect(source).not.toContain("windowsSign:");
+    expect(source).not.toContain("process.env");
+    expect(packageMetadata.scripts["release:assemble"]).toBe(
+      "node scripts/assemble-electron-package.mjs",
+    );
+    expect(packageMetadata.scripts.build).toContain(
+      "node scripts/clean-dist.mjs && tsc",
+    );
+  });
+
+  it("constructs assembly options with no network, overwrite, or signing path", () => {
+    const options = createPackagerOptions({
+      electronZip: "/private/tmp/electron-v43.4.1-darwin-arm64.zip",
+      outputRoot: "/private/tmp/cosmas-output",
+      packagerTemporaryRoot: "/private/tmp/cosmas-packager",
+      stagingRoot: "/private/tmp/cosmas-stage",
+      target: { arch: "arm64", platform: "darwin" },
+    });
+    expect(options).toMatchObject({
+      arch: "arm64",
+      asar: {
+        smartUnpack: false,
+        unpackDir: "vendor-runtime/node_modules/@recallai/desktop-sdk",
+      },
+      asarIntegrityDigest: false,
+      electronVersion: "43.4.1",
+      electronZipDir: "/private/tmp",
+      overwrite: false,
+      platform: "darwin",
+      prune: false,
+      quiet: true,
+    });
+    expect(options).not.toHaveProperty("download");
+    expect(options).not.toHaveProperty("osxSign");
+    expect(options).not.toHaveProperty("osxNotarize");
+    expect(options).not.toHaveProperty("windowsSign");
+    const exactPackagerExport = () => undefined;
+    expect(selectPackagerExport({ packager: exactPackagerExport })).toBe(
+      exactPackagerExport,
+    );
+  });
+
+  it("validates exact CLI shape, lock paths, and ASAR integrity records", () => {
+    const sha = "a".repeat(40);
+    expect(
+      parseArguments([
+        "--target",
+        "darwin-arm64",
+        "--electron-zip",
+        "/private/tmp/electron-v43.4.1-darwin-arm64.zip",
+        "--out",
+        "/private/tmp/cosmas-output",
+        "--source-sha",
+        sha,
+      ]),
+    ).toEqual({
+      target: "darwin-arm64",
+      electronZip:
+        "/private/tmp/electron-v43.4.1-darwin-arm64.zip",
+      out: "/private/tmp/cosmas-output",
+      sourceSha: sha,
+    });
+    expect(() =>
+      parseArguments([
+        "--target",
+        "darwin-arm64",
+        "--electron-zip",
+        "relative.zip",
+        "--out",
+        "/private/tmp/cosmas-output",
+        "--source-sha",
+        sha,
+      ]),
+    ).toThrow();
+    expect(isSafeLockPath("node_modules/@recallai/desktop-sdk")).toBe(true);
+    expect(isSafeLockPath("node_modules/../outside")).toBe(false);
+    const validHeader = {
+      files: {
+        "main.js": {
+          integrity: {
+            algorithm: "SHA256",
+            hash: "b".repeat(64),
+            blockSize: 1024,
+            blocks: ["c".repeat(64)],
+          },
+        },
+      },
+    };
+    expect(() => verifyAsarIntegrityHeader(validHeader)).not.toThrow();
+    expect(() =>
+      verifyAsarIntegrityHeader({
+        files: { "main.js": { integrity: { algorithm: "SHA256" } } },
+      }),
+    ).toThrow();
   });
 });

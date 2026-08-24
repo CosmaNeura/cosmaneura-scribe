@@ -10,6 +10,7 @@ const policy = JSON.parse(
 if (
   policy.release.packagingEnabled !== true ||
   policy.toolchain.assemblerSigningEnabled !== false ||
+  policy.toolchain.assemblerFrameworkResignAllowed !== false ||
   policy.toolchain.externalSigningRequired !== true ||
   policy.toolchain.recallOsxSignForkAllowed !== false
 ) {

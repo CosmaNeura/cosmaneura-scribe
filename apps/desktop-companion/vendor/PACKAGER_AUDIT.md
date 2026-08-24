@@ -21,6 +21,12 @@ registry integrity is recorded in `release/package-policy.json`, and the policy 
 missing integrity, non-registry resolution, new lifecycle scripts, a version mismatch, or signing
 being enabled.
 
+The 48-package graph does include the official `@electron/osx-sign`, `@electron/windows-sign`, and
+`@electron/notarize` libraries as direct Packager dependencies, and Packager imports them even when
+their operations are disabled. They have no lifecycle scripts and the assembly options expose none
+of their activation keys, but their presence remains part of the reviewed execution surface. The
+rejected Recall fork is distinct and remains absent.
+
 An npm vulnerability report is point-in-time evidence, not a security or release approval. The
 smaller graph and absence of install scripts materially reduce review surface; they do not make the
 assembler trusted to sign or publish.
@@ -41,19 +47,28 @@ reviewed order, sign the Electron application last, notarize and staple it, and 
 `verify-signed-desktop-artifacts.mjs`. That lane requires its own dependency/code review and release
 approval.
 
+Exact 20.3.0 API inspection also identified its default `asarIntegrityDigest` behavior on macOS: it
+modifies and ad-hoc re-signs the Electron Framework. The checked-in assembly options force that
+feature off so the assembler performs no signing. Per-file ASAR integrity and the platform ASAR
+header-hash metadata remain required; final metadata protection belongs to the external signature.
+
 ## Decision and remaining gates
 
 Pin `@electron/packager` 20.3.0 as an isolated development dependency for application assembly only.
 Do not add Electron Forge, electron-builder, the Recall signing fork, an installer, updater, signing
 credential, or publishing integration in this decision.
 
-Before the first assembly run:
+The fixed-input assembly and ASAR verification code is now present but remains unexecuted behind the
+false packaging gate. Before the first assembly run:
 
-1. implement a fixed-input packaging script that consumes only a separately hash-verified Electron
-   archive and a reviewed staging tree;
-2. prove the ASAR contains only compiled application code and that the Recall native tree is unpacked
-   only at its fixed runtime path;
+1. separately review and approve the exact development-assembly policy change;
+2. run the script on native release runners and retain its stage/ASAR/unpacked-runtime receipt;
 3. keep `packagingEnabled`, `captureEnabled`, and `clinicalReleaseApproved` false until a separate
-   review changes them;
+   review changes the specific gate required for that lane; capture and clinical gates must remain
+   false for unsigned development assembly;
 4. implement and review the external macOS/Windows signing lanes and installer choices;
 5. rerun the lock, license, vulnerability, native-content, fuse, signature, and no-PHI gates.
+
+All seven common production dependency trees and the prepared Apple Silicon Recall tree are pinned
+by content hash in the package policy. The Windows Recall tree is deliberately `UNCONFIGURED`; a
+separate Windows preparation and review must pin it before that target can assemble.

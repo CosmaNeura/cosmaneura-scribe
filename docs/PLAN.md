@@ -133,8 +133,10 @@ Recall. In parallel with the synthetic detection rerun, the next non-capturing D
 an audited packaging toolchain and producing a signed/notarized development shell for permission and
 indicator acceptance. Packager 20.3.0 is now pinned for unsigned assembly after its exact dependency
 graph passed the dated audit; its signing integration is prohibited. The next package work is a
-fixed-input ASAR assembly script followed by a separately reviewed nested-code signing lane. No SDK
-recording start, package approval, clinical flag, or deployment is approved by this plan entry.
+separately reviewed first run of the now-implemented fixed-input ASAR assembly lane, followed by a
+separately reviewed nested-code signing lane. The checked-in packaging gate still prevents artifact
+creation. No SDK recording start, package approval, clinical flag, or deployment is approved by
+this plan entry.
 
 ## Parallel infrastructure backlog
 

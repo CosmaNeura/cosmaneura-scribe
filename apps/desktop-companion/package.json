@@ -13,11 +13,12 @@
   "packageManager": "npm@11.5.2",
   "main": "dist/main-entry.js",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-static.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/copy-static.mjs",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "release:policy:verify": "node scripts/verify-desktop-package-policy.mjs",
+    "release:assemble": "node scripts/assemble-electron-package.mjs",
     "release:artifacts:verify": "node scripts/verify-signed-desktop-artifacts.mjs",
     "release:harden": "node scripts/harden-electron-package.mjs",
     "vendor:recall:prepare": "node scripts/prepare-recall-sdk.mjs",

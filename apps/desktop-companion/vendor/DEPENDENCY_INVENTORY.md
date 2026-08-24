@@ -23,6 +23,13 @@ them and the extracted tree before module loading. `clinicalReleaseApproved` rem
 The dated packaging-tool comparison is recorded in [`PACKAGER_AUDIT.md`](./PACKAGER_AUDIT.md).
 The selected assembler is not authorized to sign, notarize, publish, update, or distribute. Recall's
 stale `osx-sign` fork is not in the lock; nested signing remains a separate release-gated work item.
+The official Electron 43.4.1 macOS Apple Silicon and Windows x64 archive filenames and SHA-256
+digests are pinned in `release/package-policy.json`; the assembly script has no download path.
+Packager's macOS Framework digest/re-sign default is explicitly disabled and recorded in that policy.
+Its official signing/notarization libraries remain transitive dependencies but receive no activation
+options; the Recall signing fork is absent.
+The seven common production dependency trees and prepared Apple Silicon Recall tree also have
+checked-in content hashes; the Windows Recall tree is still `UNCONFIGURED`.
 
 The dated macOS input inspection and its non-distribution signature findings are recorded in
 [`NATIVE_ARTIFACT_AUDIT.md`](./NATIVE_ARTIFACT_AUDIT.md). The upstream executable/top-level dylibs

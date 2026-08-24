@@ -81,9 +81,11 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
 - Define encrypted local storage and recovery behavior. The current foundation intentionally stores
   no audio, transcript, upload token, or clinical note on disk.
 - The exact Packager 20.3.0 assembly-only graph passes the current lock/license/install-script and
-  vulnerability gates. Implement fixed-input ASAR assembly without Packager signing, then separately
-  select and review macOS nested-code signing/notarization and Windows installer/signing paths,
-  signed updates, downgrade protection, SBOM/provenance, release separation, and revocation.
+  vulnerability gates. The fixed-input lane and its stage/ASAR/loose-runtime receipt checks are now
+  implemented but remain blocked by the false packaging gate and have not produced an artifact.
+  Separately review the first unsigned native-runner assembly, then select macOS nested-code
+  signing/notarization and Windows installer/signing paths, signed updates, downgrade protection,
+  SBOM/provenance, release separation, and revocation.
 - Complete webhook authentication, replay/idempotency controls, bounded retention, delete-after-
   ingestion evidence, orphan reconciliation, and bot/desktop mutual exclusion in the backend.
 - Run synthetic Zoom and Meet tests on supported macOS and Windows versions, including permissions,

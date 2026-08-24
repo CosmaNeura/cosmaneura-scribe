@@ -254,11 +254,37 @@ capture, and clinical approval are all false. `scripts/harden-electron-package.m
 an executable while that packaging gate is false; after a separately reviewed approval it applies
 and reads back every fuse before signing.
 
+`scripts/assemble-electron-package.mjs` is the fail-closed unsigned assembly lane. It accepts only a
+local Electron 43.4.1 archive whose filename and official release SHA-256 match the checked-in macOS
+Apple Silicon or Windows x64 policy. It also requires a clean committed source SHA, an exact freshly
+cleaned `dist` inventory, and the prepared Recall runtime for the requested target. It builds a
+temporary allowlisted staging tree whose eight production package trees must match checked-in
+content hashes, disables Packager downloads, smart unpacking, pruning,
+overwrites, signing integrations, and Packager's default Electron Framework ad-hoc re-sign, and
+requires an integrity-bearing ASAR whose only loose
+subtree is `vendor-runtime/node_modules/@recallai/desktop-sdk`. It then extracts and rehashes the ASAR
+against the stage and emits an unsigned pre-hardening receipt beside the package. An incomplete
+marker remains if any step fails. The command refuses to run while `packagingEnabled` is false.
+The prepared Apple Silicon Recall tree is pinned; the Windows Recall tree remains `UNCONFIGURED`, so
+Windows assembly is independently blocked even after a hypothetical packaging-only flag change.
+
+After a separate policy review enables development assembly, the native release runner will use an
+already downloaded archive and a new output path:
+
+```sh
+npm run release:assemble --workspace @cosmaneura-scribe/desktop-companion -- \
+  --target darwin-arm64 \
+  --electron-zip /absolute/path/electron-v43.4.1-darwin-arm64.zip \
+  --out /absolute/new/path/cosmas-unsigned \
+  --source-sha 0123456789abcdef0123456789abcdef01234567
+```
+
 `scripts/verify-signed-desktop-artifacts.mjs` is the post-signing, pre-publication gate. On macOS it
 requires the configured Apple Team ID, hardened runtime, secure timestamp, absence of the debug
 entitlement, strict deep code-signature validation, Gatekeeper acceptance, a valid stapled
-notarization ticket, the expected bundle ID/protocol, ASAR-only application code, and the exact fuse
-wire. On Windows it requires both the application executable and installer to pass Authenticode
+notarization ticket, the expected bundle ID/protocol, ASAR-only application code, no loose content
+outside the exact Recall runtime path, and the exact fuse wire. On Windows it requires both the
+application executable and installer to pass Authenticode
 policy with no timestamp warning, match the configured publisher subject, carry a timestamp, use
 ASAR-only application code, and match the exact fuse wire. The verifier emits only a fixed pass or
 failure message. It deliberately fails now because packaging is false and both expected signing
@@ -283,6 +309,12 @@ had declared licenses throughout, no lifecycle scripts, and zero reported vulner
 11.5.2. `electron-builder@26.15.3` resolved 277 packages and an installer lifecycle script. The
 checked-in policy disables Packager's signing integration and requires a separately reviewed
 external signing lane.
+
+Packager 20.3.0 also defaults to embedding an extra macOS ASAR-integrity digest by modifying and
+ad-hoc re-signing the Electron Framework. The assembly options explicitly set
+`asarIntegrityDigest: false` so the assembler never signs. Packager still writes the ASAR header hash
+to platform metadata; the external CosmaNeura signing lane must protect and verify the final metadata
+and binaries.
 
 Recall's public `osx-sign` fork is deliberately absent: its unverified 2024 head is 94 commits behind
 upstream, identifies itself as a development build, and requires a prepare script. The dated evidence

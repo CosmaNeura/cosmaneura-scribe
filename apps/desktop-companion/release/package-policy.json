@@ -17,12 +17,48 @@
     "assemblerVersion": "20.3.0",
     "assemblerIntegritySha512": "sha512-3MvgJgy6YJ5ti0oGGBKrWKdYwpTaoRrhranMDgHSQ6i5t56yZV9IRDyoXTuqBp97LiKqnZeAMe2wTcF/9+fP5g==",
     "assemblerSigningEnabled": false,
+    "assemblerFrameworkResignAllowed": false,
     "externalSigningRequired": true,
     "recallOsxSignForkAllowed": false
   },
+  "electronArchives": {
+    "version": "43.4.1",
+    "releaseTag": "v43.4.1",
+    "targets": {
+      "darwin-arm64": {
+        "filename": "electron-v43.4.1-darwin-arm64.zip",
+        "sha256": "fe3cac8cbfd9ba1739fac6c69166cf30848741f93cbe251d800ae6ef7cebb64b"
+      },
+      "win32-x64": {
+        "filename": "electron-v43.4.1-win32-x64.zip",
+        "sha256": "c2ef9a5f65472c34d14bd3e67b7d14e66b0c01f124aba45263d6a4232160e13a"
+      }
+    }
+  },
+  "runtimeTrees": {
+    "common": {
+      "node_modules/@isaacs/fs-minipass": "b104ba398bbf9484ce9315a97f8f92950103b38bba81f798114c8d03c5180891",
+      "node_modules/chownr": "2879f1ec936ea9d238391e7448029980d2215b4c23e2584891394f71ded4de21",
+      "node_modules/minipass": "ee029226e749284887a6a6d133ff1f01ac1d1cebd5eb800672910b870f57a085",
+      "node_modules/minizlib": "ea58205b22c7d8ab12d0cbb06bac53d677238da62de243e09ada24a43cee2afd",
+      "node_modules/tar": "d2ab2f4e418883c60a1d746fe41bda030f7845e78d1584227d06bd83614ef2d9",
+      "node_modules/uuid": "bb998af9499180ee2131a0c4082b7c2f01e769b678fa75432144a0135141a7aa",
+      "node_modules/yallist": "e51fead38427770025810db2bec4d0e92f0b3e9e634948ce4dce3e2715873aa3"
+    },
+    "targets": {
+      "darwin-arm64": {
+        "node_modules/@recallai/desktop-sdk": "70d2d63210f4e9b36ecdda7b441caf3707dc2f7f1653567ddf95bbc63001ce4c"
+      },
+      "win32-x64": {
+        "node_modules/@recallai/desktop-sdk": "UNCONFIGURED"
+      }
+    }
+  },
   "archive": {
     "asarRequired": true,
-    "embeddedIntegrityRequired": true
+    "embeddedIntegrityRequired": true,
+    "smartUnpackAllowed": false,
+    "unpackedRuntimePath": "vendor-runtime/node_modules/@recallai/desktop-sdk"
   },
   "diagnostics": {
     "analyticsEnabled": false,
