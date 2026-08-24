@@ -287,6 +287,14 @@ npm run release:assemble --workspace @cosmaneura-scribe/desktop-companion -- \
   --source-sha 0123456789abcdef0123456789abcdef01234567
 ```
 
+The approved run completed on 2026-08-24 from source
+`728c0e1f4294d3e1fd97ed46bda9c9dde13197f2`. Its retained receipt records ASAR SHA-256
+`e8b1b3fb6ddfe16093464862d88ee69f0c93f487ee696575e62ebf5d19964980`, package-tree SHA-256
+`e01e3c8e42e701a9b69170e93bb5fddcd3403f67445d241a4052690962e9a1fb`, `signed: false`, and
+`distributionAllowed: false`. macOS identifies the inherited Electron executable signature as
+ad-hoc/linker-signed with no Team ID, and strict deep signature verification fails; this is not a
+distributable application.
+
 `scripts/verify-signed-desktop-artifacts.mjs` is the post-signing, pre-publication gate. On macOS it
 requires the configured Apple Team ID, hardened runtime, secure timestamp, absence of the debug
 entitlement, strict deep code-signature validation, Gatekeeper acceptance, a valid stapled

@@ -1,11 +1,11 @@
 # Desktop companion HIPAA and security review
 
-Review date: 2026-08-23
+Review date: 2026-08-24
 
 Status: **No-go for PHI or clinical use.** This review covers the hard-disabled Electron bootstrap,
-provider-neutral Recall adapter, and source/native provenance gate—not a packaged application or the
-Recall service as deployed. A BAA is necessary but does not by itself establish that the implemented
-technical workflow is HIPAA compliant.
+provider-neutral Recall adapter, source/native provenance gate, and the first unsigned development
+assembly receipt—not a signed distribution or the Recall service as deployed. A BAA is necessary but
+does not by itself establish that the implemented technical workflow is HIPAA compliant.
 
 ## Reviewed trust boundaries
 
@@ -81,10 +81,11 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
 - Define encrypted local storage and recovery behavior. The current foundation intentionally stores
   no audio, transcript, upload token, or clinical note on disk.
 - The exact Packager 20.3.0 assembly-only graph passes the current lock/license/install-script and
-  vulnerability gates. The fixed-input lane and its stage/ASAR/loose-runtime receipt checks are now
-  implemented, and the 2026-08-24 approval permits one unsigned Apple Silicon development assembly.
-  Capture, clinical use, hardening, signing, distribution, and deployment remain outside that
-  approval. After retaining the first assembly receipt, select macOS nested-code
+  vulnerability gates. The fixed-input lane completed its approved Apple Silicon development run
+  from source `728c0e1f4294d3e1fd97ed46bda9c9dde13197f2`; the independently recomputed package, ASAR,
+  and unpacked-runtime hashes match its receipt. macOS reports only an inherited ad-hoc/linker
+  signature with no Team ID, and strict deep verification fails. Capture, clinical use, hardening,
+  signing, distribution, and deployment remain outside that approval. Next, select macOS nested-code
   signing/notarization and Windows installer/signing paths, signed updates, downgrade protection,
   SBOM/provenance, release separation, and revocation.
 - Complete webhook authentication, replay/idempotency controls, bounded retention, delete-after-

@@ -2,8 +2,8 @@
 
 Audit date: 2026-08-23
 
-Status: **`@electron/packager` selected for unsigned assembly only; one fixed-input Apple Silicon
-development assembly is approved, while signing and distribution remain disabled.**
+Status: **`@electron/packager` selected for unsigned assembly only; the first fixed-input Apple
+Silicon development assembly is complete, while signing and distribution remain disabled.**
 
 ## Exact candidate comparison
 
@@ -69,15 +69,17 @@ Pin `@electron/packager` 20.3.0 as an isolated development dependency for applic
 Do not add Electron Forge, electron-builder, the Recall signing fork, an installer, updater, signing
 credential, or publishing integration in this decision.
 
-The fixed-input assembly and ASAR verification code is present. A 2026-08-24 approval enables only
-the first unsigned Apple Silicon fixed-input run. For that run:
+The first approved unsigned Apple Silicon run completed on 2026-08-24 from source
+`728c0e1f4294d3e1fd97ed46bda9c9dde13197f2`. The retained receipt and independent recomputation
+agree on package-tree SHA-256 `e01e3c8e42e701a9b69170e93bb5fddcd3403f67445d241a4052690962e9a1fb`
+and Recall runtime-tree SHA-256
+`70d2d63210f4e9b36ecdda7b441caf3707dc2f7f1653567ddf95bbc63001ce4c`. It records `signed: false`
+and `distributionAllowed: false`. Remaining requirements are:
 
-1. run the script on the native development runner and retain its stage/ASAR/unpacked-runtime
-   receipt;
-2. keep `captureEnabled`, `clinicalReleaseApproved`, and `unsignedDistributionAllowed` false;
-3. do not harden, sign, notarize, distribute, or deploy the output without separate approval;
-4. implement and review the external macOS/Windows signing lanes and installer choices;
-5. rerun the lock, license, vulnerability, native-content, fuse, signature, and no-PHI gates before
+1. keep `captureEnabled`, `clinicalReleaseApproved`, and `unsignedDistributionAllowed` false;
+2. do not harden, sign, notarize, distribute, or deploy the output without separate approval;
+3. implement and review the external macOS/Windows signing lanes and installer choices;
+4. rerun the lock, license, vulnerability, native-content, fuse, signature, and no-PHI gates before
    any later release decision.
 
 All seven common production dependency trees and the prepared Apple Silicon Recall tree are pinned

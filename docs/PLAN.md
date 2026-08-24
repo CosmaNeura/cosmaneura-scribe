@@ -132,12 +132,12 @@ The runnable shell now contains a dormant provider selector. The product, captur
 platform-origin, and vendor-provenance gates keep it on the mock without loading
 Recall. In parallel with the synthetic detection rerun, the next non-capturing D3 work is selecting
 an audited packaging toolchain and producing a signed/notarized development shell for permission and
-indicator acceptance. Packager 20.3.0 is now pinned for unsigned assembly after its exact dependency
-graph passed the dated audit; its signing integration is prohibited. The next package work is a
-first run of the now-implemented fixed-input ASAR assembly lane, approved on 2026-08-24 for an
-unsigned Apple Silicon development artifact only, followed by a separately reviewed nested-code
-signing lane. No SDK recording start, clinical flag, signing, distribution, or deployment is
-approved by this plan entry.
+indicator acceptance. Packager 20.3.0 is pinned for unsigned assembly after its exact dependency
+graph passed the dated audit; its signing integration is prohibited. The approved fixed-input Apple
+Silicon assembly completed on 2026-08-24 from source `728c0e1f4294d3e1fd97ed46bda9c9dde13197f2`,
+and independent package/ASAR/runtime hashes match its unsigned, non-distributable receipt. The next
+package work is a separately reviewed nested-code hardening/signing/notarization lane. No SDK
+recording start, clinical flag, signing, distribution, or deployment is approved by this plan entry.
 
 ## Parallel infrastructure backlog
 
