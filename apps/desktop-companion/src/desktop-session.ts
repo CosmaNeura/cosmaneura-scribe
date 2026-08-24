@@ -1,14 +1,6 @@
-import {
-  createDesktopBrowserHandoff,
-  parseDesktopAuthorizationCallback,
-  parseDesktopLaunchUrl,
-  validateDesktopAuthorizationCallback,
-} from "./browser-handoff.js";
 import { DesktopApiError } from "./desktop-api.js";
-import type {
-  DesktopApiClient,
-  DesktopSessionCredential,
-} from "./desktop-api.js";
+import type { DesktopSessionCredential } from "./desktop-api.js";
+import type { DesktopAuthenticationPort } from "./desktop-authentication.js";
 import type { DesktopSecureStateStore } from "./secure-state-store.js";
 import type { BackendCaptureGrant } from "./protocol.js";
 
@@ -34,23 +26,20 @@ export class DesktopSessionError extends Error {
 }
 
 export class DesktopSessionCoordinator {
-  readonly #platformAppOrigin: string;
-  readonly #api: DesktopApiClient;
+  readonly #authentication: DesktopAuthenticationPort;
   readonly #store: DesktopSecureStateStore;
   readonly #browser: SystemBrowserPort;
   readonly #initializer: DesktopGrantInitializer;
   readonly #clock: () => Date;
 
   constructor(options: {
-    readonly platformAppOrigin: string;
-    readonly api: DesktopApiClient;
+    readonly authentication: DesktopAuthenticationPort;
     readonly store: DesktopSecureStateStore;
     readonly browser: SystemBrowserPort;
     readonly initializer: DesktopGrantInitializer;
     readonly clock?: () => Date;
   }) {
-    this.#platformAppOrigin = options.platformAppOrigin;
-    this.#api = options.api;
+    this.#authentication = options.authentication;
     this.#store = options.store;
     this.#browser = options.browser;
     this.#initializer = options.initializer;
@@ -58,13 +47,10 @@ export class DesktopSessionCoordinator {
   }
 
   async handleLaunchUrl(value: string): Promise<void> {
-    const launchTicket = parseDesktopLaunchUrl(value);
     const current = await this.#store.load();
-    const handoff = createDesktopBrowserHandoff(
-      launchTicket,
+    const handoff = this.#authentication.begin(
+      value,
       current.installationSecret,
-      this.#platformAppOrigin,
-      this.#clock(),
     );
     await this.#store.update((state) => ({
       ...state,
@@ -83,23 +69,14 @@ export class DesktopSessionCoordinator {
   }
 
   async handleAuthorizationCallback(value: string): Promise<void> {
-    const callback = parseDesktopAuthorizationCallback(value);
     const current = await this.#store.load();
     if (current.pendingAuthorization === null) {
       throw new DesktopSessionError("authorization_rejected");
     }
     try {
-      validateDesktopAuthorizationCallback(
-        callback,
+      const credential = await this.#authentication.complete(
+        value,
         current.pendingAuthorization,
-        this.#clock(),
-      );
-      const credential = await this.#api.exchangeAuthorizationCode(
-        {
-          code: callback.code,
-          codeVerifier: current.pendingAuthorization.codeVerifier,
-          redirectUri: current.pendingAuthorization.redirectUri,
-        },
         new AbortController().signal,
       );
       await this.#store.update((state) => ({
@@ -109,7 +86,7 @@ export class DesktopSessionCoordinator {
       }));
       await this.#initializer.initialize(
         credential.grant,
-        `oauth.${callback.state.slice(0, 32)}`,
+        `oauth.${current.pendingAuthorization.state.slice(0, 32)}`,
       );
     } catch (error) {
       await this.#store.update((state) => ({

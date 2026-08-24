@@ -7,9 +7,9 @@ metadata-only mock adapter through a fail-closed provider selector; it does not 
 Recall SDK, capture audio, receive transcripts, contact Recall, contact the Cosmas platform, or
 contain a Recall workspace API key.
 
-The trusted main-process integration foundation now implements the exact custom-protocol launch,
-system-browser PKCE handoff, `/desktop/v1` token and lifecycle client, and encrypted desktop state
-store. `main-entry.ts` now composes that trusted runtime with Electron `safeStorage`, the system
+The trusted main-process integration foundation now implements a replaceable authentication port,
+the exact current custom-protocol/system-browser PKCE adapter, `/desktop/v1` token and lifecycle
+client, and encrypted desktop state store. `main-entry.ts` now composes that trusted runtime with Electron `safeStorage`, the system
 browser boundary, a native tray indicator, and the selected adapter. The selector returns the mock
 without invoking the vendor loader unless product, packaging, capture, and clinical approvals all
 pass and both platform origins are exact routable HTTPS origins. The vendor loader then independently
@@ -81,6 +81,12 @@ browser. The callback contains only a one-time authorization code and matching r
 Electron main process exchanges that code for a short-lived desktop bearer; neither the callback nor
 the bearer crosses preload IPC into the renderer.
 
+`DesktopSessionCoordinator` depends only on `DesktopAuthenticationPort`. The current
+`PlatformDesktopAuthentication` adapter owns the platform page, PKCE, callback, and token exchange.
+The authentication team may revise screens or identity-provider composition without changing the
+capture controller, stop recovery, renderer IPC, or Recall adapter; a wire-contract change is
+contained in a replacement main-process authentication adapter.
+
 `DesktopSecureStateStore` requires Electron `safeStorage` and has no plaintext fallback. On the
 supported platforms, the encrypted state file contains the installation secret, pending PKCE state,
 short-lived desktop session, and durable stop receipts. `NodeEncryptedStateFile` writes it atomically
@@ -128,8 +134,9 @@ The full preparation command requires `--package-archive`, `--native-archive`, a
 on the acceptance workstation and passed the independent verifier. The extracted files remain
 ignored development inputs rather than repository content. A separately approved, de-identified
 macOS acceptance run later initialized the native agent and confirmed the three required permission
-paths and clean shutdown; meeting detection remains incomplete because no synthetic meeting was
-visible during the bounded observation window.
+paths and clean shutdown. On 2026-08-24 a second bounded run detected a blank Google Meet in the
+supported Google Chrome application, returned success, and confirmed native shutdown. The harness
+still exposed no recording, upload, dump, or generic method.
 
 The scripts-only acceptance harness is deliberately absent from `main-entry.ts`, exposes no capture,
 upload, dump, or generic command, ignores all event payloads, and requires the approval argument to
@@ -245,6 +252,20 @@ vendor fields. Upload-token references are scrubbed immediately after the synchr
 
 Tests use only synthetic identifiers and contain no patient data, meeting URLs, audio, object names,
 or transcript text.
+
+The release-evidence lane can generate a deterministic CycloneDX 1.6 SBOM without launching
+Electron or Recall:
+
+```sh
+npm run release:sbom --workspace @cosmaneura-scribe/desktop-companion -- \
+  --target darwin-arm64 \
+  --out /absolute/new/path/cosmaneura-desktop-darwin-arm64.cdx.json
+```
+
+The generator inventories the pinned Electron and Recall archives, packaged runtime dependencies,
+and excluded build/signing tools; records the capture, clinical, and unsigned-distribution gates as
+false; refuses incomplete Windows inputs; never overwrites an output; and prints only the resulting
+SBOM SHA-256. Signing that SBOM and binding it to a final package receipt remain later release work.
 
 ## Packaging and signing gate
 
@@ -404,8 +425,8 @@ publishing, distribution, clinical release, capture, and deployment remain open.
 
 The broader release program must still:
 
-1. Consume the isolated exact locks and reviewed provenance manifest, add a complete generated SBOM,
-   and produce a signed provenance attestation.
+1. Bind the implemented generated CycloneDX SBOM to the final signed package receipt and produce a
+   signed provenance attestation.
 2. Keep Recall and all privileged modules in the main process; bundle a small preload with only the
    reviewed bridge and a renderer with no Node polyfills.
 3. Package with the checked-in ASAR integrity/fuse policy while assuming ASAR provides no secret

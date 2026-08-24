@@ -27,6 +27,9 @@ export interface AuthorizationCodeExchangeInput {
 export interface DesktopLifecycleDecision {
   readonly schemaVersion: 1;
   readonly decision: "accepted";
+  readonly captureSessionId: string;
+  readonly capabilityId: string;
+  readonly receiptId: string;
   readonly sessionStatus: "recording" | "stopping";
 }
 
@@ -153,19 +156,27 @@ export class DesktopApiClient {
     idempotencyKey: string,
     signal: AbortSignal,
   ): Promise<DesktopLifecycleDecision> {
+    const captureSessionId = parseMetadataIdentifier(
+      credential.grant.captureSessionId,
+    );
+    const validatedCapabilityId = parseMetadataIdentifier(capabilityId);
     const response = await this.#authorizedRequest(
       credential,
       `/desktop/v1/capture-sessions/${encodeURIComponent(
-        parseMetadataIdentifier(credential.grant.captureSessionId),
+        captureSessionId,
       )}/${operation}`,
-      { capabilityId: parseMetadataIdentifier(capabilityId) },
+      { capabilityId: validatedCapabilityId },
       idempotencyKey,
       signal,
     );
     if (!response.ok) {
       throwForStatus(response.status);
     }
-    return parseLifecycleDecision(await readBoundedJson(response));
+    return parseLifecycleDecision(
+      await readBoundedJson(response),
+      captureSessionId,
+      validatedCapabilityId,
+    );
   }
 
   #authorizedRequest(
@@ -315,12 +326,27 @@ export function parseDesktopSessionCredential(
   });
 }
 
-function parseLifecycleDecision(value: unknown): DesktopLifecycleDecision {
+function parseLifecycleDecision(
+  value: unknown,
+  expectedCaptureSessionId: string,
+  expectedCapabilityId: string,
+): DesktopLifecycleDecision {
   const decision = asRecord(value);
-  assertExactKeys(decision, ["schemaVersion", "decision", "sessionStatus"]);
+  assertExactKeys(decision, [
+    "schemaVersion",
+    "decision",
+    "captureSessionId",
+    "capabilityId",
+    "receiptId",
+    "sessionStatus",
+  ]);
+  const captureSessionId = parseMetadataIdentifier(decision.captureSessionId);
+  const capabilityId = parseMetadataIdentifier(decision.capabilityId);
   if (
     decision.schemaVersion !== 1 ||
     decision.decision !== "accepted" ||
+    captureSessionId !== expectedCaptureSessionId ||
+    capabilityId !== expectedCapabilityId ||
     (decision.sessionStatus !== "recording" &&
       decision.sessionStatus !== "stopping")
   ) {
@@ -329,6 +355,9 @@ function parseLifecycleDecision(value: unknown): DesktopLifecycleDecision {
   return Object.freeze({
     schemaVersion: 1,
     decision: "accepted",
+    captureSessionId,
+    capabilityId,
+    receiptId: parseMetadataIdentifier(decision.receiptId),
     sessionStatus: decision.sessionStatus,
   });
 }

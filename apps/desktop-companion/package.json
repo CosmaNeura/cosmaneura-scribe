@@ -18,6 +18,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "release:policy:verify": "node scripts/verify-desktop-package-policy.mjs",
+    "release:sbom": "node scripts/generate-desktop-sbom.mjs",
     "release:assemble": "node scripts/assemble-electron-package.mjs",
     "release:artifacts:verify": "node scripts/verify-signed-desktop-artifacts.mjs",
     "release:harden": "node scripts/harden-electron-package.mjs",

@@ -1,9 +1,9 @@
 # Recall 2.0.28 macOS native artifact audit
 
-Audit date: 2026-08-23
+Audit date: 2026-08-24
 
-Status: **Verified development input with partial de-identified native acceptance; no-go for
-distribution, PHI, capture, packaging, or deployment.**
+Status: **Verified development input with de-identified initialization, permission, meeting-
+detection, and shutdown acceptance; no-go for distribution, PHI, capture, or deployment.**
 
 ## Inputs and integrity
 
@@ -60,12 +60,22 @@ The 2026-08-23 fixed-output evidence established:
 - no meeting was detected during the bounded five-minute observation window;
 - the timeout path completed a confirmed graceful native shutdown with process exit code 0.
 
+The separately approved 2026-08-24 rerun used the same verified harness and established:
+
+- all three permission requests and the all-permissions event completed again;
+- a blank Google Meet opened in the supported Google Chrome application emitted the fixed
+  `NATIVE_ACCEPTANCE_MEETING_DETECTED` event;
+- the harness returned exit code 0 and emitted `NATIVE_ACCEPTANCE_SHUTDOWN_CONFIRMED`; and
+- no recording, upload, dump, generic command, event payload, meeting identifier, or participant
+  data was exposed to the harness output.
+
 The run initially exposed a harness-only integration defect: the immutable checked-in initialization
 constant was passed directly to Recall even though its JavaScript wrapper normalizes the region by
 mutating the caller object. The safe port now passes a fresh, mutable three-field copy, with a
 regression test proving the checked-in constant remains frozen and the vendor input does not.
 
-Meeting detection must be repeated with a visible synthetic Zoom or Google Meet window. Recording
-start, stop, abort, upload, process-tree termination under failure, local-file cleanup, and native/OS
+Meeting detection is now proven for the Apple Silicon Google Meet/Chrome combination. Zoom and the
+Windows matrix remain open. Recording start, stop, abort, upload, process-tree termination under
+failure, local-file cleanup, and native/OS
 diagnostic behavior require separately approved later gates. Product, clinical, packaging, and
 deployment gates remain off.

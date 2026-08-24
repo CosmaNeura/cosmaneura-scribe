@@ -112,8 +112,12 @@ the normalized transcript remains subject to the platform's clinical-record rete
   notarization/stapling and Windows publisher/signature/timestamp, with ASAR and exact-fuse checks;
   development-only Apple Silicon assembly and receipt-bound hardening/signing/notarization lanes are
   enabled while both signing identities remain deliberately unconfigured
-- Guarded de-identified Recall 2.0.28 macOS initialization and permission acceptance with confirmed
-  shutdown; no meeting was visible during the bounded detection window and no capture method ran
+- Guarded de-identified Recall 2.0.28 macOS initialization, permission acceptance, supported-Chrome
+  Google Meet detection, and confirmed shutdown; no capture method ran
+- Replaceable main-process desktop authentication boundary plus exact session/capability-bound
+  lifecycle receipts and same-session durable stop recovery
+- Deterministic CycloneDX 1.6 desktop SBOM generation for the complete configured Apple Silicon
+  runtime/build input set, with every capture/clinical/distribution gate retained false
 - Dormant real-provider bootstrap behind independent product, packaging, capture, clinical,
   routable-platform-origin, and vendor-provenance locks; checked-in builds still select the mock
   without invoking the Recall loader
@@ -124,16 +128,15 @@ The exact 2.0.28 package and Apple Silicon native archives have been independent
 hash-verified, safely extracted, statically inspected, and reverified against the retained receipt
 and extracted tree. A separately approved de-identified run then proved initialization, the
 accessibility/screen-capture/microphone permission paths, all-permissions confirmation, graceful
-shutdown, and final child-process absence. No synthetic meeting was visible during its five-minute
-window, so meeting detection is the next interactive D3 check. Start/stop/abort and forced
-termination remain separate later approvals.
+shutdown, and final child-process absence. A separately approved 2026-08-24 rerun detected a blank
+Google Meet in the supported Chrome application, returned success, and confirmed shutdown without
+exposing a capture method. Start/stop/abort and forced termination remain separate later approvals.
 
 The runnable shell now contains a dormant provider selector. The product, capture, clinical,
 platform-origin, and vendor-provenance gates keep it on the mock without loading
-Recall. In parallel with the synthetic detection rerun, the next non-capturing D3 work is selecting
-an audited packaging toolchain and producing a signed/notarized development shell for permission and
-indicator acceptance. Packager 20.3.0 is pinned for unsigned assembly after its exact dependency
-graph passed the dated audit; its signing integration is prohibited. The approved fixed-input Apple
+Recall. The next non-capturing D3 work is the first credentialed signed/notarized development shell
+for permission and indicator acceptance. Packager 20.3.0 is pinned for unsigned assembly after its
+exact dependency graph passed the dated audit; its signing integration is prohibited. The approved fixed-input Apple
 Silicon assembly completed on 2026-08-24 from source `728c0e1f4294d3e1fd97ed46bda9c9dde13197f2`,
 and independent package/ASAR/runtime hashes match its unsigned, non-distributable receipt. The
 copy-on-write fuse-hardening and external nested-code signing/notarization lanes are now implemented

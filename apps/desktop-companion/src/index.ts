@@ -4,6 +4,7 @@ export * from "./browser-handoff.js";
 export * from "./config.js";
 export * from "./controller.js";
 export * from "./desktop-api.js";
+export * from "./desktop-authentication.js";
 export * from "./desktop-adapter-bootstrap.js";
 export * from "./desktop-lifecycle.js";
 export * from "./desktop-session.js";

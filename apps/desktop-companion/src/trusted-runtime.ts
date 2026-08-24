@@ -5,6 +5,10 @@ import {
   DesktopApiClient,
   PlatformDesktopCaptureAuthority,
 } from "./desktop-api.js";
+import {
+  PlatformDesktopAuthentication,
+  type DesktopAuthenticationPort,
+} from "./desktop-authentication.js";
 import { DesktopLifecycleCoordinator } from "./desktop-lifecycle.js";
 import {
   DesktopSessionCoordinator,
@@ -37,6 +41,7 @@ export function createTrustedDesktopRuntime(options: {
   readonly safeStorage: ElectronSafeStoragePort;
   readonly protectedStateDirectory: string;
   readonly browser: SystemBrowserPort;
+  readonly authentication?: DesktopAuthenticationPort;
   readonly enabled: boolean;
   readonly fetch?: typeof fetch;
   readonly clock?: () => Date;
@@ -62,6 +67,13 @@ export function createTrustedDesktopRuntime(options: {
     clock,
     idempotencyKey: (operation) => `${operation}.${generateOpaqueSecret()}`,
   });
+  const authentication =
+    options.authentication ??
+    new PlatformDesktopAuthentication({
+      platformAppOrigin: options.platformAppOrigin,
+      api,
+      clock,
+    });
 
   let session: DesktopSessionCoordinator | null = null;
   const authority = new PlatformDesktopCaptureAuthority(
@@ -85,8 +97,7 @@ export function createTrustedDesktopRuntime(options: {
     },
   );
   session = new DesktopSessionCoordinator({
-    platformAppOrigin: options.platformAppOrigin,
-    api,
+    authentication,
     store,
     browser: options.browser,
     initializer: {

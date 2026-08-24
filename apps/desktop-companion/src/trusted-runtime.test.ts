@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { DESKTOP_REDIRECT_URI } from "./browser-handoff.js";
 import { MockDesktopCaptureAdapter } from "./mock-capture-adapter.js";
 import { InMemoryRecordingIndicator } from "./recording-indicator.js";
 import type {
@@ -42,6 +43,59 @@ function command(kind: "start" | "stop", requestId: string) {
 }
 
 describe("trusted Electron main-process runtime", () => {
+  it("accepts a replacement authentication UI adapter without changing capture coordination", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const pending = {
+      schemaVersion: 1,
+      state: "s".repeat(43),
+      codeVerifier: "v".repeat(43),
+      redirectUri: DESKTOP_REDIRECT_URI,
+      createdAt: "2030-01-01T00:00:00.000Z",
+    } as const;
+    const authentication = {
+      begin: vi.fn(() => ({
+        connectUrl: "https://auth-revision.example.invalid/continue",
+        pending,
+      })),
+      complete: vi.fn(() =>
+        Promise.resolve({
+          accessToken: ACCESS_TOKEN,
+          expiresAt: "2030-01-01T00:05:00.000Z",
+          grant,
+        }),
+      ),
+    };
+    const runtime = createTrustedDesktopRuntime({
+      platformAppOrigin: "https://unused.example.invalid",
+      platformApiOrigin: "https://api.example.invalid",
+      authentication,
+      adapter: new MockDesktopCaptureAdapter("ready"),
+      indicator: new InMemoryRecordingIndicator(),
+      safeStorage: encryption,
+      protectedStateDirectory: "/synthetic/not-used",
+      encryptedStateFile: new MemoryFile(),
+      browser: { openExternal: vi.fn(() => Promise.resolve()) },
+      enabled: true,
+      fetch: fetchMock,
+      clock: () => NOW,
+    });
+
+    await runtime.session.handleLaunchUrl(
+      `cosmaneura-capture://launch?launch_ticket=${LAUNCH_TICKET}`,
+    );
+    await runtime.session.handleAuthorizationCallback(
+      `cosmaneura-capture://oauth/callback?code=${AUTH_CODE}&state=${pending.state}`,
+    );
+
+    expect(authentication.begin).toHaveBeenCalledOnce();
+    expect(authentication.complete).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(runtime.controller.snapshot()).toMatchObject({
+      state: "ready",
+      captureSessionId: grant.captureSessionId,
+    });
+  });
+
   it("runs the complete synthetic browser-to-local-start-to-durable-stop flow", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((url) => {
       const path = new URL(String(url)).pathname;
@@ -76,6 +130,9 @@ describe("trusted Electron main-process runtime", () => {
           response({
             schemaVersion: 1,
             decision: "accepted",
+            captureSessionId: grant.captureSessionId,
+            capabilityId: "capability-synthetic-runtime",
+            receiptId: "receipt-heartbeat-synthetic-runtime",
             sessionStatus: "recording",
           }),
         );
@@ -85,6 +142,9 @@ describe("trusted Electron main-process runtime", () => {
           response({
             schemaVersion: 1,
             decision: "accepted",
+            captureSessionId: grant.captureSessionId,
+            capabilityId: "capability-synthetic-runtime",
+            receiptId: "receipt-stop-synthetic-runtime",
             sessionStatus: "stopping",
           }),
         );

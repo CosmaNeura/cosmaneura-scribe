@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { DesktopApiClient } from "./desktop-api.js";
+import { PlatformDesktopAuthentication } from "./desktop-authentication.js";
 import {
   DesktopSessionCoordinator,
   DesktopSessionError,
@@ -59,8 +60,11 @@ describe("desktop session coordinator", () => {
       ),
     });
     const coordinator = new DesktopSessionCoordinator({
-      platformAppOrigin: "https://app.example.invalid",
-      api,
+      authentication: new PlatformDesktopAuthentication({
+        platformAppOrigin: "https://app.example.invalid",
+        api,
+        clock: () => new Date("2030-01-01T00:00:00.000Z"),
+      }),
       store,
       browser,
       initializer: { initialize },
@@ -89,8 +93,11 @@ describe("desktop session coordinator", () => {
   it("clears pending authorization if the browser cannot open", async () => {
     const store = new DesktopSecureStateStore(encryption, new MemoryFile());
     const coordinator = new DesktopSessionCoordinator({
-      platformAppOrigin: "https://app.example.invalid",
-      api: new DesktopApiClient("https://api.example.invalid"),
+      authentication: new PlatformDesktopAuthentication({
+        platformAppOrigin: "https://app.example.invalid",
+        api: new DesktopApiClient("https://api.example.invalid"),
+        clock: () => new Date("2030-01-01T00:00:00.000Z"),
+      }),
       store,
       browser: { openExternal: () => Promise.reject(new Error("synthetic")) },
       initializer: { initialize: () => Promise.resolve() },
@@ -106,8 +113,10 @@ describe("desktop session coordinator", () => {
 
   it("rejects a callback that does not match protected state", async () => {
     const coordinator = new DesktopSessionCoordinator({
-      platformAppOrigin: "https://app.example.invalid",
-      api: new DesktopApiClient("https://api.example.invalid"),
+      authentication: new PlatformDesktopAuthentication({
+        platformAppOrigin: "https://app.example.invalid",
+        api: new DesktopApiClient("https://api.example.invalid"),
+      }),
       store: new DesktopSecureStateStore(encryption, new MemoryFile()),
       browser: { openExternal: () => Promise.resolve() },
       initializer: { initialize: () => Promise.resolve() },

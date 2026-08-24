@@ -56,6 +56,9 @@ describe("desktop lifecycle coordination", () => {
               JSON.stringify({
                 schemaVersion: 1,
                 decision: "accepted",
+                captureSessionId: grant.captureSessionId,
+                capabilityId: "capability-synthetic-001",
+                receiptId: "receipt-stop-synthetic-001",
                 sessionStatus: "stopping",
               }),
               { status: 200 },
@@ -97,6 +100,9 @@ describe("desktop lifecycle coordination", () => {
         JSON.stringify({
           schemaVersion: 1,
           decision: "accepted",
+          captureSessionId: grant.captureSessionId,
+          capabilityId: "capability-synthetic-002",
+          receiptId: "receipt-heartbeat-synthetic-001",
           sessionStatus: "recording",
         }),
         { status: 200 },
@@ -118,5 +124,38 @@ describe("desktop lifecycle coordination", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
       JSON.stringify({ capabilityId: "capability-synthetic-002" }),
     );
+  });
+
+  it("never sends an old stop capability under a replacement session credential", async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const store = await sessionStore();
+    const lifecycle = new DesktopLifecycleCoordinator({
+      api: new DesktopApiClient("https://api.example.invalid", {
+        fetch: fetchMock,
+        clock: () => new Date("2030-01-01T00:01:00.000Z"),
+      }),
+      store,
+      clock: () => new Date("2030-01-01T00:01:00.000Z"),
+      idempotencyKey: () => "stop.synthetic-request-mismatch",
+    });
+    await lifecycle.prepareStop("capability-synthetic-old");
+    await store.update((state) => ({
+      ...state,
+      sessionCredential: {
+        accessToken: ACCESS_TOKEN,
+        expiresAt: "2030-01-01T00:05:00.000Z",
+        grant: {
+          ...grant,
+          captureSessionId: "capture-synthetic-replacement",
+          sourceLeaseId: "lease-synthetic-replacement",
+        },
+      },
+    }));
+
+    await expect(
+      lifecycle.flushPendingStops(new AbortController().signal),
+    ).resolves.toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await store.load()).pendingStopReceipts).toHaveLength(1);
   });
 });

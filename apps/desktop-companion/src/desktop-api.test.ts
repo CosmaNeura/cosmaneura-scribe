@@ -130,6 +130,35 @@ describe("desktop API main-process client", () => {
     });
   });
 
+  it("rejects a lifecycle receipt bound to another session", async () => {
+    const api = new DesktopApiClient("https://api.example.invalid", {
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({
+          schemaVersion: 1,
+          decision: "accepted",
+          captureSessionId: "capture-synthetic-other",
+          capabilityId: "capability-synthetic-001",
+          receiptId: "receipt-synthetic-001",
+          sessionStatus: "recording",
+        }),
+      ),
+      clock: () => new Date("2030-01-01T00:00:30.000Z"),
+    });
+
+    await expect(
+      api.heartbeat(
+        {
+          accessToken: ACCESS_TOKEN,
+          expiresAt: "2030-01-01T00:05:00.000Z",
+          grant,
+        },
+        "capability-synthetic-001",
+        "heartbeat.request-synthetic-001",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
   it("rejects insecure origins, expired credentials, and extra response fields", async () => {
     expect(() => new DesktopApiClient("http://api.example.invalid")).toThrow(
       DesktopApiError,

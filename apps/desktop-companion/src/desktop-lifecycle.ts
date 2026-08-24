@@ -43,12 +43,15 @@ export class DesktopLifecycleCoordinator implements DesktopControllerLifecycle {
     ) {
       throw new DesktopApiError("unauthorized");
     }
-    await this.#api.heartbeat(
+    const decision = await this.#api.heartbeat(
       credential,
       parseMetadataIdentifier(capabilityId),
       this.#idempotencyKey("heartbeat"),
       signal,
     );
+    if (decision.sessionStatus !== "recording") {
+      throw new DesktopApiError("rejected");
+    }
   }
 
   async recordStopIntent(capabilityId: string): Promise<void> {
@@ -85,6 +88,11 @@ export class DesktopLifecycleCoordinator implements DesktopControllerLifecycle {
         Date.parse(credential.expiresAt) <= this.#clock().getTime()
       ) {
         break;
+      }
+      if (
+        credential.grant.captureSessionId !== receipt.captureSessionId
+      ) {
+        continue;
       }
       try {
         const decision = await this.#api.requestStop(
