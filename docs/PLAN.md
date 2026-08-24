@@ -137,8 +137,9 @@ graph passed the dated audit; its signing integration is prohibited. The approve
 Silicon assembly completed on 2026-08-24 from source `728c0e1f4294d3e1fd97ed46bda9c9dde13197f2`,
 and independent package/ASAR/runtime hashes match its unsigned, non-distributable receipt. The
 copy-on-write fuse-hardening and external nested-code signing/notarization lanes are now implemented
-and approved. Hardening can proceed against the retained receipt; the first credentialed signing run
-waits for the Apple Team ID, Developer ID certificate, and Keychain notary profile. No SDK recording
+and approved. The nine-fuse hardening run completed from `f35ad5657fe42db8f98329a81b05b2cccff7ec9b`
+with independently matching package, ASAR-header, and Recall runtime hashes. The first credentialed
+signing run waits for the Apple Team ID, Developer ID certificate, and Keychain notary profile. No SDK recording
 start, clinical flag, distribution, or deployment is approved by this plan entry.
 
 ## Parallel infrastructure backlog

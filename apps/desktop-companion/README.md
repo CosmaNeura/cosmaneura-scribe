@@ -311,6 +311,14 @@ npm run release:harden --workspace @cosmaneura-scribe/desktop-companion -- \
   --source-sha 0123456789abcdef0123456789abcdef01234567
 ```
 
+The approved hardening run completed on 2026-08-24 from source
+`f35ad5657fe42db8f98329a81b05b2cccff7ec9b`. Independent recomputation matches hardened
+package-tree SHA-256 `e5214037b0b8a595a072a8e174fbafb12cad09fde0191f3a0566e0ab2b25df8e`,
+ASAR-header SHA-256 `8074c732719a2edee6f7889f660cc3c470096772617efd0e3830190d965c1ef1`,
+and the original ASAR/runtime hashes. The complete fuse wire is `0,1,0,0,1,1,1,0,1` for
+Run-as-Node through WebAssembly trap handlers. Its receipt still records `signed: false`,
+`notarized: false`, and `distributionAllowed: false`.
+
 The separately approved external macOS lane uses exact direct development dependencies
 `@electron/osx-sign@2.7.0` and `@electron/notarize@3.1.1`. It signs the receipt-bound native
 inventory inside-out, excludes only the two retained Recall provenance archives, notarizes through
@@ -358,7 +366,8 @@ policy with no timestamp warning, match the configured publisher subject, carry 
 ASAR-only application code, and match the exact fuse wire. The verifier emits only a fixed pass or
 failure message. It deliberately fails now because both expected signing identities are
 `UNCONFIGURED`; the lane is implemented and approved but cannot sign until the Apple identity and
-Team ID are securely configured. Distribution and deployment remain unapproved.
+Team ID are securely configured. Its fail-closed dry run created no output. Distribution and
+deployment remain unapproved.
 
 After the separately reviewed release policy and identities are configured, run it only on a native
 release runner:

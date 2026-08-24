@@ -78,6 +78,15 @@ and Recall runtime-tree SHA-256
 `70d2d63210f4e9b36ecdda7b441caf3707dc2f7f1653567ddf95bbc63001ce4c`. It records `signed: false`
 and `distributionAllowed: false`. Remaining requirements are:
 
+The first hardening attempt exposed the exact condition strict fuse mode exists to catch: Electron
+43 has a ninth `WasmTrapHandlers` fuse, while the previously pinned `@electron/fuses@1.8.0` knew only
+eight. The attempt stopped before mutation and left `HARDENING-INCOMPLETE`. The audited policy now
+pins official `@electron/fuses@2.1.3` (which names the ninth fuse), explicitly keeps V8 WebAssembly
+trap handlers enabled, and still sets `strictlyRequireAllFuses: true`. The fresh receipt-bound run
+from `f35ad5657fe42db8f98329a81b05b2cccff7ec9b` completed with hardened package-tree SHA-256
+`e5214037b0b8a595a072a8e174fbafb12cad09fde0191f3a0566e0ab2b25df8e`; independent recomputation
+matched all nine fuse states, the ASAR/header hashes, and the unpacked Recall runtime hash.
+
 1. keep `captureEnabled`, `clinicalReleaseApproved`, and `unsignedDistributionAllowed` false;
 2. run the approved hardening and external macOS signing/notarization lanes only through their
    immutable receipts and new output roots; do not distribute or deploy their outputs;
