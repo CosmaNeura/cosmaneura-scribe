@@ -12,6 +12,7 @@ import {
   realpath,
   rename,
   rm,
+  symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -383,6 +384,19 @@ function createPackagerOptions({
     prune: false,
     quiet: true,
     tmpdir: packagerTemporaryRoot,
+    afterCopy: [
+      async ({ arch, buildPath, electronVersion, platform }) => {
+        if (
+          arch !== target.arch ||
+          platform !== target.platform ||
+          electronVersion !== policy.electronArchives.version ||
+          !isWithin(packagerTemporaryRoot, await requireExactDirectory(buildPath))
+        ) {
+          throw new Error(FAILURE_MESSAGE);
+        }
+        await restoreApprovedRuntimeSymlinks(stagingRoot, buildPath);
+      },
+    ],
     ...(target.platform === "darwin"
       ? {
           protocols: [
@@ -394,6 +408,52 @@ function createPackagerOptions({
         }
       : {}),
   };
+}
+
+async function restoreApprovedRuntimeSymlinks(stagingRoot, buildPath) {
+  const sourceRoot = resolve(stagingRoot, sdkRelativePath);
+  const destinationRoot = resolve(buildPath, sdkRelativePath);
+  await inspectTree(sourceRoot, { symlinkBoundary: sourceRoot });
+  await requireExactDirectory(destinationRoot);
+  const links = await listInternalSymlinks(sourceRoot);
+  if (links.length === 0) {
+    throw new Error(FAILURE_MESSAGE);
+  }
+  for (const { path, target } of links) {
+    const destination = resolve(destinationRoot, path);
+    if (!isWithin(destinationRoot, destination)) {
+      throw new Error(FAILURE_MESSAGE);
+    }
+    const details = await lstat(destination);
+    if (!details.isSymbolicLink()) {
+      throw new Error(FAILURE_MESSAGE);
+    }
+    await unlink(destination);
+    await symlink(target, destination);
+  }
+  await inspectTree(destinationRoot, { symlinkBoundary: destinationRoot });
+  if ((await hashTree(sourceRoot)) !== (await hashTree(destinationRoot))) {
+    throw new Error(FAILURE_MESSAGE);
+  }
+}
+
+async function listInternalSymlinks(root) {
+  const links = [];
+  const visit = async (path, prefix) => {
+    const names = (await readdir(path)).sort();
+    for (const name of names) {
+      const child = resolve(path, name);
+      const childPrefix = prefix.length === 0 ? name : `${prefix}/${name}`;
+      const details = await lstat(child);
+      if (details.isSymbolicLink()) {
+        links.push({ path: childPrefix, target: await readlink(child) });
+      } else if (details.isDirectory()) {
+        await visit(child, childPrefix);
+      }
+    }
+  };
+  await visit(await requireExactDirectory(root), "");
+  return links;
 }
 
 function selectPackagerExport(loaded) {
@@ -777,6 +837,7 @@ export {
   isSafeLockPath,
   isWithin,
   parseArguments,
+  restoreApprovedRuntimeSymlinks,
   selectPackagerExport,
   verifyAsarIntegrityHeader,
 };

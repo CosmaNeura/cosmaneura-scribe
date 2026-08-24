@@ -267,6 +267,9 @@ subtree is `vendor-runtime/node_modules/@recallai/desktop-sdk`. It then extracts
 against the stage and emits an unsigned pre-hardening receipt beside the package. An incomplete
 marker remains if any step fails. The command refuses to run unless the development assembly gate is
 true and the capture, clinical, and unsigned-distribution gates remain false.
+Before ASAR creation, a fixed post-copy hook restores only the already verified internal GStreamer
+framework symlinks that Node's non-dereferencing copy otherwise rewrites toward the temporary
+source; the complete copied runtime tree must then rehash to the approved staging tree.
 The prepared Apple Silicon Recall tree is pinned; the Windows Recall tree remains `UNCONFIGURED`, so
 Windows assembly is independently blocked even after a hypothetical packaging-only flag change.
 

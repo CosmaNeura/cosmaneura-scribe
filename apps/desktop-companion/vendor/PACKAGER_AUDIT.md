@@ -52,6 +52,11 @@ modifies and ad-hoc re-signs the Electron Framework. The checked-in assembly opt
 feature off so the assembler performs no signing. Per-file ASAR integrity and the platform ASAR
 header-hash metadata remain required; final metadata protection belongs to the external signature.
 
+The first native run also confirmed that Node's non-dereferencing directory copy rewrites internal
+framework symlinks toward the temporary source. The fixed assembly hook restores only symlinks from
+the already boundary-checked Recall tree, then requires the copied runtime tree hash to match the
+staging tree before Packager may create the ASAR.
+
 ## Decision and remaining gates
 
 Pin `@electron/packager` 20.3.0 as an isolated development dependency for application assembly only.

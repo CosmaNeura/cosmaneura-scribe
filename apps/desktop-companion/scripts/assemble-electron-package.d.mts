@@ -17,6 +17,10 @@ export interface AssemblyTarget {
 
 export function parseArguments(values: readonly string[]): AssemblyRequest;
 export function hashTree(root: string): Promise<string>;
+export function restoreApprovedRuntimeSymlinks(
+  stagingRoot: string,
+  buildPath: string,
+): Promise<void>;
 export function isSafeLockPath(path: string): boolean;
 export function isWithin(root: string, candidate: string): boolean;
 export function verifyAsarIntegrityHeader(header: unknown): void;

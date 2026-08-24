@@ -1,11 +1,25 @@
-import { readFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import {
   createPackagerOptions,
+  hashTree,
   isSafeLockPath,
   parseArguments,
+  restoreApprovedRuntimeSymlinks,
   selectPackagerExport,
   verifyAsarIntegrityHeader,
 } from "../scripts/assemble-electron-package.mjs";
@@ -208,10 +222,59 @@ describe("Electron package release policy", () => {
     expect(options).not.toHaveProperty("osxSign");
     expect(options).not.toHaveProperty("osxNotarize");
     expect(options).not.toHaveProperty("windowsSign");
+    const afterCopy = options.afterCopy as readonly unknown[];
+    expect(afterCopy).toHaveLength(1);
+    expect(afterCopy[0]).toBeTypeOf("function");
     const exactPackagerExport = () => undefined;
     expect(selectPackagerExport({ packager: exactPackagerExport })).toBe(
       exactPackagerExport,
     );
+  });
+
+  it("restores only approved internal runtime symlinks after Packager copies", async () => {
+    const temporaryRoot = await mkdtemp(
+      join(await realpath(tmpdir()), "cosmas-symlink-copy-test-"),
+    );
+    try {
+      const stagingRoot = join(temporaryRoot, "stage");
+      const buildPath = join(temporaryRoot, "build");
+      const runtimePath = join(
+        "vendor-runtime",
+        "node_modules",
+        "@recallai",
+        "desktop-sdk",
+      );
+      const sourceRoot = join(stagingRoot, runtimePath);
+      const destinationRoot = join(buildPath, runtimePath);
+      await mkdir(join(sourceRoot, "Versions", "1.0"), { recursive: true });
+      await writeFile(join(sourceRoot, "Versions", "1.0", "runtime"), "fixed\n");
+      await symlink("1.0", join(sourceRoot, "Versions", "Current"));
+      await symlink(
+        "Versions/Current/runtime",
+        join(sourceRoot, "runtime"),
+      );
+      await mkdir(join(buildPath, "vendor-runtime", "node_modules", "@recallai"), {
+        recursive: true,
+      });
+      await cp(sourceRoot, destinationRoot, {
+        dereference: false,
+        recursive: true,
+      });
+
+      expect(await readlink(join(destinationRoot, "runtime"))).not.toBe(
+        "Versions/Current/runtime",
+      );
+      await restoreApprovedRuntimeSymlinks(stagingRoot, buildPath);
+      expect(await readlink(join(destinationRoot, "runtime"))).toBe(
+        "Versions/Current/runtime",
+      );
+      expect(await readlink(join(destinationRoot, "Versions", "Current"))).toBe(
+        "1.0",
+      );
+      expect(await hashTree(destinationRoot)).toBe(await hashTree(sourceRoot));
+    } finally {
+      await rm(temporaryRoot, { force: true, recursive: true });
+    }
   });
 
   it("validates exact CLI shape, lock paths, and ASAR integrity records", () => {
