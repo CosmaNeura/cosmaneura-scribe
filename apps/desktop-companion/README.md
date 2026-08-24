@@ -53,7 +53,8 @@ The main-process adapter uses exactly the pinned values in `src/config.ts`:
 | regional SDK API | `https://us-west-2.recall.ai` (CosmaNeura workspace) |
 | automatic native restart | disabled |
 | capture output | `video_mixed_mp4: null`, `audio_mixed_mp3: {}` |
-| checked-in release gates | product `false`, clinical `false`, packaging `false` |
+| checked-in product gates | product packaging `false`, capture `false`, clinical `false` |
+| development assembly gate | Apple Silicon fixed-input assembly `true`; unsigned distribution `false` |
 
 Electron and Recall are deliberately isolated from the root workspace in `vendor-runtime`. This
 prevents existing web/mobile `npm ci` jobs from running desktop vendor lifecycle code. Its separate
@@ -249,10 +250,10 @@ or transcript text.
 `release/package-policy.json` is the machine-checked source of truth for the two supported package
 targets. It requires ASAR, embedded ASAR integrity, signed distribution, macOS notarization and
 stapling, Windows timestamping, and a complete fuse set that disables Run-as-Node, `NODE_OPTIONS`,
-CLI inspection, unexpected non-ASAR application loading, and extra `file://` privileges. Packaging,
-capture, and clinical approval are all false. `scripts/harden-electron-package.mjs` refuses to touch
-an executable while that packaging gate is false; after a separately reviewed approval it applies
-and reads back every fuse before signing.
+CLI inspection, unexpected non-ASAR application loading, and extra `file://` privileges.
+Development-only assembly is enabled; capture, clinical approval, and unsigned distribution remain
+false. `scripts/harden-electron-package.mjs` is not part of the approved first assembly run; fuse
+mutation and external signing remain separately reviewed release actions.
 
 `scripts/assemble-electron-package.mjs` is the fail-closed unsigned assembly lane. It accepts only a
 local Electron 43.4.1 archive whose filename and official release SHA-256 match the checked-in macOS
@@ -264,12 +265,13 @@ overwrites, signing integrations, and Packager's default Electron Framework ad-h
 requires an integrity-bearing ASAR whose only loose
 subtree is `vendor-runtime/node_modules/@recallai/desktop-sdk`. It then extracts and rehashes the ASAR
 against the stage and emits an unsigned pre-hardening receipt beside the package. An incomplete
-marker remains if any step fails. The command refuses to run while `packagingEnabled` is false.
+marker remains if any step fails. The command refuses to run unless the development assembly gate is
+true and the capture, clinical, and unsigned-distribution gates remain false.
 The prepared Apple Silicon Recall tree is pinned; the Windows Recall tree remains `UNCONFIGURED`, so
 Windows assembly is independently blocked even after a hypothetical packaging-only flag change.
 
-After a separate policy review enables development assembly, the native release runner will use an
-already downloaded archive and a new output path:
+The development-only Apple Silicon assembly approval dated 2026-08-24 permits one fixed-input,
+unsigned run using an already downloaded archive and a new output path:
 
 ```sh
 npm run release:assemble --workspace @cosmaneura-scribe/desktop-companion -- \
@@ -287,8 +289,9 @@ outside the exact Recall runtime path, and the exact fuse wire. On Windows it re
 application executable and installer to pass Authenticode
 policy with no timestamp warning, match the configured publisher subject, carry a timestamp, use
 ASAR-only application code, and match the exact fuse wire. The verifier emits only a fixed pass or
-failure message. It deliberately fails now because packaging is false and both expected signing
-identities are `UNCONFIGURED`.
+failure message. It deliberately fails now because both expected signing identities are
+`UNCONFIGURED`; no signing, distribution, or deployment action is approved by the development
+assembly gate.
 
 After the separately reviewed release policy and identities are configured, run it only on a native
 release runner:
@@ -318,8 +321,9 @@ and binaries.
 
 Recall's public `osx-sign` fork is deliberately absent: its unverified 2024 head is 94 commits behind
 upstream, identifies itself as a development build, and requires a prepare script. The dated evidence
-and exact integrity values are in `vendor/PACKAGER_AUDIT.md`. Packaging, installer, signing,
-notarization, update, publishing, and distribution approvals all remain open.
+and exact integrity values are in `vendor/PACKAGER_AUDIT.md`. The first fixed-input Apple Silicon
+development assembly is approved; installer, signing, notarization, update, publishing,
+distribution, and deployment approvals all remain open.
 
 The signed release lane must still:
 

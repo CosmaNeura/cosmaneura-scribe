@@ -11,7 +11,7 @@ import {
 } from "../scripts/assemble-electron-package.mjs";
 
 describe("Electron package release policy", () => {
-  it("requires signed distribution and keeps package and clinical gates off", async () => {
+  it("permits development assembly while keeping capture, clinical, and distribution gates off", async () => {
     const policy = JSON.parse(
       await readFile(
         new URL("../release/package-policy.json", import.meta.url),
@@ -29,7 +29,7 @@ describe("Electron package release policy", () => {
       fuses: Record<string, boolean>;
     };
     expect(policy.release).toEqual({
-      packagingEnabled: false,
+      packagingEnabled: true,
       captureEnabled: false,
       clinicalReleaseApproved: false,
       unsignedDistributionAllowed: false,

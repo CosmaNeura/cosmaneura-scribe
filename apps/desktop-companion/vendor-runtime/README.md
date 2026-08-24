@@ -14,7 +14,9 @@ only then makes the runtime eligible for packaging.
 `@electron/packager` is pinned for assembly only. It must not download Electron, sign, notarize,
 publish, or update. The checked-in assembly script requires a separately hash-verified Electron
 archive, builds an allowlisted temporary stage, and keeps Packager signing disabled;
-`release/package-policy.json` records that boundary. The false packaging gate prevents a run.
+`release/package-policy.json` records that boundary. Its 2026-08-24 development-assembly approval
+permits only a fixed-input unsigned Apple Silicon run; capture, clinical use, signing, distribution,
+and deployment remain disabled or unapproved.
 The options also disable Packager 20.3's default macOS Framework digest embedding because that path
 modifies and ad-hoc re-signs the Electron Framework; final integrity and signing belong to the
 external release lane.

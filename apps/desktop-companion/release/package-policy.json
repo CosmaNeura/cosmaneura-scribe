@@ -7,7 +7,7 @@
     "protocol": "cosmaneura-capture"
   },
   "release": {
-    "packagingEnabled": false,
+    "packagingEnabled": true,
     "captureEnabled": false,
     "clinicalReleaseApproved": false,
     "unsignedDistributionAllowed": false

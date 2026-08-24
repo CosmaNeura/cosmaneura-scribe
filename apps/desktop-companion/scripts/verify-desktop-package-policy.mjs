@@ -134,9 +134,10 @@ assert(policy.application.main === appPackage.main);
 assert(policy.application.protocol === "cosmaneura-capture");
 assert(handoffSource.includes('DESKTOP_CUSTOM_SCHEME = "cosmaneura-capture"'));
 
-for (const value of Object.values(policy.release)) {
-  assert(value === false);
-}
+assert(policy.release.packagingEnabled === true);
+assert(policy.release.captureEnabled === false);
+assert(policy.release.clinicalReleaseApproved === false);
+assert(policy.release.unsignedDistributionAllowed === false);
 for (const value of Object.values(policy.diagnostics)) {
   assert(value === false);
 }

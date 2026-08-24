@@ -39,12 +39,12 @@ technical workflow is HIPAA compliant.
 | Supply-chain drift | Isolated exact locks, independent hashes, exact-source patch, retained archives/tree receipt, clinical release false | `vendor-runtime/package-lock.json`, `vendor/recall-desktop-sdk.provenance.json` |
 | Vendor logging | Command/event payloads and native stdout/stderr removed or redacted by an exact-hash patch | `scripts/recall-vendor-patch.mjs` |
 | Ambient secrets | Vendor `RECALL_*` forwarding removed; adapter init has only region, restart, and permission keys | `recall-sdk-adapter.ts`, vendor patch |
-| Provider activation | Product, packaging, capture, clinical, routable-origin, and provenance locks all fail closed before Recall loads | `desktop-adapter-bootstrap.ts`, `config.ts`, `recall-sdk-loader.ts` |
+| Provider activation | Product, capture, clinical, routable-origin, and provenance locks all fail closed before Recall loads; the separate development assembly gate cannot activate capture | `desktop-adapter-bootstrap.ts`, `config.ts`, `recall-sdk-loader.ts` |
 | Renderer bootstrap | Fixed local assets, custom protocol, CSP, denied permissions/navigation/windows/downloads | `main-entry.ts`, `electron-app.ts`, `electron-security.ts` |
 | Browser handoff | Exact custom URLs, fragment-only launch material, S256 PKCE, random state, strict age/state validation | `browser-handoff.ts`, `desktop-session.ts` |
 | OS deep-link ingress | Exact protocol parsing, single-instance cold/warm routing, no URL logging, disabled-build no-op | `electron-deep-link.ts`, `main-entry.ts` |
 | Platform API | HTTPS origin pin, omitted cookies/referrer, no redirects/cache, bounded exact response schemas, value-free errors | `desktop-api.ts` |
-| Package hardening | Checked-in hard-off policy, complete fuse set, unsigned distribution denied, signing/notarization required | `release/package-policy.json`, `harden-electron-package.mjs` |
+| Package hardening | Development assembly only, complete fuse set specified, unsigned distribution denied, signing/notarization required | `release/package-policy.json`, `harden-electron-package.mjs` |
 | Application diagnostics | Electron Crashpad is never started; logging, NetLog, tracing, remote debugging, Node reports/inspection, analytics, and support bundles are absent or rejected before ready | `electron-diagnostics.ts`, `main-entry.ts` |
 | Signed-artifact rejection | Exact Team ID/publisher, timestamp, notarization/stapling, Gatekeeper/AuthentiCode, ASAR, and fuse checks fail closed before publication | `verify-signed-desktop-artifacts.mjs`, `verify-windows-publisher.ps1` |
 
@@ -82,8 +82,9 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
   no audio, transcript, upload token, or clinical note on disk.
 - The exact Packager 20.3.0 assembly-only graph passes the current lock/license/install-script and
   vulnerability gates. The fixed-input lane and its stage/ASAR/loose-runtime receipt checks are now
-  implemented but remain blocked by the false packaging gate and have not produced an artifact.
-  Separately review the first unsigned native-runner assembly, then select macOS nested-code
+  implemented, and the 2026-08-24 approval permits one unsigned Apple Silicon development assembly.
+  Capture, clinical use, hardening, signing, distribution, and deployment remain outside that
+  approval. After retaining the first assembly receipt, select macOS nested-code
   signing/notarization and Windows installer/signing paths, signed updates, downgrade protection,
   SBOM/provenance, release separation, and revocation.
 - Complete webhook authentication, replay/idempotency controls, bounded retention, delete-after-

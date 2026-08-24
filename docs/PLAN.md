@@ -110,7 +110,8 @@ the normalized transcript remains subject to the platform's clinical-record rete
   remote-debugging, application crash dumps, analytics, and support bundles
 - Fail-closed native release verification for macOS Team ID/signature/hardened runtime/timestamp/
   notarization/stapling and Windows publisher/signature/timestamp, with ASAR and exact-fuse checks;
-  packaging and both signing identities remain deliberately unconfigured
+  development-only Apple Silicon assembly is enabled while both signing identities remain
+  deliberately unconfigured
 - Guarded de-identified Recall 2.0.28 macOS initialization and permission acceptance with confirmed
   shutdown; no meeting was visible during the bounded detection window and no capture method ran
 - Dormant real-provider bootstrap behind independent product, packaging, capture, clinical,
@@ -127,16 +128,16 @@ shutdown, and final child-process absence. No synthetic meeting was visible duri
 window, so meeting detection is the next interactive D3 check. Start/stop/abort and forced
 termination remain separate later approvals.
 
-The runnable shell now contains a dormant provider selector, but the checked-in product, packaging,
-capture, clinical, platform-origin, and vendor-provenance gates keep it on the mock without loading
+The runnable shell now contains a dormant provider selector. The product, capture, clinical,
+platform-origin, and vendor-provenance gates keep it on the mock without loading
 Recall. In parallel with the synthetic detection rerun, the next non-capturing D3 work is selecting
 an audited packaging toolchain and producing a signed/notarized development shell for permission and
 indicator acceptance. Packager 20.3.0 is now pinned for unsigned assembly after its exact dependency
 graph passed the dated audit; its signing integration is prohibited. The next package work is a
-separately reviewed first run of the now-implemented fixed-input ASAR assembly lane, followed by a
-separately reviewed nested-code signing lane. The checked-in packaging gate still prevents artifact
-creation. No SDK recording start, package approval, clinical flag, or deployment is approved by
-this plan entry.
+first run of the now-implemented fixed-input ASAR assembly lane, approved on 2026-08-24 for an
+unsigned Apple Silicon development artifact only, followed by a separately reviewed nested-code
+signing lane. No SDK recording start, clinical flag, signing, distribution, or deployment is
+approved by this plan entry.
 
 ## Parallel infrastructure backlog
 

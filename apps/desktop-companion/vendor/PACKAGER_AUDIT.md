@@ -2,8 +2,8 @@
 
 Audit date: 2026-08-23
 
-Status: **`@electron/packager` selected for unsigned assembly only; packaging and signing remain
-disabled.**
+Status: **`@electron/packager` selected for unsigned assembly only; one fixed-input Apple Silicon
+development assembly is approved, while signing and distribution remain disabled.**
 
 ## Exact candidate comparison
 
@@ -58,16 +58,16 @@ Pin `@electron/packager` 20.3.0 as an isolated development dependency for applic
 Do not add Electron Forge, electron-builder, the Recall signing fork, an installer, updater, signing
 credential, or publishing integration in this decision.
 
-The fixed-input assembly and ASAR verification code is now present but remains unexecuted behind the
-false packaging gate. Before the first assembly run:
+The fixed-input assembly and ASAR verification code is present. A 2026-08-24 approval enables only
+the first unsigned Apple Silicon fixed-input run. For that run:
 
-1. separately review and approve the exact development-assembly policy change;
-2. run the script on native release runners and retain its stage/ASAR/unpacked-runtime receipt;
-3. keep `packagingEnabled`, `captureEnabled`, and `clinicalReleaseApproved` false until a separate
-   review changes the specific gate required for that lane; capture and clinical gates must remain
-   false for unsigned development assembly;
+1. run the script on the native development runner and retain its stage/ASAR/unpacked-runtime
+   receipt;
+2. keep `captureEnabled`, `clinicalReleaseApproved`, and `unsignedDistributionAllowed` false;
+3. do not harden, sign, notarize, distribute, or deploy the output without separate approval;
 4. implement and review the external macOS/Windows signing lanes and installer choices;
-5. rerun the lock, license, vulnerability, native-content, fuse, signature, and no-PHI gates.
+5. rerun the lock, license, vulnerability, native-content, fuse, signature, and no-PHI gates before
+   any later release decision.
 
 All seven common production dependency trees and the prepared Apple Silicon Recall tree are pinned
 by content hash in the package policy. The Windows Recall tree is deliberately `UNCONFIGURED`; a
