@@ -375,6 +375,7 @@ function createPackagerOptions({
     dir: stagingRoot,
     electronVersion: policy.electronArchives.version,
     electronZipDir: dirname(electronZip),
+    ignore: () => false,
     junk: false,
     name: policy.application.productName,
     out: outputRoot,

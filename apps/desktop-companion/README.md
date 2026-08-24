@@ -270,6 +270,9 @@ true and the capture, clinical, and unsigned-distribution gates remain false.
 Before ASAR creation, a fixed post-copy hook restores only the already verified internal GStreamer
 framework symlinks that Node's non-dereferencing copy otherwise rewrites toward the temporary
 source; the complete copied runtime tree must then rehash to the approved staging tree.
+The staging tree is already an exact allowlist, so the assembly options override Packager's broad
+default lockfile exclusion and retain `vendor-runtime/package-lock.json` for the packaged runtime's
+provenance verifier.
 The prepared Apple Silicon Recall tree is pinned; the Windows Recall tree remains `UNCONFIGURED`, so
 Windows assembly is independently blocked even after a hypothetical packaging-only flag change.
 

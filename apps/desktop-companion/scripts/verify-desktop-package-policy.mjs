@@ -239,6 +239,7 @@ assert(
 );
 assert(assemblySource.includes("asarIntegrityDigest: false"));
 assert(assemblySource.includes("electronZipDir: dirname(electronZip)"));
+assert(assemblySource.includes("ignore: () => false"));
 assert(!assemblySource.includes("osxSign:"));
 assert(!assemblySource.includes("osxNotarize:"));
 assert(!assemblySource.includes("windowsSign:"));

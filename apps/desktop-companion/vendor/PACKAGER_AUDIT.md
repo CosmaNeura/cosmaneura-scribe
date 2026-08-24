@@ -59,6 +59,9 @@ staging tree before Packager may create the ASAR.
 The allowlisted root staging manifest also omits npm's development-only `private` marker because
 Packager's fixed sanitizer removes that field before ASAR creation; the post-extraction tree hash
 therefore compares the intended production metadata byte for byte.
+Packager's default ignore list also excludes nested lockfiles. Because the staged tree is already an
+exact allowlist and the dormant Recall loader requires its reviewed lock for provenance validation,
+the fixed options override that default and retain `vendor-runtime/package-lock.json` in the ASAR.
 
 ## Decision and remaining gates
 

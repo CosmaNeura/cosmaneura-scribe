@@ -222,6 +222,8 @@ describe("Electron package release policy", () => {
     expect(options).not.toHaveProperty("osxSign");
     expect(options).not.toHaveProperty("osxNotarize");
     expect(options).not.toHaveProperty("windowsSign");
+    const ignore = options.ignore as (path: string) => boolean;
+    expect(ignore("vendor-runtime/package-lock.json")).toBe(false);
     const afterCopy = options.afterCopy as readonly unknown[];
     expect(afterCopy).toHaveLength(1);
     expect(afterCopy[0]).toBeTypeOf("function");
