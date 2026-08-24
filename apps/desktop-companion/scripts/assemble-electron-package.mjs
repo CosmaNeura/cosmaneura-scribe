@@ -73,7 +73,10 @@ async function main() {
     throw new Error(FAILURE_MESSAGE);
   }
 
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "cosmas-desktop-assembly-"));
+  const canonicalTemporaryParent = await realpath(tmpdir());
+  const temporaryRoot = await mkdtemp(
+    join(canonicalTemporaryParent, "cosmas-desktop-assembly-"),
+  );
   const stagingRoot = resolve(temporaryRoot, "stage");
   const extractionRoot = resolve(temporaryRoot, "extracted-asar");
   const packagerTemporaryRoot = resolve(temporaryRoot, "packager-tmp");

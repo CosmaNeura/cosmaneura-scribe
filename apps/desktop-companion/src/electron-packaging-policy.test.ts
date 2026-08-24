@@ -166,6 +166,7 @@ describe("Electron package release policy", () => {
     expect(source).toContain("smartUnpack: false");
     expect(source).toContain("asarIntegrityDigest: false");
     expect(source).toContain("overwrite: false");
+    expect(source).toContain("await realpath(tmpdir())");
     expect(source).toContain("ASSEMBLY-INCOMPLETE");
     expect(source).toContain("getRawHeader");
     expect(source).not.toContain("download:");
