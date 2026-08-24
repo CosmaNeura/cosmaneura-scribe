@@ -56,6 +56,9 @@ The first native run also confirmed that Node's non-dereferencing directory copy
 framework symlinks toward the temporary source. The fixed assembly hook restores only symlinks from
 the already boundary-checked Recall tree, then requires the copied runtime tree hash to match the
 staging tree before Packager may create the ASAR.
+The allowlisted root staging manifest also omits npm's development-only `private` marker because
+Packager's fixed sanitizer removes that field before ASAR creation; the post-extraction tree hash
+therefore compares the intended production metadata byte for byte.
 
 ## Decision and remaining gates
 

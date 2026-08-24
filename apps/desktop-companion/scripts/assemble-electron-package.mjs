@@ -242,7 +242,6 @@ async function buildStagingTree(stagingRoot, target) {
   const stagedPackage = {
     name: appPackage.name,
     version: appPackage.version,
-    private: true,
     productName: appPackage.productName,
     description: appPackage.description,
     author: appPackage.author,
