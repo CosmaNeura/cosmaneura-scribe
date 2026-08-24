@@ -12,6 +12,7 @@ describe("Electron package release policy", () => {
     ) as {
       release: Record<string, boolean>;
       application: { protocol: string };
+      toolchain: Record<string, unknown>;
       diagnostics: Record<string, boolean>;
       targets: Record<string, Record<string, unknown>>;
       fuses: Record<string, boolean>;
@@ -23,6 +24,15 @@ describe("Electron package release policy", () => {
       unsignedDistributionAllowed: false,
     });
     expect(policy.application.protocol).toBe("cosmaneura-capture");
+    expect(policy.toolchain).toEqual({
+      assembler: "@electron/packager",
+      assemblerVersion: "20.3.0",
+      assemblerIntegritySha512:
+        "sha512-3MvgJgy6YJ5ti0oGGBKrWKdYwpTaoRrhranMDgHSQ6i5t56yZV9IRDyoXTuqBp97LiKqnZeAMe2wTcF/9+fP5g==",
+      assemblerSigningEnabled: false,
+      externalSigningRequired: true,
+      recallOsxSignForkAllowed: false,
+    });
     expect(Object.values(policy.diagnostics)).toEqual([
       false,
       false,
@@ -76,6 +86,7 @@ describe("Electron package release policy", () => {
     expect(source).toContain('join(resourcesPath, "app.asar")');
     expect(source).toContain('requireAbsent(join(resourcesPath, "app"))');
     expect(source).toContain("packagingEnabled !== true");
+    expect(source).toContain("recallOsxSignForkAllowed !== false");
     expect(source).not.toContain("process.env");
     expect(windowsPublisher).toContain("Get-AuthenticodeSignature -LiteralPath");
     expect(windowsPublisher).toContain("TimeStamperCertificate");

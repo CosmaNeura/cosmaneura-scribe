@@ -276,11 +276,18 @@ npm run release:artifacts:verify --workspace @cosmaneura-scribe/desktop-companio
   --installer C:\\absolute\\path\\CosmasSetup.exe
 ```
 
-Electron Forge 7.11.2 was evaluated on 2026-08-23 but removed from the lock because its current
-packaging-only dependency graph produced high/critical audit findings. No audit exception was added.
-The isolated runtime currently retains only the official `@electron/fuses@1.8.0` hardening utility,
-whose installed graph passed the moderate-or-higher audit gate. Selecting or implementing the final
-packager/installer remains blocked on a clean reviewed dependency graph.
+Electron Forge 7.11.2 was evaluated on 2026-08-23 but removed from the lock because its packaging-only
+dependency graph produced high/critical audit findings. No audit exception was added. A later exact
+comparison selected `@electron/packager@20.3.0` for **unsigned assembly only**: its 48-package graph
+had declared licenses throughout, no lifecycle scripts, and zero reported vulnerabilities under npm
+11.5.2. `electron-builder@26.15.3` resolved 277 packages and an installer lifecycle script. The
+checked-in policy disables Packager's signing integration and requires a separately reviewed
+external signing lane.
+
+Recall's public `osx-sign` fork is deliberately absent: its unverified 2024 head is 94 commits behind
+upstream, identifies itself as a development build, and requires a prepare script. The dated evidence
+and exact integrity values are in `vendor/PACKAGER_AUDIT.md`. Packaging, installer, signing,
+notarization, update, publishing, and distribution approvals all remain open.
 
 The signed release lane must still:
 

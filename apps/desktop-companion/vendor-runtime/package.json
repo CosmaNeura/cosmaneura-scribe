@@ -11,6 +11,7 @@
     "@recallai/desktop-sdk": "2.0.28"
   },
   "devDependencies": {
+    "@electron/packager": "20.3.0",
     "@electron/fuses": "1.8.0",
     "electron": "43.4.1"
   }

@@ -80,9 +80,10 @@ The tests use only synthetic identifiers and contain no audio or transcript cont
   must still prove that tokens, meeting metadata, audio, and transcripts cannot enter artifacts.
 - Define encrypted local storage and recovery behavior. The current foundation intentionally stores
   no audio, transcript, upload token, or clinical note on disk.
-- Select a packaging/installer toolchain whose current dependency graph passes the audit gate, then
-  complete macOS entitlements/signing/notarization and Windows code/installer signing, signed
-  updates, downgrade protection, SBOM/provenance, release separation, and revocation procedures.
+- The exact Packager 20.3.0 assembly-only graph passes the current lock/license/install-script and
+  vulnerability gates. Implement fixed-input ASAR assembly without Packager signing, then separately
+  select and review macOS nested-code signing/notarization and Windows installer/signing paths,
+  signed updates, downgrade protection, SBOM/provenance, release separation, and revocation.
 - Complete webhook authentication, replay/idempotency controls, bounded retention, delete-after-
   ingestion evidence, orphan reconciliation, and bot/desktop mutual exclusion in the backend.
 - Run synthetic Zoom and Meet tests on supported macOS and Windows versions, including permissions,

@@ -10,6 +10,9 @@ const appPackage = JSON.parse(
 const vendorPackage = JSON.parse(
   await readFile(new URL("vendor-runtime/package.json", appRoot), "utf8"),
 );
+const vendorLock = JSON.parse(
+  await readFile(new URL("vendor-runtime/package-lock.json", appRoot), "utf8"),
+);
 const provenance = JSON.parse(
   await readFile(
     new URL("vendor/recall-desktop-sdk.provenance.json", appRoot),
@@ -26,6 +29,7 @@ assertExactKeys(policy, [
   "schemaVersion",
   "application",
   "release",
+  "toolchain",
   "archive",
   "diagnostics",
   "fuses",
@@ -42,6 +46,14 @@ assertExactKeys(policy.release, [
   "captureEnabled",
   "clinicalReleaseApproved",
   "unsignedDistributionAllowed",
+]);
+assertExactKeys(policy.toolchain, [
+  "assembler",
+  "assemblerVersion",
+  "assemblerIntegritySha512",
+  "assemblerSigningEnabled",
+  "externalSigningRequired",
+  "recallOsxSignForkAllowed",
 ]);
 assertExactKeys(policy.archive, ["asarRequired", "embeddedIntegrityRequired"]);
 assertExactKeys(policy.diagnostics, [
@@ -98,6 +110,41 @@ assert(releaseSource.includes("captureEnabled: false"));
 assert(releaseSource.includes("clinicalReleaseApproved: false"));
 assert(releaseSource.includes("packagingEnabled: false"));
 assert(provenance.clinicalReleaseApproved === false);
+
+assert(policy.toolchain.assembler === "@electron/packager");
+assert(policy.toolchain.assemblerVersion === "20.3.0");
+assert(
+  policy.toolchain.assemblerIntegritySha512 ===
+    "sha512-3MvgJgy6YJ5ti0oGGBKrWKdYwpTaoRrhranMDgHSQ6i5t56yZV9IRDyoXTuqBp97LiKqnZeAMe2wTcF/9+fP5g==",
+);
+assert(policy.toolchain.assemblerSigningEnabled === false);
+assert(policy.toolchain.externalSigningRequired === true);
+assert(policy.toolchain.recallOsxSignForkAllowed === false);
+assert(vendorPackage.devDependencies["@electron/packager"] === "20.3.0");
+const lockPackages = vendorLock.packages;
+const packagerLock = lockPackages["node_modules/@electron/packager"];
+assert(packagerLock.version === policy.toolchain.assemblerVersion);
+assert(packagerLock.integrity === policy.toolchain.assemblerIntegritySha512);
+const installScripts = Object.entries(lockPackages)
+  .filter(([, value]) => value.hasInstallScript === true)
+  .map(([name]) => name);
+assert(
+  installScripts.length === 1 &&
+    installScripts[0] === "node_modules/@recallai/desktop-sdk",
+);
+for (const [name, value] of Object.entries(lockPackages)) {
+  if (name === "") {
+    continue;
+  }
+  assert(
+    typeof value.integrity === "string" &&
+      value.integrity.startsWith("sha512-"),
+  );
+  assert(
+    typeof value.resolved === "string" &&
+      value.resolved.startsWith("https://registry.npmjs.org/"),
+  );
+}
 
 assert(policy.archive.asarRequired === true);
 assert(policy.archive.embeddedIntegrityRequired === true);

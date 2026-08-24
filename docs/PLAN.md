@@ -131,8 +131,10 @@ The runnable shell now contains a dormant provider selector, but the checked-in 
 capture, clinical, platform-origin, and vendor-provenance gates keep it on the mock without loading
 Recall. In parallel with the synthetic detection rerun, the next non-capturing D3 work is selecting
 an audited packaging toolchain and producing a signed/notarized development shell for permission and
-indicator acceptance. No SDK recording start, package approval, clinical flag, or deployment is
-approved by this plan entry.
+indicator acceptance. Packager 20.3.0 is now pinned for unsigned assembly after its exact dependency
+graph passed the dated audit; its signing integration is prohibited. The next package work is a
+fixed-input ASAR assembly script followed by a separately reviewed nested-code signing lane. No SDK
+recording start, package approval, clinical flag, or deployment is approved by this plan entry.
 
 ## Parallel infrastructure backlog
 

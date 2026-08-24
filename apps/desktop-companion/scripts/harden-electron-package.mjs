@@ -7,7 +7,12 @@ const policy = JSON.parse(
   await readFile(new URL("release/package-policy.json", appRoot), "utf8"),
 );
 
-if (policy.release.packagingEnabled !== true) {
+if (
+  policy.release.packagingEnabled !== true ||
+  policy.toolchain.assemblerSigningEnabled !== false ||
+  policy.toolchain.externalSigningRequired !== true ||
+  policy.toolchain.recallOsxSignForkAllowed !== false
+) {
   throw new Error("Desktop release packaging is not approved");
 }
 if (process.argv.length !== 4 || process.argv[2] !== "--executable") {

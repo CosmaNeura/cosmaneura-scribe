@@ -20,7 +20,12 @@ try {
 }
 
 async function main() {
-  if (policy.release.packagingEnabled !== true) {
+  if (
+    policy.release.packagingEnabled !== true ||
+    policy.toolchain.assemblerSigningEnabled !== false ||
+    policy.toolchain.externalSigningRequired !== true ||
+    policy.toolchain.recallOsxSignForkAllowed !== false
+  ) {
     throw new Error(FAILURE_MESSAGE);
   }
   const request = parseArguments(process.argv.slice(2));

@@ -12,6 +12,14 @@
     "clinicalReleaseApproved": false,
     "unsignedDistributionAllowed": false
   },
+  "toolchain": {
+    "assembler": "@electron/packager",
+    "assemblerVersion": "20.3.0",
+    "assemblerIntegritySha512": "sha512-3MvgJgy6YJ5ti0oGGBKrWKdYwpTaoRrhranMDgHSQ6i5t56yZV9IRDyoXTuqBp97LiKqnZeAMe2wTcF/9+fP5g==",
+    "assemblerSigningEnabled": false,
+    "externalSigningRequired": true,
+    "recallOsxSignForkAllowed": false
+  },
   "archive": {
     "asarRequired": true,
     "embeddedIntegrityRequired": true
