@@ -111,17 +111,28 @@ the normalized transcript remains subject to the platform's clinical-record rete
 - Fail-closed native release verification for macOS Team ID/signature/hardened runtime/timestamp/
   notarization/stapling and Windows publisher/signature/timestamp, with ASAR and exact-fuse checks;
   packaging and both signing identities remain deliberately unconfigured
+- Guarded de-identified Recall 2.0.28 macOS initialization and permission acceptance with confirmed
+  shutdown; no meeting was visible during the bounded detection window and no capture method ran
+- Dormant real-provider bootstrap behind independent product, packaging, capture, clinical,
+  routable-platform-origin, and vendor-provenance locks; checked-in builds still select the mock
+  without invoking the Recall loader
 
 ## Current desktop critical path
 
-The exact 2.0.28 package and Apple Silicon native archives have now been independently acquired,
+The exact 2.0.28 package and Apple Silicon native archives have been independently acquired,
 hash-verified, safely extracted, statically inspected, and reverified against the retained receipt
-and extracted tree without loading the module. The next D3 item is a separately approved,
-de-identified dynamic bring-up of the real pinned adapter. It must prove initialize/detect/start/
-stop/abort/shutdown and vendor child-process termination before the shell can become an operational
-recorder. Signing-account work and selection of a clean packager may continue in parallel, but
-neither substitutes for proving that the real capture engine runs safely. No real SDK start,
-package, clinical flag, or deployment is approved by this plan entry.
+and extracted tree. A separately approved de-identified run then proved initialization, the
+accessibility/screen-capture/microphone permission paths, all-permissions confirmation, graceful
+shutdown, and final child-process absence. No synthetic meeting was visible during its five-minute
+window, so meeting detection is the next interactive D3 check. Start/stop/abort and forced
+termination remain separate later approvals.
+
+The runnable shell now contains a dormant provider selector, but the checked-in product, packaging,
+capture, clinical, platform-origin, and vendor-provenance gates keep it on the mock without loading
+Recall. In parallel with the synthetic detection rerun, the next non-capturing D3 work is selecting
+an audited packaging toolchain and producing a signed/notarized development shell for permission and
+indicator acceptance. No SDK recording start, package approval, clinical flag, or deployment is
+approved by this plan entry.
 
 ## Parallel infrastructure backlog
 

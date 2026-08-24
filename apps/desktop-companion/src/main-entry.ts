@@ -8,6 +8,7 @@ import {
   DESKTOP_RELEASE_MANIFEST,
   isDesktopCaptureReleaseEnabled,
 } from "./config.js";
+import { createDesktopCaptureAdapter } from "./desktop-adapter-bootstrap.js";
 import { resolvePackagedRendererAsset } from "./electron-app.js";
 import {
   DesktopDeepLinkIngress,
@@ -37,7 +38,6 @@ import {
   type ElectronTrayPort,
 } from "./electron-recording-indicator.js";
 import { ElectronShutdownCoordinator } from "./electron-shutdown.js";
-import { MockDesktopCaptureAdapter } from "./mock-capture-adapter.js";
 import type { ElectronSafeStoragePort } from "./secure-state-store.js";
 import { createTrustedDesktopRuntime } from "./trusted-runtime.js";
 
@@ -96,9 +96,10 @@ async function bootstrap(): Promise<void> {
   if (captureEnabled && !protocolClientRegistered) {
     throw new Error("The desktop protocol client is unavailable");
   }
-  if (captureEnabled) {
-    throw new Error("The mock-only Electron build cannot be release-enabled");
-  }
+  const adapter = await createDesktopCaptureAdapter({
+    productEnabled: feature.enabled,
+    releaseManifest: DESKTOP_RELEASE_MANIFEST,
+  });
 
   protocol.handle("app", async (request) => {
     const asset = resolvePackagedRendererAsset(request.url, rendererRoot);
@@ -145,7 +146,7 @@ async function bootstrap(): Promise<void> {
   const runtime = createTrustedDesktopRuntime({
     platformAppOrigin: DESKTOP_RELEASE_MANIFEST.platformAppOrigin,
     platformApiOrigin: DESKTOP_RELEASE_MANIFEST.platformApiOrigin,
-    adapter: new MockDesktopCaptureAdapter(),
+    adapter,
     indicator,
     safeStorage,
     protectedStateDirectory: join(

@@ -96,6 +96,7 @@ for (const value of Object.values(policy.diagnostics)) {
 }
 assert(releaseSource.includes("captureEnabled: false"));
 assert(releaseSource.includes("clinicalReleaseApproved: false"));
+assert(releaseSource.includes("packagingEnabled: false"));
 assert(provenance.clinicalReleaseApproved === false);
 
 assert(policy.archive.asarRequired === true);

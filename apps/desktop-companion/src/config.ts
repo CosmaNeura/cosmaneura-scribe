@@ -28,6 +28,7 @@ export const DEFAULT_COMPANION_FEATURE_CONFIG: CompanionFeatureConfig = Object.f
 
 export interface DesktopReleaseManifest {
   readonly schemaVersion: 1;
+  readonly packagingEnabled: boolean;
   readonly captureEnabled: boolean;
   readonly clinicalReleaseApproved: boolean;
   readonly platformAppOrigin: string;
@@ -41,6 +42,7 @@ export interface DesktopReleaseManifest {
  */
 export const DESKTOP_RELEASE_MANIFEST: DesktopReleaseManifest = Object.freeze({
   schemaVersion: 1,
+  packagingEnabled: false,
   captureEnabled: false,
   clinicalReleaseApproved: false,
   platformAppOrigin: "https://desktop-disabled.invalid",
@@ -50,7 +52,45 @@ export const DESKTOP_RELEASE_MANIFEST: DesktopReleaseManifest = Object.freeze({
 export function isDesktopCaptureReleaseEnabled(
   manifest: DesktopReleaseManifest,
 ): boolean {
-  return manifest.captureEnabled && manifest.clinicalReleaseApproved;
+  return (
+    manifest.packagingEnabled &&
+    manifest.captureEnabled &&
+    manifest.clinicalReleaseApproved
+  );
+}
+
+export function hasRoutableDesktopPlatformOrigins(
+  manifest: DesktopReleaseManifest,
+): boolean {
+  return (
+    isRoutableHttpsOrigin(manifest.platformAppOrigin) &&
+    isRoutableHttpsOrigin(manifest.platformApiOrigin)
+  );
+}
+
+function isRoutableHttpsOrigin(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  return (
+    parsed.protocol === "https:" &&
+    parsed.origin === value &&
+    parsed.port === "" &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    hostname.includes(".") &&
+    hostname !== "127.0.0.1" &&
+    hostname !== "localhost" &&
+    hostname !== "[::1]" &&
+    !hostname.endsWith(".invalid") &&
+    !hostname.endsWith(".localhost") &&
+    !hostname.endsWith(".test") &&
+    !hostname.endsWith(".example")
+  );
 }
 
 export function parseCompanionFeatureFlag(value: string | undefined): CompanionFeatureConfig {

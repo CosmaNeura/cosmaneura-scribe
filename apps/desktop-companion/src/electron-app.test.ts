@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { resolvePackagedRendererAsset } from "./electron-app.js";
 
 describe("packaged Electron application protocol", () => {
-  it("keeps the runnable bootstrap pinned to the disabled mock adapter", async () => {
+  it("keeps the runnable bootstrap behind the dormant provider selector", async () => {
     const source = await readFile(
       new URL("./main-entry.ts", import.meta.url),
       "utf8",
@@ -15,15 +15,17 @@ describe("packaged Electron application protocol", () => {
     expect(source).toContain("DESKTOP_RELEASE_MANIFEST");
     expect(source).toContain("isDesktopCaptureReleaseEnabled");
     expect(source).toContain("createTrustedDesktopRuntime");
+    expect(source).toContain("createDesktopCaptureAdapter");
     expect(source).toContain("ElectronTrayRecordingIndicator");
     expect(source).toContain("DesktopDeepLinkRouter");
-    expect(source).toContain("new MockDesktopCaptureAdapter()");
+    expect(source).toContain("adapter,");
     expect(source).toContain("enabled: captureEnabled");
     expect(config).toContain("captureEnabled: false");
+    expect(config).toContain("packagingEnabled: false");
     expect(config).toContain("clinicalReleaseApproved: false");
     expect(config).toContain("https://desktop-disabled.invalid");
+    expect(source).not.toContain("MockDesktopCaptureAdapter");
     expect(source).not.toContain("loadVerifiedRecallSdk");
-    expect(source).not.toContain("RecallDesktopCaptureAdapter");
     expect(source).not.toContain("process.env");
   });
 

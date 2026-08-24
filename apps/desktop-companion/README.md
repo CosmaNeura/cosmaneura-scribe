@@ -3,17 +3,21 @@
 This directory contains the disabled-by-default Phase 3 foundation for an Electron desktop
 companion and a provider-neutral Recall.ai Desktop Recording SDK adapter. It is not clinically
 deployable. The checked-in application bootstrap always constructs a disabled controller with a
-metadata-only mock adapter; it does not load or invoke the Recall SDK, capture audio, receive
-transcripts, contact Recall, contact the Cosmas platform, or contain a Recall workspace API key.
+metadata-only mock adapter through a fail-closed provider selector; it does not load or invoke the
+Recall SDK, capture audio, receive transcripts, contact Recall, contact the Cosmas platform, or
+contain a Recall workspace API key.
 
 The trusted main-process integration foundation now implements the exact custom-protocol launch,
 system-browser PKCE handoff, `/desktop/v1` token and lifecycle client, and encrypted desktop state
 store. `main-entry.ts` now composes that trusted runtime with Electron `safeStorage`, the system
-browser boundary, a native tray indicator, and the mock adapter. The checked-in release manifest
-keeps both product and clinical release decisions false and uses `.invalid` origins. Deep links are
-registered and strictly parsed on macOS and Windows, but the disabled router performs no browser,
-credential, storage, API, or controller work. Synthetic tests prove the separately enabled launch →
-code exchange → local start → heartbeat → local stop → durable stop-receipt flow.
+browser boundary, a native tray indicator, and the selected adapter. The selector returns the mock
+without invoking the vendor loader unless product, packaging, capture, and clinical approvals all
+pass and both platform origins are exact routable HTTPS origins. The vendor loader then independently
+requires the reviewed provenance manifest's clinical approval. All checked-in approvals remain
+false and the origins remain `.invalid`. Deep links are registered and strictly parsed on macOS and
+Windows, but the disabled router performs no browser, credential, storage, API, or controller work.
+Synthetic tests prove the separately enabled launch → code exchange → local start → heartbeat →
+local stop → durable stop-receipt flow.
 
 Electron is the pilot shell prioritized by central architecture ADR 0018 because Recall supports it
 directly and it removes a native process bridge from the critical path. The provider-neutral
