@@ -65,8 +65,8 @@ security checks. Native CI must additionally run:
 
 - Node 24.x and npm 11.5.2: `npm ci`, plugin `test`/`typecheck`, capture-app build, then the repository
   clean-sync assertion;
-- Xcode 26.x with the iOS 26 simulator runtime (iPhone 17 is Capacitor 8.5.0's own verification
-  destination): run the `SecureQueueHostedTests` scheme on that simulator, then build the generated
+- Xcode 26.x with an iOS 26 simulator runtime: run the `SecureQueueHostedTests` scheme on a concrete
+  available iPhone simulator, then build the generated
   production `App` scheme for `iphonesimulator` with signing disabled;
 - JDK 21, Gradle 8.14.3, Android Gradle Plugin 8.13.0, and Android SDK 36: from
   `apps/capture/android`, run
