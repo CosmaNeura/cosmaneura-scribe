@@ -104,6 +104,7 @@ If the new revision fails before any durable records are accepted, route traffic
 Container App revision and set `use_postgres_repository = false`. Do not destroy the database.
 
 After durable writes begin, application rollback must preserve the PostgreSQL repository setting.
-Schema downgrade is a separate maintenance operation and is allowed only after confirming that the
-target application understands the older schema and that no retained data would be lost. Both the
-server and application database have `prevent_destroy` lifecycle protection.
+Do not use schema downgrade as application rollback; leave additive structures dormant. Any later
+removal requires a separately approved contract-cleanup change, founder approval, and proof that no
+retained data would be lost. Both the server and application database have `prevent_destroy`
+lifecycle protection.

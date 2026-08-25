@@ -17,11 +17,12 @@ point extraction remain in the existing Cosmaneura engine.
 - A valid consent record precedes every audio-processing path, including tests and internal tools.
 - Every row and query is tenant-scoped. Tenant identity comes from verified request context, never a body.
 - Every mutating endpoint requires an `Idempotency-Key` and writes a metadata-only audit event.
-- Every schema change includes an Alembic upgrade and downgrade.
+- Every schema change includes an Alembic upgrade and a reviewed, rung-specific recovery path.
+  Additive expand recovery leaves the new structure dormant; removal belongs only in a separately
+  approved contract-cleanup change.
 - Generate `openapi/openapi.json` from FastAPI. Never hand-edit it.
 
 ## Definition of done
 
-Tests, lint, and types pass; OpenAPI is regenerated; migrations are reversible; no PHI appears in
-logs/errors; an ADR is added for architectural choices.
-
+Tests, lint, and types pass; OpenAPI is regenerated; migration recovery is defined and tested for
+the declared rung; no PHI appears in logs/errors; an ADR is added for architectural choices.
