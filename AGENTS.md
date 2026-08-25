@@ -34,6 +34,15 @@ unknown path, unavailable accepted baseline/history/API, or classifier failure
 selects deployment. Manual capture-preview acceptance is not a deployment or
 a production authorization.
 
+The independently reviewed, path-filtered `Core API image provenance`
+workflow runs automatically for relevant pull requests and `main` pushes. It
+builds the exact source only in the CI runner, binds source/tree and
+image/material/SBOM evidence, and runs a hardened non-root in-memory smoke.
+Its six evidence files are unsigned and retained for 14 days. It does not
+publish or deploy the image, claim reproducibility or database/deployment
+readiness, or produce a promotable immutable artifact. It is not a required
+branch-ruleset context.
+
 There is no production Scribe deployment workflow. Production promotion is
 therefore unavailable, not implied by these docs. Before one is enabled it
 must accept only a merged `main` commit and an already-built artifact, and only
