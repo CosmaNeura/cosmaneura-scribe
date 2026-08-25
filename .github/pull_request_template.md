@@ -1,31 +1,65 @@
-## What & why
+<!-- deploy-kit v0.2.1 -->
 
-<!-- 1-3 sentences. Link the flight plan if this is feature work: -->
-Flight plan: docs/flight-plans/<feature>.md
+## Outcome and scope
 
-## Risk tier
+<!-- State one deployable outcome and the explicit non-goals. -->
 
-- [ ] **Tier 0** — copy/styling/docs/config text/additive UI behind existing flag
-- [ ] **Tier 1** — new logic/endpoints/additive schema (flag + flight plan required)
-- [ ] **Tier 2** — auth / billing / patient-data / destructive migration (full gates)
+## Risk class
 
-### Tier 1+ checklist
-- [ ] Behind feature flag: `ff_...`
-- [ ] Flight plan linked above and up to date
+- [ ] **Tier 0 — routine:** no deployment-surface, schema/data, auth/session,
+      billing, PHI, security-boundary, or external-contract impact
+- [ ] **Tier 1 — deployment-sensitive/reversible:** deployment or release
+      behavior changes but has a deliberate recovery move
+- [ ] **Tier 2 — irreversible/high blast radius:** data destruction/scale,
+      auth, billing, PHI, security, production identity/network/promotion,
+      breaking contract, or broad infrastructure impact
 
-### Tier 2 checklist
-- [ ] Migration ladder rung: `expand` / `dual-write` / `backfill` / `shadow` / `cut-reads` / `contract` (one rung only)
-- [ ] Rehearsal run against de-identified prod snapshot: green (link)
-- [ ] Rollback move written below
-- [ ] Founder sign-off
+Classification reason:
 
-## Rollback move
+## Evidence required for every code change
 
-<!-- The exact action if this change misbehaves in production: -->
+- [ ] Repository CI is green for the final substantive push
+- [ ] Independent non-implementer agent review identifies the final reviewed
+      commit: <!-- link to durable check/comment -->
+- [ ] Agent findings are resolved or explicitly accepted in the PR
+- [ ] Existing GitHub approval requirements are satisfied in GitHub
 
-## Change record (HIPAA change management — auto-audit trail)
+Agent evidence is not a GitHub approval. Do not write a person's name here as
+proof of review.
 
-- **Systems/data affected:**
-- **PHI impact:** none / read path / write path / schema
-- **Tested by:** CI + <manual/canary/rehearsal as applicable>
-- **Reviewed by:**
+- [ ] This PR is one independently deployable outcome; if not, link the
+      dependency-ordered split/stack decision
+
+## Conditional controls
+
+<!-- Check only what applies; mark the rest N/A with a reason. -->
+
+- **User-visible reversible behavior:** feature-flag/release-control name,
+  owner, expiry, and first cohort; otherwise N/A
+- **Flight plan:** link when Tier 2, schema/data, cross-repo, multi-deploy, or
+  cohort rollout; otherwise N/A
+- **Schema/data:** one rung label, PHI-safe rehearsal evidence, and
+  rung-specific recovery; otherwise N/A
+- **Cross-repo:** contract version and receiver-before-sender order; otherwise
+  N/A
+- **Security acceptance:** record link and allowed environment/data boundary;
+  otherwise N/A
+
+## Deployment and recovery
+
+- Deployment/runtime effect:
+- Current deployed-state comparison required: yes/no; evidence or reason:
+- Health/canary signal:
+- Exact rollback or recovery move:
+- Previous known-good artifact/data boundary:
+
+Scribe has no production promotion workflow today. Any future production
+promotion happens only after merge through a founder-only manual workflow.
+That run is self-authorization, not a pre-merge checkbox or independent review.
+
+## Change record
+
+- Systems and data affected:
+- PHI impact: none / read / write / schema-data
+- Tests and rehearsal actually run:
+- Documentation or runbook changed:
