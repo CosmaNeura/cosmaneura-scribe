@@ -16,6 +16,11 @@ class SessionStatus(StrEnum):
     FAILED = "failed"
 
 
+class SessionIngestMode(StrEnum):
+    CHUNK_UPLOAD = "chunk_upload"
+    EXTERNAL_ASYNC_TRANSCRIPT = "external_async_transcript"
+
+
 SESSION_STATUS_TRANSITIONS: Final[Mapping[SessionStatus, frozenset[SessionStatus]]] = (
     MappingProxyType(
         {
@@ -41,8 +46,21 @@ SESSION_STATUS_TRANSITIONS: Final[Mapping[SessionStatus, frozenset[SessionStatus
 )
 
 
-def can_transition_session(old: SessionStatus, new: SessionStatus) -> bool:
-    return old == new or new in SESSION_STATUS_TRANSITIONS[old]
+def can_transition_session(
+    old: SessionStatus,
+    new: SessionStatus,
+    *,
+    ingest_mode: SessionIngestMode = SessionIngestMode.CHUNK_UPLOAD,
+) -> bool:
+    return (
+        old == new
+        or new in SESSION_STATUS_TRANSITIONS[old]
+        or (
+            ingest_mode == SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT
+            and old == SessionStatus.CREATED
+            and new == SessionStatus.TRANSCRIPT_READY
+        )
+    )
 
 
 def render_transition_predicate(
