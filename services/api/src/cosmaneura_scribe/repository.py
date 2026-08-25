@@ -220,6 +220,12 @@ class DeliverySuccessCompletion:
     changed: bool
 
 
+@dataclass(frozen=True)
+class ConsentRevocationResult:
+    consent: ConsentRecord
+    changed: bool
+
+
 class DeliverySessionSyncResult(StrEnum):
     SYNCHRONIZED = "synchronized"
     ALREADY_SYNCHRONIZED = "already_synchronized"
@@ -248,7 +254,15 @@ class Repository(Protocol):
 
     async def get_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None: ...
 
+    async def lock_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None: ...
+
     async def add_consent(self, tenant_id: UUID, consent: ConsentRecord) -> None: ...
+
+    async def revoke_consent(
+        self,
+        tenant_id: UUID,
+        consent_id: UUID,
+    ) -> ConsentRevocationResult | None: ...
 
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None: ...
 
@@ -656,8 +670,46 @@ class InMemoryRepository:
     async def get_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None:
         return self.consents.get((tenant_id, consent_id))
 
+    async def lock_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None:
+        # The in-memory transaction lock already serializes consent reads and mutations.
+        return await self.get_consent(tenant_id, consent_id)
+
     async def add_consent(self, tenant_id: UUID, consent: ConsentRecord) -> None:
         self.consents[(tenant_id, consent.id)] = consent
+
+    async def revoke_consent(
+        self,
+        tenant_id: UUID,
+        consent_id: UUID,
+    ) -> ConsentRevocationResult | None:
+        row_key = (tenant_id, consent_id)
+        current = self.consents.get(row_key)
+        if current is None:
+            return None
+        changed = current.revoked_at is None
+        now = datetime.now(UTC)
+        revoked = current.model_copy(update={"revoked_at": now}) if changed else current
+        self.consents[row_key] = revoked
+        for lease_key, lease in tuple(self.capture_leases.items()):
+            session = self.sessions.get(lease_key)
+            if (
+                lease_key[0] == tenant_id
+                and session is not None
+                and session.consent_record_id == consent_id
+                and lease.closed_at is None
+                and lease.expires_at > now
+            ):
+                self.capture_leases[lease_key] = CaptureLeaseRecord(
+                    lease_id=lease.lease_id,
+                    session_id=lease.session_id,
+                    generation=lease.generation,
+                    issued_at=lease.issued_at,
+                    renewed_at=lease.renewed_at,
+                    expires_at=lease.expires_at,
+                    closed_at=now,
+                    close_reason=CaptureLeaseCloseReason.CONSENT_REVOKED,
+                )
+        return ConsentRevocationResult(consent=revoked, changed=changed)
 
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
         return self.sessions.get((tenant_id, session_id))
@@ -667,9 +719,11 @@ class InMemoryRepository:
         return await self.get_session(tenant_id, session_id)
 
     async def add_session(self, tenant_id: UUID, session: CaptureSession) -> None:
+        await self.lock_consent(tenant_id, session.consent_record_id)
         self.sessions[(tenant_id, session.id)] = session
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
+        await self.lock_consent(tenant_id, session.consent_record_id)
         current = self.sessions.get((tenant_id, session.id))
         if current is not None and not can_transition_session(current.status, session.status):
             raise ValueError(
@@ -1528,6 +1582,7 @@ class InMemoryRepository:
         session = self.sessions.get((tenant_id, session_id))
         if session is None:
             return DeliverySessionSyncResult.SESSION_UNAVAILABLE
+        await self.lock_consent(tenant_id, session.consent_record_id)
         if session.status == SessionStatus.HANDED_OFF:
             return DeliverySessionSyncResult.ALREADY_SYNCHRONIZED
         if not can_transition_session(session.status, SessionStatus.HANDED_OFF):

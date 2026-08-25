@@ -42,6 +42,7 @@ from .repository import (
     ChunkReservationBatch,
     ChunkReservationDraft,
     ChunkReservationRecord,
+    ConsentRevocationResult,
     DeliveryClaimPolicy,
     DeliverySessionSyncResult,
     DeliverySuccessCompletion,
@@ -257,6 +258,18 @@ class PostgresRepository:
         )
         return ConsentRecord.model_validate(row) if row is not None else None
 
+    async def _lock_consent_scope(self, tenant_id: UUID, consent_id: UUID) -> None:
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"scribe-consent:{tenant_id}:{consent_id}"},
+        )
+
+    async def lock_consent(self, tenant_id: UUID, consent_id: UUID) -> ConsentRecord | None:
+        # A transaction advisory lock gives every least-privilege principal the same
+        # serialization point without granting workers permission to mutate consent.
+        await self._lock_consent_scope(tenant_id, consent_id)
+        return await self.get_consent(tenant_id, consent_id)
+
     async def add_consent(self, tenant_id: UUID, consent: ConsentRecord) -> None:
         await self._session.execute(
             text(
@@ -281,6 +294,59 @@ class PostgresRepository:
             },
         )
 
+    async def revoke_consent(
+        self,
+        tenant_id: UUID,
+        consent_id: UUID,
+    ) -> ConsentRevocationResult | None:
+        current = await self.lock_consent(tenant_id, consent_id)
+        if current is None:
+            return None
+        changed = current.revoked_at is None
+        revoked = current
+        if changed:
+            row = (
+                (
+                    await self._session.execute(
+                        text(
+                            """
+                            UPDATE consent_records
+                            SET revoked_at = statement_timestamp()
+                            WHERE tenant_id = :tenant_id AND id = :id AND revoked_at IS NULL
+                            RETURNING id, appointment_id, practitioner_id, patient_id, modality,
+                                      participant_regions, method, all_parties_consented,
+                                      granted_at, evidence_object_id, policy_version, revoked_at
+                            """
+                        ),
+                        {"tenant_id": tenant_id, "id": consent_id},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            revoked = ConsentRecord.model_validate(row)
+        await self._session.execute(
+            text(
+                """
+                UPDATE capture_leases AS lease
+                SET closed_at = statement_timestamp(), close_reason = :reason
+                FROM scribe_sessions AS scribe_session
+                WHERE lease.tenant_id = :tenant_id
+                  AND lease.closed_at IS NULL
+                  AND lease.expires_at > statement_timestamp()
+                  AND scribe_session.tenant_id = lease.tenant_id
+                  AND scribe_session.id = lease.session_id
+                  AND scribe_session.consent_record_id = :consent_id
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "consent_id": consent_id,
+                "reason": CaptureLeaseCloseReason.CONSENT_REVOKED.value,
+            },
+        )
+        return ConsentRevocationResult(consent=revoked, changed=changed)
+
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
         row = await self._one_or_none(
             """
@@ -295,6 +361,18 @@ class PostgresRepository:
         return CaptureSession.model_validate(row) if row is not None else None
 
     async def lock_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
+        reference = await self._one_or_none(
+            """
+            SELECT consent_record_id
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :id
+            """,
+            tenant_id=tenant_id,
+            id=session_id,
+        )
+        if reference is None:
+            return None
+        await self._lock_consent_scope(tenant_id, reference["consent_record_id"])
         row = await self._one_or_none(
             """
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
@@ -309,6 +387,7 @@ class PostgresRepository:
         return CaptureSession.model_validate(row) if row is not None else None
 
     async def add_session(self, tenant_id: UUID, session: CaptureSession) -> None:
+        await self.lock_consent(tenant_id, session.consent_record_id)
         await self._session.execute(
             text(
                 """
@@ -330,6 +409,7 @@ class PostgresRepository:
         )
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
+        await self.lock_consent(tenant_id, session.consent_record_id)
         await self._session.execute(
             text(
                 """
@@ -383,6 +463,18 @@ class PostgresRepository:
         tenant_id: UUID,
         session_id: UUID,
     ) -> CaptureContext | None:
+        reference = await self._one_or_none(
+            """
+            SELECT consent_record_id
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        if reference is None:
+            return None
+        await self._lock_consent_scope(tenant_id, reference["consent_record_id"])
         row = await self._one_or_none(
             """
             SELECT
@@ -429,7 +521,7 @@ class PostgresRepository:
              AND lease.session_id = scribe_session.id
             WHERE scribe_session.tenant_id = :tenant_id
               AND scribe_session.id = :session_id
-            FOR UPDATE OF consent, scribe_session
+            FOR UPDATE OF scribe_session
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -1973,6 +2065,18 @@ class PostgresRepository:
         tenant_id: UUID,
         session_id: UUID,
     ) -> DeliverySessionSyncResult:
+        row = await self._one_or_none(
+            """
+            SELECT consent_record_id
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        if row is None:
+            return DeliverySessionSyncResult.SESSION_UNAVAILABLE
+        await self._lock_consent_scope(tenant_id, row["consent_record_id"])
         row = await self._one_or_none(
             """
             SELECT status

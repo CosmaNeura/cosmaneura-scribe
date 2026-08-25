@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 from cosmaneura_scribe.postgres_repository import PostgresRepository, build_postgres_provider
 from cosmaneura_scribe.repository import (
+    ConsentRevocationResult,
     IdempotencyClaimUnavailableError,
     IdempotencyConflictError,
     UploadGrantRecord,
@@ -26,6 +28,7 @@ from cosmaneura_scribe.schemas import (
 )
 from cosmaneura_scribe.session_state_v1 import can_transition_session
 from cosmaneura_scribe.settings import Settings
+from cosmaneura_scribe.transcription_worker import TranscriptionWorker, TranscriptionWorkerError
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -252,6 +255,137 @@ def test_repository_persists_across_provider_restart_and_isolates_tenants(
             assert await repository.transcript_for(other_tenant_id, session_id) is None
             assert await repository.transcription_job_for(other_tenant_id, session_id) is None
         await restarted.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.postgres
+def test_consent_lock_linearizes_session_creation_and_worker_with_revocation(
+    postgres_urls: tuple[str, str],
+) -> None:
+    _, app_url = postgres_urls
+    tenant_id = uuid4()
+    now = datetime.now(UTC)
+    consent = ConsentRecord(
+        id=uuid4(),
+        appointment_id="appointment-consent-lock",
+        practitioner_id="practitioner-consent-lock",
+        patient_id="patient-consent-lock",
+        modality=CaptureModality.VIRTUAL,
+        participant_regions={"FL"},
+        method=ConsentMethod.PRE_VISIT_FORM,
+        all_parties_consented=True,
+        granted_at=now,
+        policy_version="all-party-v1",
+    )
+    session = CaptureSession(
+        id=uuid4(),
+        appointment_id=consent.appointment_id,
+        practitioner_id=consent.practitioner_id,
+        patient_id=consent.patient_id,
+        consent_record_id=consent.id,
+        modality=consent.modality,
+        status=SessionStatus.CREATED,
+        created_at=now,
+    )
+
+    async def scenario() -> None:
+        provider = build_postgres_provider(
+            Settings(
+                repository_backend="postgres",
+                database_url=app_url,
+                database_ssl=False,
+                database_pool_size=4,
+                database_max_overflow=0,
+            )
+        )
+        consent_locked = asyncio.Event()
+        revocation_started = asyncio.Event()
+        allow_session_commit = asyncio.Event()
+        try:
+            async with provider.transaction(tenant_id) as store:
+                await store.add_consent(tenant_id, consent)
+
+            async def create_session_while_locked() -> None:
+                async with provider.transaction(tenant_id) as store:
+                    current = await store.lock_consent(tenant_id, consent.id)
+                    assert current is not None and current.revoked_at is None
+                    consent_locked.set()
+                    await allow_session_commit.wait()
+                    await store.add_session(tenant_id, session)
+
+            async def revoke_after_lock() -> ConsentRevocationResult | None:
+                await consent_locked.wait()
+                async with provider.transaction(tenant_id) as store:
+                    revocation_started.set()
+                    return await store.revoke_consent(tenant_id, consent.id)
+
+            create_task = asyncio.create_task(create_session_while_locked())
+            await consent_locked.wait()
+            revoke_task = asyncio.create_task(revoke_after_lock())
+            await revocation_started.wait()
+            await asyncio.sleep(0.05)
+            assert not revoke_task.done()
+            allow_session_commit.set()
+            await create_task
+            result = await asyncio.wait_for(revoke_task, timeout=2)
+            assert result is not None and result.changed is True
+
+            async with provider.transaction(tenant_id) as store:
+                persisted_consent = await store.get_consent(tenant_id, consent.id)
+                persisted_session = await store.get_session(tenant_id, session.id)
+            assert persisted_consent is not None
+            assert persisted_consent.revoked_at == result.consent.revoked_at
+            assert persisted_session == session
+
+            revoked_first = consent.model_copy(update={"id": uuid4()})
+            worker_session = session.model_copy(
+                update={
+                    "id": uuid4(),
+                    "consent_record_id": revoked_first.id,
+                    "status": SessionStatus.UPLOADED,
+                }
+            )
+            candidate_session = session.model_copy(
+                update={"id": uuid4(), "consent_record_id": revoked_first.id}
+            )
+            async with provider.transaction(tenant_id) as store:
+                await store.add_consent(tenant_id, revoked_first)
+                await store.add_session(tenant_id, worker_session)
+
+            async def create_after_revocation_starts() -> bool:
+                async with provider.transaction(tenant_id) as store:
+                    current = await store.lock_consent(tenant_id, revoked_first.id)
+                    if current is None or current.revoked_at is not None:
+                        return False
+                    await store.add_session(tenant_id, candidate_session)
+                    return True
+
+            worker = TranscriptionWorker(
+                repositories=provider,
+                assembler=cast(Any, object()),
+                transcriber=cast(Any, object()),
+            )
+            async with provider.transaction(tenant_id) as store:
+                revocation = await store.revoke_consent(tenant_id, revoked_first.id)
+                assert revocation is not None and revocation.changed
+                create_after = asyncio.create_task(create_after_revocation_starts())
+                worker_after = asyncio.create_task(
+                    worker.process(tenant_id=tenant_id, session_id=worker_session.id)
+                )
+                await asyncio.sleep(0.05)
+                assert not create_after.done()
+                assert not worker_after.done()
+
+            assert await asyncio.wait_for(create_after, timeout=2) is False
+            with pytest.raises(TranscriptionWorkerError, match="consent_invalid"):
+                await asyncio.wait_for(worker_after, timeout=2)
+            async with provider.transaction(tenant_id) as store:
+                assert await store.get_session(tenant_id, candidate_session.id) is None
+                assert await store.transcription_job_for(tenant_id, worker_session.id) is None
+        finally:
+            allow_session_commit.set()
+            await provider.close()
 
     asyncio.run(scenario())
 
