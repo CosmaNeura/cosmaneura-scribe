@@ -236,6 +236,7 @@ jobs:
   capture-ios:
     needs: capture-web
     runs-on: macos-26
+    timeout-minutes: 30
     env:
       DEPLOY_SHA: ${{ github.sha }}
     steps:
@@ -246,13 +247,64 @@ jobs:
       - run: npm install --global npm@11.5.2
       - run: npm ci
       - run: npm run cap:sync:check:ios
+      - name: Select and ready concrete iOS simulator
+        id: ios-simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          inventory_path="${RUNNER_TEMP}/ios-simulator-inventory.json"
+          selector_error_path="${RUNNER_TEMP}/ios-simulator-selector.error"
+          max_attempts=13
+
+          for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
+            if xcrun simctl list devices available --json >"${inventory_path}"; then
+              if simulator_selection="$(
+                node .github/scripts/select-ios-simulator.mjs \
+                  <"${inventory_path}" \
+                  2>"${selector_error_path}"
+              )"; then
+                IFS=$'\t' read -r simulator_udid simulator_state <<<"${simulator_selection}"
+                echo "Selected concrete iOS simulator ${simulator_udid} (${simulator_state})"
+
+                if [[ "${simulator_state}" == "Shutdown" ]]; then
+                  if ! xcrun simctl boot "${simulator_udid}"; then
+                    echo "::error::Failed to boot selected iOS simulator ${simulator_udid}"
+                    exit 1
+                  fi
+                elif [[ "${simulator_state}" != "Booted" ]]; then
+                  echo "::error::Selector returned unstable iOS simulator state ${simulator_state}"
+                  exit 1
+                fi
+
+                if ! xcrun simctl bootstatus "${simulator_udid}" -b; then
+                  echo "::error::Selected iOS simulator ${simulator_udid} did not become boot-ready"
+                  exit 1
+                fi
+
+                printf 'udid=%s\n' "${simulator_udid}" >>"${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              selector_error="$(<"${selector_error_path}")"
+            else
+              selector_error="xcrun simctl could not enumerate devices"
+            fi
+
+            echo "::warning::Concrete iPhone simulator unavailable (attempt ${attempt}/${max_attempts}): ${selector_error}"
+            if [[ "${attempt}" -lt "${max_attempts}" ]]; then
+              sleep 10
+            fi
+          done
+
+          echo "::error::No concrete available iPhone simulator was published after 120 seconds"
+          xcrun simctl list devices available || true
+          exit 1
       - name: Test iOS secure queue
-        run: >-
-          xcodebuild test
-          -project ios/Tests/SecureQueueHostedTests.xcodeproj
-          -scheme SecureQueueHostedTests
-          -configuration Debug
-          -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest'
+        run: |
+          xcodebuild test \
+            -project ios/Tests/SecureQueueHostedTests.xcodeproj \
+            -scheme SecureQueueHostedTests \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,id=${{ steps.ios-simulator.outputs.udid }}'
         working-directory: apps/capture/native-plugins/secure-queue
       - run: >-
           xcodebuild
