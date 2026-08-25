@@ -260,6 +260,7 @@ async def test_runtime_permissions_revoke_stale_access_before_exact_grants(
     assert "audio_chunk_reservations" in grants
     assert "audio_upload_authorization_receipts" in grants
     assert "GRANT UPDATE (generation, renewed_at, expires_at, closed_at, close_reason)" in grants
+    assert "GRANT UPDATE (revoked_at) ON consent_records" in grants
     assert "GRANT INSERT ON audit_events" in grants
     assert "DELETE" not in grants
     assert provider.closed is True
@@ -288,6 +289,7 @@ async def test_transcription_principal_receives_only_worker_table_permissions(
     assert all("GRANT" not in statement for statement in statements[:3])
     grants = "\n".join(statements)
     assert "GRANT SELECT ON consent_records, audio_chunks, session_audio_keys" in grants
+    assert "GRANT UPDATE (revoked_at) ON consent_records" not in grants
     assert "GRANT INSERT ON transcripts" in grants
     assert "GRANT SELECT, UPDATE ON scribe_sessions" in grants
     assert "GRANT SELECT, INSERT, UPDATE ON transcription_jobs" in grants
@@ -333,6 +335,7 @@ async def test_delivery_reconciler_receives_only_approved_column_permissions(
     assert "ON scribe_sessions" in grants
     assert "ON transcripts" in grants
     assert "ON transcript_deliveries" in grants
+    assert "GRANT UPDATE (revoked_at) ON consent_records" not in grants
     assert "GRANT UPDATE (status, attempt_count, platform_transcript_id" in grants
     assert "GRANT UPDATE (status) ON scribe_sessions" in grants
     assert "GRANT INSERT (id, tenant_id, action, entity_type, entity_id)" in grants
@@ -387,6 +390,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
         | {("audit_events", "INSERT")}
     )
     runtime_column_expected = {
+        ("consent_records", "revoked_at", "UPDATE"),
         *(("capture_leases", column, "UPDATE") for column in (
             "generation",
             "renewed_at",
@@ -395,6 +399,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             "close_reason",
         )),
     }
+    worker_column_expected: set[tuple[str, str, str]] = set()
     worker_expected = {
         (table_name, "SELECT")
         for table_name in (
@@ -533,6 +538,10 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 == runtime_column_expected
             )
             assert await _role_table_privileges(connection, WORKER_ROLE) == worker_expected
+            assert (
+                await _role_column_privileges(connection, WORKER_ROLE)
+                == worker_column_expected
+            )
             assert await _role_table_privileges(connection, RECONCILER_ROLE) == set()
             assert (
                 await _role_column_privileges(connection, RECONCILER_ROLE)

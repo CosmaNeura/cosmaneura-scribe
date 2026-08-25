@@ -321,7 +321,7 @@ async def _assert_session_consent(
     session: CaptureSession,
     policy: ConsentPolicy,
 ) -> None:
-    consent = await store.get_consent(tenant_id, session.consent_record_id)
+    consent = await store.lock_consent(tenant_id, session.consent_record_id)
     if consent is None:
         raise HTTPException(status_code=409, detail="A valid consent record is required.")
     try:
@@ -506,6 +506,41 @@ async def create_consent(
     return record
 
 
+@app.post("/v1/consents/{consent_id}/revocations", response_model=ConsentRecord)
+async def revoke_consent(
+    consent_id: UUID,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    store: Repository,
+) -> ConsentRecord:
+    fingerprint = _fingerprint({"consent_id": str(consent_id)})
+    previous_id = await _idempotent_entity(
+        store,
+        tenant_id,
+        "consent.revoke",
+        idempotency_key,
+        fingerprint,
+        consent_id,
+    )
+    if previous_id is not None:
+        previous = await store.lock_consent(tenant_id, previous_id)
+        if previous is None:
+            raise HTTPException(status_code=404, detail="Consent record not found.")
+        return previous
+
+    result = await store.revoke_consent(tenant_id, consent_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Consent record not found.")
+    if result.changed:
+        await store.audit(
+            tenant_id=tenant_id,
+            action="consent.revoked",
+            entity_type="consent_record",
+            entity_id=consent_id,
+        )
+    return result.consent
+
+
 @app.post("/v1/sessions", response_model=CaptureSession, status_code=201)
 async def create_session(
     payload: SessionCreate,
@@ -514,7 +549,7 @@ async def create_session(
     store: Repository,
     policy: Policy,
 ) -> CaptureSession:
-    consent = await store.get_consent(tenant_id, payload.consent_record_id)
+    consent = await store.lock_consent(tenant_id, payload.consent_record_id)
     if consent is None:
         raise HTTPException(status_code=409, detail="A valid consent record is required.")
     try:
@@ -1496,8 +1531,8 @@ async def deliver_transcript_to_master_platform(
     handoff: Handoff,
     claim_policy: DeliveryPolicy,
 ) -> TranscriptDelivery:
-    # Commit the attempt before making the network call. A crash after this
-    # point leaves a pending receipt that is safe to retry with the same key.
+    # The committed attempt is the durable in-flight boundary. Revocation can
+    # stop later claims, while a crash leaves this attempt safe to retry.
     attempted: DeliveryAttempt | None = None
     delivered_replay: TranscriptDelivery | None = None
     payload: MasterTranscriptDeliveryRequest | None = None

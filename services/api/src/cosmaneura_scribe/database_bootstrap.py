@@ -168,6 +168,9 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                 )
             )
             await connection.execute(
+                text(f"GRANT UPDATE (revoked_at) ON consent_records TO {role}")
+            )
+            await connection.execute(
                 text(f"GRANT SELECT, INSERT, UPDATE ON scribe_sessions TO {role}")
             )
             await connection.execute(

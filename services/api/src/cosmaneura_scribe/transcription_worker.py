@@ -163,6 +163,7 @@ class TranscriptionWorker:
             chunks = tuple(await store.chunks_for(tenant_id, session_id))
             if not chunks:
                 raise TranscriptionWorkerError("audio_chunks_missing")
+            # Committing this leased claim is the durable in-flight boundary.
             job = await store.claim_transcription_job(
                 tenant_id,
                 session_id,
@@ -445,19 +446,20 @@ class TranscriptionWorker:
             }
         )
         async with self._repositories.transaction(tenant_id) as store:
+            session = None
+            if is_terminal:
+                session = await store.lock_session(tenant_id, session_id)
             if not await store.update_transcription_job(
                 tenant_id,
                 failed,
                 expected_lease_token=lease_token,
             ):
                 raise TranscriptionWorkerError("transcription_lease_lost")
-            if is_terminal:
-                session = await store.lock_session(tenant_id, session_id)
-                if session is not None and session.status == SessionStatus.PROCESSING:
-                    await store.update_session(
-                        tenant_id,
-                        session.model_copy(update={"status": SessionStatus.FAILED}),
-                    )
+            if session is not None and session.status == SessionStatus.PROCESSING:
+                await store.update_session(
+                    tenant_id,
+                    session.model_copy(update={"status": SessionStatus.FAILED}),
+                )
             await store.audit(
                 tenant_id=tenant_id,
                 action=(
@@ -493,7 +495,7 @@ class TranscriptionWorker:
         tenant_id: UUID,
         session: CaptureSession,
     ) -> None:
-        consent = await store.get_consent(tenant_id, session.consent_record_id)
+        consent = await store.lock_consent(tenant_id, session.consent_record_id)
         if consent is None:
             raise ConsentError
         self._consent_policy.validate_session(
