@@ -24,11 +24,15 @@ that work; it does not replace decomposition or deployed-state reconciliation.
 
 CI also exercises disposable PostgreSQL, OpenTofu, capture web, Android, iOS,
 and browser E2E jobs. The `capture-preview` Function/SWA is a synthetic,
-non-PHI surface. When `CAPTURE_PREVIEW_DEPLOY_ENABLED` is true, successful
-`main` CI triggers deployment only when the cumulative change since the last
-accepted preview contains a preview input or an unknown path. Explicitly known
-non-preview-only changes stop after scope classification. Manual
-capture-preview acceptance is not a deployment or a production authorization.
+non-PHI surface. The repository variable `CAPTURE_PREVIEW_DEPLOY_ENABLED` is
+currently `false`, so successful `main` CI cannot enter the preview scope or
+deployment jobs. If that variable is explicitly enabled, the fail-safe scope
+classifier compares the exact current `main` commit with the newest prior
+workflow run whose `accept` job succeeded. Explicitly known non-preview-only
+cumulative changes stop after classification; a preview input, mixed or
+unknown path, unavailable accepted baseline/history/API, or classifier failure
+selects deployment. Manual capture-preview acceptance is not a deployment or
+a production authorization.
 
 There is no production Scribe deployment workflow. Production promotion is
 therefore unavailable, not implied by these docs. Before one is enabled it
@@ -119,14 +123,15 @@ deployed independently.
 - Cross-repo work is receiver-first and backward-compatible.
 - Each PR should be reviewable in roughly ten minutes and produce one
   deployable outcome. Prefer a dependency-ordered stack to a mixed tranche.
-- The separately proposed `change-budget` check blocks PRs over 2,000 changed
-  lines or 50 files. Once required, change its thresholds only in a separate
-  reviewed policy PR; an oversized change cannot waive its own limit.
+- The required `change-budget` check uses trusted GitHub PR metadata without
+  checking out PR code and blocks PRs over 2,000 changed lines or 50 files.
+  Change its thresholds only in a separate reviewed policy PR; an oversized
+  change cannot waive its own limit.
 - Every PR records tier, tests, exact recovery, agent-review evidence, and only
   the conditional controls that apply.
 - The capture-preview scope gate must remain fail-safe: unknown paths, missing
   history, API/classifier errors, and mixed preview changes deploy. Maintain
   its exact non-preview list whenever build inputs or workflows change.
 - No workflow currently validates tier, flight-plan, or agent-review evidence;
-  those remain documented process controls. The change-budget check is the
-  first narrow automated scope gate and does not claim to validate semantics.
+  those remain documented process controls. The required change-budget check
+  is a narrow automated size gate and does not claim to validate semantics.
