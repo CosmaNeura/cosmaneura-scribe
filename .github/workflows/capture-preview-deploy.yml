@@ -10,15 +10,172 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
-  build:
+  deployment_scope:
     if: >-
       vars.CAPTURE_PREVIEW_DEPLOY_ENABLED == 'true' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      baseline: ${{ steps.classify.outputs.baseline }}
+      deploy: ${{ steps.classify.outputs.deploy }}
+      reason: ${{ steps.classify.outputs.reason }}
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.DEPLOY_SHA }}
+      - name: Require the exact current main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${DEPLOY_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "${DEPLOY_SHA}"
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          test "${current_main}" = "${DEPLOY_SHA}"
+      - name: Classify capture preview deployment scope
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emit_deploy() {
+            printf 'baseline=unavailable\ndeploy=true\nreason=%s\n' \
+              "$1" >> "${GITHUB_OUTPUT}"
+          }
+
+          candidate_runs="$(mktemp)"
+          sorted_runs="$(mktemp)"
+          jobs_response="$(mktemp)"
+          classification="$(mktemp)"
+          trap 'rm -f -- "${candidate_runs}" "${sorted_runs}" "${jobs_response}" "${classification}"' EXIT
+
+          if ! gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/capture-preview-deploy.yml/runs?branch=main&status=completed&per_page=100" \
+            --jq '
+              .workflow_runs[]
+              | select(.conclusion == "success")
+              | select(.event == "workflow_run")
+              | select(.head_branch == "main")
+              | [.run_number, .id, .head_sha]
+              | @tsv
+            ' > "${candidate_runs}"; then
+            emit_deploy 'workflow_history_unavailable'
+            exit 0
+          fi
+          if ! LC_ALL=C sort -t $'\t' -k1,1nr \
+            "${candidate_runs}" > "${sorted_runs}"; then
+            emit_deploy 'workflow_history_invalid'
+            exit 0
+          fi
+
+          baseline_sha=''
+          while IFS=$'\t' read -r run_number run_id candidate_sha extra; do
+            if [[ ! "${run_number}" =~ ^[0-9]+$ || \
+              ! "${run_id}" =~ ^[0-9]+$ || \
+              ! "${candidate_sha}" =~ ^[0-9a-f]{40}$ || \
+              -n "${extra}" ]]; then
+              emit_deploy 'workflow_history_invalid'
+              exit 0
+            fi
+            if [[ "${run_id}" == "${GITHUB_RUN_ID}" ]]; then
+              continue
+            fi
+            if ! gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
+              > "${jobs_response}"; then
+              emit_deploy 'workflow_jobs_unavailable'
+              exit 0
+            fi
+            if ! jq --exit-status '
+              type == "object" and
+              (.total_count | type == "number") and
+              (.jobs | type == "array") and
+              .total_count <= (.jobs | length)
+            ' "${jobs_response}" > /dev/null; then
+              emit_deploy 'workflow_jobs_invalid'
+              exit 0
+            fi
+
+            if ! accept_count="$(jq \
+              '[.jobs[] | select(.name == "accept")] | length' \
+              "${jobs_response}")"; then
+              emit_deploy 'workflow_jobs_invalid'
+              exit 0
+            fi
+            if [[ ! "${accept_count}" =~ ^[0-9]+$ || "${accept_count}" -gt 1 ]]; then
+              emit_deploy 'accept_job_ambiguous'
+              exit 0
+            fi
+            if [[ "${accept_count}" == '1' ]]; then
+              if ! accept_conclusion="$(jq --raw-output '
+                  [.jobs[] | select(.name == "accept")][0].conclusion // ""
+                ' "${jobs_response}")"; then
+                emit_deploy 'workflow_jobs_invalid'
+                exit 0
+              fi
+              if [[ "${accept_conclusion}" == 'success' ]]; then
+                baseline_sha="${candidate_sha}"
+                break
+              fi
+            fi
+          done < "${sorted_runs}"
+
+          if [[ -z "${baseline_sha}" ]]; then
+            emit_deploy 'accepted_baseline_unavailable'
+            exit 0
+          fi
+          if ! bash .github/scripts/classify-capture-preview-scope.sh \
+            --range "${baseline_sha}" "${DEPLOY_SHA}" > "${classification}"; then
+            emit_deploy 'classifier_failed'
+            exit 0
+          fi
+
+          deploy_value="$(sed -n 's/^deploy=//p' "${classification}")"
+          reason_value="$(sed -n 's/^reason=//p' "${classification}")"
+          if [[ "${deploy_value}" != 'true' && "${deploy_value}" != 'false' ]]; then
+            emit_deploy 'classifier_output_invalid'
+            exit 0
+          fi
+          if [[ ! "${reason_value}" =~ ^[a-z_]+$ ]]; then
+            emit_deploy 'classifier_output_invalid'
+            exit 0
+          fi
+          printf 'baseline=%s\ndeploy=%s\nreason=%s\n' \
+            "${baseline_sha}" "${deploy_value}" "${reason_value}" >> "${GITHUB_OUTPUT}"
+      - name: Record deployment scope decision
+        env:
+          BASELINE: ${{ steps.classify.outputs.baseline }}
+          DEPLOY: ${{ steps.classify.outputs.deploy }}
+          REASON: ${{ steps.classify.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Capture preview deployment scope'
+            echo
+            echo "- Commit: \`${DEPLOY_SHA}\`"
+            echo "- Last accepted baseline: \`${BASELINE}\`"
+            echo "- Deploy: \`${DEPLOY}\`"
+            echo "- Reason: \`${REASON}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  build:
+    needs: deployment_scope
+    if: needs.deployment_scope.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -127,6 +284,15 @@ jobs:
           client-id: ${{ vars.CAPTURE_PREVIEW_AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.CAPTURE_PREVIEW_AZURE_TENANT_ID }}
           subscription-id: ${{ vars.CAPTURE_PREVIEW_AZURE_SUBSCRIPTION_ID }}
+      - name: Reverify current main before cloud mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${DEPLOY_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          test "${current_main}" = "${DEPLOY_SHA}"
       - name: Deploy exact Function package
         uses: Azure/functions-action@c5060b3b8bb1ebbcb531abd00c822ecbaa8ea656 # v1
         with:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,109 @@ PREVIEW_VARIABLES = ROOT / "infra" / "preview" / "variables.tf"
 PREVIEW_API_BUILDER = (
     ROOT / "apps" / "capture-preview-api" / "scripts" / "build-package.mjs"
 )
+PREVIEW_SCOPE_CLASSIFIER = (
+    ROOT / ".github" / "scripts" / "classify-capture-preview-scope.sh"
+)
+
+
+def classify_preview_scope(*paths: str) -> dict[str, str]:
+    result = subprocess.run(
+        ["bash", str(PREVIEW_SCOPE_CLASSIFIER)],
+        input=b"".join(path.encode() + b"\0" for path in paths),
+        capture_output=True,
+        check=True,
+    )
+    return dict(line.split("=", 1) for line in result.stdout.decode().splitlines())
+
+
+def classify_preview_range(repository: Path, base: str, head: str) -> dict[str, str]:
+    result = subprocess.run(
+        ["bash", str(PREVIEW_SCOPE_CLASSIFIER), "--range", base, head],
+        cwd=repository,
+        capture_output=True,
+        check=True,
+    )
+    return dict(line.split("=", 1) for line in result.stdout.decode().splitlines())
+
+
+def git(repository: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def test_capture_preview_deployment_scope_is_narrow_and_fail_open() -> None:
+    assert classify_preview_scope("docs/CAPTURE_PREVIEW.md")["deploy"] == "false"
+    assert classify_preview_scope("apps/capture-preview-api/README.md")["deploy"] == "false"
+    assert classify_preview_scope("services/api/src/example.py")["deploy"] == "false"
+    assert classify_preview_scope("apps/desktop-companion/src/main.ts")["deploy"] == "false"
+    assert classify_preview_scope("apps/capture/android/app/build.gradle")["deploy"] == "false"
+    assert classify_preview_scope(".github/workflows/change-budget.yml")["deploy"] == "false"
+    assert (
+        classify_preview_scope(".github/workflows/core-image-provenance.yml")["deploy"]
+        == "false"
+    )
+
+    for preview_input in (
+        ".github/workflows/capture-preview-deploy.yml",
+        ".github/workflows/ci.yml",
+        "package-lock.json",
+        "apps/capture/src/main.ts",
+        "apps/capture-preview-api/src/index.ts",
+        "packages/capture-preview-domain/src/domain.ts",
+        "packages/capture-protocol/src/generated.ts",
+        "apps/capture/native-plugins/secure-queue/src/index.ts",
+        "infra/preview/main.tf",
+    ):
+        assert classify_preview_scope(preview_input)["deploy"] == "true"
+
+    unknown_scope = classify_preview_scope("packages/future-preview-runtime/src/index.ts")
+    assert unknown_scope["deploy"] == "true"
+    assert classify_preview_scope()["deploy"] == "true"
+
+
+def test_capture_preview_scope_covers_changes_since_last_accepted_sha(
+    tmp_path: Path,
+) -> None:
+    git(tmp_path, "init")
+    git(tmp_path, "config", "user.email", "scope-test@example.invalid")
+    git(tmp_path, "config", "user.name", "Scope Test")
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "status.md").write_text("baseline\n", encoding="utf-8")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-m", "baseline")
+    accepted_sha = git(tmp_path, "rev-parse", "HEAD")
+
+    preview_source = tmp_path / "apps" / "capture" / "src"
+    preview_source.mkdir(parents=True)
+    (preview_source / "main.ts").write_text("export const changed = true;\n", encoding="utf-8")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-m", "preview change")
+    preview_sha = git(tmp_path, "rev-parse", "HEAD")
+
+    (docs / "status.md").write_text("documentation follow-up\n", encoding="utf-8")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-m", "docs follow-up")
+    latest_sha = git(tmp_path, "rev-parse", "HEAD")
+
+    cumulative = classify_preview_range(tmp_path, accepted_sha, latest_sha)
+    assert cumulative == {"deploy": "true", "reason": "preview_input_changed"}
+
+    docs_only = classify_preview_range(tmp_path, preview_sha, latest_sha)
+    assert docs_only == {"deploy": "false", "reason": "known_non_preview_paths_only"}
+
+    empty_range = classify_preview_range(tmp_path, latest_sha, latest_sha)
+    assert empty_range == {"deploy": "true", "reason": "no_changed_paths"}
+
+    missing_history = classify_preview_range(tmp_path, "0" * 40, latest_sha)
+    assert missing_history == {"deploy": "true", "reason": "history_unavailable"}
 
 
 def test_pull_request_preview_has_no_cloud_credential_or_deployment_job() -> None:
@@ -45,6 +149,7 @@ def test_live_deploy_is_bound_to_successful_current_main_and_oidc_environment() 
     for required in (
         "workflow_run:",
         "workflows: [CI]",
+        "actions: read",
         "github.event.workflow_run.conclusion == 'success'",
         "github.event.workflow_run.event == 'push'",
         "github.event.workflow_run.head_branch == 'main'",
@@ -66,6 +171,9 @@ def test_live_deploy_is_bound_to_successful_current_main_and_oidc_environment() 
         "apps/capture-preview-api/scripts/acceptance.mjs --dry-run",
         "npm ci --ignore-scripts --no-audit --no-fund",
         '--expected-sha "${DEPLOY_SHA}"',
+        "actions/workflows/capture-preview-deploy.yml/runs",
+        'select(.name == "accept")',
+        '--range "${baseline_sha}" "${DEPLOY_SHA}"',
     ):
         assert required in workflow
 
@@ -73,6 +181,10 @@ def test_live_deploy_is_bound_to_successful_current_main_and_oidc_environment() 
     assert "client-secret" not in workflow
     assert "CAPTURE_PREVIEW_SWA_DEPLOYMENT_TOKEN" not in workflow
     assert "smoke:capture-preview-api" not in workflow
+    # The first cloud mutation acquires the release lease. Once the Function
+    # changes, web must complete from the same artifacts rather than aborting
+    # into a mixed-version preview if main advances between the two jobs.
+    assert workflow.count("Reverify current main before cloud mutation") == 1
 
     accept_job = workflow.split("\n  accept:\n", 1)[1]
     assert "actions/checkout@" in accept_job
