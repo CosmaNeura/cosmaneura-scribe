@@ -24,9 +24,11 @@ that work; it does not replace decomposition or deployed-state reconciliation.
 
 CI also exercises disposable PostgreSQL, OpenTofu, capture web, Android, iOS,
 and browser E2E jobs. The `capture-preview` Function/SWA is a synthetic,
-non-PHI surface; when `CAPTURE_PREVIEW_DEPLOY_ENABLED` is true, it deploys
-automatically after successful `main` CI. Manual capture-preview acceptance is
-not a deployment or a production authorization.
+non-PHI surface. When `CAPTURE_PREVIEW_DEPLOY_ENABLED` is true, successful
+`main` CI triggers deployment only when the cumulative change since the last
+accepted preview contains a preview input or an unknown path. Explicitly known
+non-preview-only changes stop after scope classification. Manual
+capture-preview acceptance is not a deployment or a production authorization.
 
 There is no production Scribe deployment workflow. Production promotion is
 therefore unavailable, not implied by these docs. Before one is enabled it
@@ -122,9 +124,9 @@ deployed independently.
   reviewed policy PR; an oversized change cannot waive its own limit.
 - Every PR records tier, tests, exact recovery, agent-review evidence, and only
   the conditional controls that apply.
-- Current gap: capture-preview deploy has no docs-only path filter, so an
-  enabled preview can redeploy after a docs-only `main` merge. Do not describe
-  the target rule "docs do not deploy" as already enforced.
+- The capture-preview scope gate must remain fail-safe: unknown paths, missing
+  history, API/classifier errors, and mixed preview changes deploy. Maintain
+  its exact non-preview list whenever build inputs or workflows change.
 - No workflow currently validates tier, flight-plan, or agent-review evidence;
   those remain documented process controls. The change-budget check is the
   first narrow automated scope gate and does not claim to validate semantics.
