@@ -1,0 +1,428 @@
+name: Core API image provenance
+
+on:
+  pull_request:
+    paths:
+      - .dockerignore
+      - .github/workflows/core-image-provenance.yml
+      - Dockerfile
+      - README.md
+      - alembic.ini
+      - alembic/**
+      - pyproject.toml
+      - services/api/**
+      - uv.lock
+  push:
+    branches: [main]
+    paths:
+      - .dockerignore
+      - .github/workflows/core-image-provenance.yml
+      - Dockerfile
+      - README.md
+      - alembic.ini
+      - alembic/**
+      - pyproject.toml
+      - services/api/**
+      - uv.lock
+
+permissions:
+  contents: read
+
+jobs:
+  core-image-provenance:
+    name: Core API image provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Select the exact checked-out source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse --verify HEAD)"
+          source_tree_sha="$(git rev-parse --verify 'HEAD^{tree}')"
+          evidence_dir="${RUNNER_TEMP}/scribe-core-image-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "${source_sha}" = "${GITHUB_SHA}"
+          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${source_tree_sha}" =~ ^[0-9a-f]{40}$ ]]
+          test ! -e "${evidence_dir}"
+          mkdir -m 0700 "${evidence_dir}"
+          test -d "${evidence_dir}"
+          test ! -L "${evidence_dir}"
+          printf 'evidence_dir=%s\n' "${evidence_dir}" >> "${GITHUB_OUTPUT}"
+          printf 'sha=%s\n' "${source_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'tree_sha=%s\n' "${source_tree_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'image_tag=cosmaneura-scribe-core:ci-%s\n' \
+            "${source_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up pinned Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          version: v0.36.1
+
+      - name: Build and bind the exact source image
+        id: image
+        env:
+          BUILDX_METADATA_PROVENANCE: max
+          EVIDENCE_DIR: ${{ steps.source.outputs.evidence_dir }}
+          IMAGE_TAG: ${{ steps.source.outputs.image_tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_TREE_SHA: ${{ steps.source.outputs.tree_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw_metadata="${RUNNER_TEMP}/scribe-core-buildx-metadata.json"
+          image_archive="${RUNNER_TEMP}/scribe-core-image.tar"
+          test ! -e "${raw_metadata}"
+          test ! -L "${raw_metadata}"
+          test ! -e "${image_archive}"
+          test ! -L "${image_archive}"
+
+          docker buildx build \
+            --label "org.opencontainers.image.revision=${SOURCE_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --load \
+            --metadata-file "${raw_metadata}" \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --tag "${IMAGE_TAG}" \
+            .
+
+          image_digest="$(jq --exit-status --raw-output \
+            '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' \
+            "${raw_metadata}")"
+          provenance_revision="$(jq --exit-status --raw-output \
+            '."buildx.build.provenance".invocation.parameters.root.request.args["vcs:revision"]' \
+            "${raw_metadata}")"
+          test "${provenance_revision}" = "${SOURCE_SHA}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test "$(git rev-parse --verify 'HEAD^{tree}')" = "${SOURCE_TREE_SHA}"
+
+          docker image save --output "${image_archive}" "${IMAGE_TAG}"
+          config_path="$(tar -xOf "${image_archive}" manifest.json | jq --exit-status \
+            --raw-output 'if length == 1 then .[0].Config else error("expected one image") end')"
+          [[ "${config_path}" =~ ^([0-9a-f]{64}\.json|blobs/sha256/[0-9a-f]{64})$ ]]
+          config_digest="sha256:$(tar -xOf "${image_archive}" "${config_path}" | \
+            sha256sum | cut -d ' ' -f1)"
+          engine_image_id="$(docker image inspect --format '{{.Id}}' "${IMAGE_TAG}")"
+          if [[ "${engine_image_id}" = "${config_digest}" ]]; then
+            engine_image_id_kind=config_digest
+          elif [[ "${engine_image_id}" = "${image_digest}" ]]; then
+            engine_image_id_kind=manifest_digest
+          else
+            echo 'Loaded engine image ID matches neither build digest.' >&2
+            exit 1
+          fi
+          test "$(docker image inspect --format \
+            '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+            "${engine_image_id}")" = "${SOURCE_SHA}"
+          rm -- "${image_archive}"
+
+          jq --exit-status \
+            --arg config_digest "${config_digest}" \
+            --arg engine_image_id "${engine_image_id}" \
+            --arg engine_image_id_kind "${engine_image_id_kind}" \
+            --arg image_digest "${image_digest}" \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg source_tree_sha "${SOURCE_TREE_SHA}" '
+              . + {
+                "cosmaneura.verification": {
+                  source_revision: $source_sha,
+                  source_tree_sha1: $source_tree_sha,
+                  image_digest: $image_digest,
+                  config_digest: $config_digest,
+                  loaded_engine_image_id: $engine_image_id,
+                  loaded_engine_image_id_kind: $engine_image_id_kind
+                }
+              }
+            ' "${raw_metadata}" > "${EVIDENCE_DIR}/core-api-build-metadata.json"
+
+          jq --exit-status \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg source_tree_sha "${SOURCE_TREE_SHA}" '
+              def one_resolved_material($uri):
+                [.[] | select(
+                  .uri == $uri and
+                  (.digest.sha256? | type == "string") and
+                  (.digest.sha256 | test("^[0-9a-f]{64}$"))
+                )] | length == 1;
+              ."buildx.build.provenance".materials as $materials |
+              [$materials[] | select(.uri | startswith("pkg:docker/"))] as $images |
+              if (
+                ($images | length) == 3 and
+                ($images | one_resolved_material("pkg:docker/docker/dockerfile@1")) and
+                ($images | one_resolved_material(
+                  "pkg:docker/python@3.12-slim-trixie?platform=linux%2Famd64"
+                )) and
+                ($images | one_resolved_material(
+                  "pkg:docker/ghcr.io/astral-sh/uv@0.11.32-python3.12-trixie-slim?platform=linux%2Famd64"
+                ))
+              ) then
+                ($images + [{
+                  uri: ("git+https://github.com/" + $repository + ".git@" + $source_sha),
+                  digest: {sha1: $source_tree_sha}
+                }]) | sort_by(.uri)
+              else
+                error("resolved Dockerfile and base-image materials are incomplete")
+              end
+            ' "${raw_metadata}" > "${EVIDENCE_DIR}/core-api-resolved-materials.json"
+
+          printf 'config_digest=%s\n' "${config_digest}" >> "${GITHUB_OUTPUT}"
+          printf 'digest=%s\n' "${image_digest}" >> "${GITHUB_OUTPUT}"
+          printf 'engine_image_id=%s\n' "${engine_image_id}" >> "${GITHUB_OUTPUT}"
+          printf 'engine_image_id_kind=%s\n' \
+            "${engine_image_id_kind}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run the local-memory startup smoke
+        env:
+          EVIDENCE_DIR: ${{ steps.source.outputs.evidence_dir }}
+          ENGINE_IMAGE_ID: ${{ steps.image.outputs.engine_image_id }}
+          ENGINE_IMAGE_ID_KIND: ${{ steps.image.outputs.engine_image_id_kind }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_name="scribe-core-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          smoke_passed=false
+          cleanup() {
+            if [[ "${smoke_passed}" != "true" ]]; then
+              docker logs "${container_name}" || true
+            fi
+            docker rm --force "${container_name}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          runtime_user="$(docker image inspect --format '{{.Config.User}}' \
+            "${ENGINE_IMAGE_ID}")"
+          test "${runtime_user}" = "10001:10001"
+          docker run \
+            --cap-drop ALL \
+            --detach \
+            --env COSMANEURA_SCRIBE_REPOSITORY_BACKEND=memory \
+            --env COSMANEURA_SCRIBE_STORAGE_BACKEND=memory \
+            --env COSMANEURA_SCRIBE_TRANSCRIPTION_BACKEND=none \
+            --name "${container_name}" \
+            --publish 127.0.0.1:18020:8020 \
+            --read-only \
+            --security-opt no-new-privileges:true \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            "${ENGINE_IMAGE_ID}" >/dev/null
+          test "$(docker container inspect --format '{{.Image}}' \
+            "${container_name}")" = "${ENGINE_IMAGE_ID}"
+
+          consecutive_ready=0
+          for _attempt in $(seq 1 30); do
+            if test "$(curl --fail --silent --show-error --max-time 2 \
+                http://127.0.0.1:18020/healthz)" = '{"status":"ok"}' && \
+              test "$(curl --fail --silent --show-error --max-time 2 \
+                http://127.0.0.1:18020/readyz)" = '{"status":"ready"}'; then
+              consecutive_ready=$((consecutive_ready + 1))
+            else
+              consecutive_ready=0
+            fi
+            if (( consecutive_ready == 2 )); then
+              break
+            fi
+            sleep 2
+          done
+          test "${consecutive_ready}" -eq 2
+          test "$(docker exec "${container_name}" id -u)" = "10001"
+          curl --fail --silent --show-error --max-time 5 \
+            http://127.0.0.1:18020/openapi.json |
+            jq --exit-status '
+              .info.title == "Cosmaneura Scribe API" and
+              .paths["/healthz"].get != null and
+              .paths["/readyz"].get != null
+            ' >/dev/null
+
+          jq --null-input \
+            --arg image_id "${ENGINE_IMAGE_ID}" \
+            --arg image_id_kind "${ENGINE_IMAGE_ID_KIND}" \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg runtime_user "${runtime_user}" '
+              {
+                schema_version: 1,
+                classification: "local_memory_startup_smoke",
+                source_sha: $source_sha,
+                engine_image_id: $image_id,
+                engine_image_id_kind: $image_id_kind,
+                repository_backend: "memory",
+                runtime_user: $runtime_user,
+                hardened_runtime: true,
+                checks: {
+                  healthz: "two_consecutive_successes",
+                  readyz: "two_consecutive_successes",
+                  openapi_identity: "passed"
+                },
+                non_assertions: ["deployment_readiness", "database_readiness"]
+              }
+            ' > "${EVIDENCE_DIR}/core-api-smoke.json"
+          smoke_passed=true
+
+      - name: Generate the image SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          dependency-snapshot: false
+          format: spdx-json
+          image: ${{ steps.image.outputs.engine_image_id }}
+          output-file: ${{ steps.source.outputs.evidence_dir }}/core-api-sbom.spdx.json
+          syft-version: v1.51.0
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Bind and verify the evidence bundle
+        env:
+          CONFIG_DIGEST: ${{ steps.image.outputs.config_digest }}
+          EVIDENCE_DIR: ${{ steps.source.outputs.evidence_dir }}
+          ENGINE_IMAGE_ID: ${{ steps.image.outputs.engine_image_id }}
+          ENGINE_IMAGE_ID_KIND: ${{ steps.image.outputs.engine_image_id_kind }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_TREE_SHA: ${{ steps.source.outputs.tree_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "${EVIDENCE_DIR}"
+          test ! -L "${EVIDENCE_DIR}"
+          jq --exit-status --arg engine_image_id "${ENGINE_IMAGE_ID}" '
+            ($engine_image_id | sub("^sha256:"; "")) as $image_id_hex |
+            ([.relationships[]? | select(
+              .spdxElementId == "SPDXRef-DOCUMENT" and
+              .relationshipType == "DESCRIBES"
+            ) | .relatedSpdxElement] | unique) as $described_roots |
+            (.spdxVersion | startswith("SPDX-")) and
+            (.packages | length > 0) and
+            ($described_roots | length == 1) and
+            ([.packages[] | select(
+              .SPDXID == $described_roots[0] and
+              .primaryPackagePurpose == "CONTAINER" and
+              .versionInfo == $image_id_hex
+            )] | length == 1)
+          ' "${EVIDENCE_DIR}/core-api-sbom.spdx.json" >/dev/null
+
+          jq --exit-status \
+            --arg image_sha256 "${IMAGE_DIGEST#sha256:}" \
+            --slurpfile materials "${EVIDENCE_DIR}/core-api-resolved-materials.json" '
+              ."buildx.build.provenance" as $buildkit |
+              {
+                "_type": "https://in-toto.io/Statement/v0.1",
+                subject: [{
+                  name: "cosmaneura-scribe-core",
+                  digest: {sha256: $image_sha256}
+                }],
+                predicateType: "https://slsa.dev/provenance/v0.2",
+                predicate: ($buildkit | .materials = $materials[0])
+              }
+            ' "${EVIDENCE_DIR}/core-api-build-metadata.json" \
+            > "${EVIDENCE_DIR}/core-api-provenance.intoto.json"
+
+          jq --exit-status \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg source_tree_sha "${SOURCE_TREE_SHA}" '
+              .predicate.materials |
+              any(.[];
+                .uri == ("git+https://github.com/" + $repository + ".git@" + $source_sha) and
+                .digest.sha1 == $source_tree_sha
+              )
+            ' "${EVIDENCE_DIR}/core-api-provenance.intoto.json" >/dev/null
+
+          digest_file() {
+            printf 'sha256:%s' "$(sha256sum "$1" | cut -d ' ' -f1)"
+          }
+          dockerfile_digest="$(digest_file Dockerfile)"
+          metadata_digest="$(digest_file \
+            "${EVIDENCE_DIR}/core-api-build-metadata.json")"
+          materials_digest="$(digest_file \
+            "${EVIDENCE_DIR}/core-api-resolved-materials.json")"
+          provenance_digest="$(digest_file \
+            "${EVIDENCE_DIR}/core-api-provenance.intoto.json")"
+          sbom_digest="$(digest_file "${EVIDENCE_DIR}/core-api-sbom.spdx.json")"
+          smoke_digest="$(digest_file "${EVIDENCE_DIR}/core-api-smoke.json")"
+
+          jq --null-input \
+            --arg config_digest "${CONFIG_DIGEST}" \
+            --arg dockerfile_digest "${dockerfile_digest}" \
+            --arg engine_image_id "${ENGINE_IMAGE_ID}" \
+            --arg engine_image_id_kind "${ENGINE_IMAGE_ID_KIND}" \
+            --arg image_digest "${IMAGE_DIGEST}" \
+            --arg materials_digest "${materials_digest}" \
+            --arg metadata_digest "${metadata_digest}" \
+            --arg provenance_digest "${provenance_digest}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg sbom_digest "${sbom_digest}" \
+            --arg smoke_digest "${smoke_digest}" \
+            --arg source_sha "${SOURCE_SHA}" \
+            --arg source_tree_sha "${SOURCE_TREE_SHA}" '
+              {
+                schema_version: 1,
+                source: {
+                  repository: $repository,
+                  revision: $source_sha,
+                  git_tree_sha1: $source_tree_sha
+                },
+                image: {
+                  platform: "linux/amd64",
+                  digest: $image_digest,
+                  config_digest: $config_digest,
+                  loaded_engine_image_id: $engine_image_id,
+                  loaded_engine_image_id_kind: $engine_image_id_kind
+                },
+                reproducible_build_claimed: false,
+                dockerfile: {path: "Dockerfile", digest: $dockerfile_digest},
+                evidence: {
+                  build_metadata: {path: "core-api-build-metadata.json", digest: $metadata_digest},
+                  resolved_materials: {
+                    path: "core-api-resolved-materials.json",
+                    digest: $materials_digest
+                  },
+                  provenance: {
+                    path: "core-api-provenance.intoto.json",
+                    digest: $provenance_digest
+                  },
+                  sbom: {path: "core-api-sbom.spdx.json", digest: $sbom_digest},
+                  smoke: {
+                    path: "core-api-smoke.json",
+                    digest: $smoke_digest,
+                    classification: "local_memory_startup_smoke"
+                  }
+                }
+              }
+            ' > "${EVIDENCE_DIR}/core-api-image-manifest.json"
+
+          evidence_files=(
+            core-api-build-metadata.json
+            core-api-image-manifest.json
+            core-api-provenance.intoto.json
+            core-api-resolved-materials.json
+            core-api-sbom.spdx.json
+            core-api-smoke.json
+          )
+          for evidence_file in "${evidence_files[@]}"; do
+            evidence_path="${EVIDENCE_DIR}/${evidence_file}"
+            test -f "${evidence_path}"
+            test ! -L "${evidence_path}"
+            sha256sum "${evidence_path}"
+          done
+          test ! -L "${EVIDENCE_DIR}"
+          test -z "$(find "${EVIDENCE_DIR}" -type l -print -quit)"
+
+      - name: Upload build evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: scribe-core-image-evidence-${{ steps.source.outputs.sha }}
+          path: |
+            ${{ steps.source.outputs.evidence_dir }}/core-api-build-metadata.json
+            ${{ steps.source.outputs.evidence_dir }}/core-api-image-manifest.json
+            ${{ steps.source.outputs.evidence_dir }}/core-api-provenance.intoto.json
+            ${{ steps.source.outputs.evidence_dir }}/core-api-resolved-materials.json
+            ${{ steps.source.outputs.evidence_dir }}/core-api-sbom.spdx.json
+            ${{ steps.source.outputs.evidence_dir }}/core-api-smoke.json
+          retention-days: 14
