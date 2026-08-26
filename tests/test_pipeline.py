@@ -18,6 +18,7 @@ from cosmaneura_scribe.main import (
     get_consent_policy,
     get_delivery_claim_policy,
     get_master_platform_handoff,
+    get_repository_provider,
 )
 from cosmaneura_scribe.repository import (
     DeliveryClaimPolicy,
@@ -678,6 +679,19 @@ def test_readiness_reports_repository_health(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
+
+
+def test_readiness_hides_repository_failure(client: TestClient) -> None:
+    class UnhealthyRepositoryProvider:
+        async def health(self) -> None:
+            raise RuntimeError("synthetic outage")
+
+    app.dependency_overrides[get_repository_provider] = UnhealthyRepositoryProvider
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Persistence is not ready."}
 
 
 def test_idempotency_key_rejects_a_different_request(client: TestClient) -> None:

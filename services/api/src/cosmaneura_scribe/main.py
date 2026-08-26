@@ -54,6 +54,7 @@ from .handoff import (
     to_legacy_payload,
     to_master_platform_payload,
 )
+from .operations_routes import build_operations_router
 from .repository import (
     CaptureChannelFinalizationDraft,
     CaptureContext,
@@ -433,18 +434,11 @@ def _chunk_receipt_response(record: ChunkReceiptRecord) -> ChunkReceipt:
     )
 
 
-@app.get("/healthz", tags=["operations"])
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.get("/readyz", tags=["operations"])
-async def readiness(provider: Provider) -> dict[str, str]:
-    try:
-        await provider.health()
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Persistence is not ready.") from exc
-    return {"status": "ready"}
+app.include_router(
+    build_operations_router(
+        repository_provider_dependency=get_repository_provider,
+    )
+)
 
 
 @app.get(
