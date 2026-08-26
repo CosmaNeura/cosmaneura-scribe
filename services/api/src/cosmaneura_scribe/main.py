@@ -37,6 +37,11 @@ from .capture_protocol_v1 import (
     base64url_encode,
     capture_channel_additional_data,
 )
+from .capture_responses import (
+    capture_lease_response,
+    chunk_receipt_response,
+    reservation_batch_response,
+)
 from .consent import ConsentError, ConsentPolicy
 from .consent_routes import build_consent_router
 from .delivery_reconciler import (
@@ -63,7 +68,6 @@ from .repository import (
     CaptureLeaseConflictError,
     CaptureReservationLimitError,
     ChunkReservationDraft,
-    ChunkReservationRecord,
     DeliveryClaimPolicy,
     DeliverySuccessConflictError,
     IdempotencyClaimUnavailableError,
@@ -71,15 +75,6 @@ from .repository import (
     InMemoryRepository,
     RepositoryProvider,
     UploadGrantRecord,
-)
-from .repository import (
-    CaptureLeaseReceipt as CaptureLeaseReceiptRecord,
-)
-from .repository import (
-    ChunkReceipt as ChunkReceiptRecord,
-)
-from .repository import (
-    ChunkReservationBatch as ChunkReservationBatchRecord,
 )
 from .repository import (
     Repository as RepositoryContract,
@@ -99,8 +94,6 @@ from .schemas import (
     CaptureMediaCapabilities,
     CaptureSession,
     ChunkReceipt,
-    ChunkRegistrationMetadata,
-    ChunkReservation,
     ChunkReservationBatchReceipt,
     ChunkReservationBatchRequest,
     ChunkUploadAuthorization,
@@ -380,60 +373,6 @@ async def _capture_context_or_404(
     return context
 
 
-def _capture_lease_response(record: CaptureLeaseReceiptRecord) -> CaptureLeaseReceipt:
-    return CaptureLeaseReceipt(
-        protocol_version=PROTOCOL_VERSION,
-        receipt_id=record.id,
-        lease_id=record.lease_id,
-        session_id=record.session_id,
-        generation=record.generation,
-        issued_at=record.issued_at,
-        expires_at=record.expires_at,
-    )
-
-
-def _reservation_response(record: ChunkReservationRecord) -> ChunkReservation:
-    return ChunkReservation(
-        protocol_version=PROTOCOL_VERSION,
-        object_id=record.object_id,
-        session_id=record.session_id,
-        channel=record.channel,
-        sequence_number=record.sequence_number,
-        additional_authenticated_data=base64url_encode(record.additional_data),
-        created_at=record.created_at,
-    )
-
-
-def _reservation_batch_response(
-    record: ChunkReservationBatchRecord,
-) -> ChunkReservationBatchReceipt:
-    return ChunkReservationBatchReceipt(
-        protocol_version=PROTOCOL_VERSION,
-        batch_id=record.id,
-        session_id=record.session_id,
-        capture_authorized_until=record.capture_authorized_until,
-        reservations=tuple(_reservation_response(item) for item in record.reservations),
-    )
-
-
-def _chunk_receipt_response(record: ChunkReceiptRecord) -> ChunkReceipt:
-    registration = (
-        ChunkRegistrationMetadata(
-            chunk_id=record.registration.id,
-            sha256=record.registration.sha256,
-            ciphertext_size_bytes=record.registration.ciphertext_size_bytes,
-            registered_at=record.registration.registered_at,
-        )
-        if record.registration is not None
-        else None
-    )
-    return ChunkReceipt(
-        reservation=_reservation_response(record.reservation),
-        state="registered" if registration is not None else "reserved",
-        registration=registration,
-    )
-
-
 app.include_router(
     build_operations_router(
         repository_provider_dependency=get_repository_provider,
@@ -683,7 +622,7 @@ async def issue_capture_lease(
             previous = await store.get_capture_lease_receipt(tenant_id, previous_id)
             if previous is None or previous.session_id != session_id:
                 raise HTTPException(status_code=500, detail="Capture lease receipt is unavailable.")
-            return _capture_lease_response(previous)
+            return capture_lease_response(previous)
         if context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
             raise HTTPException(status_code=409, detail="Session is not accepting capture.")
         if context.lease is not None:
@@ -703,7 +642,7 @@ async def issue_capture_lease(
             entity_type="capture_lease",
             entity_id=lease_id,
         )
-        return _capture_lease_response(receipt)
+        return capture_lease_response(receipt)
 
 
 @app.post(
@@ -740,7 +679,7 @@ async def renew_capture_lease(
                 or previous.lease_id != lease_id
             ):
                 raise HTTPException(status_code=500, detail="Capture lease receipt is unavailable.")
-            return _capture_lease_response(previous)
+            return capture_lease_response(previous)
         if context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
             raise HTTPException(status_code=409, detail="Session is not accepting capture.")
         receipt = await store.renew_capture_lease(
@@ -759,7 +698,7 @@ async def renew_capture_lease(
             entity_type="capture_lease",
             entity_id=lease_id,
         )
-        return _capture_lease_response(receipt)
+        return capture_lease_response(receipt)
 
 
 @app.post(
@@ -817,7 +756,7 @@ async def reserve_audio_chunks(
                     status_code=500,
                     detail="Chunk reservation receipt is unavailable.",
                 )
-            return _reservation_batch_response(previous)
+            return reservation_batch_response(previous)
         if context.session.status not in {SessionStatus.CREATED, SessionStatus.CAPTURING}:
             raise HTTPException(status_code=409, detail="Session is not accepting reservations.")
         try:
@@ -846,7 +785,7 @@ async def reserve_audio_chunks(
             entity_type="audio_chunk_reservation_batch",
             entity_id=batch.id,
         )
-        return _reservation_batch_response(batch)
+        return reservation_batch_response(batch)
 
 
 @app.post(
@@ -964,7 +903,7 @@ async def get_reserved_chunk_receipt(
         if receipt is None:
             raise HTTPException(status_code=404, detail="Chunk reservation not found.")
     response.headers["Cache-Control"] = "no-store"
-    return _chunk_receipt_response(receipt)
+    return chunk_receipt_response(receipt)
 
 
 @app.post(
