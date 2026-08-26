@@ -38,6 +38,7 @@ from .capture_protocol_v1 import (
     capture_channel_additional_data,
 )
 from .consent import ConsentError, ConsentPolicy
+from .consent_routes import build_consent_router
 from .delivery_reconciler import (
     complete_delivery_failure,
     complete_delivery_success,
@@ -103,8 +104,6 @@ from .schemas import (
     ChunkReservationBatchRequest,
     ChunkUploadAuthorization,
     ChunkUploadAuthorizationRequest,
-    ConsentCreate,
-    ConsentRecord,
     DeliveryAttempt,
     DeliveryStatus,
     LegacyTranscriptPayload,
@@ -472,73 +471,13 @@ async def get_audio_encryption_public_key(
         ) from None
 
 
-@app.post("/v1/consents", response_model=ConsentRecord, status_code=201)
-async def create_consent(
-    payload: ConsentCreate,
-    tenant_id: TenantId,
-    idempotency_key: IdempotencyKey,
-    store: Repository,
-    policy: Policy,
-) -> ConsentRecord:
-    try:
-        policy.validate_new_record(payload.all_parties_consented)
-    except ConsentError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    fingerprint = _fingerprint(payload)
-    record = ConsentRecord(id=uuid4(), policy_version=policy.version, **payload.model_dump())
-    previous_id = await _idempotent_entity(
-        store, tenant_id, "consent.create", idempotency_key, fingerprint, record.id
+app.include_router(
+    build_consent_router(
+        repository_dependency=get_repository,
+        policy_dependency=get_consent_policy,
+        idempotent_entity=_idempotent_entity,
     )
-    if previous_id is not None:
-        previous = await store.get_consent(tenant_id, previous_id)
-        if previous is None:
-            raise HTTPException(status_code=500, detail="Idempotent consent is unavailable.")
-        return previous
-
-    await store.add_consent(tenant_id, record)
-    await store.audit(
-        tenant_id=tenant_id,
-        action="consent.recorded",
-        entity_type="consent_record",
-        entity_id=record.id,
-    )
-    return record
-
-
-@app.post("/v1/consents/{consent_id}/revocations", response_model=ConsentRecord)
-async def revoke_consent(
-    consent_id: UUID,
-    tenant_id: TenantId,
-    idempotency_key: IdempotencyKey,
-    store: Repository,
-) -> ConsentRecord:
-    fingerprint = _fingerprint({"consent_id": str(consent_id)})
-    previous_id = await _idempotent_entity(
-        store,
-        tenant_id,
-        "consent.revoke",
-        idempotency_key,
-        fingerprint,
-        consent_id,
-    )
-    if previous_id is not None:
-        previous = await store.lock_consent(tenant_id, previous_id)
-        if previous is None:
-            raise HTTPException(status_code=404, detail="Consent record not found.")
-        return previous
-
-    result = await store.revoke_consent(tenant_id, consent_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Consent record not found.")
-    if result.changed:
-        await store.audit(
-            tenant_id=tenant_id,
-            action="consent.revoked",
-            entity_type="consent_record",
-            entity_id=consent_id,
-        )
-    return result.consent
+)
 
 
 @app.post("/v1/sessions", response_model=CaptureSession, status_code=201)
