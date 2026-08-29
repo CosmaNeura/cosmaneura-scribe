@@ -6,6 +6,8 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from .beta_ingest_store import (
@@ -58,6 +60,13 @@ def _not_found() -> HTTPException:
     )
 
 
+async def _opaque_validation_error(_: Request, __: Exception) -> Response:
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": "Request validation failed."},
+    )
+
+
 def _require_local_tenant(
     tenant_header: Annotated[str | None, Header(alias="X-Tenant-ID")] = None,
 ) -> UUID:
@@ -90,6 +99,7 @@ def create_beta_preview_app(
         lifespan=_lifespan,
     )
     preview_app.state.beta_ingest_store = store or BetaIngestStore()
+    preview_app.add_exception_handler(RequestValidationError, _opaque_validation_error)
 
     async def no_store_responses(
         request: Request,

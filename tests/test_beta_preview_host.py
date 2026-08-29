@@ -122,6 +122,20 @@ def test_post_requires_an_idempotency_key() -> None:
     assert response.status_code == 422
 
 
+def test_validation_errors_never_echo_rejected_input() -> None:
+    marker = "must-not-echo-4482"
+    with TestClient(create_beta_preview_app(enabled=True)) as client:
+        response = client.post(
+            _INGESTS_PATH,
+            headers=_headers(idempotency_key="opaque-error-001"),
+            json={"include_transcript": True, "unexpected_text": marker},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Request validation failed."}
+    assert marker not in response.text
+
+
 def test_configured_preview_latch_is_dark_by_default() -> None:
     assert Settings().beta_preview_host_enabled is False
 
