@@ -79,7 +79,7 @@ from .repository import (
 from .repository import (
     Repository as RepositoryContract,
 )
-from .safe_logging import log_event
+from .safe_logging import configure_service_logging, log_event
 from .schemas import (
     AudioChunk,
     AudioChunkRegister,
@@ -124,6 +124,7 @@ from .storage import AudioStorage, build_audio_storage
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
+    configure_service_logging()
     yield
     if get_repository_provider.cache_info().currsize:
         await get_repository_provider().close()

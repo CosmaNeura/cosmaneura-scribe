@@ -75,6 +75,8 @@ class AzureBlobAudioStorage:
         self._client = BlobServiceClient(
             account_url=str(settings.storage_account_url),
             credential=self._credential,
+            # Object names live in the blob URL path; never hand them to the SDK logger.
+            logging_enable=False,
         )
         self._container_name = settings.storage_container_name
         self._ttl = timedelta(seconds=settings.upload_grant_ttl_seconds)

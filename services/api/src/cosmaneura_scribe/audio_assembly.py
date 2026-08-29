@@ -103,7 +103,12 @@ class AzureBlobObjectReader:
     ) -> None:
         self._container_name = container_name
         self._credential = credential
-        self._client = client or BlobServiceClient(account_url=account_url, credential=credential)
+        self._client = client or BlobServiceClient(
+            account_url=account_url,
+            credential=credential,
+            # Object names live in the blob URL path; never hand them to the SDK logger.
+            logging_enable=False,
+        )
 
     async def read(self, request: AudioAssemblyRequest, chunk: AudioChunk) -> bytes:
         object_name = blob_name(

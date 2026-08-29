@@ -34,12 +34,27 @@ _PRIVATE_API_ACCEPTANCE_READINESS_ACTIONS = {
 }
 _PRIVATE_API_ACCEPTANCE_READINESS_MAX_POLLS = 36
 
+# Namespaces whose libraries emit request URLs at INFO/DEBUG. A blob URL path
+# carries the object name, which the hard rules forbid logging. The AST policy in
+# scripts/check_phi_logs.py covers code we own; it cannot cover code we do not.
+_PHI_RISK_LOG_NAMESPACES = ("azure", "httpcore", "httpx")
+
 _SAFE_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 _LOGGER = logging.getLogger(LOGGER_NAME)
 
 
 class _StandaloneSafeLogHandler(logging.StreamHandler[TextIO]):
     """Marker handler used only by command-line jobs."""
+
+
+def _silence(namespace: str) -> None:
+    """Make one third-party logger namespace incapable of emitting."""
+
+    external = logging.getLogger(namespace)
+    external.handlers.clear()
+    external.addHandler(logging.NullHandler())
+    external.propagate = False
+    external.disabled = True
 
 
 def configure_standalone_logging() -> None:
@@ -62,12 +77,26 @@ def configure_private_api_acceptance_logging() -> None:
     root.handlers.clear()
     root.addHandler(logging.NullHandler())
     root.setLevel(logging.CRITICAL + 1)
-    for namespace in ("azure", "httpcore", "httpx"):
-        external = logging.getLogger(namespace)
-        external.handlers.clear()
-        external.addHandler(logging.NullHandler())
-        external.propagate = False
-        external.disabled = True
+    for namespace in _PHI_RISK_LOG_NAMESPACES:
+        _silence(namespace)
+
+
+def configure_service_logging() -> None:
+    """Expose only the safe Scribe logger inside the long-running API service.
+
+    Deliberately narrow. It does not touch the root logger or this service's own
+    logger: under uvicorn those already carry startup and request errors, and
+    `log_event` is closed-schema, so neither can carry a clinical payload. It
+    closes the one gap they cannot — third-party HTTP clients that log the URLs
+    they call.
+
+    Without this the service is protected only by Python's default root level of
+    WARNING, which is a default rather than a decision — one ``--log-level debug``
+    turns it into blob object names on stdout.
+    """
+
+    for namespace in _PHI_RISK_LOG_NAMESPACES:
+        _silence(namespace)
 
 
 def log_event(
