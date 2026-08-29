@@ -63,6 +63,8 @@ class Settings(BaseSettings):
         le=128 * 1_024 * 1_024,
     )
     capture_protocol_enabled: bool = False
+    # Owner: Scribe; cohort: none (dark); review by 2026-09-30.
+    beta_preview_host_enabled: bool = False
 
     workflow_authentication_enabled: bool = False
     entra_tenant_id: UUID | None = None

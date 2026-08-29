@@ -7,6 +7,7 @@
     "apps/capture",
     "apps/capture-preview-api",
     "apps/desktop-companion",
+    "apps/review-ui",
     "apps/capture/native-plugins/*",
     "packages/*"
   ],
