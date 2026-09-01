@@ -145,6 +145,7 @@ def test_0008_upgrade_and_downgrade_are_schema_only_and_default_safe(
     assert len(statements) == 8
     assert statements[0] == "SET LOCAL lock_timeout = '5s'"
     assert statements[1] == "SET LOCAL statement_timeout = '60s'"
+    assert "current_database() !~ '_test$'" in statements[2]
     assert "refusing to remove ingest_mode" in statements[2]
     assert "external_async_transcript" in statements[2]
     assert "OLD.ingest_mode" not in statements[3]

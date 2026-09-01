@@ -102,9 +102,9 @@
   mode; direct privileged SQL remains an administrative security boundary.
 - Behavior and schema recovery: keep the default path, roll back/disable future
   callers, and retain the additive column. The downgrade exists only to verify
-  reversibility in disposable databases, and it refuses while any external-mode
-  row exists. Any operational removal requires a separate data migration and
-  explicit approval.
+  reversibility in disposable databases: it refuses unless the database name
+  ends in `_test`, and it also refuses while any external-mode row exists. Any
+  operational removal requires a separate data migration and explicit approval.
 - Data-damage boundary: dropping `ingest_mode` after external rows exist loses
   provenance. No cleanup/drop is authorized here.
 - Observation window before irreversible cleanup: N/A; no cleanup is planned.

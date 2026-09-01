@@ -97,6 +97,11 @@ def downgrade() -> None:
         """
         DO $$
         BEGIN
+            IF current_database() !~ '_test$' THEN
+                RAISE EXCEPTION
+                    'refusing destructive ingest_mode downgrade outside a disposable test database'
+                    USING ERRCODE = '55000';
+            END IF;
             IF EXISTS (
                 SELECT 1 FROM scribe_sessions
                 WHERE ingest_mode = 'external_async_transcript'
