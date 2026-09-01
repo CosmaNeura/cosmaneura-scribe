@@ -102,6 +102,16 @@ def downgrade() -> None:
                     'refusing destructive ingest_mode downgrade outside a disposable test database'
                     USING ERRCODE = '55000';
             END IF;
+        END;
+        $$
+        """
+    )
+    op.execute("SET LOCAL row_security = off")
+    op.execute("LOCK TABLE scribe_sessions IN ACCESS EXCLUSIVE MODE")
+    op.execute(
+        """
+        DO $$
+        BEGIN
             IF EXISTS (
                 SELECT 1 FROM scribe_sessions
                 WHERE ingest_mode = 'external_async_transcript'
