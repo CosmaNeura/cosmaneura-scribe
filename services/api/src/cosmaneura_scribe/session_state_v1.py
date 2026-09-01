@@ -67,6 +67,7 @@ def render_transition_predicate(
     *,
     old_expression: str = "OLD.status",
     new_expression: str = "NEW.status",
+    ingest_mode_expression: str | None = None,
 ) -> str:
     clauses = [f"{old_expression} = {new_expression}"]
     for old in SessionStatus:
@@ -78,6 +79,12 @@ def render_transition_predicate(
         )
         clauses.append(
             f"({old_expression} = '{old.value}' AND {new_expression} IN ({rendered_targets}))"
+        )
+    if ingest_mode_expression is not None:
+        clauses.append(
+            f"({ingest_mode_expression} = '{SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT.value}' "
+            f"AND {old_expression} = '{SessionStatus.CREATED.value}' "
+            f"AND {new_expression} = '{SessionStatus.TRANSCRIPT_READY.value}')"
         )
     return "\n                OR ".join(clauses)
 

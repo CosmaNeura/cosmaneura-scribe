@@ -26,7 +26,7 @@ from cosmaneura_scribe.schemas import (
     TranscriptionJobStatus,
     TranscriptSegment,
 )
-from cosmaneura_scribe.session_state_v1 import can_transition_session
+from cosmaneura_scribe.session_state_v1 import SessionIngestMode, can_transition_session
 from cosmaneura_scribe.settings import Settings
 from cosmaneura_scribe.transcription_worker import TranscriptionWorker, TranscriptionWorkerError
 from sqlalchemy import text
@@ -427,6 +427,7 @@ def test_python_session_transition_table_matches_the_database_trigger(
                 session_id: UUID,
                 old_status: SessionStatus,
                 new_status: SessionStatus,
+                ingest_mode: SessionIngestMode,
             ) -> None:
                 async with engine.begin() as connection:
                     await connection.execute(
@@ -438,12 +439,13 @@ def test_python_session_transition_table_matches_the_database_trigger(
                             """
                             INSERT INTO scribe_sessions (
                                 id, tenant_id, appointment_id, practitioner_id,
-                                patient_id, consent_record_id, modality, status
+                                patient_id, consent_record_id, modality, status,
+                                ingest_mode
                             ) VALUES (
                                 :id, :tenant_id, 'appointment-transition-table',
                                 'practitioner-transition-table',
                                 'patient-transition-table', :consent_id,
-                                'virtual', :old_status
+                                'virtual', :old_status, :ingest_mode
                             )
                             """
                         ),
@@ -452,6 +454,7 @@ def test_python_session_transition_table_matches_the_database_trigger(
                             "tenant_id": tenant_id,
                             "consent_id": consent_id,
                             "old_status": old_status.value,
+                            "ingest_mode": ingest_mode.value,
                         },
                     )
                     await connection.execute(
@@ -469,17 +472,195 @@ def test_python_session_transition_table_matches_the_database_trigger(
                         },
                     )
 
-            for old_status in SessionStatus:
-                for new_status in SessionStatus:
-                    session_id = uuid4()
-                    if can_transition_session(old_status, new_status):
-                        await attempt_transition(session_id, old_status, new_status)
-                    else:
-                        with pytest.raises(
-                            DBAPIError,
-                            match="invalid scribe session status transition",
+            for ingest_mode in SessionIngestMode:
+                for old_status in SessionStatus:
+                    for new_status in SessionStatus:
+                        session_id = uuid4()
+                        if can_transition_session(
+                            old_status,
+                            new_status,
+                            ingest_mode=ingest_mode,
                         ):
-                            await attempt_transition(session_id, old_status, new_status)
+                            await attempt_transition(
+                                session_id,
+                                old_status,
+                                new_status,
+                                ingest_mode,
+                            )
+                        else:
+                            with pytest.raises(
+                                DBAPIError,
+                                match="invalid scribe session status transition",
+                            ):
+                                await attempt_transition(
+                                    session_id,
+                                    old_status,
+                                    new_status,
+                                    ingest_mode,
+                                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.postgres
+def test_external_ingest_mode_is_default_safe_constrained_and_immutable(
+    postgres_urls: tuple[str, str],
+) -> None:
+    _, app_url = postgres_urls
+    tenant_id = uuid4()
+    consent_id = uuid4()
+    default_session_id = uuid4()
+    external_session_id = uuid4()
+
+    async def scenario() -> None:
+        engine = create_async_engine(app_url, connect_args={"ssl": False})
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO consent_records (
+                            id, tenant_id, appointment_id, practitioner_id, patient_id,
+                            modality, participant_regions, method, all_parties_consented,
+                            granted_at, policy_version
+                        ) VALUES (
+                            :id, :tenant_id, 'appointment-external-ingest',
+                            'practitioner-external-ingest', 'patient-external-ingest',
+                            'virtual', ARRAY['FL'], 'pre_visit_form', true,
+                            now(), 'all-party-v1'
+                        )
+                        """
+                    ),
+                    {"id": consent_id, "tenant_id": tenant_id},
+                )
+                default_mode = await connection.scalar(
+                    text(
+                        """
+                        INSERT INTO scribe_sessions (
+                            id, tenant_id, appointment_id, practitioner_id, patient_id,
+                            consent_record_id, modality, status
+                        ) VALUES (
+                            :id, :tenant_id, 'appointment-external-ingest',
+                            'practitioner-external-ingest', 'patient-external-ingest',
+                            :consent_id, 'virtual', 'created'
+                        )
+                        RETURNING ingest_mode
+                        """
+                    ),
+                    {
+                        "id": default_session_id,
+                        "tenant_id": tenant_id,
+                        "consent_id": consent_id,
+                    },
+                )
+                assert default_mode == SessionIngestMode.CHUNK_UPLOAD.value
+
+            with pytest.raises(DBAPIError, match="invalid scribe session status transition"):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                        {"tenant_id": str(tenant_id)},
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE scribe_sessions SET status = 'transcript_ready'
+                            WHERE tenant_id = :tenant_id AND id = :id
+                            """
+                        ),
+                        {"tenant_id": tenant_id, "id": default_session_id},
+                    )
+
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO scribe_sessions (
+                            id, tenant_id, appointment_id, practitioner_id, patient_id,
+                            consent_record_id, modality, status, ingest_mode
+                        ) VALUES (
+                            :id, :tenant_id, 'appointment-external-ingest',
+                            'practitioner-external-ingest', 'patient-external-ingest',
+                            :consent_id, 'virtual', 'created', :ingest_mode
+                        )
+                        """
+                    ),
+                    {
+                        "id": external_session_id,
+                        "tenant_id": tenant_id,
+                        "consent_id": consent_id,
+                        "ingest_mode": SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT.value,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE scribe_sessions SET status = 'transcript_ready'
+                        WHERE tenant_id = :tenant_id AND id = :id
+                        """
+                    ),
+                    {"tenant_id": tenant_id, "id": external_session_id},
+                )
+
+            for invalid_mode, expected_error in (
+                ("unsupported", "scribe_sessions_ingest_mode_check"),
+                (None, "ingest_mode"),
+            ):
+                with pytest.raises(DBAPIError, match=expected_error):
+                    async with engine.begin() as connection:
+                        await connection.execute(
+                            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                            {"tenant_id": str(tenant_id)},
+                        )
+                        await connection.execute(
+                            text(
+                                """
+                                INSERT INTO scribe_sessions (
+                                    id, tenant_id, appointment_id, practitioner_id,
+                                    patient_id, consent_record_id, modality, status,
+                                    ingest_mode
+                                ) VALUES (
+                                    :id, :tenant_id, 'appointment-external-ingest',
+                                    'practitioner-external-ingest',
+                                    'patient-external-ingest', :consent_id,
+                                    'virtual', 'created', :ingest_mode
+                                )
+                                """
+                            ),
+                            {
+                                "id": uuid4(),
+                                "tenant_id": tenant_id,
+                                "consent_id": consent_id,
+                                "ingest_mode": invalid_mode,
+                            },
+                        )
+
+            with pytest.raises(DBAPIError, match="scribe session ingest mode is immutable"):
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                        {"tenant_id": str(tenant_id)},
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE scribe_sessions
+                            SET ingest_mode = 'external_async_transcript'
+                            WHERE tenant_id = :tenant_id AND id = :id
+                            """
+                        ),
+                        {"tenant_id": tenant_id, "id": default_session_id},
+                    )
         finally:
             await engine.dispose()
 
