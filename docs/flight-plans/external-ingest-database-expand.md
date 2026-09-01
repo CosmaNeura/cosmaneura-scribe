@@ -23,12 +23,17 @@
 - High-blast-radius decisions: the DDL takes a table lock and replaces a trigger
   function. Operational rollback always leaves the additive structure dormant;
   dropping it is a separately reviewed cleanup, not an immediate recovery move.
+  The migration fails rather than waiting indefinitely: lock acquisition is
+  limited to 5 seconds and each migration statement to 60 seconds.
 - Dependency-ordered PR stack: domain contract PR #61; this database-expand PR;
   a future false-default persistence/API packet; generated-client parity; then
   separately gated desktop/mobile callers. Each packet can remain held with no
   user-visible effect.
-- Cross-repo contract/version: N/A. No sender can select the new mode in this
-  packet. Receiver-before-sender ordering is mandatory for later packets.
+- Cross-repo contract/version: N/A. No current application path can select the
+  new mode in this packet. A principal with direct table-write authority could
+  do so through SQL, so dormancy here is application-path dormancy, not a new
+  database privilege boundary. Receiver-before-sender ordering is mandatory
+  for later packets.
 
 ## Current deployed state
 
@@ -79,6 +84,8 @@
 3. After the dedicated synthetic beta environment exists, obtain a separate
    authorization to rehearse the expand migration there. Measure lock duration
    and verify existing session creation and status transitions are unchanged.
+   The apply must abort if it cannot acquire the lock within 5 seconds or finish
+   within the migration's 60-second statement timeout.
 4. Keep all shared production/PHI environments blocked until the later API,
    client, security, auth, and cohort acceptance gates are complete.
 - Abort any future apply on lock-timeout/error, more than one Alembic head,
@@ -90,10 +97,14 @@
 - Existing row-level security remains attached to `scribe_sessions`; this
   packet adds no new table, role, privilege, endpoint, provider call, audio, or
   transcript payload.
+- Existing runtime database principals retain their pre-existing table-write
+  authority. The approved application and repository cannot select external
+  mode; direct privileged SQL remains an administrative security boundary.
 - Behavior and schema recovery: keep the default path, roll back/disable future
   callers, and retain the additive column. The downgrade exists only to verify
-  reversibility in disposable databases; any operational removal requires a
-  separate data migration and explicit approval.
+  reversibility in disposable databases, and it refuses while any external-mode
+  row exists. Any operational removal requires a separate data migration and
+  explicit approval.
 - Data-damage boundary: dropping `ingest_mode` after external rows exist loses
   provenance. No cleanup/drop is authorized here.
 - Observation window before irreversible cleanup: N/A; no cleanup is planned.

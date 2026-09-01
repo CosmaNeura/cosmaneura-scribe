@@ -129,19 +129,25 @@ def test_0008_upgrade_and_downgrade_are_schema_only_and_default_safe(
 
     migration.upgrade()
 
-    assert len(statements) == 4
-    assert "ingest_mode text NOT NULL DEFAULT 'chunk_upload'" in statements[0]
-    assert "scribe_sessions_ingest_mode_check" in statements[0]
-    assert "OLD.ingest_mode = 'external_async_transcript'" in statements[1]
-    assert "reject_scribe_session_ingest_mode_mutation" in statements[2]
-    assert "scribe_sessions_ingest_mode_immutable" in statements[3]
+    assert len(statements) == 6
+    assert statements[0] == "SET LOCAL lock_timeout = '5s'"
+    assert statements[1] == "SET LOCAL statement_timeout = '60s'"
+    assert "ingest_mode text NOT NULL DEFAULT 'chunk_upload'" in statements[2]
+    assert "scribe_sessions_ingest_mode_check" in statements[2]
+    assert "OLD.ingest_mode = 'external_async_transcript'" in statements[3]
+    assert "reject_scribe_session_ingest_mode_mutation" in statements[4]
+    assert "scribe_sessions_ingest_mode_immutable" in statements[5]
     assert "consent" not in " ".join(statements).lower()
 
     statements.clear()
     migration.downgrade()
 
-    assert len(statements) == 5
-    assert "OLD.ingest_mode" not in statements[0]
+    assert len(statements) == 8
+    assert statements[0] == "SET LOCAL lock_timeout = '5s'"
+    assert statements[1] == "SET LOCAL statement_timeout = '60s'"
+    assert "refusing to remove ingest_mode" in statements[2]
+    assert "external_async_transcript" in statements[2]
+    assert "OLD.ingest_mode" not in statements[3]
     assert statements[-1] == "ALTER TABLE scribe_sessions DROP COLUMN IF EXISTS ingest_mode"
 
 

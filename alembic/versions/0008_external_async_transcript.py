@@ -11,6 +11,9 @@ down_revision = "0007"
 branch_labels = None
 depends_on = None
 
+LOCK_TIMEOUT_SQL = "SET LOCAL lock_timeout = '5s'"
+STATEMENT_TIMEOUT_SQL = "SET LOCAL statement_timeout = '60s'"
+
 # Keep historical migration behavior pinned. Tests verify these predicates stay
 # aligned with the domain renderer without making a past migration depend on
 # future application-code changes.
@@ -52,6 +55,8 @@ def _transition_function(predicate: str) -> str:
 
 
 def upgrade() -> None:
+    op.execute(LOCK_TIMEOUT_SQL)
+    op.execute(STATEMENT_TIMEOUT_SQL)
     op.execute(
         """
         ALTER TABLE scribe_sessions
@@ -86,6 +91,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(LOCK_TIMEOUT_SQL)
+    op.execute(STATEMENT_TIMEOUT_SQL)
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM scribe_sessions
+                WHERE ingest_mode = 'external_async_transcript'
+            ) THEN
+                RAISE EXCEPTION
+                    'refusing to remove ingest_mode while external-mode rows exist'
+                    USING ERRCODE = '55000';
+            END IF;
+        END;
+        $$
+        """
+    )
     op.execute(_transition_function(CHUNK_UPLOAD_TRANSITION_PREDICATE))
     op.execute("DROP TRIGGER IF EXISTS scribe_sessions_ingest_mode_immutable ON scribe_sessions")
     op.execute("DROP FUNCTION IF EXISTS reject_scribe_session_ingest_mode_mutation()")

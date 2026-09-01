@@ -29,6 +29,7 @@ from fastapi import Header
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
@@ -159,12 +160,20 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     config.set_main_option("sqlalchemy.url", admin_url)
     command.downgrade(config, "base")
     command.upgrade(config, "0007")
-    probe_tenant_id, probe_session_id = asyncio.run(_seed_pre_ingest_mode_session(admin_url))
+    probe_tenant_id, probe_consent_id, probe_session_id = asyncio.run(
+        _seed_pre_ingest_mode_session(admin_url)
+    )
     command.upgrade(config, "head")
     assert (
         asyncio.run(_session_ingest_mode(admin_url, probe_tenant_id, probe_session_id))
         == "chunk_upload"
     )
+    external_probe_session_id = asyncio.run(
+        _seed_external_ingest_session(admin_url, probe_tenant_id, probe_consent_id)
+    )
+    with pytest.raises(DBAPIError, match="refusing to remove ingest_mode"):
+        command.downgrade(config, "0007")
+    asyncio.run(_delete_session(admin_url, probe_tenant_id, external_probe_session_id))
     command.downgrade(config, "0007")
     assert asyncio.run(_column_exists(admin_url, "scribe_sessions", "ingest_mode")) is False
     command.upgrade(config, "head")
@@ -201,6 +210,7 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     yield admin_url, app_url
 
     asyncio.run(_drop_app_role(admin_url))
+    asyncio.run(_clear_sessions_for_disposable_downgrade(admin_url))
     command.downgrade(config, "base")
 
 
@@ -288,7 +298,7 @@ async def _column_exists(database_url: str, table_name: str, column_name: str) -
         await engine.dispose()
 
 
-async def _seed_pre_ingest_mode_session(database_url: str) -> tuple[UUID, UUID]:
+async def _seed_pre_ingest_mode_session(database_url: str) -> tuple[UUID, UUID, UUID]:
     tenant_id = uuid4()
     consent_id = uuid4()
     session_id = uuid4()
@@ -337,7 +347,78 @@ async def _seed_pre_ingest_mode_session(database_url: str) -> tuple[UUID, UUID]:
             )
     finally:
         await engine.dispose()
-    return tenant_id, session_id
+    return tenant_id, consent_id, session_id
+
+
+async def _seed_external_ingest_session(
+    database_url: str,
+    tenant_id: UUID,
+    consent_id: UUID,
+) -> UUID:
+    session_id = uuid4()
+    engine = create_async_engine(database_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(tenant_id)},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO scribe_sessions (
+                        id, tenant_id, appointment_id, practitioner_id, patient_id,
+                        consent_record_id, modality, status, ingest_mode
+                    ) VALUES (
+                        :id, :tenant_id, 'migration-guard-appointment',
+                        'migration-guard-practitioner', 'migration-guard-patient',
+                        :consent_id, 'virtual', 'created', 'external_async_transcript'
+                    )
+                    """
+                ),
+                {
+                    "id": session_id,
+                    "tenant_id": tenant_id,
+                    "consent_id": consent_id,
+                },
+            )
+    finally:
+        await engine.dispose()
+    return session_id
+
+
+async def _delete_session(
+    database_url: str,
+    tenant_id: UUID,
+    session_id: UUID,
+) -> None:
+    engine = create_async_engine(database_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(tenant_id)},
+            )
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM scribe_sessions
+                    WHERE tenant_id = :tenant_id AND id = :session_id
+                    """
+                ),
+                {"tenant_id": tenant_id, "session_id": session_id},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _clear_sessions_for_disposable_downgrade(database_url: str) -> None:
+    engine = create_async_engine(database_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("TRUNCATE TABLE scribe_sessions CASCADE"))
+    finally:
+        await engine.dispose()
 
 
 async def _session_ingest_mode(
