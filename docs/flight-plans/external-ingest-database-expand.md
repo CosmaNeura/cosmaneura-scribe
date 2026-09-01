@@ -21,8 +21,8 @@
 
 - Tier: Tier 2 because this is a database schema and state-machine change.
 - High-blast-radius decisions: the DDL takes a table lock and replaces a trigger
-  function. Downgrading after external-mode rows exist would discard their
-  ingest provenance, so destructive rollback is prohibited after activation.
+  function. Operational rollback always leaves the additive structure dormant;
+  dropping it is a separately reviewed cleanup, not an immediate recovery move.
 - Dependency-ordered PR stack: domain contract PR #61; this database-expand PR;
   a future false-default persistence/API packet; generated-client parity; then
   separately gated desktop/mobile callers. Each packet can remain held with no
@@ -39,9 +39,9 @@
 - Reconciliation decision: retain current deployed behavior. Apply this expand
   migration only after the isolated beta database is provisioned and a separate
   migration authorization is recorded.
-- Previous known-good state: Alembic revision `0007`. Before any external-mode
-  data exists, revision `0008` can be downgraded to `0007`; afterward, retain the
-  additive column and disable callers instead of dropping data.
+- Previous known-good application behavior is represented by Alembic revision
+  `0007`. Revision cycling back to `0007` is allowed only in disposable tests.
+  Operational recovery retains the additive column and disables callers.
 
 ## Feature flag / release control (user-visible reversible behavior only)
 
@@ -55,16 +55,19 @@
 | Change | Rung | PR | Invariant | Recovery |
 |---|---|---|---|---|
 | Define external mode and its one additional transition | Code/CI | #61 | Default transition table is unchanged | Revert/hold PR |
-| Add immutable `ingest_mode` with `chunk_upload` default | Code/CI only in this packet | This PR | Old writers and existing rows remain on the old path | Hold unmerged; no database recovery needed |
+| Add immutable `ingest_mode` with `chunk_upload` default | Expand | This PR | Old writers and existing rows remain on the old path | Hold unmerged; if later applied, stop rollout and retain the additive structure |
 | Rehearse revision `0007 -> 0008 -> 0007 -> 0008` | Ephemeral synthetic PostgreSQL | This PR | Column, constraint, trigger, and transition function cycle cleanly | Destroy ephemeral database |
-| Apply expand migration | Isolated non-PHI beta database, separately authorized | Future release record | No runtime can select external mode yet | Before use: downgrade to `0007`; after use: retain schema and roll back callers |
+| Apply expand migration | Isolated non-PHI beta database, separately authorized | Future release record | No runtime can select external mode yet | Stop rollout, retain schema, and roll back/disable callers |
 | Apply to production/PHI database | Blocked | N/A | Requires founder authorization and completed beta evidence | N/A while blocked |
 
-- PHI-safe rehearsal evidence: on 2026-09-01, the full Python suite passed
+- Code-level migration validation: on 2026-09-01, the full Python suite passed
   (`492 passed`) against a disposable local PostgreSQL database ending in
   `_test`. The fixture exercised `0007 -> 0008 -> 0007 -> 0008`, verified that
   a row created before `0008` became `chunk_upload`, and used synthetic data
-  only. This is code-level rehearsal, not authorization to alter an environment.
+  only.
+- Formal PHI-safe rehearsal: not completed. Disposable local/CI validation is
+  not a substitute for the reviewed restore/isolate/scrub/verify/cleanup
+  rehearsal required before any PHI-bearing promotion, which remains blocked.
 
 ## Rollout and promotion
 
@@ -87,10 +90,10 @@
 - Existing row-level security remains attached to `scribe_sessions`; this
   packet adds no new table, role, privilege, endpoint, provider call, audio, or
   transcript payload.
-- Behavior recovery: keep the default path and roll back/disable future callers.
-  Schema recovery before external use: downgrade to `0007`. Schema recovery
-  after external use: keep the additive column; any removal requires a separate
-  data migration and explicit approval.
+- Behavior and schema recovery: keep the default path, roll back/disable future
+  callers, and retain the additive column. The downgrade exists only to verify
+  reversibility in disposable databases; any operational removal requires a
+  separate data migration and explicit approval.
 - Data-damage boundary: dropping `ingest_mode` after external rows exist loses
   provenance. No cleanup/drop is authorized here.
 - Observation window before irreversible cleanup: N/A; no cleanup is planned.
