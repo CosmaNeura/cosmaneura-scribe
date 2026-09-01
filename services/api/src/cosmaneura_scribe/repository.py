@@ -38,7 +38,7 @@ from .schemas import (
     TranscriptionJob,
     TranscriptionJobStatus,
 )
-from .session_state_v1 import can_transition_session
+from .session_state_v1 import SessionIngestMode, can_transition_session
 
 
 class IdempotencyConflictError(ValueError):
@@ -51,6 +51,10 @@ class IdempotencyClaimUnavailableError(RuntimeError):
 
 class DeliverySuccessConflictError(RuntimeError):
     """A remote success disagrees with the delivery receipt's durable binding."""
+
+
+class CaptureIngestModeError(ValueError):
+    """An audio-capture mutation was attempted for a non-capture session."""
 
 
 class CaptureLeaseConflictError(RuntimeError):
@@ -722,14 +726,31 @@ class InMemoryRepository:
         await self.lock_consent(tenant_id, session.consent_record_id)
         self.sessions[(tenant_id, session.id)] = session
 
+    def _require_chunk_upload_session(self, tenant_id: UUID, session_id: UUID) -> None:
+        session = self.sessions.get((tenant_id, session_id))
+        if (
+            session is not None
+            and session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
+
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         await self.lock_consent(tenant_id, session.consent_record_id)
         current = self.sessions.get((tenant_id, session.id))
-        if current is not None and not can_transition_session(current.status, session.status):
-            raise ValueError(
-                f"invalid scribe session status transition: "
-                f"{current.status.value} -> {session.status.value}"
-            )
+        if current is not None:
+            if current.ingest_mode != session.ingest_mode:
+                raise ValueError("scribe session ingest mode is immutable")
+            if not can_transition_session(
+                current.status,
+                session.status,
+                ingest_mode=current.ingest_mode,
+            ):
+                raise ValueError(
+                    f"invalid scribe session status transition: "
+                    f"{current.status.value} -> {session.status.value}"
+                )
         self.sessions[(tenant_id, session.id)] = session
 
     async def get_session_audio_key(
@@ -744,6 +765,7 @@ class InMemoryRepository:
         tenant_id: UUID,
         audio_key: SessionAudioKey,
     ) -> bool:
+        self._require_chunk_upload_session(tenant_id, audio_key.session_id)
         row_key = (tenant_id, audio_key.session_id)
         if row_key in self.session_audio_keys:
             return False
@@ -795,6 +817,13 @@ class InMemoryRepository:
         row_key = (tenant_id, session_id)
         context = await self.lock_capture_context(tenant_id, session_id)
         if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
+        if (
             context is None
             or context.audio_key is None
             or not context.consent.all_parties_consented
@@ -836,6 +865,13 @@ class InMemoryRepository:
         duration: timedelta,
     ) -> CaptureLeaseReceipt | None:
         context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
         current = context.lease if context is not None else None
         if (
             context is None
@@ -946,6 +982,13 @@ class InMemoryRepository:
             raise CaptureReservationLimitError
 
         context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
         lease = context.lease if context is not None else None
         now = datetime.now(UTC)
         if (
@@ -1118,6 +1161,13 @@ class InMemoryRepository:
         duration: timedelta,
     ) -> UploadAuthorizationReceipt | None:
         context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
         reservation = await self.get_chunk_reservation(tenant_id, session_id, object_id)
         if (
             context is None
@@ -1179,6 +1229,13 @@ class InMemoryRepository:
         protocol_version: str,
     ) -> bool:
         context = await self.lock_capture_context(tenant_id, chunk.session_id)
+        if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
         reservation = await self.get_chunk_reservation(
             tenant_id, chunk.session_id, chunk.object_id
         )
@@ -1228,6 +1285,14 @@ class InMemoryRepository:
         declared = {item.channel: item.last_sequence_number for item in declarations}
         if any(last < 0 or last >= MAX_CHUNKS for last in declared.values()):
             raise CaptureFinalizationError
+        context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
         existing = await self.capture_finalizations_for(tenant_id, session_id)
         if existing:
             if {
@@ -1236,7 +1301,6 @@ class InMemoryRepository:
                 raise CaptureFinalizationError
             return existing
 
-        context = await self.lock_capture_context(tenant_id, session_id)
         if (
             context is None
             or context.audio_key is None
@@ -1325,6 +1389,7 @@ class InMemoryRepository:
         return self.chunks.get((tenant_id, chunk_id))
 
     async def add_chunk(self, tenant_id: UUID, chunk: AudioChunk) -> None:
+        self._require_chunk_upload_session(tenant_id, chunk.session_id)
         self.chunks[(tenant_id, chunk.id)] = chunk
 
     async def chunks_for(self, tenant_id: UUID, session_id: UUID) -> list[AudioChunk]:
@@ -1341,6 +1406,7 @@ class InMemoryRepository:
         return self.upload_grants.get((tenant_id, object_id))
 
     async def add_upload_grant(self, tenant_id: UUID, grant: UploadGrantRecord) -> None:
+        self._require_chunk_upload_session(tenant_id, grant.session_id)
         self.upload_grants[(tenant_id, grant.object_id)] = grant
 
     async def get_transcript(self, tenant_id: UUID, transcript_id: UUID) -> Transcript | None:
@@ -1375,6 +1441,7 @@ class InMemoryRepository:
         lease_until: datetime,
         max_attempts: int,
     ) -> TranscriptionJob | None:
+        self._require_chunk_upload_session(tenant_id, session_id)
         current = await self.transcription_job_for(tenant_id, session_id)
         if current is not None:
             session = await self.get_session(tenant_id, session_id)

@@ -608,6 +608,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** @default chunk_upload */
+            ingest_mode: components["schemas"]["SessionIngestMode"];
             modality: components["schemas"]["CaptureModality"];
             /** Patient Id */
             patient_id: string;
@@ -913,6 +915,11 @@ export interface components {
             /** Practitioner Id */
             practitioner_id: string;
         };
+        /**
+         * SessionIngestMode
+         * @enum {string}
+         */
+        SessionIngestMode: "chunk_upload" | "external_async_transcript";
         /**
          * SessionStatus
          * @enum {string}

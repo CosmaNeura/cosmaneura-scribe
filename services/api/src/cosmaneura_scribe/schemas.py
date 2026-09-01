@@ -24,7 +24,7 @@ from .capture_protocol_v1 import (
     CaptureChannel,
     ProtocolVersion,
 )
-from .session_state_v1 import SessionStatus
+from .session_state_v1 import SessionIngestMode, SessionStatus
 from .transcript_constraints import (
     MAX_TRANSCRIPT_CONTENT_CHARS,
     MAX_TRANSCRIPT_DURATION_MS,
@@ -92,6 +92,7 @@ class CaptureSession(SessionCreate):
     model_config = ConfigDict(frozen=True)
 
     id: UUID
+    ingest_mode: SessionIngestMode = SessionIngestMode.CHUNK_UPLOAD
     status: SessionStatus
     created_at: datetime
 

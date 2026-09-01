@@ -25,6 +25,7 @@ from .schemas import (
     TranscriptionJobStatus,
     TranscriptSegment,
 )
+from .session_state_v1 import SessionIngestMode
 from .transcript_constraints import validate_transcript_segments
 from .transcription import (
     AudioTrack,
@@ -480,7 +481,7 @@ class TranscriptionWorker:
         session = await store.lock_session(tenant_id, session_id)
         if session is None:
             raise TranscriptionWorkerError("session_unavailable")
-        if session.status not in {
+        if session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD or session.status not in {
             SessionStatus.UPLOADED,
             SessionStatus.PROCESSING,
             SessionStatus.TRANSCRIPT_READY,
