@@ -88,6 +88,10 @@ class SessionCreate(BaseModel):
     modality: CaptureModality
 
 
+class ExternalTranscriptSessionCreate(SessionCreate):
+    model_config = ConfigDict(extra="forbid")
+
+
 class CaptureSession(SessionCreate):
     model_config = ConfigDict(frozen=True)
 
