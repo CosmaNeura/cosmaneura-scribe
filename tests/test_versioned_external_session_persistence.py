@@ -37,6 +37,7 @@ from cosmaneura_scribe.schemas import (
 )
 from cosmaneura_scribe.session_state_v1 import SessionIngestMode
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 
 def _consent(*, revoked: bool = False) -> ConsentRecord:
@@ -278,7 +279,7 @@ def test_configured_types_are_internal_fixed_and_distinct_from_legacy_state() ->
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_postgres_legacy_delivery_claim_and_completion_ignore_configured_session(
+async def test_postgres_legacy_delivery_rejects_configured_session(
     postgres_urls: tuple[str, str],
 ) -> None:
     _, app_url = postgres_urls
@@ -292,25 +293,26 @@ async def test_postgres_legacy_delivery_claim_and_completion_ignore_configured_s
             await store.add_consent(tenant_id, consent)
             assert await store.create_versioned_external_session(tenant_id, draft) is not None
 
-        async with provider.engine.begin() as connection:
-            await connection.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(tenant_id)},
-            )
-            await connection.execute(
-                text(
-                    """
-                    INSERT INTO transcript_deliveries (
-                        id, tenant_id, session_id, idempotency_key, payload_sha256,
-                        status, attempt_count, created_at, updated_at
-                    ) VALUES (
-                        :id, :tenant_id, :session_id, :idempotency_key, :payload_sha256,
-                        'pending', 0, :created_at, :updated_at
-                    )
-                    """
-                ),
-                {"tenant_id": tenant_id, **delivery.model_dump(mode="python")},
-            )
+        with pytest.raises(DBAPIError, match="legacy child root requires an unconfigured session"):
+            async with provider.engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO transcript_deliveries (
+                            id, tenant_id, session_id, idempotency_key, payload_sha256,
+                            status, attempt_count, created_at, updated_at
+                        ) VALUES (
+                            :id, :tenant_id, :session_id, :idempotency_key, :payload_sha256,
+                            'pending', 0, :created_at, :updated_at
+                        )
+                        """
+                    ),
+                    {"tenant_id": tenant_id, **delivery.model_dump(mode="python")},
+                )
 
         async with provider.transaction(tenant_id) as store:
             assert await store.get_delivery(tenant_id, delivery.id) is None
@@ -339,20 +341,20 @@ async def test_postgres_legacy_delivery_claim_and_completion_ignore_configured_s
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(tenant_id)},
             )
-            assert await connection.scalar(
+            assert not await connection.scalar(
                 text(
-                    "SELECT status FROM transcript_deliveries "
+                    "SELECT count(*) FROM transcript_deliveries "
                     "WHERE tenant_id = :tenant_id AND id = :id"
                 ),
                 {"tenant_id": tenant_id, "id": delivery.id},
-            ) == DeliveryStatus.PENDING.value
+            )
     finally:
         await provider.close()
 
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_postgres_legacy_worker_paths_ignore_configured_session_job(
+async def test_postgres_legacy_worker_job_rejects_configured_session(
     postgres_urls: tuple[str, str],
 ) -> None:
     _, app_url = postgres_urls
@@ -377,25 +379,26 @@ async def test_postgres_legacy_worker_paths_ignore_configured_session_job(
             await store.add_consent(tenant_id, consent)
             assert await store.create_versioned_external_session(tenant_id, draft) is not None
 
-        async with provider.engine.begin() as connection:
-            await connection.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(tenant_id)},
-            )
-            await connection.execute(
-                text(
-                    """
-                    INSERT INTO transcription_jobs (
-                        id, tenant_id, session_id, status, attempt_count, lease_token,
-                        lease_until, created_at, updated_at
-                    ) VALUES (
-                        :id, :tenant_id, :session_id, :status, :attempt_count, :lease_token,
-                        :lease_until, :created_at, :updated_at
-                    )
-                    """
-                ),
-                {"tenant_id": tenant_id, **job.model_dump(mode="python")},
-            )
+        with pytest.raises(DBAPIError, match="legacy child root requires an unconfigured session"):
+            async with provider.engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO transcription_jobs (
+                            id, tenant_id, session_id, status, attempt_count, lease_token,
+                            lease_until, created_at, updated_at
+                        ) VALUES (
+                            :id, :tenant_id, :session_id, :status, :attempt_count, :lease_token,
+                            :lease_until, :created_at, :updated_at
+                        )
+                        """
+                    ),
+                    {"tenant_id": tenant_id, **job.model_dump(mode="python")},
+                )
 
         async with provider.transaction(tenant_id) as store:
             assert await store.transcription_job_for(tenant_id, draft.id) is None
@@ -417,27 +420,20 @@ async def test_postgres_legacy_worker_paths_ignore_configured_session_job(
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(tenant_id)},
             )
-            persisted = (
-                await connection.execute(
-                    text(
-                        """
-                        SELECT status, lease_until
-                        FROM transcription_jobs
-                        WHERE tenant_id = :tenant_id AND id = :id
-                        """
-                    ),
-                    {"tenant_id": tenant_id, "id": job.id},
-                )
-            ).mappings().one()
-            assert persisted["status"] == TranscriptionJobStatus.PROCESSING.value
-            assert persisted["lease_until"] == job.lease_until
+            assert not await connection.scalar(
+                text(
+                    "SELECT count(*) FROM transcription_jobs "
+                    "WHERE tenant_id = :tenant_id AND id = :id"
+                ),
+                {"tenant_id": tenant_id, "id": job.id},
+            )
     finally:
         await provider.close()
 
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_postgres_legacy_capture_children_ignore_configured_session(
+async def test_postgres_legacy_capture_children_reject_configured_session(
     postgres_urls: tuple[str, str],
 ) -> None:
     _, app_url = postgres_urls
@@ -452,14 +448,15 @@ async def test_postgres_legacy_capture_children_ignore_configured_session(
             await store.add_consent(tenant_id, consent)
             assert await store.create_versioned_external_session(tenant_id, draft) is not None
 
-        async with provider.engine.begin() as connection:
-            await connection.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(tenant_id)},
-            )
-            await connection.execute(
-                text(
-                    """
+        with pytest.raises(DBAPIError, match="legacy child root requires an unconfigured session"):
+            async with provider.engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
                     WITH audio_key AS (
                         INSERT INTO session_audio_keys (
                             tenant_id, session_id, key_version, wrapped_dek, created_at
@@ -522,19 +519,19 @@ async def test_postgres_legacy_capture_children_ignore_configured_session(
                         :chunk_id, :tenant_id, :session_id, 0, 'microphone', :object_id,
                         :sha256, 1, :now, :object_id, '1.0'
                     )
-                    """
-                ),
-                {
-                    "tenant_id": tenant_id,
-                    "session_id": draft.id,
-                    "now": now,
-                    "expires_at": now + timedelta(minutes=10),
-                    "wrapped_dek": "a" * 512,
-                    "additional_data": b"synthetic-aad",
-                    "sha256": "a" * 64,
-                    **{f"{name}_id": value for name, value in ids.items()},
-                },
-            )
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": draft.id,
+                        "now": now,
+                        "expires_at": now + timedelta(minutes=10),
+                        "wrapped_dek": "a" * 512,
+                        "additional_data": b"synthetic-aad",
+                        "sha256": "a" * 64,
+                        **{f"{name}_id": value for name, value in ids.items()},
+                    },
+                )
 
         async with provider.transaction(tenant_id) as store:
             assert await store.get_session_audio_key(tenant_id, draft.id) is None

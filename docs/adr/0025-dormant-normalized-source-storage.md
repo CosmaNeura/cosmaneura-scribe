@@ -44,6 +44,22 @@ remains `handed_off`; a prior explicit failure keeps its original evidence. Retr
 original marker and event while re-running deletion and absence checks, and every source writer that
 loses the common fence observes expiry or purge before it can write.
 
+Persistence Packet 4 adds revision `0011` and updates bootstrap without adding an identity or
+caller. A fail-closed database trigger requires an existing null-contract session before insert or
+tenant/session reassignment on each direct legacy child root: audio chunk/grant/key, legacy
+transcript/delivery/job, capture lease, reservation batch/reservation, and channel finalization.
+The remaining capture receipt/item tables can only reference one of those guarded roots. Upgrade
+takes bounded locks and refuses any pre-existing configured/legacy mixture before installing the
+guards. Downgrade is disposable-test-only; operational recovery retains the guard dormant.
+
+The existing runtime principal receives only `SELECT, INSERT` on normalized source headers,
+segments, and receipt-key bindings; lifecycle-column `SELECT`; and `UPDATE` of status, receipt,
+expiry, and current-version fields. It receives neither normalized-source `UPDATE`/`DELETE`,
+terminal-event access, nor `content_purged_at` mutation. Transcription and reconciliation roles
+receive no normalized-source or terminal-event access. This is sufficient for a future source
+receiver and current-source read, while terminal failure and retention purge remain unavailable to
+every deployed application role.
+
 This dormant repository behavior follows ADR 0028's unconditional source deletion at the fourteen-
 day anchor for synthetic verification only. It does not resolve ADR 0013's broader requirement that
 legal holds win every scheduled purge. The current normalized-source schema has no hold relation or
@@ -54,14 +70,19 @@ owners reconcile that conflict and a separately reviewed retention authority enf
 
 - Applying `0009` alone is dormant: current code writes none of the new fields or tables.
 - Applying `0010` plus Packet 1 remains dormant: no route or runtime callsite invokes configured creation.
-- Packet 2 remains dormant because there is no route and the runtime principal has no
-  normalized-source table or lifecycle-column privileges. Its post-accept lifecycle reads are
-  therefore intentionally blocked until those grants receive later review.
+- Packet 2's repository remains dormant because there is no route or caller. Packet 4 makes its
+  normalized-source and lifecycle-column authority available to the existing runtime principal,
+  but does not invoke it.
 - Packet 3 remains dormant for the same reason and adds no worker, scheduler, API, OpenAPI,
   deployment, migration apply, or activation path. Only synthetic repository tests invoke it.
+- Packet 4 remains dormant because it adds no route or caller and this change does not apply its
+  migration or bootstrap grants. It reuses the existing runtime workload identity rather than
+  creating a third authentication path.
 - A later API/retention packet must translate near-expiry commit-trigger failures into bounded
   errors and serialize a receipt's canonical body only after its transaction commits.
-- The trusted runtime keeps legacy child-table access, and those foreign keys enforce tenant—not contract—identity. Repository filters hide malformed configured children, but activation is blocked until discriminator triggers, an isolated configured writer, or an explicitly accepted equivalent trust boundary prevents raw-SQL bypass.
+- The trusted runtime keeps legacy child-table access, but revision `0011` now enforces the contract
+  discriminator underneath repository filtering. Configured sessions cannot own direct legacy
+  child roots through ordinary SQL, and missing or RLS-hidden parents fail closed.
 - Translation, review, working-transcript, and handoff writers remain implementation work. Packet 3
   proves source purge only; it is not evidence that a deletion worker or complete covered-content
   purge exists.

@@ -725,7 +725,8 @@ async def test_aggregate_bounds_and_tenant_rls_are_database_enforced(
     migration = (ROOT / "alembic/versions/0009_bilingual_source_storage.py").read_text()
     bootstrap = (ROOT / "services/api/src/cosmaneura_scribe/database_bootstrap.py").read_text()
     assert "GRANT " not in migration
-    assert all(table not in bootstrap for table in NEW_TABLES)
+    assert "external_session_terminal_events" not in bootstrap
+    assert all(table in bootstrap for table in NEW_TABLES[1:])
     async with engine.begin() as connection:
         assert not await connection.scalar(
             text(
