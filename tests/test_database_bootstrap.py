@@ -1156,10 +1156,12 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
     }
 
     async def drop_probe_objects_and_roles(connection: AsyncConnection) -> None:
+        database_name = connection.dialect.identifier_preparer.quote(settings.database_name)
+        await connection.execute(text(f"ALTER DATABASE {database_name} OWNER TO CURRENT_USER"))
+        await connection.execute(text("ALTER SCHEMA public OWNER TO pg_database_owner"))
         await connection.execute(text("DROP TABLE IF EXISTS bootstrap_ownership_probe"))
         await connection.execute(text("DROP COLLATION IF EXISTS bootstrap_ownership_probe"))
         await connection.execute(text("DROP TABLE IF EXISTS bootstrap_future_privilege_probe"))
-        await connection.execute(text("DROP FUNCTION IF EXISTS bootstrap_uncontrolled_function()"))
         await connection.execute(text("DROP FUNCTION IF EXISTS bootstrap_future_function()"))
         await connection.execute(text("DROP PROCEDURE IF EXISTS bootstrap_future_procedure()"))
         for role_name in (FOREIGN_GRANTOR_ROLE, FOREIGN_DEFAULT_OWNER_ROLE, *application_roles):
@@ -1277,31 +1279,36 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             )
             await connection.execute(text("RESET ROLE"))
             await connection.execute(
-                text(f"ALTER DATABASE {database} OWNER TO {FOREIGN_GRANTOR_ROLE}")
+                text("GRANT CREATE ON SCHEMA public TO " + FOREIGN_GRANTOR_ROLE)
             )
-            await connection.execute(text(f"SET ROLE {FOREIGN_GRANTOR_ROLE}"))
-            await connection.execute(
-                text(
-                    "CREATE FUNCTION public.bootstrap_uncontrolled_function() "
-                    "RETURNS integer LANGUAGE sql AS 'SELECT 1'"
-                )
-            )
-            await connection.execute(text("RESET ROLE"))
-            assert await connection.scalar(
-                text(
-                    f"SELECT has_function_privilege('{TRANSLATION_ROLE}', "
-                    "'public.bootstrap_uncontrolled_function()', 'EXECUTE')"
-                )
-            )
-            await connection.execute(text("DROP FUNCTION bootstrap_uncontrolled_function()"))
 
         with pytest.raises(RuntimeError, match="public-schema CREATE"):
             await database_bootstrap._deny_implicit_future_permissions(settings)
 
         async with engine.begin() as connection:
             await connection.execute(
+                text("REVOKE CREATE ON SCHEMA public FROM " + FOREIGN_GRANTOR_ROLE)
+            )
+            await connection.execute(text("ALTER SCHEMA public OWNER TO CURRENT_USER"))
+            await connection.execute(
+                text(f"ALTER DATABASE {database} OWNER TO {FOREIGN_GRANTOR_ROLE}")
+            )
+            await connection.execute(text(f"SET ROLE {FOREIGN_GRANTOR_ROLE}"))
+            await connection.execute(
+                text(f"REVOKE CONNECT, TEMPORARY ON DATABASE {database} FROM PUBLIC")
+            )
+            await connection.execute(text("RESET ROLE"))
+
+        check_defaults = database_bootstrap._ensure_no_application_default_privileges
+        async with engine.begin() as connection:
+            with pytest.raises(RuntimeError, match="public-schema CREATE"):
+                await check_defaults(connection, application_roles)
+
+        async with engine.begin() as connection:
+            await connection.execute(
                 text(f"ALTER DATABASE {database} OWNER TO CURRENT_USER")
             )
+            await connection.execute(text("ALTER SCHEMA public OWNER TO pg_database_owner"))
             await database_bootstrap._ensure_no_database_principal_public_ownership(settings)
             await connection.execute(
                 text(f"GRANT TEMPORARY ON DATABASE {database} TO {', '.join(application_roles)}")

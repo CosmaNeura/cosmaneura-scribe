@@ -36,7 +36,7 @@ This packet adds no translation connection path, managed identity or app-role as
 
 ## Recovery and consequences
 
-Bootstrap spans transactions. On partial failure, keep callers quiesced and identity metadata configured and set the gate false. For an ACL failure, locate the dependency through `pg_shdepend` (`deptype='a'`) and inspect that object's ACL for its grantor; a `NOLOGIN` grantor requires an authorized operator to remove its upstream grant option with a reviewed `CASCADE`, accounting for other downstream grants. Default-ACL repair must run as, or be explicitly authorized for, its owner. Rerun bootstrap and verify exact privileges before removing configuration; no schema or immutable evidence is rolled back.
+Bootstrap spans transactions. On partial failure, keep callers quiesced and identity metadata configured and set the gate false. Locate application-role ACLs through `pg_shdepend` (`deptype='a'`); locate `PUBLIC` ACLs by expanding the scoped catalogs with `aclexplode(COALESCE(acl, acldefault(...)))`, then inspect the object's ACL for its grantor. A `NOLOGIN` grantor requires an authorized operator to remove its upstream grant option with a reviewed `CASCADE`, accounting for other downstream grants. Default-ACL repair must run as, or be explicitly authorized for, its owner. Rerun bootstrap and verify exact privileges before removing configuration; no schema or immutable evidence is rolled back.
 
 For rotation or decommission, first disable and revoke the old role's ACLs, then drop that principal's deterministic policy, and only then drop the role. Retaining old identity metadata through ACL verification is mandatory.
 

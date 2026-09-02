@@ -244,7 +244,11 @@ async def _ensure_no_application_default_privileges(
     survives = await connection.scalar(
         text(
             """
-            SELECT EXISTS (
+            SELECT NOT EXISTS (
+                SELECT 1 FROM pg_catalog.pg_database AS database
+                WHERE database.datname = current_database()
+                  AND database.datdba = current_user::regrole
+            ) OR EXISTS (
                 SELECT 1 FROM pg_catalog.pg_default_acl AS defaults
                 CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
                 WHERE defaults.defaclobjtype IN ('r', 'S', 'f')
@@ -259,12 +263,7 @@ async def _ensure_no_application_default_privileges(
                 WHERE creator.rolname <> current_user
                   AND NOT creator.rolsuper
                   AND pg_catalog.has_schema_privilege(creator.oid, 'public', 'CREATE')
-                  AND NOT (
-                      creator.oid = 'pg_database_owner'::regrole
-                      AND EXISTS (SELECT 1 FROM pg_catalog.pg_database AS database
-                          WHERE database.datname = current_database()
-                            AND database.datdba = current_user::regrole)
-                  )
+                  AND creator.oid <> 'pg_database_owner'::regrole
             )
             """
         ),
@@ -292,8 +291,7 @@ async def _replace_translation_session_scope_policy(
         "AND transcript_contract_version = '1.0' "
         "AND status IN ('translation_pending', 'review_required', 'transcript_ready'))"
     )
-    # Replace only this identity's deterministic policy. Policies for retired
-    # identities remain as a fail-closed boundary until their roles are removed.
+    # Retired identities keep their deterministic policies as a fail-closed boundary.
     await connection.execute(text(f"DROP POLICY IF EXISTS {policy} ON public.scribe_sessions"))
     await connection.execute(
         text(
