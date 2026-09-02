@@ -19,6 +19,7 @@ VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT = "1.0"
 VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID = "core_normalized_source_v1"
 VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID = "external_transcript_micro_beta_v1"
 VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID = "en_es_us_locale_normalization_v1"
+NORMALIZED_SOURCE_RETENTION_PRINCIPAL_ID = "retention_worker_v1"
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -44,6 +45,7 @@ class NormalizedSourcePersistenceCode(StrEnum):
     CONSENT_INVALID = "source_consent_invalid"
     IDEMPOTENCY_CONFLICT = "source_idempotency_conflict"
     LANGUAGE_MODE_CONFLICT = "source_language_mode_conflict"
+    RETENTION_NOT_DUE = "source_retention_not_due"
     RETENTION_EXPIRED = "source_retention_expired"
     STATE_CONFLICT = "source_state_conflict"
 
@@ -249,6 +251,96 @@ class NormalizedSourceAcceptance:
 
     def __repr__(self) -> str:
         return f"NormalizedSourceAcceptance(disposition={self.disposition.value!r})"
+
+
+class ExternalSessionFailureCode(StrEnum):
+    CONSENT_REVOKED = "consent_revoked"
+    IRRECOVERABLE_INTEGRITY_FAILURE = "irrecoverable_integrity_failure"
+    RETENTION_EXPIRED_BEFORE_HANDOFF = "retention_expired_before_handoff"
+
+
+class ExternalSessionTerminalPrincipalType(StrEnum):
+    SYSTEM = "system"
+    OPERATOR = "operator"
+
+
+@dataclass(frozen=True, repr=False)
+class ExternalSessionTerminalFailure:
+    """Bounded internal command; it carries no transcript or human identity."""
+
+    event_id: UUID
+    failure_code: ExternalSessionFailureCode
+    principal_type: ExternalSessionTerminalPrincipalType
+    principal_id: str
+
+    def __post_init__(self) -> None:
+        _validate_safe_identifier("principal_id", self.principal_id)
+        if self.failure_code == ExternalSessionFailureCode.RETENTION_EXPIRED_BEFORE_HANDOFF:
+            raise ValueError("retention expiry is owned by normalized source purge")
+
+    def __repr__(self) -> str:
+        return "ExternalSessionTerminalFailure(<protected>)"
+
+
+@dataclass(frozen=True, repr=False)
+class ExternalSessionTerminalEventRecord:
+    session_id: UUID
+    event_id: UUID
+    prior_status: ConfiguredExternalSessionStatus
+    failure_code: ExternalSessionFailureCode
+    occurred_at: datetime
+    principal_type: ExternalSessionTerminalPrincipalType
+    principal_id: str
+
+    def __post_init__(self) -> None:
+        _validate_safe_identifier("principal_id", self.principal_id)
+        if self.prior_status in {
+            ConfiguredExternalSessionStatus.HANDED_OFF,
+            ConfiguredExternalSessionStatus.FAILED,
+        }:
+            raise ValueError("terminal evidence requires a nonterminal prior status")
+        if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
+            raise ValueError("occurred_at must include a UTC offset")
+
+    def __repr__(self) -> str:
+        return "ExternalSessionTerminalEventRecord(<protected>)"
+
+
+@dataclass(frozen=True, repr=False)
+class VersionedExternalTerminalResult:
+    event: ExternalSessionTerminalEventRecord
+    changed: bool
+
+    def __repr__(self) -> str:
+        return f"VersionedExternalTerminalResult(changed={self.changed!r})"
+
+
+@dataclass(frozen=True, repr=False)
+class NormalizedSourcePurgeResult:
+    session_id: UUID
+    status: ConfiguredExternalSessionStatus
+    content_purged_at: datetime
+    terminal_event: ExternalSessionTerminalEventRecord | None
+    changed: bool
+
+    def __post_init__(self) -> None:
+        if self.status not in {
+            ConfiguredExternalSessionStatus.HANDED_OFF,
+            ConfiguredExternalSessionStatus.FAILED,
+        }:
+            raise ValueError("purged session status must be terminal")
+        if self.content_purged_at.tzinfo is None or self.content_purged_at.utcoffset() is None:
+            raise ValueError("content_purged_at must include a UTC offset")
+        if (
+            self.status == ConfiguredExternalSessionStatus.HANDED_OFF
+            and self.terminal_event is not None
+        ):
+            raise ValueError("handed-off purge cannot create terminal failure evidence")
+        if self.status == ConfiguredExternalSessionStatus.FAILED and self.terminal_event is None:
+            raise ValueError("failed purge requires terminal failure evidence")
+
+    def __repr__(self) -> str:
+        return f"NormalizedSourcePurgeResult(changed={self.changed!r})"
 
 
 def normalized_source_request_fingerprint(
