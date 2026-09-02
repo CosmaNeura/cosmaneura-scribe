@@ -82,8 +82,8 @@ connection strings, patient data, transcript data, SAS URLs, or object names.
 Bootstrap also revokes default privileges on future tables, sequences, and routines from `PUBLIC`
 and both application identities before migrations run. It deliberately does not grant blanket
 future access: every migration that adds an object needed by the API or worker must update the
-corresponding explicit grant list and bootstrap must run again. A future migration owner must have
-the same deny-by-default settings installed because PostgreSQL default privileges are owner-scoped.
+corresponding explicit grant list and bootstrap must run again. PostgreSQL ACLs are grantor-scoped
+and default privileges are owner-scoped, so bootstrap fails if another grantor/owner leaves access; that grantor/owner must remove it before bootstrap is retried.
 
 ## 4. Switch the API
 

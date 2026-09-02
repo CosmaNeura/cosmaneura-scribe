@@ -153,6 +153,12 @@ async def _ensure_no_database_principal_public_ownership(settings: Settings) -> 
                                 WHERE namespace.nspname = 'public'
                                   AND database_type.typowner = application_role.oid
                             )
+                            OR EXISTS (
+                                SELECT 1 FROM pg_catalog.pg_shdepend AS dependency
+                                WHERE dependency.refclassid = 'pg_authid'::regclass
+                                  AND dependency.refobjid = application_role.oid
+                                  AND dependency.deptype = 'o'
+                            )
                         FROM pg_catalog.pg_roles AS application_role
                         WHERE application_role.rolname = :role_name
                         """
@@ -162,13 +168,115 @@ async def _ensure_no_database_principal_public_ownership(settings: Settings) -> 
                 if owns_public_object is None:
                     raise RuntimeError("Database application role was not created")
                 if owns_public_object:
-                    raise RuntimeError("Database application role owns public database objects")
+                    raise RuntimeError("Database application role owns database objects")
     finally:
         await provider.close()
 
 
 def _quoted_identifier(connection: AsyncConnection, value: str) -> str:
     return connection.dialect.identifier_preparer.quote(value)
+
+
+async def _ensure_no_acl_survivor(
+    connection: AsyncConnection,
+    role_name: str | None,
+) -> None:
+    if role_name is not None:
+        survives = await connection.scalar(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_shdepend AS dependency
+                    JOIN pg_catalog.pg_roles AS role ON role.oid = dependency.refobjid
+                    WHERE role.rolname = :role_name AND dependency.deptype = 'a'
+                )
+                """
+            ),
+            {"role_name": role_name},
+        )
+        if survives:
+            raise RuntimeError("A surviving direct ACL remains for application role")
+        return
+    survives = await connection.scalar(
+        text(
+            """
+            WITH scoped_acls AS (
+                SELECT COALESCE(database.datacl, pg_catalog.acldefault('d', database.datdba)) AS acl
+                FROM pg_catalog.pg_database AS database
+                WHERE database.datname = current_database()
+                UNION ALL SELECT COALESCE(
+                    namespace.nspacl, pg_catalog.acldefault('n', namespace.nspowner)
+                ) FROM pg_catalog.pg_namespace AS namespace
+                WHERE namespace.nspname = 'public'
+                UNION ALL SELECT COALESCE(relation.relacl, pg_catalog.acldefault(
+                    (CASE WHEN relation.relkind = 'S' THEN 's' ELSE 'r' END)::"char",
+                    relation.relowner
+                )) FROM pg_catalog.pg_class AS relation
+                WHERE relation.relnamespace = 'public'::regnamespace
+                UNION ALL SELECT COALESCE(
+                    attribute.attacl, pg_catalog.acldefault('c', relation.relowner)
+                )
+                FROM pg_catalog.pg_attribute AS attribute
+                JOIN pg_catalog.pg_class AS relation ON relation.oid = attribute.attrelid
+                WHERE relation.relnamespace = 'public'::regnamespace
+                UNION ALL SELECT COALESCE(
+                    routine.proacl, pg_catalog.acldefault('f', routine.proowner)
+                ) FROM pg_catalog.pg_proc AS routine
+                WHERE routine.pronamespace = 'public'::regnamespace
+            )
+            SELECT EXISTS (
+                SELECT 1 FROM scoped_acls
+                CROSS JOIN LATERAL pg_catalog.aclexplode(scoped_acls.acl) AS privilege
+                WHERE privilege.grantee = 0
+            )
+            """
+        ),
+        {},
+    )
+    if survives:
+        raise RuntimeError("A surviving direct ACL remains for PUBLIC")
+
+
+async def _ensure_no_application_default_privileges(
+    connection: AsyncConnection,
+    role_names: tuple[str, ...],
+) -> None:
+    survives = await connection.scalar(
+        text(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_catalog.pg_default_acl AS defaults
+                CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
+                WHERE defaults.defaclobjtype IN ('r', 'S', 'f')
+                  AND defaults.defaclnamespace IN (0, 'public'::regnamespace)
+                  AND (privilege.grantee = 0 OR privilege.grantee = ANY (
+                      SELECT role.oid FROM pg_catalog.pg_roles AS role
+                      WHERE role.rolname = ANY (CAST(:role_names AS text[]))
+                  ))
+            )
+            OR EXISTS (
+                SELECT 1 FROM pg_catalog.pg_namespace AS namespace
+                CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
+                    namespace.nspacl, pg_catalog.acldefault('n', namespace.nspowner)
+                )) AS privilege
+                WHERE namespace.nspname = 'public' AND privilege.privilege_type = 'CREATE'
+                  AND privilege.grantee <> (
+                      SELECT role.oid FROM pg_catalog.pg_roles AS role
+                      WHERE role.rolname = current_user
+                  )
+                  AND NOT (
+                      privilege.grantee = 'pg_database_owner'::regrole
+                      AND EXISTS (SELECT 1 FROM pg_catalog.pg_database AS database
+                          WHERE database.datname = current_database()
+                            AND pg_catalog.pg_has_role(current_user, database.datdba, 'USAGE'))
+                  )
+            )
+            """
+        ),
+        {"role_names": list(role_names)},
+    )
+    if survives:
+        raise RuntimeError("Uncontrolled public-schema CREATE or default privileges remain")
 
 
 def _translation_session_scope_policy_name(object_id: UUID) -> str:
@@ -213,11 +321,14 @@ async def _deny_implicit_future_permissions(settings: Settings) -> None:
             await connection.execute(
                 text(f"REVOKE CONNECT, TEMPORARY ON DATABASE {database} FROM PUBLIC")
             )
-            await connection.execute(text("REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC"))
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON SCHEMA public FROM {grantees}")
+            )
             for object_type in ("TABLES", "SEQUENCES", "ROUTINES"):
                 await connection.execute(
                     text(f"REVOKE ALL PRIVILEGES ON ALL {object_type} IN SCHEMA public FROM PUBLIC")
                 )
+            await _ensure_no_acl_survivor(connection, None)
             for object_type in ("TABLES", "SEQUENCES", "ROUTINES"):
                 await connection.execute(
                     text(
@@ -231,6 +342,10 @@ async def _deny_implicit_future_permissions(settings: Settings) -> None:
                         f"REVOKE ALL PRIVILEGES ON {object_type} FROM {grantees}"
                     )
                 )
+            await _ensure_no_application_default_privileges(
+                connection,
+                tuple(principal.role_name for principal in principals),
+            )
     finally:
         await provider.close()
 
@@ -335,6 +450,7 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                 await connection.execute(
                     text(f"REVOKE ALL PRIVILEGES ON ALL {object_type} IN SCHEMA public FROM {role}")
                 )
+            await _ensure_no_acl_survivor(connection, role_name)
             await connection.execute(text(f"GRANT CONNECT ON DATABASE {database} TO {role}"))
             await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
             await connection.execute(
@@ -468,6 +584,7 @@ async def _grant_transcription_permissions(settings: Settings) -> None:
             await connection.execute(
                 text(f"REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM {role}")
             )
+            await _ensure_no_acl_survivor(connection, role_name)
             await connection.execute(text(f"GRANT CONNECT ON DATABASE {database} TO {role}"))
             await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
             await connection.execute(
@@ -516,6 +633,7 @@ async def _grant_translation_permissions(settings: Settings) -> None:
                 await connection.execute(
                     text(f"REVOKE ALL PRIVILEGES ON ALL {object_type} IN SCHEMA public FROM {role}")
                 )
+            await _ensure_no_acl_survivor(connection, role_name)
             await connection.execute(text("SET LOCAL lock_timeout = '5s'"))
             await connection.execute(text("SET LOCAL statement_timeout = '60s'"))
             await _replace_translation_session_scope_policy(
@@ -637,6 +755,7 @@ async def _grant_delivery_reconciler_permissions(settings: Settings) -> None:
             await connection.execute(
                 text(f"REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM {role}")
             )
+            await _ensure_no_acl_survivor(connection, role_name)
             await connection.execute(text(f"GRANT CONNECT ON DATABASE {database} TO {role}"))
             await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
             await connection.execute(

@@ -23,14 +23,14 @@ Both writers receive only required source/evidence/session reads. Neither receiv
 ## Implementation sequence
 
 1. Add a false-default gate and complete/distinct translation-principal pair.
-2. Reject replication, role membership, or ownership that could bypass ACL convergence.
+2. Reject replication, role membership, public-object ownership, foreign-grantor ACL survivors, or owner-specific default ACL survivors that could bypass convergence.
 3. Preserve the disabled runtime baseline; when enabled, add review/projector/correction authority but never translation-attempt insertion.
 4. Revoke all translation capability on every bootstrap. In the same transaction, replace its UUID-derived restrictive policy for contract `1.0` external rows in translation/review/ready states, retaining unrelated/retired policies; grant the attempt/projector set only when enabled.
 5. Prove idempotent grants, then disable and rerun with identity metadata retained to prove baseline/zero-authority recovery.
 
 ## Verification and abort conditions
 
-- Inspect direct ACLs and effective privileges; seed stale rights and prove revoke-first removal.
+- Inspect direct ACLs and effective privileges; prove ordinary stale rights are removed and foreign-grantor/default-owner survivors fail closed.
 - Exercise both writers under exact roles and forced RLS, including triggers with routine `EXECUTE` revoked.
 - Prove translation cannot see/update legacy sessions or move a ready row to handoff.
 - Prove opposite writes and cross-tenant writes fail, wrong-tenant reads are empty, and immutable/future-object rights remain absent.

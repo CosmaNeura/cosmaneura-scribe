@@ -20,15 +20,15 @@ The API runtime remains the only database identity intended for Core-authorized 
 
 It cannot insert translation attempts or update/delete immutable derived evidence.
 
-The new translation principal is intended for a future separately hosted translation job. When enabled it can read tenant-scoped projection inputs, insert translation attempts and complete immutable working projections, write metadata-only audit events, and update only the working pointer/status. It cannot insert creator reviews or normalized source rows. It has no legacy capture, transcription, delivery, idempotency, terminal-event, sequence, routine-execution, schema-creation, database-temporary, update, delete, truncate, trigger, or references authority.
+The new translation principal is intended for a future separately hosted translation job. When enabled it can read tenant-scoped projection inputs, insert translation attempts and complete immutable working projections, write metadata-only audit events, and update only the named working-pointer/status columns on scoped session rows. It cannot insert creator reviews or normalized source rows, update any immutable evidence, or receive legacy capture, transcription, delivery, idempotency, terminal-event, sequence, routine-execution, schema-creation, database-temporary, delete, truncate, trigger, or references authority.
 
 On `scribe_sessions`, a restrictive policy additionally limits it to contract `1.0` external transcript rows in `translation_pending`, `review_required`, or `transcript_ready`, for both old and new update images. This prevents legacy access and transition to `handed_off`.
 
 Both writers invoke the projector within their evidence transaction. There is no projector login role or `SECURITY DEFINER` function. Trigger functions remain invoker-security and receive the exact reads required for their constraints.
 
-Bootstrap revokes each role's database, schema, table, sequence, and routine privileges before reconstructing the allowed set. In that same transaction it replaces only the current translation identity's UUID-derived restrictive policy, including while the gate is false; retired-identity and unrelated policies are not broadly dropped. With the gate false, runtime returns to its pre-packet baseline and a configured translation role has zero database capability.
+Bootstrap revokes each role's database, schema, table, sequence, and routine privileges before reconstructing the allowed set, then fails closed if a foreign-grantor ACL survived. It also fails if any owner's table, sequence, or routine defaults still grant `PUBLIC` or an application role; PostgreSQL default ACLs are owner-specific. In the translation transaction it replaces only the current identity's UUID-derived restrictive policy, including while the gate is false. With the gate false, runtime returns to its pre-packet baseline and a configured translation role has zero application-database capability.
 
-Application roles are rejected if they are superusers, bypass RLS, create roles/databases, replicate, inherit another role, own a database, or own the `public` schema or its objects. Bootstrap fails closed rather than changing memberships or ownership.
+Application roles are rejected if they are superusers, bypass RLS, create roles/databases, replicate, inherit another role, or own any database object tracked by PostgreSQL. Bootstrap fails closed rather than changing memberships, ownership, foreign-grantor ACLs, or another owner's default privileges.
 
 ## Authentication and activation boundary
 
@@ -38,7 +38,7 @@ This packet adds no translation connection path, managed identity or app-role as
 
 ## Recovery and consequences
 
-Bootstrap spans transactions. On partial failure, keep callers quiesced and identity metadata configured, set the gate false, rerun bootstrap, and verify exact effective privileges before removing configuration. No schema or immutable evidence is rolled back.
+Bootstrap spans transactions. On partial failure, keep callers quiesced and identity metadata configured, set the gate false, remove any reported surviving ACL as its grantor and any reported default ACL as its owner, rerun bootstrap, and verify exact effective privileges before removing configuration. No schema or immutable evidence is rolled back.
 
 For rotation or decommission, first disable and revoke the old role's ACLs, then drop that principal's deterministic policy, and only then drop the role. Retaining old identity metadata through ACL verification is mandatory.
 

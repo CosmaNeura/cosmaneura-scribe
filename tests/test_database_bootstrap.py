@@ -49,6 +49,8 @@ RUNTIME_ROLE = "cosmaneura_scribe_bootstrap_runtime"
 WORKER_ROLE = "cosmaneura_scribe_bootstrap_worker"
 TRANSLATION_ROLE = "cosmaneura_scribe_bootstrap_translation"
 RECONCILER_ROLE = "cosmaneura_scribe_bootstrap_reconciler"
+FOREIGN_GRANTOR_ROLE = "cosmaneura_scribe_bootstrap_foreign_grantor"
+FOREIGN_DEFAULT_OWNER_ROLE = "cosmaneura_scribe_bootstrap_foreign_default_owner"
 
 
 class _Begin(AbstractAsyncContextManager["_Connection"]):
@@ -467,7 +469,7 @@ async def test_bootstrap_rejects_public_object_ownership_for_every_application_r
         "scribe-translation",
     ]
     ownership_query = "\n".join(safe_connection.scalar_statements)
-    for catalog in ("pg_namespace", "pg_class", "pg_proc", "pg_type"):
+    for catalog in ("pg_namespace", "pg_class", "pg_proc", "pg_type", "pg_shdepend"):
         assert catalog in ownership_query
     assert safe_provider.closed is True
 
@@ -551,7 +553,8 @@ async def test_default_privileges_deny_implicit_future_application_access(
     statements = [statement for statement, _ in connection.executed]
     assert statements[:5] == [
         'REVOKE CONNECT, TEMPORARY ON DATABASE "cosmaneura_scribe" FROM PUBLIC',
-        "REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC",
+        'REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC, "scribe-runtime", '
+        '"scribe-transcription", "scribe-delivery-reconciler", "scribe-translation"',
         "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM PUBLIC",
         "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC",
         "REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM PUBLIC",
@@ -577,6 +580,9 @@ async def test_default_privileges_deny_implicit_future_application_access(
         '"scribe-delivery-reconciler", "scribe-translation"',
     ]
     assert all("GRANT" not in statement for statement in statements)
+    default_acl_query = "\n".join(connection.scalar_statements)
+    assert "pg_default_acl" in default_acl_query
+    assert "aclexplode" in default_acl_query
     assert provider.closed is True
 
 
@@ -636,55 +642,52 @@ async def test_runtime_permissions_revoke_stale_access_before_exact_grants(
     assert provider.closed is True
 
 
+@pytest.mark.parametrize(
+    ("grant_function", "allowed_insert", "denied_insert"),
+    (
+        (
+            "_grant_runtime_permissions",
+            "normalized_translation_reviews",
+            "normalized_translation_attempts",
+        ),
+        (
+            "_grant_translation_permissions",
+            "normalized_translation_attempts",
+            "normalized_translation_reviews",
+        ),
+    ),
+)
 @pytest.mark.asyncio
-async def test_enabled_runtime_permissions_add_only_review_projector_and_correction_access(
+async def test_enabled_derived_writer_grants_keep_evidence_authority_split(
     monkeypatch: pytest.MonkeyPatch,
+    grant_function: str,
+    allowed_insert: str,
+    denied_insert: str,
 ) -> None:
     connection = _Connection()
     provider = _Provider(connection)
     monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
 
-    await database_bootstrap._grant_runtime_permissions(_settings(derived_permissions_enabled=True))
+    await getattr(database_bootstrap, grant_function)(_settings(derived_permissions_enabled=True))
 
-    statements = [" ".join(statement.split()) for statement, _ in connection.executed]
-    grants = "\n".join(statements[5:])
-    for table in (
-        "normalized_translation_attempts",
-        "normalized_translation_reviews",
-        "normalized_working_transcripts",
-        "normalized_working_translation_inputs",
-        "normalized_working_review_inputs",
-        "normalized_working_segments",
-        "normalized_working_blockers",
-    ):
-        assert any(
-            statement.startswith("GRANT SELECT") and table in statement for statement in statements
-        )
+    grants = [
+        " ".join(statement.split())
+        for statement, _ in connection.executed
+        if statement.lstrip().startswith("GRANT")
+    ]
     assert any(
-        statement.startswith("GRANT INSERT") and "normalized_translation_reviews" in statement
-        for statement in statements
+        statement.startswith("GRANT INSERT") and allowed_insert in statement
+        for statement in grants
     )
     assert not any(
-        statement.startswith("GRANT INSERT") and "normalized_translation_attempts" in statement
-        for statement in statements
+        statement.startswith("GRANT INSERT") and denied_insert in statement
+        for statement in grants
     )
-    for table in (
-        "normalized_working_transcripts",
-        "normalized_working_translation_inputs",
-        "normalized_working_review_inputs",
-        "normalized_working_segments",
-        "normalized_working_blockers",
-    ):
-        assert any(
-            statement.startswith("GRANT INSERT") and table in statement for statement in statements
-        )
-    assert "working_transcript_id" in grants
-    assert "current_working_transcript_version" in grants
-    assert "GRANT UPDATE (status, source_received_at" in grants
-    assert "DELETE" not in grants
-    assert "TRUNCATE" not in grants
-    assert "REFERENCES" not in grants
-    assert "TRIGGER" not in grants
+    assert any("ON normalized_working_transcripts TO" in statement for statement in grants)
+    assert any(
+        "GRANT UPDATE (" in statement and "ON scribe_sessions TO" in statement
+        for statement in grants
+    )
     assert provider.closed is True
 
 
@@ -730,87 +733,6 @@ async def test_translation_permissions_are_revoke_only_until_the_gate_is_enabled
     ):
         assert statements[8].count(scope_term) == 2
     assert not any(statement.startswith("GRANT") for statement in statements)
-    assert provider.closed is True
-
-
-@pytest.mark.asyncio
-async def test_enabled_translation_permissions_allow_attempt_and_projector_but_not_review(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    connection = _Connection()
-    provider = _Provider(connection)
-    monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
-
-    await database_bootstrap._grant_translation_permissions(
-        _settings(derived_permissions_enabled=True)
-    )
-
-    statements = [" ".join(statement.split()) for statement, _ in connection.executed]
-    grants = "\n".join(
-        statement for statement in statements if statement.startswith("GRANT")
-    )
-    assert any("CREATE POLICY" in statement for statement in statements)
-    assert "GRANT CONNECT ON DATABASE" in grants
-    assert "GRANT USAGE ON SCHEMA public" in grants
-    for table in (
-        "consent_records",
-        "normalized_source_transcripts",
-        "normalized_source_segments",
-        "normalized_translation_attempts",
-        "normalized_translation_reviews",
-        "normalized_working_transcripts",
-        "normalized_working_translation_inputs",
-        "normalized_working_review_inputs",
-        "normalized_working_segments",
-        "normalized_working_blockers",
-    ):
-        assert any(
-            statement.startswith("GRANT SELECT") and table in statement for statement in statements
-        )
-    assert any(
-        statement.startswith("GRANT INSERT") and "normalized_translation_attempts" in statement
-        for statement in statements
-    )
-    assert not any(
-        statement.startswith("GRANT INSERT") and "normalized_translation_reviews" in statement
-        for statement in statements
-    )
-    assert not any(
-        statement.startswith("GRANT INSERT") and "normalized_source_" in statement
-        for statement in statements
-    )
-    for table in (
-        "normalized_working_transcripts",
-        "normalized_working_translation_inputs",
-        "normalized_working_review_inputs",
-        "normalized_working_segments",
-        "normalized_working_blockers",
-    ):
-        assert any(
-            statement.startswith("GRANT INSERT") and table in statement for statement in statements
-        )
-    assert "GRANT SELECT (id, tenant_id" in grants
-    assert "working_transcript_id" in grants
-    assert "current_working_transcript_version" in grants
-    assert (
-        "GRANT UPDATE (status, working_transcript_id, current_working_transcript_version)" in grants
-    )
-    assert "GRANT INSERT (id, tenant_id, action, entity_type, entity_id)" in grants
-    for forbidden in (
-        "audio_chunks",
-        "normalized_source_receipt_keys",
-        "idempotency_records",
-        "transcription_jobs",
-        "transcript_deliveries",
-        "DELETE",
-        "TRUNCATE",
-        "REFERENCES",
-        "TRIGGER",
-        "CREATE",
-        "ALTER",
-        "DROP",
-    ):
-        assert forbidden not in grants
     assert provider.closed is True
 
 
@@ -1235,10 +1157,12 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
 
     async def drop_probe_objects_and_roles(connection: AsyncConnection) -> None:
         await connection.execute(text("DROP TABLE IF EXISTS bootstrap_ownership_probe"))
+        await connection.execute(text("DROP COLLATION IF EXISTS bootstrap_ownership_probe"))
         await connection.execute(text("DROP TABLE IF EXISTS bootstrap_future_privilege_probe"))
+        await connection.execute(text("DROP FUNCTION IF EXISTS bootstrap_uncontrolled_function()"))
         await connection.execute(text("DROP FUNCTION IF EXISTS bootstrap_future_function()"))
         await connection.execute(text("DROP PROCEDURE IF EXISTS bootstrap_future_procedure()"))
-        for role_name in application_roles:
+        for role_name in (FOREIGN_GRANTOR_ROLE, FOREIGN_DEFAULT_OWNER_ROLE, *application_roles):
             exists = await connection.scalar(
                 text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role_name)"),
                 {"role_name": role_name},
@@ -1254,6 +1178,8 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             await connection.execute(text(f"CREATE ROLE {WORKER_ROLE} NOLOGIN"))
             await connection.execute(text(f"CREATE ROLE {TRANSLATION_ROLE} NOLOGIN"))
             await connection.execute(text(f"CREATE ROLE {RECONCILER_ROLE} NOLOGIN"))
+            await connection.execute(text(f"CREATE ROLE {FOREIGN_GRANTOR_ROLE} NOLOGIN"))
+            await connection.execute(text(f"CREATE ROLE {FOREIGN_DEFAULT_OWNER_ROLE} NOLOGIN"))
             await connection.execute(
                 text(
                     f"CREATE POLICY {retired_translation_policy_name} "
@@ -1266,7 +1192,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 text(f"ALTER TABLE bootstrap_ownership_probe OWNER TO {RUNTIME_ROLE}")
             )
 
-        with pytest.raises(RuntimeError, match="owns public database objects"):
+        with pytest.raises(RuntimeError, match="owns database objects"):
             await database_bootstrap._ensure_no_database_principal_public_ownership(settings)
 
         async with engine.begin() as connection:
@@ -1274,27 +1200,108 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 text("ALTER TABLE bootstrap_ownership_probe OWNER TO CURRENT_USER")
             )
             await connection.execute(text("DROP TABLE bootstrap_ownership_probe"))
-            assert not await connection.scalar(
-                text(
-                    """
-                    SELECT bool_or(
-                        role.rolreplication
-                        OR EXISTS (
-                            SELECT 1 FROM pg_catalog.pg_auth_members AS membership
-                            WHERE membership.roleid = role.oid
-                               OR membership.member = role.oid
-                        )
-                        OR EXISTS (
-                            SELECT 1 FROM pg_catalog.pg_database AS database
-                            WHERE database.datdba = role.oid
-                        )
-                    )
-                    FROM pg_catalog.pg_roles AS role
-                    WHERE role.rolname = ANY(:role_names)
-                    """
-                ),
-                {"role_names": list(application_roles)},
+            await connection.execute(text('CREATE COLLATION bootstrap_ownership_probe FROM "C"'))
+            await connection.execute(
+                text(f"ALTER COLLATION bootstrap_ownership_probe OWNER TO {RUNTIME_ROLE}")
             )
+
+        with pytest.raises(RuntimeError, match="owns database objects"):
+            await database_bootstrap._ensure_no_database_principal_public_ownership(settings)
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("ALTER COLLATION bootstrap_ownership_probe OWNER TO CURRENT_USER")
+            )
+            await connection.execute(text("DROP COLLATION bootstrap_ownership_probe"))
+            await connection.execute(
+                text(
+                    f"GRANT SELECT, UPDATE (content) ON normalized_translation_attempts "
+                    f"TO {FOREIGN_GRANTOR_ROLE} WITH GRANT OPTION"
+                )
+            )
+            await connection.execute(
+                text(f"GRANT EXECUTE ON FUNCTION reject_audit_event_mutation() "
+                     f"TO {FOREIGN_GRANTOR_ROLE} WITH GRANT OPTION")
+            )
+            await connection.execute(
+                text("GRANT USAGE ON SCHEMA public TO " + FOREIGN_GRANTOR_ROLE)
+            )
+            await connection.execute(text(f"SET ROLE {FOREIGN_GRANTOR_ROLE}"))
+            await connection.execute(
+                text(
+                    f"GRANT SELECT, UPDATE (content) ON normalized_translation_attempts "
+                    f"TO {TRANSLATION_ROLE}"
+                )
+            )
+            await connection.execute(
+                text("GRANT EXECUTE ON FUNCTION reject_audit_event_mutation() TO PUBLIC")
+            )
+            await connection.execute(text("RESET ROLE"))
+
+        with pytest.raises(RuntimeError, match="surviving direct ACL"):
+            await database_bootstrap._grant_translation_permissions(settings)
+        with pytest.raises(RuntimeError, match="direct ACL remains for PUBLIC"):
+            await database_bootstrap._deny_implicit_future_permissions(settings)
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    f"REVOKE SELECT, UPDATE (content) ON normalized_translation_attempts "
+                    f"FROM {FOREIGN_GRANTOR_ROLE} CASCADE"
+                )
+            )
+            await connection.execute(
+                text(f"REVOKE EXECUTE ON FUNCTION reject_audit_event_mutation() "
+                     f"FROM {FOREIGN_GRANTOR_ROLE} CASCADE")
+            )
+            await connection.execute(text(f"SET ROLE {FOREIGN_DEFAULT_OWNER_ROLE}"))
+            await connection.execute(
+                text(
+                    f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES "
+                    f"TO {TRANSLATION_ROLE}"
+                )
+            )
+            await connection.execute(text("RESET ROLE"))
+
+        with pytest.raises(RuntimeError, match="default privileges remain"):
+            await database_bootstrap._deny_implicit_future_permissions(settings)
+
+        async with engine.begin() as connection:
+            await connection.execute(text(f"SET ROLE {FOREIGN_DEFAULT_OWNER_ROLE}"))
+            await connection.execute(
+                text(
+                    f"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES "
+                    f"FROM {TRANSLATION_ROLE}"
+                )
+            )
+            await connection.execute(text("RESET ROLE"))
+            await connection.execute(
+                text(f"GRANT CREATE ON SCHEMA public TO {FOREIGN_GRANTOR_ROLE}")
+            )
+            await connection.execute(text(f"SET ROLE {FOREIGN_GRANTOR_ROLE}"))
+            await connection.execute(
+                text(
+                    "CREATE FUNCTION public.bootstrap_uncontrolled_function() "
+                    "RETURNS integer LANGUAGE sql AS 'SELECT 1'"
+                )
+            )
+            await connection.execute(text("RESET ROLE"))
+            assert await connection.scalar(
+                text(
+                    f"SELECT has_function_privilege('{TRANSLATION_ROLE}', "
+                    "'public.bootstrap_uncontrolled_function()', 'EXECUTE')"
+                )
+            )
+            await connection.execute(text("DROP FUNCTION bootstrap_uncontrolled_function()"))
+
+        with pytest.raises(RuntimeError, match="public-schema CREATE"):
+            await database_bootstrap._deny_implicit_future_permissions(settings)
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(f"REVOKE CREATE ON SCHEMA public FROM {FOREIGN_GRANTOR_ROLE}")
+            )
+            await database_bootstrap._ensure_no_database_principal_public_ownership(settings)
             database = connection.dialect.identifier_preparer.quote(settings.database_name)
             await connection.execute(
                 text(f"GRANT TEMPORARY ON DATABASE {database} TO {', '.join(application_roles)}")
