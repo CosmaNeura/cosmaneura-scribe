@@ -168,6 +168,16 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
         asyncio.run(_session_ingest_mode(admin_url, probe_tenant_id, probe_session_id))
         == "chunk_upload"
     )
+    bilingual_probe_session_id = asyncio.run(
+        _seed_versioned_external_session(admin_url, probe_tenant_id, probe_consent_id)
+    )
+    with pytest.raises(DBAPIError, match="bilingual source storage after it has been used"):
+        command.downgrade(config, "0008")
+    asyncio.run(_delete_session(admin_url, probe_tenant_id, bilingual_probe_session_id))
+    command.downgrade(config, "0008")
+    assert asyncio.run(_table_exists(admin_url, "normalized_source_transcripts")) is False
+    assert asyncio.run(_column_exists(admin_url, "scribe_sessions", "language_mode")) is False
+    command.upgrade(config, "head")
     external_probe_session_id = asyncio.run(
         _seed_external_ingest_session(admin_url, probe_tenant_id, probe_consent_id)
     )
@@ -381,6 +391,44 @@ async def _seed_external_ingest_session(
                     "tenant_id": tenant_id,
                     "consent_id": consent_id,
                 },
+            )
+    finally:
+        await engine.dispose()
+    return session_id
+
+
+async def _seed_versioned_external_session(
+    database_url: str,
+    tenant_id: UUID,
+    consent_id: UUID,
+) -> UUID:
+    session_id = uuid4()
+    engine = create_async_engine(database_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(tenant_id)},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO scribe_sessions (
+                        id, tenant_id, appointment_id, practitioner_id, patient_id,
+                        consent_record_id, modality, status, ingest_mode,
+                        transcript_contract_version, creator_actor_id, language_mode,
+                        transcription_adapter_id, transcription_model_profile_id,
+                        normalization_profile_id
+                    ) VALUES (
+                        :id, :tenant_id, 'migration-versioned-appointment',
+                        'migration-probe-practitioner', 'migration-probe-patient',
+                        :consent_id, 'virtual', 'created', 'external_async_transcript',
+                        '1.0', 'actor_migration_probe', 'en-US+es-US',
+                        'stt_adapter_v1', 'stt_model_v1', 'normalizer_v1'
+                    )
+                    """
+                ),
+                {"id": session_id, "tenant_id": tenant_id, "consent_id": consent_id},
             )
     finally:
         await engine.dispose()
