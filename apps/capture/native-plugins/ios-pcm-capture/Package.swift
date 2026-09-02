@@ -9,13 +9,25 @@ let package = Package(
     .macOS(.v13),
   ],
   products: [
-    .library(name: "CosmaneuraIOSPCMCore", targets: ["CosmaneuraIOSPCMCore"])
+    .library(name: "CosmaneuraIOSPCMCore", targets: ["CosmaneuraIOSPCMCore"]),
+    .library(
+      name: "CosmaneuraIOSAVFoundationDriver",
+      targets: ["CosmaneuraIOSAVFoundationDriver"]
+    ),
   ],
   targets: [
     .target(name: "CosmaneuraIOSPCMCore"),
+    .target(
+      name: "CosmaneuraIOSAVFoundationDriver",
+      dependencies: ["CosmaneuraIOSPCMCore"]
+    ),
     .testTarget(
       name: "CosmaneuraIOSPCMCoreTests",
       dependencies: ["CosmaneuraIOSPCMCore"]
+    ),
+    .testTarget(
+      name: "CosmaneuraIOSAVFoundationDriverTests",
+      dependencies: ["CosmaneuraIOSAVFoundationDriver", "CosmaneuraIOSPCMCore"]
     ),
   ]
 )
