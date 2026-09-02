@@ -25,15 +25,29 @@ import type {
 } from "../capture";
 import { QueueInvariantError } from "../queue/errors";
 import type { CaptureQueue } from "../queue/capture-queue";
-import type { CaptureQueueTransport, ChunkReservation } from "../queue/types";
+import type {
+  CaptureChunkRecord,
+  CaptureQueueTransport,
+  ChunkReservation,
+} from "../queue/types";
 import { createWrappedSessionKey } from "./session-key";
+import {
+  acknowledgeRecoveryGap,
+  beginRecoverySegment,
+  confirmRecoverySourceClosed,
+  createCaptureRecoveryState,
+  observeRecoveryGap,
+  stopRecoverySegment,
+} from "./recovery-state";
 import {
   FLOW_RECORD_SCHEMA_VERSION,
   type ActiveCapturePhase,
   type ActiveCaptureState,
   type CaptureFlowState,
   type CaptureFlowStore,
+  type CaptureGapReasonCode,
   type CapturePreparationState,
+  type CaptureRecoveryStateV1,
   type ReservationIntent,
   type SessionKeyBindingState,
 } from "./types";
@@ -89,14 +103,18 @@ export class CaptureFlowController {
 
   #capabilities: CaptureCapabilities | null = null;
   #activeState: ActiveCaptureState | null = null;
+  #recoveryState: CaptureRecoveryStateV1 | null = null;
   #lease: CaptureLeaseReceipt | null = null;
   #sessionId: string | null = null;
   #recordedPlaintextBytes = 0;
   #sourcePausedBySignal = false;
   #sourcePausePersistence: Promise<void> | null = null;
   #sourceStarted = false;
+  #recoveredUnverifiedClose = false;
+  #legacyCompletionEligible = false;
   #recordingAbortController: AbortController | null = null;
   #chunkPersistence: Promise<void> = Promise.resolve();
+  #recoveryPersistence: Promise<void> = Promise.resolve();
   #authorityExpiryRequested = false;
   #authorityTimeout: unknown = null;
   #authorityExpiryTask: Promise<void> | null = null;
@@ -165,13 +183,17 @@ export class CaptureFlowController {
       if (keyState === null) throw new QueueInvariantError("session_key_missing");
       await this.#bindStoredSessionKey(keyState);
       this.#setCapabilities(await this.#bff.getCapabilities(active.sessionId));
+      const storedRecovery = await this.#flowStore.getCaptureRecoveryState(active.sessionId);
       if (this.#canCreateOrRecoverReservations()) {
         await this.#recoverReservationIntents();
       }
       let records = (await this.#queue.list()).filter(
         (record) => record.reservation.sessionId === active.sessionId,
       );
-      if (records.length === 0 && this.#canCreateOrRecoverReservations()) {
+      if (
+        records.length === 0 && active.phase === "ready" &&
+        this.#canCreateOrRecoverReservations()
+      ) {
         await this.#reserveInitialWindow();
         records = (await this.#queue.list()).filter(
           (record) => record.reservation.sessionId === active.sessionId,
@@ -181,6 +203,13 @@ export class CaptureFlowController {
         this.#reservations.set(record.reservation.sequenceNumber, record.reservation);
       }
       const recorded = records.filter((record) => record.state !== "reserved");
+      const requiresDurableHighWater = active.phase !== "processing";
+      const durableRecordedChunks = requiresDurableHighWater
+        ? contiguousRecordedChunkCount(recorded)
+        : recorded.length;
+      if (requiresDurableHighWater && active.recordedChunks > durableRecordedChunks) {
+        throw new QueueInvariantError("capture_recovery_sequence_conflict");
+      }
       const conservativeBytes = recorded.reduce(
         (total, record) => total + ("byteLength" in record ? record.byteLength : 0),
         0,
@@ -189,23 +218,32 @@ export class CaptureFlowController {
         active.recordedPlaintextBytes,
         conservativeBytes,
       );
-      const recordedChunks = Math.max(active.recordedChunks, recorded.length);
+      const recordedChunks = requiresDurableHighWater
+        ? durableRecordedChunks
+        : Math.max(active.recordedChunks, durableRecordedChunks);
       this.#activeState = {
         ...this.#requireActiveState(),
         recordedChunks,
         recordedPlaintextBytes: this.#recordedPlaintextBytes,
       };
+      await this.#restoreRecoveryState(active, recordedChunks, storedRecovery);
       await this.#flowStore.putActiveCaptureState(this.#activeState);
       const capturePhase =
         active.phase === "ready" || active.phase === "recording" || active.phase === "paused";
       const authorityExpired = capturePhase && !this.#hasActiveCaptureAuthority();
-      if (active.phase === "recording" || authorityExpired) {
+      if (active.phase === "recording" && this.#recoveryState?.phase === "stopped") {
+        await this.#saveActivePhase("uploading");
+      } else if (
+        active.phase === "recording" || authorityExpired || this.#hasRecoveryGap()
+      ) {
         await this.#saveActivePhase("paused");
       }
       const phase = this.#requireActiveState().phase;
+      const recoveryStatusCode = this.#recoveryStatusCode();
       this.#setSnapshot({
         state: restoredSnapshotState(phase),
-        statusCode: authorityExpired ? "capture_authority_expired" : restoredStatusCode(phase),
+        statusCode: recoveryStatusCode ??
+          (authorityExpired ? "capture_authority_expired" : restoredStatusCode(phase)),
         sessionId: active.sessionId,
         recordedChunks,
         queuedChunks: records.length,
@@ -331,6 +369,8 @@ export class CaptureFlowController {
     await this.#flowStore.putActiveCaptureState(this.#activeState);
     await this.#recoverReservationIntents();
     if (this.#reservations.size === 0) await this.#reserveInitialWindow();
+    this.#recoveryState = createCaptureRecoveryState(session.id);
+    await this.#flowStore.putCaptureRecoveryState(this.#recoveryState);
     if (!this.#hasActiveCaptureAuthority()) {
       await this.#pauseForExpiredAuthority();
       throw new QueueInvariantError("capture_authority_expired");
@@ -357,6 +397,18 @@ export class CaptureFlowController {
     this.#sourceStarted = false;
     this.#authorityExpiryRequested = false;
     this.#recordingAbortController = new AbortController();
+    const active = this.#requireActiveState();
+    if (active.captureAuthorizedUntil === null) {
+      throw new QueueInvariantError("capture_authority_missing");
+    }
+    const captureAuthorizedUntil = active.captureAuthorizedUntil;
+    await this.#updateRecoveryState((state) => beginRecoverySegment(state, {
+      segmentId: this.#idFactory(),
+      recoveryGapId: this.#idFactory(),
+      startedAt: this.#now().toISOString(),
+      leaseGeneration: active.lease.generation,
+      captureAuthorizedUntil,
+    }));
     await this.#saveActivePhase("recording");
     if (this.#authorityExpiryRequested || !this.#hasActiveCaptureAuthority()) {
       await this.#authorityExpiryTask;
@@ -395,32 +447,100 @@ export class CaptureFlowController {
     try {
       this.#clearAuthorityTimeout();
       await this.#authorityExpiryTask;
+      await this.#sourcePausePersistence;
+      if (this.#hasRecoveryGap() && this.#recoveredUnverifiedClose) {
+        throw new QueueInvariantError("capture_source_close_unverified");
+      }
+      if (
+        this.#recoveryState?.phase === "ack_required" ||
+        this.#recoveryState?.phase === "authority_required"
+      ) {
+        throw new QueueInvariantError("capture_gap_review_required");
+      }
+      let stopFailure: unknown;
+      let stopRejected = false;
+      let stopFailureObservedAt: string | null = null;
       try {
         await this.#source.stop();
       } catch (error) {
-        if (
-          !this.#sourcePausedBySignal ||
-          isNativeStopFailure(error)
-        ) throw error;
+        stopRejected = true;
+        stopFailure = error;
+        stopFailureObservedAt = this.#now().toISOString();
+      }
+      // A terminal callback can replace this promise while stop is in flight.
+      await this.#sourcePausePersistence;
+      await this.#chunkPersistence;
+      if (stopRejected) {
+        if (!this.#hasRecoveryGap()) {
+          await this.#recordRecoveryGap(
+            "capture_source_failed",
+            this.#snapshot.recordedChunks,
+            stopFailureObservedAt ?? this.#now().toISOString(),
+          );
+          await this.#saveActivePhase("paused");
+        }
+        throw sourceCloseFailure(stopFailure);
       }
       this.#sourceStarted = false;
       this.#recordingAbortController = null;
-      await this.#sourcePausePersistence;
+      if (this.#hasRecoveryGap()) {
+        await this.#confirmInterruptedSourceClosed(true);
+        this.#setSnapshot({
+          state: "paused",
+          statusCode: "capture_gap_ack_required",
+        });
+        throw new QueueInvariantError("capture_gap_review_required");
+      }
       if (this.#snapshot.recordedChunks < 1) {
         throw new QueueInvariantError("capture_has_no_chunks");
       }
+      await this.#updateRecoveryState((state) => stopRecoverySegment(
+        state,
+        this.#now().toISOString(),
+        this.#snapshot.recordedChunks,
+      ));
       await this.#saveActivePhase("uploading");
       this.#setSnapshot({ state: "uploading", statusCode: "synthetic_preview_uploading" });
       await this.#drainAndComplete();
     } catch (error) {
-      if (isNativeStopFailure(error)) {
+      if (isSourceCloseFailure(error)) {
         await this.#sourcePausePersistence;
+        this.#setSnapshot({ state: "paused", statusCode: error.code });
+      } else if (isRecoveryHold(error)) {
         this.#setSnapshot({ state: "paused", statusCode: error.code });
       } else {
         this.#fail();
       }
       throw error;
     }
+  }
+
+  /**
+   * Records the creator's local decision only. It cannot renew authority or
+   * resume capture; those remain receiver-backed work in the next packet.
+   */
+  public async acknowledgeGap(): Promise<void> {
+    if (this.#snapshot.state !== "paused") {
+      throw new QueueInvariantError("capture_state_conflict");
+    }
+    await this.#sourcePausePersistence;
+    if (this.#recoveredUnverifiedClose) {
+      this.#setSnapshot({ statusCode: "capture_source_close_unverified" });
+      throw new QueueInvariantError("capture_source_close_unverified");
+    }
+    await this.#confirmInterruptedSourceClosed();
+    const recovery = this.#requireRecoveryState();
+    if (recovery.phase === "authority_required") {
+      this.#setSnapshot({ statusCode: "capture_resume_authority_required" });
+      return;
+    }
+    const acknowledgement = {
+      acknowledgedAt: this.#now().toISOString(),
+      idempotencyKey: this.#operationKey("ack-gap"),
+    };
+    await this.#updateRecoveryState((state) =>
+      acknowledgeRecoveryGap(state, acknowledgement));
+    this.#setSnapshot({ statusCode: "capture_resume_authority_required" });
   }
 
   public async resumePendingWork(): Promise<void> {
@@ -436,6 +556,7 @@ export class CaptureFlowController {
         return;
       }
       if (active.phase === "processing") {
+        await this.#purgeRegisteredChunks();
         await this.refreshTranscriptionStatus();
         return;
       }
@@ -447,6 +568,10 @@ export class CaptureFlowController {
   }
 
   public async refreshTranscriptionStatus(): Promise<void> {
+    this.#assertCompletionEligible();
+    if (this.#requireActiveState().phase !== "processing") {
+      throw new QueueInvariantError("capture_state_conflict");
+    }
     const sessionId = this.#requireSessionId();
     const status = await this.#bff.getTranscriptionStatus(sessionId);
     this.#setSnapshot({ transcriptionStatus: status });
@@ -463,23 +588,17 @@ export class CaptureFlowController {
   }
 
   async #drainAndComplete(): Promise<void> {
+    this.#assertCompletionEligible();
     const drained = await this.#queue.drainOnce(this.#queueTransport);
     if (drained.items.some((item) => item.outcome !== "registered")) {
       throw new QueueInvariantError("capture_queue_not_drained");
-    }
-    for (const record of await this.#queue.list()) {
-      if (
-        record.reservation.sessionId === this.#requireSessionId() &&
-        record.state === "registered"
-      ) {
-        await this.#queue.purge(record.reservation.objectId);
-      }
     }
     await this.#saveActivePhase("completing");
     await this.#completeAndRefresh();
   }
 
   async #completeAndRefresh(): Promise<void> {
+    this.#assertCompletionEligible();
     const sessionId = this.#requireSessionId();
     const lease = this.#requireLease();
     const active = this.#requireActiveState();
@@ -493,8 +612,20 @@ export class CaptureFlowController {
       }],
     }, { idempotencyKey: active.completeIdempotencyKey });
     await this.#saveActivePhase("processing");
+    await this.#purgeRegisteredChunks();
     this.#setSnapshot({ state: "processing", statusCode: "synthetic_preview_processing" });
     await this.refreshTranscriptionStatus();
+  }
+
+  async #purgeRegisteredChunks(): Promise<void> {
+    for (const record of await this.#queue.list()) {
+      if (
+        record.reservation.sessionId === this.#requireSessionId() &&
+        record.state === "registered"
+      ) {
+        await this.#queue.purge(record.reservation.objectId);
+      }
+    }
   }
 
   async #bindSessionKey(sessionId: string): Promise<void> {
@@ -659,6 +790,9 @@ export class CaptureFlowController {
       await this.#pauseForExpiredAuthority();
       throw new QueueInvariantError("capture_authority_expired");
     }
+    if (chunk.sequenceNumber !== this.#snapshot.recordedChunks) {
+      throw new QueueInvariantError("capture_recovery_sequence_conflict");
+    }
     const reservation = this.#reservations.get(chunk.sequenceNumber);
     if (reservation === undefined) throw new QueueInvariantError("chunk_not_reserved");
     const capabilities = this.#requireCapabilities();
@@ -813,6 +947,9 @@ export class CaptureFlowController {
   }
 
   async #pauseForExpiredAuthority(): Promise<void> {
+    if (this.#recoveryState?.phase === "recording") {
+      await this.#recordRecoveryGap("capture_authority_expired");
+    }
     await this.#saveActivePhase("paused");
     this.#setSnapshot({
       state: "paused",
@@ -833,7 +970,7 @@ export class CaptureFlowController {
       this.#authorityExpiryTask = task;
       void task
         .catch((error: unknown) => {
-          if (isNativeStopFailure(error)) {
+          if (isSourceCloseFailure(error)) {
             if (this.#authorityExpiryTask === task) this.#authorityExpiryTask = null;
             this.#setSnapshot({ state: "paused", statusCode: error.code });
           } else {
@@ -855,6 +992,7 @@ export class CaptureFlowController {
   async #expireCaptureAuthority(): Promise<void> {
     if (this.#snapshot.state !== "ready" && this.#snapshot.state !== "recording") return;
     const wasRecording = this.#snapshot.state === "recording";
+    const observedAt = this.#now().toISOString();
     let sourceStop: Promise<void> | null = null;
     if (wasRecording) {
       this.#sourcePausedBySignal = true;
@@ -862,11 +1000,21 @@ export class CaptureFlowController {
       sourceStop = this.#sourceStarted ? this.#source.stop() : null;
       void sourceStop?.catch(() => undefined);
       await this.#chunkPersistence;
+      await this.#recordRecoveryGap(
+        "capture_authority_expired",
+        this.#snapshot.recordedChunks,
+        observedAt,
+      );
     }
     await this.#pauseForExpiredAuthority();
     if (sourceStop !== null) {
-      await sourceStop;
+      try {
+        await sourceStop;
+      } catch (error) {
+        throw sourceCloseFailure(error);
+      }
       this.#sourceStarted = false;
+      await this.#confirmInterruptedSourceClosed(true);
     }
   }
 
@@ -876,8 +1024,15 @@ export class CaptureFlowController {
     if (this.#snapshot.state !== "recording" || this.#authorityExpiryRequested) return;
     this.#clearAuthorityTimeout();
     this.#sourcePausedBySignal = true;
+    const observedAt = this.#now().toISOString();
     this.#setSnapshot({ state: "paused", statusCode: code });
-    const persistence = this.#saveActivePhase("paused");
+    const persistence = this.#chunkPersistence
+      .then(() => this.#recordRecoveryGap(
+        code,
+        this.#snapshot.recordedChunks,
+        observedAt,
+      ))
+      .then(() => this.#saveActivePhase("paused"));
     this.#sourcePausePersistence = persistence;
     void persistence.catch(() => this.#fail());
   }
@@ -915,6 +1070,135 @@ export class CaptureFlowController {
     await this.#flowStore.putActiveCaptureState(this.#activeState);
   }
 
+  async #restoreRecoveryState(
+    active: ActiveCaptureState,
+    nextSequenceNumber: number,
+    storedRecovery: CaptureRecoveryStateV1 | null,
+  ): Promise<void> {
+    this.#recoveryState = storedRecovery;
+    if (this.#recoveryState === null) {
+      this.#recoveryState = createCaptureRecoveryState(active.sessionId);
+      await this.#flowStore.putCaptureRecoveryState(this.#recoveryState);
+      this.#legacyCompletionEligible =
+        active.phase === "uploading" || active.phase === "completing" ||
+        active.phase === "processing";
+    } else {
+      this.#legacyCompletionEligible =
+        this.#recoveryState.phase === "ready" &&
+        this.#recoveryState.segments.length === 0 &&
+        (active.phase === "uploading" || active.phase === "completing" ||
+          active.phase === "processing");
+    }
+    if (this.#recoveryState.phase === "interruption_closing") {
+      // A fresh JS source cannot prove that an orphaned native token was released.
+      this.#recoveredUnverifiedClose = true;
+    }
+    const shouldRecoverUnknown =
+      active.phase === "recording" || this.#recoveryState.phase === "recording" ||
+      (active.phase === "paused" && active.recordedChunks > 0 &&
+        this.#recoveryState.phase === "ready");
+    if (shouldRecoverUnknown && this.#recoveryState.phase === "ready") {
+      const authorizedUntil = active.captureAuthorizedUntil;
+      if (authorizedUntil === null) {
+        throw new QueueInvariantError("capture_authority_missing");
+      }
+      await this.#updateRecoveryState((state) => beginRecoverySegment(state, {
+        segmentId: this.#idFactory(),
+        recoveryGapId: this.#idFactory(),
+        startedAt: active.startedAt,
+        leaseGeneration: active.lease.generation,
+        captureAuthorizedUntil: authorizedUntil,
+      }));
+    }
+    if (shouldRecoverUnknown && this.#requireRecoveryState().phase === "recording") {
+      await this.#recordRecoveryGap("process_recovery_unknown", nextSequenceNumber);
+      this.#recoveredUnverifiedClose = true;
+    }
+    const recovery = this.#requireRecoveryState();
+    const activeIsCapturePhase =
+      active.phase === "ready" || active.phase === "recording" || active.phase === "paused";
+    if (
+      recovery.phase !== "recording" &&
+      recovery.phase !== "ready" &&
+      (
+        recovery.nextSequenceNumber !== this.#requireActiveState().recordedChunks ||
+        (activeIsCapturePhase && recovery.nextSequenceNumber !== nextSequenceNumber)
+      )
+    ) {
+      throw new QueueInvariantError("capture_recovery_sequence_conflict");
+    }
+  }
+
+  async #recordRecoveryGap(
+    reasonCode: CaptureGapReasonCode,
+    nextSequenceNumber = this.#snapshot.recordedChunks,
+    observedAt = this.#now().toISOString(),
+  ): Promise<void> {
+    await this.#updateRecoveryState((state) => observeRecoveryGap(state, {
+      reasonCode,
+      observedAt,
+      nextSequenceNumber,
+    }));
+  }
+
+  async #confirmInterruptedSourceClosed(sourceAlreadyClosed = false): Promise<void> {
+    const recovery = this.#requireRecoveryState();
+    if (recovery.phase !== "interruption_closing") return;
+    if (!sourceAlreadyClosed) {
+      try {
+        await this.#source.stop();
+      } catch (error) {
+        throw sourceCloseFailure(error);
+      }
+    }
+    this.#sourceStarted = false;
+    this.#recordingAbortController = null;
+    await this.#updateRecoveryState(confirmRecoverySourceClosed);
+  }
+
+  async #updateRecoveryState(
+    transition: (state: CaptureRecoveryStateV1) => CaptureRecoveryStateV1,
+  ): Promise<void> {
+    const task = this.#recoveryPersistence.then(async () => {
+      const current = this.#requireRecoveryState();
+      const replacement = transition(current);
+      if (replacement === current) return;
+      await this.#flowStore.putCaptureRecoveryState(replacement);
+      this.#recoveryState = replacement;
+    });
+    this.#recoveryPersistence = task.catch(() => undefined);
+    return task;
+  }
+
+  #requireRecoveryState(): CaptureRecoveryStateV1 {
+    if (this.#recoveryState === null) {
+      throw new QueueInvariantError("capture_recovery_state_missing");
+    }
+    return this.#recoveryState;
+  }
+
+  #hasRecoveryGap(): boolean {
+    return this.#recoveryState?.noteReadiness === "review_required";
+  }
+
+  #assertCompletionEligible(): void {
+    const recovery = this.#requireRecoveryState();
+    if (
+      recovery.noteReadiness !== "eligible" ||
+      (recovery.phase !== "stopped" && !this.#legacyCompletionEligible)
+    ) {
+      throw new QueueInvariantError("capture_gap_review_required");
+    }
+  }
+
+  #recoveryStatusCode(): string | null {
+    const phase = this.#recoveryState?.phase;
+    if (phase === "interruption_closing") return "capture_interruption_closing";
+    if (phase === "ack_required") return "capture_gap_ack_required";
+    if (phase === "authority_required") return "capture_resume_authority_required";
+    return null;
+  }
+
   #fail(): void {
     this.#clearAuthorityTimeout();
     this.#authorityExpiryRequested = true;
@@ -930,6 +1214,39 @@ export class CaptureFlowController {
 
 function isNativeStopFailure(error: unknown): error is AudioCaptureError {
   return error instanceof AudioCaptureError && error.code === "audio_capture_native_stop_failed";
+}
+
+function sourceCloseFailure(error: unknown): AudioCaptureError | QueueInvariantError {
+  return isNativeStopFailure(error)
+    ? error
+    : new QueueInvariantError("capture_source_close_failed");
+}
+
+function isSourceCloseFailure(
+  error: unknown,
+): error is AudioCaptureError | QueueInvariantError {
+  return isNativeStopFailure(error) ||
+    (error instanceof QueueInvariantError && error.code === "capture_source_close_failed");
+}
+
+function isRecoveryHold(error: unknown): error is QueueInvariantError {
+  return error instanceof QueueInvariantError &&
+    (error.code === "capture_gap_review_required" ||
+      error.code === "capture_source_close_unverified");
+}
+
+function contiguousRecordedChunkCount(
+  records: readonly CaptureChunkRecord[],
+): number {
+  const sequences = records
+    .map((record) => record.reservation.sequenceNumber)
+    .sort((left, right) => left - right);
+  for (const [expected, actual] of sequences.entries()) {
+    if (actual !== expected) {
+      throw new QueueInvariantError("capture_recovery_sequence_conflict");
+    }
+  }
+  return sequences.length;
 }
 
 function restoredSnapshotState(phase: ActiveCapturePhase): CaptureFlowState {

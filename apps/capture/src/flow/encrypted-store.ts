@@ -1,14 +1,19 @@
-import { NONCE_BYTES } from "@cosmaneura-scribe/capture-protocol";
+import { base64UrlEncode, NONCE_BYTES } from "@cosmaneura-scribe/capture-protocol";
 
 import { QueueInvariantError } from "../queue/errors";
 import {
   FLOW_RECORD_SCHEMA_VERSION,
   type ActiveCaptureState,
+  type CaptureRecoveryStateV1,
   type CaptureFlowStore,
   type CapturePreparationState,
   type ReservationIntent,
   type SessionKeyBindingState,
 } from "./types";
+import {
+  assertCaptureRecoveryProgression,
+  assertCaptureRecoveryState,
+} from "./recovery-state";
 
 const DATABASE_VERSION = 1;
 const FLOW_RECORD_STORE = "encrypted-flow-records";
@@ -21,6 +26,7 @@ const IDEMPOTENCY_PATTERN = /^[A-Za-z0-9._:-]{8,255}$/u;
 
 type StoredFlowValue =
   | ActiveCaptureState
+  | CaptureRecoveryStateV1
   | CapturePreparationState
   | ReservationIntent
   | SessionKeyBindingState;
@@ -29,6 +35,8 @@ interface SealedFlowRecord {
   readonly key: string;
   readonly nonce: Uint8Array<ArrayBuffer>;
   readonly ciphertext: ArrayBuffer;
+  /** Present only on recovery records to support atomic optimistic concurrency. */
+  readonly recordRevision?: number;
 }
 
 export interface EncryptedFlowStoreOptions {
@@ -107,6 +115,70 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     return value;
   }
 
+  async putCaptureRecoveryState(state: CaptureRecoveryStateV1): Promise<void> {
+    assertCaptureRecoveryState(state);
+    const key = await this.#recoveryRecordKey(state.sessionId);
+    const existing = await this.getCaptureRecoveryState(state.sessionId);
+    if (existing !== null) {
+      if (JSON.stringify(existing) === JSON.stringify(state)) return;
+      assertCaptureRecoveryProgression(existing, state);
+    } else if (
+      state.localRevision !== 1 || state.phase !== "ready" ||
+      state.nextSegmentOrdinal !== 0 || state.nextSequenceNumber !== 0 ||
+      state.currentSegmentId !== null || state.segments.length !== 0 || state.gaps.length !== 0
+    ) {
+      throw new QueueInvariantError("capture_recovery_state_conflict");
+    }
+    const sealed = await this.#seal(key, state, state.localRevision);
+    const transaction = this.#database.transaction(FLOW_RECORD_STORE, "readwrite");
+    const records = transaction.objectStore(FLOW_RECORD_STORE);
+    let failure: QueueInvariantError | undefined;
+    const current = records.get(key) as IDBRequest<unknown>;
+    current.addEventListener("success", () => {
+      const value = current.result;
+      if (value === undefined) {
+        if (existing !== null) {
+          failure = new QueueInvariantError("capture_recovery_state_conflict");
+          transaction.abort();
+          return;
+        }
+      } else {
+        try {
+          assertSealedRecord(value);
+        } catch {
+          failure = new QueueInvariantError("capture_recovery_state_conflict");
+          transaction.abort();
+          return;
+        }
+        if (existing === null || value.recordRevision !== existing.localRevision) {
+          failure = new QueueInvariantError("capture_recovery_state_conflict");
+          transaction.abort();
+          return;
+        }
+      }
+      records.put(sealed);
+    });
+    try {
+      await transactionDone(transaction, () => failure);
+    } catch (error) {
+      if (failure?.code !== "capture_recovery_state_conflict") throw error;
+      const converged = await this.getCaptureRecoveryState(state.sessionId);
+      if (converged !== null && JSON.stringify(converged) === JSON.stringify(state)) return;
+      throw error;
+    }
+  }
+
+  async getCaptureRecoveryState(sessionId: string): Promise<CaptureRecoveryStateV1 | null> {
+    assertUuid(sessionId, "invalid_session_id");
+    const value = await this.#getRecord(await this.#recoveryRecordKey(sessionId));
+    if (value === null) return null;
+    assertCaptureRecoveryState(value);
+    if (value.sessionId !== sessionId) {
+      throw new QueueInvariantError("capture_recovery_session_conflict");
+    }
+    return value;
+  }
+
   async clearCompletedCapture(sessionId: string): Promise<void> {
     assertUuid(sessionId, "invalid_session_id");
     const existing = await this.getActiveCaptureState();
@@ -114,6 +186,7 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     if (existing.sessionId !== sessionId) {
       throw new QueueInvariantError("active_capture_conflict");
     }
+    const recoveryKey = await this.#recoveryRecordKey(sessionId);
     const transaction = this.#database.transaction(
       [FLOW_RECORD_STORE, SESSION_KEY_STORE],
       "readwrite",
@@ -122,6 +195,7 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     records.delete("active");
     records.delete("preparation");
     records.delete(`session:${sessionId}`);
+    records.delete(recoveryKey);
     transaction.objectStore(SESSION_KEY_STORE).delete(sessionId);
     await transactionDone(transaction);
   }
@@ -244,6 +318,17 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     this.#database.close();
   }
 
+  async #recoveryRecordKey(sessionId: string): Promise<string> {
+    const input = new TextEncoder().encode(`${LOCAL_AAD_PREFIX}:recovery:${sessionId}`);
+    const digest = new Uint8Array(await this.#crypto.subtle.digest("SHA-256", input));
+    input.fill(0);
+    try {
+      return `recovery:${base64UrlEncode(digest)}`;
+    } finally {
+      digest.fill(0);
+    }
+  }
+
   async #putExact(key: string, value: StoredFlowValue): Promise<void> {
     const sealed = await this.#seal(key, value);
     const existing = await this.#getRecord(key);
@@ -269,16 +354,29 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     return this.#open(value);
   }
 
-  async #seal(key: string, value: StoredFlowValue): Promise<SealedFlowRecord> {
+  async #seal(
+    key: string,
+    value: StoredFlowValue,
+    recordRevision?: number,
+  ): Promise<SealedFlowRecord> {
     const nonce = this.#crypto.getRandomValues(new Uint8Array(new ArrayBuffer(NONCE_BYTES)));
     const plaintext = new TextEncoder().encode(JSON.stringify(value));
     try {
       const ciphertext = await this.#crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: nonce, additionalData: localAdditionalData(key) },
+        {
+          name: "AES-GCM",
+          iv: nonce,
+          additionalData: localAdditionalData(key, recordRevision),
+        },
         this.#localKey,
         plaintext,
       );
-      return { key, nonce, ciphertext };
+      return {
+        key,
+        nonce,
+        ciphertext,
+        ...(recordRevision === undefined ? {} : { recordRevision }),
+      };
     } finally {
       plaintext.fill(0);
     }
@@ -291,7 +389,7 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
         {
           name: "AES-GCM",
           iv: sealed.nonce,
-          additionalData: localAdditionalData(sealed.key),
+          additionalData: localAdditionalData(sealed.key, sealed.recordRevision),
         },
         this.#localKey,
         sealed.ciphertext,
@@ -301,7 +399,16 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
     }
     const bytes = new Uint8Array(plaintext);
     try {
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as StoredFlowValue;
+      const value = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      ) as StoredFlowValue;
+      if (
+        sealed.recordRevision !== undefined &&
+        (!isRecord(value) || value.localRevision !== sealed.recordRevision)
+      ) {
+        throw new QueueInvariantError("encrypted_flow_store_integrity_failure");
+      }
+      return value;
     } catch {
       throw new QueueInvariantError("encrypted_flow_store_integrity_failure");
     } finally {
@@ -617,6 +724,8 @@ function assertSealedRecord(value: unknown): asserts value is SealedFlowRecord {
     !(value.nonce instanceof Uint8Array) ||
     value.nonce.byteLength !== NONCE_BYTES ||
     !(value.ciphertext instanceof ArrayBuffer) ||
+    (value.recordRevision !== undefined &&
+      (!Number.isSafeInteger(value.recordRevision) || (value.recordRevision as number) < 1)) ||
     value.ciphertext.byteLength < 16
   ) {
     throw new QueueInvariantError("invalid_flow_store_record");
@@ -641,8 +750,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function localAdditionalData(key: string): Uint8Array<ArrayBuffer> {
-  return new TextEncoder().encode(`${LOCAL_AAD_PREFIX}:${key}`);
+function localAdditionalData(
+  key: string,
+  recordRevision?: number,
+): Uint8Array<ArrayBuffer> {
+  const suffix = recordRevision === undefined ? "" : `:${String(recordRevision)}`;
+  return new TextEncoder().encode(`${LOCAL_AAD_PREFIX}:${key}${suffix}`);
 }
 
 function requestResult<Result>(request: IDBRequest<Result>): Promise<Result> {
