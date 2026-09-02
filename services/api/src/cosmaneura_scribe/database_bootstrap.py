@@ -33,6 +33,10 @@ def _database_principals(settings: Settings) -> tuple[_DatabasePrincipal, ...]:
     reconciler_object_id = settings.database_delivery_reconciler_principal_object_id
     if reconciler_name is not None and reconciler_object_id is not None:
         principals.append(_DatabasePrincipal(reconciler_name, reconciler_object_id))
+    translation_name = settings.database_translation_principal_name
+    translation_object_id = settings.database_translation_principal_object_id
+    if translation_name is not None and translation_object_id is not None:
+        principals.append(_DatabasePrincipal(translation_name, translation_object_id))
     return tuple(principals)
 
 
@@ -76,9 +80,24 @@ async def _ensure_database_principals(settings: Settings) -> None:
                 unsafe_role = await connection.scalar(
                     text(
                         """
-                        SELECT rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb
-                        FROM pg_catalog.pg_roles
-                        WHERE rolname = :role_name
+                        SELECT application_role.rolsuper
+                            OR application_role.rolbypassrls
+                            OR application_role.rolcreaterole
+                            OR application_role.rolcreatedb
+                            OR application_role.rolreplication
+                            OR EXISTS (
+                                SELECT 1
+                                FROM pg_catalog.pg_auth_members AS membership
+                                WHERE membership.roleid = application_role.oid
+                                   OR membership.member = application_role.oid
+                            )
+                            OR EXISTS (
+                                SELECT 1
+                                FROM pg_catalog.pg_database AS database
+                                WHERE database.datdba = application_role.oid
+                            )
+                        FROM pg_catalog.pg_roles AS application_role
+                        WHERE application_role.rolname = :role_name
                         """
                     ),
                     {"role_name": principal.role_name},
@@ -86,13 +105,99 @@ async def _ensure_database_principals(settings: Settings) -> None:
                 if unsafe_role is None:
                     raise RuntimeError("Database application role was not created")
                 if unsafe_role:
-                    raise RuntimeError("Database application role has unsafe privileges")
+                    raise RuntimeError(
+                        "Database application role has unsafe privileges, memberships, "
+                        "or ownership"
+                    )
+    finally:
+        await provider.close()
+
+
+async def _ensure_no_database_principal_public_ownership(settings: Settings) -> None:
+    principals = _database_principals(settings)
+    provider = build_postgres_provider(settings)
+    try:
+        async with provider.engine.begin() as connection:
+            for principal in principals:
+                owns_public_object = await connection.scalar(
+                    text(
+                        """
+                        SELECT
+                            EXISTS (
+                                SELECT 1
+                                FROM pg_catalog.pg_namespace AS namespace
+                                WHERE namespace.nspname = 'public'
+                                  AND namespace.nspowner = application_role.oid
+                            )
+                            OR EXISTS (
+                                SELECT 1
+                                FROM pg_catalog.pg_class AS relation
+                                JOIN pg_catalog.pg_namespace AS namespace
+                                  ON namespace.oid = relation.relnamespace
+                                WHERE namespace.nspname = 'public'
+                                  AND relation.relowner = application_role.oid
+                            )
+                            OR EXISTS (
+                                SELECT 1
+                                FROM pg_catalog.pg_proc AS routine
+                                JOIN pg_catalog.pg_namespace AS namespace
+                                  ON namespace.oid = routine.pronamespace
+                                WHERE namespace.nspname = 'public'
+                                  AND routine.proowner = application_role.oid
+                            )
+                            OR EXISTS (
+                                SELECT 1
+                                FROM pg_catalog.pg_type AS database_type
+                                JOIN pg_catalog.pg_namespace AS namespace
+                                  ON namespace.oid = database_type.typnamespace
+                                WHERE namespace.nspname = 'public'
+                                  AND database_type.typowner = application_role.oid
+                            )
+                        FROM pg_catalog.pg_roles AS application_role
+                        WHERE application_role.rolname = :role_name
+                        """
+                    ),
+                    {"role_name": principal.role_name},
+                )
+                if owns_public_object is None:
+                    raise RuntimeError("Database application role was not created")
+                if owns_public_object:
+                    raise RuntimeError("Database application role owns public database objects")
     finally:
         await provider.close()
 
 
 def _quoted_identifier(connection: AsyncConnection, value: str) -> str:
     return connection.dialect.identifier_preparer.quote(value)
+
+
+def _translation_session_scope_policy_name(object_id: UUID) -> str:
+    """Return the stable policy name for one translation workload identity."""
+
+    return f"scribe_translation_scope_{object_id.hex}"
+
+
+async def _replace_translation_session_scope_policy(
+    connection: AsyncConnection,
+    role_name: str,
+    object_id: UUID,
+) -> None:
+    role = _quoted_identifier(connection, role_name)
+    policy = _quoted_identifier(connection, _translation_session_scope_policy_name(object_id))
+    scope = (
+        "(ingest_mode = 'external_async_transcript' "
+        "AND transcript_contract_version = '1.0' "
+        "AND status IN ('translation_pending', 'review_required', 'transcript_ready'))"
+    )
+    # Replace only this identity's deterministic policy. Policies for retired
+    # identities remain as a fail-closed boundary until their roles are removed.
+    await connection.execute(text(f"DROP POLICY IF EXISTS {policy} ON public.scribe_sessions"))
+    await connection.execute(
+        text(
+            f"CREATE POLICY {policy} ON public.scribe_sessions AS RESTRICTIVE FOR ALL "
+            f"TO {role} USING {scope} WITH CHECK {scope}"
+        )
+    )
 
 
 async def _deny_implicit_future_permissions(settings: Settings) -> None:
@@ -128,6 +233,88 @@ async def _deny_implicit_future_permissions(settings: Settings) -> None:
                 )
     finally:
         await provider.close()
+
+
+async def _grant_working_transcript_permissions(
+    connection: AsyncConnection,
+    role: str,
+) -> None:
+    await connection.execute(
+        text(
+            "GRANT SELECT (tenant_id, session_id, working_transcript_id, "
+            "working_transcript_version, source_transcript_version, "
+            "translation_input_count, review_input_count, working_fingerprint, created_at) "
+            f"ON normalized_working_transcripts TO {role}"
+        )
+    )
+    await connection.execute(
+        text(
+            "GRANT INSERT (tenant_id, session_id, working_transcript_id, "
+            "working_transcript_version, source_transcript_version, schema_version, "
+            "segment_count, blocker_count, translation_input_count, review_input_count, "
+            f"total_content_chars, working_fingerprint) ON normalized_working_transcripts TO {role}"
+        )
+    )
+    await connection.execute(
+        text(
+            "GRANT SELECT (tenant_id, session_id, working_transcript_version) "
+            f"ON normalized_working_translation_inputs TO {role}"
+        )
+    )
+    await connection.execute(
+        text(
+            "GRANT INSERT (tenant_id, session_id, working_transcript_version, "
+            "source_transcript_version, source_segment_id, source_segment_version, "
+            "translation_id, translation_version) "
+            f"ON normalized_working_translation_inputs TO {role}"
+        )
+    )
+    await connection.execute(
+        text(
+            "GRANT SELECT (tenant_id, session_id, working_transcript_version) "
+            f"ON normalized_working_review_inputs TO {role}"
+        )
+    )
+    await connection.execute(
+        text(
+            "GRANT INSERT (tenant_id, session_id, working_transcript_version, "
+            "source_transcript_version, source_segment_id, source_segment_version, "
+            "translation_id, translation_version, review_id) "
+            f"ON normalized_working_review_inputs TO {role}"
+        )
+    )
+    working_segment_columns = (
+        "tenant_id, session_id, working_transcript_version, ordinal, "
+        "source_transcript_version, source_segment_id, source_segment_version, "
+        "source_locale, speaker_id, speaker_role, start_ms, end_ms, resolution, "
+        "content, translation_id, translation_version, translation_review_id"
+    )
+    await connection.execute(
+        text(
+            f"GRANT SELECT ({working_segment_columns}) "
+            f"ON normalized_working_segments TO {role}"
+        )
+    )
+    await connection.execute(
+        text(
+            f"GRANT INSERT ({working_segment_columns}) "
+            f"ON normalized_working_segments TO {role}"
+        )
+    )
+    await connection.execute(
+        text(
+            "GRANT SELECT (tenant_id, session_id, working_transcript_version, ordinal, "
+            "source_segment_id, source_segment_version, code) "
+            f"ON normalized_working_blockers TO {role}"
+        )
+    )
+    await connection.execute(
+        text(
+            "GRANT INSERT (tenant_id, session_id, working_transcript_version, ordinal, "
+            "source_transcript_version, source_segment_id, source_segment_version, code) "
+            f"ON normalized_working_blockers TO {role}"
+        )
+    )
 
 
 async def _grant_runtime_permissions(settings: Settings) -> None:
@@ -211,6 +398,49 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                 text(f"GRANT SELECT, INSERT, UPDATE ON transcription_jobs TO {role}")
             )
             await connection.execute(text(f"GRANT INSERT ON audit_events TO {role}"))
+            if settings.derived_writer_database_permissions_enabled:
+                await connection.execute(
+                    text(
+                        "GRANT SELECT (working_transcript_id, "
+                        "current_working_transcript_version) "
+                        f"ON scribe_sessions TO {role}"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "GRANT UPDATE (working_transcript_id, "
+                        "current_working_transcript_version) "
+                        f"ON scribe_sessions TO {role}"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "GRANT SELECT (tenant_id, session_id, source_transcript_version, "
+                        "source_segment_id, source_segment_version, translation_id, "
+                        "translation_version, source_locale, target_locale, outcome, content, "
+                        "failure_code, translation_adapter_id, "
+                        "translation_model_profile_id, created_at) "
+                        f"ON normalized_translation_attempts TO {role}"
+                    )
+                )
+                review_columns = (
+                    "tenant_id, session_id, source_transcript_version, source_segment_id, "
+                    "source_segment_version, translation_id, translation_version, review_id, "
+                    "decision, reviewer_actor_id, reviewed_at"
+                )
+                await connection.execute(
+                    text(
+                        f"GRANT SELECT ({review_columns}) "
+                        f"ON normalized_translation_reviews TO {role}"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        f"GRANT INSERT ({review_columns}) "
+                        f"ON normalized_translation_reviews TO {role}"
+                    )
+                )
+                await _grant_working_transcript_permissions(connection, role)
     finally:
         await provider.close()
 
@@ -261,6 +491,125 @@ async def _grant_transcription_permissions(settings: Settings) -> None:
                 text(f"GRANT SELECT, INSERT, UPDATE ON transcription_jobs TO {role}")
             )
             await connection.execute(text(f"GRANT INSERT ON audit_events TO {role}"))
+    finally:
+        await provider.close()
+
+
+async def _grant_translation_permissions(settings: Settings) -> None:
+    role_name = settings.database_translation_principal_name
+    object_id = settings.database_translation_principal_object_id
+    if role_name is None and object_id is None:
+        return
+    if role_name is None or object_id is None:
+        raise RuntimeError("Translation principal name and object ID must be configured together")
+
+    provider = build_postgres_provider(settings)
+    try:
+        async with provider.engine.begin() as connection:
+            role = _quoted_identifier(connection, role_name)
+            database = _quoted_identifier(connection, settings.database_name)
+            await connection.execute(
+                text(f"REVOKE ALL PRIVILEGES ON DATABASE {database} FROM {role}")
+            )
+            await connection.execute(text(f"REVOKE ALL PRIVILEGES ON SCHEMA public FROM {role}"))
+            for object_type in ("TABLES", "SEQUENCES", "ROUTINES"):
+                await connection.execute(
+                    text(f"REVOKE ALL PRIVILEGES ON ALL {object_type} IN SCHEMA public FROM {role}")
+                )
+            await connection.execute(text("SET LOCAL lock_timeout = '5s'"))
+            await connection.execute(text("SET LOCAL statement_timeout = '60s'"))
+            await _replace_translation_session_scope_policy(
+                connection,
+                role_name,
+                object_id,
+            )
+            if not settings.derived_writer_database_permissions_enabled:
+                return
+
+            await connection.execute(text(f"GRANT CONNECT ON DATABASE {database} TO {role}"))
+            await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            await connection.execute(
+                text(
+                    "GRANT SELECT (id, tenant_id, appointment_id, practitioner_id, "
+                    "patient_id, modality, participant_regions, method, "
+                    "all_parties_consented, granted_at, evidence_object_id, "
+                    f"policy_version, revoked_at) ON consent_records TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT SELECT (id, tenant_id, appointment_id, practitioner_id, "
+                    "patient_id, consent_record_id, modality, ingest_mode, status, created_at, "
+                    "transcript_contract_version, creator_actor_id, language_mode, "
+                    "transcription_adapter_id, transcription_model_profile_id, "
+                    "normalization_profile_id, source_received_at, "
+                    "transcript_content_expires_at, content_purged_at, "
+                    "current_source_transcript_version, working_transcript_id, "
+                    f"current_working_transcript_version) ON scribe_sessions TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT UPDATE (status, working_transcript_id, "
+                    f"current_working_transcript_version) ON scribe_sessions TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT SELECT (tenant_id, session_id, source_transcript_version, "
+                    "source_receipt_id, schema_version, language_mode, "
+                    "transcription_adapter_id, transcription_model_profile_id, "
+                    "normalization_profile_id, duration_ms, request_fingerprint, received_at, "
+                    f"transcript_content_expires_at) ON normalized_source_transcripts TO {role}"
+                )
+            )
+            source_segment_columns = (
+                "tenant_id, session_id, source_transcript_version, ordinal, "
+                "source_segment_id, source_segment_version, source_locale, speaker_id, "
+                "speaker_role, content, start_ms, end_ms, locale_confidence"
+            )
+            await connection.execute(
+                text(
+                    f"GRANT SELECT ({source_segment_columns}) "
+                    f"ON normalized_source_segments TO {role}"
+                )
+            )
+            translation_columns = (
+                "tenant_id, session_id, source_transcript_version, source_segment_id, "
+                "source_segment_version, translation_id, translation_version, source_locale, "
+                "target_locale, outcome, content, failure_code, translation_adapter_id, "
+                "translation_model_profile_id"
+            )
+            await connection.execute(
+                text(
+                    f"GRANT SELECT ({translation_columns}, created_at) "
+                    f"ON normalized_translation_attempts TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
+                    f"GRANT INSERT ({translation_columns}) "
+                    f"ON normalized_translation_attempts TO {role}"
+                )
+            )
+            review_columns = (
+                "tenant_id, session_id, source_transcript_version, source_segment_id, "
+                "source_segment_version, translation_id, translation_version, review_id, "
+                "decision, reviewer_actor_id, reviewed_at"
+            )
+            await connection.execute(
+                text(
+                    f"GRANT SELECT ({review_columns}) "
+                    f"ON normalized_translation_reviews TO {role}"
+                )
+            )
+            await _grant_working_transcript_permissions(connection, role)
+            await connection.execute(
+                text(
+                    "GRANT INSERT (id, tenant_id, action, entity_type, entity_id) "
+                    f"ON audit_events TO {role}"
+                )
+            )
     finally:
         await provider.close()
 
@@ -338,11 +687,13 @@ async def bootstrap_database(settings: Settings | None = None) -> None:
     if settings.repository_backend != "postgres":
         raise RuntimeError("Database bootstrap requires repository_backend=postgres")
     await _ensure_database_principals(settings)
+    await _ensure_no_database_principal_public_ownership(settings)
     await _deny_implicit_future_permissions(settings)
     await upgrade_database(settings)
     await _grant_runtime_permissions(settings)
     await _grant_transcription_permissions(settings)
     await _grant_delivery_reconciler_permissions(settings)
+    await _grant_translation_permissions(settings)
 
 
 def main() -> None:
