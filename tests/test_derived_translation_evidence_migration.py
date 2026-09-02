@@ -922,7 +922,7 @@ async def test_derived_tables_force_tenant_rls_and_receive_no_runtime_grant(
 
 def test_derived_translation_evidence_is_the_only_alembic_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0013"]
+    assert script.get_heads() == ["0014"]
     migration = (ROOT / "alembic/versions/0012_derived_translation_evidence.py").read_text()
     assert "current_database() !~ '_test$'" in migration
     assert "CREATE ROLE" not in migration

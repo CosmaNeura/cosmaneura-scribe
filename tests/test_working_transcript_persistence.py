@@ -14,6 +14,7 @@ from cosmaneura_scribe.external_transcript_v1 import (
 )
 from cosmaneura_scribe.normalized_source_persistence import (
     ConfiguredExternalSessionStatus,
+    NormalizedSourceAcceptanceDisposition,
 )
 from cosmaneura_scribe.postgres_repository import (
     PostgresRepository,
@@ -89,6 +90,27 @@ async def _working_counts(
             )
         ).one()
         return row[0], row[1], row[2]
+
+
+async def _postgres_projection_state(
+    store: PostgresRepository,
+    tenant_id: UUID,
+    session_id: UUID,
+) -> tuple[int, UUID | None, int | None, str]:
+    row = (
+        await store._session.execute(
+            text(
+                """
+                SELECT current_source_transcript_version, working_transcript_id,
+                       current_working_transcript_version, status
+                FROM scribe_sessions
+                WHERE tenant_id = :tenant AND id = :session
+                """
+            ),
+            {"tenant": tenant_id, "session": session_id},
+        )
+    ).one()
+    return row[0], row[1], row[2], row[3]
 
 
 async def _sleep_past_expiry(
@@ -367,6 +389,171 @@ async def test_postgres_concurrent_publish_converges_to_one_version(
             )
         assert audit_count == 1
     finally:
+        await provider.close()
+        await engine.dispose()
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_postgres_correction_clears_pointer_and_preserves_identity_and_history(
+    postgres_urls: tuple[str, str],
+) -> None:
+    admin_url, _ = postgres_urls
+    engine = create_async_engine(admin_url, connect_args={"ssl": False})
+    provider = build_postgres_provider(postgres_settings(admin_url))
+    tenant_id = uuid4()
+    async with engine.begin() as connection:
+        session_id, _ = await _seed_source(connection, tenant_id, locale="en-US")
+
+    correction_request = _request(spanish_content="Synthetic corrected source.")
+    try:
+        async with provider.transaction(tenant_id) as store:
+            published = await store.publish_current_working_transcript(tenant_id, session_id)
+        assert published is not None
+        assert published.status == ConfiguredExternalSessionStatus.TRANSCRIPT_READY
+        assert published.working_transcript_version == 1
+
+        with pytest.raises(RuntimeError, match="synthetic correction rollback"):
+            async with provider.transaction(tenant_id) as store:
+                corrected = await store.accept_normalized_source_transcript(
+                    tenant_id,
+                    session_id,
+                    idempotency_key="correction-source-0001",
+                    request=correction_request,
+                )
+                assert corrected is not None
+                assert corrected.disposition == NormalizedSourceAcceptanceDisposition.CORRECTED
+                assert corrected.receipt.source_transcript_version == 2
+                assert isinstance(store, PostgresRepository)
+                assert await _postgres_projection_state(store, tenant_id, session_id) == (
+                    2,
+                    published.working_transcript_id,
+                    None,
+                    "source_received",
+                )
+                raise RuntimeError("synthetic correction rollback")
+
+        async with provider.transaction(tenant_id) as store:
+            assert isinstance(store, PostgresRepository)
+            rolled_back = await _postgres_projection_state(store, tenant_id, session_id)
+        assert rolled_back == (
+            1,
+            published.working_transcript_id,
+            1,
+            "transcript_ready",
+        )
+        assert await _working_counts(provider, tenant_id, session_id) == (1, 1, 0)
+
+        async with provider.transaction(tenant_id) as store:
+            corrected = await store.accept_normalized_source_transcript(
+                tenant_id,
+                session_id,
+                idempotency_key="correction-source-0001",
+                request=correction_request,
+            )
+        assert corrected is not None
+        assert corrected.disposition == NormalizedSourceAcceptanceDisposition.CORRECTED
+        assert corrected.receipt.source_transcript_version == 2
+
+        async with provider.transaction(tenant_id) as store:
+            assert isinstance(store, PostgresRepository)
+            corrected_state = await _postgres_projection_state(store, tenant_id, session_id)
+        assert corrected_state == (
+            2,
+            published.working_transcript_id,
+            None,
+            "source_received",
+        )
+        assert await _working_counts(provider, tenant_id, session_id) == (1, 1, 0)
+
+        async with provider.transaction(tenant_id) as store:
+            replacement = await store.publish_current_working_transcript(tenant_id, session_id)
+        assert replacement is not None
+        assert replacement.disposition == WorkingTranscriptPublishDisposition.REPLACED
+        assert replacement.working_transcript_id == published.working_transcript_id
+        assert replacement.working_transcript_version == 2
+        assert replacement.source_transcript_version == 2
+        assert await _working_counts(provider, tenant_id, session_id) == (2, 3, 1)
+
+        async with engine.begin() as connection:
+            versions = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT working_transcript_id, working_transcript_version,
+                               source_transcript_version
+                        FROM normalized_working_transcripts
+                        WHERE tenant_id = :tenant AND session_id = :session
+                        ORDER BY working_transcript_version
+                        """
+                    ),
+                    {"tenant": tenant_id, "session": session_id},
+                )
+            ).all()
+        assert versions == [
+            (published.working_transcript_id, 1, 1),
+            (published.working_transcript_id, 2, 2),
+        ]
+    finally:
+        await provider.close()
+        await engine.dispose()
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_postgres_correction_serializes_before_reprojection(
+    postgres_urls: tuple[str, str],
+) -> None:
+    admin_url, _ = postgres_urls
+    engine = create_async_engine(admin_url, connect_args={"ssl": False})
+    provider = build_postgres_provider(
+        postgres_settings(admin_url).model_copy(
+            update={"database_pool_size": 2, "database_max_overflow": 0}
+        )
+    )
+    tenant_id = uuid4()
+    async with engine.begin() as connection:
+        session_id, _ = await _seed_source(connection, tenant_id, locale="en-US")
+    async with provider.transaction(tenant_id) as store:
+        first = await store.publish_current_working_transcript(tenant_id, session_id)
+    assert first is not None
+
+    correction_holds_lock = asyncio.Event()
+    release_correction = asyncio.Event()
+
+    async def correct() -> object:
+        async with provider.transaction(tenant_id) as store:
+            result = await store.accept_normalized_source_transcript(
+                tenant_id,
+                session_id,
+                idempotency_key="correction-race-0001",
+                request=_request(spanish_content="Synthetic serialized correction."),
+            )
+            correction_holds_lock.set()
+            await release_correction.wait()
+            return result
+
+    async def project() -> object:
+        async with provider.transaction(tenant_id) as store:
+            return await store.publish_current_working_transcript(tenant_id, session_id)
+
+    try:
+        correction_task = asyncio.create_task(correct())
+        await correction_holds_lock.wait()
+        projector_task = asyncio.create_task(project())
+        await asyncio.sleep(0.05)
+        assert not projector_task.done()
+        release_correction.set()
+        correction, projection = await asyncio.gather(correction_task, projector_task)
+        assert correction is not None
+        assert projection is not None
+        assert projection.disposition == WorkingTranscriptPublishDisposition.REPLACED
+        assert projection.working_transcript_id == first.working_transcript_id
+        assert projection.working_transcript_version == 2
+        assert projection.source_transcript_version == 2
+        assert await _working_counts(provider, tenant_id, session_id) == (2, 3, 1)
+    finally:
+        release_correction.set()
         await provider.close()
         await engine.dispose()
 

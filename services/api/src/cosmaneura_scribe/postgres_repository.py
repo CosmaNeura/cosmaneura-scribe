@@ -909,6 +909,7 @@ class PostgresRepository:
                 """
                 UPDATE scribe_sessions
                 SET current_source_transcript_version = current_source_transcript_version + 1,
+                    current_working_transcript_version = NULL,
                     status = 'source_received'
                 WHERE tenant_id = :tenant_id AND id = :session_id
                   AND transcript_contract_version = :contract_version
