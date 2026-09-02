@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from .external_transcript_v1 import TranscriptLanguageMode
-from .schemas import CaptureModality, ConsentRecord
+from .canonical_json import canonical_sha256
+from .external_transcript_v1 import (
+    NormalizedSourceTranscriptReceiptV1,
+    NormalizedSourceTranscriptRequestV1,
+    SourceLocale,
+    TranscriptLanguageMode,
+)
+from .schemas import CaptureModality, ConsentRecord, SpeakerRole
 
 VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT = "1.0"
 VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID = "core_normalized_source_v1"
 VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID = "external_transcript_micro_beta_v1"
 VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID = "en_es_us_locale_normalization_v1"
-
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -26,6 +31,32 @@ class ConfiguredExternalSessionStatus(StrEnum):
     TRANSCRIPT_READY = "transcript_ready"
     HANDED_OFF = "handed_off"
     FAILED = "failed"
+
+
+class NormalizedSourceAcceptanceDisposition(StrEnum):
+    ACCEPTED = "accepted"
+    CORRECTED = "corrected"
+    REPLAYED = "replayed"
+    CONVERGED = "converged"
+
+
+class NormalizedSourcePersistenceCode(StrEnum):
+    CONSENT_INVALID = "source_consent_invalid"
+    IDEMPOTENCY_CONFLICT = "source_idempotency_conflict"
+    LANGUAGE_MODE_CONFLICT = "source_language_mode_conflict"
+    RETENTION_EXPIRED = "source_retention_expired"
+    STATE_CONFLICT = "source_state_conflict"
+
+
+class NormalizedSourcePersistenceError(RuntimeError):
+    """Bounded failure that never includes protected request or entity values."""
+
+    def __init__(self, code: NormalizedSourcePersistenceCode) -> None:
+        self.code = code
+        super().__init__(code.value)
+
+    def __repr__(self) -> str:
+        return f"NormalizedSourcePersistenceError({self.code.value!r})"
 
 
 def _validate_external_id(name: str, value: str) -> None:
@@ -78,6 +109,10 @@ class VersionedExternalSessionRecord:
     normalization_profile_id: str
     status: ConfiguredExternalSessionStatus
     created_at: datetime
+    source_received_at: datetime | None = None
+    transcript_content_expires_at: datetime | None = None
+    content_purged_at: datetime | None = None
+    current_source_transcript_version: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("appointment_id", "practitioner_id", "patient_id"):
@@ -93,6 +128,14 @@ class VersionedExternalSessionRecord:
             raise ValueError("unsupported versioned external transcript contract")
         if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
             raise ValueError("created_at must include a UTC offset")
+        for name in (
+            "source_received_at",
+            "transcript_content_expires_at",
+            "content_purged_at",
+        ):
+            value = getattr(self, name)
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError(f"{name} must include a UTC offset")
 
     def __repr__(self) -> str:
         return "VersionedExternalSessionRecord(<protected>)"
@@ -123,7 +166,7 @@ def build_versioned_external_session_record(
 
 def consent_authorizes_versioned_session(
     consent: ConsentRecord | None,
-    draft: VersionedExternalSessionCreate,
+    draft: VersionedExternalSessionCreate | VersionedExternalSessionRecord,
 ) -> bool:
     return bool(
         consent is not None
@@ -134,3 +177,105 @@ def consent_authorizes_versioned_session(
         and consent.patient_id == draft.patient_id
         and consent.modality == draft.modality
     )
+
+
+@dataclass(frozen=True, repr=False)
+class NormalizedSourceSegmentRecord:
+    source_segment_id: UUID
+    source_segment_version: int
+    ordinal: int
+    source_locale: SourceLocale
+    speaker_id: UUID
+    speaker_role: SpeakerRole
+    content: str = field(repr=False)
+    start_ms: int
+    end_ms: int
+    locale_confidence: float | None
+
+    def __repr__(self) -> str:
+        return "NormalizedSourceSegmentRecord(<protected>)"
+
+
+@dataclass(frozen=True, repr=False)
+class NormalizedSourceTranscriptRecord:
+    session_id: UUID
+    source_transcript_version: int
+    source_receipt_id: UUID
+    schema_version: str
+    language_mode: TranscriptLanguageMode
+    transcription_adapter_id: str
+    transcription_model_profile_id: str
+    normalization_profile_id: str
+    duration_ms: int
+    request_fingerprint: str = field(repr=False)
+    received_at: datetime
+    transcript_content_expires_at: datetime
+    segments: tuple[NormalizedSourceSegmentRecord, ...] = field(repr=False)
+
+    @property
+    def receipt(self) -> NormalizedSourceTranscriptReceiptV1:
+        return NormalizedSourceTranscriptReceiptV1(
+            schema_version="1.0",
+            session_id=self.session_id,
+            source_receipt_id=self.source_receipt_id,
+            source_transcript_version=self.source_transcript_version,
+            receipt_state="source_received",
+            received_at=self.received_at,
+            transcript_content_expires_at=self.transcript_content_expires_at,
+        )
+
+    def __repr__(self) -> str:
+        return "NormalizedSourceTranscriptRecord(<protected>)"
+
+
+@dataclass(frozen=True, repr=False)
+class NormalizedSourceReceiptKeyRecord:
+    idempotency_key: str = field(repr=False)
+    source_transcript_version: int
+    request_fingerprint: str = field(repr=False)
+
+    def __repr__(self) -> str:
+        return "NormalizedSourceReceiptKeyRecord(<protected>)"
+
+
+@dataclass(frozen=True, repr=False)
+class NormalizedSourceAcceptance:
+    receipt: NormalizedSourceTranscriptReceiptV1 = field(repr=False)
+    disposition: NormalizedSourceAcceptanceDisposition
+
+    @property
+    def receipt_body(self) -> bytes:
+        return self.receipt.canonical_body()
+
+    def __repr__(self) -> str:
+        return f"NormalizedSourceAcceptance(disposition={self.disposition.value!r})"
+
+
+def normalized_source_request_fingerprint(
+    session: VersionedExternalSessionRecord,
+    request: NormalizedSourceTranscriptRequestV1,
+) -> str:
+    return canonical_sha256(
+        {
+            "contract": "normalized-source-transcript-request-v1",
+            "schema_version": request.schema_version,
+            "language_mode": session.language_mode,
+            "transcription_adapter_id": session.transcription_adapter_id,
+            "transcription_model_profile_id": session.transcription_model_profile_id,
+            "normalization_profile_id": session.normalization_profile_id,
+            "duration_ms": request.duration_ms,
+            "segments": request.segments,
+        }
+    )
+
+
+def validate_normalized_source_request_for_session(
+    session: VersionedExternalSessionRecord,
+    request: NormalizedSourceTranscriptRequestV1,
+) -> None:
+    if session.language_mode == TranscriptLanguageMode.ENGLISH and any(
+        segment.source_locale == SourceLocale.SPANISH_US for segment in request.segments
+    ):
+        raise NormalizedSourcePersistenceError(
+            NormalizedSourcePersistenceCode.LANGUAGE_MODE_CONFLICT
+        )

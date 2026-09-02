@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import timedelta
 from typing import Protocol
 
 MAX_TRANSCRIPT_SEGMENTS = 10_000
 MAX_TRANSCRIPT_CONTENT_CHARS = 100_000
 MAX_TRANSCRIPT_DURATION_MS = 86_400_000
+NORMALIZED_SOURCE_RETENTION_LIMIT = timedelta(days=14)
 
 
 class TimedTranscriptSegment(Protocol):

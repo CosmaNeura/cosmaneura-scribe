@@ -4,12 +4,12 @@ import asyncio
 import copy
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from .capture_protocol_v1 import (
     CAPTURE_LEASE_TTL_SECONDS,
@@ -19,11 +19,22 @@ from .capture_protocol_v1 import (
     PROTOCOL_VERSION,
     RESERVATION_PLAINTEXT_BUDGET_BYTES,
 )
+from .external_transcript_v1 import NormalizedSourceTranscriptRequestV1
 from .normalized_source_persistence import (
+    ConfiguredExternalSessionStatus,
+    NormalizedSourceAcceptance,
+    NormalizedSourceAcceptanceDisposition,
+    NormalizedSourcePersistenceCode,
+    NormalizedSourcePersistenceError,
+    NormalizedSourceReceiptKeyRecord,
+    NormalizedSourceSegmentRecord,
+    NormalizedSourceTranscriptRecord,
     VersionedExternalSessionCreate,
     VersionedExternalSessionRecord,
     build_versioned_external_session_record,
     consent_authorizes_versioned_session,
+    normalized_source_request_fingerprint,
+    validate_normalized_source_request_for_session,
 )
 from .schemas import (
     AudioChunk,
@@ -45,6 +56,7 @@ from .schemas import (
     TranscriptionJobStatus,
 )
 from .session_state_v1 import SessionIngestMode, can_transition_session
+from .transcript_constraints import NORMALIZED_SOURCE_RETENTION_LIMIT
 
 
 class IdempotencyConflictError(ValueError):
@@ -299,6 +311,21 @@ class Repository(Protocol):
         tenant_id: UUID,
         session_id: UUID,
     ) -> VersionedExternalSessionRecord | None: ...
+
+    async def accept_normalized_source_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        idempotency_key: str,
+        request: NormalizedSourceTranscriptRequestV1,
+    ) -> NormalizedSourceAcceptance | None: ...
+
+    async def get_current_normalized_source_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> NormalizedSourceTranscriptRecord | None: ...
 
     async def get_session_audio_key(
         self,
@@ -581,6 +608,12 @@ class InMemoryRepository:
     versioned_external_sessions: dict[
         tuple[UUID, UUID], VersionedExternalSessionRecord
     ] = field(default_factory=lambda: {})
+    normalized_source_transcripts: dict[
+        tuple[UUID, UUID, int], NormalizedSourceTranscriptRecord
+    ] = field(default_factory=lambda: {})
+    normalized_source_receipt_keys: dict[
+        tuple[UUID, UUID, str], NormalizedSourceReceiptKeyRecord
+    ] = field(default_factory=lambda: {})
     session_audio_keys: dict[tuple[UUID, UUID], SessionAudioKey] = field(default_factory=lambda: {})
     capture_leases: dict[tuple[UUID, UUID], CaptureLeaseRecord] = field(
         default_factory=lambda: {}
@@ -622,6 +655,8 @@ class InMemoryRepository:
                 copy.deepcopy(self.consents),
                 copy.deepcopy(self.sessions),
                 copy.deepcopy(self.versioned_external_sessions),
+                copy.deepcopy(self.normalized_source_transcripts),
+                copy.deepcopy(self.normalized_source_receipt_keys),
                 copy.deepcopy(self.session_audio_keys),
                 copy.deepcopy(self.capture_leases),
                 copy.deepcopy(self.capture_lease_receipts),
@@ -647,6 +682,8 @@ class InMemoryRepository:
                     self.consents,
                     self.sessions,
                     self.versioned_external_sessions,
+                    self.normalized_source_transcripts,
+                    self.normalized_source_receipt_keys,
                     self.session_audio_keys,
                     self.capture_leases,
                     self.capture_lease_receipts,
@@ -827,6 +864,256 @@ class InMemoryRepository:
         if locked is None or locked.consent_record_id != record.consent_record_id:
             return None
         return locked
+
+    async def accept_normalized_source_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        idempotency_key: str,
+        request: NormalizedSourceTranscriptRequestV1,
+    ) -> NormalizedSourceAcceptance | None:
+        if not 8 <= len(idempotency_key) <= 255:
+            raise ValueError("normalized source idempotency key length is invalid")
+        reference = self.versioned_external_sessions.get((tenant_id, session_id))
+        if reference is None:
+            return None
+        consent = await self.lock_consent(tenant_id, reference.consent_record_id)
+        session = self.versioned_external_sessions.get((tenant_id, session_id))
+        if session is None or session.consent_record_id != reference.consent_record_id:
+            return None
+        if not consent_authorizes_versioned_session(consent, session):
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.CONSENT_INVALID
+            )
+        now = datetime.now(UTC)
+        self._require_live_normalized_source_session(session, now)
+        validate_normalized_source_request_for_session(session, request)
+        fingerprint = normalized_source_request_fingerprint(session, request)
+
+        binding = self.normalized_source_receipt_keys.get(
+            (tenant_id, session_id, idempotency_key)
+        )
+        if binding is not None:
+            if binding.request_fingerprint != fingerprint:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.IDEMPOTENCY_CONFLICT
+                )
+            source = self.normalized_source_transcripts.get(
+                (tenant_id, session_id, binding.source_transcript_version)
+            )
+            if source is None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            self._require_live_normalized_source_session(session, datetime.now(UTC))
+            return NormalizedSourceAcceptance(
+                receipt=source.receipt,
+                disposition=NormalizedSourceAcceptanceDisposition.REPLAYED,
+            )
+
+        current = self._current_normalized_source(tenant_id, session)
+        if current is not None and current.request_fingerprint == fingerprint:
+            self.normalized_source_receipt_keys[(tenant_id, session_id, idempotency_key)] = (
+                NormalizedSourceReceiptKeyRecord(
+                    idempotency_key=idempotency_key,
+                    source_transcript_version=current.source_transcript_version,
+                    request_fingerprint=fingerprint,
+                )
+            )
+            await self._audit_normalized_source(
+                tenant_id,
+                current.source_receipt_id,
+                NormalizedSourceAcceptanceDisposition.CONVERGED,
+            )
+            self._require_live_normalized_source_session(session, datetime.now(UTC))
+            return NormalizedSourceAcceptance(
+                receipt=current.receipt,
+                disposition=NormalizedSourceAcceptanceDisposition.CONVERGED,
+            )
+
+        first_receipt = current is None
+        if first_receipt:
+            if (
+                session.status != ConfiguredExternalSessionStatus.CREATED
+                or session.current_source_transcript_version is not None
+                or session.source_received_at is not None
+                or session.transcript_content_expires_at is not None
+            ):
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            version = 1
+            received_at = now
+            expires_at = now + NORMALIZED_SOURCE_RETENTION_LIMIT
+            disposition = NormalizedSourceAcceptanceDisposition.ACCEPTED
+        else:
+            if session.status in {
+                ConfiguredExternalSessionStatus.HANDED_OFF,
+                ConfiguredExternalSessionStatus.FAILED,
+            }:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            if session.current_source_transcript_version is None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            version = session.current_source_transcript_version + 1
+            received_at = now
+            expires_at = session.transcript_content_expires_at
+            if expires_at is None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            disposition = NormalizedSourceAcceptanceDisposition.CORRECTED
+
+        source = self._build_normalized_source(
+            session,
+            request,
+            version=version,
+            fingerprint=fingerprint,
+            received_at=received_at,
+            expires_at=expires_at,
+        )
+        updated_session = replace(
+            session,
+            status=ConfiguredExternalSessionStatus.SOURCE_RECEIVED,
+            source_received_at=session.source_received_at or received_at,
+            transcript_content_expires_at=expires_at,
+            current_source_transcript_version=version,
+        )
+        self.versioned_external_sessions[(tenant_id, session_id)] = updated_session
+        self.normalized_source_transcripts[(tenant_id, session_id, version)] = source
+        self.normalized_source_receipt_keys[(tenant_id, session_id, idempotency_key)] = (
+            NormalizedSourceReceiptKeyRecord(
+                idempotency_key=idempotency_key,
+                source_transcript_version=version,
+                request_fingerprint=fingerprint,
+            )
+        )
+        await self._audit_normalized_source(
+            tenant_id,
+            source.source_receipt_id,
+            disposition,
+        )
+        self._require_live_normalized_source_session(updated_session, datetime.now(UTC))
+        return NormalizedSourceAcceptance(receipt=source.receipt, disposition=disposition)
+
+    async def get_current_normalized_source_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> NormalizedSourceTranscriptRecord | None:
+        reference = self.versioned_external_sessions.get((tenant_id, session_id))
+        if reference is None:
+            return None
+        consent = await self.lock_consent(tenant_id, reference.consent_record_id)
+        session = self.versioned_external_sessions.get((tenant_id, session_id))
+        if session is None or session.consent_record_id != reference.consent_record_id:
+            return None
+        if not consent_authorizes_versioned_session(consent, session):
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.CONSENT_INVALID
+            )
+        self._require_live_normalized_source_session(session, datetime.now(UTC))
+        source = self._current_normalized_source(tenant_id, session)
+        if source is None:
+            return None
+        await self.audit(
+            tenant_id=tenant_id,
+            action="normalized_source.read",
+            entity_type="normalized_source_receipt",
+            entity_id=source.source_receipt_id,
+        )
+        self._require_live_normalized_source_session(session, datetime.now(UTC))
+        return source
+
+    def _current_normalized_source(
+        self,
+        tenant_id: UUID,
+        session: VersionedExternalSessionRecord,
+    ) -> NormalizedSourceTranscriptRecord | None:
+        version = session.current_source_transcript_version
+        if version is None:
+            return None
+        return self.normalized_source_transcripts.get((tenant_id, session.id, version))
+
+    @staticmethod
+    def _require_live_normalized_source_session(
+        session: VersionedExternalSessionRecord,
+        now: datetime,
+    ) -> None:
+        if session.content_purged_at is not None or (
+            session.transcript_content_expires_at is not None
+            and now >= session.transcript_content_expires_at
+        ):
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.RETENTION_EXPIRED
+            )
+        if session.status == ConfiguredExternalSessionStatus.FAILED:
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.STATE_CONFLICT
+            )
+
+    @staticmethod
+    def _build_normalized_source(
+        session: VersionedExternalSessionRecord,
+        request: NormalizedSourceTranscriptRequestV1,
+        *,
+        version: int,
+        fingerprint: str,
+        received_at: datetime,
+        expires_at: datetime,
+    ) -> NormalizedSourceTranscriptRecord:
+        speaker_ids = {segment.speaker_slot: uuid4() for segment in request.segments}
+        allocated = sorted(
+            ((uuid4(), segment) for segment in request.segments),
+            key=lambda item: (item[1].start_ms, item[1].end_ms, item[0].int),
+        )
+        segments = tuple(
+            NormalizedSourceSegmentRecord(
+                source_segment_id=source_segment_id,
+                source_segment_version=1,
+                ordinal=ordinal,
+                source_locale=segment.source_locale,
+                speaker_id=speaker_ids[segment.speaker_slot],
+                speaker_role=segment.speaker_role,
+                content=segment.content,
+                start_ms=segment.start_ms,
+                end_ms=segment.end_ms,
+                locale_confidence=segment.locale_confidence,
+            )
+            for ordinal, (source_segment_id, segment) in enumerate(allocated)
+        )
+        return NormalizedSourceTranscriptRecord(
+            session_id=session.id,
+            source_transcript_version=version,
+            source_receipt_id=uuid4(),
+            schema_version=request.schema_version,
+            language_mode=session.language_mode,
+            transcription_adapter_id=session.transcription_adapter_id,
+            transcription_model_profile_id=session.transcription_model_profile_id,
+            normalization_profile_id=session.normalization_profile_id,
+            duration_ms=request.duration_ms,
+            request_fingerprint=fingerprint,
+            received_at=received_at,
+            transcript_content_expires_at=expires_at,
+            segments=segments,
+        )
+
+    async def _audit_normalized_source(
+        self,
+        tenant_id: UUID,
+        source_receipt_id: UUID,
+        disposition: NormalizedSourceAcceptanceDisposition,
+    ) -> None:
+        await self.audit(
+            tenant_id=tenant_id,
+            action=f"normalized_source.{disposition.value}",
+            entity_type="normalized_source_receipt",
+            entity_id=source_receipt_id,
+        )
 
     async def get_session_audio_key(
         self,
