@@ -180,6 +180,7 @@ export class MockCaptureService {
       if (this.consent?.id !== request.consent_record_id) {
         throw new MockBffError(409, "consent_required");
       }
+      this.resetSessionArtifacts();
       this.session = {
         id: this.sessionId,
         ...request,
@@ -558,6 +559,19 @@ export class MockCaptureService {
     this.faults.splice(index, 1);
     if (phase === "after-commit") throw new MockDroppedResponseError(operation);
     throw new MockBffError(503, "synthetic_dependency_unavailable");
+  }
+
+  private resetSessionArtifacts(): void {
+    // The standalone E2E server reuses one deterministic ID across browser contexts.
+    this.lease = undefined;
+    this.audioKeyReceipt = undefined;
+    this.completed = false;
+    this.transcriptionPolls = 0;
+    this.reservationsByPosition.clear();
+    this.reservationsByObject.clear();
+    this.authorizations.clear();
+    this.uploadedEnvelopes.clear();
+    this.registrations.clear();
   }
 
   private requireLease(): CaptureLeaseReceipt {

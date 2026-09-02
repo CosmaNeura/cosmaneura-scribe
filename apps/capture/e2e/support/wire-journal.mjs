@@ -49,13 +49,14 @@ export class WireJournal {
   }
 
   firstUpload() {
-    const upload = this.#uploads[0];
+    const registration = this.firstRegistration();
+    const upload = this.#uploads.find(({ objectId }) => objectId === registration.objectId);
     if (upload === undefined) throw new Error("wire_upload_missing");
-    return upload;
+    return upload.envelope;
   }
 
   firstRegistration() {
-    const registration = this.#registrations[0];
+    const registration = this.#registrations.find(({ sequenceNumber }) => sequenceNumber === 0);
     if (registration === undefined) throw new Error("wire_registration_missing");
     return registration;
   }
@@ -118,7 +119,10 @@ export class WireJournal {
     if (method === "PUT" && pathname.startsWith("/mock-upload/")) {
       const body = request.postDataBuffer();
       if (body === null) throw new Error("wire_upload_body_missing");
-      this.#uploads.push(Buffer.from(body));
+      this.#uploads.push({
+        envelope: Buffer.from(body),
+        objectId: decodeURIComponent(pathname.slice("/mock-upload/".length)),
+      });
       return;
     }
 
@@ -126,6 +130,7 @@ export class WireJournal {
       const body = requestJson(request, "wire_registration_body_invalid");
       this.#registrations.push({
         channel: body.channel,
+        objectId: body.object_id,
         sequenceNumber: body.sequence_number,
         sha256: body.sha256,
         ciphertextSizeBytes: body.ciphertext_size_bytes,

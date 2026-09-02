@@ -3,6 +3,7 @@ import { expect } from "@playwright/test";
 const selectors = Object.freeze({
   beginSession: "[data-testid=begin-session]",
   consentCheckbox: "[data-testid=consent-checkbox]",
+  fixedStatus: ".fixed-status",
   flowStatus: "[data-testid=flow-status]",
   queueStatus: "[data-testid=queue-status]",
   recordButton: "[data-testid=record-button]",
@@ -18,6 +19,7 @@ export class CapturePage {
     this.page = page;
     this.beginSession = page.locator(selectors.beginSession);
     this.consentCheckbox = page.locator(selectors.consentCheckbox);
+    this.fixedStatus = page.locator(selectors.fixedStatus);
     this.flowStatus = page.locator(selectors.flowStatus);
     this.queueStatus = page.locator(selectors.queueStatus);
     this.recordButton = page.locator(selectors.recordButton);
@@ -58,14 +60,22 @@ export class CapturePage {
 
   async assertPausedRecovery() {
     await expect(this.flowStatus).toHaveText("paused");
+    await expect(this.fixedStatus).toHaveText("capture_interruption_closing");
     await expect(this.queueStatus).toHaveText("1 encrypted · 90 reserved");
     await expect(this.stopButton).toBeEnabled();
+  }
+
+  async assertRecoveredStopBlocked() {
+    await this.stopButton.click();
+    await expect(this.flowStatus).toHaveText("paused");
+    await expect(this.fixedStatus).toHaveText("capture_source_close_unverified");
+    await expect(this.queueStatus).toHaveText("1 encrypted · 90 reserved");
   }
 
   async stopAtHeldUpload() {
     await this.stopButton.click();
     await expect(this.flowStatus).toHaveText("uploading", { timeout: 15_000 });
-    await expect(this.queueStatus).toHaveText("1 uploading", { timeout: 15_000 });
+    await expect(this.queueStatus).toHaveText(/^\d+ uploading$/u, { timeout: 15_000 });
   }
 
   async waitForCompletion() {

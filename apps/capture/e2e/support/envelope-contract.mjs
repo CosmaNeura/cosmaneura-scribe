@@ -65,7 +65,7 @@ export function assertUploadedEnvelopeContract(envelope, registration) {
   );
 }
 
-export function assertCompletionContract(completion) {
+export function assertCompletionContract(completion, finalSequenceNumber) {
   fixed(
     completion.protocolVersion === protocol.protocol_version,
     "completion_protocol_version_mismatch",
@@ -77,7 +77,7 @@ export function assertCompletionContract(completion) {
     "completion_channel_mismatch",
   );
   fixed(
-    channel?.final_sequence_number === microphoneGolden.vector.input.sequence_number,
+    channel?.final_sequence_number === finalSequenceNumber,
     "completion_sequence_mismatch",
   );
 }

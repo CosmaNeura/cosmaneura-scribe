@@ -93,7 +93,73 @@ describe("CaptureFlowController", () => {
     }
   });
 
-  it("recovers a durable encrypted chunk after relaunch and completes with the same queue", async () => {
+  it("converges clean-stop phase-write loss without purging evidence early", async () => {
+    const server = createMockBffServer();
+    const origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({
+      databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO,
+    });
+    const flowStore = await EncryptedIndexedDbFlowStore.open({
+      databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO,
+    });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+    const completeCapture = vi.spyOn(bff, "completeCapture");
+    const persistActive = flowStore.putActiveCaptureState.bind(flowStore);
+    let loseUploadingWrite = true;
+    let loseProcessingWrite = true;
+    vi.spyOn(flowStore, "putActiveCaptureState").mockImplementation(async (state) => {
+      if (state.phase === "uploading" && loseUploadingWrite) {
+        loseUploadingWrite = false;
+        throw new Error("synthetic active phase write lost");
+      }
+      if (state.phase === "processing" && loseProcessingWrite) {
+        loseProcessingWrite = false;
+        throw new Error("synthetic processing phase write lost");
+      }
+      await persistActive(state);
+    });
+
+    try {
+      const first = createController(bff, flowStore, queueStorage, origin);
+      await first.prepare(TEST_ENCOUNTER);
+      await first.startRecording();
+      await expect(first.stopRecording()).rejects.toThrow("synthetic active phase write lost");
+      await expect(flowStore.getCaptureRecoveryState(first.snapshot.sessionId!))
+        .resolves.toMatchObject({ phase: "stopped", nextSequenceNumber: 1 });
+
+      const recovered = createController(bff, flowStore, queueStorage, origin);
+      await expect(recovered.restore()).resolves.toBe(true);
+      expect(recovered.snapshot).toMatchObject({ state: "uploading", recordedChunks: 1 });
+      await expect(recovered.resumePendingWork()).rejects.toThrow(
+        "synthetic processing phase write lost",
+      );
+      expect((await new CaptureQueue(queueStorage, { crypto: TEST_CRYPTO }).list())
+        .filter((record) => record.state === "registered")).toHaveLength(1);
+
+      const flakyQueue = new CaptureQueue(queueStorage, { crypto: TEST_CRYPTO });
+      vi.spyOn(flakyQueue, "purge").mockRejectedValueOnce(
+        new Error("synthetic post-complete purge lost"),
+      );
+      const recoveredAgain = createController(bff, flowStore, queueStorage, origin, flakyQueue);
+      await expect(recoveredAgain.restore()).resolves.toBe(true);
+      await expect(recoveredAgain.resumePendingWork()).rejects.toThrow(
+        "synthetic post-complete purge lost",
+      );
+      expect(completeCapture).toHaveBeenCalledTimes(2);
+
+      const processingRecovery = createController(bff, flowStore, queueStorage, origin);
+      await expect(processingRecovery.restore()).resolves.toBe(true);
+      await processingRecovery.resumePendingWork();
+      expect(completeCapture).toHaveBeenCalledTimes(2);
+    } finally {
+      flowStore.close();
+      queueStorage.close();
+      await closeServer(server);
+    }
+  });
+
+  it("persists an unknown recovery gap across repeated relaunches", async () => {
     const server = createMockBffServer();
     const origin = await listenOnEphemeralLoopback(server);
     const indexedDB = new IDBFactory();
@@ -112,6 +178,7 @@ describe("CaptureFlowController", () => {
 
     try {
       const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+      const completeCapture = vi.spyOn(bff, "completeCapture");
       const first = new CaptureFlowController({
         bff,
         flowStore,
@@ -158,16 +225,20 @@ describe("CaptureFlowController", () => {
       await expect(recovered.restore()).resolves.toBe(true);
       expect(recovered.snapshot).toMatchObject({
         state: "paused",
-        statusCode: "capture_recovered_paused",
+        statusCode: "capture_interruption_closing",
         recordedChunks: 1,
       });
-      await recovered.stopRecording();
-      expect(recovered.snapshot).toMatchObject({ state: "processing" });
-      await recovered.refreshTranscriptionStatus();
-      expect(recovered.snapshot).toMatchObject({ state: "complete" });
-      await expect(flowStore.getActiveCaptureState()).resolves.toBeNull();
-      await expect(flowStore.getPreparationState()).resolves.toBeNull();
-      await expect(flowStore.getSessionKeyState(recovered.snapshot.sessionId!)).resolves.toBeNull();
+      expect(await flowStore.getCaptureRecoveryState(recovered.snapshot.sessionId!)).toMatchObject({
+        phase: "interruption_closing",
+        gaps: [{ reasonCode: "process_recovery_unknown" }],
+      });
+      const recoveredAgain = createController(bff, flowStore, queueStorage, origin);
+      await expect(recoveredAgain.restore()).resolves.toBe(true);
+      expect(recoveredAgain.snapshot.statusCode).toBe("capture_interruption_closing");
+      await expect(recoveredAgain.stopRecording()).rejects.toThrow(
+        "capture_source_close_unverified",
+      );
+      expect(completeCapture).not.toHaveBeenCalled();
     } finally {
       flowStore.close();
       queueStorage.close();
@@ -348,9 +419,15 @@ describe("CaptureFlowController", () => {
         state: "paused", statusCode: "audio_capture_native_stop_failed",
       }));
       expect(completeCapture).not.toHaveBeenCalled();
-      await controller.stopRecording();
-      expect(controller.snapshot.state).toBe("processing");
-      expect(completeCapture).toHaveBeenCalledOnce();
+      await expect(controller.stopRecording()).rejects.toThrow(
+        "capture_gap_review_required",
+      );
+      await controller.acknowledgeGap();
+      await controller.acknowledgeGap();
+      expect(controller.snapshot).toMatchObject({
+        state: "paused", statusCode: "capture_resume_authority_required",
+      });
+      expect(completeCapture).not.toHaveBeenCalled();
       expect(bridge.stopModes).toEqual(["discard", "discard"]);
     } finally {
       stopBarrier.resolve();
@@ -528,14 +605,15 @@ describe("CaptureFlowController", () => {
       await expect(recovered.restore()).resolves.toBe(true);
       expect(recovered.snapshot).toMatchObject({
         state: "paused",
-        statusCode: "capture_authority_expired",
+        statusCode: "capture_interruption_closing",
         recordedChunks: 1,
         remainingAuthoritySeconds: 0,
       });
       const durable = await new CaptureQueue(queueStorage, { crypto: TEST_CRYPTO }).list();
       expect(durable.filter((record) => record.state === "encrypted")).toHaveLength(1);
-      await recovered.stopRecording();
-      expect(recovered.snapshot.state).toBe("processing");
+      await expect(recovered.stopRecording()).rejects.toThrow(
+        "capture_source_close_unverified",
+      );
     } finally {
       flowStore.close();
       queueStorage.close();
@@ -544,7 +622,7 @@ describe("CaptureFlowController", () => {
   });
 
   it.each(["interruption", "error"] as const)(
-    "drains durable chunks after a terminal source %s",
+    "holds durable chunks for review after a terminal source %s",
     async (signal) => {
       const server = createMockBffServer();
       const origin = await listenOnEphemeralLoopback(server);
@@ -560,6 +638,7 @@ describe("CaptureFlowController", () => {
         crypto: TEST_CRYPTO,
       });
       const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+      const getTranscriptionStatus = vi.spyOn(bff, "getTranscriptionStatus");
       const controller = createControllerWithSource({
         bff,
         flowStore,
@@ -577,8 +656,22 @@ describe("CaptureFlowController", () => {
             signal === "interruption" ? "capture_backgrounded" : "capture_source_failed",
           recordedChunks: 1,
         });
-        await controller.stopRecording();
-        expect(controller.snapshot.state).toBe("processing");
+        await expect(controller.refreshTranscriptionStatus()).rejects.toThrow(
+          "capture_gap_review_required",
+        );
+        await expect(controller.stopRecording()).rejects.toThrow(
+          "capture_gap_review_required",
+        );
+        await expect(controller.refreshTranscriptionStatus()).rejects.toThrow(
+          "capture_gap_review_required",
+        );
+        await controller.acknowledgeGap();
+        await expect(controller.refreshTranscriptionStatus()).rejects.toThrow(
+          "capture_gap_review_required",
+        );
+        expect(getTranscriptionStatus).not.toHaveBeenCalled();
+        expect(await flowStore.getCaptureRecoveryState(controller.snapshot.sessionId!))
+          .toMatchObject({ phase: "authority_required", noteReadiness: "review_required" });
       } finally {
         flowStore.close();
         queueStorage.close();
@@ -587,7 +680,9 @@ describe("CaptureFlowController", () => {
     },
   );
 
-  it("does not ignore an ordinary active-stop failure", async () => {
+  it.each([false, true])(
+    "does not ignore an ordinary active-stop failure (undefined: %s)",
+    async (rejectUndefined) => {
     const server = createMockBffServer();
     const origin = await listenOnEphemeralLoopback(server);
     const indexedDB = new IDBFactory();
@@ -607,14 +702,24 @@ describe("CaptureFlowController", () => {
       flowStore,
       queueStorage,
       origin,
-      source: new TerminalStopSource(null),
+      source: new TerminalStopSource(null, rejectUndefined),
     });
 
     try {
       await controller.prepare(TEST_ENCOUNTER);
       await controller.startRecording();
-      await expect(controller.stopRecording()).rejects.toThrow("synthetic active stop failed");
-      expect(controller.snapshot.state).toBe("error");
+      await expect(controller.stopRecording()).rejects.toThrow("capture_source_close_failed");
+      expect(controller.snapshot).toMatchObject({
+        state: "paused", statusCode: "capture_source_close_failed",
+      });
+      await expect(controller.acknowledgeGap()).rejects.toThrow(
+        "capture_source_close_failed",
+      );
+      expect(await flowStore.getCaptureRecoveryState(controller.snapshot.sessionId!))
+        .toMatchObject({
+          phase: "interruption_closing",
+          gaps: [{ reasonCode: rejectUndefined ? "capture_backgrounded" : "capture_source_failed" }],
+        });
       const durable = await new CaptureQueue(queueStorage, { crypto: TEST_CRYPTO }).list();
       expect(durable.filter((record) => record.state === "encrypted")).toHaveLength(1);
     } finally {
@@ -622,7 +727,8 @@ describe("CaptureFlowController", () => {
       queueStorage.close();
       await closeServer(server);
     }
-  });
+    },
+  );
 
   it("blocks upload when a native stop failure also pauses the source", async () => {
     const server = createMockBffServer();
@@ -665,9 +771,12 @@ describe("CaptureFlowController", () => {
       expect(durable.filter((record) => record.state === "encrypted")).toHaveLength(1);
       expect(bridge.stopModes).toEqual(["drain"]);
 
-      await controller.stopRecording();
-      expect(controller.snapshot.state).toBe("processing");
-      expect(completeCapture).toHaveBeenCalledOnce();
+      await expect(controller.stopRecording()).rejects.toThrow(
+        "capture_gap_review_required",
+      );
+      expect(await flowStore.getCaptureRecoveryState(controller.snapshot.sessionId!))
+        .toMatchObject({ phase: "ack_required", noteReadiness: "review_required" });
+      expect(completeCapture).not.toHaveBeenCalled();
       expect(bridge.stopModes).toEqual(["drain", "drain"]);
     } finally {
       flowStore.close();
@@ -761,17 +870,25 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
 
 class TerminalStopSource implements CaptureSource {
   public readonly kind = "synthetic" as const;
+  private options: CaptureSourceStartOptions | null = null;
 
-  public constructor(private readonly signal: "interruption" | "error" | null) {}
+  public constructor(
+    private readonly signal: "interruption" | "error" | null,
+    private readonly rejectUndefined = false,
+  ) {}
 
   public async start(options: CaptureSourceStartOptions): Promise<void> {
+    this.options = options;
     await options.onChunk(makeCapturedChunk(options.capabilities));
     if (this.signal === "interruption") options.onInterruption?.("capture_backgrounded");
     if (this.signal === "error") options.onError?.("capture_source_failed");
   }
 
   public stop(): Promise<void> {
-    return Promise.reject(new Error("synthetic active stop failed"));
+    if (this.rejectUndefined) this.options?.onInterruption?.("capture_backgrounded");
+    return this.signal === null
+      ? Promise.reject(this.rejectUndefined ? undefined : new Error("synthetic active stop failed"))
+      : Promise.resolve();
   }
 }
 
@@ -801,11 +918,12 @@ function createController(
   flowStore: EncryptedIndexedDbFlowStore,
   queueStorage: EncryptedIndexedDbQueueStorage,
   origin: string,
+  queue = new CaptureQueue(queueStorage, { crypto: TEST_CRYPTO }),
 ): CaptureFlowController {
   return new CaptureFlowController({
     bff,
     flowStore,
-    queue: new CaptureQueue(queueStorage, { crypto: TEST_CRYPTO }),
+    queue,
     queueTransport: new BffCaptureQueueTransport(
       bff,
       new HttpCiphertextUploadTarget([origin]),
