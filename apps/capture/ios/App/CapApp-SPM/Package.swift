@@ -12,6 +12,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.0"),
+        .package(name: "CosmaneuraScribeCapacitorIosPcm", path: "../../../native-plugins/ios-pcm-capacitor"),
         .package(name: "CosmaneuraScribeCapacitorSecureQueue", path: "../../../native-plugins/secure-queue")
     ],
     targets: [
@@ -20,6 +21,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
+                .product(name: "CosmaneuraScribeCapacitorIosPcm", package: "CosmaneuraScribeCapacitorIosPcm"),
                 .product(name: "CosmaneuraScribeCapacitorSecureQueue", package: "CosmaneuraScribeCapacitorSecureQueue")
             ]
         )

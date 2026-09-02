@@ -607,6 +607,78 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     expect(deliveredReference?.every((value) => value === 0)).toBe(true);
   });
 
+  it("propagates one late discard after a native drain has begun", async () => {
+    const bridge = new FakeIosNativePcmBridge();
+    const drainGate = deferred<void>();
+    bridge.delayNextStopUntil(drainGate.promise);
+    const authority = new AbortController();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    await source.start({
+      capabilities,
+      onChunk: async () => undefined,
+      signal: authority.signal,
+    });
+
+    const draining = source.stop();
+    await vi.waitFor(() => expect(bridge.stopModes).toEqual(["drain"]));
+    authority.abort();
+    await vi.waitFor(() => expect(bridge.stopModes).toEqual(["drain", "discard"]));
+
+    drainGate.resolve(undefined);
+    await expect(draining).resolves.toBeUndefined();
+    await source.stop();
+    expect(bridge.stopModes).toEqual(["drain", "discard"]);
+  });
+
+  it("awaits a discard requested during final delivery and retains a failed upgrade for retry", async () => {
+    const stopModes: string[] = [];
+    const finalPcmBytes = Uint8Array.from([52, 18]);
+    let stopCall = 0;
+    const bridge: IosNativeMicrophoneBridge = {
+      getAppState: async () => "foreground",
+      start: () => ({
+        ready: Promise.resolve(),
+        stop: async ({ mode }) => {
+          stopModes.push(mode);
+          stopCall += 1;
+          if (stopCall === 1) {
+            return { finalPcmPacket: { sequenceNumber: 0, pcmBytes: finalPcmBytes } };
+          }
+          if (stopCall === 2) throw new Error("synthetic late discard failure");
+          return { finalPcmPacket: null };
+        },
+      }),
+    };
+    const deliveryEntered = deferred<void>();
+    const deliveryGate = deferred<void>();
+    const authority = new AbortController();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    await source.start({
+      capabilities,
+      onChunk: async () => {
+        deliveryEntered.resolve(undefined);
+        await deliveryGate.promise;
+      },
+      signal: authority.signal,
+    });
+
+    const draining = source.stop();
+    await deliveryEntered.promise;
+    expect(stopModes).toEqual(["drain"]);
+    authority.abort();
+    await vi.waitFor(() => expect(stopModes).toEqual(["drain", "discard"]));
+    deliveryGate.resolve(undefined);
+
+    await expect(draining).rejects.toMatchObject({ code: "audio_capture_native_stop_failed" });
+    expect(finalPcmBytes.every((value) => value === 0)).toBe(true);
+    await expect(source.start({
+      capabilities,
+      onChunk: async () => undefined,
+    })).rejects.toMatchObject({ code: "audio_capture_native_stop_failed" });
+    await expect(source.stop()).resolves.toBeUndefined();
+    expect(stopModes).toEqual(["drain", "discard", "discard"]);
+  });
+
   it("clears buffers and emits only a fixed code when the consumer rejects", async () => {
     const bridge = new FakeIosNativePcmBridge();
     const source = new IosNativeMicrophoneCaptureSource(bridge);

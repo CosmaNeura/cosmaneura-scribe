@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = resolve(appRoot, "dist");
 const files = await walk(distRoot);
-const forbiddenNames = /(?:browser-microphone-source|pcm-capture-worklet)/u;
-const forbiddenCode = /(?:getUserMedia|AudioWorkletNode)/u;
+const forbiddenNames = /(?:browser-microphone-source|capacitor-ios-native-pcm-bridge|pcm-capture-worklet)/u;
+const forbiddenCode = /(?:getUserMedia|AudioWorkletNode|iosNativePcmEvent|CapacitorCustomPlatform)/u;
 const deploymentAttestationName = "capture-preview-deployment.json";
 const sourceSha = process.env.DEPLOY_SHA;
 
@@ -19,7 +19,7 @@ for (const file of files) {
     throw new Error("dormant preview bundle contains a microphone asset");
   }
   if (file.endsWith(".js") && forbiddenCode.test(await readFile(file, "utf8"))) {
-    throw new Error("dormant preview bundle contains microphone runtime code");
+    throw new Error("dormant preview bundle contains microphone or Capacitor runtime code");
   }
 }
 

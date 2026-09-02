@@ -12,6 +12,10 @@ let package = Package(
     .library(
       name: "CosmaneuraIOSPCMCapacitor",
       targets: ["CosmaneuraIOSPCMCapacitor"]
+    ),
+    .library(
+      name: "CosmaneuraScribeCapacitorIosPcm",
+      targets: ["CosmaneuraIOSPCMCapacitor"]
     )
   ],
   dependencies: [
