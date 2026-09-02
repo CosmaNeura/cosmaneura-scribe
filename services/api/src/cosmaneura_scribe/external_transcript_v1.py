@@ -41,10 +41,6 @@ ClinicalText = Annotated[
     str,
     Field(min_length=1, max_length=MAX_TRANSCRIPT_CONTENT_CHARS, repr=False),
 ]
-Sha256Fingerprint = Annotated[
-    str,
-    Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
-]
 
 
 class _StrictFrozenModel(BaseModel):
@@ -110,8 +106,7 @@ _VALIDATION_LOCATION_TOKENS = frozenset(
     start_ms end_ms locale_confidence translations translation_reviews translation_id
     translation_version target_locale outcome translation_adapter_id translation_model_profile_id
     created_at failure_code review_id decision reviewer_actor_id reviewed_at working_transcript_id
-    working_transcript_version derivation_fingerprint resolution translation_review_id blockers code
-    note_ready
+    working_transcript_version resolution translation_review_id blockers code note_ready
     """.split()
 )
 
@@ -383,20 +378,6 @@ class ExternalTranscriptBundleV1(_StrictFrozenModel):
         return self
 
 
-def external_transcript_derivation_fingerprint(bundle: ExternalTranscriptBundleV1) -> str:
-    return canonical_sha256(
-        {
-            "contract": "english-working-transcript-derivation-v1",
-            "schema_version": bundle.schema_version,
-            "working_transcript_id": bundle.working_transcript_id,
-            "working_transcript_version": bundle.working_transcript_version,
-            "source_transcript": bundle.source_transcript,
-            "translations": bundle.translations,
-            "translation_reviews": bundle.translation_reviews,
-        }
-    )
-
-
 class EnglishWorkingTranscriptSegmentV1(_StrictFrozenModel):
     source_segment_id: UUID
     source_segment_version: int = Field(ge=1)
@@ -465,7 +446,6 @@ class EnglishWorkingTranscriptV1(_StrictFrozenModel):
     working_transcript_id: UUID
     working_transcript_version: int = Field(ge=1)
     source_transcript_version: int = Field(ge=1)
-    derivation_fingerprint: Sha256Fingerprint
     segments: tuple[EnglishWorkingTranscriptSegmentV1, ...] = Field(
         min_length=1,
         max_length=MAX_TRANSCRIPT_SEGMENTS,
@@ -612,7 +592,6 @@ def build_english_working_transcript(
         working_transcript_id=bundle.working_transcript_id,
         working_transcript_version=bundle.working_transcript_version,
         source_transcript_version=bundle.source_transcript.source_transcript_version,
-        derivation_fingerprint=external_transcript_derivation_fingerprint(bundle),
         segments=tuple(working_segments),
         blockers=tuple(blockers),
     )
@@ -630,15 +609,17 @@ def external_source_transcript_fingerprint(source: SourceTranscriptV1) -> str:
     )
 
 
-def english_working_transcript_fingerprint(working: EnglishWorkingTranscriptV1) -> str:
+def english_working_transcript_fingerprint(bundle: ExternalTranscriptBundleV1) -> str:
+    working = build_english_working_transcript(bundle)
     return canonical_sha256(
         {
             "contract": "english-working-transcript-v1",
-            "schema_version": working.schema_version,
-            "working_transcript_id": working.working_transcript_id,
-            "working_transcript_version": working.working_transcript_version,
-            "source_transcript_version": working.source_transcript_version,
-            "derivation_fingerprint": working.derivation_fingerprint,
+            "schema_version": bundle.schema_version,
+            "working_transcript_id": bundle.working_transcript_id,
+            "working_transcript_version": bundle.working_transcript_version,
+            "source_transcript": bundle.source_transcript,
+            "translations": bundle.translations,
+            "translation_reviews": bundle.translation_reviews,
             "working_transcript": working,
         }
     )

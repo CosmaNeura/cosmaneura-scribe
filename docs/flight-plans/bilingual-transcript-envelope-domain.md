@@ -7,7 +7,7 @@
   creator-review evidence, and one deterministically derived English working transcript without
   exposing or storing it.
 - In scope: frozen versioned domain models, bounded validation codes, non-persisted source and
-  complete-derivation and working fingerprints, one PHI-safe validation-error serializer,
+  transient complete-input working fingerprints, one PHI-safe validation-error serializer,
   deterministic working-transcript construction, synthetic unit tests, ADR 0024, and this plan.
 - Explicit non-goals: API routes; OpenAPI; repository or database changes; migrations or data
   rewrites; provider SDKs/calls; translation execution; creator-review service authorization;
@@ -37,8 +37,9 @@
   One exact translation version has at most one terminal decision; one current source version has
   at most one accepted translation.
 - A working transcript has a stable Scribe-issued UUID per session and monotonically increasing
-  Scribe-issued version. Its canonical derivation fingerprint pins the full source, every attempt,
-  and every review; canonical input-order changes converge. `note_ready` is computed and rejected.
+  Scribe-issued version. A transient canonical fingerprint operation binds the full source, every
+  attempt, every review, and the internally derived object; input-order changes converge. No digest
+  field is stored or serialized, and `note_ready` is computed and rejected.
 - Raw Pydantic structured errors are internal and unsafe. Future routes must use the sole sanitizer,
   which caps issues and emits only allowlisted codes and schema-owned or sanitized locations.
 

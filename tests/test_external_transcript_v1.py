@@ -21,7 +21,6 @@ from cosmaneura_scribe.external_transcript_v1 import (
     build_english_working_transcript,
     english_working_transcript_fingerprint,
     external_source_transcript_fingerprint,
-    external_transcript_derivation_fingerprint,
     serialize_external_transcript_validation_error,
 )
 from cosmaneura_scribe.schemas import SpeakerRole
@@ -163,15 +162,14 @@ def _bilingual_source() -> SourceTranscriptV1:
 def test_accepted_bilingual_translation_builds_one_ready_english_transcript() -> None:
     source = _bilingual_source()
     translation = _translation()
-    working = build_english_working_transcript(
-        ExternalTranscriptBundleV1(
-            source_transcript=source,
-            translations=(translation,),
-            translation_reviews=(_review(),),
-            working_transcript_id=WORKING_TRANSCRIPT_ID,
-            working_transcript_version=3,
-        )
+    bundle = ExternalTranscriptBundleV1(
+        source_transcript=source,
+        translations=(translation,),
+        translation_reviews=(_review(),),
+        working_transcript_id=WORKING_TRANSCRIPT_ID,
+        working_transcript_version=3,
     )
+    working = build_english_working_transcript(bundle)
 
     assert working.note_ready is True
     assert working.working_transcript_id == WORKING_TRANSCRIPT_ID
@@ -191,7 +189,13 @@ def test_accepted_bilingual_translation_builds_one_ready_english_transcript() ->
     assert working.segments[1].translation_review_id == REVIEW_ID
     assert working.segments[1].speaker_id == source.segments[1].speaker_id
     assert source.segments[1].content == "Me siento mejor hoy."
-    assert working.model_dump(mode="json")["note_ready"] is True
+    serialized = working.model_dump(mode="json")
+    transient_fingerprint = english_working_transcript_fingerprint(bundle)
+    assert serialized["note_ready"] is True
+    assert "fingerprint" not in repr(working)
+    assert "fingerprint" not in repr(serialized)
+    assert transient_fingerprint not in repr(working)
+    assert transient_fingerprint not in repr(serialized)
 
 
 def test_locale_is_not_inferred_from_speaker_role_or_confidence() -> None:
@@ -942,7 +946,7 @@ def test_working_fingerprint_binds_complete_canonical_derivation(
         working_transcript_id=WORKING_TRANSCRIPT_ID,
         working_transcript_version=1,
     )
-    working = build_english_working_transcript(bundle)
+    working_fingerprint = english_working_transcript_fingerprint(bundle)
     payload = bundle.model_dump()
     target = payload
     for token in path[:-1]:
@@ -953,12 +957,9 @@ def test_working_fingerprint_binds_complete_canonical_derivation(
             ExternalTranscriptBundleV1.model_validate(payload)
         return
     changed = ExternalTranscriptBundleV1.model_validate(payload)
-    changed_working = build_english_working_transcript(changed)
-    assert working.derivation_fingerprint == external_transcript_derivation_fingerprint(bundle)
-    assert working.derivation_fingerprint != external_transcript_derivation_fingerprint(changed)
-    working_fingerprint = english_working_transcript_fingerprint(working)
-    assert working_fingerprint != english_working_transcript_fingerprint(changed_working)
-    assert len(working_fingerprint) == len(working.derivation_fingerprint) == 64
+    assert working_fingerprint != english_working_transcript_fingerprint(changed)
+    assert working_fingerprint == english_working_transcript_fingerprint(bundle)
+    assert len(working_fingerprint) == 64
     assert "I feel better" not in working_fingerprint
 
 
@@ -1003,9 +1004,6 @@ def test_translation_and_review_order_are_canonical() -> None:
     assert forward.translations == reversed_input.translations
     assert forward.translation_reviews == reversed_input.translation_reviews
     assert forward.model_dump(mode="json") == reversed_input.model_dump(mode="json")
-    assert external_transcript_derivation_fingerprint(forward) == (
-        external_transcript_derivation_fingerprint(reversed_input)
-    )
-    assert english_working_transcript_fingerprint(build_english_working_transcript(forward)) == (
-        english_working_transcript_fingerprint(build_english_working_transcript(reversed_input))
+    assert english_working_transcript_fingerprint(forward) == (
+        english_working_transcript_fingerprint(reversed_input)
     )

@@ -84,10 +84,11 @@ new source-segment and source-transcript version.
 ### English working transcript
 
 `EnglishWorkingTranscriptV1` has a stable Scribe-issued UUID per session and a Scribe-issued
-monotonically increasing version. Its derivation fingerprint binds that identity/version and the
-complete canonical current source, every translation attempt, and every review input. Consequently,
-even an unselected attempt or review change stales the working version; input-order changes alone
-converge. No input schema accepts `note_ready`.
+monotonically increasing version. A transient fingerprint operation accepts the validated canonical
+bundle and internally derives the working object. Its hash input binds that identity/version, the
+complete current source, every translation attempt, every review input, and the derived object.
+Consequently, even an unselected attempt or review change stales the working version; input-order
+changes alone converge. No input schema accepts `note_ready` or stores a digest field.
 
 - An English segment contributes its exact source text without a translation reference.
 - A Spanish segment contributes only a successful current translation with accepted review.
@@ -100,10 +101,11 @@ Working segments preserve source UUID/version, opaque speaker UUID, advisory rol
 and any selected translation UUID/version and review UUID. The serialized `note_ready` value is
 computed only from the derived blockers and resolutions.
 
-The canonical working fingerprint binds the complete derived object and its derivation fingerprint,
-including working and source versions, source/translation/review references, English content,
+The transient canonical working fingerprint binds complete bundle derivation and the derived object,
+including working and source versions, all source/translation/review inputs, English content,
 resolutions, and blockers. Handoff and note retries can therefore pin the exact immutable working
-version rather than rebuilding from different evidence.
+version rather than rebuilding from different evidence. The digest is neither a model field nor
+serialized output.
 
 ### Retention boundary
 
