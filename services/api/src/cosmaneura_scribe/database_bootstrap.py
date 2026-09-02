@@ -247,7 +247,7 @@ async def _ensure_no_application_default_privileges(
             SELECT NOT EXISTS (
                 SELECT 1 FROM pg_catalog.pg_database AS database
                 WHERE database.datname = current_database()
-                  AND database.datdba = current_user::regrole
+                  AND pg_catalog.pg_get_userbyid(database.datdba) = current_user
             ) OR EXISTS (
                 SELECT 1 FROM pg_catalog.pg_default_acl AS defaults
                 CROSS JOIN LATERAL pg_catalog.aclexplode(defaults.defaclacl) AS privilege
