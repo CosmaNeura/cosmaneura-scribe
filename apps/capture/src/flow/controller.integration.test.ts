@@ -16,6 +16,10 @@ import type {
 } from "../capture";
 import { encodePcm16MonoWav, pcm16WavProfile } from "../capture";
 import { createMockBffServer } from "../mock-bff/server";
+import {
+  FakeIosNativePcmBridge,
+  IosNativeMicrophoneCaptureSource,
+} from "../native";
 import { CaptureQueue } from "../queue/capture-queue";
 import { EncryptedIndexedDbQueueStorage } from "../storage/encrypted-indexeddb";
 import { CaptureFlowController } from "./controller";
@@ -299,6 +303,63 @@ describe("CaptureFlowController", () => {
     }
   });
 
+  it("keeps a delayed authority-expiry stop failure paused until retry closes it", async () => {
+    const clock = { value: new Date("2026-08-18T12:00:00.000Z") };
+    const server = createMockBffServer({ now: () => new Date(clock.value) });
+    const origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({
+      databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO,
+    });
+    const flowStore = await EncryptedIndexedDbFlowStore.open({
+      databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO,
+    });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+    const completeCapture = vi.spyOn(bff, "completeCapture");
+    const bridge = new FakeIosNativePcmBridge();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const authorityTimer = new ManualTimeout();
+    const controller = createControllerWithSource({
+      bff, flowStore, queueStorage, origin, source,
+      now: () => new Date(clock.value),
+      scheduleTimeout: authorityTimer.schedule,
+      cancelTimeout: authorityTimer.cancel,
+    });
+    const stopBarrier = deferred();
+
+    try {
+      await controller.prepare(TEST_ENCOUNTER);
+      await controller.startRecording();
+      const frames = bridge.lastConfiguration?.targetFramesPerChunk;
+      if (frames === undefined) throw new Error("native configuration missing");
+      await bridge.emitPcmPacket({
+        sequenceNumber: 0,
+        pcmBytes: new Uint8Array(frames * Int16Array.BYTES_PER_ELEMENT),
+      });
+      bridge.delayNextStopUntil(stopBarrier.promise);
+      bridge.failNextStops();
+      clock.value = new Date("2026-08-18T12:15:01.000Z");
+      authorityTimer.fire();
+      await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
+      expect(completeCapture).not.toHaveBeenCalled();
+
+      stopBarrier.resolve();
+      await vi.waitFor(() => expect(controller.snapshot).toMatchObject({
+        state: "paused", statusCode: "audio_capture_native_stop_failed",
+      }));
+      expect(completeCapture).not.toHaveBeenCalled();
+      await controller.stopRecording();
+      expect(controller.snapshot.state).toBe("processing");
+      expect(completeCapture).toHaveBeenCalledOnce();
+      expect(bridge.stopModes).toEqual(["discard", "discard"]);
+    } finally {
+      stopBarrier.resolve();
+      flowStore.close();
+      queueStorage.close();
+      await closeServer(server);
+    }
+  });
+
   it("blocks an expired authority before the source starts", async () => {
     const clock = { value: new Date("2026-08-18T12:00:00.000Z") };
     const server = createMockBffServer({ now: () => new Date(clock.value) });
@@ -556,6 +617,58 @@ describe("CaptureFlowController", () => {
       expect(controller.snapshot.state).toBe("error");
       const durable = await new CaptureQueue(queueStorage, { crypto: TEST_CRYPTO }).list();
       expect(durable.filter((record) => record.state === "encrypted")).toHaveLength(1);
+    } finally {
+      flowStore.close();
+      queueStorage.close();
+      await closeServer(server);
+    }
+  });
+
+  it("blocks upload when a native stop failure also pauses the source", async () => {
+    const server = createMockBffServer();
+    const origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({
+      databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO,
+    });
+    const flowStore = await EncryptedIndexedDbFlowStore.open({
+      databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO,
+    });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+    const completeCapture = vi.spyOn(bff, "completeCapture");
+    const bridge = new FakeIosNativePcmBridge();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const controller = createControllerWithSource({
+      bff, flowStore, queueStorage, origin, source,
+    });
+
+    try {
+      await controller.prepare(TEST_ENCOUNTER);
+      await controller.startRecording();
+      const frames = bridge.lastConfiguration?.targetFramesPerChunk;
+      if (frames === undefined) throw new Error("native configuration missing");
+      await bridge.emitPcmPacket({
+        sequenceNumber: 0,
+        pcmBytes: new Uint8Array(frames * Int16Array.BYTES_PER_ELEMENT),
+      });
+      bridge.failNextStops();
+
+      await expect(controller.stopRecording()).rejects.toMatchObject({
+        code: "audio_capture_native_stop_failed",
+      });
+      expect(controller.snapshot).toMatchObject({
+        state: "paused",
+        statusCode: "audio_capture_native_stop_failed",
+      });
+      expect(completeCapture).not.toHaveBeenCalled();
+      const durable = await new CaptureQueue(queueStorage, { crypto: TEST_CRYPTO }).list();
+      expect(durable.filter((record) => record.state === "encrypted")).toHaveLength(1);
+      expect(bridge.stopModes).toEqual(["drain"]);
+
+      await controller.stopRecording();
+      expect(controller.snapshot.state).toBe("processing");
+      expect(completeCapture).toHaveBeenCalledOnce();
+      expect(bridge.stopModes).toEqual(["drain", "drain"]);
     } finally {
       flowStore.close();
       queueStorage.close();
