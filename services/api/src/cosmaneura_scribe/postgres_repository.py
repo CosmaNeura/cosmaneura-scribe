@@ -1196,6 +1196,36 @@ class PostgresRepository:
                     status=derivation.status,
                     working_fingerprint=derivation.working_fingerprint,
                 )
+                rearmed = await self._session.execute(
+                    text(
+                        """
+                        UPDATE scribe_sessions SET status = status
+                        WHERE tenant_id = :tenant_id AND id = :session_id
+                          AND transcript_contract_version = :contract_version
+                          AND current_source_transcript_version = :source_version
+                          AND working_transcript_id = :working_transcript_id
+                          AND current_working_transcript_version = :working_version
+                          AND status = :status
+                          AND content_purged_at IS NULL
+                          AND clock_timestamp() < transcript_content_expires_at
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "contract_version": VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+                        "source_version": source_version,
+                        "working_transcript_id": working_id,
+                        "working_version": next_version,
+                        "status": derivation.status.value,
+                    },
+                )
+                if rearmed.scalar_one_or_none() is None:
+                    await self._require_fresh_live_working_session(session)
+                    raise WorkingTranscriptPersistenceError(
+                        WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                    )
         except DBAPIError as error:
             if self._is_expected_working_integrity_error(error):
                 await self._require_fresh_live_working_session(session)

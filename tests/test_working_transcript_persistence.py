@@ -28,6 +28,7 @@ from cosmaneura_scribe.working_transcript_persistence import (
     derive_persisted_working_transcript,
 )
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 from test_derived_translation_evidence_migration import (
     TRANSLATION_INSERT,
@@ -88,6 +89,23 @@ async def _working_counts(
             )
         ).one()
         return row[0], row[1], row[2]
+
+
+async def _sleep_past_expiry(
+    store: PostgresRepository,
+    tenant_id: UUID,
+    session_id: UUID,
+) -> None:
+    await store._session.execute(
+        text(
+            """
+            SELECT pg_sleep(GREATEST(EXTRACT(EPOCH FROM
+                transcript_content_expires_at - clock_timestamp()) + 0.05, 0))
+            FROM scribe_sessions WHERE tenant_id = :tenant AND id = :session
+            """
+        ),
+        {"tenant": tenant_id, "session": session_id},
+    )
 
 
 def test_publish_replay_rollback_expiry_and_purge_are_backend_equivalent(
@@ -409,16 +427,7 @@ async def test_postgres_midflight_expiry_is_bounded_and_rolls_back(
     ) -> None:
         nonlocal reached_child_write
         reached_child_write = True
-        await self._session.execute(
-            text(
-                """
-                SELECT pg_sleep(GREATEST(EXTRACT(EPOCH FROM
-                    transcript_content_expires_at - clock_timestamp()) + 0.05, 0))
-                FROM scribe_sessions WHERE tenant_id = :tenant AND id = :session
-                """
-            ),
-            {"tenant": args[0], "session": args[1]},
-        )
+        await _sleep_past_expiry(self, args[0], args[1])  # type: ignore[arg-type]
         return await original(self, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(PostgresRepository, "_insert_working_children", delayed_children)
@@ -431,6 +440,49 @@ async def test_postgres_midflight_expiry_is_bounded_and_rolls_back(
         assert expired.value.code == WorkingTranscriptPersistenceCode.RETENTION_EXPIRED
         assert expired.value.__cause__ is None and expired.value.__suppress_context__
         assert await _working_counts(provider, tenant_id, session_id) == (0, 0, 0)
+    finally:
+        await provider.close()
+        await engine.dispose()
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_postgres_commit_fence_rechecks_expiry_after_publish_returns(
+    postgres_urls: tuple[str, str],
+) -> None:
+    admin_url, _ = postgres_urls
+    engine = create_async_engine(admin_url, connect_args={"ssl": False})
+    provider = build_postgres_provider(postgres_settings(admin_url))
+    tenant_id = uuid4()
+    async with engine.begin() as connection:
+        session_id, _ = await _seed_source(
+            connection, tenant_id, lifetime=timedelta(seconds=3)
+        )
+    published_before_expiry = False
+    try:
+        with pytest.raises(DBAPIError) as commit_failure:
+            async with provider.transaction(tenant_id) as store:
+                result = await store.publish_current_working_transcript(
+                    tenant_id, session_id
+                )
+                assert isinstance(store, PostgresRepository) and result is not None
+                published_before_expiry = True
+                await _sleep_past_expiry(store, tenant_id, session_id)
+        assert published_before_expiry
+        assert "Synthetic" not in str(commit_failure.value)
+        assert await _working_counts(provider, tenant_id, session_id) == (0, 0, 0)
+        async with engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT status, working_transcript_id, "
+                        "current_working_transcript_version FROM scribe_sessions "
+                        "WHERE tenant_id = :tenant AND id = :session"
+                    ),
+                    {"tenant": tenant_id, "session": session_id},
+                )
+            ).one()
+        assert row == ("source_received", None, None)
     finally:
         await provider.close()
         await engine.dispose()

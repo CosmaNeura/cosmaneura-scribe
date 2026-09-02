@@ -24,12 +24,18 @@ translation memberships, review memberships, segments, blockers, and finally the
 It then forces all relevant deferred constraints and performs a final live/current/fingerprint
 gate. Exact replay recomputes the fingerprint using the current version, performs the same final
 gate, returns the original creation time, and writes no audit event or duplicate row. The
-consent/session locks serialize concurrent calls.
+consent/session locks serialize concurrent calls. After immediate validation, a no-op session
+update re-arms the deferred session fences so the caller-owned outer commit checks expiry again.
+Existing evidence is immutable; any later evidence insert queues its own membership fence, so the
+translation/review constraint triggers do not need a synthetic re-arm.
 
-Expected domain and integrity failures are mapped to bounded `CONSENT_INVALID`,
+Method-time domain and expected integrity failures are mapped to bounded `CONSENT_INVALID`,
 `EVIDENCE_INVALID`, `RETENTION_EXPIRED`, and `STATE_CONFLICT` codes without including database
-text. Operational database failures remain visible and retryable. Expiry is rechecked with the
-database clock after both a failed compare-and-set and a rolled-back deferred constraint check.
+text. A re-armed named fence can still reject at the caller-owned outer commit, after the method has
+returned; the future activation wrapper must translate that commit failure and must not log or
+return raw database details. Other operational database failures remain visible and retryable.
+Expiry is rechecked with the database clock after both a failed compare-and-set and a rolled-back
+deferred constraint check.
 
 This packet may precede translation and review repositories. It projects already-persisted `0012`
 evidence and is the transaction-local primitive those future writers must call. Once a current

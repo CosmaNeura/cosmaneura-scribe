@@ -22,7 +22,8 @@
    segments, blockers, and header in that order. Force deferred constraints and run the final gate.
 5. Prove memory/PostgreSQL parity for publish, replay, rollback, expiry, and purge; prove complete
    pre-existing evidence, fingerprint inputs, concurrent convergence, evidence bounds, and PHI-safe
-   errors. Keep runtime-grant tests explicitly negative.
+   errors. Keep runtime-grant tests explicitly negative. The future activation wrapper must map a
+   deferred fence rejection raised by the caller-owned transaction commit.
 
 ## Activation dependency and recovery
 
