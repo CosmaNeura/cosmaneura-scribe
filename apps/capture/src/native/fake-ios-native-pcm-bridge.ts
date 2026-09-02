@@ -19,6 +19,7 @@ export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
   #finalPcmPacket: IosNativePcmPacket | null = null;
   #retainedSinks: IosNativePcmSink[] = [];
   #startFailure: unknown;
+  #stopBarrier: Promise<void> | undefined;
   #stopFailuresRemaining = 0;
 
   public lastConfiguration: IosNativePcmConfiguration | undefined;
@@ -64,6 +65,10 @@ export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
     this.#stopFailuresRemaining = count;
   }
 
+  public delayNextStopUntil(barrier: Promise<void>): void {
+    this.#stopBarrier = barrier;
+  }
+
   public setFinalPcmPacket(packet: IosNativePcmPacket): void {
     this.#finalPcmPacket = packet;
   }
@@ -98,18 +103,21 @@ export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
     this.#requireRetainedSink(index).onError(code);
   }
 
-  public stopSession(
+  public async stopSession(
     session: FakeIosNativeMicrophoneSession,
     options: IosNativeMicrophoneStopOptions,
   ): Promise<IosNativeMicrophoneStopResult> {
     this.stopCalls += 1;
     this.stopModes.push(options.mode);
+    const barrier = this.#stopBarrier;
+    this.#stopBarrier = undefined;
+    if (barrier !== undefined) await barrier;
     if (session !== this.#activeSession) {
-      return Promise.reject(new Error("fake_ios_bridge_stale_session"));
+      throw new Error("fake_ios_bridge_stale_session");
     }
     if (this.#stopFailuresRemaining > 0) {
       this.#stopFailuresRemaining -= 1;
-      return Promise.reject(new Error("fake_ios_bridge_stop_failed"));
+      throw new Error("fake_ios_bridge_stop_failed");
     }
 
     const finalPcmPacket = options.mode === "drain" ? this.#finalPcmPacket : null;
@@ -118,7 +126,7 @@ export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
     }
     this.#finalPcmPacket = null;
     this.#activeSession = undefined;
-    return Promise.resolve({ finalPcmPacket });
+    return { finalPcmPacket };
   }
 
   #requireActiveSession(): FakeIosNativeMicrophoneSession {

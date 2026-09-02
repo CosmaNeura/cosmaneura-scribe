@@ -303,6 +303,63 @@ describe("CaptureFlowController", () => {
     }
   });
 
+  it("keeps a delayed authority-expiry stop failure paused until retry closes it", async () => {
+    const clock = { value: new Date("2026-08-18T12:00:00.000Z") };
+    const server = createMockBffServer({ now: () => new Date(clock.value) });
+    const origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({
+      databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO,
+    });
+    const flowStore = await EncryptedIndexedDbFlowStore.open({
+      databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO,
+    });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+    const completeCapture = vi.spyOn(bff, "completeCapture");
+    const bridge = new FakeIosNativePcmBridge();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const authorityTimer = new ManualTimeout();
+    const controller = createControllerWithSource({
+      bff, flowStore, queueStorage, origin, source,
+      now: () => new Date(clock.value),
+      scheduleTimeout: authorityTimer.schedule,
+      cancelTimeout: authorityTimer.cancel,
+    });
+    const stopBarrier = deferred();
+
+    try {
+      await controller.prepare(TEST_ENCOUNTER);
+      await controller.startRecording();
+      const frames = bridge.lastConfiguration?.targetFramesPerChunk;
+      if (frames === undefined) throw new Error("native configuration missing");
+      await bridge.emitPcmPacket({
+        sequenceNumber: 0,
+        pcmBytes: new Uint8Array(frames * Int16Array.BYTES_PER_ELEMENT),
+      });
+      bridge.delayNextStopUntil(stopBarrier.promise);
+      bridge.failNextStops();
+      clock.value = new Date("2026-08-18T12:15:01.000Z");
+      authorityTimer.fire();
+      await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
+      expect(completeCapture).not.toHaveBeenCalled();
+
+      stopBarrier.resolve();
+      await vi.waitFor(() => expect(controller.snapshot).toMatchObject({
+        state: "paused", statusCode: "audio_capture_native_stop_failed",
+      }));
+      expect(completeCapture).not.toHaveBeenCalled();
+      await controller.stopRecording();
+      expect(controller.snapshot.state).toBe("processing");
+      expect(completeCapture).toHaveBeenCalledOnce();
+      expect(bridge.stopModes).toEqual(["discard", "discard"]);
+    } finally {
+      stopBarrier.resolve();
+      flowStore.close();
+      queueStorage.close();
+      await closeServer(server);
+    }
+  });
+
   it("blocks an expired authority before the source starts", async () => {
     const clock = { value: new Date("2026-08-18T12:00:00.000Z") };
     const server = createMockBffServer({ now: () => new Date(clock.value) });

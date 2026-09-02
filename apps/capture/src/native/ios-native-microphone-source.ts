@@ -97,7 +97,10 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
     let appState: unknown;
     try {
       this.#assertStartingRun(run, "checking_foreground");
-      appState = await this.#bridge.getAppState();
+      appState = await Promise.race([
+        this.#bridge.getAppState(),
+        run.startupCancellation.promise,
+      ]);
       this.#assertStartingRun(run, "checking_foreground");
     } catch (error) {
       if (this.#isCurrentRun(run) && run.phase === "checking_foreground") {

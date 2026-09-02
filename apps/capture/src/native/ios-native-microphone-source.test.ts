@@ -264,10 +264,10 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     expect(bridge.stopCalls).toBe(0);
   });
 
-  it("cancels a pending foreground check without later starting native capture", async () => {
-    const firstForeground = deferred<IosNativeAppState>();
+  it("stops a never-settling foreground check without starting native capture", async () => {
+    const neverForeground = new Promise<IosNativeAppState>(() => undefined);
     const getAppState = vi.fn<IosNativeMicrophoneBridge["getAppState"]>()
-      .mockReturnValueOnce(firstForeground.promise)
+      .mockReturnValueOnce(neverForeground)
       .mockResolvedValueOnce("foreground");
     const stopNative = vi.fn<IosNativeMicrophoneSession["stop"]>(
       async () => ({ finalPcmPacket: null }),
@@ -280,14 +280,34 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     await vi.waitFor(() => expect(getAppState).toHaveBeenCalledOnce());
 
     await source.stop();
-    await source.start({ capabilities, onChunk: async () => undefined });
-    firstForeground.resolve("foreground");
-
     await expect(firstStart).rejects.toMatchObject({ name: "AbortError" });
+    await source.start({ capabilities, onChunk: async () => undefined });
     expect(startNative).toHaveBeenCalledOnce();
     expect(stopNative).not.toHaveBeenCalled();
     await source.stop();
     expect(stopNative).toHaveBeenCalledOnce();
+  });
+
+  it("aborts a never-settling foreground check without starting native capture", async () => {
+    const neverForeground = new Promise<IosNativeAppState>(() => undefined);
+    const getAppState = vi.fn<IosNativeMicrophoneBridge["getAppState"]>(
+      () => neverForeground,
+    );
+    const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>();
+    const source = new IosNativeMicrophoneCaptureSource({ getAppState, start: startNative });
+    const authority = new AbortController();
+    const starting = source.start({
+      capabilities,
+      onChunk: async () => undefined,
+      signal: authority.signal,
+    });
+    await vi.waitFor(() => expect(getAppState).toHaveBeenCalledOnce());
+
+    authority.abort();
+
+    await expect(starting).rejects.toMatchObject({ name: "AbortError" });
+    expect(startNative).not.toHaveBeenCalled();
+    await expect(source.stop()).resolves.toBeUndefined();
   });
 
   it("aborts a never-ready native start with one discard shutdown", async () => {

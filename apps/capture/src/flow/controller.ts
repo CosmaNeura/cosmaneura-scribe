@@ -832,7 +832,14 @@ export class CaptureFlowController {
       const task = this.#expireCaptureAuthority();
       this.#authorityExpiryTask = task;
       void task
-        .catch(() => this.#fail())
+        .catch((error: unknown) => {
+          if (isNativeStopFailure(error)) {
+            if (this.#authorityExpiryTask === task) this.#authorityExpiryTask = null;
+            this.#setSnapshot({ state: "paused", statusCode: error.code });
+          } else {
+            this.#fail();
+          }
+        })
         .finally(() => {
           if (this.#authorityExpiryTask === task) this.#authorityExpiryTask = null;
         });
@@ -848,14 +855,17 @@ export class CaptureFlowController {
   async #expireCaptureAuthority(): Promise<void> {
     if (this.#snapshot.state !== "ready" && this.#snapshot.state !== "recording") return;
     const wasRecording = this.#snapshot.state === "recording";
+    let sourceStop: Promise<void> | null = null;
     if (wasRecording) {
       this.#sourcePausedBySignal = true;
       this.#recordingAbortController?.abort();
+      sourceStop = this.#sourceStarted ? this.#source.stop() : null;
+      void sourceStop?.catch(() => undefined);
       await this.#chunkPersistence;
     }
     await this.#pauseForExpiredAuthority();
-    if (wasRecording && this.#sourceStarted) {
-      await this.#source.stop();
+    if (sourceStop !== null) {
+      await sourceStop;
       this.#sourceStarted = false;
     }
   }
