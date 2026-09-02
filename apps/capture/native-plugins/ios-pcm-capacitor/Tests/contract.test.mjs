@@ -16,14 +16,17 @@ test("pins one exact JavaScript and Swift Capacitor boundary", async () => {
   assert.match(swiftPackage, /\.package\(path:\s+"\.\.\/ios-pcm-capture"\)/u);
 });
 
-test("keeps the wrapper absent from production selection and registration", async () => {
+test("links the wrapper while keeping app selection explicitly false by default", async () => {
   const captureManifest = await source("../../../package.json");
   const appPackage = await source("../../../ios/App/CapApp-SPM/Package.swift");
   const nativeFactory = await source("../../../src/capture-source-factory.ts");
 
-  for (const sourceText of [captureManifest, appPackage, nativeFactory]) {
-    assert.doesNotMatch(sourceText, /capacitor-ios-pcm|IOSPCMCapacitorPlugin/u);
-  }
+  assert.match(captureManifest, /@cosmaneura-scribe\/capacitor-ios-pcm/u);
+  assert.match(appPackage, /CosmaneuraScribeCapacitorIosPcm/u);
+  assert.match(nativeFactory, /VITE_CAPTURE_IOS_NATIVE_PCM_ENABLED/u);
+  assert.match(nativeFactory, /IOS_NATIVE_PCM_CAPTURE_ENABLED/u);
+  assert.match(nativeFactory, /import\("@capacitor\/core"\)/u);
+  assert.doesNotMatch(nativeFactory, /^import .* from "@capacitor\/core";/mu);
 });
 
 test("exposes only the bounded reviewed method and event surface", async () => {
@@ -56,4 +59,12 @@ test("documents immutable transport copies and physical-device gates", async () 
   assert.match(readme, /WebKit message copies/u);
   assert.match(readme, /physical\s+device/u);
   assert.match(readme, /non-PHI TestFlight canary/u);
+});
+
+test("the app adapter has no payload, token, or native-detail logging surface", async () => {
+  const adapter = await source("../../../src/native/capacitor-ios-native-pcm-bridge.ts");
+  assert.doesNotMatch(adapter, /\b(?:console\.|print\s*\(|debugPrint\s*\(|NSLog\s*\(|os_log\s*\()/u);
+  assert.doesNotMatch(adapter, /throw\s+error\b/u);
+  assert.match(adapter, /clearIosPcmBytes/u);
+  assert.match(adapter, /finally/u);
 });

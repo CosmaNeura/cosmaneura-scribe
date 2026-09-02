@@ -1,8 +1,13 @@
 # Dormant iOS PCM Capacitor transport
 
 This package is a thin, iOS-only Capacitor transport over the reviewed
-`CosmaneuraIOSPCMBridgeCore` package. It is deliberately absent from the capture app's dependencies,
-`CapApp-SPM`, native registration, and runtime factory. Nothing can select or execute it in an app.
+`CosmaneuraIOSPCMBridgeCore` package. The app-link packet adds it to the capture workspace and
+`CapApp-SPM`, but runtime selection remains false by default behind
+`VITE_CAPTURE_IOS_NATIVE_PCM_ENABLED === "true"` plus a native-iOS platform check. Linking alone
+does not start capture or change the ordinary web/Android source path. The exact-false build omits
+both the TypeScript adapter and the Capacitor runtime platform probe from its output.
+The Swift package retains its reviewed `CosmaneuraIOSPCMCapacitor` product and exposes the
+Capacitor-CLI-derived `CosmaneuraScribeCapacitorIosPcm` product as an alias of that same target.
 
 ## Contract
 
@@ -19,7 +24,8 @@ that token:
   liveness contract.
 - `stop({ sessionToken, mode })` preserves core stop coalescing and retry semantics. `drain` may
   return one final partial packet; `discard` returns none. A successful explicit stop remains
-  idempotent after an automatic terminal close. A rejected close retains the same token for retry.
+  idempotent after an automatic terminal close. A late discard upgrades an in-flight drain exactly
+  once and dominates its result. A rejected close retains the same token for retry.
 - `acknowledge({ sessionToken, sequenceNumber })` retires the one pending regular packet and returns
   `accepted`, `replayed`, or `stale`. Event receipt is not acknowledgement.
 - `replayPendingPacket(...)` re-emits the same pending core owner and returns `replayed`,
@@ -46,13 +52,17 @@ or framework-owned and cannot be reliably overwritten. Base64 also expands PHI-b
 copies are an accepted implementation residual for this dormant packet, not authorization to
 activate it. No code logs payloads, tokens, device labels, or native error descriptions.
 
-## Later gates
+## App-link boundary and later gates
 
-Before any selection or beta activation, a separate reviewed rung must add app dependency and
-registration, implement the higher-level listener/ack adapter, and prove listener-before-start,
-background precheck, terminal auto-close, close retry, replay recovery, and cleanup on a physical
-device. It must also validate microphone permission plist text, audio-session behavior, WebKit memory
-residence, background/route transitions, signing, archive contents, and a non-PHI TestFlight canary.
+The linked TypeScript adapter installs its listener before start, checks foreground state through the
+existing source boundary, acknowledges each decoded regular packet in a cleanup path, sends bounded
+heartbeats, requests replay for a missing expected packet, rejects stale tokens, and retains a failed
+stop for retry. `NSMicrophoneUsageDescription` already exists and was not modified.
+
+Before beta activation, a later reviewed rung must validate listener delivery, microphone permission,
+audio-session behavior, immutable WebKit copy residence, background/route transitions, stop retry,
+and memory pressure on a physical device. Signing, archive contents, a non-PHI TestFlight canary,
+cohort eligibility, and any default-on decision remain separate gates.
 
 ## Verification
 

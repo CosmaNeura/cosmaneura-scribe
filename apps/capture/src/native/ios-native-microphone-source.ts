@@ -51,6 +51,8 @@ interface CaptureRun {
   readonly startupCancellation: ReturnType<typeof deferred<void>>;
   nativeHandlePromise: Promise<IosNativeMicrophoneSession> | undefined;
   nativeSession: IosNativeMicrophoneSession | undefined;
+  nativeStopMode: IosNativeMicrophoneStopMode | undefined;
+  discardUpgradePromise: Promise<IosNativeMicrophoneStopResult> | undefined;
   closePromise: Promise<void> | undefined;
   deliveryInFlight: boolean;
   pendingDelivery: Promise<void>;
@@ -65,8 +67,8 @@ interface CaptureRun {
 }
 
 /**
- * Dormant adapter from an injected iOS PCM bridge to the existing WAV source.
- * No runtime factory imports or selects this class.
+ * Adapter from an injected iOS PCM bridge to the existing WAV source. The app
+ * factory can select it only behind the separate false-by-default native gate.
  */
 export class IosNativeMicrophoneCaptureSource implements CaptureSource {
   public readonly kind = "microphone" as const;
@@ -194,6 +196,8 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
       startupCancellation: deferred<void>(),
       nativeHandlePromise: undefined,
       nativeSession: undefined,
+      nativeStopMode: undefined,
+      discardUpgradePromise: undefined,
       closePromise: undefined,
       deliveryInFlight: false,
       pendingDelivery: Promise.resolve(),
@@ -378,10 +382,13 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
     if (!this.#isCurrentRun(run)) return Promise.resolve();
     run.startupCancellation.resolve(undefined);
     if (mode === "discard" || run.stopMode === undefined) run.stopMode = mode;
-    if (run.closePromise !== undefined) return run.closePromise;
+    if (run.closePromise !== undefined) {
+      this.#requestDiscardUpgrade(run);
+      return run.closePromise;
+    }
 
     run.phase = "closing";
-    const attempt = this.#performClose(run);
+    const attempt = Promise.resolve().then(() => this.#performClose(run));
     run.closePromise = attempt;
     void attempt.then(
       () => this.#clearClosePromise(run, attempt),
@@ -415,10 +422,18 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
 
     this.#assertClosingRun(run);
     const requestedMode = run.stopMode ?? "discard";
-    let stopResult: IosNativeMicrophoneStopResult;
-    try {
-      stopResult = await nativeSession.stop({ mode: requestedMode });
-    } catch {
+    run.nativeStopMode = requestedMode;
+    const primary = await settledNativeStop(
+      Promise.resolve().then(() => nativeSession.stop({ mode: requestedMode })),
+    );
+    let observedDiscardUpgrade = run.discardUpgradePromise;
+    let upgrade = observedDiscardUpgrade === undefined
+      ? undefined
+      : await settledNativeStop(observedDiscardUpgrade);
+    if (upgrade !== undefined ? !upgrade.succeeded : !primary.succeeded) {
+      if (run.stopMode === "discard" && primary.succeeded) {
+        clearStopResultPacket(primary.result);
+      }
       if (this.#isClosingRun(run)) {
         run.phase = "close_failed";
         run.nativeSession = nativeSession;
@@ -426,24 +441,45 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
       }
       throw new AudioCaptureError("audio_capture_native_stop_failed");
     }
-    this.#assertClosingRun(run);
 
     await run.pendingDelivery;
     this.#assertClosingRun(run);
+    const laterDiscardUpgrade = run.discardUpgradePromise;
+    if (laterDiscardUpgrade !== undefined && laterDiscardUpgrade !== observedDiscardUpgrade) {
+      observedDiscardUpgrade = laterDiscardUpgrade;
+      upgrade = await settledNativeStop(laterDiscardUpgrade);
+      if (!upgrade.succeeded) {
+        if (run.stopMode === "discard" && primary.succeeded) {
+          clearStopResultPacket(primary.result);
+        }
+        run.phase = "close_failed";
+        run.nativeSession = nativeSession;
+        this.#notifyStopFailure(run);
+        throw new AudioCaptureError("audio_capture_native_stop_failed");
+      }
+    }
+
     let postStopFailure: AudioCaptureError | undefined;
     try {
-      const finalPcmPacket = requireStopResult(stopResult);
+      const primaryFinalPcmPacket = primary.succeeded
+        ? requireStopResult(primary.result)
+        : null;
+      const upgradeFinalPcmPacket = upgrade?.succeeded === true
+        ? requireStopResult(upgrade.result)
+        : null;
       if (requestedMode === "discard") {
-        if (finalPcmPacket !== null) {
-          zeroPacket(finalPcmPacket);
+        if (primaryFinalPcmPacket !== null) {
+          zeroPacket(primaryFinalPcmPacket);
           throw new AudioCaptureError("audio_capture_native_protocol_error");
         }
+        if (upgradeFinalPcmPacket !== null) zeroPacket(upgradeFinalPcmPacket);
       } else if (run.stopMode === "discard") {
-        if (finalPcmPacket !== null) zeroPacket(finalPcmPacket);
-      } else if (finalPcmPacket !== null) {
+        if (primaryFinalPcmPacket !== null) zeroPacket(primaryFinalPcmPacket);
+        if (upgradeFinalPcmPacket !== null) zeroPacket(upgradeFinalPcmPacket);
+      } else if (primaryFinalPcmPacket !== null) {
         run.deliveryInFlight = true;
         try {
-          await this.#deliverPcmPacket(run, finalPcmPacket, true);
+          await this.#deliverPcmPacket(run, primaryFinalPcmPacket, true);
         } finally {
           if (this.#isClosingRun(run)) run.deliveryInFlight = false;
         }
@@ -452,9 +488,43 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
     } catch (error) {
       postStopFailure = sanitizePacketFailure(error);
     }
+
+    const finalDiscardUpgrade = run.discardUpgradePromise;
+    if (finalDiscardUpgrade !== undefined && finalDiscardUpgrade !== observedDiscardUpgrade) {
+      upgrade = await settledNativeStop(finalDiscardUpgrade);
+      this.#assertClosingRun(run);
+      if (!upgrade.succeeded) {
+        if (primary.succeeded) clearStopResultPacket(primary.result);
+        run.phase = "close_failed";
+        run.nativeSession = nativeSession;
+        this.#notifyStopFailure(run);
+        throw new AudioCaptureError("audio_capture_native_stop_failed");
+      }
+      try {
+        const upgradeFinalPcmPacket = requireStopResult(upgrade.result);
+        if (upgradeFinalPcmPacket !== null) zeroPacket(upgradeFinalPcmPacket);
+      } catch (error) {
+        postStopFailure = sanitizePacketFailure(error);
+      }
+    }
     this.#assertClosingRun(run);
     this.#finalizeRun(run);
     if (postStopFailure !== undefined) throw postStopFailure;
+  }
+
+  #requestDiscardUpgrade(run: CaptureRun): void {
+    if (
+      run.stopMode !== "discard" ||
+      run.nativeStopMode !== "drain" ||
+      run.discardUpgradePromise !== undefined ||
+      run.nativeSession === undefined
+    ) {
+      return;
+    }
+    const nativeSession = run.nativeSession;
+    const upgrade = Promise.resolve().then(() => nativeSession.stop({ mode: "discard" }));
+    run.discardUpgradePromise = upgrade;
+    void upgrade.catch(() => undefined);
   }
 
   #notifyStopFailure(run: CaptureRun): void {
@@ -470,6 +540,8 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
   #clearClosePromise(run: CaptureRun, attempt: Promise<void>): void {
     if (this.#isCurrentRun(run) && run.closePromise === attempt) {
       run.closePromise = undefined;
+      run.nativeStopMode = undefined;
+      run.discardUpgradePromise = undefined;
     }
   }
 
@@ -606,6 +678,11 @@ function zeroPacket(packet: unknown): void {
   }
 }
 
+function clearStopResultPacket(result: unknown): void {
+  if (typeof result !== "object" || result === null || !("finalPcmPacket" in result)) return;
+  zeroPacket(result.finalPcmPacket);
+}
+
 function mapInterruption(
   code: IosNativeMicrophoneInterruptionCode,
 ): CaptureSourceInterruptionCode | undefined {
@@ -670,6 +747,19 @@ function sanitizeStartFailure(error: unknown): AudioCaptureError {
 function startFailureFor(run: CaptureRun, error: unknown): AudioCaptureError | DOMException {
   if (run.cancelReason === "abort" || run.cancelReason === "stop") return abortError();
   return run.terminalFailure ?? (isAbortError(error) ? abortError() : sanitizeStartFailure(error));
+}
+
+async function settledNativeStop(
+  promise: Promise<IosNativeMicrophoneStopResult>,
+): Promise<
+  | { readonly succeeded: true; readonly result: IosNativeMicrophoneStopResult }
+  | { readonly succeeded: false }
+> {
+  try {
+    return { succeeded: true, result: await promise };
+  } catch {
+    return { succeeded: false };
+  }
 }
 
 function sanitizePacketFailure(error: unknown): AudioCaptureError {
