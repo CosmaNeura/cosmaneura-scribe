@@ -26,6 +26,17 @@ from .capture_protocol_v1 import (
     PROTOCOL_VERSION,
     RESERVATION_PLAINTEXT_BUDGET_BYTES,
 )
+from .external_transcript_v1 import TranscriptLanguageMode
+from .normalized_source_persistence import (
+    VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID,
+    VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+    VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID,
+    VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID,
+    ConfiguredExternalSessionStatus,
+    VersionedExternalSessionCreate,
+    VersionedExternalSessionRecord,
+    consent_authorizes_versioned_session,
+)
 from .repository import (
     AudioAssemblyManifest,
     CaptureChannelFinalization,
@@ -58,6 +69,7 @@ from .repository import (
 from .schemas import (
     AudioChunk,
     CaptureChannel,
+    CaptureModality,
     CaptureSession,
     ConsentRecord,
     DeliveryAttempt,
@@ -124,6 +136,27 @@ def _chunk_reservation(row: dict[str, Any]) -> ChunkReservationRecord:
     )
 
 
+def _versioned_external_session_record(
+    row: dict[str, Any],
+) -> VersionedExternalSessionRecord:
+    return VersionedExternalSessionRecord(
+        id=row["id"],
+        appointment_id=row["appointment_id"],
+        practitioner_id=row["practitioner_id"],
+        patient_id=row["patient_id"],
+        consent_record_id=row["consent_record_id"],
+        modality=CaptureModality(row["modality"]),
+        creator_actor_id=row["creator_actor_id"],
+        language_mode=TranscriptLanguageMode(row["language_mode"]),
+        transcript_contract_version=row["transcript_contract_version"],
+        transcription_adapter_id=row["transcription_adapter_id"],
+        transcription_model_profile_id=row["transcription_model_profile_id"],
+        normalization_profile_id=row["normalization_profile_id"],
+        status=ConfiguredExternalSessionStatus(row["status"]),
+        created_at=row["created_at"],
+    )
+
+
 class PostgresRepositoryProvider:
     def __init__(
         self,
@@ -166,6 +199,8 @@ class PostgresRepository:
         tenant_id: UUID,
         session_id: UUID,
     ) -> None:
+        # This is the one legacy guard that intentionally sees configured rows:
+        # their external ingest mode must fail closed before any audio child write.
         row = await self._one_or_none(
             """
             SELECT ingest_mode
@@ -361,6 +396,7 @@ class PostgresRepository:
                   AND scribe_session.tenant_id = lease.tenant_id
                   AND scribe_session.id = lease.session_id
                   AND scribe_session.consent_record_id = :consent_id
+                  AND scribe_session.transcript_contract_version IS NULL
                 """
             ),
             {
@@ -378,6 +414,7 @@ class PostgresRepository:
                    modality, ingest_mode, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
+              AND transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             id=session_id,
@@ -390,6 +427,7 @@ class PostgresRepository:
             SELECT consent_record_id
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
+              AND transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             id=session_id,
@@ -403,6 +441,7 @@ class PostgresRepository:
                    modality, ingest_mode, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
+              AND transcript_contract_version IS NULL
             FOR UPDATE
             """,
             tenant_id=tenant_id,
@@ -442,6 +481,7 @@ class PostgresRepository:
                 SET status = :status
                 WHERE tenant_id = :tenant_id AND id = :id
                   AND ingest_mode = :ingest_mode
+                  AND transcript_contract_version IS NULL
                 RETURNING id
                 """
             ),
@@ -458,6 +498,128 @@ class PostgresRepository:
         if current is not None and current.ingest_mode != session.ingest_mode:
             raise ValueError("scribe session ingest mode is immutable")
 
+    async def create_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        draft: VersionedExternalSessionCreate,
+    ) -> VersionedExternalSessionRecord | None:
+        consent = await self.lock_consent(tenant_id, draft.consent_record_id)
+        if not consent_authorizes_versioned_session(consent, draft):
+            return None
+        row = (
+            (
+                await self._session.execute(
+                    text(
+                        """
+                        INSERT INTO scribe_sessions (
+                            id, tenant_id, appointment_id, practitioner_id, patient_id,
+                            consent_record_id, modality, ingest_mode, status,
+                            transcript_contract_version, creator_actor_id, language_mode,
+                            transcription_adapter_id, transcription_model_profile_id,
+                            normalization_profile_id
+                        ) VALUES (
+                            :id, :tenant_id, :appointment_id, :practitioner_id, :patient_id,
+                            :consent_record_id, :modality, 'external_async_transcript', 'created',
+                            :transcript_contract_version, :creator_actor_id, :language_mode,
+                            :transcription_adapter_id, :transcription_model_profile_id,
+                            :normalization_profile_id
+                        )
+                        RETURNING id, appointment_id, practitioner_id, patient_id,
+                                  consent_record_id, modality, transcript_contract_version,
+                                  creator_actor_id, language_mode, transcription_adapter_id,
+                                  transcription_model_profile_id, normalization_profile_id,
+                                  status, created_at
+                        """
+                    ),
+                    {
+                        "id": draft.id,
+                        "tenant_id": tenant_id,
+                        "appointment_id": draft.appointment_id,
+                        "practitioner_id": draft.practitioner_id,
+                        "patient_id": draft.patient_id,
+                        "consent_record_id": draft.consent_record_id,
+                        "modality": draft.modality.value,
+                        "transcript_contract_version": VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+                        "creator_actor_id": draft.creator_actor_id,
+                        "language_mode": draft.language_mode.value,
+                        "transcription_adapter_id": (
+                            VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID
+                        ),
+                        "transcription_model_profile_id": (
+                            VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID
+                        ),
+                        "normalization_profile_id": (
+                            VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID
+                        ),
+                    },
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return _versioned_external_session_record(dict(row))
+
+    async def get_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> VersionedExternalSessionRecord | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                   modality, transcript_contract_version, creator_actor_id, language_mode,
+                   transcription_adapter_id, transcription_model_profile_id,
+                   normalization_profile_id, status, created_at
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND ingest_mode = 'external_async_transcript'
+              AND transcript_contract_version = :transcript_contract_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            transcript_contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        return _versioned_external_session_record(row) if row is not None else None
+
+    async def lock_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> VersionedExternalSessionRecord | None:
+        reference = await self._one_or_none(
+            """
+            SELECT consent_record_id
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND transcript_contract_version = :transcript_contract_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            transcript_contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if reference is None:
+            return None
+        await self._lock_consent_scope(tenant_id, reference["consent_record_id"])
+        row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                   modality, transcript_contract_version, creator_actor_id, language_mode,
+                   transcription_adapter_id, transcription_model_profile_id,
+                   normalization_profile_id, status, created_at
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND consent_record_id = :consent_id
+              AND ingest_mode = 'external_async_transcript'
+              AND transcript_contract_version = :transcript_contract_version
+            FOR UPDATE
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            consent_id=reference["consent_record_id"],
+            transcript_contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        return _versioned_external_session_record(row) if row is not None else None
+
     async def get_session_audio_key(
         self,
         tenant_id: UUID,
@@ -468,6 +630,12 @@ class PostgresRepository:
             SELECT session_id, key_version, wrapped_dek, created_at
             FROM session_audio_keys
             WHERE tenant_id = :tenant_id AND session_id = :session_id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = :session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -506,6 +674,7 @@ class PostgresRepository:
             SELECT consent_record_id
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
+              AND transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -560,6 +729,7 @@ class PostgresRepository:
              AND lease.session_id = scribe_session.id
             WHERE scribe_session.tenant_id = :tenant_id
               AND scribe_session.id = :session_id
+              AND scribe_session.transcript_contract_version IS NULL
             FOR UPDATE OF scribe_session
             """,
             tenant_id=tenant_id,
@@ -637,6 +807,12 @@ class PostgresRepository:
                    expires_at, closed_at, close_reason
             FROM capture_leases
             WHERE tenant_id = :tenant_id AND session_id = :session_id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = :session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -653,6 +829,12 @@ class PostgresRepository:
             SELECT id, lease_id, session_id, generation, issued_at, expires_at
             FROM capture_lease_receipts
             WHERE tenant_id = :tenant_id AND id = :receipt_id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = capture_lease_receipts.session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             receipt_id=receipt_id,
@@ -709,6 +891,7 @@ class PostgresRepository:
                              AND audio_key.session_id = scribe_session.id
                             WHERE scribe_session.tenant_id = :tenant_id
                               AND scribe_session.id = :session_id
+                              AND scribe_session.transcript_contract_version IS NULL
                               AND scribe_session.status IN ('created', 'capturing')
                               AND consent.all_parties_consented
                               AND consent.revoked_at IS NULL
@@ -800,6 +983,7 @@ class PostgresRepository:
                               AND lease.closed_at IS NULL
                               AND scribe_session.tenant_id = lease.tenant_id
                               AND scribe_session.id = lease.session_id
+                              AND scribe_session.transcript_contract_version IS NULL
                               AND scribe_session.status IN ('created', 'capturing')
                               AND consent.all_parties_consented
                               AND consent.revoked_at IS NULL
@@ -854,6 +1038,12 @@ class PostgresRepository:
                   AND lease_id = :expected_lease_id
                   AND generation = :expected_generation
                   AND closed_at IS NULL
+                  AND EXISTS (
+                      SELECT 1 FROM scribe_sessions AS session
+                      WHERE session.tenant_id = :tenant_id
+                        AND session.id = :session_id
+                        AND session.transcript_contract_version IS NULL
+                  )
                 RETURNING session_id
                 """
             ),
@@ -878,6 +1068,12 @@ class PostgresRepository:
                    requested_protocol_version, created_at, capture_authorized_until
             FROM audio_chunk_reservation_batches
             WHERE tenant_id = :tenant_id AND id = :batch_id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = audio_chunk_reservation_batches.session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             batch_id=batch_id,
@@ -1179,6 +1375,12 @@ class PostgresRepository:
             WHERE tenant_id = :tenant_id
               AND session_id = :session_id
               AND object_id = :object_id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = :session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -1201,6 +1403,12 @@ class PostgresRepository:
                                sum(plaintext_budget_bytes) AS plaintext_budget_bytes
                         FROM audio_chunk_reservations
                         WHERE tenant_id = :tenant_id AND session_id = :session_id
+                          AND EXISTS (
+                              SELECT 1 FROM scribe_sessions AS session
+                              WHERE session.tenant_id = :tenant_id
+                                AND session.id = :session_id
+                                AND session.transcript_contract_version IS NULL
+                          )
                         GROUP BY channel
                         """
                     ),
@@ -1234,6 +1442,12 @@ class PostgresRepository:
             SELECT id, session_id, reservation_object_id, issued_at, expires_at
             FROM audio_upload_authorization_receipts
             WHERE tenant_id = :tenant_id AND id = :receipt_id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = audio_upload_authorization_receipts.session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             receipt_id=receipt_id,
@@ -1255,6 +1469,13 @@ class PostgresRepository:
                         WHERE tenant_id = :tenant_id
                           AND id = :receipt_id
                           AND expires_at > statement_timestamp()
+                          AND EXISTS (
+                              SELECT 1 FROM scribe_sessions AS session
+                              WHERE session.tenant_id = :tenant_id
+                                AND session.id =
+                                    audio_upload_authorization_receipts.session_id
+                                AND session.transcript_contract_version IS NULL
+                          )
                     )
                     """
                 ),
@@ -1319,6 +1540,7 @@ class PostgresRepository:
                         WHERE reservation.tenant_id = :tenant_id
                           AND reservation.session_id = :session_id
                           AND reservation.object_id = :object_id
+                          AND scribe_session.transcript_contract_version IS NULL
                           AND scribe_session.status IN ('created', 'capturing')
                           AND consent.all_parties_consented
                           AND consent.revoked_at IS NULL
@@ -1375,6 +1597,12 @@ class PostgresRepository:
             WHERE reservation.tenant_id = :tenant_id
               AND reservation.session_id = :session_id
               AND reservation.object_id = :object_id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = :session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -1452,6 +1680,7 @@ class PostgresRepository:
                   AND reservation.sequence_number = :sequence_number
                   AND reservation.channel = :channel
                   AND reservation.protocol_version = :protocol_version
+                  AND scribe_session.transcript_contract_version IS NULL
                   AND scribe_session.status IN ('created', 'capturing')
                   AND consent.all_parties_consented
                   AND consent.revoked_at IS NULL
@@ -1579,6 +1808,12 @@ class PostgresRepository:
                         SELECT session_id, channel, last_sequence_number, finalized_at
                         FROM capture_channel_finalizations
                         WHERE tenant_id = :tenant_id AND session_id = :session_id
+                          AND EXISTS (
+                              SELECT 1 FROM scribe_sessions AS session
+                              WHERE session.tenant_id = :tenant_id
+                                AND session.id = :session_id
+                                AND session.transcript_contract_version IS NULL
+                          )
                         ORDER BY CASE channel
                             WHEN 'microphone' THEN 0
                             WHEN 'system_audio' THEN 1
@@ -1624,6 +1859,7 @@ class PostgresRepository:
              AND job.session_id = session.id
             WHERE audio_key.tenant_id = :tenant_id
               AND audio_key.session_id = :session_id
+              AND session.transcript_contract_version IS NULL
               AND session.status = 'processing'
               AND job.id = :job_id
               AND job.status = 'processing'
@@ -1650,6 +1886,12 @@ class PostgresRepository:
                    ciphertext_size_bytes, registered_at
             FROM audio_chunks
             WHERE tenant_id = :tenant_id AND id = :id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = audio_chunks.session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             id=chunk_id,
@@ -1687,6 +1929,12 @@ class PostgresRepository:
                            ciphertext_size_bytes, registered_at
                     FROM audio_chunks
                     WHERE tenant_id = :tenant_id AND session_id = :session_id
+                      AND EXISTS (
+                          SELECT 1 FROM scribe_sessions AS session
+                          WHERE session.tenant_id = :tenant_id
+                            AND session.id = :session_id
+                            AND session.transcript_contract_version IS NULL
+                      )
                     ORDER BY sequence_number, channel
                     """
                     ),
@@ -1704,6 +1952,12 @@ class PostgresRepository:
             SELECT object_id, session_id, sequence_number, channel, expires_at
             FROM audio_upload_grants
             WHERE tenant_id = :tenant_id AND object_id = :id
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id
+                    AND session.id = audio_upload_grants.session_id
+                    AND session.transcript_contract_version IS NULL
+              )
             """,
             tenant_id=tenant_id,
             id=object_id,
@@ -1732,9 +1986,14 @@ class PostgresRepository:
     async def get_transcript(self, tenant_id: UUID, transcript_id: UUID) -> Transcript | None:
         row = await self._one_or_none(
             """
-            SELECT id, session_id, language_code, stt_provider, segments, created_at
-            FROM transcripts
-            WHERE tenant_id = :tenant_id AND id = :id
+            SELECT transcript.id, transcript.session_id, transcript.language_code,
+                   transcript.stt_provider, transcript.segments, transcript.created_at
+            FROM transcripts AS transcript
+            JOIN scribe_sessions AS session
+              ON session.tenant_id = transcript.tenant_id
+             AND session.id = transcript.session_id
+            WHERE transcript.tenant_id = :tenant_id AND transcript.id = :id
+              AND session.transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             id=transcript_id,
@@ -1742,15 +2001,20 @@ class PostgresRepository:
         return Transcript.model_validate(row) if row is not None else None
 
     async def add_transcript(self, tenant_id: UUID, transcript: Transcript) -> None:
-        await self._session.execute(
+        inserted = await self._session.execute(
             text(
                 """
                 INSERT INTO transcripts (
                     id, tenant_id, session_id, language_code, stt_provider, segments, created_at
-                ) VALUES (
+                )
+                SELECT
                     :id, :tenant_id, :session_id, :language_code, :stt_provider,
                     CAST(:segments AS jsonb), :created_at
-                )
+                FROM scribe_sessions AS session
+                WHERE session.tenant_id = :tenant_id
+                  AND session.id = :session_id
+                  AND session.transcript_contract_version IS NULL
+                RETURNING id
                 """
             ),
             {
@@ -1765,13 +2029,21 @@ class PostgresRepository:
                 ),
             },
         )
+        if inserted.scalar_one_or_none() is None:
+            raise ValueError("legacy session is unavailable for transcript persistence")
 
     async def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None:
         row = await self._one_or_none(
             """
-            SELECT id, session_id, language_code, stt_provider, segments, created_at
-            FROM transcripts
-            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            SELECT transcript.id, transcript.session_id, transcript.language_code,
+                   transcript.stt_provider, transcript.segments, transcript.created_at
+            FROM transcripts AS transcript
+            JOIN scribe_sessions AS session
+              ON session.tenant_id = transcript.tenant_id
+             AND session.id = transcript.session_id
+            WHERE transcript.tenant_id = :tenant_id
+              AND transcript.session_id = :session_id
+              AND session.transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -1783,10 +2055,16 @@ class PostgresRepository:
     ) -> TranscriptionJob | None:
         row = await self._one_or_none(
             """
-            SELECT id, session_id, status, attempt_count, lease_token, lease_until,
-                   last_error_code, created_at, updated_at
-            FROM transcription_jobs
-            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            SELECT job.id, job.session_id, job.status, job.attempt_count,
+                   job.lease_token, job.lease_until, job.last_error_code,
+                   job.created_at, job.updated_at
+            FROM transcription_jobs AS job
+            JOIN scribe_sessions AS session
+              ON session.tenant_id = job.tenant_id
+             AND session.id = job.session_id
+            WHERE job.tenant_id = :tenant_id
+              AND job.session_id = :session_id
+              AND session.transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -1844,6 +2122,7 @@ class PostgresRepository:
                                 FROM scribe_sessions
                                 WHERE scribe_sessions.tenant_id = :tenant_id
                                   AND scribe_sessions.id = :session_id
+                                  AND scribe_sessions.transcript_contract_version IS NULL
                                   AND scribe_sessions.status = 'uploaded'
                             )
                           )
@@ -1877,18 +2156,22 @@ class PostgresRepository:
         updated = await self._session.execute(
             text(
                 """
-                UPDATE transcription_jobs
+                UPDATE transcription_jobs AS job
                 SET status = :status,
                     attempt_count = :attempt_count,
                     lease_token = :lease_token,
                     lease_until = :lease_until,
                     last_error_code = :last_error_code,
                     updated_at = :updated_at
-                WHERE tenant_id = :tenant_id
-                  AND id = :id
-                  AND status = 'processing'
-                  AND lease_token = :expected_lease_token
-                RETURNING id
+                FROM scribe_sessions AS session
+                WHERE job.tenant_id = :tenant_id
+                  AND job.id = :id
+                  AND job.status = 'processing'
+                  AND job.lease_token = :expected_lease_token
+                  AND session.tenant_id = job.tenant_id
+                  AND session.id = job.session_id
+                  AND session.transcript_contract_version IS NULL
+                RETURNING job.id
                 """
             ),
             {
@@ -1912,15 +2195,19 @@ class PostgresRepository:
         renewed = await self._session.execute(
             text(
                 """
-                UPDATE transcription_jobs
+                UPDATE transcription_jobs AS job
                 SET lease_until = :lease_until,
                     updated_at = :now
-                WHERE tenant_id = :tenant_id
-                  AND id = :id
-                  AND status = 'processing'
-                  AND lease_token = :lease_token
-                  AND lease_until > :now
-                RETURNING id
+                FROM scribe_sessions AS session
+                WHERE job.tenant_id = :tenant_id
+                  AND job.id = :id
+                  AND job.status = 'processing'
+                  AND job.lease_token = :lease_token
+                  AND job.lease_until > :now
+                  AND session.tenant_id = job.tenant_id
+                  AND session.id = job.session_id
+                  AND session.transcript_contract_version IS NULL
+                RETURNING job.id
                 """
             ),
             {
@@ -1936,11 +2223,16 @@ class PostgresRepository:
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
         row = await self._one_or_none(
             """
-            SELECT id, session_id, idempotency_key, payload_sha256, status,
-                   attempt_count, platform_transcript_id, last_error_code,
-                   created_at, updated_at
-            FROM transcript_deliveries
-            WHERE tenant_id = :tenant_id AND id = :id
+            SELECT delivery.id, delivery.session_id, delivery.idempotency_key,
+                   delivery.payload_sha256, delivery.status, delivery.attempt_count,
+                   delivery.platform_transcript_id, delivery.last_error_code,
+                   delivery.created_at, delivery.updated_at
+            FROM transcript_deliveries AS delivery
+            JOIN scribe_sessions AS session
+              ON session.tenant_id = delivery.tenant_id
+             AND session.id = delivery.session_id
+            WHERE delivery.tenant_id = :tenant_id AND delivery.id = :id
+              AND session.transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             id=delivery_id,
@@ -1954,10 +2246,16 @@ class PostgresRepository:
     ) -> DeliveryAttempt | None:
         row = await self._one_or_none(
             """
-            SELECT id, session_id, idempotency_key, payload_sha256, status,
-                   attempt_count, platform_transcript_id, last_error_code, updated_at
-            FROM transcript_deliveries
-            WHERE tenant_id = :tenant_id AND id = :id
+            SELECT delivery.id, delivery.session_id, delivery.idempotency_key,
+                   delivery.payload_sha256, delivery.status, delivery.attempt_count,
+                   delivery.platform_transcript_id, delivery.last_error_code,
+                   delivery.updated_at
+            FROM transcript_deliveries AS delivery
+            JOIN scribe_sessions AS session
+              ON session.tenant_id = delivery.tenant_id
+             AND session.id = delivery.session_id
+            WHERE delivery.tenant_id = :tenant_id AND delivery.id = :id
+              AND session.transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             id=delivery_id,
@@ -1967,11 +2265,17 @@ class PostgresRepository:
     async def delivery_for(self, tenant_id: UUID, session_id: UUID) -> TranscriptDelivery | None:
         row = await self._one_or_none(
             """
-            SELECT id, session_id, idempotency_key, payload_sha256, status,
-                   attempt_count, platform_transcript_id, last_error_code,
-                   created_at, updated_at
-            FROM transcript_deliveries
-            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            SELECT delivery.id, delivery.session_id, delivery.idempotency_key,
+                   delivery.payload_sha256, delivery.status, delivery.attempt_count,
+                   delivery.platform_transcript_id, delivery.last_error_code,
+                   delivery.created_at, delivery.updated_at
+            FROM transcript_deliveries AS delivery
+            JOIN scribe_sessions AS session
+              ON session.tenant_id = delivery.tenant_id
+             AND session.id = delivery.session_id
+            WHERE delivery.tenant_id = :tenant_id
+              AND delivery.session_id = :session_id
+              AND session.transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -1979,18 +2283,23 @@ class PostgresRepository:
         return TranscriptDelivery.model_validate(row) if row is not None else None
 
     async def add_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
-        await self._session.execute(
+        inserted = await self._session.execute(
             text(
                 """
                 INSERT INTO transcript_deliveries (
                     id, tenant_id, session_id, idempotency_key, payload_sha256,
                     status, attempt_count, platform_transcript_id, last_error_code,
                     created_at, updated_at
-                ) VALUES (
+                )
+                SELECT
                     :id, :tenant_id, :session_id, :idempotency_key, :payload_sha256,
                     :status, :attempt_count, :platform_transcript_id, :last_error_code,
                     :created_at, :updated_at
-                )
+                FROM scribe_sessions AS session
+                WHERE session.tenant_id = :tenant_id
+                  AND session.id = :session_id
+                  AND session.transcript_contract_version IS NULL
+                RETURNING id
                 """
             ),
             {
@@ -1999,6 +2308,8 @@ class PostgresRepository:
                 "status": delivery.status.value,
             },
         )
+        if inserted.scalar_one_or_none() is None:
+            raise ValueError("legacy session is unavailable for delivery persistence")
 
     async def claim_delivery_attempt(
         self,
@@ -2024,8 +2335,12 @@ class PostgresRepository:
                         ), candidate AS (
                             SELECT delivery.id
                             FROM transcript_deliveries AS delivery
+                            JOIN scribe_sessions AS session
+                              ON session.tenant_id = delivery.tenant_id
+                             AND session.id = delivery.session_id
                             CROSS JOIN claim_clock
                             WHERE delivery.tenant_id = :tenant_id
+                              AND session.transcript_contract_version IS NULL
                               {delivery_filter}
                               {exclusion_filter}
                               AND (
@@ -2105,6 +2420,7 @@ class PostgresRepository:
                    modality, status
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
+              AND transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -2155,6 +2471,7 @@ class PostgresRepository:
             SELECT consent_record_id
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
+              AND transcript_contract_version IS NULL
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -2167,6 +2484,7 @@ class PostgresRepository:
             SELECT status
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
+              AND transcript_contract_version IS NULL
             FOR UPDATE
             """,
             tenant_id=tenant_id,
@@ -2185,6 +2503,7 @@ class PostgresRepository:
                 SET status = 'handed_off'
                 WHERE tenant_id = :tenant_id
                   AND id = :session_id
+                  AND transcript_contract_version IS NULL
                   AND status = 'transcript_ready'
                 """
             ),
@@ -2214,16 +2533,22 @@ class PostgresRepository:
                 await self._session.execute(
                     text(
                         """
-                        UPDATE transcript_deliveries
+                        UPDATE transcript_deliveries AS delivery
                         SET status = :status,
                             last_error_code = :last_error_code,
                             updated_at = statement_timestamp()
-                        WHERE tenant_id = :tenant_id
-                          AND id = :id
-                          AND status = 'pending'
-                          AND attempt_count = :expected_attempt_count
-                        RETURNING id, session_id, idempotency_key, payload_sha256, status,
-                                  attempt_count, platform_transcript_id, last_error_code, updated_at
+                        FROM scribe_sessions AS session
+                        WHERE delivery.tenant_id = :tenant_id
+                          AND delivery.id = :id
+                          AND delivery.status = 'pending'
+                          AND delivery.attempt_count = :expected_attempt_count
+                          AND session.tenant_id = delivery.tenant_id
+                          AND session.id = delivery.session_id
+                          AND session.transcript_contract_version IS NULL
+                        RETURNING delivery.id, delivery.session_id, delivery.idempotency_key,
+                                  delivery.payload_sha256, delivery.status,
+                                  delivery.attempt_count, delivery.platform_transcript_id,
+                                  delivery.last_error_code, delivery.updated_at
                         """
                     ),
                     {
@@ -2253,17 +2578,23 @@ class PostgresRepository:
                 await self._session.execute(
                     text(
                         """
-                        UPDATE transcript_deliveries
+                        UPDATE transcript_deliveries AS delivery
                         SET status = 'delivered',
                             platform_transcript_id = :platform_transcript_id,
                             last_error_code = NULL,
                             updated_at = statement_timestamp()
-                        WHERE tenant_id = :tenant_id
-                          AND id = :id
-                          AND payload_sha256 = :expected_payload_sha256
-                          AND status <> 'delivered'
-                        RETURNING id, session_id, idempotency_key, payload_sha256, status,
-                                  attempt_count, platform_transcript_id, last_error_code, updated_at
+                        FROM scribe_sessions AS session
+                        WHERE delivery.tenant_id = :tenant_id
+                          AND delivery.id = :id
+                          AND delivery.payload_sha256 = :expected_payload_sha256
+                          AND delivery.status <> 'delivered'
+                          AND session.tenant_id = delivery.tenant_id
+                          AND session.id = delivery.session_id
+                          AND session.transcript_contract_version IS NULL
+                        RETURNING delivery.id, delivery.session_id, delivery.idempotency_key,
+                                  delivery.payload_sha256, delivery.status,
+                                  delivery.attempt_count, delivery.platform_transcript_id,
+                                  delivery.last_error_code, delivery.updated_at
                         """
                     ),
                     {

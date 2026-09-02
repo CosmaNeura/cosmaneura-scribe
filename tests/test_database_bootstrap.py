@@ -6,6 +6,11 @@ from uuid import uuid4
 
 import pytest
 from cosmaneura_scribe import database_bootstrap
+from cosmaneura_scribe.normalized_source_persistence import (
+    VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID,
+    VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID,
+    VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID,
+)
 from cosmaneura_scribe.settings import Settings
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -261,6 +266,17 @@ async def test_runtime_permissions_revoke_stale_access_before_exact_grants(
     assert "audio_upload_authorization_receipts" in grants
     assert "GRANT UPDATE (generation, renewed_at, expires_at, closed_at, close_reason)" in grants
     assert "GRANT UPDATE (revoked_at) ON consent_records" in grants
+    assert "GRANT SELECT (id, tenant_id, appointment_id" in grants
+    assert "GRANT INSERT (id, tenant_id, appointment_id" in grants
+    assert "GRANT UPDATE (status) ON scribe_sessions" in grants
+    assert "GRANT SELECT, INSERT, UPDATE ON scribe_sessions" not in grants
+    for protected_column in (
+        "source_received_at",
+        "transcript_content_expires_at",
+        "content_purged_at",
+        "current_source_transcript_version",
+    ):
+        assert protected_column not in grants
     assert "GRANT INSERT ON audit_events" in grants
     assert "DELETE" not in grants
     assert provider.closed is True
@@ -291,7 +307,21 @@ async def test_transcription_principal_receives_only_worker_table_permissions(
     assert "GRANT SELECT ON consent_records, audio_chunks, session_audio_keys" in grants
     assert "GRANT UPDATE (revoked_at) ON consent_records" not in grants
     assert "GRANT INSERT ON transcripts" in grants
-    assert "GRANT SELECT, UPDATE ON scribe_sessions" in grants
+    assert "GRANT SELECT (id, tenant_id, appointment_id" in grants
+    assert "GRANT UPDATE (status) ON scribe_sessions" in grants
+    assert "GRANT SELECT, UPDATE ON scribe_sessions" not in grants
+    for configured_column in (
+        "creator_actor_id",
+        "language_mode",
+        "transcription_adapter_id",
+        "transcription_model_profile_id",
+        "normalization_profile_id",
+        "source_received_at",
+        "transcript_content_expires_at",
+        "content_purged_at",
+        "current_source_transcript_version",
+    ):
+        assert configured_column not in grants
     assert "GRANT SELECT, INSERT, UPDATE ON transcription_jobs" in grants
     assert "GRANT INSERT ON audit_events" in grants
     for forbidden in (
@@ -361,6 +391,9 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
     admin_url, _ = postgres_urls
     settings = _postgres_settings(admin_url)
     engine = create_async_engine(admin_url, connect_args={"ssl": False})
+    configured_tenant_id = uuid4()
+    configured_consent_id = uuid4()
+    configured_session_id = uuid4()
 
     runtime_expected = (
         {
@@ -384,22 +417,60 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
         }
         | {
             (table_name, privilege)
-            for table_name in ("scribe_sessions", "transcript_deliveries", "transcription_jobs")
+            for table_name in ("transcript_deliveries", "transcription_jobs")
             for privilege in ("SELECT", "INSERT", "UPDATE")
         }
         | {("audit_events", "INSERT")}
     )
+    runtime_session_columns = {
+        "id",
+        "tenant_id",
+        "appointment_id",
+        "practitioner_id",
+        "patient_id",
+        "consent_record_id",
+        "modality",
+        "ingest_mode",
+        "status",
+        "created_at",
+        "transcript_contract_version",
+        "creator_actor_id",
+        "language_mode",
+        "transcription_adapter_id",
+        "transcription_model_profile_id",
+        "normalization_profile_id",
+    }
     runtime_column_expected = {
         ("consent_records", "revoked_at", "UPDATE"),
         *(("capture_leases", column, "UPDATE") for column in (
-            "generation",
-            "renewed_at",
-            "expires_at",
-            "closed_at",
-            "close_reason",
-        )),
+                "generation",
+                "renewed_at",
+                "expires_at",
+                "closed_at",
+                "close_reason",
+            )),
+        *(("scribe_sessions", column, privilege)
+          for column in runtime_session_columns
+          for privilege in ("SELECT", "INSERT")),
+        ("scribe_sessions", "status", "UPDATE"),
     }
-    worker_column_expected: set[tuple[str, str, str]] = set()
+    worker_session_columns = {
+        "id",
+        "tenant_id",
+        "appointment_id",
+        "practitioner_id",
+        "patient_id",
+        "consent_record_id",
+        "modality",
+        "ingest_mode",
+        "status",
+        "created_at",
+        "transcript_contract_version",
+    }
+    worker_column_expected = {
+        *(("scribe_sessions", column, "SELECT") for column in worker_session_columns),
+        ("scribe_sessions", "status", "UPDATE"),
+    }
     worker_expected = {
         (table_name, "SELECT")
         for table_name in (
@@ -407,12 +478,10 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             "audio_chunks",
             "session_audio_keys",
             "transcripts",
-            "scribe_sessions",
             "transcription_jobs",
         )
     } | {
         ("transcripts", "INSERT"),
-        ("scribe_sessions", "UPDATE"),
         ("transcription_jobs", "INSERT"),
         ("transcription_jobs", "UPDATE"),
         ("audit_events", "INSERT"),
@@ -440,6 +509,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             "consent_record_id",
             "modality",
             "status",
+            "transcript_contract_version",
         )
     } | {
         ("transcripts", column, "SELECT")
@@ -507,6 +577,63 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
 
         async with engine.begin() as connection:
             await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(configured_tenant_id)},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO consent_records (
+                        id, tenant_id, appointment_id, practitioner_id, patient_id,
+                        modality, participant_regions, method, all_parties_consented,
+                        granted_at, policy_version
+                    ) VALUES (
+                        :id, :tenant_id, 'bootstrap-appointment', 'bootstrap-practitioner',
+                        'bootstrap-patient', 'virtual', ARRAY['FL'], 'pre_visit_form', true,
+                        statement_timestamp(), 'bootstrap-policy-v1'
+                    )
+                    """
+                ),
+                {"id": configured_consent_id, "tenant_id": configured_tenant_id},
+            )
+
+        # Commit as the exact runtime role. This catches deferred-trigger reads that
+        # accidentally require source-anchor columns outside Packet 1's grant.
+        async with engine.begin() as connection:
+            await connection.execute(text(f"SET LOCAL ROLE {RUNTIME_ROLE}"))
+            await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(configured_tenant_id)},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO scribe_sessions (
+                        id, tenant_id, appointment_id, practitioner_id, patient_id,
+                        consent_record_id, modality, ingest_mode, status,
+                        transcript_contract_version, creator_actor_id, language_mode,
+                        transcription_adapter_id, transcription_model_profile_id,
+                        normalization_profile_id
+                    ) VALUES (
+                        :id, :tenant_id, 'bootstrap-appointment', 'bootstrap-practitioner',
+                        'bootstrap-patient', :consent_id, 'virtual',
+                        'external_async_transcript', 'created', '1.0', 'bootstrap_actor',
+                        'en-US+es-US', :adapter_id, :model_profile_id, :normalization_profile_id
+                    )
+                    """
+                ),
+                {
+                    "id": configured_session_id,
+                    "tenant_id": configured_tenant_id,
+                    "consent_id": configured_consent_id,
+                    "adapter_id": VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID,
+                    "model_profile_id": VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID,
+                    "normalization_profile_id": VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID,
+                },
+            )
+
+        async with engine.begin() as connection:
+            await connection.execute(
                 text(
                     """
                     CREATE TABLE bootstrap_future_privilege_probe (
@@ -547,6 +674,20 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 await _role_column_privileges(connection, RECONCILER_ROLE)
                 == reconciler_expected
             )
+            for role_name in (RUNTIME_ROLE, WORKER_ROLE, RECONCILER_ROLE):
+                for table_name in (
+                    "external_session_terminal_events",
+                    "normalized_source_transcripts",
+                    "normalized_source_segments",
+                    "normalized_source_receipt_keys",
+                ):
+                    assert not await connection.scalar(
+                        text(
+                            "SELECT has_table_privilege("
+                            ":role_name, :table_name, 'SELECT,INSERT,UPDATE,DELETE')"
+                        ),
+                        {"role_name": role_name, "table_name": f"public.{table_name}"},
+                    )
 
             sequence_name = await connection.scalar(
                 text(
@@ -582,5 +723,17 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 )
     finally:
         async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(configured_tenant_id)},
+            )
+            await connection.execute(
+                text("DELETE FROM scribe_sessions WHERE id = :id AND tenant_id = :tenant_id"),
+                {"id": configured_session_id, "tenant_id": configured_tenant_id},
+            )
+            await connection.execute(
+                text("DELETE FROM consent_records WHERE id = :id AND tenant_id = :tenant_id"),
+                {"id": configured_consent_id, "tenant_id": configured_tenant_id},
+            )
             await drop_probe_objects_and_roles(connection)
         await engine.dispose()

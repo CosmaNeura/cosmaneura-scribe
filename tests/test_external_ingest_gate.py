@@ -248,7 +248,18 @@ def test_allowed_workload_creates_replays_and_completes_external_session(
     )
 
     assert created.status_code == replay.status_code == ordinary.status_code == 201
-    assert created.json()["id"] == replay.json()["id"]
+    assert replay.json() == created.json()
+    assert set(created.json()) == {
+        "appointment_id",
+        "practitioner_id",
+        "patient_id",
+        "consent_record_id",
+        "modality",
+        "id",
+        "ingest_mode",
+        "status",
+        "created_at",
+    }
     assert created.json()["ingest_mode"] == SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT
     assert ordinary.json()["id"] != created.json()["id"]
     assert ordinary.json()["ingest_mode"] == SessionIngestMode.CHUNK_UPLOAD
@@ -451,6 +462,7 @@ def test_external_session_openapi_contract_is_strict_and_authenticated() -> None
     ]
     request_schema_name = request_reference.rsplit("/", maxsplit=1)[-1]
     request_schema = app.openapi()["components"]["schemas"][request_schema_name]
+    response_schema = app.openapi()["components"]["schemas"]["CaptureSession"]
 
     assert operation["security"] == [{"HTTPBearer": []}]
     assert parameters[("X-Tenant-ID", "header")]["required"] is True
@@ -463,3 +475,18 @@ def test_external_session_openapi_contract_is_strict_and_authenticated() -> None
         "consent_record_id",
         "modality",
     }
+    assert set(response_schema["properties"]) == {
+        "appointment_id",
+        "practitioner_id",
+        "patient_id",
+        "consent_record_id",
+        "modality",
+        "id",
+        "ingest_mode",
+        "status",
+        "created_at",
+    }
+    assert all(
+        not schema_name.startswith("VersionedExternalSession")
+        for schema_name in app.openapi()["components"]["schemas"]
+    )
