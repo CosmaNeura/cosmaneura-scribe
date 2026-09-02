@@ -1267,6 +1267,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             await database_bootstrap._deny_implicit_future_permissions(settings)
 
         async with engine.begin() as connection:
+            database = connection.dialect.identifier_preparer.quote(settings.database_name)
             await connection.execute(text(f"SET ROLE {FOREIGN_DEFAULT_OWNER_ROLE}"))
             await connection.execute(
                 text(
@@ -1276,7 +1277,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             )
             await connection.execute(text("RESET ROLE"))
             await connection.execute(
-                text(f"GRANT CREATE ON SCHEMA public TO {FOREIGN_GRANTOR_ROLE}")
+                text(f"ALTER DATABASE {database} OWNER TO {FOREIGN_GRANTOR_ROLE}")
             )
             await connection.execute(text(f"SET ROLE {FOREIGN_GRANTOR_ROLE}"))
             await connection.execute(
@@ -1299,10 +1300,9 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
 
         async with engine.begin() as connection:
             await connection.execute(
-                text(f"REVOKE CREATE ON SCHEMA public FROM {FOREIGN_GRANTOR_ROLE}")
+                text(f"ALTER DATABASE {database} OWNER TO CURRENT_USER")
             )
             await database_bootstrap._ensure_no_database_principal_public_ownership(settings)
-            database = connection.dialect.identifier_preparer.quote(settings.database_name)
             await connection.execute(
                 text(f"GRANT TEMPORARY ON DATABASE {database} TO {', '.join(application_roles)}")
             )

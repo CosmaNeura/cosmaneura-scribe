@@ -195,7 +195,7 @@ async def _ensure_no_acl_survivor(
             {"role_name": role_name},
         )
         if survives:
-            raise RuntimeError("A surviving direct ACL remains for application role")
+            raise RuntimeError(f"A surviving direct ACL remains for application role {role_name!r}")
         return
     survives = await connection.scalar(
         text(
@@ -255,20 +255,15 @@ async def _ensure_no_application_default_privileges(
                   ))
             )
             OR EXISTS (
-                SELECT 1 FROM pg_catalog.pg_namespace AS namespace
-                CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(
-                    namespace.nspacl, pg_catalog.acldefault('n', namespace.nspowner)
-                )) AS privilege
-                WHERE namespace.nspname = 'public' AND privilege.privilege_type = 'CREATE'
-                  AND privilege.grantee <> (
-                      SELECT role.oid FROM pg_catalog.pg_roles AS role
-                      WHERE role.rolname = current_user
-                  )
+                SELECT 1 FROM pg_catalog.pg_roles AS creator
+                WHERE creator.rolname <> current_user
+                  AND NOT creator.rolsuper
+                  AND pg_catalog.has_schema_privilege(creator.oid, 'public', 'CREATE')
                   AND NOT (
-                      privilege.grantee = 'pg_database_owner'::regrole
+                      creator.oid = 'pg_database_owner'::regrole
                       AND EXISTS (SELECT 1 FROM pg_catalog.pg_database AS database
                           WHERE database.datname = current_database()
-                            AND pg_catalog.pg_has_role(current_user, database.datdba, 'USAGE'))
+                            AND database.datdba = current_user::regrole)
                   )
             )
             """

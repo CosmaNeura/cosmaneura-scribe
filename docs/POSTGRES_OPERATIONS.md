@@ -84,6 +84,7 @@ and both application identities before migrations run. It deliberately does not 
 future access: every migration that adds an object needed by the API or worker must update the
 corresponding explicit grant list and bootstrap must run again. PostgreSQL ACLs are grantor-scoped
 and default privileges are owner-scoped, so bootstrap fails if another grantor/owner leaves access; that grantor/owner must remove it before bootstrap is retried.
+Use `pg_shdepend` ACL dependencies to locate the object; owner-side grant-option revocation with `CASCADE` requires separate review because it may remove unrelated downstream grants.
 
 ## 4. Switch the API
 
