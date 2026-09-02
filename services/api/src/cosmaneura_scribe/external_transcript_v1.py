@@ -10,6 +10,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationError,
     computed_field,
     field_validator,
     model_validator,
@@ -24,6 +25,8 @@ from .transcript_constraints import (
 )
 
 EXTERNAL_TRANSCRIPT_SCHEMA_VERSION = "1.0"
+MAX_EXTERNAL_TRANSCRIPT_VALIDATION_ISSUES = 32
+MAX_EXTERNAL_TRANSCRIPT_VALIDATION_LOCATION_DEPTH = 8
 
 ProtocolVersion = Literal["1.0"]
 SafeIdentifier = Annotated[
@@ -37,6 +40,10 @@ SafeIdentifier = Annotated[
 ClinicalText = Annotated[
     str,
     Field(min_length=1, max_length=MAX_TRANSCRIPT_CONTENT_CHARS, repr=False),
+]
+Sha256Fingerprint = Annotated[
+    str,
+    Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
 ]
 
 
@@ -84,6 +91,31 @@ class WorkingTranscriptBlockerCode(StrEnum):
     TRANSLATION_FAILED = "translation_failed"
 
 
+class ExternalTranscriptValidationCode(StrEnum):
+    REQUIRED = "required"
+    FIELD_NOT_ALLOWED = "field_not_allowed"
+    IMMUTABLE = "immutable"
+    INVALID_TYPE = "invalid_type"
+    INVALID_FORMAT = "invalid_format"
+    OUT_OF_BOUNDS = "out_of_bounds"
+    DOMAIN_CONSTRAINT = "domain_constraint"
+    VALIDATION_FAILED = "validation_failed"
+
+
+_VALIDATION_LOCATION_TOKENS = frozenset(
+    """
+    schema_version source_transcript source_transcript_version language_mode
+    transcription_adapter_id transcription_model_profile_id normalization_profile_id duration_ms
+    segments source_segment_id source_segment_version source_locale speaker_id speaker_role content
+    start_ms end_ms locale_confidence translations translation_reviews translation_id
+    translation_version target_locale outcome translation_adapter_id translation_model_profile_id
+    created_at failure_code review_id decision reviewer_actor_id reviewed_at working_transcript_id
+    working_transcript_version derivation_fingerprint resolution translation_review_id blockers code
+    note_ready
+    """.split()
+)
+
+
 class SourceTranscriptSegmentV1(_StrictFrozenModel):
     source_segment_id: UUID
     source_segment_version: int = Field(ge=1)
@@ -101,6 +133,11 @@ class SourceTranscriptSegmentV1(_StrictFrozenModel):
         if not value.strip():
             raise ValueError("source_segment_content_empty")
         return value
+
+    @field_validator("locale_confidence")
+    @classmethod
+    def normalize_locale_confidence_signed_zero(cls, value: float | None) -> float | None:
+        return 0.0 if value == 0.0 else value
 
     @model_validator(mode="after")
     def timestamps_are_ordered(self) -> SourceTranscriptSegmentV1:
@@ -346,6 +383,20 @@ class ExternalTranscriptBundleV1(_StrictFrozenModel):
         return self
 
 
+def external_transcript_derivation_fingerprint(bundle: ExternalTranscriptBundleV1) -> str:
+    return canonical_sha256(
+        {
+            "contract": "english-working-transcript-derivation-v1",
+            "schema_version": bundle.schema_version,
+            "working_transcript_id": bundle.working_transcript_id,
+            "working_transcript_version": bundle.working_transcript_version,
+            "source_transcript": bundle.source_transcript,
+            "translations": bundle.translations,
+            "translation_reviews": bundle.translation_reviews,
+        }
+    )
+
+
 class EnglishWorkingTranscriptSegmentV1(_StrictFrozenModel):
     source_segment_id: UUID
     source_segment_version: int = Field(ge=1)
@@ -414,6 +465,7 @@ class EnglishWorkingTranscriptV1(_StrictFrozenModel):
     working_transcript_id: UUID
     working_transcript_version: int = Field(ge=1)
     source_transcript_version: int = Field(ge=1)
+    derivation_fingerprint: Sha256Fingerprint
     segments: tuple[EnglishWorkingTranscriptSegmentV1, ...] = Field(
         min_length=1,
         max_length=MAX_TRANSCRIPT_SEGMENTS,
@@ -560,6 +612,7 @@ def build_english_working_transcript(
         working_transcript_id=bundle.working_transcript_id,
         working_transcript_version=bundle.working_transcript_version,
         source_transcript_version=bundle.source_transcript.source_transcript_version,
+        derivation_fingerprint=external_transcript_derivation_fingerprint(bundle),
         segments=tuple(working_segments),
         blockers=tuple(blockers),
     )
@@ -585,6 +638,76 @@ def english_working_transcript_fingerprint(working: EnglishWorkingTranscriptV1) 
             "working_transcript_id": working.working_transcript_id,
             "working_transcript_version": working.working_transcript_version,
             "source_transcript_version": working.source_transcript_version,
+            "derivation_fingerprint": working.derivation_fingerprint,
             "working_transcript": working,
         }
     )
+
+
+def serialize_external_transcript_validation_error(error: ValidationError) -> dict[str, object]:
+    """Return the only validation-error shape safe for a future external boundary."""
+    issues: list[dict[str, str]] = []
+    for raw_error in error.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    )[:MAX_EXTERNAL_TRANSCRIPT_VALIDATION_ISSUES]:
+        error_type = raw_error["type"]
+        issues.append(
+            {
+                "code": _safe_validation_code(error_type).value,
+                "location": _safe_validation_location(raw_error["loc"], error_type),
+            }
+        )
+    if not issues:
+        issues.append(
+            {
+                "code": ExternalTranscriptValidationCode.VALIDATION_FAILED.value,
+                "location": "root",
+            }
+        )
+    return {"code": "external_transcript_validation_failed", "issues": issues}
+
+
+def _safe_validation_code(error_type: str) -> ExternalTranscriptValidationCode:
+    if error_type == "missing":
+        return ExternalTranscriptValidationCode.REQUIRED
+    if error_type == "extra_forbidden":
+        return ExternalTranscriptValidationCode.FIELD_NOT_ALLOWED
+    if error_type in {"frozen_field", "frozen_instance"}:
+        return ExternalTranscriptValidationCode.IMMUTABLE
+    if error_type in {
+        "greater_than",
+        "greater_than_equal",
+        "less_than",
+        "less_than_equal",
+        "too_long",
+        "too_short",
+        "string_too_long",
+        "string_too_short",
+    }:
+        return ExternalTranscriptValidationCode.OUT_OF_BOUNDS
+    if error_type.endswith("_type"):
+        return ExternalTranscriptValidationCode.INVALID_TYPE
+    if error_type == "value_error":
+        return ExternalTranscriptValidationCode.DOMAIN_CONSTRAINT
+    if (
+        error_type in {"enum", "literal_error", "string_pattern_mismatch"}
+        or "parsing" in error_type
+    ):
+        return ExternalTranscriptValidationCode.INVALID_FORMAT
+    return ExternalTranscriptValidationCode.VALIDATION_FAILED
+
+
+def _safe_validation_location(location: tuple[int | str, ...], error_type: str) -> str:
+    safe: list[str] = []
+    for index, token in enumerate(location[:MAX_EXTERNAL_TRANSCRIPT_VALIDATION_LOCATION_DEPTH]):
+        if error_type == "extra_forbidden" and index == len(location) - 1:
+            safe.append("unknown_field")
+        elif isinstance(token, int):
+            safe.append("item")
+        elif token in _VALIDATION_LOCATION_TOKENS:
+            safe.append(token)
+        else:
+            safe.append("unknown_field")
+    return ".".join(safe) if safe else "root"

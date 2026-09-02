@@ -7,6 +7,7 @@ import pytest
 from cosmaneura_scribe.external_transcript_v1 import (
     EnglishWorkingTranscriptV1,
     ExternalTranscriptBundleV1,
+    ExternalTranscriptValidationCode,
     SourceLocale,
     SourceTranscriptSegmentV1,
     SourceTranscriptV1,
@@ -20,6 +21,8 @@ from cosmaneura_scribe.external_transcript_v1 import (
     build_english_working_transcript,
     english_working_transcript_fingerprint,
     external_source_transcript_fingerprint,
+    external_transcript_derivation_fingerprint,
+    serialize_external_transcript_validation_error,
 )
 from cosmaneura_scribe.schemas import SpeakerRole
 from pydantic import ValidationError
@@ -34,6 +37,18 @@ SECOND_REVIEW_ID = UUID("30000000-0000-4000-8000-000000000002")
 WORKING_TRANSCRIPT_ID = UUID("40000000-0000-4000-8000-000000000001")
 SECOND_WORKING_TRANSCRIPT_ID = UUID("40000000-0000-4000-8000-000000000002")
 SENTINEL = "SYNTHETIC_SECRET_TRANSCRIPT_MARKER"
+
+
+def _assert_sentinel_absent(value: object) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _assert_sentinel_absent(key)
+            _assert_sentinel_absent(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _assert_sentinel_absent(item)
+    else:
+        assert SENTINEL not in str(value)
 
 
 def _segment(
@@ -673,6 +688,17 @@ def test_source_locale_confidence_is_optional_and_bounded_without_a_domain_thres
     with pytest.raises(ValidationError):
         SourceTranscriptSegmentV1.model_validate(payload)
 
+    positive_zero = no_confidence.model_copy(update={"locale_confidence": 0.0})
+    negative_zero_payload = positive_zero.model_dump()
+    negative_zero_payload["locale_confidence"] = -0.0
+    negative_zero = SourceTranscriptSegmentV1.model_validate(negative_zero_payload)
+    assert positive_zero.locale_confidence is not None
+    assert negative_zero.locale_confidence is not None
+    assert negative_zero.locale_confidence.hex() == positive_zero.locale_confidence.hex()
+    assert external_source_transcript_fingerprint(_source(positive_zero)) == (
+        external_source_transcript_fingerprint(_source(negative_zero))
+    )
+
 
 def test_contracts_reject_caller_authority_and_raw_provider_fields() -> None:
     source_payload = _bilingual_source().model_dump()
@@ -742,10 +768,47 @@ def test_models_are_strict_frozen_and_hide_text() -> None:
     assert SENTINEL not in repr(translation)
 
     invalid = segment.model_dump()
-    invalid["unexpected"] = SENTINEL
-    with pytest.raises(ValidationError) as captured:
+    invalid.update({f"unexpected_{SENTINEL}_{index}": SENTINEL for index in range(40)})
+    with pytest.raises(ValidationError) as extra_error:
         SourceTranscriptSegmentV1.model_validate(invalid)
-    assert SENTINEL not in str(captured.value)
+
+    nested = bundle.model_dump()
+    nested["source_transcript"]["segments"][0]["content"] = SENTINEL * 4_000
+    with pytest.raises(ValidationError) as nested_text_error:
+        ExternalTranscriptBundleV1.model_validate(nested)
+
+    model_level = source.model_dump()
+    model_level["language_mode"] = TranscriptLanguageMode.ENGLISH
+    model_level["segments"] = (
+        _segment(
+            SPANISH_SEGMENT_ID,
+            locale=SourceLocale.SPANISH_US,
+            content=SENTINEL,
+            start_ms=0,
+            end_ms=500,
+        ).model_dump(),
+    )
+    with pytest.raises(ValidationError) as model_error:
+        SourceTranscriptV1.model_validate(model_level)
+
+    safe_errors = [
+        serialize_external_transcript_validation_error(captured.value)
+        for captured in (extra_error, nested_text_error, model_error)
+    ]
+    assert [payload["issues"][0]["location"] for payload in safe_errors] == [
+        "unknown_field",
+        "source_transcript.segments.item.content",
+        "root",
+    ]
+    for payload in safe_errors:
+        assert set(payload) == {"code", "issues"}
+        assert payload["code"] == "external_transcript_validation_failed"
+        assert len(payload["issues"]) <= 32
+        assert all(set(issue) == {"code", "location"} for issue in payload["issues"])
+        for issue in payload["issues"]:
+            ExternalTranscriptValidationCode(issue["code"])
+            assert len(issue["location"].split(".")) <= 8
+        _assert_sentinel_absent(payload)
 
     strict_payload = segment.model_dump()
     strict_payload["start_ms"] = "0"
@@ -838,44 +901,65 @@ def test_source_fingerprint_is_canonical_and_content_bound() -> None:
     assert "Me siento" not in fingerprint
 
 
-def test_working_fingerprint_pins_content_lineage_identity_version_and_blockers() -> None:
-    source = _bilingual_source()
-
-    def build(
-        *,
-        translated_content: str = "I feel better today.",
-        review_id: UUID = REVIEW_ID,
-        working_id: UUID = WORKING_TRANSCRIPT_ID,
-        working_version: int = 1,
-        reviews: tuple[TranslationReviewEvidenceV1, ...] | None = None,
-    ) -> EnglishWorkingTranscriptV1:
-        return build_english_working_transcript(
-            ExternalTranscriptBundleV1(
-                source_transcript=source,
-                translations=(_translation(content=translated_content),),
-                translation_reviews=(
-                    (_review(review_id=review_id),) if reviews is None else reviews
-                ),
-                working_transcript_id=working_id,
-                working_transcript_version=working_version,
-            )
-        )
-
-    working = build()
-    fingerprint = english_working_transcript_fingerprint(working)
-
-    assert fingerprint == english_working_transcript_fingerprint(build())
-    assert fingerprint != english_working_transcript_fingerprint(
-        build(translated_content="I have less pain.")
+@pytest.mark.parametrize(
+    ("path", "value", "invalid"),
+    [
+        (("source_transcript", "language_mode"), TranscriptLanguageMode.ENGLISH, True),
+        (("source_transcript", "transcription_adapter_id"), "changed_stt_adapter", False),
+        (("source_transcript", "transcription_model_profile_id"), "changed_stt_model", False),
+        (("source_transcript", "normalization_profile_id"), "changed_normalizer", False),
+        (("source_transcript", "segments", 1, "content"), "Contenido cambiado.", False),
+        (("translations", 1, "translation_id"), UUID(int=222), False),
+        (("translations", 1, "translation_version"), 3, False),
+        (("translations", 1, "outcome"), TranslationOutcome.SUCCEEDED, True),
+        (("translations", 0, "content"), "I have less pain.", False),
+        (("translations", 1, "failure_code"), "changed_failure", False),
+        (("translations", 1, "translation_adapter_id"), "changed_adapter", False),
+        (("translations", 1, "translation_model_profile_id"), "changed_model", False),
+        (("translations", 1, "created_at"), datetime(2026, 9, 1, 17, 0, tzinfo=UTC), False),
+        (("translation_reviews", 0, "review_id"), SECOND_REVIEW_ID, False),
+        (("translation_reviews", 0, "decision"), TranslationReviewDecision.REJECTED, False),
+        (("translation_reviews", 0, "reviewer_actor_id"), "core_actor.changed", False),
+        (("translation_reviews", 0, "reviewed_at"), datetime(2026, 9, 1, 18, 6, tzinfo=UTC), False),
+        (("working_transcript_id",), SECOND_WORKING_TRANSCRIPT_ID, False),
+        (("working_transcript_version",), 2, False),
+    ],
+)
+def test_working_fingerprint_binds_complete_canonical_derivation(
+    path: tuple[str | int, ...], value: object, invalid: bool
+) -> None:
+    failed = _translation(
+        translation_id=SECOND_TRANSLATION_ID,
+        translation_version=2,
+        outcome=TranslationOutcome.FAILED,
+        content=None,
+        failure_code="adapter_unavailable",
     )
-    assert fingerprint != english_working_transcript_fingerprint(build(review_id=SECOND_REVIEW_ID))
-    assert fingerprint != english_working_transcript_fingerprint(
-        build(working_id=SECOND_WORKING_TRANSCRIPT_ID)
+    bundle = ExternalTranscriptBundleV1(
+        source_transcript=_bilingual_source(),
+        translations=(_translation(), failed),
+        translation_reviews=(_review(),),
+        working_transcript_id=WORKING_TRANSCRIPT_ID,
+        working_transcript_version=1,
     )
-    assert fingerprint != english_working_transcript_fingerprint(build(working_version=2))
-    assert fingerprint != english_working_transcript_fingerprint(build(reviews=()))
-    assert len(fingerprint) == 64
-    assert "I feel better" not in fingerprint
+    working = build_english_working_transcript(bundle)
+    payload = bundle.model_dump()
+    target = payload
+    for token in path[:-1]:
+        target = target[token]
+    target[path[-1]] = value
+    if invalid:
+        with pytest.raises(ValidationError):
+            ExternalTranscriptBundleV1.model_validate(payload)
+        return
+    changed = ExternalTranscriptBundleV1.model_validate(payload)
+    changed_working = build_english_working_transcript(changed)
+    assert working.derivation_fingerprint == external_transcript_derivation_fingerprint(bundle)
+    assert working.derivation_fingerprint != external_transcript_derivation_fingerprint(changed)
+    working_fingerprint = english_working_transcript_fingerprint(working)
+    assert working_fingerprint != english_working_transcript_fingerprint(changed_working)
+    assert len(working_fingerprint) == len(working.derivation_fingerprint) == 64
+    assert "I feel better" not in working_fingerprint
 
 
 def test_translation_and_review_order_are_canonical() -> None:
@@ -919,3 +1003,9 @@ def test_translation_and_review_order_are_canonical() -> None:
     assert forward.translations == reversed_input.translations
     assert forward.translation_reviews == reversed_input.translation_reviews
     assert forward.model_dump(mode="json") == reversed_input.model_dump(mode="json")
+    assert external_transcript_derivation_fingerprint(forward) == (
+        external_transcript_derivation_fingerprint(reversed_input)
+    )
+    assert english_working_transcript_fingerprint(build_english_working_transcript(forward)) == (
+        english_working_transcript_fingerprint(build_english_working_transcript(reversed_input))
+    )

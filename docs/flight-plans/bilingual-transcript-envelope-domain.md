@@ -7,8 +7,8 @@
   creator-review evidence, and one deterministically derived English working transcript without
   exposing or storing it.
 - In scope: frozen versioned domain models, bounded validation codes, non-persisted source and
-  working fingerprints, deterministic working-transcript construction, synthetic unit tests, ADR
-  0024, and this plan.
+  complete-derivation and working fingerprints, one PHI-safe validation-error serializer,
+  deterministic working-transcript construction, synthetic unit tests, ADR 0024, and this plan.
 - Explicit non-goals: API routes; OpenAPI; repository or database changes; migrations or data
   rewrites; provider SDKs/calls; translation execution; creator-review service authorization;
   handoff changes; Core, desktop, Chrome, Zoom, or iOS changes; settings, infrastructure,
@@ -25,8 +25,9 @@
   transcript cannot first assert it.
 - Every source carries opaque Scribe-issued transcription-adapter, model-profile, and
   normalization-profile IDs. Provider speaker labels/IDs are replaced by normalizer-issued UUIDs.
-- Optional `locale_confidence` is bounded `0..1`. The accepted, versioned normalization profile owns
-  threshold and conflict policy; the domain invents no numeric threshold. `unknown` always blocks.
+- Optional `locale_confidence` is bounded `0..1` and signed zero is normalized. The accepted,
+  versioned normalization profile owns threshold and conflict policy; the domain invents no numeric
+  threshold. `unknown` always blocks.
 - A translation attempt has outcome `succeeded` with content/no failure code or `failed` with no
   content/a bounded failure code. Attempt IDs are unique; translation-version ordinals are
   Scribe-issued and scoped to the current source segment/version.
@@ -36,8 +37,10 @@
   One exact translation version has at most one terminal decision; one current source version has
   at most one accepted translation.
 - A working transcript has a stable Scribe-issued UUID per session and monotonically increasing
-  Scribe-issued version. Its frozen build input pins all source, attempt, and review evidence.
-  `note_ready` is computed and rejected as input.
+  Scribe-issued version. Its canonical derivation fingerprint pins the full source, every attempt,
+  and every review; canonical input-order changes converge. `note_ready` is computed and rejected.
+- Raw Pydantic structured errors are internal and unsafe. Future routes must use the sole sanitizer,
+  which caps issues and emits only allowlisted codes and schema-owned or sanitized locations.
 
 ## Risk and dependencies
 
@@ -55,8 +58,8 @@
 - Principal risks controlled here: silently discarded locale/provenance fields; overloading one
   content field as Spanish source and English note input; caller-selected identity, version, or
   readiness; inferred locale; an invented universal confidence threshold; stale/dangling evidence;
-  provider self-approval; competing review decisions; PHI in representations/errors; and
-  nondeterministic retries.
+  provider self-approval; competing review decisions; PHI in representations/errors; incomplete
+  lineage invalidation; and nondeterministic retries.
 
 ## Current deployed state
 
@@ -85,7 +88,7 @@
 1. Verify exact modes/locales/outcomes/decisions, strict and frozen input, source ordering and bounds,
    locale-confidence evidence, opaque profile IDs, attempt identity/version uniqueness, review
    chronology and referential integrity, accepted-review uniqueness, computed readiness,
-   deterministic fingerprints, and text-safe failures.
+   complete deterministic fingerprints, signed-zero convergence, and PHI-safe serialized failures.
 2. Obtain independent review of the final commit. Hold it without route, merge, deploy, provider
    configuration, or environment change.
 3. Merge the governing bilingual transcript contract before treating these values as cross-service

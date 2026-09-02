@@ -19,8 +19,11 @@ identifiers, and readiness assertions cannot become part of that contract.
 ## Decision
 
 Add a versioned, provider-neutral domain module with no route or persistence integration. Every
-model is strict, frozen, rejects unknown fields, and hides input values in validation errors. Text
-fields are omitted from representations.
+model is strict, frozen, rejects unknown fields, and hides input in rendered validation errors.
+Raw Pydantic structured errors remain internal and unsafe because they can retain input, context,
+URLs, messages, and caller-selected location tokens. Any future route must serialize a validation
+failure only through `serialize_external_transcript_validation_error`, which emits capped,
+allowlisted codes and schema-owned or sanitized locations. Text is omitted from representations.
 
 ### Source transcript
 
@@ -36,7 +39,8 @@ The only modes are `en-US` and `en-US+es-US`; the only source locales are `en-US
 Spanish segment. Either mode accepts `unknown`, which always blocks note readiness. Locale is never
 inferred from speaker role or confidence inside this domain. An admitted, versioned normalization
 profile owns its provider field, minimum-confidence, and conflict rules. This module records the
-profile and bounded confidence evidence but invents no universal threshold.
+profile and bounded confidence evidence but invents no universal threshold. Signed zero is
+normalized so semantically identical confidence values have one canonical representation.
 
 Provider speaker labels and IDs must be replaced with normalizer-issued opaque UUIDs before model
 construction. Raw provider or model names and identifiers are represented only by internal opaque
@@ -80,9 +84,10 @@ new source-segment and source-transcript version.
 ### English working transcript
 
 `EnglishWorkingTranscriptV1` has a stable Scribe-issued UUID per session and a Scribe-issued
-monotonically increasing version. The frozen bundle pins that identity/version and the complete
-current source, translation-attempt, and review-evidence inputs so construction is deterministic.
-No input schema accepts `note_ready`.
+monotonically increasing version. Its derivation fingerprint binds that identity/version and the
+complete canonical current source, every translation attempt, and every review input. Consequently,
+even an unselected attempt or review change stales the working version; input-order changes alone
+converge. No input schema accepts `note_ready`.
 
 - An English segment contributes its exact source text without a translation reference.
 - A Spanish segment contributes only a successful current translation with accepted review.
@@ -95,10 +100,10 @@ Working segments preserve source UUID/version, opaque speaker UUID, advisory rol
 and any selected translation UUID/version and review UUID. The serialized `note_ready` value is
 computed only from the derived blockers and resolutions.
 
-The canonical working fingerprint binds the complete derived object, including working and source
-versions, source/translation/review references, English content, resolutions, and blockers. Handoff
-and note retries can therefore pin the exact immutable working version rather than rebuilding from
-different evidence.
+The canonical working fingerprint binds the complete derived object and its derivation fingerprint,
+including working and source versions, source/translation/review references, English content,
+resolutions, and blockers. Handoff and note retries can therefore pin the exact immutable working
+version rather than rebuilding from different evidence.
 
 ### Retention boundary
 
