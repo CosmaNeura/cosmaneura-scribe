@@ -64,7 +64,29 @@ to fixed core events. One accepted frame may await consumption; the next tap
 fails closed instead of queueing audio.
 
 This target is not linked into an app and adds no permission description,
-background mode, entitlement, bridge, runtime selection, or distribution
-configuration. Simulator tests cannot validate microphone routing, Voice Chat
-signal processing, interruptions, Bluetooth behavior, permission UI, or audio
-session restoration. Those require separately authorized physical-device tests.
+background mode, entitlement, Capacitor plugin, runtime selection, or
+distribution configuration. Simulator tests cannot validate microphone
+routing, Voice Chat signal processing, interruptions, Bluetooth behavior,
+permission UI, or audio session restoration. Those require separately
+authorized physical-device tests.
+
+## Dormant bridge core
+
+`CosmaneuraIOSPCMBridgeCore` composes the core and driver behind a future
+Capacitor-friendly opaque session-token registry. It is also an unlinked Swift
+package product: no app target or capture factory imports it.
+
+The bridge owns one mutable byte packet awaiting explicit acknowledgement.
+Replay republishes that same packet without another audio copy, and a delivery
+lease prevents acknowledgement or retirement from clearing it while the event
+publisher is reading. Failed close keeps the token retryable; a successful
+automatic terminal close leaves one metadata-only tombstone so the TypeScript
+layer's following stop is idempotent. Start and lifecycle codes mirror the
+dormant TypeScript contract. Registry and stop failures stay bounded and are
+for a future wrapper to reject without native detail. The bridge performs no
+logging.
+
+This layer deliberately transports mutable bytes rather than creating an
+immutable Base64 string. The future Capacitor wrapper will own that conversion
+and its cleanup; WebKit/JavaScript copies and Apple-managed audio buffers remain
+activation risks until physical-device and wrapper evidence exists.

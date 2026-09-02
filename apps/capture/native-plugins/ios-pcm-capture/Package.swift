@@ -14,12 +14,20 @@ let package = Package(
       name: "CosmaneuraIOSAVFoundationDriver",
       targets: ["CosmaneuraIOSAVFoundationDriver"]
     ),
+    .library(
+      name: "CosmaneuraIOSPCMBridgeCore",
+      targets: ["CosmaneuraIOSPCMBridgeCore"]
+    ),
   ],
   targets: [
     .target(name: "CosmaneuraIOSPCMCore"),
     .target(
       name: "CosmaneuraIOSAVFoundationDriver",
       dependencies: ["CosmaneuraIOSPCMCore"]
+    ),
+    .target(
+      name: "CosmaneuraIOSPCMBridgeCore",
+      dependencies: ["CosmaneuraIOSPCMCore", "CosmaneuraIOSAVFoundationDriver"]
     ),
     .testTarget(
       name: "CosmaneuraIOSPCMCoreTests",
@@ -28,6 +36,14 @@ let package = Package(
     .testTarget(
       name: "CosmaneuraIOSAVFoundationDriverTests",
       dependencies: ["CosmaneuraIOSAVFoundationDriver", "CosmaneuraIOSPCMCore"]
+    ),
+    .testTarget(
+      name: "CosmaneuraIOSPCMBridgeCoreTests",
+      dependencies: [
+        "CosmaneuraIOSPCMBridgeCore",
+        "CosmaneuraIOSPCMCore",
+        "CosmaneuraIOSAVFoundationDriver",
+      ]
     ),
   ]
 )
