@@ -654,24 +654,29 @@ def upgrade() -> None:
                 RAISE EXCEPTION 'current working projection is outside the live session fence'
                     USING ERRCODE = '23514';
             END IF;
-            SELECT CASE
-                       WHEN bool_or(code IN ('source_overlap', 'source_locale_unknown'))
-                           THEN 'quality_blocked'
-                       WHEN bool_or(code IN (
-                           'translation_missing', 'translation_failed',
-                           'translation_retry_required'
-                       )) THEN 'translation_pending'
-                       WHEN bool_or(code = 'translation_review_required')
-                           THEN 'review_required'
-                       ELSE 'transcript_ready'
-                   END
-            INTO expected_status
-            FROM public.normalized_working_blockers
-            WHERE tenant_id = NEW.tenant_id AND session_id = NEW.id
-              AND working_transcript_version = NEW.current_working_transcript_version;
-            IF NEW.status IS DISTINCT FROM expected_status THEN
-                RAISE EXCEPTION 'working readiness does not match session state'
-                    USING ERRCODE = '23514';
+            IF NEW.status IN (
+                'translation_pending', 'review_required',
+                'quality_blocked', 'transcript_ready'
+            ) THEN
+                SELECT CASE
+                           WHEN bool_or(code IN ('source_overlap', 'source_locale_unknown'))
+                               THEN 'quality_blocked'
+                           WHEN bool_or(code IN (
+                               'translation_missing', 'translation_failed',
+                               'translation_retry_required'
+                           )) THEN 'translation_pending'
+                           WHEN bool_or(code = 'translation_review_required')
+                               THEN 'review_required'
+                           ELSE 'transcript_ready'
+                       END
+                INTO expected_status
+                FROM public.normalized_working_blockers
+                WHERE tenant_id = NEW.tenant_id AND session_id = NEW.id
+                  AND working_transcript_version = NEW.current_working_transcript_version;
+                IF NEW.status IS DISTINCT FROM expected_status THEN
+                    RAISE EXCEPTION 'working readiness does not match session state'
+                        USING ERRCODE = '23514';
+                END IF;
             END IF;
             RETURN NULL;
         END;

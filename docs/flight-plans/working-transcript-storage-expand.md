@@ -4,7 +4,7 @@
 
 - Outcome: Alembic `0013` can retain immutable, versioned English working projections with exact
   source, translation, review, blocker, and unused-evidence lineage.
-- Tier 2; exact parent `2cf556b612033badd26ea2c1c19c8307d2099b6a`; architecture
+- Tier 2; exact parent `c3c41662285565acd5aee1b63242e2ab63ea6300`; architecture
   `356bbd839deacdcecb372035f7652d3f3436d0a7`; synthetic disposable PostgreSQL only.
 - In scope: two nullable session projection fields, five tables, composite keys, forced RLS,
   immutable/purge/fence triggers, deferred completeness checks, migration cycle, tests, and ADR.

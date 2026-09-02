@@ -10,7 +10,7 @@ fingerprint. Handoff must not infer a projection from mutable session state or p
 
 ## Decision
 
-Revision `0013`, based on reviewed commit `2cf556b612033badd26ea2c1c19c8307d2099b6a`
+Revision `0013`, based on reviewed commit `c3c41662285565acd5aee1b63242e2ab63ea6300`
 and architecture contract `356bbd839deacdcecb372035f7652d3f3436d0a7`, adds a stable nullable
 working-transcript identity and nullable current version to configured sessions. Five forced-RLS
 tables store immutable version headers, complete translation-attempt membership, complete review
@@ -24,10 +24,11 @@ the version. Deferred checks reject missing or extra source segments, evidence m
 blockers, forged content, stale evidence, count/character mismatch, non-current pointers, expiry,
 or purge. Old-version segments are excluded when validating a replacement projection.
 
-Status is exact: overlap or unknown locale yields `quality_blocked`; otherwise missing, latest
-failed, or latest rejected translation yields `translation_pending`; otherwise an unreviewed latest
-success yields `review_required`; and zero blockers yields `transcript_ready`. An accepted review
-wins for its source segment. Older attempts and reviews remain bound as fingerprint inputs.
+For an opted-in working projection, status is exact: overlap or unknown locale yields
+`quality_blocked`; otherwise missing, latest failed, or latest rejected translation yields
+`translation_pending`; otherwise an unreviewed latest success yields `review_required`; and zero
+blockers yields `transcript_ready`. Terminal transitions retain the immutable pointer under the
+existing lifecycle rules. Older attempts and reviews remain bound as fingerprint inputs.
 
 Updates are rejected. Deletes require the monotonic purge marker and normally cascade from the
 source root. No grants, repositories, API/OpenAPI, workers, settings, bootstrap, handoff, migration

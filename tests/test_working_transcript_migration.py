@@ -360,6 +360,16 @@ async def test_ready_projection_preserves_exact_selected_and_complete_input_line
             with pytest.raises(DBAPIError, match=match):
                 await connection.execute(text(statement))
             await savepoint.rollback()
+    async with engine.begin() as connection:
+        pointer = await connection.scalar(
+            text(
+                "UPDATE scribe_sessions SET status = 'handed_off' "
+                "WHERE tenant_id = :tenant AND id = :session "
+                "RETURNING current_working_transcript_version"
+            ),
+            {"tenant": tenant_id, "session": session_id},
+        )
+        assert pointer == 1
     await engine.dispose()
 
 
@@ -390,7 +400,7 @@ async def test_overlap_and_unknown_have_complete_canonical_blockers(
 
 
 @pytest.mark.asyncio
-async def test_rejection_state_is_deferred_but_every_unused_input_is_bound(
+async def test_rejected_and_latest_failed_inputs_are_bound_across_versions(
     postgres_urls: tuple[str, str],
 ) -> None:
     admin_url, _ = postgres_urls
@@ -439,6 +449,25 @@ async def test_rejection_state_is_deferred_but_every_unused_input_is_bound(
             )
         ).one()
         assert row == (2, 1, ["translation_retry_required", "translation_failed"])
+        await connection.execute(
+            text(
+                "INSERT INTO external_session_terminal_events "
+                "(tenant_id, session_id, event_id, prior_status, failure_code, "
+                "principal_type, principal_id) VALUES (:tenant, :session, :event, "
+                "'translation_pending', 'irrecoverable_integrity_failure', "
+                "'operator', 'actor_operator')"
+            ),
+            {"tenant": tenant_id, "session": session_id, "event": uuid4()},
+        )
+        pointer = await connection.scalar(
+            text(
+                "UPDATE scribe_sessions SET status = 'failed' "
+                "WHERE tenant_id = :tenant AND id = :session "
+                "RETURNING current_working_transcript_version"
+            ),
+            {"tenant": tenant_id, "session": session_id},
+        )
+        assert pointer == 2
     await engine.dispose()
 
 
