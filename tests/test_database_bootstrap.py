@@ -287,6 +287,9 @@ async def test_runtime_permissions_revoke_stale_access_before_exact_grants(
         assert readable_lifecycle_column in grants
     assert "UPDATE (content_purged_at" not in grants
     assert "content_purged_at, current_source_transcript_version) ON scribe_sessions" in grants
+    assert "working_transcript_id" not in grants
+    assert "current_working_transcript_version" not in grants
+    assert "normalized_working_" not in grants
     assert "external_session_terminal_events" not in grants
     assert "GRANT INSERT ON audit_events" in grants
     assert "DELETE" not in grants
