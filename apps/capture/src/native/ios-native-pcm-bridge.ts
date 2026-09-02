@@ -43,8 +43,10 @@ export interface IosNativePcmPacket {
   /** Starts at zero and advances by exactly one for each packet. */
   readonly sequenceNumber: number;
   /**
-   * Ownership transfers to the sink. The bridge must not retain or reuse this
-   * little-endian PCM16 buffer; the receiver zeroes it before acknowledging it.
+   * Ownership transfers to the sink. This must span its complete ArrayBuffer;
+   * aliased/subview buffers are rejected. The bridge must not retain or reuse
+   * the little-endian PCM16 bytes; the receiver zeroes the entire ArrayBuffer
+   * before acknowledging the packet.
    */
   readonly pcmBytes: Uint8Array<ArrayBuffer>;
 }
@@ -56,12 +58,34 @@ export interface IosNativePcmSink {
   readonly onError: (code: IosNativeMicrophoneTerminalErrorCode) => void;
 }
 
+export type IosNativeMicrophoneStopMode = "drain" | "discard";
+
+export interface IosNativeMicrophoneStopOptions {
+  readonly mode: IosNativeMicrophoneStopMode;
+}
+
+export interface IosNativeMicrophoneStopResult {
+  /** Present only for `drain`; it must contain fewer than one full chunk. */
+  readonly finalPcmPacket: IosNativePcmPacket | null;
+}
+
+/**
+ * One native capture generation. A rejected stop means closure is unconfirmed:
+ * the same handle remains valid and stop must be retried. A successful `drain`
+ * first awaits any in-flight sink acknowledgement, stops production, then
+ * transfers at most one final partial packet. A successful `discard` clears
+ * the native partial buffer and returns no packet. Either successful mode
+ * confirms that the audio session is released and no callbacks can follow.
+ */
+export interface IosNativeMicrophoneSession {
+  stop(options: IosNativeMicrophoneStopOptions): Promise<IosNativeMicrophoneStopResult>;
+}
+
 /**
  * Dormant TypeScript boundary for a future foreground-only iOS implementation.
  *
- * `stop` must be idempotent (including during `start`), stop native production
- * before it resolves, release the audio session, and zero native buffers. No
- * implementation may log audio, encoded content, device labels, or native
+ * A rejected `start` guarantees that it retained no native capture resources.
+ * No implementation may log audio, encoded content, device labels, or native
  * exception messages.
  */
 export interface IosNativeMicrophoneBridge {
@@ -70,6 +94,8 @@ export interface IosNativeMicrophoneBridge {
    * Resolve only after the foreground audio session is ready. Do not emit a
    * packet before resolution, and never emit while the app is backgrounded.
    */
-  start(configuration: IosNativePcmConfiguration, sink: IosNativePcmSink): Promise<void>;
-  stop(): Promise<void>;
+  start(
+    configuration: IosNativePcmConfiguration,
+    sink: IosNativePcmSink,
+  ): Promise<IosNativeMicrophoneSession>;
 }

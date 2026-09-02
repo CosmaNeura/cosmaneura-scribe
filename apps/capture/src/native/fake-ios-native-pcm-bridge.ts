@@ -2,6 +2,10 @@ import type {
   IosNativeAppState,
   IosNativeMicrophoneBridge,
   IosNativeMicrophoneInterruptionCode,
+  IosNativeMicrophoneSession,
+  IosNativeMicrophoneStopMode,
+  IosNativeMicrophoneStopOptions,
+  IosNativeMicrophoneStopResult,
   IosNativeMicrophoneTerminalErrorCode,
   IosNativePcmConfiguration,
   IosNativePcmPacket,
@@ -10,13 +14,17 @@ import type {
 
 /** Metadata-only fake used to exercise the dormant adapter without native audio. */
 export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
-  #activeSink: IosNativePcmSink | undefined;
+  #activeSession: FakeIosNativeMicrophoneSession | undefined;
   #appState: IosNativeAppState = "foreground";
+  #finalPcmPacket: IosNativePcmPacket | null = null;
+  #retainedSinks: IosNativePcmSink[] = [];
   #startFailure: unknown;
+  #stopFailuresRemaining = 0;
 
   public lastConfiguration: IosNativePcmConfiguration | undefined;
   public startCalls = 0;
   public stopCalls = 0;
+  public readonly stopModes: IosNativeMicrophoneStopMode[] = [];
 
   public getAppState(): Promise<IosNativeAppState> {
     return Promise.resolve(this.#appState);
@@ -25,7 +33,7 @@ export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
   public start(
     configuration: IosNativePcmConfiguration,
     sink: IosNativePcmSink,
-  ): Promise<void> {
+  ): Promise<IosNativeMicrophoneSession> {
     this.startCalls += 1;
     if (this.#startFailure !== undefined) {
       return Promise.reject(
@@ -34,18 +42,14 @@ export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
           : new Error("fake_ios_bridge_start_failed"),
       );
     }
-    if (this.#activeSink !== undefined) {
+    if (this.#activeSession !== undefined) {
       return Promise.reject(new Error("fake_ios_bridge_already_active"));
     }
     this.lastConfiguration = { ...configuration };
-    this.#activeSink = sink;
-    return Promise.resolve();
-  }
-
-  public stop(): Promise<void> {
-    this.stopCalls += 1;
-    this.#activeSink = undefined;
-    return Promise.resolve();
+    this.#retainedSinks.push(sink);
+    const session = new FakeIosNativeMicrophoneSession(this, sink);
+    this.#activeSession = session;
+    return Promise.resolve(session);
   }
 
   public setAppState(state: IosNativeAppState): void {
@@ -56,20 +60,94 @@ export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
     this.#startFailure = error;
   }
 
+  public failNextStops(count = 1): void {
+    this.#stopFailuresRemaining = count;
+  }
+
+  public setFinalPcmPacket(packet: IosNativePcmPacket): void {
+    this.#finalPcmPacket = packet;
+  }
+
   public emitPcmPacket(packet: IosNativePcmPacket): Promise<void> {
-    return this.#requireSink().onPcmPacket(packet);
+    return this.#requireActiveSession().sink.onPcmPacket(packet);
   }
 
   public emitInterruption(code: IosNativeMicrophoneInterruptionCode): void {
-    this.#requireSink().onInterruption(code);
+    this.#requireActiveSession().sink.onInterruption(code);
   }
 
   public emitError(code: IosNativeMicrophoneTerminalErrorCode): void {
-    this.#requireSink().onError(code);
+    this.#requireActiveSession().sink.onError(code);
   }
 
-  #requireSink(): IosNativePcmSink {
-    if (this.#activeSink === undefined) throw new Error("fake_ios_bridge_not_active");
-    return this.#activeSink;
+  public emitRetainedPcmPacket(index: number, packet: IosNativePcmPacket): Promise<void> {
+    return this.#requireRetainedSink(index).onPcmPacket(packet);
+  }
+
+  public emitRetainedInterruption(
+    index: number,
+    code: IosNativeMicrophoneInterruptionCode,
+  ): void {
+    this.#requireRetainedSink(index).onInterruption(code);
+  }
+
+  public emitRetainedError(
+    index: number,
+    code: IosNativeMicrophoneTerminalErrorCode,
+  ): void {
+    this.#requireRetainedSink(index).onError(code);
+  }
+
+  public stopSession(
+    session: FakeIosNativeMicrophoneSession,
+    options: IosNativeMicrophoneStopOptions,
+  ): Promise<IosNativeMicrophoneStopResult> {
+    this.stopCalls += 1;
+    this.stopModes.push(options.mode);
+    if (session !== this.#activeSession) {
+      return Promise.reject(new Error("fake_ios_bridge_stale_session"));
+    }
+    if (this.#stopFailuresRemaining > 0) {
+      this.#stopFailuresRemaining -= 1;
+      return Promise.reject(new Error("fake_ios_bridge_stop_failed"));
+    }
+
+    const finalPcmPacket = options.mode === "drain" ? this.#finalPcmPacket : null;
+    if (options.mode === "discard" && this.#finalPcmPacket !== null) {
+      zeroWholeBuffer(this.#finalPcmPacket.pcmBytes);
+    }
+    this.#finalPcmPacket = null;
+    this.#activeSession = undefined;
+    return Promise.resolve({ finalPcmPacket });
+  }
+
+  #requireActiveSession(): FakeIosNativeMicrophoneSession {
+    if (this.#activeSession === undefined) throw new Error("fake_ios_bridge_not_active");
+    return this.#activeSession;
+  }
+
+  #requireRetainedSink(index: number): IosNativePcmSink {
+    const sink = this.#retainedSinks[index];
+    if (sink === undefined) throw new Error("fake_ios_bridge_sink_not_found");
+    return sink;
+  }
+}
+
+class FakeIosNativeMicrophoneSession implements IosNativeMicrophoneSession {
+  public constructor(
+    private readonly bridge: FakeIosNativePcmBridge,
+    public readonly sink: IosNativePcmSink,
+  ) {}
+
+  public stop(options: IosNativeMicrophoneStopOptions): Promise<IosNativeMicrophoneStopResult> {
+    return this.bridge.stopSession(this, options);
+  }
+}
+
+function zeroWholeBuffer(bytes: Uint8Array): void {
+  try {
+    new Uint8Array(bytes.buffer).fill(0);
+  } catch {
+    // The fake mirrors native best-effort cleanup for invalid/detached buffers.
   }
 }

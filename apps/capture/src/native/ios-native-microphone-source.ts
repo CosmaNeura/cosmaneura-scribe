@@ -17,6 +17,9 @@ import {
   IosNativeMicrophoneBridgeError,
   type IosNativeMicrophoneBridge,
   type IosNativeMicrophoneInterruptionCode,
+  type IosNativeMicrophoneSession,
+  type IosNativeMicrophoneStopMode,
+  type IosNativeMicrophoneStopResult,
   type IosNativeMicrophoneTerminalErrorCode,
   type IosNativePcmConfiguration,
   type IosNativePcmPacket,
@@ -28,6 +31,38 @@ interface CaptureBounds {
   readonly targetFramesPerChunk: number;
 }
 
+type CaptureRunPhase =
+  | "checking_foreground"
+  | "starting_native"
+  | "active"
+  | "closing"
+  | "close_failed"
+  | "closed";
+
+interface CaptureRun {
+  readonly generation: number;
+  phase: CaptureRunPhase;
+  cancelReason: "abort" | "stop" | "terminal" | undefined;
+  stopMode: IosNativeMicrophoneStopMode | undefined;
+  terminalFailure: AudioCaptureError | undefined;
+  stopFailureNotified: boolean;
+  abortHandler: (() => void) | undefined;
+  abortSignal: AbortSignal | undefined;
+  nativeStartPromise: Promise<IosNativeMicrophoneSession> | undefined;
+  nativeSession: IosNativeMicrophoneSession | undefined;
+  closePromise: Promise<void> | undefined;
+  deliveryInFlight: boolean;
+  pendingDelivery: Promise<void>;
+  deliveredChunks: number;
+  expectedSequenceNumber: number;
+  readonly maximumChunks: number;
+  readonly targetFramesPerChunk: number;
+  readonly profile: Pcm16WavProfile;
+  onChunk: ((chunk: CapturedWavChunk) => Promise<void>) | undefined;
+  onError: ((code: CaptureSourceErrorCode) => void) | undefined;
+  onInterruption: ((code: CaptureSourceInterruptionCode) => void) | undefined;
+}
+
 /**
  * Dormant adapter from an injected iOS PCM bridge to the existing WAV source.
  * No runtime factory imports or selects this class.
@@ -36,140 +71,187 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
   public readonly kind = "microphone" as const;
 
   readonly #bridge: IosNativeMicrophoneBridge;
-  #abortHandler: (() => void) | undefined;
-  #abortSignal: AbortSignal | undefined;
-  #bridgeStartAttempted = false;
-  #deliveryInFlight = false;
-  #deliveredChunks = 0;
-  #expectedSequenceNumber = 0;
-  #maximumChunks = 0;
-  #onChunk: ((chunk: CapturedWavChunk) => Promise<void>) | undefined;
-  #onError: ((code: CaptureSourceErrorCode) => void) | undefined;
-  #onInterruption: ((code: CaptureSourceInterruptionCode) => void) | undefined;
-  #pendingDelivery: Promise<void> = Promise.resolve();
-  #profile: Pcm16WavProfile | undefined;
-  #shutdownPromise: Promise<void> | undefined;
-  #state: "idle" | "starting" | "active" | "stopping" = "idle";
-  #targetFramesPerChunk = 0;
-  #terminal = false;
-  #terminalFailure: AudioCaptureError | undefined;
+  #generation = 0;
+  #run: CaptureRun | undefined;
 
   public constructor(bridge: IosNativeMicrophoneBridge) {
     this.#bridge = bridge;
   }
 
   public async start(options: CaptureSourceStartOptions): Promise<void> {
-    if (this.#state !== "idle") {
-      throw new AudioCaptureError("audio_capture_already_active");
+    if (this.#run !== undefined) {
+      throw new AudioCaptureError(
+        this.#run.phase === "close_failed"
+          ? "audio_capture_native_stop_failed"
+          : "audio_capture_already_active",
+      );
     }
     if (isAborted(options.signal)) throw abortError();
 
-    this.#resetForStart();
-    this.#state = "starting";
+    const bounds = captureBounds(options);
+    const run = this.#createRun(options, bounds);
+    this.#run = run;
+    this.#addAbortHandler(run, options.signal);
+
+    let appState: unknown;
     try {
-      const bounds = captureBounds(options);
-      await this.#requireForeground();
-      if (isAborted(options.signal)) throw abortError();
-
-      this.#maximumChunks = bounds.maximumChunks;
-      this.#onChunk = options.onChunk;
-      this.#onError = options.onError;
-      this.#onInterruption = options.onInterruption;
-      this.#profile = bounds.profile;
-      this.#targetFramesPerChunk = bounds.targetFramesPerChunk;
-      this.#addAbortHandler(options.signal);
-
-      const configuration: IosNativePcmConfiguration = {
-        ...IOS_NATIVE_PCM_FORMAT,
-        targetFramesPerChunk: bounds.targetFramesPerChunk,
-        maximumChunks: bounds.maximumChunks,
-      };
-      this.#bridgeStartAttempted = true;
-      await this.#bridge.start(configuration, {
-        onPcmPacket: (packet) => this.#receivePcmPacket(packet),
-        onInterruption: (code) => this.#receiveInterruption(code),
-        onError: (code) => this.#receiveTerminalError(code),
-      });
-      if (isAborted(options.signal)) throw abortError();
-      if (this.#state !== "starting" || this.#terminal) {
-        throw this.#terminalFailure ?? new AudioCaptureError("audio_capture_unavailable");
-      }
-      this.#state = "active";
-      await this.#requireForeground();
-      if (isAborted(options.signal)) throw abortError();
-      if (this.#state !== "active" || this.#terminal) {
-        throw this.#terminalFailure ?? new AudioCaptureError("audio_capture_unavailable");
-      }
+      this.#assertStartingRun(run, "checking_foreground");
+      appState = await this.#bridge.getAppState();
+      this.#assertStartingRun(run, "checking_foreground");
     } catch (error) {
-      const failure = isAbortError(error) ? error : sanitizeStartFailure(error);
-      await this.#shutdown().catch(() => undefined);
-      throw failure;
+      if (this.#isCurrentRun(run) && run.phase === "checking_foreground") {
+        this.#finalizeRun(run);
+      }
+      throw startFailureFor(run, error);
     }
+    if (appState !== "foreground") {
+      this.#finalizeRun(run);
+      throw new AudioCaptureError("audio_capture_unavailable");
+    }
+
+    this.#assertStartingRun(run, "checking_foreground");
+    run.phase = "starting_native";
+    const configuration: IosNativePcmConfiguration = {
+      ...IOS_NATIVE_PCM_FORMAT,
+      targetFramesPerChunk: bounds.targetFramesPerChunk,
+      maximumChunks: bounds.maximumChunks,
+    };
+    const generation = run.generation;
+    this.#assertStartingRun(run, "starting_native");
+    const nativeStart = deferred<IosNativeMicrophoneSession>();
+    run.nativeStartPromise = nativeStart.promise;
+    try {
+      const bridgeStart = this.#bridge.start(configuration, {
+        onPcmPacket: (packet) => this.#receivePcmPacket(run, generation, packet),
+        onInterruption: (code) => this.#receiveInterruption(run, generation, code),
+        onError: (code) => this.#receiveTerminalError(run, generation, code),
+      });
+      void bridgeStart.then(nativeStart.resolve, nativeStart.reject);
+    } catch (error) {
+      nativeStart.reject(error);
+    }
+
+    let nativeSession: IosNativeMicrophoneSession;
+    try {
+      nativeSession = await nativeStart.promise;
+    } catch (error) {
+      if (this.#isCurrentRun(run) && run.phase === "starting_native") {
+        run.nativeStartPromise = undefined;
+        this.#finalizeRun(run);
+      } else if (run.closePromise !== undefined) {
+        await run.closePromise;
+      }
+      throw startFailureFor(run, error);
+    }
+
+    if (!this.#isCurrentRun(run) || run.phase !== "starting_native") {
+      if (run.closePromise !== undefined) await run.closePromise;
+      throw startFailureFor(run, abortError());
+    }
+    run.nativeStartPromise = undefined;
+    run.nativeSession = nativeSession;
+    if (isAborted(options.signal)) {
+      run.cancelReason = "abort";
+      await this.#requestClose(run, "discard");
+      throw abortError();
+    }
+    this.#assertStartingRun(run, "starting_native");
+    run.phase = "active";
   }
 
   public async stop(): Promise<void> {
-    await this.#shutdown();
+    const run = this.#run;
+    if (run === undefined) return;
+    const mode = run.stopMode ??
+      (run.phase === "active" && run.terminalFailure === undefined ? "drain" : "discard");
+    if (run.cancelReason === undefined) run.cancelReason = "stop";
+    await this.#requestClose(run, mode);
   }
 
-  async #requireForeground(): Promise<void> {
-    let state: unknown;
-    try {
-      state = await this.#bridge.getAppState();
-    } catch {
-      throw new AudioCaptureError("audio_capture_unavailable");
-    }
-    if (state !== "foreground") {
-      throw new AudioCaptureError("audio_capture_unavailable");
-    }
-  }
-
-  #addAbortHandler(signal: AbortSignal | undefined): void {
-    if (signal === undefined) return;
-    this.#abortSignal = signal;
-    this.#abortHandler = () => {
-      void this.#shutdown().catch(() => undefined);
+  #createRun(options: CaptureSourceStartOptions, bounds: CaptureBounds): CaptureRun {
+    this.#generation += 1;
+    return {
+      generation: this.#generation,
+      phase: "checking_foreground",
+      cancelReason: undefined,
+      stopMode: undefined,
+      terminalFailure: undefined,
+      stopFailureNotified: false,
+      abortHandler: undefined,
+      abortSignal: undefined,
+      nativeStartPromise: undefined,
+      nativeSession: undefined,
+      closePromise: undefined,
+      deliveryInFlight: false,
+      pendingDelivery: Promise.resolve(),
+      deliveredChunks: 0,
+      expectedSequenceNumber: 0,
+      maximumChunks: bounds.maximumChunks,
+      targetFramesPerChunk: bounds.targetFramesPerChunk,
+      profile: bounds.profile,
+      onChunk: options.onChunk,
+      onError: options.onError,
+      onInterruption: options.onInterruption,
     };
-    signal.addEventListener("abort", this.#abortHandler, { once: true });
   }
 
-  #receivePcmPacket(packet: IosNativePcmPacket): Promise<void> {
-    if (this.#terminal || this.#state === "idle" || this.#state === "stopping") {
+  #addAbortHandler(run: CaptureRun, signal: AbortSignal | undefined): void {
+    if (signal === undefined) return;
+    run.abortSignal = signal;
+    run.abortHandler = () => {
+      if (!this.#isCurrentRun(run)) return;
+      run.cancelReason = "abort";
+      void this.#requestClose(run, "discard").catch(() => undefined);
+    };
+    signal.addEventListener("abort", run.abortHandler, { once: true });
+  }
+
+  #receivePcmPacket(
+    run: CaptureRun,
+    generation: number,
+    packet: IosNativePcmPacket,
+  ): Promise<void> {
+    if (!this.#isCurrentGeneration(run, generation)) {
       zeroPacket(packet);
-      return Promise.resolve();
+      return Promise.reject(new AudioCaptureError("audio_capture_stale_generation"));
     }
-    if (this.#state !== "active") {
+    if (run.phase !== "active" || run.terminalFailure !== undefined) {
       zeroPacket(packet);
       const failure = new AudioCaptureError("audio_capture_native_protocol_error");
-      this.#failWithError(failure, "capture_source_stalled");
+      this.#markTerminal(run, failure, "capture_source_stalled");
       return Promise.reject(failure);
     }
-    if (this.#deliveryInFlight) {
+    if (run.deliveryInFlight) {
       zeroPacket(packet);
       const failure = new AudioCaptureError("audio_capture_native_protocol_error");
-      this.#failWithError(failure, "capture_source_stalled");
+      this.#markTerminal(run, failure, "capture_source_stalled");
       return Promise.reject(failure);
     }
 
-    this.#deliveryInFlight = true;
-    const delivery = this.#deliverPcmPacket(packet).finally(() => {
-      this.#deliveryInFlight = false;
+    run.deliveryInFlight = true;
+    const delivery = this.#deliverPcmPacket(run, packet, false).finally(() => {
+      if (this.#isCurrentGeneration(run, generation)) run.deliveryInFlight = false;
     });
-    this.#pendingDelivery = delivery.catch(() => undefined);
+    run.pendingDelivery = delivery.catch(() => undefined);
     void delivery.catch((error: unknown) => {
       const failure = sanitizePacketFailure(error);
-      this.#failWithError(failure, packetFailureSignal(failure));
+      this.#markTerminal(run, failure, packetFailureSignal(failure));
     });
     return delivery;
   }
 
-  async #deliverPcmPacket(packet: IosNativePcmPacket): Promise<void> {
+  async #deliverPcmPacket(
+    run: CaptureRun,
+    packet: IosNativePcmPacket,
+    finalPartial: boolean,
+  ): Promise<void> {
     try {
       const pcmBytes = requirePcmBytes(packet);
       const sequenceNumber = requireSequenceNumber(packet);
-      if (sequenceNumber !== this.#expectedSequenceNumber) {
+      if (sequenceNumber !== run.expectedSequenceNumber) {
         throw new AudioCaptureError("audio_capture_native_protocol_error");
       }
-      if (this.#deliveredChunks >= this.#maximumChunks) {
+      if (run.deliveredChunks >= run.maximumChunks) {
         throw new AudioCaptureError("audio_capture_output_limit_exceeded");
       }
       if (
@@ -179,27 +261,34 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
         throw new AudioCaptureError("audio_capture_native_protocol_error");
       }
       const frameCount = pcmBytes.byteLength / Int16Array.BYTES_PER_ELEMENT;
-      if (frameCount > this.#targetFramesPerChunk) {
+      if (
+        frameCount > run.targetFramesPerChunk ||
+        (finalPartial && frameCount >= run.targetFramesPerChunk)
+      ) {
         throw new AudioCaptureError("audio_capture_output_limit_exceeded");
       }
 
       const samples = decodeLittleEndianPcm16(pcmBytes);
       let wavBytes: Uint8Array<ArrayBuffer>;
       try {
-        wavBytes = encodePcm16MonoWav(samples, this.#requireProfile());
+        wavBytes = encodePcm16MonoWav(samples, run.profile);
       } finally {
         samples.fill(0);
       }
 
-      this.#expectedSequenceNumber += 1;
-      this.#deliveredChunks += 1;
+      run.expectedSequenceNumber += 1;
+      run.deliveredChunks += 1;
       const chunk: CapturedWavChunk = {
         sequenceNumber,
         durationMs: frameCount * 1_000 / IOS_NATIVE_PCM_FORMAT.sampleRateHz,
         wavBytes,
       };
       try {
-        await this.#requireOnChunk()(chunk);
+        const onChunk = run.onChunk;
+        if (onChunk === undefined) {
+          throw new AudioCaptureError("audio_capture_unavailable");
+        }
+        await onChunk(chunk);
       } catch {
         throw new AudioCaptureError("audio_capture_callback_failed");
       } finally {
@@ -210,115 +299,204 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
     }
   }
 
-  #receiveInterruption(code: IosNativeMicrophoneInterruptionCode): void {
+  #receiveInterruption(
+    run: CaptureRun,
+    generation: number,
+    code: IosNativeMicrophoneInterruptionCode,
+  ): void {
+    if (!this.#isCurrentGeneration(run, generation)) return;
     const mapped = mapInterruption(code);
     if (mapped === undefined) {
-      this.#failWithError(
+      this.#markTerminal(
+        run,
         new AudioCaptureError("audio_capture_native_protocol_error"),
         "capture_source_failed",
       );
       return;
     }
-    this.#fail(
-      () => this.#onInterruption?.(mapped),
+    this.#markTerminal(
+      run,
       new AudioCaptureError("audio_capture_unavailable"),
+      undefined,
+      () => run.onInterruption?.(mapped),
     );
   }
 
-  #receiveTerminalError(code: IosNativeMicrophoneTerminalErrorCode): void {
+  #receiveTerminalError(
+    run: CaptureRun,
+    generation: number,
+    code: IosNativeMicrophoneTerminalErrorCode,
+  ): void {
+    if (!this.#isCurrentGeneration(run, generation)) return;
     const mapped = mapTerminalError(code);
     if (mapped === undefined) {
-      this.#failWithError(
+      this.#markTerminal(
+        run,
         new AudioCaptureError("audio_capture_native_protocol_error"),
         "capture_source_failed",
       );
       return;
     }
-    this.#failWithError(new AudioCaptureError(mapped.failure), mapped.signal);
+    this.#markTerminal(run, new AudioCaptureError(mapped.failure), mapped.signal);
   }
 
-  #failWithError(error: AudioCaptureError, code: CaptureSourceErrorCode): void {
-    this.#fail(() => this.#onError?.(code), error);
-  }
-
-  #fail(notify: () => void, error: AudioCaptureError): void {
-    if (this.#terminal || (this.#state !== "starting" && this.#state !== "active")) return;
-    this.#terminal = true;
-    this.#terminalFailure = error;
-    try {
-      notify();
-    } catch {
-      // The source is terminal; notification code cannot reopen native capture.
-    }
-    void this.#shutdown().catch(() => undefined);
-  }
-
-  #shutdown(): Promise<void> {
-    if (this.#shutdownPromise !== undefined) return this.#shutdownPromise;
-    if (this.#state === "idle") return Promise.resolve();
-    this.#state = "stopping";
-    this.#shutdownPromise = this.#performShutdown().finally(() => {
-      this.#state = "idle";
-      this.#shutdownPromise = undefined;
-    });
-    return this.#shutdownPromise;
-  }
-
-  async #performShutdown(): Promise<void> {
-    let stopFailed = false;
-    if (this.#bridgeStartAttempted) {
+  #markTerminal(
+    run: CaptureRun,
+    failure: AudioCaptureError,
+    errorCode: CaptureSourceErrorCode | undefined,
+    interruptionNotification?: () => void,
+  ): void {
+    if (!this.#isCurrentRun(run) || run.phase === "closed") return;
+    if (run.terminalFailure === undefined) {
+      run.terminalFailure = failure;
+      run.cancelReason = "terminal";
+      run.stopMode = "discard";
       try {
-        await this.#bridge.stop();
+        if (interruptionNotification !== undefined) interruptionNotification();
+        else if (errorCode !== undefined) run.onError?.(errorCode);
       } catch {
-        stopFailed = true;
+        // The run is terminal; notification code cannot reopen native capture.
       }
     }
-    await this.#pendingDelivery;
-    this.#removeAbortHandler();
-    this.#bridgeStartAttempted = false;
-    this.#deliveryInFlight = false;
-    this.#maximumChunks = 0;
-    this.#onChunk = undefined;
-    this.#onError = undefined;
-    this.#onInterruption = undefined;
-    this.#profile = undefined;
-    this.#targetFramesPerChunk = 0;
-    if (stopFailed) throw new AudioCaptureError("audio_capture_unavailable");
+    void this.#requestClose(run, "discard").catch(() => undefined);
   }
 
-  #removeAbortHandler(): void {
-    if (this.#abortSignal !== undefined && this.#abortHandler !== undefined) {
-      this.#abortSignal.removeEventListener("abort", this.#abortHandler);
+  #requestClose(run: CaptureRun, mode: IosNativeMicrophoneStopMode): Promise<void> {
+    if (!this.#isCurrentRun(run)) return Promise.resolve();
+    if (mode === "discard" || run.stopMode === undefined) run.stopMode = mode;
+    if (run.closePromise !== undefined) return run.closePromise;
+
+    run.phase = "closing";
+    const attempt = this.#performClose(run);
+    run.closePromise = attempt;
+    void attempt.then(
+      () => this.#clearClosePromise(run, attempt),
+      () => this.#clearClosePromise(run, attempt),
+    );
+    return attempt;
+  }
+
+  async #performClose(run: CaptureRun): Promise<void> {
+    let nativeSession = run.nativeSession;
+    if (nativeSession === undefined && run.nativeStartPromise !== undefined) {
+      try {
+        nativeSession = await run.nativeStartPromise;
+      } catch {
+        if (this.#isClosingRun(run)) {
+          run.nativeStartPromise = undefined;
+          this.#finalizeRun(run);
+        }
+        return;
+      }
+      this.#assertClosingRun(run);
+      run.nativeStartPromise = undefined;
+      run.nativeSession = nativeSession;
     }
-    this.#abortHandler = undefined;
-    this.#abortSignal = undefined;
-  }
 
-  #requireOnChunk(): (chunk: CapturedWavChunk) => Promise<void> {
-    if (this.#onChunk === undefined) {
-      throw new AudioCaptureError("audio_capture_unavailable");
+    if (nativeSession === undefined) {
+      this.#assertClosingRun(run);
+      this.#finalizeRun(run);
+      return;
     }
-    return this.#onChunk;
-  }
 
-  #requireProfile(): Pcm16WavProfile {
-    if (this.#profile === undefined) {
-      throw new AudioCaptureError("audio_capture_unavailable");
+    this.#assertClosingRun(run);
+    const requestedMode = run.stopMode ?? "discard";
+    let stopResult: IosNativeMicrophoneStopResult;
+    try {
+      stopResult = await nativeSession.stop({ mode: requestedMode });
+    } catch {
+      if (this.#isClosingRun(run)) {
+        run.phase = "close_failed";
+        run.nativeSession = nativeSession;
+        this.#notifyStopFailure(run);
+      }
+      throw new AudioCaptureError("audio_capture_native_stop_failed");
     }
-    return this.#profile;
+    this.#assertClosingRun(run);
+
+    await run.pendingDelivery;
+    this.#assertClosingRun(run);
+    let postStopFailure: AudioCaptureError | undefined;
+    try {
+      const finalPcmPacket = requireStopResult(stopResult);
+      if (requestedMode === "discard") {
+        if (finalPcmPacket !== null) {
+          zeroPacket(finalPcmPacket);
+          throw new AudioCaptureError("audio_capture_native_protocol_error");
+        }
+      } else if (run.stopMode === "discard") {
+        if (finalPcmPacket !== null) zeroPacket(finalPcmPacket);
+      } else if (finalPcmPacket !== null) {
+        run.deliveryInFlight = true;
+        try {
+          await this.#deliverPcmPacket(run, finalPcmPacket, true);
+        } finally {
+          if (this.#isClosingRun(run)) run.deliveryInFlight = false;
+        }
+        this.#assertClosingRun(run);
+      }
+    } catch (error) {
+      postStopFailure = sanitizePacketFailure(error);
+    }
+    this.#assertClosingRun(run);
+    this.#finalizeRun(run);
+    if (postStopFailure !== undefined) throw postStopFailure;
   }
 
-  #resetForStart(): void {
-    this.#bridgeStartAttempted = false;
-    this.#deliveryInFlight = false;
-    this.#deliveredChunks = 0;
-    this.#expectedSequenceNumber = 0;
-    this.#maximumChunks = 0;
-    this.#pendingDelivery = Promise.resolve();
-    this.#shutdownPromise = undefined;
-    this.#targetFramesPerChunk = 0;
-    this.#terminal = false;
-    this.#terminalFailure = undefined;
+  #notifyStopFailure(run: CaptureRun): void {
+    if (run.stopFailureNotified) return;
+    run.stopFailureNotified = true;
+    try {
+      run.onError?.("capture_source_failed");
+    } catch {
+      // The close remains failed and retryable even if notification code fails.
+    }
+  }
+
+  #clearClosePromise(run: CaptureRun, attempt: Promise<void>): void {
+    if (this.#isCurrentRun(run) && run.closePromise === attempt) {
+      run.closePromise = undefined;
+    }
+  }
+
+  #finalizeRun(run: CaptureRun): void {
+    if (!this.#isCurrentRun(run)) return;
+    if (run.abortSignal !== undefined && run.abortHandler !== undefined) {
+      run.abortSignal.removeEventListener("abort", run.abortHandler);
+    }
+    run.abortHandler = undefined;
+    run.abortSignal = undefined;
+    run.nativeStartPromise = undefined;
+    run.nativeSession = undefined;
+    run.onChunk = undefined;
+    run.onError = undefined;
+    run.onInterruption = undefined;
+    run.phase = "closed";
+    this.#run = undefined;
+  }
+
+  #assertStartingRun(run: CaptureRun, phase: CaptureRunPhase): void {
+    if (!this.#isCurrentRun(run) || run.phase !== phase || run.cancelReason !== undefined) {
+      throw run.terminalFailure ?? abortError();
+    }
+  }
+
+  #assertClosingRun(run: CaptureRun): void {
+    if (!this.#isClosingRun(run)) {
+      throw new AudioCaptureError("audio_capture_stale_generation");
+    }
+  }
+
+  #isClosingRun(run: CaptureRun): boolean {
+    return this.#isCurrentRun(run) && run.phase === "closing";
+  }
+
+  #isCurrentGeneration(run: CaptureRun, generation: number): boolean {
+    return run.generation === generation && this.#isCurrentRun(run);
+  }
+
+  #isCurrentRun(run: CaptureRun): boolean {
+    return this.#run === run && this.#run.generation === run.generation;
   }
 }
 
@@ -359,7 +537,12 @@ function requirePcmBytes(packet: unknown): Uint8Array<ArrayBuffer> {
     throw new AudioCaptureError("audio_capture_native_protocol_error");
   }
   const pcmBytes: unknown = packet.pcmBytes;
-  if (!(pcmBytes instanceof Uint8Array) || !(pcmBytes.buffer instanceof ArrayBuffer)) {
+  if (
+    !(pcmBytes instanceof Uint8Array) ||
+    !(pcmBytes.buffer instanceof ArrayBuffer) ||
+    pcmBytes.byteOffset !== 0 ||
+    pcmBytes.byteLength !== pcmBytes.buffer.byteLength
+  ) {
     throw new AudioCaptureError("audio_capture_native_protocol_error");
   }
   return pcmBytes as Uint8Array<ArrayBuffer>;
@@ -376,12 +559,21 @@ function requireSequenceNumber(packet: unknown): number {
   return sequenceNumber as number;
 }
 
+function requireStopResult(result: unknown): IosNativePcmPacket | null {
+  if (typeof result !== "object" || result === null || !("finalPcmPacket" in result)) {
+    throw new AudioCaptureError("audio_capture_native_protocol_error");
+  }
+  const packet: unknown = result.finalPcmPacket;
+  if (packet !== null && (typeof packet !== "object" || packet === null)) {
+    throw new AudioCaptureError("audio_capture_native_protocol_error");
+  }
+  return packet as IosNativePcmPacket | null;
+}
+
 function decodeLittleEndianPcm16(
   pcmBytes: Uint8Array<ArrayBuffer>,
 ): Int16Array<ArrayBuffer> {
-  const samples = new Int16Array(
-    new ArrayBuffer(pcmBytes.byteLength),
-  );
+  const samples = new Int16Array(new ArrayBuffer(pcmBytes.byteLength));
   const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
   for (let index = 0; index < samples.length; index += 1) {
     samples[index] = view.getInt16(index * Int16Array.BYTES_PER_ELEMENT, true);
@@ -394,7 +586,7 @@ function zeroPacket(packet: unknown): void {
   const pcmBytes: unknown = packet.pcmBytes;
   if (!(pcmBytes instanceof Uint8Array)) return;
   try {
-    pcmBytes.fill(0);
+    new Uint8Array(pcmBytes.buffer).fill(0);
   } catch {
     // Detached or otherwise invalid native buffers cannot be recovered here.
   }
@@ -461,6 +653,11 @@ function sanitizeStartFailure(error: unknown): AudioCaptureError {
   }
 }
 
+function startFailureFor(run: CaptureRun, error: unknown): AudioCaptureError | DOMException {
+  if (run.cancelReason === "abort" || run.cancelReason === "stop") return abortError();
+  return run.terminalFailure ?? (isAbortError(error) ? abortError() : sanitizeStartFailure(error));
+}
+
 function sanitizePacketFailure(error: unknown): AudioCaptureError {
   return error instanceof AudioCaptureError
     ? error
@@ -469,7 +666,8 @@ function sanitizePacketFailure(error: unknown): AudioCaptureError {
 
 function packetFailureSignal(error: AudioCaptureError): CaptureSourceErrorCode {
   return error.code === "audio_capture_native_protocol_error" ||
-    error.code === "audio_capture_output_limit_exceeded"
+    error.code === "audio_capture_output_limit_exceeded" ||
+    error.code === "audio_capture_stale_generation"
     ? "capture_source_stalled"
     : "capture_source_failed";
 }
@@ -485,4 +683,18 @@ function isAborted(signal: AbortSignal | undefined): boolean {
 
 function abortError(): DOMException {
   return new DOMException("capture start was cancelled", "AbortError");
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason: unknown) => void;
+} {
+  let resolvePromise: (value: T) => void = () => undefined;
+  let rejectPromise: (reason: unknown) => void = () => undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return { promise, reject: rejectPromise, resolve: resolvePromise };
 }

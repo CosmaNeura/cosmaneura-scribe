@@ -7,7 +7,9 @@ import { FakeIosNativePcmBridge } from "./fake-ios-native-pcm-bridge";
 import { IosNativeMicrophoneCaptureSource } from "./ios-native-microphone-source";
 import {
   IosNativeMicrophoneBridgeError,
+  type IosNativeAppState,
   type IosNativeMicrophoneBridge,
+  type IosNativeMicrophoneSession,
 } from "./ios-native-pcm-bridge";
 
 const SYNTHETIC_WAV = Uint8Array.from(Buffer.from(
@@ -66,13 +68,45 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     expect(deliveredCopy).toEqual(SYNTHETIC_WAV);
     expect(pcmBytes.every((value) => value === 0)).toBe(true);
     expect(deliveredReference?.every((value) => value === 0)).toBe(true);
-    expect(bridge.stopCalls).toBe(1);
+    expect(bridge.stopModes).toEqual(["drain"]);
+  });
+
+  it("awaits and delivers a current-generation final partial packet during normal stop", async () => {
+    const bridge = new FakeIosNativePcmBridge();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const delivered: Array<{
+      readonly sequenceNumber: number;
+      readonly durationMs: number;
+      readonly wavBytes: Uint8Array;
+    }> = [];
+    const finalPcmBytes = Uint8Array.from([52, 18, 120, 86]);
+    bridge.setFinalPcmPacket({ sequenceNumber: 1, pcmBytes: finalPcmBytes });
+    await source.start({
+      capabilities,
+      onChunk: async (chunk) => {
+        delivered.push({ ...chunk, wavBytes: chunk.wavBytes.slice() });
+      },
+    });
+    await bridge.emitPcmPacket({ sequenceNumber: 0, pcmBytes: syntheticPcmBytes() });
+
+    await source.stop();
+
+    expect(bridge.stopModes).toEqual(["drain"]);
+    expect(delivered.map(({ sequenceNumber, durationMs }) => ({
+      sequenceNumber,
+      durationMs,
+    }))).toEqual([
+      { sequenceNumber: 0, durationMs: 20 },
+      { sequenceNumber: 1, durationMs: 0.125 },
+    ]);
+    expect(readPcm16(delivered[1]?.wavBytes)).toEqual([4_660, 22_136]);
+    expect(finalPcmBytes.every((value) => value === 0)).toBe(true);
   });
 
   it("holds native acknowledgement until downstream persistence releases backpressure", async () => {
     const bridge = new FakeIosNativePcmBridge();
     const source = new IosNativeMicrophoneCaptureSource(bridge);
-    const gate = deferred();
+    const gate = deferred<void>();
     let callbackEntered = false;
     let acknowledged = false;
 
@@ -92,7 +126,7 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     await vi.waitFor(() => expect(callbackEntered).toBe(true));
     expect(acknowledged).toBe(false);
 
-    gate.resolve();
+    gate.resolve(undefined);
     await acknowledgement;
     expect(acknowledged).toBe(true);
     await source.stop();
@@ -101,7 +135,7 @@ describe("IosNativeMicrophoneCaptureSource", () => {
   it("fails closed when a native producer violates single-packet backpressure", async () => {
     const bridge = new FakeIosNativePcmBridge();
     const source = new IosNativeMicrophoneCaptureSource(bridge);
-    const gate = deferred();
+    const gate = deferred<void>();
     const onError = vi.fn();
     let callbackEntered = false;
     await source.start({
@@ -124,48 +158,18 @@ describe("IosNativeMicrophoneCaptureSource", () => {
       pcmBytes: concurrentBytes,
     })).rejects.toMatchObject({ code: "audio_capture_native_protocol_error" });
     expect(concurrentBytes.every((value) => value === 0)).toBe(true);
-    expect(onError).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith("capture_source_stalled");
 
-    gate.resolve();
+    gate.resolve(undefined);
     await first;
-    await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
-  });
-
-  it("rejects and clears a packet emitted before native start resolves", async () => {
-    const pcmBytes = nonzeroSyntheticPcmBytes();
-    const getAppState = vi.fn<IosNativeMicrophoneBridge["getAppState"]>(
-      async () => "foreground",
-    );
-    const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>(
-      async (_configuration, sink) => {
-        await sink.onPcmPacket({ sequenceNumber: 0, pcmBytes });
-      },
-    );
-    const stopNative = vi.fn<IosNativeMicrophoneBridge["stop"]>(async () => undefined);
-    const bridge: IosNativeMicrophoneBridge = {
-      getAppState,
-      start: startNative,
-      stop: stopNative,
-    };
-    const source = new IosNativeMicrophoneCaptureSource(bridge);
-    const onError = vi.fn();
-
-    await expect(source.start({
-      capabilities,
-      onChunk: async () => undefined,
-      onError,
-    })).rejects.toMatchObject({ code: "audio_capture_native_protocol_error" });
-    expect(pcmBytes.every((value) => value === 0)).toBe(true);
-    expect(onError).toHaveBeenCalledWith("capture_source_stalled");
-    expect(stopNative).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(bridge.stopModes).toEqual(["discard"]));
   });
 
   it.each([
     {
       name: "a skipped sequence",
       firstSequence: 1,
-      pcmBytes: () => syntheticPcmBytes(),
+      pcmBytes: () => nonzeroSyntheticPcmBytes(),
       errorCode: "audio_capture_native_protocol_error",
     },
     {
@@ -191,7 +195,23 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     })).rejects.toMatchObject({ code: errorCode });
     expect(pcmBytes.every((value) => value === 0)).toBe(true);
     expect(onError).toHaveBeenCalledWith("capture_source_stalled");
-    await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
+    await vi.waitFor(() => expect(bridge.stopModes).toEqual(["discard"]));
+  });
+
+  it("rejects an aliased subview and clears its entire backing buffer", async () => {
+    const bridge = new FakeIosNativePcmBridge();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const onError = vi.fn();
+    const fullBuffer = new Uint8Array(12).fill(91);
+    const aliasedSubview = fullBuffer.subarray(2, 10);
+    await source.start({ capabilities, onChunk: async () => undefined, onError });
+
+    await expect(bridge.emitPcmPacket({
+      sequenceNumber: 0,
+      pcmBytes: aliasedSubview,
+    })).rejects.toMatchObject({ code: "audio_capture_native_protocol_error" });
+    expect(fullBuffer.every((value) => value === 0)).toBe(true);
+    expect(onError).toHaveBeenCalledWith("capture_source_stalled");
   });
 
   it("enforces the capability-derived packet count ceiling", async () => {
@@ -227,10 +247,10 @@ describe("IosNativeMicrophoneCaptureSource", () => {
       message: "audio_capture_permission_denied",
     });
     expect(bridge.startCalls).toBe(1);
-    expect(bridge.stopCalls).toBe(1);
+    expect(bridge.stopCalls).toBe(0);
   });
 
-  it("refuses capture while iOS is backgrounded without starting the bridge", async () => {
+  it("refuses capture while iOS is backgrounded without starting native capture", async () => {
     const bridge = new FakeIosNativePcmBridge();
     bridge.setAppState("background");
     const source = new IosNativeMicrophoneCaptureSource(bridge);
@@ -238,40 +258,274 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     await expect(source.start({
       capabilities,
       onChunk: async () => undefined,
-    })).rejects.toMatchObject({
-      code: "audio_capture_unavailable",
-      message: "audio_capture_unavailable",
-    });
+    })).rejects.toMatchObject({ code: "audio_capture_unavailable" });
     expect(bridge.startCalls).toBe(0);
     expect(bridge.stopCalls).toBe(0);
   });
 
-  it("fails closed if the app backgrounds while native start is completing", async () => {
-    const getAppState = vi.fn()
-      .mockResolvedValueOnce("foreground")
-      .mockResolvedValueOnce("background");
-    const startNative = vi.fn(async () => undefined);
-    const stopNative = vi.fn(async () => undefined);
+  it("cancels a pending foreground check without later starting native capture", async () => {
+    const firstForeground = deferred<IosNativeAppState>();
+    const getAppState = vi.fn<IosNativeMicrophoneBridge["getAppState"]>()
+      .mockReturnValueOnce(firstForeground.promise)
+      .mockResolvedValueOnce("foreground");
+    const stopNative = vi.fn<IosNativeMicrophoneSession["stop"]>(
+      async () => ({ finalPcmPacket: null }),
+    );
+    const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>(
+      async () => ({ stop: stopNative }),
+    );
+    const source = new IosNativeMicrophoneCaptureSource({ getAppState, start: startNative });
+    const firstStart = source.start({ capabilities, onChunk: async () => undefined });
+    await vi.waitFor(() => expect(getAppState).toHaveBeenCalledOnce());
+
+    await source.stop();
+    await source.start({ capabilities, onChunk: async () => undefined });
+    firstForeground.resolve("foreground");
+
+    await expect(firstStart).rejects.toMatchObject({ name: "AbortError" });
+    expect(startNative).toHaveBeenCalledOnce();
+    expect(stopNative).not.toHaveBeenCalled();
+    await source.stop();
+    expect(stopNative).toHaveBeenCalledOnce();
+  });
+
+  it("uses one discard shutdown when abort races a pending native start", async () => {
+    const nativeStart = deferred<IosNativeMicrophoneSession>();
+    const stopNative = vi.fn<IosNativeMicrophoneSession["stop"]>(
+      async () => ({ finalPcmPacket: null }),
+    );
+    const getAppState = vi.fn<IosNativeMicrophoneBridge["getAppState"]>(
+      async () => "foreground",
+    );
+    const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>(
+      () => nativeStart.promise,
+    );
     const bridge: IosNativeMicrophoneBridge = {
       getAppState,
       start: startNative,
-      stop: stopNative,
     };
     const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const authority = new AbortController();
+    const starting = source.start({
+      capabilities,
+      onChunk: async () => undefined,
+      signal: authority.signal,
+    });
+    await vi.waitFor(() => expect(startNative).toHaveBeenCalledOnce());
+
+    authority.abort();
+    const concurrentStop = source.stop();
+    nativeStart.resolve({ stop: stopNative });
+
+    await expect(starting).rejects.toMatchObject({ name: "AbortError" });
+    await concurrentStop;
+    expect(stopNative).toHaveBeenCalledOnce();
+    expect(stopNative).toHaveBeenCalledWith({ mode: "discard" });
+  });
+
+  it("uses one discard shutdown when explicit stop races a pending native start", async () => {
+    const firstNativeStart = deferred<IosNativeMicrophoneSession>();
+    let activeSessions = 1;
+    const firstStop = vi.fn<IosNativeMicrophoneSession["stop"]>(
+      async () => {
+        activeSessions -= 1;
+        return { finalPcmPacket: null };
+      },
+    );
+    const secondStop = vi.fn<IosNativeMicrophoneSession["stop"]>(
+      async () => {
+        activeSessions -= 1;
+        return { finalPcmPacket: null };
+      },
+    );
+    const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>()
+      .mockReturnValueOnce(firstNativeStart.promise)
+      .mockImplementationOnce(async () => {
+        if (activeSessions !== 0) throw new Error("leaked_native_session");
+        activeSessions += 1;
+        return { stop: secondStop };
+      });
+    const bridge: IosNativeMicrophoneBridge = {
+      getAppState: vi.fn(async () => "foreground" as const),
+      start: startNative,
+    };
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const starting = source.start({ capabilities, onChunk: async () => undefined });
+    await vi.waitFor(() => expect(startNative).toHaveBeenCalledOnce());
+
+    const stopping = source.stop();
+    firstNativeStart.resolve({ stop: firstStop });
+
+    await expect(starting).rejects.toMatchObject({ name: "AbortError" });
+    await stopping;
+    expect(firstStop).toHaveBeenCalledOnce();
+    expect(firstStop).toHaveBeenCalledWith({ mode: "discard" });
+    expect(activeSessions).toBe(0);
+
+    await source.start({ capabilities, onChunk: async () => undefined });
+    await source.stop();
+    expect(secondStop).toHaveBeenCalledOnce();
+    expect(secondStop).toHaveBeenCalledWith({ mode: "drain" });
+    expect(activeSessions).toBe(0);
+  });
+
+  it("owns and discards a session returned after an early packet violation", async () => {
+    const pcmBytes = nonzeroSyntheticPcmBytes();
+    const stopNative = vi.fn<IosNativeMicrophoneSession["stop"]>(
+      async () => ({ finalPcmPacket: null }),
+    );
+    let earlyDelivery: Promise<void> | undefined;
+    const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>(
+      (_configuration, sink) => {
+        earlyDelivery = sink.onPcmPacket({ sequenceNumber: 0, pcmBytes });
+        void earlyDelivery.catch(() => undefined);
+        return Promise.resolve({ stop: stopNative });
+      },
+    );
+    const bridge: IosNativeMicrophoneBridge = {
+      getAppState: vi.fn(async () => "foreground" as const),
+      start: startNative,
+    };
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const onError = vi.fn();
 
     await expect(source.start({
       capabilities,
       onChunk: async () => undefined,
-    })).rejects.toMatchObject({ code: "audio_capture_unavailable" });
-    expect(startNative).toHaveBeenCalledOnce();
+      onError,
+    })).rejects.toMatchObject({ code: "audio_capture_native_protocol_error" });
+    await expect(earlyDelivery).rejects.toMatchObject({
+      code: "audio_capture_native_protocol_error",
+    });
+    expect(pcmBytes.every((value) => value === 0)).toBe(true);
     expect(stopNative).toHaveBeenCalledOnce();
+    expect(stopNative).toHaveBeenCalledWith({ mode: "discard" });
+  });
+
+  it("rejects stale generation callbacks without affecting a new capture", async () => {
+    const bridge = new FakeIosNativePcmBridge();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const firstInterruption = vi.fn();
+    const firstError = vi.fn();
+    await source.start({
+      capabilities,
+      onChunk: async () => undefined,
+      onInterruption: firstInterruption,
+      onError: firstError,
+    });
+    await source.stop();
+
+    const secondInterruption = vi.fn();
+    const secondError = vi.fn();
+    await source.start({
+      capabilities,
+      onChunk: async () => undefined,
+      onInterruption: secondInterruption,
+      onError: secondError,
+    });
+    const staleBytes = nonzeroSyntheticPcmBytes();
+    await expect(bridge.emitRetainedPcmPacket(0, {
+      sequenceNumber: 0,
+      pcmBytes: staleBytes,
+    })).rejects.toMatchObject({ code: "audio_capture_stale_generation" });
+    bridge.emitRetainedInterruption(0, "ios_capture_backgrounded");
+    bridge.emitRetainedError(0, "ios_capture_failed");
+
+    expect(staleBytes.every((value) => value === 0)).toBe(true);
+    expect(firstInterruption).not.toHaveBeenCalled();
+    expect(firstError).not.toHaveBeenCalled();
+    expect(secondInterruption).not.toHaveBeenCalled();
+    expect(secondError).not.toHaveBeenCalled();
+    expect(bridge.stopCalls).toBe(1);
+    await source.stop();
+    expect(bridge.stopCalls).toBe(2);
+  });
+
+  it("retains a failed native handle, blocks restart, and retries explicit stop", async () => {
+    const bridge = new FakeIosNativePcmBridge();
+    bridge.failNextStops();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const onError = vi.fn();
+    const delivered: number[] = [];
+    const finalPcmBytes = Uint8Array.from([52, 18]);
+    bridge.setFinalPcmPacket({ sequenceNumber: 0, pcmBytes: finalPcmBytes });
+    await source.start({
+      capabilities,
+      onChunk: async (chunk) => {
+        delivered.push(chunk.sequenceNumber);
+      },
+      onError,
+    });
+
+    await expect(source.stop()).rejects.toMatchObject({
+      code: "audio_capture_native_stop_failed",
+      message: "audio_capture_native_stop_failed",
+    });
+    expect(onError).toHaveBeenCalledWith("capture_source_failed");
+    await expect(source.start({
+      capabilities,
+      onChunk: async () => undefined,
+    })).rejects.toMatchObject({ code: "audio_capture_native_stop_failed" });
+
+    await expect(source.stop()).resolves.toBeUndefined();
+    expect(bridge.stopModes).toEqual(["drain", "drain"]);
+    expect(delivered).toEqual([0]);
+    expect(finalPcmBytes.every((value) => value === 0)).toBe(true);
+    await expect(source.start({
+      capabilities,
+      onChunk: async () => undefined,
+    })).resolves.toBeUndefined();
+    await source.stop();
+  });
+
+  it("retains a failed abort shutdown until an explicit discard retry succeeds", async () => {
+    const bridge = new FakeIosNativePcmBridge();
+    bridge.failNextStops();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const authority = new AbortController();
+    const onError = vi.fn();
+    await source.start({
+      capabilities,
+      onChunk: async () => undefined,
+      onError,
+      signal: authority.signal,
+    });
+
+    authority.abort();
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledWith("capture_source_failed"));
+    await expect(source.start({
+      capabilities,
+      onChunk: async () => undefined,
+    })).rejects.toMatchObject({ code: "audio_capture_native_stop_failed" });
+    await source.stop();
+
+    expect(bridge.stopModes).toEqual(["discard", "discard"]);
+  });
+
+  it("retains a failed terminal shutdown until an explicit discard retry succeeds", async () => {
+    const bridge = new FakeIosNativePcmBridge();
+    bridge.failNextStops();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const onError = vi.fn();
+    await source.start({ capabilities, onChunk: async () => undefined, onError });
+
+    bridge.emitError("ios_capture_failed");
+    await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
+    await expect(source.start({
+      capabilities,
+      onChunk: async () => undefined,
+    })).rejects.toMatchObject({ code: "audio_capture_native_stop_failed" });
+    await source.stop();
+
+    expect(bridge.stopModes).toEqual(["discard", "discard"]);
+    expect(onError).toHaveBeenCalledWith("capture_source_failed");
   });
 
   it.each([
     ["ios_audio_session_interrupted", "audio_session_interrupted"],
     ["ios_audio_route_changed", "audio_route_changed"],
     ["ios_capture_backgrounded", "capture_backgrounded"],
-  ] as const)("maps %s to %s and stops", async (nativeCode, sourceCode) => {
+  ] as const)("maps %s to %s and discards", async (nativeCode, sourceCode) => {
     const bridge = new FakeIosNativePcmBridge();
     const source = new IosNativeMicrophoneCaptureSource(bridge);
     const onInterruption = vi.fn();
@@ -282,47 +536,29 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     });
 
     bridge.emitInterruption(nativeCode);
-    expect(onInterruption).toHaveBeenCalledOnce();
     expect(onInterruption).toHaveBeenCalledWith(sourceCode);
-    await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
+    await vi.waitFor(() => expect(bridge.stopModes).toEqual(["discard"]));
   });
 
   it.each([
     ["ios_microphone_permission_revoked", "capture_source_failed"],
     ["ios_capture_stalled", "capture_source_stalled"],
     ["ios_capture_failed", "capture_source_failed"],
-  ] as const)("maps terminal %s to %s and stops", async (nativeCode, sourceCode) => {
+  ] as const)("maps terminal %s to %s and discards", async (nativeCode, sourceCode) => {
     const bridge = new FakeIosNativePcmBridge();
     const source = new IosNativeMicrophoneCaptureSource(bridge);
     const onError = vi.fn();
     await source.start({ capabilities, onChunk: async () => undefined, onError });
 
     bridge.emitError(nativeCode);
-    expect(onError).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith(sourceCode);
-    await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
+    await vi.waitFor(() => expect(bridge.stopModes).toEqual(["discard"]));
   });
 
-  it("stops on abort and makes repeated stop calls safe", async () => {
+  it("waits for an acknowledged packet before normal stop finishes", async () => {
     const bridge = new FakeIosNativePcmBridge();
     const source = new IosNativeMicrophoneCaptureSource(bridge);
-    const authority = new AbortController();
-    await source.start({
-      capabilities,
-      onChunk: async () => undefined,
-      signal: authority.signal,
-    });
-
-    authority.abort();
-    await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
-    await expect(source.stop()).resolves.toBeUndefined();
-    expect(bridge.stopCalls).toBe(1);
-  });
-
-  it("waits for an acknowledged packet before stop finishes and clears both buffers", async () => {
-    const bridge = new FakeIosNativePcmBridge();
-    const source = new IosNativeMicrophoneCaptureSource(bridge);
-    const gate = deferred();
+    const gate = deferred<void>();
     let deliveredReference: Uint8Array | undefined;
     let stopFinished = false;
     await source.start({
@@ -341,7 +577,7 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     });
     await vi.waitFor(() => expect(bridge.stopCalls).toBe(1));
     expect(stopFinished).toBe(false);
-    gate.resolve();
+    gate.resolve(undefined);
     await delivery;
     await stop;
 
@@ -405,9 +641,22 @@ function nonzeroSyntheticPcmBytes(): Uint8Array<ArrayBuffer> {
   return pcmBytes;
 }
 
-function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
-  let resolvePromise: () => void = () => undefined;
-  const promise = new Promise<void>((resolve) => {
+function readPcm16(wav: Uint8Array | undefined): readonly number[] {
+  if (wav === undefined) return [];
+  const view = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+  const samples: number[] = [];
+  for (let offset = 44; offset < wav.byteLength; offset += 2) {
+    samples.push(view.getInt16(offset, true));
+  }
+  return samples;
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolvePromise: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((resolve) => {
     resolvePromise = resolve;
   });
   return { promise, resolve: resolvePromise };
