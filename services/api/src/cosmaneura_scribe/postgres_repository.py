@@ -117,6 +117,16 @@ from .transcript_constraints import (
     MAX_TRANSCRIPT_SEGMENTS,
     NORMALIZED_SOURCE_RETENTION_LIMIT,
 )
+from .translation_attempt_persistence import (
+    TranslationAttemptCommand,
+    TranslationAttemptPersistenceCode,
+    TranslationAttemptPersistenceError,
+    TranslationAttemptPublication,
+    TranslationAttemptWriteDisposition,
+    allocate_translation_version,
+    build_translation_record,
+    translation_matches_command,
+)
 from .working_transcript_persistence import (
     WorkingTranscriptDerivation,
     WorkingTranscriptPersistenceCode,
@@ -235,6 +245,23 @@ def _normalized_source_transcript_record(
             )
             for row in segment_rows
         ),
+    )
+
+
+def _translation_record(row: dict[str, Any]) -> TranslationRecordV1:
+    return TranslationRecordV1(
+        translation_id=row["translation_id"],
+        translation_version=row["translation_version"],
+        source_segment_id=row["source_segment_id"],
+        source_segment_version=row["source_segment_version"],
+        source_locale=row["source_locale"],
+        target_locale=row["target_locale"],
+        content=row["content"],
+        outcome=TranslationOutcome(row["outcome"]),
+        translation_adapter_id=row["translation_adapter_id"],
+        translation_model_profile_id=row["translation_model_profile_id"],
+        created_at=row["created_at"],
+        failure_code=row["failure_code"],
     )
 
 
@@ -1249,6 +1276,191 @@ class PostgresRepository:
             disposition=disposition,
         )
 
+    async def record_translation_attempt_and_publish(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        command: TranslationAttemptCommand,
+    ) -> TranslationAttemptPublication | None:
+        try:
+            locked = await self._lock_working_transcript_session(tenant_id, session_id)
+        except WorkingTranscriptPersistenceError as error:
+            raise self._translation_error(error) from None
+        if locked is None:
+            return None
+        session, database_now = locked
+        try:
+            self._require_live_working_session(session, database_now)
+        except WorkingTranscriptPersistenceError as error:
+            raise self._translation_error(error) from None
+        source_version = session.current_source_transcript_version
+        if (
+            source_version is None
+            or source_version != command.expected_source_transcript_version
+            or session.working_transcript_id is None
+            or session.current_working_transcript_version is None
+        ):
+            raise TranslationAttemptPersistenceError(
+                TranslationAttemptPersistenceCode.STATE_CONFLICT
+            )
+        source = await self._get_normalized_source_by_version(
+            tenant_id,
+            session_id,
+            source_version,
+        )
+        if source is None:
+            raise TranslationAttemptPersistenceError(
+                TranslationAttemptPersistenceCode.STATE_CONFLICT
+            )
+        try:
+            await self._validate_working_evidence_bounds(tenant_id, session_id, source_version)
+            translations = await self._get_working_translation_inputs(
+                tenant_id,
+                session_id,
+                source_version,
+            )
+            reviews = await self._get_working_review_inputs(
+                tenant_id,
+                session_id,
+                source_version,
+            )
+        except WorkingTranscriptPersistenceError as error:
+            raise self._translation_error(error) from None
+        existing_row = await self._get_translation_attempt_by_id(
+            tenant_id,
+            command.translation_id,
+        )
+        if existing_row is not None:
+            try:
+                existing = _translation_record(existing_row)
+            except (TypeError, ValueError):
+                raise TranslationAttemptPersistenceError(
+                    TranslationAttemptPersistenceCode.EVIDENCE_INVALID
+                ) from None
+            if existing_row["session_id"] != session_id or not translation_matches_command(
+                existing,
+                command,
+                source_transcript_version=existing_row["source_transcript_version"],
+            ):
+                raise TranslationAttemptPersistenceError(
+                    TranslationAttemptPersistenceCode.IDENTITY_CONFLICT
+                )
+            try:
+                async with self._session.begin_nested():
+                    working = await self.publish_current_working_transcript(
+                        tenant_id,
+                        session_id,
+                    )
+                    if (
+                        working is None
+                        or working.disposition != WorkingTranscriptPublishDisposition.REPLAYED
+                    ):
+                        raise TranslationAttemptPersistenceError(
+                            TranslationAttemptPersistenceCode.STATE_CONFLICT
+                        )
+            except WorkingTranscriptPersistenceError as error:
+                raise self._translation_error(error) from None
+            return self._translation_publication(
+                existing,
+                session_id=session_id,
+                source_transcript_version=source_version,
+                working=working,
+                disposition=TranslationAttemptWriteDisposition.REPLAYED,
+            )
+        if session.status != ConfiguredExternalSessionStatus.TRANSLATION_PENDING:
+            raise TranslationAttemptPersistenceError(
+                TranslationAttemptPersistenceCode.STATE_CONFLICT
+            )
+        version = allocate_translation_version(source, translations, reviews, command)
+        try:
+            async with self._session.begin_nested():
+                created_at = await self._session.scalar(
+                    text(
+                        """
+                        INSERT INTO normalized_translation_attempts (
+                            tenant_id, session_id, source_transcript_version,
+                            source_segment_id, source_segment_version,
+                            translation_id, translation_version, source_locale,
+                            target_locale, outcome, content, failure_code,
+                            translation_adapter_id, translation_model_profile_id
+                        ) VALUES (
+                            :tenant_id, :session_id, :source_version,
+                            :source_segment_id, :source_segment_version,
+                            :translation_id, :translation_version, 'es-US',
+                            'en-US', :outcome, :content, :failure_code,
+                            :adapter_id, :model_profile_id
+                        )
+                        RETURNING created_at
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "source_version": source_version,
+                        "source_segment_id": command.source_segment_id,
+                        "source_segment_version": command.expected_source_segment_version,
+                        "translation_id": command.translation_id,
+                        "translation_version": version,
+                        "outcome": command.outcome.value,
+                        "content": command.content,
+                        "failure_code": command.failure_code,
+                        "adapter_id": command.translation_adapter_id,
+                        "model_profile_id": command.translation_model_profile_id,
+                    },
+                )
+                if not isinstance(created_at, datetime):
+                    raise RuntimeError("translation attempt creation time is unavailable")
+                record = build_translation_record(
+                    command,
+                    translation_version=version,
+                    created_at=created_at,
+                )
+                await self.audit(
+                    tenant_id=tenant_id,
+                    action="normalized_translation_attempt.recorded",
+                    entity_type="normalized_translation_attempt",
+                    entity_id=record.translation_id,
+                )
+                working = await self.publish_current_working_transcript(
+                    tenant_id,
+                    session_id,
+                )
+                if (
+                    working is None
+                    or working.disposition != WorkingTranscriptPublishDisposition.REPLACED
+                ):
+                    raise TranslationAttemptPersistenceError(
+                        TranslationAttemptPersistenceCode.STATE_CONFLICT
+                    )
+        except WorkingTranscriptPersistenceError as error:
+            raise self._translation_error(error) from None
+        except DBAPIError as error:
+            if self._is_unique_violation(error):
+                conflicting = await self._get_translation_attempt_by_id(
+                    tenant_id,
+                    command.translation_id,
+                )
+                if conflicting is not None:
+                    raise TranslationAttemptPersistenceError(
+                        TranslationAttemptPersistenceCode.IDENTITY_CONFLICT
+                    ) from None
+            if self._is_expected_working_integrity_error(error):
+                try:
+                    await self._require_fresh_live_working_session(session)
+                except WorkingTranscriptPersistenceError as live_error:
+                    raise self._translation_error(live_error) from None
+                raise TranslationAttemptPersistenceError(
+                    TranslationAttemptPersistenceCode.STATE_CONFLICT
+                ) from None
+            raise
+        return self._translation_publication(
+            record,
+            session_id=session_id,
+            source_transcript_version=source_version,
+            working=working,
+            disposition=TranslationAttemptWriteDisposition.RECORDED,
+        )
+
     async def fail_versioned_external_session(
         self,
         tenant_id: UUID,
@@ -1888,27 +2100,30 @@ class PostgresRepository:
             },
         )
         try:
-            return tuple(
-                TranslationRecordV1(
-                    translation_id=row["translation_id"],
-                    translation_version=row["translation_version"],
-                    source_segment_id=row["source_segment_id"],
-                    source_segment_version=row["source_segment_version"],
-                    source_locale=row["source_locale"],
-                    target_locale=row["target_locale"],
-                    content=row["content"],
-                    outcome=TranslationOutcome(row["outcome"]),
-                    translation_adapter_id=row["translation_adapter_id"],
-                    translation_model_profile_id=row["translation_model_profile_id"],
-                    created_at=row["created_at"],
-                    failure_code=row["failure_code"],
-                )
-                for row in rows.mappings()
-            )
+            return tuple(_translation_record(dict(row)) for row in rows.mappings())
         except (TypeError, ValueError):
             raise WorkingTranscriptPersistenceError(
                 WorkingTranscriptPersistenceCode.EVIDENCE_INVALID
             ) from None
+
+    async def _get_translation_attempt_by_id(
+        self,
+        tenant_id: UUID,
+        translation_id: UUID,
+    ) -> dict[str, Any] | None:
+        return await self._one_or_none(
+            """
+            SELECT session_id, source_transcript_version,
+                   translation_id, translation_version, source_segment_id,
+                   source_segment_version, source_locale, target_locale, content,
+                   outcome, translation_adapter_id, translation_model_profile_id,
+                   created_at, failure_code
+            FROM normalized_translation_attempts
+            WHERE tenant_id = :tenant_id AND translation_id = :translation_id
+            """,
+            tenant_id=tenant_id,
+            translation_id=translation_id,
+        )
 
     async def _validate_working_evidence_bounds(
         self,
@@ -2304,6 +2519,61 @@ class PostgresRepository:
             for candidate in candidates
             if candidate is not None
         )
+
+    @staticmethod
+    def _is_unique_violation(error: DBAPIError) -> bool:
+        candidates = (
+            error.orig,
+            getattr(error.orig, "__cause__", None),
+            getattr(error.orig, "__context__", None),
+        )
+        return any(
+            getattr(candidate, "sqlstate", None) == "23505"
+            for candidate in candidates
+            if candidate is not None
+        )
+
+    @staticmethod
+    def _translation_publication(
+        record: TranslationRecordV1,
+        *,
+        session_id: UUID,
+        source_transcript_version: int,
+        working: WorkingTranscriptPublication,
+        disposition: TranslationAttemptWriteDisposition,
+    ) -> TranslationAttemptPublication:
+        return TranslationAttemptPublication(
+            session_id=session_id,
+            translation_id=record.translation_id,
+            translation_version=record.translation_version,
+            source_transcript_version=source_transcript_version,
+            source_segment_id=record.source_segment_id,
+            source_segment_version=record.source_segment_version,
+            created_at=record.created_at,
+            status=working.status,
+            current_working_transcript=working,
+            disposition=disposition,
+        )
+
+    @staticmethod
+    def _translation_error(
+        error: WorkingTranscriptPersistenceError,
+    ) -> TranslationAttemptPersistenceError:
+        mapping = {
+            WorkingTranscriptPersistenceCode.CONSENT_INVALID: (
+                TranslationAttemptPersistenceCode.CONSENT_INVALID
+            ),
+            WorkingTranscriptPersistenceCode.EVIDENCE_INVALID: (
+                TranslationAttemptPersistenceCode.EVIDENCE_INVALID
+            ),
+            WorkingTranscriptPersistenceCode.RETENTION_EXPIRED: (
+                TranslationAttemptPersistenceCode.RETENTION_EXPIRED
+            ),
+            WorkingTranscriptPersistenceCode.STATE_CONFLICT: (
+                TranslationAttemptPersistenceCode.STATE_CONFLICT
+            ),
+        }
+        return TranslationAttemptPersistenceError(mapping[error.code])
 
     async def _require_fresh_live_working_session(
         self,
