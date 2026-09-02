@@ -40,6 +40,14 @@
   Scribe-issued version. A transient canonical fingerprint operation binds the full source, every
   attempt, every review, and the internally derived object; input-order changes converge. No digest
   field is stored or serialized, and `note_ready` is computed and rejected.
+- An accepted review selects its exact translation. Otherwise the highest translation-version
+  attempt is current: absent, failed, unreviewed-success, and rejected-success evidence map to
+  `translation_missing`, `translation_failed`, `translation_review_required`, and
+  `translation_retry_required`, respectively. Older unselected evidence remains fingerprint input.
+- Session projection precedence is quality (`source_overlap` or `source_locale_unknown`), then
+  retryable translation work (missing, failed, or rejected), then creator review, then ready. A
+  corrected source commits `source_received` and clears the old working pointer before a later
+  projector chooses its state; no direct pending/review-to-quality edge is added.
 - Raw Pydantic structured errors are internal and unsafe. Future routes must use the sole sanitizer,
   which caps issues and emits only allowlisted codes and schema-owned or sanitized locations.
 
@@ -80,6 +88,9 @@
   future false-default activation gates.
 - No table, column, JSONB write, stored schema version, migration, backfill, or rewrite is added.
   The existing transcript JSONB is not declared an approved persistence design.
+- The later working-transcript schema must admit `translation_retry_required`, enforce the same
+  highest-attempt blocker choice and global precedence, and preserve the existing versioned-session
+  transition graph. This packet adds no migration.
 - A later receiver packet must allocate source, translation, review, and working identities and
   versions server-side, authenticate the existing platform workload, preserve the external-session
   drain rule, and demonstrate backward reads before any write.
@@ -121,7 +132,8 @@
 
 - Focused synthetic tests cover alternating English/Spanish speech; role/locale independence;
   profile-owned confidence; English-only and unknown behavior; missing, failed, rejected, and
-  accepted translation paths; multiple attempts; translation/review identity and version rules;
+  accepted translation paths; latest-attempt selection; mixed-blocker status precedence; multiple
+  attempts; translation/review identity and version rules;
   review chronology; stale/dangling/competing evidence; overlap; strict fields; immutability;
   deterministic ordering and source/working fingerprints; stable working identity; computed
   readiness; and text-safe representations/errors.

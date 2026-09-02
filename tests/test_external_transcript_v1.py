@@ -23,6 +23,10 @@ from cosmaneura_scribe.external_transcript_v1 import (
     external_source_transcript_fingerprint,
     serialize_external_transcript_validation_error,
 )
+from cosmaneura_scribe.normalized_source_persistence import (
+    ConfiguredExternalSessionStatus,
+    derive_working_transcript_status,
+)
 from cosmaneura_scribe.schemas import SpeakerRole
 from pydantic import ValidationError
 
@@ -172,6 +176,9 @@ def test_accepted_bilingual_translation_builds_one_ready_english_transcript() ->
     working = build_english_working_transcript(bundle)
 
     assert working.note_ready is True
+    assert derive_working_transcript_status(working) == (
+        ConfiguredExternalSessionStatus.TRANSCRIPT_READY
+    )
     assert working.working_transcript_id == WORKING_TRANSCRIPT_ID
     assert working.working_transcript_version == 3
     assert working.source_transcript_version == 1
@@ -263,18 +270,25 @@ def test_english_mode_allows_unknown_but_rejects_spanish_source() -> None:
 
 
 @pytest.mark.parametrize(
-    ("translations", "reviews", "expected_code"),
+    ("translations", "reviews", "expected_code", "expected_status"),
     [
-        ((), (), WorkingTranscriptBlockerCode.TRANSLATION_MISSING),
+        (
+            (),
+            (),
+            WorkingTranscriptBlockerCode.TRANSLATION_MISSING,
+            ConfiguredExternalSessionStatus.TRANSLATION_PENDING,
+        ),
         (
             (_translation(),),
             (),
             WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED,
+            ConfiguredExternalSessionStatus.REVIEW_REQUIRED,
         ),
         (
             (_translation(),),
             (_review(decision=TranslationReviewDecision.REJECTED),),
-            WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED,
+            WorkingTranscriptBlockerCode.TRANSLATION_RETRY_REQUIRED,
+            ConfiguredExternalSessionStatus.TRANSLATION_PENDING,
         ),
         (
             (
@@ -286,6 +300,7 @@ def test_english_mode_allows_unknown_but_rejects_spanish_source() -> None:
             ),
             (),
             WorkingTranscriptBlockerCode.TRANSLATION_FAILED,
+            ConfiguredExternalSessionStatus.TRANSLATION_PENDING,
         ),
     ],
 )
@@ -293,6 +308,7 @@ def test_spanish_translation_failure_states_block_note_readiness(
     translations: tuple[TranslationRecordV1, ...],
     reviews: tuple[TranslationReviewEvidenceV1, ...],
     expected_code: WorkingTranscriptBlockerCode,
+    expected_status: ConfiguredExternalSessionStatus,
 ) -> None:
     working = build_english_working_transcript(
         ExternalTranscriptBundleV1(
@@ -309,6 +325,7 @@ def test_spanish_translation_failure_states_block_note_readiness(
     assert working.segments[1].content is None
     assert working.blockers[-1].source_segment_id == SPANISH_SEGMENT_ID
     assert working.blockers[-1].code == expected_code
+    assert derive_working_transcript_status(working) == expected_status
 
 
 def test_successful_unreviewed_retry_takes_precedence_over_failed_attempt() -> None:
@@ -334,7 +351,90 @@ def test_successful_unreviewed_retry_takes_precedence_over_failed_attempt() -> N
     assert working.blockers[-1].code == (WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED)
 
 
-def test_unknown_locale_and_overlap_are_deterministic_review_blockers() -> None:
+def test_latest_failed_attempt_supersedes_older_unreviewed_success() -> None:
+    latest_failed = _translation(
+        translation_id=SECOND_TRANSLATION_ID,
+        translation_version=2,
+        outcome=TranslationOutcome.FAILED,
+        content=None,
+        failure_code="translation_adapter_unavailable",
+    )
+    working = build_english_working_transcript(
+        ExternalTranscriptBundleV1(
+            source_transcript=_bilingual_source(),
+            translations=(_translation(), latest_failed),
+            working_transcript_id=WORKING_TRANSCRIPT_ID,
+            working_transcript_version=1,
+        )
+    )
+
+    assert working.blockers[-1].code == WorkingTranscriptBlockerCode.TRANSLATION_FAILED
+    assert (
+        derive_working_transcript_status(working)
+        == ConfiguredExternalSessionStatus.TRANSLATION_PENDING
+    )
+
+
+def test_new_success_after_rejection_becomes_the_current_review_candidate() -> None:
+    retry = _translation(
+        translation_id=SECOND_TRANSLATION_ID,
+        translation_version=2,
+        content="Second synthetic translation.",
+    )
+    working = build_english_working_transcript(
+        ExternalTranscriptBundleV1(
+            source_transcript=_bilingual_source(),
+            translations=(_translation(), retry),
+            translation_reviews=(_review(decision=TranslationReviewDecision.REJECTED),),
+            working_transcript_id=WORKING_TRANSCRIPT_ID,
+            working_transcript_version=1,
+        )
+    )
+
+    assert working.blockers[-1].code == (WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED)
+    assert (
+        derive_working_transcript_status(working) == ConfiguredExternalSessionStatus.REVIEW_REQUIRED
+    )
+
+
+def test_translation_pending_precedes_review_required_across_segments() -> None:
+    second_spanish_id = UNKNOWN_SEGMENT_ID
+    source = _source(
+        _segment(
+            SPANISH_SEGMENT_ID,
+            locale=SourceLocale.SPANISH_US,
+            content="Primer texto sintetico.",
+            start_ms=0,
+            end_ms=500,
+        ),
+        _segment(
+            second_spanish_id,
+            locale=SourceLocale.SPANISH_US,
+            content="Segundo texto sintetico.",
+            start_ms=600,
+            end_ms=1_000,
+        ),
+    )
+    working = build_english_working_transcript(
+        ExternalTranscriptBundleV1(
+            source_transcript=source,
+            translations=(_translation(),),
+            working_transcript_id=WORKING_TRANSCRIPT_ID,
+            working_transcript_version=1,
+        )
+    )
+
+    assert {blocker.code for blocker in working.blockers} == {
+        WorkingTranscriptBlockerCode.TRANSLATION_MISSING,
+        WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED,
+    }
+    assert (
+        derive_working_transcript_status(working)
+        == ConfiguredExternalSessionStatus.TRANSLATION_PENDING
+    )
+
+
+def test_quality_blockers_precede_translation_pending_globally() -> None:
     source = _source(
         _segment(
             ENGLISH_SEGMENT_ID,
@@ -350,6 +450,13 @@ def test_unknown_locale_and_overlap_are_deterministic_review_blockers() -> None:
             start_ms=900,
             end_ms=1_500,
         ),
+        _segment(
+            SPANISH_SEGMENT_ID,
+            locale=SourceLocale.SPANISH_US,
+            content="Texto fuente sintetico.",
+            start_ms=1_600,
+            end_ms=2_000,
+        ),
     )
     working = build_english_working_transcript(
         ExternalTranscriptBundleV1(
@@ -363,7 +470,11 @@ def test_unknown_locale_and_overlap_are_deterministic_review_blockers() -> None:
     assert [blocker.code for blocker in working.blockers] == [
         WorkingTranscriptBlockerCode.SOURCE_OVERLAP,
         WorkingTranscriptBlockerCode.SOURCE_LOCALE_UNKNOWN,
+        WorkingTranscriptBlockerCode.TRANSLATION_MISSING,
     ]
+    assert (
+        derive_working_transcript_status(working) == ConfiguredExternalSessionStatus.QUALITY_BLOCKED
+    )
 
 
 def test_overlap_detection_uses_the_latest_prior_end_time() -> None:
@@ -460,6 +571,9 @@ def test_multiple_translation_attempts_are_allowed_and_one_accepted_attempt_is_u
     working = build_english_working_transcript(bundle)
     assert [translation.translation_version for translation in bundle.translations] == [1, 2]
     assert working.note_ready is True
+    assert derive_working_transcript_status(working) == (
+        ConfiguredExternalSessionStatus.TRANSCRIPT_READY
+    )
     assert working.segments[1].content == "Second synthetic translation."
 
 

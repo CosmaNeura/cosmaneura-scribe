@@ -8,10 +8,12 @@ from uuid import UUID
 
 from .canonical_json import canonical_sha256
 from .external_transcript_v1 import (
+    EnglishWorkingTranscriptV1,
     NormalizedSourceTranscriptReceiptV1,
     NormalizedSourceTranscriptRequestV1,
     SourceLocale,
     TranscriptLanguageMode,
+    WorkingTranscriptBlockerCode,
 )
 from .schemas import CaptureModality, ConsentRecord, SpeakerRole
 
@@ -32,6 +34,28 @@ class ConfiguredExternalSessionStatus(StrEnum):
     TRANSCRIPT_READY = "transcript_ready"
     HANDED_OFF = "handed_off"
     FAILED = "failed"
+
+
+def derive_working_transcript_status(
+    working: EnglishWorkingTranscriptV1,
+) -> ConfiguredExternalSessionStatus:
+    blocker_codes = {blocker.code for blocker in working.blockers}
+    if blocker_codes & {
+        WorkingTranscriptBlockerCode.SOURCE_LOCALE_UNKNOWN,
+        WorkingTranscriptBlockerCode.SOURCE_OVERLAP,
+    }:
+        return ConfiguredExternalSessionStatus.QUALITY_BLOCKED
+    if blocker_codes & {
+        WorkingTranscriptBlockerCode.TRANSLATION_MISSING,
+        WorkingTranscriptBlockerCode.TRANSLATION_FAILED,
+        WorkingTranscriptBlockerCode.TRANSLATION_RETRY_REQUIRED,
+    }:
+        return ConfiguredExternalSessionStatus.TRANSLATION_PENDING
+    if WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED in blocker_codes:
+        return ConfiguredExternalSessionStatus.REVIEW_REQUIRED
+    if not working.note_ready:
+        raise ValueError("working transcript blocker status is unmapped")
+    return ConfiguredExternalSessionStatus.TRANSCRIPT_READY
 
 
 class NormalizedSourceAcceptanceDisposition(StrEnum):
