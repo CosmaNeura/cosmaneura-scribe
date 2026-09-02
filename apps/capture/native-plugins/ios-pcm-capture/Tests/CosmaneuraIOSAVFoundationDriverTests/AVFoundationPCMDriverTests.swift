@@ -27,6 +27,26 @@ final class AVFoundationPCMDriverTests: XCTestCase, @unchecked Sendable {
     XCTAssertTrue(source[marker.lowerBound...].prefix(180).contains("emit(.captureFailed)"))
   }
 
+  func testLiveLifecycleObserverTreatsInactiveAsForegroundLoss() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let sourceURL =
+      packageRoot
+      .appendingPathComponent("Sources")
+      .appendingPathComponent("CosmaneuraIOSAVFoundationDriver")
+      .appendingPathComponent("LiveAVFoundationSystem.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    let inactive = try XCTUnwrap(
+      source.range(of: "forName: UIApplication.willResignActiveNotification")
+    )
+    XCTAssertTrue(source[inactive.lowerBound...].prefix(180).contains("emit(.backgrounded)"))
+    XCTAssertTrue(source.contains("forName: UIApplication.didEnterBackgroundNotification"))
+    XCTAssertTrue(source.contains("forName: UIApplication.didBecomeActiveNotification"))
+  }
+
   func testPermissionAdapterMapsEveryBoundedState() async {
     let cases: [(AppleMicrophonePermissionState, String)] = [
       (.granted, "granted"),
@@ -281,6 +301,44 @@ final class AVFoundationPCMDriverTests: XCTestCase, @unchecked Sendable {
       try await driver.freezeInput(sessionID: sessionID)
       try await driver.release(sessionID: sessionID)
     }
+  }
+
+  func testOverlappingResignBackgroundAndInterruptionDeliverOneTerminalEvent() async throws {
+    let eventGate = ManualGate<Void>()
+    let recorder = CallbackRecorder(eventGate: eventGate)
+    let system = FakeAudioSystem()
+    let driver = makeDriver(system)
+    try await driver.start(
+      sessionID: 1,
+      callbacks: recorder.callbacks(),
+      cancellation: StartupCancellation()
+    )
+
+    system.emitEvent(.backgrounded)
+    try await waitUntil { recorder.eventStartCount == 1 }
+    system.emitEvent(.backgrounded)
+    system.emitEvent(.interruptionBegan)
+    system.emitEvent(.backgrounded)
+    await Task.yield()
+    XCTAssertEqual(recorder.eventStartCount, 1)
+
+    try await driver.freezeInput(sessionID: 1)
+    let completion = CompletionFlag()
+    let release = Task {
+      defer { completion.finish() }
+      try await driver.release(sessionID: 1)
+    }
+    try await waitUntil { system.deactivateCalls == 1 }
+    XCTAssertFalse(completion.isFinished)
+
+    eventGate.resolve(())
+    try await release.value
+    XCTAssertEqual(recorder.eventKeys, ["backgrounded"])
+    try await driver.freezeInput(sessionID: 1)
+    try await driver.release(sessionID: 1)
+    XCTAssertEqual(system.freezeCalls, 1)
+    XCTAssertEqual(system.deactivateCalls, 1)
+    XCTAssertEqual(system.clearHandlerCalls, 1)
   }
 
   func testStaleTapAndNotificationCallbacksAreInert() async throws {

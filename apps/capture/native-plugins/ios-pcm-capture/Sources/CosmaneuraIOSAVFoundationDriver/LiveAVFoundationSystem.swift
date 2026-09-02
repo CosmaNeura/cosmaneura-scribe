@@ -120,6 +120,11 @@
           queue: nil
         ) { [weak self] _ in self?.emit(.captureFailed) },
         notificationCenter.addObserver(
+          forName: UIApplication.willResignActiveNotification,
+          object: nil,
+          queue: nil
+        ) { [weak self] _ in self?.emit(.backgrounded) },
+        notificationCenter.addObserver(
           forName: UIApplication.didEnterBackgroundNotification,
           object: nil,
           queue: nil

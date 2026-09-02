@@ -61,6 +61,19 @@ test("documents immutable transport copies and physical-device gates", async () 
   assert.match(readme, /non-PHI TestFlight canary/u);
 });
 
+test("the live driver treats inactive application state as foreground loss", async () => {
+  const liveSystem = await source(
+    "../../ios-pcm-capture/Sources/CosmaneuraIOSAVFoundationDriver/LiveAVFoundationSystem.swift",
+  );
+  const driver = await source(
+    "../../ios-pcm-capture/Sources/CosmaneuraIOSAVFoundationDriver/AVFoundationPCMDriver.swift",
+  );
+
+  assert.match(liveSystem, /UIApplication\.willResignActiveNotification/u);
+  assert.match(liveSystem, /emit\(\.backgrounded\)/u);
+  assert.match(driver, /case \.backgrounded: \.backgrounded/u);
+});
+
 test("the app adapter has no payload, token, or native-detail logging surface", async () => {
   const adapter = await source("../../../src/native/capacitor-ios-native-pcm-bridge.ts");
   assert.doesNotMatch(adapter, /\b(?:console\.|print\s*\(|debugPrint\s*\(|NSLog\s*\(|os_log\s*\()/u);
