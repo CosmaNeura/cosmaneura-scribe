@@ -181,12 +181,12 @@ export class EncryptedIndexedDbFlowStore implements CaptureFlowStore {
 
   async clearCompletedCapture(sessionId: string): Promise<void> {
     assertUuid(sessionId, "invalid_session_id");
+    const recoveryKey = await this.#recoveryRecordKey(sessionId);
     const existing = await this.getActiveCaptureState();
     if (existing === null) return;
     if (existing.sessionId !== sessionId) {
       throw new QueueInvariantError("active_capture_conflict");
     }
-    const recoveryKey = await this.#recoveryRecordKey(sessionId);
     const transaction = this.#database.transaction(
       [FLOW_RECORD_STORE, SESSION_KEY_STORE],
       "readwrite",
