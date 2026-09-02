@@ -562,6 +562,33 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     await vi.waitFor(() => expect(bridge.stopModes).toEqual(["discard"]));
   });
 
+  it("deduplicates overlapping lifecycle signals and retains failed discard for retry", async () => {
+    const bridge = new FakeIosNativePcmBridge();
+    bridge.failNextStops();
+    const source = new IosNativeMicrophoneCaptureSource(bridge);
+    const onInterruption = vi.fn();
+    const onError = vi.fn();
+    await source.start({
+      capabilities,
+      onChunk: async () => undefined,
+      onInterruption,
+      onError,
+    });
+
+    bridge.emitInterruption("ios_capture_backgrounded");
+    bridge.emitInterruption("ios_audio_session_interrupted");
+    bridge.emitError("ios_capture_failed");
+
+    expect(onInterruption).toHaveBeenCalledTimes(1);
+    expect(onInterruption).toHaveBeenCalledWith("capture_backgrounded");
+    await vi.waitFor(() => expect(bridge.stopModes).toEqual(["discard"]));
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onError).toHaveBeenCalledWith("capture_source_failed");
+
+    await expect(source.stop()).resolves.toBeUndefined();
+    expect(bridge.stopModes).toEqual(["discard", "discard"]);
+  });
+
   it.each([
     ["ios_microphone_permission_revoked", "capture_source_failed"],
     ["ios_capture_stalled", "capture_source_stalled"],

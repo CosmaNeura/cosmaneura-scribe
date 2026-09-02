@@ -57,7 +57,10 @@ activate it. No code logs payloads, tokens, device labels, or native error descr
 The linked TypeScript adapter installs its listener before start, checks foreground state through the
 existing source boundary, acknowledges each decoded regular packet in a cleanup path, sends bounded
 heartbeats, requests replay for a missing expected packet, rejects stale tokens, and retains a failed
-stop for retry. `NSMicrophoneUsageDescription` already exists and was not modified.
+stop for retry. The live driver treats `willResignActive` as foreground loss without waiting for a
+later background notification; its first-terminal-wins gate collapses overlapping resign-active,
+background, and audio-interruption notifications to the existing `ios_capture_backgrounded` result.
+`NSMicrophoneUsageDescription` already exists and was not modified.
 
 Before beta activation, a later reviewed rung must validate listener delivery, microphone permission,
 audio-session behavior, immutable WebKit copy residence, background/route transitions, stop retry,
