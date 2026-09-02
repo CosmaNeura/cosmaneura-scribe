@@ -210,36 +210,54 @@ final class IOSPCMCoreTests: XCTestCase, @unchecked Sendable {
     XCTAssertTrue(harness.sink.sequences.isEmpty)
   }
 
-  func testFailedDrainCanRetryAsDiscardAndWipesItsPartial() async throws {
+  func testLifecycleAfterFailedDrainReleasePermanentlyDiscards() async throws {
     let audio = FakeAudioDriver(releaseFailures: 1)
     let harness = try Harness(audio: audio)
     let session = try await harness.readySession()
-    await audio.emitLatest(OwnedAudioFrames(sampleRateHz: 16_000, channels: [[1]]))
+    let partial = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[1]])
+    await audio.emitLatest(partial)
 
     await assertFailure(.stopFailed) { _ = try await session.stop(.drain) }
     XCTAssertThrowsError(try harness.core.start(configuration: harness.configuration)) {
       XCTAssertEqual(($0 as? PCMFailure)?.code, .stopFailed)
     }
-    let discarded = try await session.stop(.discard)
+    await audio.eventLatest(.routeChanged)
+    let discarded = try await session.stop(.drain)
     XCTAssertNil(discarded.finalPacket)
+    XCTAssertTrue(partial.isZeroed)
+    XCTAssertTrue(harness.sink.sequences.isEmpty)
+    XCTAssertEqual(harness.sink.terminations, [.routeChanged])
+    XCTAssertEqual(audio.releaseCalls, 2)
     let replacement = try harness.core.start(configuration: harness.configuration)
     try await replacement.ready()
     _ = try await replacement.stop(.discard)
   }
 
-  func testFreezeFailureAlsoBlocksRestartUntilRetry() async throws {
+  func testLifecycleAfterFailedDrainFreezePermanentlyDiscards() async throws {
     let audio = FakeAudioDriver(freezeFailures: 1)
     let harness = try Harness(audio: audio)
     let session = try await harness.readySession()
-    await audio.emitLatest(OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0, 0, 0, 0]]))
+    let full = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0, 0, 0, 0]])
+    let partial = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[1]])
+    await audio.emitLatest(full)
+    await audio.emitLatest(partial)
 
-    await assertFailure(.stopFailed) { _ = try await session.stop(.discard) }
-    XCTAssertTrue(harness.sink.acknowledgements[0].wasCancelled)
+    await assertFailure(.stopFailed) { _ = try await session.stop(.drain) }
     XCTAssertThrowsError(try harness.core.start(configuration: harness.configuration)) {
       XCTAssertEqual(($0 as? PCMFailure)?.code, .stopFailed)
     }
-    _ = try await session.stop(.discard)
+    await audio.eventLatest(.backgrounded)
+    let discarded = try await session.stop(.drain)
+    XCTAssertNil(discarded.finalPacket)
+    XCTAssertTrue(full.isZeroed)
+    XCTAssertTrue(partial.isZeroed)
+    XCTAssertTrue(harness.sink.acknowledgements[0].wasCancelled)
+    XCTAssertEqual(harness.sink.terminations, [.backgrounded])
     XCTAssertEqual(audio.freezeCalls, 2)
+    XCTAssertEqual(audio.releaseCalls, 1)
+    let replacement = try harness.core.start(configuration: harness.configuration)
+    try await replacement.ready()
+    _ = try await replacement.stop(.discard)
   }
 
   func testStaleCallbacksAreInertAndClearTransferredAudio() async throws {

@@ -393,6 +393,7 @@ private actor IOSPCMSessionState {
     guard
       phase == .active || phase == .starting
         || (phase == .closing && requestedStopMode == .drain)
+        || (phase == .closeFailed && requestedStopMode == .drain)
     else { return }
     switch event {
     case .interruption: beginTerminal(.interruption)
