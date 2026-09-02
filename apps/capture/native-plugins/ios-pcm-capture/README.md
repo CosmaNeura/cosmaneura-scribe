@@ -48,3 +48,23 @@ Run deterministic tests with:
 ```sh
 swift test --package-path apps/capture/native-plugins/ios-pcm-capture
 ```
+
+## Dormant AVFoundation driver
+
+`CosmaneuraIOSAVFoundationDriver` is a separate, unlinked target containing a
+live foreground iOS adapter. It configures `playAndRecord`/`voiceChat` with the
+speaker and Bluetooth hands-free routes, copies bounded Float32 tap buffers
+into core-owned frames, and delegates downmixing, resampling, packetization,
+and watchdog shutdown to `CosmaneuraIOSPCMCore`.
+
+The driver suppresses category-change notifications created by its own setup,
+but fails startup on genuine lifecycle/media loss and maps active interruption,
+route, media-services, background, permission-revocation, and engine failures
+to fixed core events. One accepted frame may await consumption; the next tap
+fails closed instead of queueing audio.
+
+This target is not linked into an app and adds no permission description,
+background mode, entitlement, bridge, runtime selection, or distribution
+configuration. Simulator tests cannot validate microphone routing, Voice Chat
+signal processing, interruptions, Bluetooth behavior, permission UI, or audio
+session restoration. Those require separately authorized physical-device tests.
