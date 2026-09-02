@@ -38,6 +38,7 @@ async def _seed_source(
     *,
     locale: str = "es-US",
     lifetime: timedelta = timedelta(days=13),
+    overlap_unknown: bool = False,
 ) -> tuple[UUID, UUID]:
     consent_id = uuid4()
     session_id = uuid4()
@@ -45,6 +46,13 @@ async def _seed_source(
     receipt_id = uuid4()
     fingerprint = uuid4().hex + uuid4().hex
     content = f"Synthetic {locale} source content."
+    unknown_content = "Synthetic unknown source."
+    unknown_row = (
+        ", (:tenant_id, :session_id, 1, 1, :unknown_segment_id, 1, 'unknown', "
+        ":unknown_speaker_id, 'patient', :unknown_content, 500, 900, 0.40)"
+        if overlap_unknown
+        else ""
+    )
     await connection.execute(
         text(
             """
@@ -116,7 +124,7 @@ async def _seed_source(
                 received_at, transcript_content_expires_at
             ) VALUES (
                 :tenant_id, :session_id, 1, :receipt_id, '1.0', 'en-US+es-US',
-                'stt_adapter_v1', 'stt_model_v1', 'normalizer_v1', 1000, 1,
+                'stt_adapter_v1', 'stt_model_v1', 'normalizer_v1', 1000, :segment_count,
                 :content_length, :fingerprint, :received_at, :expires_at
             )
             """
@@ -125,7 +133,8 @@ async def _seed_source(
             "tenant_id": tenant_id,
             "session_id": session_id,
             "receipt_id": receipt_id,
-            "content_length": len(content),
+            "segment_count": 2 if overlap_unknown else 1,
+            "content_length": len(content) + (len(unknown_content) if overlap_unknown else 0),
             "fingerprint": fingerprint,
             "received_at": lifecycle.source_received_at,
             "expires_at": lifecycle.transcript_content_expires_at,
@@ -133,7 +142,7 @@ async def _seed_source(
     )
     await connection.execute(
         text(
-            """
+            f"""
             INSERT INTO normalized_source_segments (
                 tenant_id, session_id, source_transcript_version, ordinal,
                 source_segment_id, source_segment_version, source_locale,
@@ -142,7 +151,7 @@ async def _seed_source(
             ) VALUES (
                 :tenant_id, :session_id, 1, 0, :segment_id, 1, :locale,
                 :speaker_id, 'patient', :content, 0, 1000, 0.99
-            )
+            ){unknown_row}
             """
         ),
         {
@@ -150,6 +159,9 @@ async def _seed_source(
             "session_id": session_id,
             "segment_id": segment_id,
             "speaker_id": uuid4(),
+            "unknown_segment_id": uuid4(),
+            "unknown_speaker_id": uuid4(),
+            "unknown_content": unknown_content,
             "locale": locale,
             "content": content,
         },
@@ -910,7 +922,7 @@ async def test_derived_tables_force_tenant_rls_and_receive_no_runtime_grant(
 
 def test_derived_translation_evidence_is_the_only_alembic_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0012"]
+    assert script.get_heads() == ["0013"]
     migration = (ROOT / "alembic/versions/0012_derived_translation_evidence.py").read_text()
     assert "current_database() !~ '_test$'" in migration
     assert "CREATE ROLE" not in migration
