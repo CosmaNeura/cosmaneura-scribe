@@ -93,6 +93,63 @@ public final class IOSPCMSessionHandle: Sendable {
   }
 }
 
+private final class FrameAdmissionGate: @unchecked Sendable {
+  enum Claim { case accepted, overflow, closed }
+  private let lock = NSLock()
+  private var occupied = false
+  private var closed = false
+
+  func claim() -> Claim {
+    lock.withLock {
+      guard !closed else { return .closed }
+      guard !occupied else {
+        closed = true
+        return .overflow
+      }
+      occupied = true
+      return .accepted
+    }
+  }
+
+  func release() { lock.withLock { occupied = false } }
+  func close() { lock.withLock { closed = true } }
+}
+
+private final class FirstResult<Value: Sendable>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var resolved = false
+  private var value: Value?
+  private var waiter: CheckedContinuation<Value, Never>?
+
+  func resolve(_ value: Value) {
+    let continuation = lock.withLock { () -> CheckedContinuation<Value, Never>? in
+      guard !resolved else { return nil }
+      resolved = true
+      guard let waiter else {
+        self.value = value
+        return nil
+      }
+      self.waiter = nil
+      return waiter
+    }
+    continuation?.resume(returning: value)
+  }
+
+  func wait() async -> Value {
+    await withCheckedContinuation { continuation in
+      let existing = lock.withLock { () -> Value? in
+        if let value {
+          self.value = nil
+          return value
+        }
+        waiter = continuation
+        return nil
+      }
+      if let existing { continuation.resume(returning: existing) }
+    }
+  }
+}
+
 private actor IOSPCMSessionState {
   private enum Phase: Equatable {
     case owned
@@ -116,6 +173,7 @@ private actor IOSPCMSessionState {
   private let sink: any PCMEmissionSink
   private let clock: any PCMClock
   private let cancellation = StartupCancellation()
+  private let frameAdmission = FrameAdmissionGate()
   private let markCloseFailed: @Sendable () -> Void
   private let releaseOwnership: @Sendable () -> Void
   private var phase: Phase = .owned
@@ -124,8 +182,8 @@ private actor IOSPCMSessionState {
   private var released = false
   private var closingInProgress = false
   private var terminationSent = false
-  private var terminalStopFailure: PCMErrorCode?
   private var resampler: AreaWeightedPCM16Resampler?
+  private var sourceSampleRateHz: Int?
   private var resamplerFinished = false
   private var accumulator: PCMAccumulator
   private var nextSequence: UInt64 = 0
@@ -135,6 +193,7 @@ private actor IOSPCMSessionState {
   private var retainedFinalPacket: PCMEncodedPacket?
   private var watchdogTask: Task<Void, Never>?
   private var watchdogGeneration: UInt64 = 0
+  private var closeWaiters: [CheckedContinuation<Void, Never>] = []
 
   init(
     sessionID: UInt64,
@@ -160,11 +219,12 @@ private actor IOSPCMSessionState {
   func startup() async throws {
     guard phase == .owned else { throw PCMFailure(.startupCancelled) }
     phase = .requestingPermission
-    let permissionResult = await permission.requestPermission(cancellation: cancellation)
-    guard phase == .requestingPermission, !cancellation.isCancelled else {
+    let permissionResult = await racePermission()
+    guard phase == .requestingPermission, case .value(let permissionValue) = permissionResult
+    else {
       throw PCMFailure(.startupCancelled)
     }
-    switch permissionResult {
+    switch permissionValue {
     case .granted:
       break
     case .denied:
@@ -177,26 +237,42 @@ private actor IOSPCMSessionState {
 
     phase = .starting
     let callbacks = PCMAudioCallbacks(
-      frames: { [weak self] frames in
-        guard let self else {
+      frames: { [weak self, frameAdmission] frames in
+        switch frameAdmission.claim() {
+        case .closed:
           frames.zeroize()
-          return
+          return PCMFrameAdmission(accepted: false)
+        case .overflow:
+          frames.zeroize()
+          Task { await self?.receiveAdmissionOverflow() }
+          return PCMFrameAdmission(accepted: false)
+        case .accepted:
+          let completion = Task { [weak self] in
+            guard let self else {
+              frames.zeroize()
+              return
+            }
+            await self.receive(frames)
+          }
+          return PCMFrameAdmission(
+            accepted: true,
+            completion: completion,
+            release: { frameAdmission.release() }
+          )
         }
-        await self.receive(frames)
       },
       event: { [weak self] event in await self?.receive(event) }
     )
-    do {
-      try await audio.start(
-        sessionID: sessionID,
-        callbacks: callbacks,
-        cancellation: cancellation
-      )
-    } catch {
+    switch await raceAudioStart(callbacks: callbacks) {
+    case .cancelled:
+      throw PCMFailure(.startupCancelled)
+    case .failed:
       guard phase == .starting, !cancellation.isCancelled else {
         throw PCMFailure(.startupCancelled)
       }
       try await closeAfterStartupFailure(.startFailed)
+    case .started:
+      break
     }
     guard phase == .starting, !cancellation.isCancelled else {
       throw PCMFailure(.startupCancelled)
@@ -212,21 +288,14 @@ private actor IOSPCMSessionState {
 
   func stop(_ mode: PCMStopMode) async throws -> PCMStopResult {
     if phase == .closed { return PCMStopResult(finalPacket: nil) }
-    guard !closingInProgress else { throw PCMFailure(.stopFailed) }
-    if phase == .closeFailed, let requestedStopMode, requestedStopMode != mode {
-      throw PCMFailure(.stopFailed)
+    applyStopRequest(mode)
+    while closingInProgress {
+      await withCheckedContinuation { closeWaiters.append($0) }
+      if phase == .closed { return PCMStopResult(finalPacket: nil) }
     }
     closingInProgress = true
-    defer { closingInProgress = false }
-
-    if requestedStopMode == nil { requestedStopMode = mode }
-    if requestedStopMode == .discard || mode == .discard {
-      requestedStopMode = .discard
-    }
+    defer { finishCloseOperation() }
     phase = .closing
-    cancellation.cancel()
-    cancelWatchdog()
-    if requestedStopMode == .discard { discardBufferedAudio() }
 
     if !inputFrozen {
       do {
@@ -245,11 +314,9 @@ private actor IOSPCMSessionState {
         await waitForDeliveries()
         if requestedStopMode == .drain { try prepareFinalPacket() }
       } catch let failure as PCMFailure {
-        terminalStopFailure = failure.code
         beginTerminal(Self.termination(for: failure.code))
         await waitForDeliveries()
       } catch {
-        terminalStopFailure = .invalidPCM
         beginTerminal(.invalidPCM)
         await waitForDeliveries()
       }
@@ -269,7 +336,6 @@ private actor IOSPCMSessionState {
     releaseOwnership()
     let final = requestedStopMode == .drain ? retainedFinalPacket : nil
     retainedFinalPacket = nil
-    if let terminalStopFailure { throw PCMFailure(terminalStopFailure) }
     return PCMStopResult(finalPacket: final)
   }
 
@@ -289,6 +355,10 @@ private actor IOSPCMSessionState {
     }
     do {
       var output = try frames.consume { channels -> [Int16] in
+        guard frames.sampleRateHz >= PCMConfiguration.sampleRateHz,
+          frames.sampleRateHz <= 384_000,
+          sourceSampleRateHz == nil || sourceSampleRateHz == frames.sampleRateHz
+        else { throw PCMFailure(.invalidPCM) }
         var mono = try downmix(channels)
         defer {
           for index in mono.indices { mono[index] = 0 }
@@ -302,6 +372,7 @@ private actor IOSPCMSessionState {
             targetRate: PCMConfiguration.sampleRateHz,
             maximumOutputFrames: maximumOutput
           )
+          sourceSampleRateHz = frames.sampleRateHz
         }
         return try resampler!.push(mono)
       }
@@ -313,8 +384,16 @@ private actor IOSPCMSessionState {
     }
   }
 
-  private func receive(_ event: PCMAudioEvent) {
+  private func receiveAdmissionOverflow() {
     guard phase == .active || phase == .starting else { return }
+    beginTerminal(.bufferOverflow)
+  }
+
+  private func receive(_ event: PCMAudioEvent) {
+    guard
+      phase == .active || phase == .starting
+        || (phase == .closing && requestedStopMode == .drain)
+    else { return }
     switch event {
     case .interruption: beginTerminal(.interruption)
     case .routeChanged: beginTerminal(.routeChanged)
@@ -332,10 +411,12 @@ private actor IOSPCMSessionState {
       frameCount <= configuration.maximumInputFramesPerBuffer,
       channels.allSatisfy({ $0.count == frameCount })
     else { throw PCMFailure(.invalidPCM) }
+    guard channels.allSatisfy({ $0.allSatisfy(\.isFinite) }) else {
+      throw PCMFailure(.invalidPCM)
+    }
     var mono = Array(repeating: Float.zero, count: frameCount)
     for channel in channels {
       for index in channel.indices {
-        guard channel[index].isFinite else { throw PCMFailure(.invalidPCM) }
         mono[index] += channel[index]
       }
     }
@@ -457,26 +538,74 @@ private actor IOSPCMSessionState {
 
   private func beginTerminal(_ code: PCMTerminationCode) {
     guard phase != .closed else { return }
-    if terminalStopFailure == nil {
-      switch code {
-      case .invalidPCM: terminalStopFailure = .invalidPCM
-      case .bufferOverflow: terminalStopFailure = .bufferOverflow
-      case .outputLimitExceeded: terminalStopFailure = .outputLimitExceeded
-      case .sinkFailed: terminalStopFailure = .sinkFailed
-      default: break
-      }
-    }
-    requestedStopMode = .discard
-    phase = .closing
-    cancellation.cancel()
-    cancelWatchdog()
-    discardBufferedAudio()
+    applyStopRequest(.discard)
     if !terminationSent {
       terminationSent = true
       sink.terminated(code)
     }
     guard !closingInProgress else { return }
     Task { [weak self] in _ = try? await self?.stop(.discard) }
+  }
+
+  private func applyStopRequest(_ mode: PCMStopMode) {
+    if requestedStopMode == nil || mode == .discard { requestedStopMode = mode }
+    phase = .closing
+    cancellation.cancel()
+    cancelWatchdog()
+    frameAdmission.close()
+    if requestedStopMode == .discard { discardBufferedAudio() }
+  }
+
+  private func finishCloseOperation() {
+    closingInProgress = false
+    let waiters = closeWaiters
+    closeWaiters.removeAll(keepingCapacity: false)
+    for waiter in waiters { waiter.resume() }
+  }
+
+  private enum PermissionRace: Sendable {
+    case value(MicrophonePermission)
+    case cancelled
+  }
+
+  private enum AudioStartRace: Sendable {
+    case started
+    case failed
+    case cancelled
+  }
+
+  private func racePermission() async -> PermissionRace {
+    let first = FirstResult<PermissionRace>()
+    Task.detached { [permission, cancellation] in
+      let value = await permission.requestPermission(cancellation: cancellation)
+      first.resolve(.value(value))
+    }
+    Task.detached { [cancellation] in
+      await cancellation.waitUntilCancelled()
+      first.resolve(.cancelled)
+    }
+    return await first.wait()
+  }
+
+  private func raceAudioStart(callbacks: PCMAudioCallbacks) async -> AudioStartRace {
+    let first = FirstResult<AudioStartRace>()
+    Task.detached { [audio, cancellation, sessionID] in
+      do {
+        try await audio.start(
+          sessionID: sessionID,
+          callbacks: callbacks,
+          cancellation: cancellation
+        )
+        first.resolve(.started)
+      } catch {
+        first.resolve(.failed)
+      }
+    }
+    Task.detached { [cancellation] in
+      await cancellation.waitUntilCancelled()
+      first.resolve(.cancelled)
+    }
+    return await first.wait()
   }
 
   private func armWatchdog() {

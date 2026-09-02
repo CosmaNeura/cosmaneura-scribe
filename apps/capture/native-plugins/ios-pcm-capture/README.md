@@ -17,6 +17,14 @@ are separately awaitable and cancellable. A successful drain freezes input,
 waits for accepted full packets, and transfers at most one final partial packet.
 A successful discard returns no packet. Failed freeze/release keeps ownership
 and blocks another session until the same handle successfully retries stop.
+Discard permanently supersedes drain, including during an in-flight close.
+Readiness races cancellation locally, while driver `freezeInput` must also
+invalidate a non-cooperative or late native start. Once release succeeds, stop
+resolves; processing failures are reported through the fixed termination sink.
+
+Frame admission is synchronous. A driver may own only one accepted receipt and
+must await `waitUntilConsumed()` before offering another buffer. A concurrent
+offer is cleared, rejected, and terminates the session as bounded overflow.
 
 ## Zeroization boundary
 

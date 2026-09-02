@@ -26,26 +26,30 @@ final class IOSPCMCoreTests: XCTestCase, @unchecked Sendable {
   }
 
   func testImmediateHandleCancelsPendingPermissionWithoutStartingAudio() async throws {
-    let permission = BlockingPermission()
+    let permission = LatePermission()
     let harness = try Harness(permission: permission)
     let session = try harness.core.start(configuration: harness.configuration)
+    try await waitUntil { permission.isWaiting }
 
     let result = try await session.stop(.discard)
     XCTAssertNil(result.finalPacket)
     await assertFailure(.startupCancelled) { try await session.ready() }
+    permission.resolve(.granted)
     XCTAssertEqual(harness.audio.startCalls, 0)
     XCTAssertEqual(harness.audio.freezeCalls, 1)
     XCTAssertEqual(harness.audio.releaseCalls, 1)
   }
 
   func testImmediateHandleCancelsPendingAudioStart() async throws {
-    let audio = FakeAudioDriver(holdStartUntilCancellation: true)
+    let startGate = ManualGate<Void>()
+    let audio = FakeAudioDriver(startGate: startGate)
     let harness = try Harness(audio: audio)
     let session = try harness.core.start(configuration: harness.configuration)
     try await waitUntil { audio.startCalls == 1 }
 
     _ = try await session.stop(.discard)
     await assertFailure(.startupCancelled) { try await session.ready() }
+    startGate.resolve(())
     XCTAssertEqual(audio.freezeCalls, 1)
     XCTAssertEqual(audio.releaseCalls, 1)
   }
@@ -104,6 +108,26 @@ final class IOSPCMCoreTests: XCTestCase, @unchecked Sendable {
     _ = session
   }
 
+  func testSynchronousAdmissionRejectsAStressBurstAndClearsEveryBuffer() async throws {
+    let harness = try Harness(targetFrames: 4, maximumInputFrames: 4)
+    let session = try await harness.readySession()
+    let first = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
+    let receipt = harness.audio.offerLatest(first)
+    let rejected = (0..<100).map { _ in
+      OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
+    }
+    let decisions = rejected.map { harness.audio.offerLatest($0) }
+
+    XCTAssertTrue(receipt.accepted)
+    XCTAssertTrue(decisions.allSatisfy { !$0.accepted })
+    XCTAssertTrue(rejected.allSatisfy(\.isZeroed))
+    await receipt.waitUntilConsumed()
+    try await waitUntil { harness.audio.releaseCalls == 1 }
+    XCTAssertTrue(first.isZeroed)
+    XCTAssertEqual(harness.sink.terminations, [.bufferOverflow])
+    _ = session
+  }
+
   func testDrainFreezesWaitsForFullAckAndReturnsOnePartial() async throws {
     let harness = try Harness(targetFrames: 4, maximumInputFrames: 4)
     let session = try await harness.readySession()
@@ -127,6 +151,53 @@ final class IOSPCMCoreTests: XCTestCase, @unchecked Sendable {
     XCTAssertTrue(result.finalPacket?.bytes.isZeroed == true)
   }
 
+  func testDiscardSupersedesDrainAndLaterDrainCannotReverseIt() async throws {
+    let freezeGate = ManualGate<Void>()
+    let audio = FakeAudioDriver(freezeGate: freezeGate)
+    let harness = try Harness(audio: audio)
+    let session = try await harness.readySession()
+    await audio.emitLatest(OwnedAudioFrames(sampleRateHz: 16_000, channels: [[1]]))
+
+    let drain = Task { try await session.stop(.drain) }
+    try await waitUntil { audio.freezeCalls == 1 }
+    let discard = Task { try await session.stop(.discard) }
+    let lateDrain = Task { try await session.stop(.drain) }
+    freezeGate.resolve(())
+
+    let results = try await [drain.value, discard.value, lateDrain.value]
+    XCTAssertTrue(results.allSatisfy { $0.finalPacket == nil })
+    XCTAssertTrue(harness.sink.sequences.isEmpty)
+  }
+
+  func testLifecycleEventDuringDrainSupersedesItWithDiscard() async throws {
+    let harness = try Harness(targetFrames: 1, maximumInputFrames: 1)
+    let session = try await harness.readySession()
+    await harness.audio.emitLatest(OwnedAudioFrames(sampleRateHz: 16_000, channels: [[1]]))
+    let drain = Task { try await session.stop(.drain) }
+    try await waitUntil { harness.audio.freezeCalls == 1 }
+
+    await harness.audio.eventLatest(.backgrounded)
+    let result = try await drain.value
+    XCTAssertNil(result.finalPacket)
+    XCTAssertEqual(harness.sink.terminations, [.backgrounded])
+    XCTAssertTrue(harness.sink.acknowledgements[0].wasCancelled)
+  }
+
+  func testConcurrentDiscardSupersedesDrainWaitingForAcknowledgement() async throws {
+    let harness = try Harness(targetFrames: 1, maximumInputFrames: 1)
+    let session = try await harness.readySession()
+    await harness.audio.emitLatest(OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]]))
+    let drain = Task { try await session.stop(.drain) }
+    try await waitUntil { harness.audio.freezeCalls == 1 }
+    let discard = Task { try await session.stop(.discard) }
+
+    let drained = try await drain.value
+    XCTAssertNil(drained.finalPacket)
+    let discarded = try await discard.value
+    XCTAssertNil(discarded.finalPacket)
+    XCTAssertTrue(harness.sink.acknowledgements[0].wasCancelled)
+  }
+
   func testDiscardClearsPartialAndReturnsNothing() async throws {
     let harness = try Harness(targetFrames: 4, maximumInputFrames: 4)
     let session = try await harness.readySession()
@@ -139,16 +210,18 @@ final class IOSPCMCoreTests: XCTestCase, @unchecked Sendable {
     XCTAssertTrue(harness.sink.sequences.isEmpty)
   }
 
-  func testReleaseFailureBlocksRestartAndSameHandleRetriesStop() async throws {
+  func testFailedDrainCanRetryAsDiscardAndWipesItsPartial() async throws {
     let audio = FakeAudioDriver(releaseFailures: 1)
     let harness = try Harness(audio: audio)
     let session = try await harness.readySession()
+    await audio.emitLatest(OwnedAudioFrames(sampleRateHz: 16_000, channels: [[1]]))
 
-    await assertFailure(.stopFailed) { _ = try await session.stop(.discard) }
+    await assertFailure(.stopFailed) { _ = try await session.stop(.drain) }
     XCTAssertThrowsError(try harness.core.start(configuration: harness.configuration)) {
       XCTAssertEqual(($0 as? PCMFailure)?.code, .stopFailed)
     }
-    _ = try await session.stop(.discard)
+    let discarded = try await session.stop(.discard)
+    XCTAssertNil(discarded.finalPacket)
     let replacement = try harness.core.start(configuration: harness.configuration)
     try await replacement.ready()
     _ = try await replacement.stop(.discard)
@@ -194,6 +267,26 @@ final class IOSPCMCoreTests: XCTestCase, @unchecked Sendable {
     _ = session
   }
 
+  func testSourceRateChangeAndNonfiniteResamplerInputFailBeforePartialMutation() async throws {
+    var resampler = try AreaWeightedPCM16Resampler(
+      sourceRate: 16_000,
+      targetRate: 16_000,
+      maximumOutputFrames: 2
+    )
+    XCTAssertThrowsError(try resampler.push([0, .nan]))
+    XCTAssertEqual(try resampler.push([1]), [32_767])
+
+    let harness = try Harness()
+    let session = try await harness.readySession()
+    await harness.audio.emitLatest(OwnedAudioFrames(sampleRateHz: 48_000, channels: [[0]]))
+    let changed = OwnedAudioFrames(sampleRateHz: 44_100, channels: [[0]])
+    await harness.audio.emitLatest(changed)
+    try await waitUntil { harness.audio.releaseCalls == 1 }
+    XCTAssertTrue(changed.isZeroed)
+    XCTAssertEqual(harness.sink.terminations, [.invalidPCM])
+    _ = session
+  }
+
   func testLifecycleEventsFailSafeWithOnlyBoundedCodes() async throws {
     let cases: [(PCMAudioEvent, PCMTerminationCode)] = [
       (.interruption, .interruption),
@@ -231,9 +324,13 @@ final class IOSPCMCoreTests: XCTestCase, @unchecked Sendable {
     let harness = try Harness(targetFrames: 2, maximumInputFrames: 2)
     let session = try await harness.readySession()
     await harness.audio.emitLatest(OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0, 0]]))
+    let stop = Task { try await session.stop(.drain) }
+    try await waitUntil { harness.audio.freezeCalls == 1 }
     harness.sink.fail(0)
 
-    try await waitUntil { harness.audio.releaseCalls == 1 }
+    let result = try await stop.value
+    XCTAssertNil(result.finalPacket)
+    XCTAssertEqual(harness.audio.releaseCalls, 1)
     XCTAssertEqual(harness.sink.terminations, [.sinkFailed])
     _ = session
   }
@@ -245,18 +342,23 @@ private struct GrantedPermission: MicrophonePermissionAuthorizing {
   }
 }
 
-private struct BlockingPermission: MicrophonePermissionAuthorizing {
+private final class LatePermission: MicrophonePermissionAuthorizing, @unchecked Sendable {
+  private let gate = ManualGate<MicrophonePermission>()
+  var isWaiting: Bool { gate.isWaiting }
+
   func requestPermission(cancellation: StartupCancellation) async -> MicrophonePermission {
-    await cancellation.waitUntilCancelled()
-    return .unavailable
+    await gate.wait()
   }
+
+  func resolve(_ value: MicrophonePermission) { gate.resolve(value) }
 }
 
 private enum FakeDriverError: Error { case failed }
 
 private final class FakeAudioDriver: PCMAudioDriving, @unchecked Sendable {
   private let lock = NSLock()
-  private let holdStartUntilCancellation: Bool
+  private let startGate: ManualGate<Void>?
+  private let freezeGate: ManualGate<Void>?
   private var callbacks: [PCMAudioCallbacks] = []
   private var remainingFreezeFailures: Int
   private var remainingReleaseFailures: Int
@@ -265,11 +367,13 @@ private final class FakeAudioDriver: PCMAudioDriving, @unchecked Sendable {
   private var releases = 0
 
   init(
-    holdStartUntilCancellation: Bool = false,
+    startGate: ManualGate<Void>? = nil,
+    freezeGate: ManualGate<Void>? = nil,
     freezeFailures: Int = 0,
     releaseFailures: Int = 0
   ) {
-    self.holdStartUntilCancellation = holdStartUntilCancellation
+    self.startGate = startGate
+    self.freezeGate = freezeGate
     remainingFreezeFailures = freezeFailures
     remainingReleaseFailures = releaseFailures
   }
@@ -287,10 +391,7 @@ private final class FakeAudioDriver: PCMAudioDriving, @unchecked Sendable {
       starts += 1
       self.callbacks.append(callbacks)
     }
-    if holdStartUntilCancellation {
-      await cancellation.waitUntilCancelled()
-      throw FakeDriverError.failed
-    }
+    if let startGate { await startGate.wait() }
     if cancellation.isCancelled { throw FakeDriverError.failed }
   }
 
@@ -301,6 +402,7 @@ private final class FakeAudioDriver: PCMAudioDriving, @unchecked Sendable {
       remainingFreezeFailures -= 1
       return true
     }
+    if let freezeGate { await freezeGate.wait() }
     if fail { throw FakeDriverError.failed }
   }
 
@@ -315,11 +417,16 @@ private final class FakeAudioDriver: PCMAudioDriving, @unchecked Sendable {
   }
 
   func emitLatest(_ frames: OwnedAudioFrames) async {
+    let admission = offerLatest(frames)
+    await admission.waitUntilConsumed()
+  }
+
+  func offerLatest(_ frames: OwnedAudioFrames) -> PCMFrameAdmission {
     guard let callback = lock.withLock({ callbacks.last }) else {
       frames.zeroize()
-      return
+      return PCMFrameAdmission(accepted: false)
     }
-    await callback.frames(frames)
+    return callback.frames(frames)
   }
 
   func emitRetained(index: Int, frames: OwnedAudioFrames) async {
@@ -329,12 +436,50 @@ private final class FakeAudioDriver: PCMAudioDriving, @unchecked Sendable {
       frames.zeroize()
       return
     }
-    await callback.frames(frames)
+    let admission = callback.frames(frames)
+    await admission.waitUntilConsumed()
   }
 
   func eventLatest(_ event: PCMAudioEvent) async {
     guard let callback = lock.withLock({ callbacks.last }) else { return }
     await callback.event(event)
+  }
+}
+
+private final class ManualGate<Value: Sendable>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<Value, Never>?
+  private var stored: Value?
+  private var waiting = false
+
+  var isWaiting: Bool { lock.withLock { waiting } }
+
+  func wait() async -> Value {
+    await withCheckedContinuation { continuation in
+      let value = lock.withLock { () -> Value? in
+        if let stored {
+          self.stored = nil
+          return stored
+        }
+        waiting = true
+        self.continuation = continuation
+        return nil
+      }
+      if let value { continuation.resume(returning: value) }
+    }
+  }
+
+  func resolve(_ value: Value) {
+    let waiter = lock.withLock { () -> CheckedContinuation<Value, Never>? in
+      waiting = false
+      guard let continuation else {
+        stored = value
+        return nil
+      }
+      self.continuation = nil
+      return continuation
+    }
+    waiter?.resume(returning: value)
   }
 }
 

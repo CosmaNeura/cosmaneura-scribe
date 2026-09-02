@@ -38,11 +38,11 @@ struct AreaWeightedPCM16Resampler {
     guard expectedOutput <= maximumOutputFrames else {
       throw PCMFailure(.outputLimitExceeded)
     }
+    guard input.allSatisfy(\.isFinite) else { throw PCMFailure(.invalidPCM) }
 
     var output: [Int16] = []
     output.reserveCapacity(Int(expectedOutput - outputFrames))
     for raw in input {
-      guard raw.isFinite else { throw PCMFailure(.invalidPCM) }
       let sample = Double(max(-1, min(1, raw)))
       var inputTicksRemaining = targetRate
       while inputTicksRemaining > 0 {
@@ -61,7 +61,10 @@ struct AreaWeightedPCM16Resampler {
       }
       inputFrames += 1
     }
-    guard outputFrames == expectedOutput else { throw PCMFailure(.invalidPCM) }
+    guard outputFrames == expectedOutput else {
+      for index in output.indices { output[index] = 0 }
+      throw PCMFailure(.invalidPCM)
+    }
     return output
   }
 

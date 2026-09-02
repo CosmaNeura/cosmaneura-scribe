@@ -233,15 +233,17 @@ public final class StartupCancellation: @unchecked Sendable {
 }
 
 public protocol MicrophonePermissionAuthorizing: Sendable {
+  /// Must stop permission-side work when the token cancels; core readiness also
+  /// races this token so a late/non-returning provider cannot hold the caller.
   func requestPermission(cancellation: StartupCancellation) async -> MicrophonePermission
 }
 
 public struct PCMAudioCallbacks: Sendable {
-  public let frames: @Sendable (OwnedAudioFrames) async -> Void
+  public let frames: @Sendable (OwnedAudioFrames) -> PCMFrameAdmission
   public let event: @Sendable (PCMAudioEvent) async -> Void
 
   public init(
-    frames: @escaping @Sendable (OwnedAudioFrames) async -> Void,
+    frames: @escaping @Sendable (OwnedAudioFrames) -> PCMFrameAdmission,
     event: @escaping @Sendable (PCMAudioEvent) async -> Void
   ) {
     self.frames = frames
@@ -249,9 +251,53 @@ public struct PCMAudioCallbacks: Sendable {
   }
 }
 
+/// Synchronous admission prevents a driver from queuing transferred audio
+/// outside the state actor. A driver must await an accepted receipt before it
+/// offers another buffer; rejection has already cleared the offered buffer.
+public struct PCMFrameAdmission: Sendable {
+  public let accepted: Bool
+  private let receipt: PCMFrameReceipt?
+
+  init(
+    accepted: Bool,
+    completion: Task<Void, Never>? = nil,
+    release: (@Sendable () -> Void)? = nil
+  ) {
+    self.accepted = accepted
+    receipt = completion.map { PCMFrameReceipt(completion: $0, release: release) }
+  }
+
+  public func waitUntilConsumed() async {
+    await receipt?.waitUntilConsumed()
+  }
+}
+
+private final class PCMFrameReceipt: @unchecked Sendable {
+  private let completion: Task<Void, Never>
+  private let release: (@Sendable () -> Void)?
+  private let lock = NSLock()
+  private var released = false
+
+  init(completion: Task<Void, Never>, release: (@Sendable () -> Void)?) {
+    self.completion = completion
+    self.release = release
+  }
+
+  func waitUntilConsumed() async {
+    await completion.value
+    let shouldRelease = lock.withLock {
+      guard !released else { return false }
+      released = true
+      return true
+    }
+    if shouldRelease { release?() }
+  }
+}
+
 public protocol PCMAudioDriving: Sendable {
   /// Must honor cancellation. `freezeInput` invalidates a pending start and
-  /// returns only when no new callback can begin for this session.
+  /// returns only when no new callback can begin for this session. The driver
+  /// must await every accepted frame receipt before offering another buffer.
   func start(
     sessionID: UInt64,
     callbacks: PCMAudioCallbacks,
