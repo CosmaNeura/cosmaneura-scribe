@@ -17,8 +17,9 @@
   serialized; generation-tagged callbacks make stale taps and notifications
   inert, and failed freeze/deactivate retains ownership for retry.
 - Startup ignores only configuration-caused route changes before the engine is
-  armed. Other startup lifecycle/media loss fails closed. Active lifecycle loss
-  closes frame admission and maps to one fixed core event.
+  armed. Foreground state is checked before activation and again before arming;
+  other startup lifecycle/media loss fails closed. Active lifecycle loss closes
+  frame admission and maps to one fixed core event whose delivery release waits.
 - The tap copies at most 32 non-interleaved Float32 channels and 32,768 frames.
   Only one transferred frame may await the core receipt; overrun discards and
   terminates instead of queueing audio.
@@ -38,4 +39,6 @@
   schema, environment, signing, or deployed state.
 - Physical-device microphone, route, Bluetooth, lock/background, interruption,
   media-services reset, thermal/load, and permission-transition evidence is
-  mandatory before any bridge, selection, TestFlight, or PHI-bearing use.
+  mandatory before any bridge, selection, TestFlight, or PHI-bearing use. This
+  must include first-ever permission completion versus `didBecomeActive`; the
+  exact `.active` foreground check may conservatively reject that first attempt.

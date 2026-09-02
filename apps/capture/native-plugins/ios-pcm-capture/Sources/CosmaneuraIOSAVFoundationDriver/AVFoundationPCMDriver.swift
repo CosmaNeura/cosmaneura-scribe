@@ -73,6 +73,10 @@ public enum AppleAudioSessionProfile: Sendable {
   case foregroundTwoPartySpeech
 }
 
+public protocol AppleApplicationForegroundProviding: Sendable {
+  func isForegroundActive() async -> Bool
+}
+
 /// Injectable boundary around AVAudioSession, AVAudioEngine, and lifecycle
 /// notifications. Implementations must not log native error or audio detail.
 public protocol AppleAudioSystem: Sendable {
@@ -104,6 +108,7 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     case freezeFailed
     case frozen
     case releaseFailed
+    case releasing
   }
 
   private struct Session {
@@ -113,17 +118,21 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
   }
 
   private let system: any AppleAudioSystem
+  private let foreground: any AppleApplicationForegroundProviding
   private let callbackGate = DriverCallbackGate()
   private let frameCapacity: UInt32
   private var session: Session?
+  private var releaseWaiters: [CheckedContinuation<Bool, Never>] = []
   private var lastReleasedSessionID: UInt64?
   private var nextGeneration: UInt64 = 0
 
   public init(
     system: any AppleAudioSystem,
+    foreground: any AppleApplicationForegroundProviding,
     frameCapacity: UInt32 = 4_096
   ) {
     self.system = system
+    self.foreground = foreground
     self.frameCapacity = min(
       max(frameCapacity, 1),
       UInt32(PCMConfiguration.maximumFramesPerInputBuffer)
@@ -147,24 +156,35 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     }
 
     do {
-      try checkCancellation(cancellation)
+      try validateStarting(sessionID, generation, cancellation)
+      let activeBeforeActivation = await foreground.isForegroundActive()
+      try validateStarting(sessionID, generation, cancellation)
+      guard activeBeforeActivation else {
+        throw AVFoundationDriverError.operationFailed
+      }
+      try checkStartupEvents(generation)
       try system.configureAndActivate(profile: .foregroundTwoPartySpeech)
-      try checkCancellation(cancellation)
+      try validateStarting(sessionID, generation, cancellation)
       try checkStartupEvents(generation)
       try system.installInputTap(frameCapacity: frameCapacity) { [callbackGate] frames in
         callbackGate.receive(frames: frames, generation: generation)
       }
-      try checkCancellation(cancellation)
+      try validateStarting(sessionID, generation, cancellation)
       try checkStartupEvents(generation)
       try system.startEngine()
-      try checkCancellation(cancellation)
+      try validateStarting(sessionID, generation, cancellation)
+      let activeBeforeArming = await foreground.isForegroundActive()
+      try validateStarting(sessionID, generation, cancellation)
+      guard activeBeforeArming else {
+        throw AVFoundationDriverError.operationFailed
+      }
       guard callbackGate.arm(generation: generation) else {
         throw AVFoundationDriverError.operationFailed
       }
       session?.phase = .active
     } catch {
       callbackGate.freezeFrames(generation: generation)
-      session?.phase = .startFailed
+      markStartFailed(sessionID: sessionID, generation: generation)
       throw AVFoundationDriverError.operationFailed
     }
   }
@@ -177,7 +197,11 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     guard current.id == sessionID else {
       throw AVFoundationDriverError.operationFailed
     }
-    if current.phase == .frozen || current.phase == .releaseFailed { return }
+    if current.phase == .frozen || current.phase == .releaseFailed
+      || current.phase == .releasing
+    {
+      return
+    }
 
     callbackGate.freezeFrames(generation: current.generation)
     do {
@@ -198,7 +222,16 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     }
     guard current.id == sessionID,
       current.phase == .frozen || current.phase == .releaseFailed
+        || current.phase == .releasing
     else { throw AVFoundationDriverError.operationFailed }
+
+    if current.phase == .releasing {
+      let succeeded = await withCheckedContinuation { releaseWaiters.append($0) }
+      guard succeeded, lastReleasedSessionID == sessionID else {
+        throw AVFoundationDriverError.operationFailed
+      }
+      return
+    }
 
     do {
       try system.deactivate()
@@ -207,14 +240,45 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
       session = current
       throw AVFoundationDriverError.operationFailed
     }
-    callbackGate.retire(generation: current.generation)
+    current.phase = .releasing
+    session = current
+    let delivery = callbackGate.retireAdmission(generation: current.generation)
     system.clearEventHandler()
+    await delivery?.value
+    guard let retained = session,
+      retained.id == sessionID,
+      retained.generation == current.generation,
+      retained.phase == .releasing
+    else {
+      finishReleaseWaiters(succeeded: false)
+      throw AVFoundationDriverError.operationFailed
+    }
     session = nil
     lastReleasedSessionID = sessionID
+    finishReleaseWaiters(succeeded: true)
   }
 
-  private func checkCancellation(_ cancellation: StartupCancellation) throws {
-    if cancellation.isCancelled { throw AVFoundationDriverError.operationFailed }
+  private func validateStarting(
+    _ sessionID: UInt64,
+    _ generation: UInt64,
+    _ cancellation: StartupCancellation
+  ) throws {
+    guard let current = session,
+      current.id == sessionID,
+      current.generation == generation,
+      current.phase == .starting,
+      !cancellation.isCancelled
+    else { throw AVFoundationDriverError.operationFailed }
+  }
+
+  private func markStartFailed(sessionID: UInt64, generation: UInt64) {
+    guard var current = session,
+      current.id == sessionID,
+      current.generation == generation,
+      current.phase == .starting
+    else { return }
+    current.phase = .startFailed
+    session = current
   }
 
   private func checkStartupEvents(_ generation: UInt64) throws {
@@ -222,6 +286,14 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
       throw AVFoundationDriverError.operationFailed
     }
   }
+
+  private func finishReleaseWaiters(succeeded: Bool) {
+    let waiters = releaseWaiters
+    releaseWaiters.removeAll(keepingCapacity: false)
+    for waiter in waiters { waiter.resume(returning: succeeded) }
+  }
+
+  func releaseWaiterCountForTesting() -> Int { releaseWaiters.count }
 }
 
 private final class PermissionFirstResult: @unchecked Sendable {
@@ -257,7 +329,7 @@ private final class DriverCallbackGate: @unchecked Sendable {
   private enum FrameDecision {
     case offer(PCMAudioCallbacks)
     case reject
-    case overflow(PCMAudioCallbacks?)
+    case overflow
   }
 
   private let lock = NSLock()
@@ -268,6 +340,7 @@ private final class DriverCallbackGate: @unchecked Sendable {
   private var eventsArmed = false
   private var startupFailed = false
   private var terminalEventSent = false
+  private var terminalDelivery: Task<Void, Never>?
 
   func activate(generation: UInt64, callbacks: PCMAudioCallbacks) {
     lock.withLock {
@@ -278,6 +351,7 @@ private final class DriverCallbackGate: @unchecked Sendable {
       eventsArmed = false
       startupFailed = false
       terminalEventSent = false
+      terminalDelivery = nil
     }
   }
 
@@ -301,12 +375,15 @@ private final class DriverCallbackGate: @unchecked Sendable {
     }
   }
 
-  func retire(generation: UInt64) {
+  func retireAdmission(generation: UInt64) -> Task<Void, Never>? {
     lock.withLock {
-      guard self.generation == generation else { return }
+      guard self.generation == generation else { return nil }
       framesOpen = false
       callbacks = nil
       self.generation = nil
+      let delivery = terminalDelivery
+      terminalDelivery = nil
+      return delivery
     }
   }
 
@@ -317,9 +394,11 @@ private final class DriverCallbackGate: @unchecked Sendable {
       }
       guard !frameOutstanding else {
         framesOpen = false
-        let notify = terminalEventSent ? nil : callbacks
-        terminalEventSent = true
-        return .overflow(notify)
+        if !terminalEventSent {
+          terminalEventSent = true
+          terminalDelivery = Task { await callbacks.event(.captureFailed) }
+        }
+        return .overflow
       }
       frameOutstanding = true
       return .offer(callbacks)
@@ -328,11 +407,8 @@ private final class DriverCallbackGate: @unchecked Sendable {
     switch decision {
     case .reject:
       frames.zeroize()
-    case .overflow(let callbacks):
+    case .overflow:
       frames.zeroize()
-      if let callbacks {
-        Task { await callbacks.event(.captureFailed) }
-      }
     case .offer(let callbacks):
       let admission = callbacks.frames(frames)
       guard admission.accepted else {
@@ -348,25 +424,21 @@ private final class DriverCallbackGate: @unchecked Sendable {
   }
 
   func receive(event: AppleAudioSystemEvent, generation: UInt64) {
-    let selected = lock.withLock { () -> PCMAudioCallbacks? in
+    let mapped = Self.map(event)
+    lock.withLock {
       guard self.generation == generation, !terminalEventSent,
         let storedCallbacks = callbacks
-      else {
-        return nil
-      }
+      else { return }
       guard eventsArmed else {
-        if event == .configurationChanged { return nil }
+        if event == .configurationChanged { return }
         startupFailed = true
         terminalEventSent = true
-        return nil
+        return
       }
       terminalEventSent = true
       framesOpen = false
-      return storedCallbacks
+      terminalDelivery = Task { await storedCallbacks.event(mapped) }
     }
-    guard let selected else { return }
-    let mapped = Self.map(event)
-    Task { await selected.event(mapped) }
   }
 
   private func completeFrame(generation: UInt64) {

@@ -4,6 +4,16 @@
   import Foundation
   @preconcurrency import UIKit
 
+  public struct LiveAppleApplicationForegroundProvider:
+    AppleApplicationForegroundProviding, Sendable
+  {
+    public init() {}
+
+    public func isForegroundActive() async -> Bool {
+      await MainActor.run { UIApplication.shared.applicationState == .active }
+    }
+  }
+
   /// Thin live adapter. It is dormant until a future reviewed bridge creates it.
   public final class LiveAppleMicrophonePermissionProvider:
     AppleMicrophonePermissionProviding, @unchecked Sendable
@@ -105,6 +115,11 @@
           queue: nil
         ) { [weak self] _ in self?.emit(.mediaServicesReset) },
         notificationCenter.addObserver(
+          forName: .AVAudioEngineConfigurationChange,
+          object: engine,
+          queue: nil
+        ) { [weak self] _ in self?.emit(.captureFailed) },
+        notificationCenter.addObserver(
           forName: UIApplication.didEnterBackgroundNotification,
           object: nil,
           queue: nil
@@ -154,24 +169,22 @@
       else { throw AVFoundationDriverError.operationFailed }
 
       let input = engine.inputNode
-      let source = input.inputFormat(forBus: 0)
+      // The tap observes the input node's output bus; preserve that bus's exact
+      // format rather than synthesizing a format at this boundary.
+      let source = input.outputFormat(forBus: 0)
       guard source.sampleRate.isFinite,
         source.sampleRate >= Double(PCMConfiguration.sampleRateHz),
         source.sampleRate <= 384_000,
         source.channelCount > 0,
         source.channelCount <= 32,
-        let format = AVAudioFormat(
-          commonFormat: .pcmFormatFloat32,
-          sampleRate: source.sampleRate,
-          channels: source.channelCount,
-          interleaved: false
-        )
+        source.commonFormat == .pcmFormatFloat32,
+        !source.isInterleaved
       else { throw AVFoundationDriverError.operationFailed }
 
       input.installTap(
         onBus: 0,
         bufferSize: AVAudioFrameCount(frameCapacity),
-        format: format
+        format: source
       ) { [weak self] buffer, _ in
         guard let frames = Self.copyFrames(buffer) else {
           self?.emit(.captureFailed)

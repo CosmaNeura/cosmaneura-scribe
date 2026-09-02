@@ -37,11 +37,11 @@ open activation risk, not a property this dormant package claims to solve.
 
 ## Deliberate deferrals
 
-There is no `AVAudioEngine`/`AVAudioSession` driver, Capacitor plugin, permission
-plist entry, background entitlement, runtime selection, signing, TestFlight,
-deployment, or activation in this packet. A live driver must implement the
-injected cancellation/freeze/release and acknowledgement contracts, undergo
-physical-device lifecycle testing, and receive a separate Tier-2 review.
+The live `AVAudioEngine`/`AVAudioSession` driver exists only as the dormant,
+unlinked target described below. There is no Capacitor plugin, app dependency,
+permission plist entry, background entitlement, runtime selection, signing,
+TestFlight, deployment, or activation. The driver still requires independent
+review and physical-device lifecycle evidence before any integration.
 
 Run deterministic tests with:
 
