@@ -1,0 +1,41 @@
+{
+  "name": "@cosmaneura-scribe/capacitor-ios-pcm",
+  "version": "0.1.0",
+  "description": "Dormant iOS PCM transport for the reviewed native capture core",
+  "private": true,
+  "type": "module",
+  "main": "dist/esm/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "default": "./dist/esm/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "Sources/",
+    "Package.swift",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
+    "pretest": "npm run build",
+    "test": "node --test Tests/*.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@capacitor/core": "8.5.0",
+    "@capacitor/ios": "8.5.0"
+  },
+  "capacitor": {
+    "ios": {
+      "src": "."
+    }
+  },
+  "license": "UNLICENSED"
+}
