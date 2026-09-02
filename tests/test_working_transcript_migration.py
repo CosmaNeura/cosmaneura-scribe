@@ -370,6 +370,14 @@ async def test_ready_projection_preserves_exact_selected_and_complete_input_line
             {"tenant": tenant_id, "session": session_id},
         )
         assert pointer == 1
+    with pytest.raises(DBAPIError, match="current working projection|live session fence"):
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE scribe_sessions SET current_source_transcript_version = NULL, "
+                     "content_purged_at = clock_timestamp() "
+                     "WHERE tenant_id = :tenant AND id = :session"),
+                {"tenant": tenant_id, "session": session_id},
+            )
     await engine.dispose()
 
 
@@ -557,6 +565,24 @@ async def test_database_clock_and_purge_remove_every_working_artifact(
         if transaction.is_active:
             await transaction.rollback()
         await connection.close()
+
+    late_tenant = uuid4()
+    async with engine.begin() as connection:
+        late_session, _ = await _seed_source(
+            connection, late_tenant, locale="en-US", lifetime=timedelta(seconds=2)
+        )
+    async with engine.begin() as connection:
+        await _publish(connection, late_tenant, late_session, uuid4(), 1, "transcript_ready")
+    async with engine.begin() as connection:
+        await _set_status(connection, late_tenant, late_session, "handed_off")
+    with pytest.raises(DBAPIError, match="expired versioned external|live session fence"):
+        async with engine.begin() as connection:
+            await connection.execute(text("SELECT pg_sleep(2.1)"))
+            await connection.execute(
+                text("UPDATE scribe_sessions SET status = status "
+                     "WHERE tenant_id = :tenant AND id = :session"),
+                {"tenant": late_tenant, "session": late_session},
+            )
 
     tenant_id, working_id = uuid4(), uuid4()
     async with engine.begin() as connection:
