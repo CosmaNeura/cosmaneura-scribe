@@ -247,7 +247,8 @@ describe("IosNativeMicrophoneCaptureSource", () => {
       message: "audio_capture_permission_denied",
     });
     expect(bridge.startCalls).toBe(1);
-    expect(bridge.stopCalls).toBe(0);
+    expect(bridge.stopCalls).toBe(1);
+    expect(bridge.stopModes).toEqual(["discard"]);
   });
 
   it("refuses capture while iOS is backgrounded without starting native capture", async () => {
@@ -272,7 +273,7 @@ describe("IosNativeMicrophoneCaptureSource", () => {
       async () => ({ finalPcmPacket: null }),
     );
     const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>(
-      async () => ({ stop: stopNative }),
+      () => ({ ready: Promise.resolve(), stop: stopNative }),
     );
     const source = new IosNativeMicrophoneCaptureSource({ getAppState, start: startNative });
     const firstStart = source.start({ capabilities, onChunk: async () => undefined });
@@ -289,8 +290,8 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     expect(stopNative).toHaveBeenCalledOnce();
   });
 
-  it("uses one discard shutdown when abort races a pending native start", async () => {
-    const nativeStart = deferred<IosNativeMicrophoneSession>();
+  it("aborts a never-ready native start with one discard shutdown", async () => {
+    const neverReady = new Promise<void>(() => undefined);
     const stopNative = vi.fn<IosNativeMicrophoneSession["stop"]>(
       async () => ({ finalPcmPacket: null }),
     );
@@ -298,7 +299,7 @@ describe("IosNativeMicrophoneCaptureSource", () => {
       async () => "foreground",
     );
     const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>(
-      () => nativeStart.promise,
+      () => ({ ready: neverReady, stop: stopNative }),
     );
     const bridge: IosNativeMicrophoneBridge = {
       getAppState,
@@ -315,7 +316,6 @@ describe("IosNativeMicrophoneCaptureSource", () => {
 
     authority.abort();
     const concurrentStop = source.stop();
-    nativeStart.resolve({ stop: stopNative });
 
     await expect(starting).rejects.toMatchObject({ name: "AbortError" });
     await concurrentStop;
@@ -323,9 +323,9 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     expect(stopNative).toHaveBeenCalledWith({ mode: "discard" });
   });
 
-  it("uses one discard shutdown when explicit stop races a pending native start", async () => {
-    const firstNativeStart = deferred<IosNativeMicrophoneSession>();
-    let activeSessions = 1;
+  it("stops a never-ready native start with one discard shutdown", async () => {
+    const neverReady = new Promise<void>(() => undefined);
+    let activeSessions = 0;
     const firstStop = vi.fn<IosNativeMicrophoneSession["stop"]>(
       async () => {
         activeSessions -= 1;
@@ -339,11 +339,14 @@ describe("IosNativeMicrophoneCaptureSource", () => {
       },
     );
     const startNative = vi.fn<IosNativeMicrophoneBridge["start"]>()
-      .mockReturnValueOnce(firstNativeStart.promise)
-      .mockImplementationOnce(async () => {
+      .mockImplementationOnce(() => {
+        activeSessions += 1;
+        return { ready: neverReady, stop: firstStop };
+      })
+      .mockImplementationOnce(() => {
         if (activeSessions !== 0) throw new Error("leaked_native_session");
         activeSessions += 1;
-        return { stop: secondStop };
+        return { ready: Promise.resolve(), stop: secondStop };
       });
     const bridge: IosNativeMicrophoneBridge = {
       getAppState: vi.fn(async () => "foreground" as const),
@@ -354,7 +357,6 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     await vi.waitFor(() => expect(startNative).toHaveBeenCalledOnce());
 
     const stopping = source.stop();
-    firstNativeStart.resolve({ stop: firstStop });
 
     await expect(starting).rejects.toMatchObject({ name: "AbortError" });
     await stopping;
@@ -379,7 +381,7 @@ describe("IosNativeMicrophoneCaptureSource", () => {
       (_configuration, sink) => {
         earlyDelivery = sink.onPcmPacket({ sequenceNumber: 0, pcmBytes });
         void earlyDelivery.catch(() => undefined);
-        return Promise.resolve({ stop: stopNative });
+        return { ready: Promise.resolve(), stop: stopNative };
       },
     );
     const bridge: IosNativeMicrophoneBridge = {

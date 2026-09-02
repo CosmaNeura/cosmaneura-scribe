@@ -48,7 +48,8 @@ interface CaptureRun {
   stopFailureNotified: boolean;
   abortHandler: (() => void) | undefined;
   abortSignal: AbortSignal | undefined;
-  nativeStartPromise: Promise<IosNativeMicrophoneSession> | undefined;
+  readonly startupCancellation: ReturnType<typeof deferred<void>>;
+  nativeHandlePromise: Promise<IosNativeMicrophoneSession> | undefined;
   nativeSession: IosNativeMicrophoneSession | undefined;
   closePromise: Promise<void> | undefined;
   deliveryInFlight: boolean;
@@ -118,25 +119,24 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
     };
     const generation = run.generation;
     this.#assertStartingRun(run, "starting_native");
-    const nativeStart = deferred<IosNativeMicrophoneSession>();
-    run.nativeStartPromise = nativeStart.promise;
+    const nativeHandle = deferred<IosNativeMicrophoneSession>();
+    run.nativeHandlePromise = nativeHandle.promise;
     try {
-      const bridgeStart = this.#bridge.start(configuration, {
+      nativeHandle.resolve(this.#bridge.start(configuration, {
         onPcmPacket: (packet) => this.#receivePcmPacket(run, generation, packet),
         onInterruption: (code) => this.#receiveInterruption(run, generation, code),
         onError: (code) => this.#receiveTerminalError(run, generation, code),
-      });
-      void bridgeStart.then(nativeStart.resolve, nativeStart.reject);
+      }));
     } catch (error) {
-      nativeStart.reject(error);
+      nativeHandle.reject(error);
     }
 
     let nativeSession: IosNativeMicrophoneSession;
     try {
-      nativeSession = await nativeStart.promise;
+      nativeSession = await nativeHandle.promise;
     } catch (error) {
       if (this.#isCurrentRun(run) && run.phase === "starting_native") {
-        run.nativeStartPromise = undefined;
+        run.nativeHandlePromise = undefined;
         this.#finalizeRun(run);
       } else if (run.closePromise !== undefined) {
         await run.closePromise;
@@ -148,14 +148,23 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
       if (run.closePromise !== undefined) await run.closePromise;
       throw startFailureFor(run, abortError());
     }
-    run.nativeStartPromise = undefined;
+    run.nativeHandlePromise = undefined;
     run.nativeSession = nativeSession;
-    if (isAborted(options.signal)) {
-      run.cancelReason = "abort";
+    try {
+      await Promise.race([nativeSession.ready, run.startupCancellation.promise]);
+      this.#assertStartingRun(run, "starting_native");
+    } catch (error) {
+      if (!this.#isCurrentRun(run) || run.phase !== "starting_native") {
+        if (run.closePromise !== undefined) await run.closePromise;
+        throw startFailureFor(run, error);
+      }
+      this.#assertStartingRun(run, "starting_native");
+      const failure = sanitizeStartFailure(error);
+      run.terminalFailure = failure;
+      run.cancelReason = "terminal";
       await this.#requestClose(run, "discard");
-      throw abortError();
+      throw failure;
     }
-    this.#assertStartingRun(run, "starting_native");
     run.phase = "active";
   }
 
@@ -179,7 +188,8 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
       stopFailureNotified: false,
       abortHandler: undefined,
       abortSignal: undefined,
-      nativeStartPromise: undefined,
+      startupCancellation: deferred<void>(),
+      nativeHandlePromise: undefined,
       nativeSession: undefined,
       closePromise: undefined,
       deliveryInFlight: false,
@@ -363,6 +373,7 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
 
   #requestClose(run: CaptureRun, mode: IosNativeMicrophoneStopMode): Promise<void> {
     if (!this.#isCurrentRun(run)) return Promise.resolve();
+    run.startupCancellation.resolve(undefined);
     if (mode === "discard" || run.stopMode === undefined) run.stopMode = mode;
     if (run.closePromise !== undefined) return run.closePromise;
 
@@ -378,18 +389,18 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
 
   async #performClose(run: CaptureRun): Promise<void> {
     let nativeSession = run.nativeSession;
-    if (nativeSession === undefined && run.nativeStartPromise !== undefined) {
+    if (nativeSession === undefined && run.nativeHandlePromise !== undefined) {
       try {
-        nativeSession = await run.nativeStartPromise;
+        nativeSession = await run.nativeHandlePromise;
       } catch {
         if (this.#isClosingRun(run)) {
-          run.nativeStartPromise = undefined;
+          run.nativeHandlePromise = undefined;
           this.#finalizeRun(run);
         }
         return;
       }
       this.#assertClosingRun(run);
-      run.nativeStartPromise = undefined;
+      run.nativeHandlePromise = undefined;
       run.nativeSession = nativeSession;
     }
 
@@ -466,7 +477,7 @@ export class IosNativeMicrophoneCaptureSource implements CaptureSource {
     }
     run.abortHandler = undefined;
     run.abortSignal = undefined;
-    run.nativeStartPromise = undefined;
+    run.nativeHandlePromise = undefined;
     run.nativeSession = undefined;
     run.onChunk = undefined;
     run.onError = undefined;

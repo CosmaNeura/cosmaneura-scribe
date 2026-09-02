@@ -78,24 +78,29 @@ export interface IosNativeMicrophoneStopResult {
  * confirms that the audio session is released and no callbacks can follow.
  */
 export interface IosNativeMicrophoneSession {
+  /** Resolves only when capture is live; stop remains usable while this is pending. */
+  readonly ready: Promise<void>;
   stop(options: IosNativeMicrophoneStopOptions): Promise<IosNativeMicrophoneStopResult>;
 }
 
 /**
  * Dormant TypeScript boundary for a future foreground-only iOS implementation.
  *
- * A rejected `start` guarantees that it retained no native capture resources.
- * No implementation may log audio, encoded content, device labels, or native
- * exception messages.
+ * `start` returns a session handle synchronously, before permission or audio
+ * startup can wait. The handle's `stop` must cancel pending readiness and settle
+ * without waiting for `ready`; after successful stop, readiness cannot activate
+ * capture. No implementation may log audio, encoded content, device labels, or
+ * native exception messages.
  */
 export interface IosNativeMicrophoneBridge {
   getAppState(): Promise<IosNativeAppState>;
   /**
-   * Resolve only after the foreground audio session is ready. Do not emit a
-   * packet before resolution, and never emit while the app is backgrounded.
+   * Return the handle before asynchronous startup. `ready` resolves only after
+   * the foreground audio session is live. Do not emit a packet before then, and
+   * never emit while the app is backgrounded.
    */
   start(
     configuration: IosNativePcmConfiguration,
     sink: IosNativePcmSink,
-  ): Promise<IosNativeMicrophoneSession>;
+  ): IosNativeMicrophoneSession;
 }

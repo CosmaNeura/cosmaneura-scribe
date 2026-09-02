@@ -33,23 +33,23 @@ export class FakeIosNativePcmBridge implements IosNativeMicrophoneBridge {
   public start(
     configuration: IosNativePcmConfiguration,
     sink: IosNativePcmSink,
-  ): Promise<IosNativeMicrophoneSession> {
+  ): IosNativeMicrophoneSession {
     this.startCalls += 1;
-    if (this.#startFailure !== undefined) {
-      return Promise.reject(
+    if (this.#activeSession !== undefined) {
+      throw new Error("fake_ios_bridge_already_active");
+    }
+    this.lastConfiguration = { ...configuration };
+    this.#retainedSinks.push(sink);
+    const ready = this.#startFailure === undefined
+      ? Promise.resolve()
+      : Promise.reject(
         this.#startFailure instanceof Error
           ? this.#startFailure
           : new Error("fake_ios_bridge_start_failed"),
       );
-    }
-    if (this.#activeSession !== undefined) {
-      return Promise.reject(new Error("fake_ios_bridge_already_active"));
-    }
-    this.lastConfiguration = { ...configuration };
-    this.#retainedSinks.push(sink);
-    const session = new FakeIosNativeMicrophoneSession(this, sink);
+    const session = new FakeIosNativeMicrophoneSession(this, sink, ready);
     this.#activeSession = session;
-    return Promise.resolve(session);
+    return session;
   }
 
   public setAppState(state: IosNativeAppState): void {
@@ -137,6 +137,7 @@ class FakeIosNativeMicrophoneSession implements IosNativeMicrophoneSession {
   public constructor(
     private readonly bridge: FakeIosNativePcmBridge,
     public readonly sink: IosNativePcmSink,
+    public readonly ready: Promise<void>,
   ) {}
 
   public stop(options: IosNativeMicrophoneStopOptions): Promise<IosNativeMicrophoneStopResult> {

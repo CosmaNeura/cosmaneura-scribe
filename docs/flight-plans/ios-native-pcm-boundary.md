@@ -8,8 +8,8 @@
 - In scope: a TypeScript bridge contract, `CaptureSource` adapter, metadata-only
   fake, fixed error mapping, bounded packet validation, buffer cleanup, and
   synthetic fixture tests. Each start has an isolated generation and native
-  session handle; normal stop drains one final partial packet, while abort and
-  terminal paths discard it.
+  session handle returned before asynchronous readiness; normal stop drains one
+  final partial packet, while abort and terminal paths discard it.
 - Explicit non-goals: Swift or `AVAudioEngine`, `capture-source-factory.ts`,
   runtime selection, background recording, auth/Core/API/schema/migrations,
   provider credentials, signing, distribution, deployment, or beta activation.
@@ -59,8 +59,9 @@
 - Health signals and measurable abort thresholds: zero sequence gaps, oversized
   packets, concurrent deliveries, background packets, unsanitized failures, or
   uncleared test buffers. A native stop rejection blocks restart and requires a
-  successful retry on the retained session handle. Any occurrence blocks the
-  next rung.
+  successful retry on the retained session handle; the flow remains paused and
+  cannot upload or complete before that retry succeeds. Any occurrence blocks
+  the next rung.
 - Canary journey: N/A until a real native bridge and explicit runtime gate exist.
 - Founder-only production/PHI promotion: blocked; this repository has no
   production Scribe promotion workflow and this packet authorizes no activation.
