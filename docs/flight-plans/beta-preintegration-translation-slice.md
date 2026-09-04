@@ -57,21 +57,24 @@ repository for its end-to-end test.
 Keep commits independent and preserve this branch locally. After stabilization, inspect the new
 base without changing it, classify overlap, and cherry-pick only the still-needed commits onto a
 fresh branch. Do not modify the reviewed Packet B branch. Before any PR, re-run the exact-base full
-suite and split the final review stack into no more than three reviewable packets under the change
-budget.
+suite and rebuild the final review stack as four reviewable packets under the change budget. Do
+not open the accumulation branch itself as a pull request.
 
-The local accumulation branch intentionally exceeds the 2,000-line PR budget and must never be
-opened as one PR. Rebuild it as these three bounded packets:
+The local accumulation branch intentionally exceeds the 2,000-line PR budget. Its logical packet
+boundaries are:
 
 1. **Translation execution contracts:** adapter, planner, completed-job envelope, durable execution
    lifecycle, unit tests, and ADRs 0034/0037.
 2. **Creator review and English handoff acceptance:** protected review transport, handoff mapper,
    shared bilingual fixture, and the synthetic vertical/race tests.
-3. **Beta product gates:** onboarding/access and dashboard matrices, dark-activation manifest,
-   encounter-binding matrix, exact-artifact acceptance runbook/model, and their contract tests.
+3. **Beta access and encounter gates:** onboarding/access, dashboard, and encounter-binding
+   matrices; dark-activation manifest; and their contract tests.
+4. **Exact-artifact evidence:** the acceptance evidence model, dependency invalidation tests,
+   runbook, and ADR 0036.
 
 Packet 2 depends on Packet 1. Packet 3 is contract-only and may review independently once its
-status names are checked against the stabilized Scribe base.
+status names are checked against the stabilized Scribe base. Packet 4 is contract-only but should
+land after Packet 3 so its required scenarios refer to the final beta product gates.
 
 Abort integration on a changed auth/tenant/creator contract, a different transcript schema head,
 an incompatible note-engine request, a live-provider or environment dependency, a need to repeat a
