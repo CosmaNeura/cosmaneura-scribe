@@ -174,9 +174,7 @@ async def test_http_handoff_sanitizes_invalid_success_responses() -> None:
             await handoff.deliver(_payload(), idempotency_key="stable-key-4000")
 
     rendered_traceback = "".join(
-        traceback.format_exception(
-            type(caught.value), caught.value, caught.value.__traceback__
-        )
+        traceback.format_exception(type(caught.value), caught.value, caught.value.__traceback__)
     )
     assert caught.value.code == "invalid_platform_response"
     assert str(caught.value) == "invalid_platform_response"
