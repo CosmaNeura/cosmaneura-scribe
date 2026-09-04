@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from cosmaneura_scribe.normalized_source_persistence import ConfiguredExternalSessionStatus
 from cosmaneura_scribe.settings import Settings
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ACCESS_MATRIX = _ROOT / "tests/fixtures/beta/invite_and_creator_access_matrix_v1.json"
+_DASHBOARD_MATRIX = _ROOT / "tests/fixtures/beta/limited_dashboard_state_matrix_v1.json"
 _ACTIVATION_MANIFEST = _ROOT / "docs/beta/BETA_DARK_ACTIVATION_MANIFEST_V1.json"
 
 
@@ -109,3 +111,21 @@ def test_existing_scribe_runtime_controls_remain_dark() -> None:
         "master_platform_handoff_enabled",
     ):
         assert Settings.model_fields[name].default is False
+
+
+def test_limited_dashboard_matrix_covers_every_status_and_stays_creator_only() -> None:
+    matrix = _load_object(_DASHBOARD_MATRIX)
+    states = matrix["states"]
+    by_status = {state["source_status"]: state for state in states}
+
+    assert set(by_status) == {status.value for status in ConfiguredExternalSessionStatus}
+    assert all(state["creator_authorization_required"] is True for state in states)
+    assert all(state["show_to_non_creator"] is False for state in states)
+    assert {
+        state["source_status"]
+        for state in states
+        if state["can_review_translation"]
+    } == {ConfiguredExternalSessionStatus.REVIEW_REQUIRED.value}
+    assert {
+        state["source_status"] for state in states if state["can_request_note"]
+    } == {ConfiguredExternalSessionStatus.TRANSCRIPT_READY.value}

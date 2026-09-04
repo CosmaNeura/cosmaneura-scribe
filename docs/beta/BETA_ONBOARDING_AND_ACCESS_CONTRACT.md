@@ -67,6 +67,11 @@ It must not show practice-wide clinical content, another tester's identifiers or
 CAB, Sovereign, billing, EHR writeback, or production MCD data. A direct URL or guessed identifier
 must enforce the same creator-only decision as a dashboard query.
 
+The machine-checkable UI mapping is
+`tests/fixtures/beta/limited_dashboard_state_matrix_v1.json`. It covers every current Scribe
+external-session status, exposes translation review only for `review_required`, exposes note
+request only for `transcript_ready`, and requires creator authorization for every state.
+
 ## Deferred implementation gates
 
 Before any user is invited, the stabilized Core base must implement the invitation and grant state,
