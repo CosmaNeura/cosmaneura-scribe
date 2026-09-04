@@ -2,7 +2,7 @@
   "case_id": "synthetic_bilingual_source_to_handoff_v1",
   "source": {
     "schema_version": "1.0",
-    "duration_ms": 2000,
+    "duration_ms": 4000,
     "segments": [
       {
         "speaker_slot": 0,
@@ -17,16 +17,37 @@
         "speaker_slot": 1,
         "speaker_role": "patient",
         "source_locale": "es-US",
-        "content": "Texto fuente sintetico en espanol.",
+        "content": "Declaracion sintetica del paciente uno.",
         "start_ms": 1000,
-        "end_ms": 2000,
+        "end_ms": 1900,
+        "locale_confidence": 0.98
+      },
+      {
+        "speaker_slot": 0,
+        "speaker_role": "clinician",
+        "source_locale": "en-US",
+        "content": "Synthetic English follow-up text.",
+        "start_ms": 2000,
+        "end_ms": 2900,
+        "locale_confidence": 0.99
+      },
+      {
+        "speaker_slot": 1,
+        "speaker_role": "patient",
+        "source_locale": "es-US",
+        "content": "Declaracion sintetica del paciente dos.",
+        "start_ms": 3000,
+        "end_ms": 4000,
         "locale_confidence": 0.98
       }
     ]
   },
-  "spanish_to_english_result": "Synthetic translated patient statement.",
+  "spanish_to_english_results": {
+    "Declaracion sintetica del paciente uno.": "Synthetic translated patient statement one.",
+    "Declaracion sintetica del paciente dos.": "Synthetic translated patient statement two."
+  },
   "expected_handoff": {
-    "duration_seconds": 2,
+    "duration_seconds": 4,
     "segments": [
       {
         "speaker": "Doctor",
@@ -36,9 +57,21 @@
       },
       {
         "speaker": "Patient",
-        "content": "Synthetic translated patient statement.",
+        "content": "Synthetic translated patient statement one.",
         "start_ms": 1000,
-        "end_ms": 2000
+        "end_ms": 1900
+      },
+      {
+        "speaker": "Doctor",
+        "content": "Synthetic English follow-up text.",
+        "start_ms": 2000,
+        "end_ms": 2900
+      },
+      {
+        "speaker": "Patient",
+        "content": "Synthetic translated patient statement two.",
+        "start_ms": 3000,
+        "end_ms": 4000
       }
     ]
   }

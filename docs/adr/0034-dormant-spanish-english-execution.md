@@ -56,6 +56,12 @@ Spanish-to-English provider outcome, creator acceptance, canonical English proje
 existing note-engine request shape. Desktop and iOS can use the checked-in fixture as a common
 normalized-source acceptance target without depending on Core or staging.
 
+The canonical status precedence is batch-oriented for a multi-Spanish transcript: every missing
+Spanish segment receives an attempt before the session becomes `review_required`; creator reviews
+then proceed until the final acceptance makes the transcript `transcript_ready`. The shared fixture
+locks that behavior for the micro-beta. Interleaved translation and review would be a separate
+product and state-machine decision.
+
 This is not translation-provider readiness. Activation still requires a selected provider and
 model profile, an approved synthetic accuracy/latency evaluation, private connectivity and secret
 handling, a durable reservation/completed-command job boundary, bounded telemetry, least-privilege
