@@ -150,14 +150,17 @@ async def test_http_handoff_sanitizes_protocol_errors() -> None:
     assert caught.value.__suppress_context__
 
 
+@pytest.mark.parametrize("status_code", [200, 201])
 @pytest.mark.asyncio
-async def test_http_handoff_sanitizes_invalid_success_responses() -> None:
+async def test_http_handoff_sanitizes_invalid_success_responses(
+    status_code: int,
+) -> None:
     credential = StaticCredential()
-    sensitive = "synthetic-platform-response-detail-must-not-escape"
+    sensitive = "synthetic-leak-marker"
 
     def handler(request: httpx.Request) -> httpx.Response:
         del request
-        return httpx.Response(200, json={"unexpected_detail": sensitive})
+        return httpx.Response(status_code, json={"unexpected_detail": sensitive})
 
     async with httpx.AsyncClient(
         base_url="https://platform.internal.example",
