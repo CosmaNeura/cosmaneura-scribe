@@ -25,6 +25,7 @@
     "stable_existing_entra_workload_authentication",
     "creator_only_authorization_evidence",
     "single_use_exact_email_invitation_evidence",
+    "core_owned_encounter_binding_evidence",
     "dedicated_environment_isolation_evidence",
     "approved_translation_provider_profile",
     "encrypted_translation_job_store_and_ambiguity_runbook",

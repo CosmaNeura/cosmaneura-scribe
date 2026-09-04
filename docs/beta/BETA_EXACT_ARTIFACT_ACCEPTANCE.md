@@ -50,9 +50,10 @@ the same synthetic-only review before retention.
 7. Bilingual flow: run `bilingual_source_to_handoff_v1.json`; translate every Spanish segment to
    English, require creator review, retain source evidence, and prove only the accepted English
    projection enters note handoff.
-8. Encounter binding: select one existing creator-owned synthetic appointment; separately create an
-   unscheduled synthetic encounter with name/DOB input, require explicit possible-match choice,
-   avoid auto-merge, and show the result immediately in the creator's dashboard.
+8. Encounter binding: select one provider-authorized existing synthetic appointment; separately
+   create an unscheduled synthetic encounter with name/DOB input, require explicit possible-match
+   choice, avoid auto-merge, keep demographics out of Scribe, and show the result immediately in
+   the recording creator's dashboard.
 9. Failure controls: revoke consent, session, beta grant, and capture lease independently; inject
    offline/retry, provider timeout, provider-result storage uncertainty, upload uncertainty,
    duplicate mutation, stale source, and app interruption; exercise the ordered stop controls and

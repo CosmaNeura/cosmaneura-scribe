@@ -10,6 +10,7 @@ from cosmaneura_scribe.settings import Settings
 _ROOT = Path(__file__).resolve().parents[1]
 _ACCESS_MATRIX = _ROOT / "tests/fixtures/beta/invite_and_creator_access_matrix_v1.json"
 _DASHBOARD_MATRIX = _ROOT / "tests/fixtures/beta/limited_dashboard_state_matrix_v1.json"
+_ENCOUNTER_MATRIX = _ROOT / "tests/fixtures/beta/encounter_binding_matrix_v1.json"
 _ACTIVATION_MANIFEST = _ROOT / "docs/beta/BETA_DARK_ACTIVATION_MANIFEST_V1.json"
 
 
@@ -106,6 +107,9 @@ def test_beta_activation_manifest_is_non_phi_and_false_by_default() -> None:
         "encrypted_translation_job_store_and_ambiguity_runbook"
         in manifest["required_before_activation"]
     )
+    assert "core_owned_encounter_binding_evidence" in manifest[
+        "required_before_activation"
+    ]
 
 
 def test_existing_scribe_runtime_controls_remain_dark() -> None:
@@ -133,3 +137,115 @@ def test_limited_dashboard_matrix_covers_every_status_and_stays_creator_only() -
     assert {
         state["source_status"] for state in states if state["can_request_note"]
     } == {ConfiguredExternalSessionStatus.TRANSCRIPT_READY.value}
+
+
+def test_encounter_binding_keeps_demographics_in_core_and_precedes_capture() -> None:
+    matrix = _load_object(_ENCOUNTER_MATRIX)
+
+    assert matrix["ownership"] == {
+        "human_identity": "core_existing_clerk",
+        "demographics_and_matching": "core",
+        "canonical_encounter": "core",
+        "recording_and_transcript": "scribe",
+        "recording_visibility": "immutable_creator_only",
+    }
+    boundary = matrix["scribe_boundary"]
+    assert boundary["tenant_source"] == "verified_entra_context"
+    assert boundary["creator_source"] == "core_authenticated_actor"
+    assert set(boundary["allowed_request_fields"]) == {
+        "appointment_id",
+        "practitioner_id",
+        "patient_id",
+        "consent_record_id",
+        "modality",
+    }
+    assert set(boundary["forbidden_request_fields"]) == {
+        "tenant_id",
+        "creator_actor_id",
+        "patient_name",
+        "patient_date_of_birth",
+        "possible_matches",
+    }
+    assert not set(boundary["allowed_request_fields"]) & set(
+        boundary["forbidden_request_fields"]
+    )
+    assert all(matrix["rules"].values())
+
+
+def test_encounter_binding_cases_require_explicit_safe_resolution() -> None:
+    matrix = _load_object(_ENCOUNTER_MATRIX)
+    cases = matrix["cases"]
+    by_id = {case["case_id"]: case for case in cases}
+
+    assert len(by_id) == len(cases)
+    assert {
+        "existing_appointment_authorized",
+        "existing_appointment_unauthorized",
+        "manual_no_match_create_new",
+        "manual_match_existing_patient",
+        "manual_possible_match_unresolved",
+        "manual_possible_match_explicit_new",
+        "manual_selected_match_unauthorized",
+        "manual_incomplete_demographics",
+        "revoked_grant_denied",
+        "view_as_denied",
+        "exact_idempotent_replay",
+        "idempotency_payload_conflict",
+    } == set(by_id)
+
+    successful_actions = {
+        "bind_existing_appointment",
+        "create_unscheduled_for_existing_patient",
+        "create_unscheduled_new_patient",
+        "replay_existing_binding",
+    }
+    for case in cases:
+        eligible = bool(
+            case["authenticated"]
+            and not case["session_revoked"]
+            and case["beta_grant"] == "active"
+            and case["practice_relation"] == "same"
+            and not case["view_as"]
+        )
+        expected = case["expected"]
+        successful = expected["action"] in successful_actions
+        assert expected["create_scribe_session"] is successful
+        assert expected["capture_start_allowed"] is successful
+        assert expected["dashboard_visible_to_creator"] is successful
+        assert expected["duplicate_encounter_created"] is False
+        if successful:
+            assert eligible
+
+        if case["mode"] == "existing_appointment" and eligible:
+            should_bind = bool(
+                case["appointment_authorized"]
+                and case["selected_match_authorized"]
+                and case["idempotency"] != "payload_conflict"
+            )
+            assert successful is should_bind
+
+        if case["mode"] == "manual_demographics" and eligible:
+            complete = bool(
+                case["manual_name_present"] and case["manual_dob_present"]
+            )
+            if not complete or case["idempotency"] == "payload_conflict":
+                assert not successful
+            if (
+                complete
+                and case["possible_match_count"]
+                and case["explicit_resolution"] == "none"
+            ):
+                assert expected["action"] == "wait_for_explicit_resolution"
+                assert not successful
+            if case["explicit_resolution"] == (
+                "create_unscheduled_for_existing_patient"
+            ):
+                assert case["possible_match_count"] >= 1
+                assert successful is bool(case["selected_match_authorized"])
+
+    assert by_id["exact_idempotent_replay"]["expected"]["action"] == (
+        "replay_existing_binding"
+    )
+    assert by_id["manual_possible_match_unresolved"]["expected"]["action"] == (
+        "wait_for_explicit_resolution"
+    )

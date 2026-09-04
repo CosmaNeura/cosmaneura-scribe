@@ -79,6 +79,20 @@ adding a route: it returns Spanish source beside the proposed English translatio
 reviewer identity, review ID, or review time. Core must supply those values only after a fresh
 creator-only authorization check.
 
+## Encounter binding before capture
+
+Core owns appointment selection, manual synthetic name/date-of-birth entry, possible-match search,
+and the canonical encounter. Possible matches never auto-merge: the provider must explicitly use
+an authorized match, explicitly create a new unscheduled context, or cancel. Binding is
+idempotent and must complete, with consent, before capture can start.
+
+Scribe continues to receive only opaque appointment/encounter, practitioner, patient, consent, and
+modality identifiers. It does not receive name, date of birth, match candidates, tenant, or a
+client-asserted creator. This reuses the current external-session shape rather than expanding the
+Scribe database. The dashboard may render Core-supplied patient display values after the same
+creator authorization; those values do not come back from Scribe. The executable decision table is
+`tests/fixtures/beta/encounter_binding_matrix_v1.json`.
+
 ## Deferred implementation gates
 
 Before any user is invited, the stabilized Core base must implement the invitation and grant state,
