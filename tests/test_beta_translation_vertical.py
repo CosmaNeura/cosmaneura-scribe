@@ -7,6 +7,11 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
+from cosmaneura_scribe.creator_review_contract_v1 import (
+    CreatorReviewQueueStatus,
+    CreatorTranslationDecisionRequestV1,
+    build_creator_translation_review_queue,
+)
 from cosmaneura_scribe.derived_writer_transactions import (
     commit_creator_translation_review_and_publish,
     commit_translation_attempt_and_publish,
@@ -35,8 +40,8 @@ from cosmaneura_scribe.translation_attempt_persistence import (
     TranslationAttemptWriteDisposition,
 )
 from cosmaneura_scribe.translation_job_v1 import CompletedTranslationJobV1
-from cosmaneura_scribe.translation_review_persistence import (
-    CreatorTranslationReviewCommand,
+from cosmaneura_scribe.working_transcript_persistence import (
+    derive_persisted_working_transcript,
 )
 from test_derived_writer_transactions import _FaultInjectingProvider
 from test_normalized_source_persistence import (
@@ -136,20 +141,48 @@ async def test_synthetic_bilingual_source_reaches_reviewed_english_note_handoff(
         attempts.append(attempt)
 
     assert adapter.call_count == 2
+    current_session = provider.versioned_external_sessions[(tenant_id, draft.id)]
+    assert current_session.working_transcript_id is not None
+    assert current_session.current_working_transcript_version is not None
+    translation_records = tuple(
+        record
+        for key, record in provider.normalized_translation_attempts.items()
+        if key[:3] == (tenant_id, draft.id, source.source_transcript_version)
+    )
+    review_bundle = derive_persisted_working_transcript(
+        source,
+        translation_records,
+        (),
+        working_transcript_id=current_session.working_transcript_id,
+        working_transcript_version=current_session.current_working_transcript_version,
+    ).bundle
+    review_queue = build_creator_translation_review_queue(
+        session_id=draft.id,
+        bundle=review_bundle,
+    )
+    assert review_queue.status == CreatorReviewQueueStatus.REVIEW_REQUIRED
+    assert len(review_queue.items) == len(attempts)
+
     review = None
-    for index, attempt in enumerate(attempts):
+    for index, item in enumerate(review_queue.items):
+        decision = CreatorTranslationDecisionRequestV1(
+            schema_version="1.0",
+            expected_source_transcript_version=(
+                review_queue.source_transcript_version
+            ),
+            source_segment_id=item.source_segment_id,
+            expected_source_segment_version=item.source_segment_version,
+            translation_id=item.translation_id,
+            expected_translation_version=item.translation_version,
+            decision=TranslationReviewDecision.ACCEPTED,
+        )
+        assert "reviewer_actor_id" not in decision.model_dump(mode="json")
         review = await commit_creator_translation_review_and_publish(
             provider,
             tenant_id,
             draft.id,
-            CreatorTranslationReviewCommand(
+            decision.to_authorized_command(
                 review_id=uuid4(),
-                expected_source_transcript_version=attempt.source_transcript_version,
-                source_segment_id=attempt.source_segment_id,
-                expected_source_segment_version=attempt.source_segment_version,
-                translation_id=attempt.translation_id,
-                expected_translation_version=attempt.translation_version,
-                decision=TranslationReviewDecision.ACCEPTED,
                 reviewer_actor_id=draft.creator_actor_id,
                 reviewed_at=datetime.now(UTC),
             ),
