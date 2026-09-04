@@ -29,14 +29,23 @@ from cosmaneura_scribe.translation_adapter import (
     SpanishToEnglishTranslationResult,
     prepare_spanish_to_english_attempt,
 )
+from cosmaneura_scribe.translation_attempt_persistence import (
+    TranslationAttemptPersistenceCode,
+    TranslationAttemptPersistenceError,
+    TranslationAttemptWriteDisposition,
+)
+from cosmaneura_scribe.translation_job_v1 import CompletedTranslationJobV1
 from cosmaneura_scribe.translation_review_persistence import (
     CreatorTranslationReviewCommand,
 )
+from test_derived_writer_transactions import _FaultInjectingProvider
 from test_normalized_source_persistence import (
     _consent,
     _draft,
+    _request,
     _seed_configured_session,
 )
+from test_translation_attempt_persistence import _seed_pending
 
 _FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "beta" / "bilingual_source_to_handoff_v1.json"
@@ -103,11 +112,19 @@ async def test_synthetic_bilingual_source_reaches_reviewed_english_note_handoff(
                 source_content=spanish.content,
             ),
         )
+        completed_job = CompletedTranslationJobV1.from_command(
+            tenant_id=tenant_id,
+            session_id=draft.id,
+            command=prepared_attempt,
+        )
+        recovered_job = CompletedTranslationJobV1.model_validate_json(
+            completed_job.model_dump_json()
+        )
         attempt = await commit_translation_attempt_and_publish(
             provider,
-            tenant_id,
-            draft.id,
-            prepared_attempt,
+            recovered_job.tenant_id,
+            recovered_job.session_id,
+            recovered_job.to_command(),
         )
         assert attempt is not None
         expected_status = (
@@ -174,4 +191,114 @@ async def test_synthetic_bilingual_source_reaches_reviewed_english_note_handoff(
         "normalized_working_transcript.published",
     }.issubset(
         {event.action for event in provider.audit_events if event.tenant_id == tenant_id}
+    )
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_database_commit_replays_command_without_recalling_provider() -> None:
+    provider = InMemoryRepository()
+    tenant_id = uuid4()
+    raw_draft, raw_spanish, _ = await _seed_pending(provider, tenant_id)
+    draft = cast(VersionedExternalSessionCreate, raw_draft)
+    spanish = cast(NormalizedSourceSegmentRecord, raw_spanish)
+    adapter = _SyntheticSpanishEnglishAdapter(
+        {spanish.content: "Synthetic translation retained across database retry."}
+    )
+    prepared = await prepare_spanish_to_english_attempt(
+        adapter,
+        ReservedSpanishTranslation(
+            translation_id=uuid4(),
+            expected_source_transcript_version=1,
+            source_segment_id=spanish.source_segment_id,
+            expected_source_segment_version=spanish.source_segment_version,
+            expected_previous_translation_version=0,
+            source_locale=spanish.source_locale,
+            source_content=spanish.content,
+        ),
+    )
+    completed = CompletedTranslationJobV1.from_command(
+        tenant_id=tenant_id,
+        session_id=draft.id,
+        command=prepared,
+    )
+    retrying_provider = _FaultInjectingProvider(provider, "lose_first_acknowledgement")
+
+    publication = await commit_translation_attempt_and_publish(
+        retrying_provider,
+        completed.tenant_id,
+        completed.session_id,
+        completed.to_command(),
+    )
+
+    assert publication is not None
+    assert publication.disposition == TranslationAttemptWriteDisposition.REPLAYED
+    assert retrying_provider.transaction_calls == 2
+    assert adapter.call_count == 1
+    assert sum(
+        1
+        for key in provider.normalized_translation_attempts
+        if key[:2] == (tenant_id, draft.id)
+    ) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intervening_change", ["consent_revoked", "source_corrected"])
+async def test_completed_provider_result_fails_closed_after_authority_or_lineage_change(
+    intervening_change: str,
+) -> None:
+    provider = InMemoryRepository()
+    tenant_id = uuid4()
+    raw_draft, raw_spanish, _ = await _seed_pending(provider, tenant_id)
+    draft = cast(VersionedExternalSessionCreate, raw_draft)
+    spanish = cast(NormalizedSourceSegmentRecord, raw_spanish)
+    adapter = _SyntheticSpanishEnglishAdapter(
+        {spanish.content: "Synthetic result that must not cross a stale boundary."}
+    )
+    prepared = await prepare_spanish_to_english_attempt(
+        adapter,
+        ReservedSpanishTranslation(
+            translation_id=uuid4(),
+            expected_source_transcript_version=1,
+            source_segment_id=spanish.source_segment_id,
+            expected_source_segment_version=spanish.source_segment_version,
+            expected_previous_translation_version=0,
+            source_locale=spanish.source_locale,
+            source_content=spanish.content,
+        ),
+    )
+    completed = CompletedTranslationJobV1.from_command(
+        tenant_id=tenant_id,
+        session_id=draft.id,
+        command=prepared,
+    )
+
+    async with provider.transaction(tenant_id) as store:
+        if intervening_change == "consent_revoked":
+            assert await store.revoke_consent(tenant_id, draft.consent_record_id)
+        else:
+            assert await store.accept_normalized_source_transcript(
+                tenant_id,
+                draft.id,
+                idempotency_key="synthetic-source-correction-v2",
+                request=_request(spanish_content="Contenido sintetico corregido."),
+            )
+
+    with pytest.raises(TranslationAttemptPersistenceError) as caught:
+        await commit_translation_attempt_and_publish(
+            provider,
+            completed.tenant_id,
+            completed.session_id,
+            completed.to_command(),
+        )
+
+    expected_code = (
+        TranslationAttemptPersistenceCode.CONSENT_INVALID
+        if intervening_change == "consent_revoked"
+        else TranslationAttemptPersistenceCode.STATE_CONFLICT
+    )
+    assert caught.value.code == expected_code
+    assert adapter.call_count == 1
+    assert not any(
+        key[:2] == (tenant_id, draft.id)
+        for key in provider.normalized_translation_attempts
     )

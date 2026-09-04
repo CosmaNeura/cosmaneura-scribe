@@ -41,6 +41,13 @@ reuses the exact completed command and therefore never repeats provider work. A 
 must durably retain that completed command before attempting its database commit. This packet does
 not add that job store or claim production resumability.
 
+`CompletedTranslationJobV1` defines the protected durable handoff between those phases. It binds
+the tenant, session, translation identity, source lineage, fixed locale direction, outcome,
+adapter/model profile, and translated content or failure code. Strict JSON round-trip and a
+canonical SHA-256 fingerprint make exact replay testable without logging content. The envelope is
+the storage contract only: a future job store must encrypt it, enforce retention and tenant scope,
+and write it before the first database commit.
+
 Add a pure mapper from a note-ready `EnglishWorkingTranscriptV1` to the existing
 `MasterTranscriptDeliveryRequest`. It fails closed while any blocker remains, maps speaker roles to
 the established note-engine labels, and sends only the canonical English segment content. It does
@@ -70,7 +77,7 @@ product and state-machine decision.
 
 This is not translation-provider readiness. Activation still requires a selected provider and
 model profile, an approved synthetic accuracy/latency evaluation, private connectivity and secret
-handling, a durable reservation/completed-command job boundary, bounded telemetry, least-privilege
-identity activation, Core creator reauthorization and idempotency, exact-artifact end-to-end
-evidence, and an explicit founder decision. Recovery is to leave the seam uncalled; no stored data,
-schema, or deployed resource changes are created by this packet.
+handling, an encrypted durable job store using the completed-command boundary, bounded telemetry,
+least-privilege identity activation, Core creator reauthorization and idempotency, exact-artifact
+end-to-end evidence, and an explicit founder decision. Recovery is to leave the seam uncalled; no
+stored data, schema, or deployed resource changes are created by this packet.

@@ -19,6 +19,7 @@ One acceptance run records only non-PHI metadata:
 - iOS bundle version/build, archive digest, signing team, TestFlight build identifier, and iOS
   version;
 - translation adapter and model-profile identifiers;
+- completed-translation job schema version and canonical command fingerprint;
 - test case ID, start/end timestamps, pass/fail, bounded failure code, and evidence-file digest; and
 - operator/founder decision time and the exact artifact set accepted.
 
