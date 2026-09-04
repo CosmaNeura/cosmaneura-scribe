@@ -76,7 +76,8 @@ Practice owners cannot expand the cohort.
 4. The accepted invitation becomes immutable terminal evidence. Runtime access
    comes from the separate beta grant, which records subject, doctor, practice,
    cohort, allowed client surfaces, `non_phi_test_only=true`, allowed data
-   classifications, issue/expiry times, and revocation state.
+   classifications (`synthetic`, `verified_deidentified`, or
+   `approved_test_fixture`), issue/expiry times, and revocation state.
 5. Revoking a pending invitation prevents acceptance. Revoking an accepted grant
    blocks new launches and capabilities immediately, revokes pending launch
    tickets/codes and active desktop sessions, and causes the client to stop and
@@ -155,6 +156,13 @@ synthetic values. Matching is owner-scoped, advisory, and requires explicit conf
 silently merges identities. Every accepted encounter must carry a durable allowed data
 classification and provenance, and the server must reject an otherwise valid user, grant, or PKCE
 exchange if that evidence is absent or unknown.
+
+The stable classes are `synthetic`, `verified_deidentified`, and `approved_test_fixture`. The
+founder owns initial data admission. De-identified and other imported fixtures require a recorded
+privacy/security non-PHI review and enter only through an operator-controlled seed or catalog path.
+The client can select only an eligible server-classified encounter or fixture; it cannot upload an
+arbitrary fixture, assert or upgrade a classification, or convert consent into non-PHI status.
+Capture created inside the beta inherits its immutable class from the selected encounter.
 
 The existing public capture preview is useful protocol evidence but is not this
 beta: it has no Core BFF, clinical authentication, Scribe API, production storage,

@@ -30,7 +30,10 @@ The existing Clerk identity provider and Core authentication implementation rema
 plane. Beta authorization is separate, server-side state: exact invitation or existing approved
 identity, fixed beta practice, active Scribe beta grant, allowed client, and
 `non_phi_test_only` data mode with an allowlisted data classification. A Clerk session accepted by
-beta does not gain production Scribe authority. Consent alone cannot satisfy that data mode.
+beta does not gain production Scribe authority. Consent alone cannot satisfy that data mode. The
+allowlist contains only `synthetic`, `verified_deidentified`, and `approved_test_fixture`. Imported
+fixtures enter through an operator-controlled seed or catalog path after the required admission
+review; clients cannot assert or upgrade classification.
 
 ## User continuity
 
@@ -128,8 +131,8 @@ production control plane and prove that the same signed client and user workflow
 authorized production dashboard. Any discrepancy blocks activation.
 
 Foundation rollback deletes nothing automatically. Disable new traffic and provider actions first,
-retain evidence, reconcile in-flight synthetic sessions, and use a separately reviewed cleanup plan
-for disposable beta resources only after confirming that no required evidence remains.
+retain evidence, reconcile in-flight approved non-PHI test sessions, and use a separately reviewed
+cleanup plan for disposable beta resources only after confirming that no required evidence remains.
 
 ## Open implementation inputs
 

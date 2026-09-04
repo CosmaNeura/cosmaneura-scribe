@@ -41,14 +41,22 @@ normal Cosmaneura dashboard. This is a release gate, not a claim that software c
 
 ### Permitted test-data classes
 
-- **Synthetic:** generated or fictional data that does not describe a real person or customer.
-- **Verified de-identified:** data transformed outside the beta through an approved de-identification
-  process and verified as containing no PHI before ingestion.
-- **Other approved test data:** licensed benchmark, public-domain, generated, or purpose-built
+- **`synthetic`:** generated or fictional data that does not describe a real person or customer.
+- **`verified_deidentified`:** data transformed outside the beta through an approved
+  de-identification process and verified as containing no PHI before ingestion.
+- **`approved_test_fixture`:** licensed benchmark, public-domain, generated, or purpose-built
   fixtures with a recorded owner, source, permitted use, and explicit non-PHI approval.
 
 Every accepted record must identify one of these classes. Unknown, unclassified, merely
 “consented,” or real customer data fails closed.
+
+For the initial micro-beta, the founder is the data-admission owner. The founder may admit
+`synthetic` data after recording its source and purpose. `verified_deidentified` and
+`approved_test_fixture` data additionally require a recorded privacy/security non-PHI review before
+ingress. Imported fixtures enter only through an operator-controlled seed or catalog path; clients
+cannot upload arbitrary fixtures, assert a class, or upgrade an existing classification. For
+capture created inside the beta, the server inherits the immutable class from the selected eligible
+test encounter and rejects any client-supplied override.
 
 ## Shared product journey
 
