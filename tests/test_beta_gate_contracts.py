@@ -102,6 +102,10 @@ def test_beta_activation_manifest_is_non_phi_and_false_by_default() -> None:
     ]
     assert "phi" in manifest["forbidden_until_controlled_mcd_launch"]
     assert "founder_activation_decision" in manifest["required_before_activation"]
+    assert (
+        "encrypted_translation_job_store_and_ambiguity_runbook"
+        in manifest["required_before_activation"]
+    )
 
 
 def test_existing_scribe_runtime_controls_remain_dark() -> None:

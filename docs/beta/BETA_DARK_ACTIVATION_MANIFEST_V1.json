@@ -27,6 +27,7 @@
     "single_use_exact_email_invitation_evidence",
     "dedicated_environment_isolation_evidence",
     "approved_translation_provider_profile",
+    "encrypted_translation_job_store_and_ambiguity_runbook",
     "signed_notarized_desktop_artifact",
     "signed_testflight_ios_artifact",
     "exact_artifact_synthetic_end_to_end_evidence",

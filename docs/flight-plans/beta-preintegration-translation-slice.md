@@ -23,8 +23,9 @@
 3. Plan only missing/failed/rejected current Spanish lineage, stop on source-quality blockers, and
    require a caller-supplied durable translation identity.
 4. Convert success or bounded failure into the existing immutable attempt command, then round-trip
-   its tenant/session-bound completed-job envelope before commit. Never rerun the provider inside
-   database reconciliation.
+   its tenant/session-bound completed-job envelope before commit. Fence the provider call with a
+   dormant durable lifecycle, and never rerun the provider inside database reconciliation or after
+   an ambiguous unstored provider outcome.
 5. Project only canonical `review_required` items into a protected side-by-side review queue;
    accept only lineage plus the creator's decision from the client, and require trusted Core to
    supply reviewer authority after fresh authorization.
@@ -44,7 +45,7 @@ repository for its end-to-end test.
 
 | Gate | Evidence produced here | Remaining before closed beta |
 | --- | --- | --- |
-| Scribe backend | Fixed-direction adapter seam, bounded outcomes, and versioned completed-job contract | Encrypted job store/resume, actual provider integration and evaluation |
+| Scribe backend | Fixed-direction adapter seam, bounded outcomes, versioned completed job, and fail-closed restart contract | Encrypted job-store implementation, ambiguity operations, actual provider integration and evaluation |
 | Translation/note path | Synthetic source-to-bounded-review-to-English-note contract | Core review route/caller, provider allowlist, exact deployed artifact |
 | Core onboarding/dashboard | Stable input/output shapes only | Existing-auth invitation, creator views, encounter/dashboard implementation |
 | Desktop and iOS | One shared normalized-source fixture | Client conformance, signing, distribution, live-capture evidence |
@@ -62,8 +63,8 @@ budget.
 The local accumulation branch intentionally exceeds the 2,000-line PR budget and must never be
 opened as one PR. Rebuild it as these three bounded packets:
 
-1. **Translation execution contracts:** adapter, planner, completed-job envelope, unit tests, and
-   ADR 0034.
+1. **Translation execution contracts:** adapter, planner, completed-job envelope, durable execution
+   lifecycle, unit tests, and ADRs 0034/0037.
 2. **Creator review and English handoff acceptance:** protected review transport, handoff mapper,
    shared bilingual fixture, and the synthetic vertical/race tests.
 3. **Beta product gates:** onboarding/access and dashboard matrices, dark-activation manifest,

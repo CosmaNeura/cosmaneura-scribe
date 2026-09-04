@@ -54,8 +54,9 @@ the same synthetic-only review before retention.
    unscheduled synthetic encounter with name/DOB input, require explicit possible-match choice,
    avoid auto-merge, and show the result immediately in the creator's dashboard.
 9. Failure controls: revoke consent, session, beta grant, and capture lease independently; inject
-   offline/retry, provider timeout, upload uncertainty, duplicate mutation, stale source, and app
-   interruption; prove fail-closed state, bounded UI, and no duplicate note.
+   offline/retry, provider timeout, provider-result storage uncertainty, upload uncertainty,
+   duplicate mutation, stale source, and app interruption; exercise the ordered stop controls and
+   prove fail-closed state, no automatic provider replay, bounded UI, and no duplicate note.
 10. Retention/deletion: perform the approved synthetic expiry/purge scenario and prove content is
     unavailable while metadata-only audit evidence remains.
 
