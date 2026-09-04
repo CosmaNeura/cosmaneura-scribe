@@ -2,7 +2,7 @@
 
 **Status:** Locked design for implementation planning
 
-**Scope:** Invite-only, one-to-three-person, synthetic-data beta
+**Scope:** Invite-only, one-to-three-person, approved non-PHI test-data beta
 **Deployment authority:** None. This document authorizes no code, schema, identity,
 network, configuration, cohort, or production change.
 
@@ -26,7 +26,7 @@ Founder invitation
   -> normal Core/Clerk sign-in
   -> exact-email invitation acceptance
   -> Core practice context + active Scribe beta grant
-  -> owner-bound synthetic encounter + consent
+  -> owner-bound classified non-PHI test encounter + consent
   -> short-lived Core launch ticket
   -> system-browser S256 PKCE
   -> short-lived, session-scoped Core desktop bearer
@@ -40,11 +40,11 @@ proof alone never authorizes capture.
 
 | Cohort | Identity | Practice binding | Beta authorization | Data boundary |
 | --- | --- | --- | --- | --- |
-| MCD legacy | Existing Clerk subject and verified primary email | Production practice and role remain unchanged; the beta environment uses a non-production projection bound to the same subject | Founder-issued Scribe beta grant | Only an owner-bound, durably marked synthetic encounter |
-| Non-MCD external/internal tester | Normal Clerk account accepted only after an exact-email invitation | One isolated synthetic beta practice, workforce role | Invitation acceptance atomically creates membership and Scribe beta grant | Only that tester's owner-bound synthetic records |
+| MCD legacy | Existing Clerk subject and verified primary email | Production practice and role remain unchanged; the beta environment uses a non-production projection bound to the same subject | Founder-issued Scribe beta grant | Only owner-bound records classified as approved non-PHI test data |
+| Non-MCD external/internal tester | Normal Clerk account accepted only after an exact-email invitation | One isolated test-only beta practice, workforce role | Invitation acceptance atomically creates membership and Scribe beta grant | Only that tester's owner-bound approved non-PHI test records |
 
 For the MCD cohort, select only users whose current production practice binding is known and
-active. The isolated beta database may project that same verified subject into the synthetic beta
+active. The isolated beta database may project that same verified subject into the test-only beta
 practice, but it must not mutate, guess, or duplicate the user's production membership. If a
 desired tester lacks a safe production binding, exclude that tester from this beta rather than
 broadening the production tenancy model.
@@ -70,17 +70,17 @@ Practice owners cannot expand the cohort.
    current Clerk subject and exact verified primary email to match the invitation.
 3. Acceptance is single-use, idempotent, and atomic. For MCD it preserves the
    existing membership and adds only the beta grant. For a non-MCD tester it
-   creates the single synthetic-practice membership and the beta grant together.
+   creates the single test-only-practice membership and the beta grant together.
    A conflicting identity, membership, email change, expired token, revoked
    token, or replay fails closed.
 4. The accepted invitation becomes immutable terminal evidence. Runtime access
    comes from the separate beta grant, which records subject, doctor, practice,
-   cohort, allowed client surfaces, `synthetic_only=true`, issue/expiry times, and
-   revocation state.
+   cohort, allowed client surfaces, `non_phi_test_only=true`, allowed data
+   classifications, issue/expiry times, and revocation state.
 5. Revoking a pending invitation prevents acceptance. Revoking an accepted grant
    blocks new launches and capabilities immediately, revokes pending launch
    tickets/codes and active desktop sessions, and causes the client to stop and
-   purge beta credentials and queued synthetic material on its next authoritative
+   purge beta credentials and queued test material on its next authoritative
    contact. Clerk access to unrelated Core features is unchanged.
 
 Core already contains the durable invitation primitives—hashed bearer,
@@ -123,15 +123,16 @@ not an active invitation flow.
 1. **Core beta admission:** founder-only invitation issue/list/revoke plus atomic
    exact-email acceptance, and a durable Scribe beta grant with expiry and
    revocation. Do not restack or activate the broad stale public-onboarding work.
-2. **Synthetic encounter provisioning:** list only creator-owned appointments and allow the creator
-   either to select one or enter a conspicuously synthetic patient name and DOB for a new
-   unscheduled encounter. Search only that creator's records, show possible matches for explicit
-   confirmation, never auto-merge, and create the patient and appointment atomically and
-   idempotently with durable synthetic and Scribe-created provenance. No tenant ID, meeting URL, or
-   real patient data is accepted from the client.
+2. **Test encounter provisioning:** list only creator-owned appointments already classified as
+   approved non-PHI test data and allow the creator either to select one or enter a conspicuously
+   synthetic patient name and DOB for a new unscheduled encounter. Search only that creator's test
+   records, show possible matches for explicit confirmation, never auto-merge, and create the
+   patient and appointment atomically and idempotently with durable data classification,
+   provenance, and Scribe-created provenance. No tenant ID, meeting URL, real customer data, or PHI
+   is accepted from the client.
 3. **Core desktop receiver:** port the smallest current-master-compatible launch,
    authorize, token, and lifecycle slices receiver-first. Apply the beta-grant
-   and synthetic-provenance decision at launch and recheck it on authorization,
+   and non-PHI classification/provenance decision at launch and recheck it on authorization,
    exchange, refresh, capability issue, and lifecycle mutation.
 4. **Desktop consumer:** adopt the existing system-browser PKCE adapter and secure
    state storage after the canonical Scribe source line is established. No
@@ -139,31 +140,35 @@ not an active invitation flow.
    enters the desktop renderer.
 5. **Revocation and evidence:** prove invite replay denial, wrong-email denial,
    cross-tenant denial, grant/session revocation, safe stop, local purge, and
-   metadata-only audit output using synthetic fixtures.
+   metadata-only audit output using approved non-PHI fixtures.
 
 iOS consumes the same Core admission and authorization decision in the initial micro-beta. It must
 not create a separate mobile identity or direct-to-Scribe user-token path.
 
-## Synthetic-data and environment boundary
+## Non-PHI test-data and environment boundary
 
-No real patient name, DOB, recording, meeting, transcript, appointment, or chart identifier may
-enter this beta. The creator may exercise the name+DOB workflow only with conspicuously synthetic
-values. Matching is owner-scoped, advisory, and requires explicit confirmation; it never silently
-merges identities. Every accepted encounter must carry durable synthetic provenance, and the server
-must reject an otherwise valid user, grant, or PKCE exchange if that provenance is absent.
+No real customer record or PHI may enter this beta. Permitted inputs are synthetic data, data
+verified as de-identified through an approved process before ingestion, and other fixtures
+explicitly approved as non-PHI with recorded source, owner, and permitted use. Consent alone does
+not make data non-PHI. The creator may exercise the name+DOB workflow only with conspicuously
+synthetic values. Matching is owner-scoped, advisory, and requires explicit confirmation; it never
+silently merges identities. Every accepted encounter must carry a durable allowed data
+classification and provenance, and the server must reject an otherwise valid user, grant, or PKCE
+exchange if that evidence is absent or unknown.
 
 The existing public capture preview is useful protocol evidence but is not this
 beta: it has no Core BFF, clinical authentication, Scribe API, production storage,
 or microphone path, as documented in [`CAPTURE_PREVIEW.md`](./CAPTURE_PREVIEW.md).
 
 The beta reuses the existing Clerk identity plane and stable subject while isolating the Core/Scribe
-runtime data, storage, synthetic practice, and private service path. It does not introduce a third
+runtime data, storage, test-only practice, and private service path. It does not introduce a third
 auth provider or require an identity migration at live activation. The exact environment topology
 must prove issuer/audience/callback isolation and prevent beta credentials or data from reaching
 production.
 
 MCD's production account, practice, and role remain unchanged. The isolated beta environment maps
-the same verified Clerk subject to non-production authorization state and synthetic records. A live
+the same verified Clerk subject to non-production authorization state and approved non-PHI test
+records. A live
 transition must be rehearsed with the same identity and client and is blocked by any login,
 membership, token-refresh, or dashboard-delivery regression.
 
@@ -178,7 +183,7 @@ None of the following is satisfied or authorized by this document:
   email-change, duplicate-account, one-practice, replay, rate-limit, and
   revocation races;
 - signed/notarized desktop build and supported-device acceptance completed;
-- end-to-end synthetic acceptance proves consent, PKCE, one owner, one tenant,
+- end-to-end approved non-PHI acceptance proves consent, PKCE, one owner, one tenant,
   one capture, idempotent delivery, stop/recovery, purge, and no sensitive logs;
 - kill switch, cohort expiry, support owner, incident response, recovery, and
   rollback rehearsed;
@@ -202,7 +207,7 @@ no tester is provisioned, and no desktop or mobile build is distributed.
   queue, or capture session usable;
 - accidental PHI entry or visibility of existing MCD clinical records;
 - practice-wide visibility defeating owner-only beta data;
-- a synthetic membership unintentionally affecting seat or billing state;
+- a test-only membership unintentionally affecting seat or billing state;
 - weakening private networking by exposing Scribe directly; and
 - merging stale broad Core/Scribe branches instead of restacking small,
   receiver-first slices on the canonical sources.

@@ -15,9 +15,11 @@ authorize a deployment, a provider call, a production configuration change, clin
 Where this document is narrower than the Phase 0 plan, this document controls the initial micro-beta
 cohort only.
 
-Implementation may proceed behind false-default controls with synthetic or de-identified fixtures.
-Opening any runtime gate, distributing an application, invoking real capture, or enrolling a cohort
-requires a separate reviewed decision and its required evidence.
+Implementation may proceed behind false-default controls with approved non-PHI test data:
+synthetic data, verified de-identified data, or other fixtures explicitly approved as non-PHI.
+Consent alone does not make data non-PHI. Opening any runtime gate, distributing an application,
+invoking real capture, or enrolling a cohort requires a separate reviewed decision and its required
+evidence.
 
 ## Locked launch profile
 
@@ -29,8 +31,9 @@ The initial micro-beta supports exactly:
 - Google Meet in supported Google Chrome and Zoom Desktop. Both client cells must pass on the same
   companion artifact before the micro-beta opens.
 - Online, audio-only capture of one mixed stream.
-- One authenticated clinician, one synthetic or de-identified participant, one canonical synthetic
-  appointment, one meeting window, and one capture source at a time.
+- One authenticated clinician, one participant represented only by approved non-PHI test data, one
+  canonical test appointment carrying durable data classification and provenance, one meeting
+  window, and one capture source at a time.
 - Explicit clinician start and stop with a persistent native recording or uncertain-state indicator.
 - Desktop Scribe as the primary capture source. The Zoom bot is available only as an explicit,
   pre-start fallback for a Zoom appointment.
@@ -171,7 +174,7 @@ other.
 | Mid-meeting failure | No bot handoff; mark incomplete | No bot handoff; mark incomplete | Block automatic note readiness |
 | Transcript handoff | One completed transcript is ingested and dispatched once | Same | Block affected client |
 | Retention and deletion | Explicit bounded provider retention and confirmed deletion/absence | Same for Desktop and bot resources | Block affected client |
-| No-PHI evidence | Synthetic/de-identified audio only; logs, diagnostics, crash data, screenshots, URLs, and fixtures contain no PHI | Same | Stop test and treat exposure as an incident |
+| No-PHI evidence | Synthetic, verified de-identified, or other explicitly approved non-PHI test audio only; logs, diagnostics, crash data, screenshots, URLs, and fixtures contain no PHI or real customer data | Same | Stop test and treat exposure as an incident |
 | Kill switch and recovery | New starts stop; active cleanup continues | New starts and fallback stop; active cleanup continues | Block cohort |
 
 The launch gate passes only when every shared row and both client columns pass on the same candidate

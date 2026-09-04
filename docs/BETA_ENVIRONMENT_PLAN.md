@@ -5,10 +5,12 @@ deployment, or cohort activation is authorized by this document.
 
 ## Objective
 
-Create a dedicated synthetic-only Core/Scribe runtime and data plane for the micro-beta while
+Create a dedicated non-PHI-test-only Core/Scribe runtime and data plane for the micro-beta while
 reusing the existing Clerk human-identity architecture and the same client-facing contracts that
-will be used at clinical activation. Beta credentials and data must not authorize or reach
-production resources, and production credentials and callbacks must not be copied into beta.
+will be used at clinical activation. Permitted inputs are synthetic data, verified de-identified
+data, and other fixtures explicitly approved as non-PHI. Beta credentials and data must not
+authorize or reach production resources, and production credentials and callbacks must not be
+copied into beta.
 
 ## Boundary
 
@@ -26,8 +28,9 @@ The beta environment requires distinct:
 
 The existing Clerk identity provider and Core authentication implementation remain the human login
 plane. Beta authorization is separate, server-side state: exact invitation or existing approved
-identity, fixed beta practice, active Scribe beta grant, allowed client, and `synthetic_only` data
-mode. A Clerk session accepted by beta does not gain production Scribe authority.
+identity, fixed beta practice, active Scribe beta grant, allowed client, and
+`non_phi_test_only` data mode with an allowlisted data classification. A Clerk session accepted by
+beta does not gain production Scribe authority. Consent alone cannot satisfy that data mode.
 
 ## User continuity
 
@@ -82,14 +85,14 @@ handoff.
    logging/budget baseline, identities, storage, Key Vault, database, Speech, and translation
    foundations. Application and provider gates remain false.
 4. **Private-path proof:** deploy an immutable non-PHI Core/Scribe image pair, migrate the empty beta
-   database, and prove private DNS, managed identity, health, and synthetic handoff without a client
-   or provider.
+   database, and prove private DNS, managed identity, health, and an approved non-PHI test handoff
+   without a client or provider.
 5. **Identity and invitation proof:** configure reviewed beta origins/callbacks, accept one exact
    founder-issued invitation, prove owner/tenant isolation and revocation, and keep capture false.
 6. **Provider proof:** configure exact beta Recall/Zoom callback boundaries, run observation-only
    platform discovery, and prove Desktop-versus-bot source arbitration before enabling audio.
 7. **Client proof:** distribute exact signed desktop and TestFlight artifacts only after their full
-   synthetic acceptance matrices pass.
+   approved non-PHI acceptance matrices pass.
 
 Each rung has a saved pre-change plan, immutable source/artifact identity, explicit approval,
 post-change evidence, and its own recovery action. Passing one rung does not authorize the next.
@@ -99,7 +102,7 @@ post-change evidence, and its own recovery action. Passing one rung does not aut
 At minimum, separate controls cover:
 
 - beta admission;
-- synthetic encounter creation;
+- approved non-PHI test encounter creation;
 - desktop launch and real Recall capture;
 - Google Meet and Zoom Desktop allowlists;
 - Zoom-bot fallback;

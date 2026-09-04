@@ -29,8 +29,9 @@ an API or schema, configure an Azure service, upload a TestFlight build, or auth
 - Up to three named creator accounts in the initial cohort. For each session, the creator must also
   be the authenticated user who selects or creates the encounter, records, resumes, completes,
   views, and sends the session to note generation.
-- One creator and one synthetic patient on either an existing creator-owned appointment or an
-  explicitly confirmed Scribe-created unscheduled encounter.
+- One creator and one participant represented only by approved non-PHI test data on either an
+  eligible creator-owned test appointment or an explicitly confirmed Scribe-created unscheduled
+  test encounter.
 - Foreground-only, audio-only capture with an explicit start, persistent visible recording state,
   explicit stop, and no silent resume.
 - Consent confirmation before any audio API opens, with approved English and Spanish consent copy.
@@ -188,9 +189,11 @@ English. It does not produce English-to-Spanish advice for the patient.
 
 ## Acceptance evidence
 
-All fixtures are synthetic or consented and de-identified. Evidence records source commit, app and
-OS version, provider/model version, selected mode, locale pair, result, timestamp, and sanitized
-artifact location.
+All fixtures are synthetic, verified de-identified through an approved process before ingestion, or
+other test data explicitly approved as non-PHI with recorded source, owner, and permitted use.
+Consent alone does not make data non-PHI. Evidence records the data classification, source commit,
+app and OS version, provider/model version, selected mode, locale pair, result, timestamp, and
+sanitized artifact location.
 
 | Area | Required beta evidence | Failure disposition |
 | --- | --- | --- |
@@ -223,8 +226,8 @@ They must be approved and recorded before activation; this contract does not inv
    complete versioned English working transcript.
 4. **iOS runtime:** finish native PCM capture, device-bound DEK custody, foreground lifecycle,
    queue/recovery, PKCE/BFF authorization, and explicit resume.
-5. **Release evidence:** pass synthetic and de-identified bilingual evaluation, physical-device and
-   lifecycle matrices, signing/privacy review, TestFlight installation, rollback, and incident drill.
+5. **Release evidence:** pass approved non-PHI bilingual evaluation, physical-device and lifecycle
+   matrices, signing/privacy review, TestFlight installation, rollback, and incident drill.
 6. **Creator-only activation:** enable each of at most three named creators only after every
    preceding gate passes; one creator's evidence does not authorize another.
 
