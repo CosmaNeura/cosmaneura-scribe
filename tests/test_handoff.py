@@ -7,13 +7,23 @@ from uuid import uuid4
 import httpx
 import pytest
 from azure.core.credentials import AccessToken
+from cosmaneura_scribe.external_transcript_v1 import (
+    EnglishWorkingTranscriptSegmentV1,
+    EnglishWorkingTranscriptV1,
+    SourceLocale,
+    WorkingSegmentResolution,
+    WorkingTranscriptBlockerCode,
+    WorkingTranscriptBlockerV1,
+)
 from cosmaneura_scribe.handoff import (
     HandoffRetryableError,
     HttpMasterPlatformHandoff,
+    to_master_platform_payload_from_working_transcript,
 )
 from cosmaneura_scribe.schemas import (
     MasterTranscriptDeliveryRequest,
     MasterTranscriptSegment,
+    SpeakerRole,
 )
 
 
@@ -45,6 +55,82 @@ def _payload() -> MasterTranscriptDeliveryRequest:
             )
         ],
     )
+
+
+def _working_transcript(*, note_ready: bool) -> EnglishWorkingTranscriptV1:
+    spanish_segment_id = uuid4()
+    return EnglishWorkingTranscriptV1(
+        working_transcript_id=uuid4(),
+        working_transcript_version=3,
+        source_transcript_version=1,
+        segments=(
+            EnglishWorkingTranscriptSegmentV1(
+                source_segment_id=uuid4(),
+                source_segment_version=1,
+                source_locale=SourceLocale.ENGLISH_US,
+                speaker_id=uuid4(),
+                speaker_role=SpeakerRole.CLINICIAN,
+                start_ms=0,
+                end_ms=900,
+                resolution=WorkingSegmentResolution.ENGLISH_SOURCE,
+                content="Synthetic English clinician statement.",
+            ),
+            EnglishWorkingTranscriptSegmentV1(
+                source_segment_id=spanish_segment_id,
+                source_segment_version=1,
+                source_locale=SourceLocale.SPANISH_US,
+                speaker_id=uuid4(),
+                speaker_role=SpeakerRole.PATIENT,
+                start_ms=1000,
+                end_ms=2100,
+                resolution=(
+                    WorkingSegmentResolution.SPANISH_TRANSLATION
+                    if note_ready
+                    else WorkingSegmentResolution.UNRESOLVED
+                ),
+                content="Synthetic English patient statement." if note_ready else None,
+                translation_id=uuid4() if note_ready else None,
+                translation_version=1 if note_ready else None,
+                translation_review_id=uuid4() if note_ready else None,
+            ),
+        ),
+        blockers=(
+            ()
+            if note_ready
+            else (
+                WorkingTranscriptBlockerV1(
+                    source_segment_id=spanish_segment_id,
+                    code=WorkingTranscriptBlockerCode.TRANSLATION_MISSING,
+                ),
+            )
+        ),
+    )
+
+
+def test_note_ready_working_transcript_maps_to_existing_english_handoff() -> None:
+    session_id = uuid4()
+
+    payload = to_master_platform_payload_from_working_transcript(
+        encounter_id="appointment_synthetic_beta_01",
+        session_id=session_id,
+        working_transcript=_working_transcript(note_ready=True),
+    )
+
+    assert payload.scribe_session_id == session_id
+    assert payload.duration_seconds == 3
+    assert [(segment.speaker, segment.content) for segment in payload.segments] == [
+        ("Doctor", "Synthetic English clinician statement."),
+        ("Patient", "Synthetic English patient statement."),
+    ]
+
+
+def test_unreviewed_working_transcript_cannot_enter_note_handoff() -> None:
+    with pytest.raises(ValueError, match="working_transcript_not_note_ready"):
+        to_master_platform_payload_from_working_transcript(
+            encounter_id="appointment_synthetic_beta_01",
+            session_id=uuid4(),
+            working_transcript=_working_transcript(note_ready=False),
+        )
 
 
 @pytest.mark.asyncio
