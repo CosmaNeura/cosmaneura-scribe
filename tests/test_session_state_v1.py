@@ -4,6 +4,10 @@ from typing import Any
 
 import pytest
 from cosmaneura_scribe.session_state_v1 import (
+    SESSION_STATUS_TRANSITIONS,
+    SessionIngestMode,
+    SessionStatus,
+    can_transition_session,
     render_status_values,
     render_transition_predicate,
 )
@@ -38,6 +42,47 @@ def test_v1_status_values_are_pinned() -> None:
     assert render_status_values() == (
         "'created', 'capturing', 'uploaded', 'processing', "
         "'transcript_ready', 'handed_off', 'failed'"
+    )
+
+
+@pytest.mark.parametrize("old", SessionStatus)
+@pytest.mark.parametrize("new", SessionStatus)
+def test_default_ingest_mode_preserves_every_v1_transition(
+    old: SessionStatus,
+    new: SessionStatus,
+) -> None:
+    expected = old == new or new in SESSION_STATUS_TRANSITIONS[old]
+
+    assert can_transition_session(old, new) is expected
+    assert (
+        can_transition_session(
+            old,
+            new,
+            ingest_mode=SessionIngestMode.CHUNK_UPLOAD,
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize("old", SessionStatus)
+@pytest.mark.parametrize("new", SessionStatus)
+def test_external_async_mode_adds_only_direct_transcript_delivery(
+    old: SessionStatus,
+    new: SessionStatus,
+) -> None:
+    expected = (
+        old == new
+        or new in SESSION_STATUS_TRANSITIONS[old]
+        or (old == SessionStatus.CREATED and new == SessionStatus.TRANSCRIPT_READY)
+    )
+
+    assert (
+        can_transition_session(
+            old,
+            new,
+            ingest_mode=SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT,
+        )
+        is expected
     )
 
 
