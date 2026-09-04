@@ -30,6 +30,12 @@ rejection, timeout, unavailability, or an invalid response becomes a failed comm
 bounded code; raw provider details and clinical text are not retained in an exception. Cancellation
 is not converted into a provider failure.
 
+A pure planner reads the validated current bundle and selects only Spanish source versions that
+have no attempt, a failed latest attempt, or a rejected latest successful attempt. It never mints a
+translation identity. It waits when a successful attempt needs review, returns complete after
+accepted reviews, and returns no provider work when unknown locale or overlapping source timing
+quality-blocks the transcript. The caller must reserve each selected candidate durably.
+
 The adapter call occurs before the existing transaction-owning writer. Database reconciliation
 reuses the exact completed command and therefore never repeats provider work. A resumable runtime
 must durably retain that completed command before attempting its database commit. This packet does

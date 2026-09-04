@@ -6,7 +6,14 @@ from enum import StrEnum
 from typing import Protocol, cast
 from uuid import UUID
 
-from .external_transcript_v1 import SourceLocale, TranslationOutcome
+from .external_transcript_v1 import (
+    ExternalTranscriptBundleV1,
+    SourceLocale,
+    TranslationOutcome,
+    TranslationReviewDecision,
+    WorkingTranscriptBlockerCode,
+    build_english_working_transcript,
+)
 from .transcript_constraints import MAX_TRANSCRIPT_CONTENT_CHARS
 from .translation_attempt_persistence import TranslationAttemptCommand
 
@@ -24,6 +31,13 @@ class TranslationAdapterFailureCode(StrEnum):
 
 class TranslationPreparationCode(StrEnum):
     ADAPTER_CONFIGURATION_INVALID = "translation_adapter_configuration_invalid"
+
+
+class SpanishTranslationPlanStatus(StrEnum):
+    READY = "ready"
+    WAITING_FOR_REVIEW = "waiting_for_review"
+    COMPLETE = "complete"
+    QUALITY_BLOCKED = "quality_blocked"
 
 
 class TranslationAdapterError(RuntimeError):
@@ -127,6 +141,151 @@ class ReservedSpanishTranslation:
 
     def __repr__(self) -> str:
         return "ReservedSpanishTranslation(<protected>)"
+
+
+@dataclass(frozen=True, repr=False)
+class SpanishTranslationCandidate:
+    """Current source lineage eligible for a new provider attempt."""
+
+    expected_source_transcript_version: int
+    source_segment_id: UUID
+    expected_source_segment_version: int
+    expected_previous_translation_version: int
+    source_locale: SourceLocale
+    source_content: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self.expected_source_transcript_version < 1:
+            raise ValueError("expected source transcript version must be positive")
+        if self.expected_source_segment_version < 1:
+            raise ValueError("expected source segment version must be positive")
+        if self.expected_previous_translation_version < 0:
+            raise ValueError("expected previous translation version cannot be negative")
+        if (
+            not isinstance(cast(object, self.source_locale), SourceLocale)
+            or self.source_locale != SourceLocale.SPANISH_US
+        ):
+            raise ValueError("translation candidate source locale must be es-US")
+        if (
+            not self.source_content.strip()
+            or len(self.source_content) > MAX_TRANSCRIPT_CONTENT_CHARS
+        ):
+            raise ValueError("translation candidate source content is invalid")
+
+    def reserve(self, translation_id: UUID) -> ReservedSpanishTranslation:
+        return ReservedSpanishTranslation(
+            translation_id=translation_id,
+            expected_source_transcript_version=self.expected_source_transcript_version,
+            source_segment_id=self.source_segment_id,
+            expected_source_segment_version=self.expected_source_segment_version,
+            expected_previous_translation_version=(
+                self.expected_previous_translation_version
+            ),
+            source_locale=self.source_locale,
+            source_content=self.source_content,
+        )
+
+    def __repr__(self) -> str:
+        return "SpanishTranslationCandidate(<protected>)"
+
+
+@dataclass(frozen=True, repr=False)
+class SpanishTranslationPlan:
+    status: SpanishTranslationPlanStatus
+    candidates: tuple[SpanishTranslationCandidate, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(cast(object, self.status), SpanishTranslationPlanStatus):
+            raise ValueError("translation plan status is invalid")
+        if self.status == SpanishTranslationPlanStatus.READY:
+            if not self.candidates:
+                raise ValueError("ready translation plan requires candidates")
+        elif self.candidates:
+            raise ValueError("non-ready translation plan cannot contain candidates")
+
+    def __repr__(self) -> str:
+        return (
+            "SpanishTranslationPlan("
+            f"status={self.status.value!r}, candidate_count={len(self.candidates)})"
+        )
+
+
+def plan_spanish_translation_work(
+    bundle: ExternalTranscriptBundleV1,
+) -> SpanishTranslationPlan:
+    """Select current Spanish segments without inferring language or minting identities."""
+
+    working = build_english_working_transcript(bundle)
+    quality_blockers = {
+        WorkingTranscriptBlockerCode.SOURCE_LOCALE_UNKNOWN,
+        WorkingTranscriptBlockerCode.SOURCE_OVERLAP,
+    }
+    if any(blocker.code in quality_blockers for blocker in working.blockers):
+        return SpanishTranslationPlan(status=SpanishTranslationPlanStatus.QUALITY_BLOCKED)
+
+    translations_by_source = {
+        source.source_segment_id: sorted(
+            (
+                translation
+                for translation in bundle.translations
+                if translation.source_segment_id == source.source_segment_id
+                and translation.source_segment_version == source.source_segment_version
+            ),
+            key=lambda translation: translation.translation_version,
+        )
+        for source in bundle.source_transcript.segments
+    }
+    reviews_by_translation = {
+        (review.translation_id, review.translation_version): review
+        for review in bundle.translation_reviews
+    }
+    accepted_source_ids = {
+        review.source_segment_id
+        for review in bundle.translation_reviews
+        if review.decision == TranslationReviewDecision.ACCEPTED
+    }
+    waiting_for_review = False
+    candidates: list[SpanishTranslationCandidate] = []
+    for source in bundle.source_transcript.segments:
+        if (
+            source.source_locale != SourceLocale.SPANISH_US
+            or source.source_segment_id in accepted_source_ids
+        ):
+            continue
+        attempts = translations_by_source[source.source_segment_id]
+        latest = attempts[-1] if attempts else None
+        if latest is not None and latest.outcome == TranslationOutcome.SUCCEEDED:
+            review = reviews_by_translation.get(
+                (latest.translation_id, latest.translation_version)
+            )
+            if review is None:
+                waiting_for_review = True
+                continue
+            if review.decision != TranslationReviewDecision.REJECTED:
+                continue
+        candidates.append(
+            SpanishTranslationCandidate(
+                expected_source_transcript_version=(
+                    bundle.source_transcript.source_transcript_version
+                ),
+                source_segment_id=source.source_segment_id,
+                expected_source_segment_version=source.source_segment_version,
+                expected_previous_translation_version=(
+                    latest.translation_version if latest is not None else 0
+                ),
+                source_locale=source.source_locale,
+                source_content=source.content,
+            )
+        )
+
+    if candidates:
+        return SpanishTranslationPlan(
+            status=SpanishTranslationPlanStatus.READY,
+            candidates=tuple(candidates),
+        )
+    if waiting_for_review:
+        return SpanishTranslationPlan(status=SpanishTranslationPlanStatus.WAITING_FOR_REVIEW)
+    return SpanishTranslationPlan(status=SpanishTranslationPlanStatus.COMPLETE)
 
 
 def _adapter_profile(

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from cosmaneura_scribe.settings import Settings
+
 _ROOT = Path(__file__).resolve().parents[1]
 _ACCESS_MATRIX = _ROOT / "tests/fixtures/beta/invite_and_creator_access_matrix_v1.json"
 _ACTIVATION_MANIFEST = _ROOT / "docs/beta/BETA_DARK_ACTIVATION_MANIFEST_V1.json"
@@ -98,3 +100,12 @@ def test_beta_activation_manifest_is_non_phi_and_false_by_default() -> None:
     ]
     assert "phi" in manifest["forbidden_until_controlled_mcd_launch"]
     assert "founder_activation_decision" in manifest["required_before_activation"]
+
+
+def test_existing_scribe_runtime_controls_remain_dark() -> None:
+    for name in (
+        "external_ingest_admission_enabled",
+        "derived_writer_database_permissions_enabled",
+        "master_platform_handoff_enabled",
+    ):
+        assert Settings.model_fields[name].default is False

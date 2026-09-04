@@ -6,17 +6,33 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
-from cosmaneura_scribe.external_transcript_v1 import SourceLocale, TranslationOutcome
+from cosmaneura_scribe.external_transcript_v1 import (
+    ExternalTranscriptBundleV1,
+    SourceLocale,
+    TranslationOutcome,
+    TranslationReviewDecision,
+)
 from cosmaneura_scribe.translation_adapter import (
     ReservedSpanishTranslation,
     SpanishToEnglishTranslationAdapter,
     SpanishToEnglishTranslationRequest,
     SpanishToEnglishTranslationResult,
+    SpanishTranslationPlanStatus,
     TranslationAdapterError,
     TranslationAdapterFailureCode,
     TranslationPreparationCode,
     TranslationPreparationError,
+    plan_spanish_translation_work,
     prepare_spanish_to_english_attempt,
+)
+from test_external_transcript_v1 import (
+    UNKNOWN_SEGMENT_ID,
+    WORKING_TRANSCRIPT_ID,
+    _bilingual_source,
+    _review,
+    _segment,
+    _source,
+    _translation,
 )
 
 _SOURCE_MARKER = "Contenido clinico sintetico en espanol."
@@ -69,6 +85,16 @@ def _reservation() -> ReservedSpanishTranslation:
         expected_previous_translation_version=1,
         source_locale=SourceLocale.SPANISH_US,
         source_content=_SOURCE_MARKER,
+    )
+
+
+def _bundle(*, translations: tuple = (), reviews: tuple = ()) -> ExternalTranscriptBundleV1:
+    return ExternalTranscriptBundleV1(
+        source_transcript=_bilingual_source(),
+        translations=translations,
+        translation_reviews=reviews,
+        working_transcript_id=WORKING_TRANSCRIPT_ID,
+        working_transcript_version=1,
     )
 
 
@@ -175,3 +201,98 @@ def test_protected_values_are_hidden_and_reservation_is_strict() -> None:
         replace(reservation, source_content="   ")
     with pytest.raises(ValueError, match="source locale must be es-US"):
         replace(reservation, source_locale=SourceLocale.ENGLISH_US)
+
+
+def test_planner_selects_missing_spanish_and_reserves_exact_lineage() -> None:
+    plan = plan_spanish_translation_work(_bundle())
+
+    assert plan.status == SpanishTranslationPlanStatus.READY
+    assert len(plan.candidates) == 1
+    candidate = plan.candidates[0]
+    assert candidate.expected_source_transcript_version == 1
+    assert candidate.expected_source_segment_version == 1
+    assert candidate.expected_previous_translation_version == 0
+    assert candidate.source_locale == SourceLocale.SPANISH_US
+    assert candidate.source_content == "Me siento mejor hoy."
+    assert candidate.source_content not in repr(candidate)
+    reservation = candidate.reserve(uuid4())
+    assert reservation.source_segment_id == candidate.source_segment_id
+    assert reservation.source_content == candidate.source_content
+
+
+@pytest.mark.parametrize(
+    ("translations", "reviews", "expected_status", "expected_previous_version"),
+    [
+        (
+            (_translation(),),
+            (),
+            SpanishTranslationPlanStatus.WAITING_FOR_REVIEW,
+            None,
+        ),
+        (
+            (
+                _translation(
+                    outcome=TranslationOutcome.FAILED,
+                    content=None,
+                    failure_code="provider_timeout",
+                ),
+            ),
+            (),
+            SpanishTranslationPlanStatus.READY,
+            1,
+        ),
+        (
+            (_translation(),),
+            (_review(decision=TranslationReviewDecision.REJECTED),),
+            SpanishTranslationPlanStatus.READY,
+            1,
+        ),
+        (
+            (_translation(),),
+            (_review(),),
+            SpanishTranslationPlanStatus.COMPLETE,
+            None,
+        ),
+    ],
+)
+def test_planner_distinguishes_review_wait_retry_and_completion(
+    translations: tuple,
+    reviews: tuple,
+    expected_status: SpanishTranslationPlanStatus,
+    expected_previous_version: int | None,
+) -> None:
+    plan = plan_spanish_translation_work(
+        _bundle(translations=translations, reviews=reviews)
+    )
+
+    assert plan.status == expected_status
+    if expected_previous_version is None:
+        assert plan.candidates == ()
+    else:
+        assert len(plan.candidates) == 1
+        assert (
+            plan.candidates[0].expected_previous_translation_version
+            == expected_previous_version
+        )
+
+
+def test_planner_stops_before_provider_work_when_source_quality_is_blocked() -> None:
+    source = _source(
+        _segment(
+            UNKNOWN_SEGMENT_ID,
+            locale=SourceLocale.UNKNOWN,
+            content="Synthetic unresolved source.",
+            start_ms=0,
+            end_ms=500,
+        )
+    )
+    bundle = ExternalTranscriptBundleV1(
+        source_transcript=source,
+        working_transcript_id=WORKING_TRANSCRIPT_ID,
+        working_transcript_version=1,
+    )
+
+    plan = plan_spanish_translation_work(bundle)
+
+    assert plan.status == SpanishTranslationPlanStatus.QUALITY_BLOCKED
+    assert plan.candidates == ()

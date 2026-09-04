@@ -20,13 +20,15 @@
 1. Validate adapter/profile configuration and the caller's authoritative Spanish reservation
    before invoking a provider.
 2. Pass only clinical text plus the fixed `es-US` to `en-US` direction to the adapter.
-3. Convert success or bounded failure into the existing immutable attempt command. Never rerun the
+3. Plan only missing/failed/rejected current Spanish lineage, stop on source-quality blockers, and
+   require a caller-supplied durable translation identity.
+4. Convert success or bounded failure into the existing immutable attempt command. Never rerun the
    provider inside database reconciliation.
-4. Exercise the existing consent, translation, creator-review, and English-projection writers with
+5. Exercise the existing consent, translation, creator-review, and English-projection writers with
    a deterministic synthetic adapter.
-5. Admit only a blocker-free, note-ready English projection to the existing master-platform
+6. Admit only a blocker-free, note-ready English projection to the existing master-platform
    request model and prove the Spanish source is absent from that request.
-6. Keep the cross-client normalized-source fixture stable so desktop and iOS can run the same
+7. Keep the cross-client normalized-source fixture stable so desktop and iOS can run the same
    conformance case after their current stacks are rebased.
 
 Required local evidence is focused and full Python tests, Ruff, strict Pyright, `git diff --check`,
