@@ -245,11 +245,13 @@ async def test_http_handoff_treats_bounded_transient_statuses_as_retryable() -> 
 
 @pytest.mark.asyncio
 async def test_http_handoff_treats_unusable_success_body_as_retryable() -> None:
-    for body in ("not-json", '{"schema_version": "1.0"}', '{"disposition": "invented"}'):
-        with pytest.raises(HandoffRetryableError) as caught:
-            await _deliver_against(httpx.Response(200, text=body))
+    bodies = ("not-json", '{"schema_version": "1.0"}', '{"disposition": "invented"}')
+    for status_code in (200, 201):
+        for body in bodies:
+            with pytest.raises(HandoffRetryableError) as caught:
+                await _deliver_against(httpx.Response(status_code, text=body))
 
-        assert caught.value.code == "invalid_platform_response"
+            assert caught.value.code == "invalid_platform_response"
 
 
 @pytest.mark.asyncio
