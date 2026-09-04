@@ -49,7 +49,7 @@ repository for its end-to-end test.
 | Core onboarding/dashboard | Stable input/output shapes only | Existing-auth invitation, creator views, encounter/dashboard implementation |
 | Desktop and iOS | One shared normalized-source fixture | Client conformance, signing, distribution, live-capture evidence |
 | Dedicated environment | False-default activation boundary documented | Approved configuration/IAM/Terraform plan and later apply |
-| End-to-end acceptance | Deterministic in-process scenario | Signed-client and deployed non-PHI cohort evidence |
+| End-to-end acceptance | Deterministic in-process scenario plus exact-component evidence contract | Signed-client and deployed non-PHI cohort evidence |
 
 ## Rebase and promotion plan
 
@@ -67,7 +67,7 @@ opened as one PR. Rebuild it as these three bounded packets:
 2. **Creator review and English handoff acceptance:** protected review transport, handoff mapper,
    shared bilingual fixture, and the synthetic vertical/race tests.
 3. **Beta product gates:** onboarding/access and dashboard matrices, dark-activation manifest,
-   exact-artifact acceptance runbook, and their contract tests.
+   exact-artifact acceptance runbook/model, and their contract tests.
 
 Packet 2 depends on Packet 1. Packet 3 is contract-only and may review independently once its
 status names are checked against the stabilized Scribe base.

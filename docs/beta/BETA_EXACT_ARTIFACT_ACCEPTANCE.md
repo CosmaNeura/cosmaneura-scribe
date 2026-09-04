@@ -23,6 +23,12 @@ One acceptance run records only non-PHI metadata:
 - test case ID, start/end timestamps, pass/fail, bounded failure code, and evidence-file digest; and
 - operator/founder decision time and the exact artifact set accepted.
 
+The dormant machine-checkable shape is
+`services/api/src/cosmaneura_scribe/beta_acceptance_evidence_v1.py`. It fingerprints Scribe, Core,
+database, environment, desktop, iOS, and translation as separate components. Each scenario binds
+only the components it actually exercises. Changing one component invalidates every dependent
+scenario result, while evidence for an unrelated scenario remains valid.
+
 Do not record email, name, DOB, transcript text, audio/blob URL, object name, invite token, access
 token, cookie, provider response, or database query/bind values. Screenshots and recordings require
 the same synthetic-only review before retention.
@@ -61,6 +67,11 @@ auth, creator-isolation, consent, data-loss, silent-recording, duplicate-note, o
 finding. A rebuilt, resigned, re-notarized, re-uploaded, reconfigured, or redeployed component
 invalidates only the evidence that depends on that component, but the affected scenarios must be
 rerun before invitation.
+
+Technical readiness and activation are distinct. A fully passing, closed evidence run remains dark
+until the founder records an explicit acceptance after the run. The evidence contract rejects an
+accepted decision when any scenario is missing or non-passing, the run is still open, an exact
+artifact binding is stale, or a blocking finding remains.
 
 ## Stop and rollback order
 
