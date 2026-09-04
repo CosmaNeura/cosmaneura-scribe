@@ -21,6 +21,11 @@ Consent alone does not make data non-PHI. Opening any runtime gate, distributing
 invoking real capture, or enrolling a cohort requires a separate reviewed decision and its required
 evidence.
 
+The stable classes are `synthetic`, `verified_deidentified`, and `approved_test_fixture`.
+The product and authentication contracts govern founder admission, required privacy/security
+review, and operator-controlled imported-fixture ingress. The client cannot assert or upgrade a
+classification.
+
 ## Locked launch profile
 
 The initial micro-beta supports exactly:
@@ -58,6 +63,8 @@ Before issuing a launch ticket or capture capability, Core must establish that:
 4. The consent record is current and bound to the same tenant, clinician, appointment, and capture
    purpose.
 5. One durable source lease is available for the appointment.
+6. The encounter carries an allowed immutable non-PHI test-data classification and provenance, and
+   the active beta grant permits that class.
 
 The browser launch supplies only a short-lived, single-use, non-PHI ticket. The desktop exchanges it
 through PKCE for a short-lived credential bound to opaque clinician, appointment, session, consent,

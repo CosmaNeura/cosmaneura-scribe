@@ -21,6 +21,11 @@ English working transcript for note generation. English source segments remain u
 This contract is documentation only. It does not enable a feature flag, create a beta cohort, change
 an API or schema, configure an Azure service, upload a TestFlight build, or authorize PHI use.
 
+The stable data classes are `synthetic`, `verified_deidentified`, and `approved_test_fixture`.
+Founder admission, required privacy/security review, and operator-controlled imported-fixture
+ingress follow the product and authentication contracts. The client selects only an eligible
+server-classified encounter and cannot assert or upgrade classification.
+
 ## Frozen beta scope
 
 ### Included
