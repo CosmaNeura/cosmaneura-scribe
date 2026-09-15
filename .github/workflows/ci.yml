@@ -2,8 +2,10 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -11,6 +13,7 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -48,6 +51,7 @@ jobs:
 
   infrastructure:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2
@@ -63,6 +67,7 @@ jobs:
 
   capture-web:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       DEPLOY_SHA: ${{ github.sha }}
     steps:

@@ -18,7 +18,9 @@ Classification reason:
 
 ## Evidence required for every code change
 
-- [ ] Repository CI is green for the final substantive push
+- [ ] Required exact-head status evidence is green for the final substantive
+      push. While Actions is disabled, identify locally executed versus
+      byte-identical reused evidence; do not describe either as hosted CI.
 - [ ] Independent non-implementer agent review identifies the final reviewed
       commit: <!-- link to durable check/comment -->
 - [ ] Agent findings are resolved or explicitly accepted in the PR

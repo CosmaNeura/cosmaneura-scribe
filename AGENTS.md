@@ -34,6 +34,15 @@ unknown path, unavailable accepted baseline/history/API, or classifier failure
 selects deployment. Manual capture-preview acceptance is not a deployment or
 a production authorization.
 
+Repository GitHub Actions is currently disabled and remains off until the owner
+explicitly authorizes re-enabling it. Required CI and browser-E2E workflows are
+PR-only and cancel superseded runs; merging a PR must not replay those checks on
+`main`. While Actions is off, an already-authorized status writer may report
+exact-head local evidence only under
+`docs/flight-plans/2026-09-15-actions-off-local-checks.md`. Never describe local
+evidence as hosted CI, fabricate success, replace a genuine failure, or trigger
+a workflow rerun to obtain a status.
+
 The independently reviewed, path-filtered `Core API image provenance`
 workflow runs automatically for relevant pull requests and `main` pushes. It
 builds the exact source only in the CI runner, binds source/tree and
@@ -138,6 +147,10 @@ deployed independently.
   change cannot waive its own limit.
 - Every PR records tier, tests, exact recovery, agent-review evidence, and only
   the conditional controls that apply.
+- Agents do not dispatch or rerun GitHub Actions to refresh required statuses.
+  They consolidate substantive changes before the final push, inspect existing
+  exact-head results first, and reuse prior execution only when relevant inputs
+  are proven byte-identical.
 - The capture-preview scope gate must remain fail-safe: unknown paths, missing
   history, API/classifier errors, and mixed preview changes deploy. Maintain
   its exact non-preview list whenever build inputs or workflows change.
