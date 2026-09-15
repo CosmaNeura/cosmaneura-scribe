@@ -45,7 +45,7 @@
 - Consumes: live branch protection readback and PR #407 precedent.
 - Produces: exact admin instructions and merge evidence requirements.
 
-- [ ] **Step 1: Record the seven required context names, app-ID removal, strict-policy preservation, collision checks, rollback, and Actions-off hold.**
+- [ ] **Step 1: Record classic protection's seven required contexts, ruleset `21000654`'s six-context subset, app-ID removal in both layers, strict-policy preservation, collision checks, rollback, and the Actions-off hold.**
 - [ ] **Step 2: Update agent and PR guidance so local evidence is never represented as hosted CI and any status binds to the exact head.**
 - [ ] **Step 3: Run focused documentation/policy tests and `git diff --check`.**
 
@@ -62,4 +62,4 @@
 - [ ] **Step 1: Run `uv run pytest tests/test_ci_cost_controls.py tests/test_capture_preview_cloud.py -q`.**
 - [ ] **Step 2: Run scoped Ruff and Pyright plus the repository security scan.**
 - [ ] **Step 3: Commit, push, create/update the draft PR, and obtain independent final-head agent review.**
-- [ ] **Step 4: Confirm an admin-capable client removes only app ID `15368` from the seven required contexts and re-reads the policy before any merge.**
+- [ ] **Step 4: Confirm an admin-capable client removes only app ID `15368` from all existing entries in classic protection and ruleset `21000654`, preserves their respective seven- and six-context sets, and re-reads both layers before any merge.**
