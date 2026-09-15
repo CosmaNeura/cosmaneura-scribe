@@ -34,11 +34,12 @@ unknown path, unavailable accepted baseline/history/API, or classifier failure
 selects deployment. Manual capture-preview acceptance is not a deployment or
 a production authorization.
 
-Repository GitHub Actions is currently disabled and remains off until the owner
-explicitly authorizes re-enabling it. Required CI and browser-E2E workflows are
-PR-only and cancel superseded runs; merging a PR must not replay those checks on
-`main`. While Actions is off, an already-authorized status writer may report
-exact-head local evidence only under
+The owner requires repository GitHub Actions to be disabled until explicitly
+authorizing re-enablement. A billing failure or reached spending limit is not
+equivalent to repository-level disablement. Required CI and browser-E2E
+workflows are PR-only and cancel superseded runs; merging a PR must not replay
+those checks on `main`. After disablement is verified, an already-authorized
+status writer may report exact-head local evidence only under
 `docs/flight-plans/2026-09-15-actions-off-local-checks.md`. Never describe local
 evidence as hosted CI, fabricate success, replace a genuine failure, or trigger
 a workflow rerun to obtain a status.

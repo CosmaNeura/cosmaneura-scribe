@@ -1,6 +1,6 @@
 # Actions-off local checks
 
-**Status:** source controls prepared; live branch-policy transition pending
+**Status:** source controls prepared; live Actions disablement and branch-policy transition pending
 **Risk:** Tier 1 — CI and required-status reporter trust
 **Owner:** founder
 **Scope:** synthetic/non-PHI repository validation only
@@ -31,10 +31,17 @@ or PHI processing.
 - Non-required CodeQL, provenance, preview, and deployment workflows are
   unchanged.
 
+An account payment failure or reached spending limit is not Actions
+disablement. On 2026-09-15, PR #93 still triggered workflows whose jobs failed
+before startup with that billing annotation. Before using the local-status
+path, an admin must explicitly disable Actions for this repository and verify
+the setting. A later final PR head must have no Actions-created same-name
+checks.
+
 ## Live GitHub policy transition
 
-Read-only evidence before this change showed these seven strict required
-contexts bound to GitHub Actions app ID `15368`:
+Read-only evidence before this change showed classic branch protection with
+these seven strict required contexts bound to GitHub Actions app ID `15368`:
 
 1. `quality`
 2. `infrastructure`
@@ -44,12 +51,16 @@ contexts bound to GitHub Actions app ID `15368`:
 6. `synthetic-recording-flow`
 7. `change-budget`
 
-An admin-capable client must remove only the app/integration binding from those
-seven entries. It must preserve the context names, strict up-to-date policy,
-pull-request rule, approval count, force-push/deletion restrictions, and bypass
-policy. The client must re-read both classic branch protection and active
-rulesets after mutation. Repository source cannot perform or prove this account-
-side change.
+Active ruleset `21000654` separately required six Actions-bound contexts:
+`quality`, `infrastructure`, `capture-web`, `capture-android`, `capture-ios`,
+and `change-budget`; it did not include `synthetic-recording-flow`.
+
+An admin-capable client must remove only the app/integration binding from the
+existing entries in both enforcement layers. It must preserve each layer's
+context names, strict up-to-date policy, pull-request rule, approval count,
+force-push/deletion restrictions, and bypass policy. The client must re-read
+both classic branch protection and active rulesets after mutation. Repository
+source cannot perform or prove this account-side change.
 
 ## Exact-head evidence contract
 
@@ -71,10 +82,13 @@ No new token, app, role, or status writer is created by this change.
 
 ## Recovery
 
-Revert the source PR to restore `main` push triggers and prior concurrency.
-Separately restore app ID `15368` on the seven required contexts if hosted
-GitHub Actions reporting is intentionally restored. Either recovery action may
-leave PRs blocked while Actions is disabled; neither action enables Actions.
+Revert the source PR to restore `main` push triggers and remove the new
+PR-scoped cancellation.
+Separately restore app ID `15368` on all existing entries in both classic
+protection and ruleset `21000654` if hosted GitHub Actions reporting is
+intentionally restored. Re-read both layers and preserve their respective
+seven- and six-context sets. Either recovery action may leave PRs blocked while
+Actions is disabled; neither action enables Actions.
 
 ## Acceptance
 
@@ -82,4 +96,6 @@ leave PRs blocked while Actions is disabled; neither action enables Actions.
 - Existing capture-preview policy tests still pass.
 - Scoped lint/type checks and security review report no blocking finding.
 - An independent non-implementer reviews the final substantive commit.
+- Repository-level Actions disablement is confirmed; a billing failure or spend
+  limit is not accepted as equivalent.
 - An admin-capable client records before/after GitHub policy readback.
