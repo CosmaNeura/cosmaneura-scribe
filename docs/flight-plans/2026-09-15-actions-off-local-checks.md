@@ -1,7 +1,7 @@
 # Actions-off local checks
 
-**Status:** source controls prepared; live Actions disablement and branch-policy transition pending
-**Risk:** Tier 1 — CI and required-status reporter trust
+**Status:** Actions disabled and binding-only branch transition verified; final-head validation/review/status gates pending
+**Risk:** Tier 2 — required-status reporter trust boundary
 **Owner:** founder
 **Scope:** synthetic/non-PHI repository validation only
 
@@ -12,9 +12,11 @@ local results to satisfy Scribe's existing required status names. If Actions is
 later re-enabled, the required workflows run only for pull requests, cancel
 superseded runs, and never run again solely because a PR merged to `main`.
 
-This plan does not enable Actions, grant status-write permission, alter runtime
-or deployment behavior, or authorize production, preview deployment, migration,
-or PHI processing.
+This plan does not enable Actions, grant status-write permission, change clinical
+runtime, or authorize production, preview deployment, migration, or PHI processing.
+CI no longer emits the main-push completion consumed by capture-preview-deploy.yml;
+that preview route remains dormant even if its enable variable changes. A separately
+reviewed and authorized trigger design is needed before preview reactivation.
 
 ## Source controls
 
@@ -99,3 +101,35 @@ Actions is disabled; neither action enables Actions.
 - Repository-level Actions disablement is confirmed; a billing failure or spend
   limit is not accepted as equivalent.
 - An admin-capable client records before/after GitHub policy readback.
+
+
+## Recorded account-side transition
+
+The [sanitized before/after record](evidence/2026-09-15-actions-off-policy.json)
+retains Actions permissions, complete branch controls, effective rules and active
+rulesets. Exact expected context sets and strictness were checked before mutation.
+Both repositories were disabled before any new commit/push; billing errors were
+not treated as disablement. Full policy comparison verified that the only branch
+delta is removal of Actions issuer 15368. No required context, approval rule,
+strictness, deletion/force-push restriction or bypass actor changed.
+
+Classic protection was updated through its required-status-checks subresource,
+not a partial whole-protection replacement. Scribe's ruleset was updated with its
+complete editable policy, preserving the deliberate six-versus-seven distinction.
+The disabled Actions response omits allowed-actions selection; retained before
+settings must be reviewed before any separately authorized re-enablement.
+
+Old-head failed Actions checks remain intact. This meaningful evidence commit
+creates a new head; it is not an empty commit or a replacement of failed results.
+After its single normal push, verify no Actions run/check appeared on the new head
+before publishing any local status. Record exact commands, hashes, exit codes,
+review/dispositions and status evidence in the PR; historical successes alone are
+not current-head validation. No status or merge success is asserted in this file.
+
+The owner subsequently authorized merging only if independent review and genuine
+required-status evidence pass and the cost-control goal is met. That is not bypass
+authority or deployment approval. Leave the PR draft/unmerged if any gate is unmet.
+Bugbot autofix remains off; confirmed findings are fixed in this task. Do not ask
+for repeated unchanged-head reviews or rerun hosted CI to obtain green results.
+Opsera is not claimed to have run; authentication and any compensating security
+evidence must be stated explicitly in the final PR report.
