@@ -10,8 +10,9 @@ source fidelity, and reproducible signed artifacts.
 Use the existing local, unpushed `codex/beta-preintegration-20260904` branch
 (starting at `1e48c12`, descendant of the authorized `b46ade8`). Inspect newer
 CosmasOS/Scribe integration sources read-only; their uncommitted work belongs to
-other ongoing work. Do not open a PR, push, change staging/IAM/Zoom, or deploy
-under this packet. No cross-task coordination.
+other ongoing work. Do not open a PR, push, or change shared staging/IAM/Zoom.
+The initial packet prohibited deployment; the bounded owner-approved extension
+below is the only exception. No cross-task coordination.
 
 Core remains the SOAP generator. Scribe captures, transcribes, translates the
 Spanish portions, preserves source/version/speaker evidence, and hands reviewed
@@ -70,3 +71,35 @@ the main, integration, development-cloud or production database. The existing
 fixture's destructive downgrade tests are permitted only in this newly created
 throwaway cluster. Stop only this cluster's verified process when finished;
 retain logs/data for inspection without deleting any shared resource.
+
+## Owner-approved private qualification extension — 2026-09-21
+
+After connecting the iPhone, the owner stated: “You have the explicit approval
+you need.” This approves the previously requested isolated Scribe private Speech
+qualification setup/execution and selected native-device trial. It does not
+authorize shared Auth/IAM/Zoom/staging changes, a push/PR, deployment of unmerged
+code, production/PHI use, cohort admission or release publication.
+
+Readback corrected an earlier inventory error: `cosmaneura-scribe-dev-smoke`
+already runs `cosmaneura_scribe.speech_smoke_runner`, not API-route acceptance.
+Its gate is false, backend is `none`, and its dedicated identity has only
+`AcrPull` on the Scribe registry. Reuse this existing job. The deployed source
+`eaf343a1152eccf7fff0a96652a1c3731902c30c` is a merged ancestor of the locally
+recorded `origin/main`; registry readback resolves its tag to
+`sha256:6ee5a221e50e284cf37d58f01746cbfe632c487c32fbcbd40158e7a713c1253c`.
+The tag is mutable; do not describe it as an immutable deployment.
+
+Run one no-override disabled-state execution, retain only fixed action/error
+metadata, and verify the effective execution template. Do not treat this as
+Speech inference. Enablement still requires the private acceptance runbook's
+reviewed saved plan, current-state reconciliation and a qualified private
+infrastructure execution path. No account/public-network relaxation or arbitrary
+job command/environment override is an alternative. Leave clinical transcription
+off. Removing any temporary Speech call authority follows the same reviewed plan
+path, preserving the existing dormant job.
+
+The phone must pass current unlock/developer-service and exact installed-bundle
+checks before installing the preserved development package. Never overwrite an
+existing unrelated app or collect a password, code or token. The W13 identity
+snapshot still has capture/model services disabled and does not qualify full
+device capture or a phone-reachable backend.

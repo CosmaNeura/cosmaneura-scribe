@@ -4,9 +4,10 @@ Status: meaningful implementation and real-service/build evidence; **not a beta
 release or closure of the five owner goals**. All repository edits remain on
 `codex/beta-preintegration-20260904`, based on `1e48c124f355f486d8106c7f7441fd13895c3c97`.
 No push, PR, migration of an existing/shared database, shared Core/Auth/IAM/Zoom/
-staging edit or Azure infrastructure mutation occurred. Newer integration
+staging edit or Azure resource-configuration mutation occurred. Newer integration
 checkouts were read-only. Later migration tests used a new disposable local
-cluster, as recorded below.
+cluster. Following explicit owner approval, one existing disabled Speech job was
+started without overrides; its fail-closed result is recorded below.
 
 ## What “clinical evaluation” means here
 
@@ -27,8 +28,8 @@ noise, omissions, or end-to-end Core notes. Those remain acceptance work.
 | Goal | New evidence | Remaining gate |
 | --- | --- | --- |
 | Real auth/token custody | Reused selected W13 Clerk/Keychain candidate and initiated owner sign-in. Timeout kept workspace closed. No password/token was read or recorded. | Successful owner sign-in, organization/audience verification, restart/refresh, revocation/logout and native-only custody evidence on Mac and iPhone. No new IdP/auth path is proposed. |
-| Real STT/model/translation | Concrete Azure GPT-4.1 translator now implements the existing adapter interface. Final real run returned seven HTTP 200/reference agreements and one HTTP 400 rejection. Azure phrase-language evidence now survives into an opt-in normalized-source bridge. | Private Speech job execution; admitted provider/model profiles; durable normalized receiver/translation/review integration in the current standalone and OS paths. No runtime route or worker registers the new bridge/translator yet. |
-| Physical iPhone | Arm64 device builds, Release-configuration archives and an installable development IPA succeeded; the exported app's signature, entitlements and paired-device profile membership verify. | Paired iPhone 12 remains unavailable; earlier developer-image services were unavailable. No install or physical recording was completed. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
+| Real STT/model/translation | Concrete Azure GPT-4.1 translator now implements the existing adapter interface. Final real run returned seven HTTP 200/reference agreements and one HTTP 400 rejection. Azure phrase-language evidence now survives into an opt-in normalized-source bridge. The existing private Speech job passed its live disabled-state check. | Enabled private Speech inference; admitted provider/model profiles; durable normalized receiver/translation/review integration in the current standalone and OS paths. No runtime route or worker registers the new bridge/translator yet. |
+| Physical iPhone | Arm64 device builds, Release-configuration archives and an installable development IPA succeeded; the exported app's signature, entitlements and paired-device profile membership verify. The owner connected the physical phone; Apple confirms wired pairing and Developer Mode. | Apple still reports `passcodeRequired=true`; developer-image mount and installed-app inspection fail with the device-locked error. No install or physical recording was completed. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
 | Source fidelity | Fixed tests cover negation, dose, self-correction, uncertainty, pregnancy, allergy, attribution and quoted instruction text. Golden references were defined before service calls. | Quoted-instruction input is rejected; safe blocked/review UX must be exercised. Full consented synthetic audio/translation/Core-note loop and human review remain. Do not change references or bypass provider filtering merely to get a pass. |
 | Signed/reproducible artifacts | Canonical-path clean builds now match compiled payloads and UUIDs; signatures, public entitlements and all 332 source inputs verify. The exact exported development IPA, source and symbols are retained outside temporary storage. | Signing/ZIP bytes still vary; cross-machine/hermetic reproducibility is unproven. No Apple Distribution identity, TestFlight acceptance, desktop notarization, cross-client installer/update acceptance or production artifact set was established. |
 
@@ -65,21 +66,54 @@ single locale `en-US+es-US`. Unknown source language remains a note-readiness
 blocker. The legacy raw transcript writer does not persist these locale fields;
 the versioned receiver must be wired before calling bilingual capture complete.
 
-## Private Speech execution is still gated
+## Private Speech approval and disabled-state acceptance
 
-Read-only ARM inspection found the owned `cosmaneura-scribe-dev-speech` resource
-with public network access disabled. The current API revision is `--0000004`
-using image tag `804c4bacd692bc157ab101ff5055d999e00a37cc`. Only the existing API
-smoke job was found; no Speech acceptance/transcription job was deployed.
+**Correction to the earlier inventory:** `cosmaneura-scribe-dev-smoke` is the
+Speech acceptance job, not API-route acceptance. Direct command readback shows
+`python -m cosmaneura_scribe.speech_smoke_runner`. No replacement job is needed.
+The owner explicitly approved the previously requested isolated qualification
+setup/execution after connecting the phone. That approval is recorded in the
+flight plan; it is not approval for shared Auth/IAM/Zoom/staging, unmerged-code
+deployment, production/PHI use or release publication.
 
-Follow [Private Speech acceptance](SPEECH_PRIVATE_ACCEPTANCE.md): reconcile the
-deployed/source state, use an approved merged candidate and private infrastructure
-runner, review the bounded dormant-job plan, prove disabled behavior, then grant
-account-scoped Speech User for the fixed synthetic acceptance execution. No public
-access, arbitrary in-container execution, command override or shared IAM edit is
-an alternative. The owner's earlier no-infrastructure restriction has not been
-treated as silently lifted by the broad goals request. Actual deployment requires
-an explicit scoped decision.
+The existing job uses merged source
+`eaf343a1152eccf7fff0a96652a1c3731902c30c`, verified as an ancestor of the local
+`origin/main`. ACR resolves its tag to
+`sha256:6ee5a221e50e284cf37d58f01746cbfe632c487c32fbcbd40158e7a713c1253c`.
+ACR reports write/delete enabled; the tag is mutable, and this lookup does not
+prove the digest actually pulled by the terminated execution.
+
+Preflight found no retained/active executions and only exact-registry `AcrPull`
+on the dedicated smoke identity. The raw gate was false and backend `none`.
+One no-override start created `cosmaneura-scribe-dev-smoke-mff21ng` at
+`2026-09-21T13:02:16Z`. Azure reported terminal status `Failed`, which is expected
+for the disabled gate. Exact-execution Log Analytics returned only projected
+metadata: `speech_smoke.disabled` / `SpeechSmokeDisabled` at
+`2026-09-21T13:02:39.8732154Z`. The effective container template and post-run job
+readback retain the same image, command, no arguments, four environment entries,
+0.5 CPU/1 GiB resources and dedicated identity. The execution API omits identity;
+identity evidence is from job readback. Replica metadata says `Terminated` but
+does not expose an exit code. Do not claim a specific observed numeric exit code.
+
+This proves the deployed disabled-state boundary, **not Speech inference**.
+No role, job definition, foundation resource, network rule, API revision or live-data
+setting was changed. Speech still has public access disabled, local/key auth
+disabled, default-deny ACLs with no IP rules, and an approved private endpoint.
+
+The metadata-only device/Speech record is retained in the artifact package as
+`device-and-speech-preflight.json`, SHA-256
+`9408e3d8dfd392a81b7d0b7d7efbe9e117d1991b07e8075a1545e4b71142c14a`.
+
+Enablement remains a technical execution prerequisite, not renewed owner consent:
+follow [Private Speech acceptance](SPEECH_PRIVATE_ACCEPTANCE.md) using a current,
+reviewed saved plan and qualified private infrastructure path. No such runner is
+currently present in the isolated resource inventory. The retired temporary
+runner's code targets API/key reconciliation, not Speech-only enablement, and
+must not be repurposed through command overrides. The older main checkout is
+dirty and its local tfvars image differs from deployed state; do not apply it.
+Reconcile and retain the deployed API untouched. The permitted enablement delta
+is the smoke gate/owned endpoint configuration plus account-scoped Speech User.
+Clinical transcription remains off, and no public-network bypass is permitted.
 
 ## iPhone artifact provenance and repeat-build result
 
@@ -240,12 +274,15 @@ substitute or treat the real adapter smoke test as a working clinical pipeline.
 
 Next sequence:
 
-1. Owner completes the selected test-account sign-in and connects/unlocks the
-   paired iPhone over USB. Preserve existing apps/drafts; check installed app
-   identity before installing the distinct candidate. Qualify real token custody.
-2. Approve the bounded private Speech deployment/execution path separately from
-   shared platform stabilization. Keep clinical transcription disabled until its
-   existing acceptance run passes.
+1. Owner enters the passcode directly on the USB-connected phone and keeps its
+   Home Screen awake. Apple currently reports it locked despite wired pairing.
+   Preserve existing apps/drafts; check installed app identity before installing
+   the distinct candidate. Then complete selected test-account sign-in and
+   qualify real token custody. Never ask the owner to send a passcode or password.
+2. Execute the already-approved bounded private Speech enablement through a
+   qualified private saved-plan path, retaining all unrelated deployed state.
+   Its disabled-state live test has passed. Keep clinical transcription disabled
+   until the enabled synthetic acceptance run passes.
 3. Wire the admitted Speech source and real translator through durable receiver,
    current consent/creator checks and review in a reconciled Scribe integration
    slice; reuse the same capability from standalone and CosmasOS.
