@@ -115,6 +115,53 @@ Reconcile and retain the deployed API untouched. The permitted enablement delta
 is the smoke gate/owned endpoint configuration plus account-scoped Speech User.
 Clinical transcription remains off, and no public-network bypass is permitted.
 
+### Follow-on: enablement execution-path preflight
+
+The infrastructure sources are byte-identical to the local `origin/main` tree;
+no infrastructure source was edited. OpenTofu 1.12.5 reused the cached, locked
+AzureRM 4.81.0 provider with `init -backend=false -get=false -lockfile=readonly`.
+Offline `validate` passed using the macOS local IPC service outside the sandbox.
+No remote backend was initialized, state read, plan produced or apply attempted.
+`graph` refused to run without backend initialization; it is not graph evidence.
+
+A fresh API read still reports revision `cosmaneura-scribe-dev-api--0000004`
+and image `804c4bacd692bc157ab101ff5055d999e00a37cc`. The Speech job retains
+`eaf343a1152eccf7fff0a96652a1c3731902c30c`. Both resource definitions consume
+the same `container_image_tag`, so a naive full apply could change one of them.
+The two commits' Speech runner, transcription adapter and private-network guard
+have no diff, but that does not establish equivalence of their complete images.
+The selected Speech runner source hash is
+`e639b7387dc22e2d5a401e521df2a0f2dc314f9acefcc8c750e0ef5500a3a56c`.
+
+The owned account endpoint and linked private-endpoint NIC were read through
+Azure management APIs. A bounded DNS-only check on this Mac resolved the
+hostname, but answers were **not exclusively private and did not match the owned
+private endpoint**. No address was printed, credential requested or HTTP request
+sent. This Mac therefore cannot be called the qualified private runner.
+
+Proposed execution-method exception, **not yet approved or performed**: use this
+Mac only for an authenticated, saved, refresh-enabled management-plane plan
+targeting the existing Speech job and its account-scoped Speech User assignment.
+The job continues to execute audio processing only inside the existing private
+environment. This changes the runbook's private-operator-location requirement,
+not the Speech network boundary; obtain explicit owner direction before use.
+
+The reviewed plan must allow only the job's raw gate/backend/owned endpoint and
+private-IP settings plus the single temporary Speech User assignment. Reject
+image, command, identity, resource, trigger/retry, API, key, shared IAM, network,
+database, diagnostics or other dependency changes. Record the API/image drift as
+`retain temporarily`; a targeted acceptance plan is not full-stack convergence.
+Bind the existing remote backend state and saved plan, preserve its lock, verify
+effective execution configuration, run once without overrides, and use a fresh
+reviewed reverse plan to close the gate/remove only that temporary assignment
+after the terminal result. Do not use local state, force-unlock or a public
+Speech endpoint. If the actual saved plan cannot satisfy these conditions, stop.
+
+Native identity remains a separate open gate: the physical app is installed and
+running, but Tester sign-in has not been reported or verified. Browser-based
+identity inspection could not initialize because the computer-use connection was
+unavailable; no Clerk setting or session was changed.
+
 ## iPhone artifact provenance and repeat-build result
 
 The retained W13 client composition was reused without editing its sources:
