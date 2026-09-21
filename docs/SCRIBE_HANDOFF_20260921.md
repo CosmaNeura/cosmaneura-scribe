@@ -10,8 +10,9 @@ clean HEAD `99324d87628ec22f038f5ee9a4918de8cb46abb8`. Read the latest section o
 `SCRIBE_REAL_SERVICES_CHECKPOINT_20260921.md` for the subsequent recorder-mounted
 review, durable decisions and browser/API evidence. The bounded Core consumer
 packet in `beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md` was subsequently approved
-and implemented locally. The next configured-admission/Core SOAP packet is in
-`beta/SCRIBE_CONFIGURED_CORE_WORKFLOW_PACKET_20260921.md`; it remains proposed.
+and implemented locally. The configured-admission/Core SOAP packet in
+`beta/SCRIBE_CONFIGURED_CORE_WORKFLOW_PACKET_20260921.md` was then explicitly
+approved and implemented locally. Read the newest checkpoint and ADR 0047.
 The checkpoint below remains historical; native/hosted/full-workflow acceptance
 has not been declared complete.
 

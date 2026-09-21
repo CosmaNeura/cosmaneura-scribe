@@ -12,7 +12,82 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: approved local Core creator-review integration
+## Latest: approved configured admission and Core SOAP workflow
+
+The owner approved "the configured admission and Core soap packet." Work stayed
+on the existing Scribe branch from clean 5404d4c and the existing detached Core
+checkout e21ba4c. No other task was contacted; all prior Core work was snapshotted.
+
+The local backend workflow now admits a new manually configured capture, returns
+persisted source and translation review, and sends explicitly accepted English
+through Core's existing canonical transcript import and SOAP engine. Notes stay
+unreviewed, creator-scoped and in the same existing encounter. Existing Core note
+reads, edits and lost-response recovery are reused. Original Spanish, English
+speech and immutable review history stay preserved in Scribe.
+
+Scribe POST /v1/captured-sessions is default-off and uses existing Entra workload
+authentication plus the trusted creator header. Its transaction claims the exact
+request key and reuses the existing captured admission/consent primitive. Core
+reserves UUID, creator and language before contact; retries cannot change family
+or configuration. No creator is accepted from a browser body. Core's additive
+configured reservation and reviewed-source mapping prohibit converting legacy
+admissions or overwriting provenance. Neither product acquired a second note
+engine, login mechanism or automatic provider retry.
+
+Two actual local HTTP scenarios passed Core route → Scribe admission (including
+a lost committed reply and fresh runtime) → encrypted generated capture →
+offline Speech/translation → explicit accept/reject → Core SOAP/read. Accepted
+English and preserved English speech reached the existing prompt/import path;
+rejection and revoked consent blocked notes. Workload identity, audio, storage,
+keys and all model responses were synthetic fixtures. This is backend integration
+evidence, not a native provider app, real-login or live clinical workflow claim.
+
+Focused verification has passing evidence for all 183 distinct Core checks and
+85 Scribe checks, plus both child HTTP receiver processes. The broader Core run
+initially omitted 67 legacy cases because of a temporary runner's duplicate
+module imports; a corrected isolated runner passed all 82 legacy cases. Evidence
+review then fixed guard assertions that had failed on TypeID formatting before
+reaching their triggers, and bounded overlength generated database names.
+All 14 affected cases passed again in a second fresh cluster; its log confirms
+the actual immutability guards fired. Original logs remain retained.
+Affected Ruff, Core/Scribe Pyright, generated OpenAPI/TypeScript, capture/review
+TypeScript and ADR/whitespace checks pass. The unchanged native/UI rendering
+was not requalified or repackaged during this backend increment.
+
+Core fresh and incremental schemas reached generated revision c8526f5e8d80 from
+parent 9172abd84a3d, with 74 tables and matching new columns. Scribe retains its
+separate 0019_captured_bilingual history without a migration here. This does not
+reconcile a deployable/shared migration graph. Only new owned disposable local
+databases were used. Both private-socket clusters had no TCP listener; verified
+owned PIDs 65088 and 77092 were stopped and confirmed absent. Earlier clusters,
+owner demos and native artifacts were preserved.
+
+Evidence: /private/tmp/scribe-configured-core.h44yns4x/.
+
+- core-increment.patch SHA-256:
+  f7f3b3b35832a3769eec6b716672041422a7149d4c6b8559595902e8234ea58e.
+- verification.json maps the exact test identities and XML hashes; core-final.xml,
+  legacy-final.xml and guards-final.xml jointly cover the Core collection.
+- scribe-final.xml SHA-256:
+  a9c4230e900b8ebcf435a4241bc0a135ed621476c10f1a0f24291f9585d1069d.
+- core-final/test_configured_admission_revi0/ and ...revi1/ retain wire receiver
+  logs/XML. shutdown.json and guard-rehearsal/shutdown.json retain process checks.
+  The first database list includes only names retaining the _test suffix;
+  earlier truncated-name rehearsal databases also remain in its stopped cluster.
+- Core's 75 prior dirty files are preserved: 69 byte-identical, six approved
+  extensions and seven new packet files. The patch is relative to that before
+  snapshot and passes reverse-apply checking. Core remains uncommitted.
+
+The full operational goal remains open. The host still needs actual configured
+admission/recording/note-screen binding, native identity and token custody,
+processing/provider credential lifecycle, configured interruption recovery,
+desktop/iPhone fidelity and signed releases. Legacy raw/gap recovery envelopes
+remain unavailable for configured sessions; no evidence was fabricated to make
+them compatible. The approved packet excludes hosted/native activation, shared
+auth/environment changes, live trials, device/signing work, deployment and PHI.
+Those are remaining authority/acceptance boundaries, not completed features.
+
+## Earlier: approved local Core creator-review integration
 
 The owner approved the exact Core review-consumer packet ("I approve core
 integration"). Before editing, Scribe was clean at `fea25741eb133eb85779316e650212c5a3669ced`
@@ -70,11 +145,12 @@ Core remains uncommitted on its existing detached checkout so this task does not
 claim or combine the other work. The before/final manifests and incremental patch
 are retained. No independent review, PR or release is claimed.
 
-Configured ordinary admission still uses the older contract, and Core SOAP still
-consumes the older raw/working-source envelope. The next concrete local proposal
+At that checkpoint configured ordinary admission used the older contract, and
+Core SOAP consumed the older raw/working-source envelope. The next local proposal
 is [configured admission and Core SOAP](beta/SCRIBE_CONFIGURED_CORE_WORKFLOW_PACKET_20260921.md).
-That packet, native identity/device acceptance, actual runtime credentials and
-signed releases remain open. The historical ~55% operational judgment is not
+That packet was subsequently approved and completed locally as recorded above.
+Native identity/device acceptance, actual runtime credentials and signed releases
+remain open. The historical ~55% operational judgment is not
 raised based on these local tests.
 
 ## Earlier: clear translation progress and blocked-work guidance

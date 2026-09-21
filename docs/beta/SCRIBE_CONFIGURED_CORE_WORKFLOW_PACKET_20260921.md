@@ -1,14 +1,16 @@
 # Configured admission and existing Core SOAP — next local packet
 
-Status: proposed; outside the completed creator-review consumer approval.
+Status: explicitly approved by the owner ("I approve the configured admission
+and Core soap packet") and implemented locally, 2026-09-21. The latest
+real-services checkpoint records qualification and retained evidence.
 
-The review consumer is locally verified, but a new ordinary Core admission still
+Starting gap: the review consumer was locally verified, but a new Core admission
 creates the older `SessionCreate` contract. The Scribe configured capture runtime
-has no ordinary authenticated admission route. Core's note reader also requires
+had no ordinary authenticated admission route. Core's note reader also required
 the older raw/working-source envelope. A review URL change cannot make these
 contracts compatible, and existing sessions must not be converted.
 
-## Proposed approval
+## Approved scope
 
 Approve completing the **local configured capture → review → existing Core SOAP
 and creator encounter flow**, in the same two checkouts with synthetic data only.
@@ -58,6 +60,7 @@ completed private Speech/translation trials. Physical desktop/iPhone and real
 identity/release acceptance remain open after this local packet.
 
 The prior review-consumer packet explicitly excluded configured admission,
-migration reconciliation and the canonical SOAP consumer. Handoff §4 requires
-new exact authority for these additional Core edits. This document proposes that
-scope; it does not grant it.
+migration reconciliation and the canonical SOAP consumer. Handoff §4 required
+new exact authority for these additional Core edits; the owner's subsequent
+approval authorized the local scope above. Migration reconciliation, shared apply
+and every listed activation exclusion remain outside it.
