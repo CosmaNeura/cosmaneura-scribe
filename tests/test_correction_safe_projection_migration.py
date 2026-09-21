@@ -144,17 +144,23 @@ def test_forward_retained_recovery_is_safe_and_reapplicable(
     before = asyncio.run(_function_metadata(admin_url))
     _assert_hardened(before)
     try:
+        # Later expansions intentionally change the allowed ingest modes. Verify
+        # 0014's retained recovery against 0014 itself, then require an exact
+        # restoration of the complete current head after reapplication below.
+        command.downgrade(config, "0014")
+        prior_expansion = asyncio.run(_function_metadata(admin_url))
+        _assert_hardened(prior_expansion)
         command.downgrade(config, "0013")
         assert asyncio.run(_current_revision(admin_url)) == "0013"
         retained = asyncio.run(_function_metadata(admin_url))
         _assert_hardened(retained)
-        assert retained == before
+        assert retained == prior_expansion
         assert asyncio.run(_public_execute_functions(admin_url)) == set()
     finally:
         command.upgrade(config, "head")
         asyncio.run(_restore_recreated_test_table_permissions(admin_url))
 
-    assert asyncio.run(_current_revision(admin_url)) == "0018_translation_jobs"
+    assert asyncio.run(_current_revision(admin_url)) == "0019_captured_bilingual"
     reapplied = asyncio.run(_function_metadata(admin_url))
     _assert_hardened(reapplied)
     assert reapplied == before

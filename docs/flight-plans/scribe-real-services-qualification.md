@@ -149,6 +149,37 @@ Implementation and live evidence are recorded in
 
 ## Disposable storage acceptance extension
 
+### Captured bilingual source — owner-approved 2026-09-21
+
+The owner explicitly approved an additional Scribe-only dormant migration to
+connect captured audio to bilingual storage, tested only in a **new disposable
+local database**. No cloud/shared database, Core/Auth/IAM/Zoom/staging edit,
+push, PR or deployment. This does not permit converting existing recordings.
+
+Tier 2 expand rung: admit newly configured `chunk_upload` sessions with immutable
+creator/language/Azure-source profiles. Preserve every existing unconfigured
+capture and configured imported session. Captured sessions must traverse capture,
+upload and processing before receiving normalized source; imported sessions keep
+their direct source-receipt path. Only capture/audio/job child roots are permitted
+for configured capture. Legacy transcript/delivery writes remain fenced so they
+cannot bypass bilingual review. Reuse the existing normalized source, translation,
+working projection, consent, tenant and retention guards; no second transcript
+store or external-source relabeling.
+
+First qualify the dormant schema and its unchanged legacy behavior. Runtime
+admission, leased Speech-result persistence, dispatch and authenticated routes
+follow separately within the local runtime approval. Existing endpoints stay
+unmodified and cannot see the new configured captures. A schema pass is not
+capture-to-translation or beta acceptance. Record the new local revision after
+`0018_translation_jobs`; reconcile the separate integration graph before promotion.
+
+Recovery leaves the expansion dormant. Reversing its guards is allowed only in
+the disposable-test database with no configured captures, under table locks;
+refuse removal after use. Test tenant isolation, immutable provenance, forbidden
+shortcuts/children, source/translation/review guards, preservation across upgrade,
+unused downgrade/reapply, and the complete regression. Keep the stopped local
+cluster/evidence and do not touch existing databases or other running apps.
+
 ### Encrypted translation job store — owner-approved 2026-09-21
 
 The owner explicitly approved the Scribe-only encrypted job store and dormant

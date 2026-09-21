@@ -682,7 +682,7 @@ async def test_working_tables_force_rls_and_have_no_new_grants(
 
 def test_working_transcript_storage_is_the_only_alembic_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0018_translation_jobs"]
+    assert script.get_heads() == ["0019_captured_bilingual"]
     migration = (ROOT / "alembic/versions/0013_working_transcript_storage.py").read_text()
     assert "current_database() !~ '_test$'" in migration
     assert "CREATE ROLE" not in migration

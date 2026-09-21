@@ -11,7 +11,62 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: branded Scribe URL and local runtime approval — 17:23 UTC
+## Latest: captured bilingual storage expansion — 17:45 UTC
+
+The owner explicitly approved the additional Scribe-only dormant capture/storage
+migration, tested only in a new disposable local database. Revision
+`0019_captured_bilingual` follows `0018_translation_jobs`; ADR 0042 records the
+decision and boundaries. No existing recording is converted or backfilled.
+
+New configured `chunk_upload` sessions can retain their actual capture provenance
+through normalized source, encrypted translation jobs, creator review and English
+working storage. Their state path requires capture/upload/processing before
+source receipt. Exact immutable Azure-source profiles replace any need to label
+them as external imports. Audio/job child roots are allowed; legacy raw-transcript
+and delivery writes remain prohibited. Imported sessions and unconfigured capture
+retain their prior behavior. No public route, runtime registration, application
+query widening, new grant, Core/Auth/IAM/Zoom/staging change or live call occurred.
+
+Final complete Python regression: **984 passed, zero failures/errors/skips**,
+78.63 seconds, including 23 new migration checks. Real PostgreSQL checks cover
+restricted non-owner operation, creator review before ready projection, unchanged
+source/role/profile evidence, tenant isolation, current-consent/source/retention
+job fences, terminal failures, legacy-query exclusion, row/privilege preservation
+across expand/reversal and refusal to reverse a used capture format. The initial
+fixture had a SQL typo; the first full run also exposed an older test that
+compared 0014's retained guards with the now-newer head. The test now verifies
+0014-to-0013 retention and exact restoration of the complete current head.
+No production guard was weakened to satisfy either test.
+
+Ruff and strict Pyright for the new migration/tests pass; OpenAPI regeneration is
+unchanged, ADR numbering and whitespace checks pass. JUnit:
+`/private/tmp/scribe-captured-bilingual.vfCl4X/verified-results.xml`, SHA-256
+`e4009f893a49042eb04ba576c65df0a3d2d30fef3ca650bb7be4076d05f9d88d`.
+The new UTF-8 database `scribe_captured_bilingual_test` used only its private
+Unix socket, no TCP listener. Teardown left only `alembic_version`; the exact
+owned cluster is stopped and its data/logs retained. No other database/app was
+stopped or changed.
+
+This is the schema foundation, **not a connected recording-to-note runtime**.
+Next: trusted configured-capture admission and leased Speech-result persistence,
+then durable translation dispatch and authenticated review/idempotency, followed
+by exact client/service acceptance. Existing app paths deliberately cannot read
+these new configured captures yet. Combined migration-graph reconciliation and
+independent review remain prerequisites to promotion.
+
+### Owner-requested MCD readiness estimate
+
+For actual MCD provider operation on desktop and iOS, estimate **about 55%
+(50–60% range)**. This is engineering judgment across implementation and remaining
+acceptance, not a measured completion or clinical-accuracy score. Strong local
+storage/service foundations do not close the release gates: real existing-user
+authentication and token custody; integrated capture → Spanish-to-English review
+→ Core SOAP → authorized MCD dashboard; physical-client/older-iOS recovery;
+mixed-language fidelity acceptance; and signed/distributed artifacts plus an
+approved PHI-capable operating environment. The stabilized shared platform has
+not been requalified in this task. Nothing here enables MCD clinical use.
+
+## Earlier: branded Scribe URL and local runtime approval — 17:23 UTC
 
 The owner requested a `cosmaneura.com` address, completed Cloudflare sign-in, and
 separately explicitly approved the local runtime-integration packet. The chosen
