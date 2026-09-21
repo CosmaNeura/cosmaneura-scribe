@@ -30,6 +30,62 @@ const TEST_ENCOUNTER = Object.freeze({
 });
 
 describe("CaptureFlowController", () => {
+  it("recovers configured preparation, uploads once, and restores review without legacy admission or transcript calls", async () => {
+    const server = createMockBffServer();
+    const origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    try {
+      const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+      const consent = await bff.createConsent({ appointment_id: TEST_ENCOUNTER.appointmentId,
+        practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId,
+        participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "core-consent-0001" });
+      const admitted = await bff.createSession({ appointment_id: TEST_ENCOUNTER.appointmentId,
+        practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId,
+        consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "core-session-0001" });
+      const consentSpy = vi.spyOn(bff, "createConsent"), sessionSpy = vi.spyOn(bff, "createSession");
+      const statusSpy = vi.spyOn(bff, "getTranscriptionStatus"), transcriptSpy = vi.spyOn(bff, "getTranscript");
+      const issue = bff.issueLease.bind(bff);
+      let lost = true;
+      const leaseSpy = vi.spyOn(bff, "issueLease").mockImplementation(async (...args) => {
+        const result = await issue(...args);
+        if (lost) { lost = false; throw new Error("synthetic lost lease reply"); }
+        return result;
+      });
+      const first = createController(bff, flowStore, queueStorage, origin);
+      await expect(first.prepareConfigured(admitted.id)).rejects.toThrow("synthetic lost lease reply");
+      const pending = await flowStore.getPreparationState();
+      expect(pending).toMatchObject({ mode: "configured_core", sessionId: admitted.id });
+      expect(pending).not.toHaveProperty("consentRequest");
+      const recovered = createController(bff, flowStore, queueStorage, origin);
+      expect(await recovered.restore()).toBe(true);
+      expect(leaseSpy.mock.calls[1]).toEqual(leaseSpy.mock.calls[0]);
+      expect(recovered.snapshot).toMatchObject({ state: "ready", recordedChunks: 0 });
+      await expect(recovered.releaseUploadedCapture()).rejects.toThrow("capture_state_conflict");
+      const active = (await flowStore.getActiveCaptureState())!;
+      const { reviewAfterUpload: _mode, ...changed } = active;
+      expect(_mode).toBe(true);
+      await expect(flowStore.putActiveCaptureState(changed)).rejects.toThrow("active_capture_conflict");
+      const complete = vi.spyOn(bff, "completeCapture");
+      await recovered.startRecording();
+      await recovered.deactivate();
+      expect(recovered.snapshot).toMatchObject({ state: "paused", recordedChunks: 1 });
+      expect(complete).not.toHaveBeenCalled();
+      await recovered.stopRecording();
+      expect(recovered.snapshot.state).toBe("processing");
+      vi.spyOn(bff, "getCapabilities").mockRejectedValue(new Error("expired capture must not be consulted"));
+      const review = createController(bff, flowStore, queueStorage, origin);
+      expect(await review.restore()).toBe(true);
+      expect(review.snapshot.state).toBe("processing");
+      await review.releaseUploadedCapture(); await review.releaseUploadedCapture();
+      expect(await flowStore.getActiveCaptureState()).toBeNull();
+      expect(await flowStore.getSessionKey(admitted.id)).toBeNull();
+      for (const spy of [consentSpy, sessionSpy, statusSpy, transcriptSpy]) expect(spy).not.toHaveBeenCalled();
+    } finally { flowStore.close(); queueStorage.close(); await closeServer(server); }
+  });
+
   it("runs the synthetic consent-to-read-only-transcript flow", async () => {
     const server = createMockBffServer();
     const origin = await listenOnEphemeralLoopback(server);

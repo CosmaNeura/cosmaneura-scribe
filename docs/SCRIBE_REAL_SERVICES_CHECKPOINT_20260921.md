@@ -12,7 +12,51 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: approved configured admission and Core SOAP workflow
+## Latest: approved local provider workspace
+
+The owner approved completing the local configured capture → review → existing
+Core SOAP and creator encounter flow. On the same Scribe branch from fe93564a,
+the separate provider entry now mounts encounter selection, manual language and
+consent, the retained recorder, creator transcript review, Core template/note
+preparation, edits/save recovery and navigation to the existing Core encounter.
+Configured recording uses Core's admitted session and never requests legacy
+admission or raw transcript endpoints. Exact pending requests use scoped,
+encrypted, revision-checked journals. Notes retain Core's unreviewed status.
+
+The actual browser components passed over local Core/Scribe HTTP routes, with
+48,000 generated PCM frames encrypted by the recorder and decrypted intact by
+the assembler. One offline Speech and one translation call produced preserved
+English/Spanish source; explicit acceptance gated notes. The browser recovered
+lost admission/save replies, and Core retained one canonical transcript and two
+note versions. Its existing outline/JSON-note pipeline was used. Mobile layout,
+creator encounter read and logout clearing passed. No external provider call or
+auth activation occurred. Full capture regression: 135 passed; review UI: 18.
+
+Passing evidence is `/private/tmp/scribe-configured-core.provider.wtRDMA/recheck/`.
+The same root preserves the earlier failed fixture attempts, final targeted
+checks, screenshots, exact scripts, Core preservation check and stopped-cluster
+metadata. The new private-socket PostgreSQL PID 4264 was stopped; historical
+clusters/demos/native artifacts were untouched. All 82 previously dirty Core
+files still match the saved configured packet manifest; this increment did not
+edit Core or its schema. See `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` and ADR
+0048 for the host contract, validation limits, recovery and remaining full goal.
+
+This closes the local provider UI increment, not operational beta acceptance.
+The existing native authenticated hosts must supply the real encounter/mount
+transport and device storage/lifetime before activation. Tester sign-in, token
+custody, iOS 17+/desktop physical acceptance, reconciled runtime and reproducible
+signed releases remain open. The public URL still serves the older preview.
+
+Current native observation: the physical iPhone 12 is connected with developer
+services, iOS 27.0 and W13 1.0/build 1 installed. The owner has not completed
+Tester sign-in. At the owner's request the retained W13 Mac app was quit and
+reopened; its fresh sign-in reached the helper but ended with secure session
+unavailable. Hosted-auth creation returned 200 in fixed metadata diagnostics;
+no successful login/callback or custody acceptance is established. Port 8046 had
+no observed listener. The next critical-path work is actual native sign-in and
+authenticated host composition, preserving all identity/policy boundaries.
+
+## Previous: approved configured admission and Core SOAP workflow
 
 The owner approved "the configured admission and Core soap packet." Work stayed
 on the existing Scribe branch from clean 5404d4c and the existing detached Core

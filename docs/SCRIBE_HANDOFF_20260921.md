@@ -12,7 +12,10 @@ review, durable decisions and browser/API evidence. The bounded Core consumer
 packet in `beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md` was subsequently approved
 and implemented locally. The configured-admission/Core SOAP packet in
 `beta/SCRIBE_CONFIGURED_CORE_WORKFLOW_PACKET_20260921.md` was then explicitly
-approved and implemented locally. Read the newest checkpoint and ADR 0047.
+approved and implemented locally. The owner then approved the full local provider
+controls. See `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md`, the newest checkpoint
+and ADR 0048 for the mounted encounter/record/review/Core-note workflow and its
+passing local browser/server evidence. Native/hosted activation remains open.
 The checkpoint below remains historical; native/hosted/full-workflow acceptance
 has not been declared complete.
 

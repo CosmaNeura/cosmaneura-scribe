@@ -63,9 +63,12 @@ export interface ActiveCaptureState {
   readonly recordedChunks: number;
   readonly recordedPlaintextBytes: number;
   readonly startedAt: string;
+  /** Configured Core sessions use creator review, never the legacy transcript API. */
+  readonly reviewAfterUpload?: true;
 }
 
-export interface CapturePreparationState {
+export interface DirectCapturePreparationState {
+  readonly mode?: "direct";
   readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION;
   readonly startedAt: string;
   readonly consentIdempotencyKey: string;
@@ -78,6 +81,18 @@ export interface CapturePreparationState {
   readonly leaseIdempotencyKey: string | null;
   readonly leaseRequest: CaptureLeaseIssueRequest | null;
 }
+
+export interface ConfiguredCapturePreparationState {
+  readonly mode: "configured_core";
+  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION;
+  readonly startedAt: string;
+  readonly completeIdempotencyKey: string;
+  readonly sessionId: string;
+  readonly leaseIdempotencyKey: string | null;
+  readonly leaseRequest: CaptureLeaseIssueRequest | null;
+}
+
+export type CapturePreparationState = DirectCapturePreparationState | ConfiguredCapturePreparationState;
 
 export interface CaptureFlowStore {
   putPreparationState(state: CapturePreparationState): Promise<void>;

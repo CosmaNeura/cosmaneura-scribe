@@ -13,3 +13,9 @@ export function mountProviderCapture(root: HTMLElement, binding: ProviderCapture
 
 export type { ProviderCaptureBinding } from "./provider-binding";
 export { NativeCreatorReviewJournal } from "../../review-ui/src/native-review-journal";
+export { mountProviderWorkspace } from "./provider/workspace";
+export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderEncounter,
+  ProviderRecorderResources } from "./provider/workspace";
+export { NativeProviderWorkspaceJournal } from "./provider/workspace-journal";
+export type { ProviderWorkspaceJournal, JournalSnapshot, ProviderProgress } from "./provider/workspace-journal";
+export type { AuthorizedCoreRequest, CoreCaptureScope } from "./provider/core-client";

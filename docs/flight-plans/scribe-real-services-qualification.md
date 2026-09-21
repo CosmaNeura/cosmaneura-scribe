@@ -1,5 +1,21 @@
 # Scribe real service and client qualification
 
+### Approved local provider controls — 2026-09-21
+
+The owner approved completing the local configured capture → review → existing
+Core SOAP and creator encounter flow. Connect the retained recorder to Core's
+configured admission, then expose encounter/language/consent, transcript review,
+template selection and version-checked Core note editing in the provider entry.
+Reuse Core's authenticated operation facade and note engine. The trusted host
+owns encounter authorization, credential custody, recorder storage and lifetime;
+the view never acquires workload credentials or asserts a creator/tenant.
+Persist exact admission and save recovery in encrypted, scoped journals before
+mutation. Keep explicit recording/review/note actions and clear protected views
+on host deactivation. Tier 2; test lost replies, scope changes and the rendered
+local flow using invented fixtures. No default preview activation, native auth
+policy, hosted deployment, live-service trial or release qualification. Recovery
+is to leave the separate provider entry unmounted; preserve pending journals.
+
 Latest approved local increment: configured admission and existing Core SOAP,
 2026-09-21. Reuse the existing Scribe admission repository, Entra dependency,
 review contract and Core canonical transcript/note engine. Add a default-off
