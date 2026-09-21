@@ -96,6 +96,103 @@ class CapturedSourceRepository(PostgresRepository):
         self._require_live_normalized_source_session(session, now)
         return session
 
+    async def reconcile_exhausted_speech(
+        self, tenant_id: UUID, session_id: UUID, *, max_attempts: int
+    ) -> None:
+        if type(max_attempts) is not int or max_attempts < 1:
+            raise CapturedSourceUnavailable()
+        session = await self.lock_live_capture(tenant_id, session_id)
+        if session.status != CapturedPreSourceStatus.PROCESSING:
+            return
+        job_id = await self._session.scalar(
+            text("""
+            UPDATE transcription_jobs SET status = 'terminal', lease_token = NULL,
+                lease_until = NULL, last_error_code = 'captured_speech_attempts_exhausted',
+                updated_at = clock_timestamp()
+            WHERE tenant_id = :tenant AND session_id = :session AND attempt_count >= :maximum
+              AND (status = 'retryable' OR (
+                  status = 'processing' AND lease_until <= clock_timestamp()
+              ))
+            RETURNING id
+        """),
+            {"tenant": tenant_id, "session": session_id, "maximum": max_attempts},
+        )
+        if job_id is not None:
+            await self.audit(
+                tenant_id=tenant_id,
+                action="captured_speech.exhausted",
+                entity_type="transcription_job",
+                entity_id=job_id,
+            )
+
+    async def discover_pending_captures(
+        self, tenant_id: UUID, *, limit: int = 8, after: UUID | None = None
+    ) -> tuple[UUID, ...]:
+        """Metadata discovery only; each target is authorized again before any work."""
+        if type(limit) is not int or not 1 <= limit <= 32:
+            raise CapturedSourceUnavailable()
+        rows = await self._session.execute(
+            text("""
+            SELECT session.id FROM scribe_sessions AS session
+            JOIN consent_records AS consent ON consent.tenant_id = session.tenant_id
+              AND consent.id = session.consent_record_id
+            LEFT JOIN transcription_jobs AS speech ON speech.tenant_id = session.tenant_id
+              AND speech.session_id = session.id
+            WHERE session.tenant_id = :tenant
+              AND session.transcript_contract_version = '1.0'
+              AND session.ingest_mode = 'chunk_upload'
+              AND (CAST(:after AS uuid) IS NULL OR session.id > :after)
+              AND consent.all_parties_consented AND consent.revoked_at IS NULL
+              AND session.content_purged_at IS NULL
+              AND (session.transcript_content_expires_at IS NULL
+                   OR session.transcript_content_expires_at > clock_timestamp())
+              AND (
+                (session.status IN ('uploaded', 'processing') AND (
+                    speech.id IS NULL OR speech.status = 'retryable'
+                    OR (speech.status = 'processing' AND speech.lease_until <= clock_timestamp())
+                ))
+                OR (session.status IN ('translation_pending', 'review_required', 'transcript_ready')
+                    AND speech.status = 'completed' AND (
+                    EXISTS (
+                        SELECT 1 FROM encrypted_translation_jobs AS job
+                        WHERE job.tenant_id = session.tenant_id AND job.session_id = session.id
+                          AND job.source_transcript_version =
+                              session.current_source_transcript_version
+                          AND job.status IN ('reserved', 'provider_result_stored')
+                    ) OR (session.status = 'translation_pending' AND EXISTS (
+                        SELECT 1 FROM normalized_source_segments AS segment
+                        WHERE segment.tenant_id = session.tenant_id
+                          AND segment.session_id = session.id
+                          AND segment.source_transcript_version =
+                              session.current_source_transcript_version
+                          AND segment.source_locale = 'es-US'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM normalized_translation_attempts AS attempt
+                              WHERE attempt.tenant_id = segment.tenant_id
+                                AND attempt.session_id = segment.session_id
+                                AND attempt.source_transcript_version =
+                                    segment.source_transcript_version
+                                AND attempt.source_segment_id = segment.source_segment_id
+                                AND attempt.source_segment_version = segment.source_segment_version
+                          ) AND NOT EXISTS (
+                              SELECT 1 FROM encrypted_translation_jobs AS job
+                              WHERE job.tenant_id = segment.tenant_id
+                                AND job.session_id = segment.session_id
+                                AND job.source_transcript_version =
+                                    segment.source_transcript_version
+                                AND job.source_segment_id = segment.source_segment_id
+                                AND job.source_segment_version = segment.source_segment_version
+                                AND job.previous_translation_version = 0
+                          )
+                    ))
+                ))
+              )
+            ORDER BY session.id LIMIT :limit
+        """),
+            {"tenant": tenant_id, "after": after, "limit": limit},
+        )
+        return tuple(rows.scalars())
+
     async def recover_completed_speech(
         self, tenant_id: UUID, session_id: UUID, job: TranscriptionJob
     ) -> bool:

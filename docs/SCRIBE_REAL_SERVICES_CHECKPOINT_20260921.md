@@ -11,7 +11,66 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: encrypted capture protocol to bilingual worker — 18:18 UTC
+## Latest: bounded automatic capture-to-review dispatch — 18:35 UTC
+
+Added default-off `CapturedProcessingRuntime`: one trusted-tenant dispatch call
+discovers actionable captured sessions, runs the encrypted Speech worker, plans
+Spanish-only translation, reserves bounded initial work and executes or recovers
+the existing encrypted jobs. Callers can carry a UUID cursor through a bounded
+sweep. No API, scheduler or environment automatically registers this runtime.
+Translation verifies the original completed captured-Speech receipt before using
+source rows. Expired final-attempt Speech leases and retryable work at the attempt
+ceiling become terminal metadata without another provider call or invented source.
+
+Initial translation reservation is serialized with current source/consent under
+the existing unique slot constraint. Failed or creator-rejected attempts are not
+automatically retried. An explicitly created retry reservation can be dispatched.
+Started calls are in flight or uncertain and are never automatically repeated;
+they do not starve unrelated unstarted Spanish segments. Stored results recover
+before new calls. Current source, consent, retention and immutable evidence are
+revalidated by the existing store/writers. Worker evidence reads share the creator
+reader's validation but have distinct worker audit events and never impersonate
+the creator. Creator-only acceptance and English handoff remain explicit.
+
+Final complete Python regression: **1,061 passed, zero failures/errors/skips**,
+68.449 seconds, including 30 new cases. Tests discover actual local capture-protocol
+rows and process real encrypted generated WAV through the existing assembler,
+fixed offline Speech/model responses, encrypted jobs, human-decision fixtures and
+Core handoff serialization. They cover competing dispatch, bounded pages/batches,
+uncertain-call non-replay, retry boundaries, changed-source/revocation/retention
+fences, English/quality-blocked source, completion lineage, exhausted Speech,
+lost reservation/result/commit-marker replies and acceptance before marker recovery.
+A fresh actual Python process discovers and commits a stored encrypted result
+with audio/Speech/model methods forbidden. Its generated test RSA key travels via
+stdin, not source, command-line arguments or logs. Source and English speech are
+preserved and no automatic review is written.
+
+The first 25 new tests passed, followed by 136 focused regressions and a complete
+1,060-test run. Final review added the explicit captured-completion-lineage guard
+and its negative test; the final count is 1,061. Strict Pyright exposed the existing
+safe-job decorator's overly broad awaitable annotation when the concrete store
+was composed with its protocol; its annotation now correctly describes the
+returned native coroutine, without weakening the protocol or changing execution.
+
+Ruff on changed code/tests, strict Pyright across the complete API, unchanged
+OpenAPI regeneration, ADR numbering and whitespace checks pass. ADR 0045 records
+the decision. JUnit: `/private/tmp/scribe-auto-processing.GKPGLv/verified.xml`, SHA-256
+`833f859b4369688b00fd69418c5b34824efa0d77855cef4a511c80994e346b88`.
+The fresh UTF-8 `scribe_auto_processing_test` database used only its private Unix
+socket, no TCP listener. Test teardown left only `alembic_version`; verified owned
+PID 67166 is stopped and its data/logs retained. No shared database, other app,
+owner preview, package, cloud setting, provider model/prompt/HTTP contract, grant, auth parser,
+Core/IAM/Zoom/staging, migration, push, PR or deployment changed.
+
+Next: paired authenticated review/status/idempotency receivers and qualified
+provider/credential lifecycle bootstrap, followed by actual client/Core/service
+acceptance. Internal status now distinguishes capture/Speech/translation progress,
+unconfirmed calls, explicit retry need, quality blocks and review readiness; that
+is not yet a public status/failure UX. Real identity/token custody, physical-device
+and older-iOS qualification, mixed-language fidelity and signed release remain
+open. This is local automatic-dispatch capability, not MCD operational activation.
+
+## Earlier: encrypted capture protocol to bilingual worker — 18:18 UTC
 
 Connected the configured captured format to the existing encrypted recorder
 protocol and audio assembly through an explicitly paired PostgreSQL provider.

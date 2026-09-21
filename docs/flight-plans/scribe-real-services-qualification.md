@@ -151,6 +151,18 @@ Implementation and live evidence are recorded in
 
 ### Captured bilingual source — owner-approved 2026-09-21
 
+Next local runtime increment: bounded automatic capture/transcription/translation
+dispatch, using trusted tenant scope and existing encrypted reservation/execution
+and source/review writers. Atomically reserve only missing initial translations;
+failed/rejected attempts require an explicit later retry decision. Never repeat an
+uncertain started model call. Resume stored results, keep creator approval manual,
+and report exhausted Speech and translation failures explicitly. Worker evidence
+reads must not impersonate the creator or write creator-read audit events. Test
+concurrent dispatch, crashes/lost replies, bounded batches, stale/revoked/expired
+source and actual local capture-to-review composition in a new disposable
+synthetic database. No model/prompt/API change, new migration, cloud setting,
+auth parser, route registration, live provider call, push, PR or deployment.
+
 Next local runtime increment: pair the configured-capture repository explicitly
 with the existing encrypted capture protocol and leased audio assembler. Default
 legacy/imported access stays unchanged; configured capture cannot create legacy

@@ -1174,6 +1174,24 @@ class PostgresRepository:
         session, database_now = locked
         if session.creator_actor_id != creator_actor_id:
             return None
+        return await self._read_locked_working_transcript(
+            tenant_id, session, database_now, creator_read=True
+        )
+
+    async def get_processing_working_transcript(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> WorkingTranscriptDerivation | None:
+        """Trusted internal worker read; never a creator authorization substitute."""
+        locked = await self._lock_working_transcript_session(tenant_id, session_id)
+        if locked is None:
+            return None
+        return await self._read_locked_working_transcript(tenant_id, *locked, creator_read=False)
+
+    async def _read_locked_working_transcript(
+        self, tenant_id: UUID, session: VersionedExternalSessionRecord, database_now: datetime,
+        *, creator_read: bool,
+    ) -> WorkingTranscriptDerivation | None:
+        session_id = session.id
         self._require_live_working_session(session, database_now)
         source_version = session.current_source_transcript_version
         working_version = session.current_working_transcript_version
@@ -1204,7 +1222,8 @@ class PostgresRepository:
             raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         await self.audit(
             tenant_id=tenant_id,
-            action="normalized_working_transcript.creator_read",
+            action="normalized_working_transcript.creator_read" if creator_read
+            else "normalized_working_transcript.worker_read",
             entity_type="normalized_working_transcript",
             entity_id=working_id,
         )
