@@ -59,3 +59,14 @@ These observations do not prove successful capture, service inference or release
 
 Implementation and live evidence are recorded in
 [the 2026-09-21 checkpoint](../SCRIBE_REAL_SERVICES_CHECKPOINT_20260921.md).
+
+## Disposable storage acceptance extension
+
+Run the existing migration/restricted-role/recovery tests against a new local
+PostgreSQL cluster under an owned temporary directory, database name ending in
+`_test`, Unix socket only, no TCP listener. Only invented test data is admitted.
+This exercises the existing additive schema; it does not apply a migration to
+the main, integration, development-cloud or production database. The existing
+fixture's destructive downgrade tests are permitted only in this newly created
+throwaway cluster. Stop only this cluster's verified process when finished;
+retain logs/data for inspection without deleting any shared resource.

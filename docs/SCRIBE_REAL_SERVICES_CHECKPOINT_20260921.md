@@ -3,8 +3,10 @@
 Status: meaningful implementation and real-service/build evidence; **not a beta
 release or closure of the five owner goals**. All repository edits remain on
 `codex/beta-preintegration-20260904`, based on `1e48c124f355f486d8106c7f7441fd13895c3c97`.
-No push, PR, schema migration, shared Core/Auth/IAM/Zoom/staging edit or Azure
-infrastructure mutation occurred. Newer integration checkouts were read-only.
+No push, PR, migration of an existing/shared database, shared Core/Auth/IAM/Zoom/
+staging edit or Azure infrastructure mutation occurred. Newer integration
+checkouts were read-only. Later migration tests used a new disposable local
+cluster, as recorded below.
 
 ## What “clinical evaluation” means here
 
@@ -187,12 +189,54 @@ scoped trial; do not rebuild and call it the same artifact.
 
 ## Local verification and next acceptance sequence
 
-Final Python regression: **647 passed, 183 skipped**. Skips require the disposable
-PostgreSQL test configuration, which was not provided; no new database acceptance
-is claimed. Ruff and strict Pyright pass. The initial run exposed an ADR-number
+Initial Python regression: **647 passed, 183 skipped**. That run lacked the
+disposable PostgreSQL test configuration; the later complete run below supersedes
+its storage-validation gap. Ruff and strict Pyright pass. The initial run exposed an ADR-number
 collision (fixed by using 0039) and system Node 22; the final run selected the
 existing required Node runtime through `CAPTURE_PROTOCOL_NODE`. No dependency or
 global runtime upgrade was made. No API or storage schema changed.
+
+### Follow-on: complete local PostgreSQL regression
+
+A new PostgreSQL 16.15 cluster was initialized only at
+`/private/tmp/scribe-storage-qualification.2w4AVy/data`. It used a mode-0700 Unix
+socket, no TCP listener, and the new `scribe_qualification_test` database. Before
+tests, SQL confirmed the exact data directory, empty `listen_addresses` and no
+network server address. No main, integration, cloud or production database was
+addressed. Existing migration up/down, downgrade refusal and destructive cleanup
+tests were run only in this newly created throwaway cluster.
+
+The first fixture run exposed a real packaging gap: SQLAlchemy's default Greenlet
+dependency marker excludes macOS `arm64`. Without its `asyncio` extra, the local
+async engine failed before reaching storage assertions. The existing read-only
+integration checkout already carried the exact fix, `sqlalchemy[asyncio]>=2.0,<3`.
+That one-line declaration was reused here and the lockfile regenerated offline.
+Both dependency files match the inspected integration checkout byte-for-byte;
+that checkout was not modified. All 64 locked package versions are unchanged;
+the existing locked Greenlet 3.5.5 was installed from cache into this branch's
+own virtual environment. No unrelated packages or global runtime were removed.
+
+A new non-database test exercises SQLAlchemy's async bridge so this environment
+failure is detected even when the optional PostgreSQL fixture is absent.
+
+**Final full result: 831 passed, zero skipped, zero failures, in 40.46 seconds.**
+Ruff and strict Pyright pass. This includes the existing PostgreSQL migration,
+restricted-role, tenant isolation, immutable source/translation, creator review,
+consent/retention, competing-write and ambiguous-commit recovery tests. It does
+not prove cloud deployment, real Speech inference, native login, physical-device
+capture, or end-to-end real-service note generation.
+
+After fixture teardown, the disposable public schema had only its Alembic
+bookkeeping table. The cluster's process was verified as PID 51412 with the exact
+owned data directory, then stopped using `pg_ctl` for that directory. Temporary
+data/logs were retained; no shared server, database or user data was removed.
+
+The remaining runtime integration was rechecked: `DurableTranslationJobStore`
+is still a protocol, with only a test implementation. Its approved encrypted
+production store, current consent/source authorization at provider-call admission,
+worker configuration and connection to the newer capture integration remain
+activation prerequisites. Do not use the in-memory test store as a production
+substitute or treat the real adapter smoke test as a working clinical pipeline.
 
 Next sequence:
 

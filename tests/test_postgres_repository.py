@@ -32,6 +32,7 @@ from cosmaneura_scribe.transcription_worker import TranscriptionWorker, Transcri
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.util.concurrency import greenlet_spawn
 
 
 def _settings(database_url: str) -> Settings:
@@ -42,6 +43,13 @@ def _settings(database_url: str) -> Settings:
         database_pool_size=1,
         database_max_overflow=0,
     )
+
+
+@pytest.mark.asyncio
+async def test_async_database_runtime_is_available_without_database_fixture() -> None:
+    # Keep this outside the optional PostgreSQL fixture: a platform-specific
+    # missing asyncio extra must fail even when database tests are skipped.
+    assert await greenlet_spawn(lambda: "async_runtime_ready") == "async_runtime_ready"
 
 
 class EmptyIdempotencyResult:
