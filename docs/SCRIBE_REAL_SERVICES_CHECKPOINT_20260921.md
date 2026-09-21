@@ -11,7 +11,65 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: bounded automatic capture-to-review dispatch — 18:35 UTC
+## Latest: provider review receiver and reusable screen — 18:53 UTC
+
+The owner requested a detailed handoff and explicitly approved pausing this goal
+after that handoff. Resume from `docs/SCRIBE_HANDOFF_20260921.md`, not the entire
+historical conversation. Current implementation commits are `3514639` (receiver)
+and `67d58a4` (provider panel), both local and unpushed on the existing branch.
+
+The existing API now registers GET/POST
+`/v1/captured-sessions/{session_id}/review`. It remains unavailable without an
+explicit server-side `CreatorReviewRuntime` binding, enabled gate and tenant
+allowlist. It reuses existing Entra trusted-platform authentication; Core must
+reauthorize the end user and supply the creator header. It does not add a user
+login path or prove Core currently forwards that context. Reads expose captured
+status, preserved source, English working projection and explicit translation
+review. Decisions use the existing idempotency table and immutable writer in one
+transaction, recover the persisted review ID/time and reject changed retries.
+No schema migration or automatic provider/review/note call is introduced.
+
+The review workspace now builds a reusable ES module/CSS panel. It shows Spanish
+beside proposed English, unchanged English speech, unassigned speaker roles,
+accept/reject buttons, blockers, current status and English readiness. Its host
+supplies the existing authenticated transport and must dispose on logout/session
+change. Uncertain saves retain exact metadata/key in memory for explicit retry;
+unavailable responses clear protected display. Native durable recovery and
+actual shell/BFF mounting remain unfinished. No physical/browser interaction or
+visual acceptance was performed for this new panel. The old synthetic ingest
+page is preserved and is not silently replaced by an operational app.
+
+Final full Python regression: **1,065 passed, zero failures/errors/skips**, 119.557
+seconds. Four new API cases cover generated capture → bilingual source → actual
+HTTP-interface review, concurrent exact retry, fresh receiver recovery, source
+preservation, creator/cohort/auth rejection, consent revocation, missing keys and
+forbidden authority fields. Identity acquisition, Speech/model and blob/key
+services are fixtures. All **13 review-UI checks** pass, including four new
+contract/render/transport checks. Strict API Pyright, affected Ruff, review-UI
+TypeScript/ESLint, generated OpenAPI/TypeScript, both UI builds, ADR numbering and
+whitespace checks pass. These tests are not real end-user/device acceptance.
+
+JUnit: `/private/tmp/scribe-review-surface.0xben8/verified.xml`, SHA-256
+`13e1ec050b5b5ffc70fac318a5e70642ef11d08b67759f677017bbfeb5cc1ef4`.
+The new UTF-8 `scribe_review_surface_test` database used a private Unix socket,
+port 55454 and no TCP listener. Final public schema contained only
+`alembic_version`; owned PID 82950 was verified, stopped and confirmed absent.
+Its files/logs remain retained. Existing databases/apps/devices were untouched.
+
+Built panel assets under `apps/review-ui/dist/creator-review/`:
+JS SHA-256 `a4879be15a8d839b84f424e933cbd58e28b6ee019d57e9e9503a7c98ab1bde46`;
+CSS SHA-256 `564d42c3991cab1b0a665d13b4fa52e2a20419d6bb45686620b946e22bb0510c`.
+These are unsigned local web assets, not distributed native releases.
+
+Next checkpoint target: mount this existing panel in the actual authenticated
+client workflow and qualify its real transport, recording-to-review behavior and
+Core handoff. Obtain narrowly scoped missing Core/deployment authority rather
+than inventing another identity path or demo. Real identity/token custody,
+physical-device/older-iOS qualification, full mixed-language fidelity, signed
+distribution and MCD PHI activation remain open. Overall MCD readiness is still
+the prior approximate 55% judgment, not increased on test count alone.
+
+## Earlier: bounded automatic capture-to-review dispatch — 18:35 UTC
 
 Added default-off `CapturedProcessingRuntime`: one trusted-tenant dispatch call
 discovers actionable captured sessions, runs the encrypted Speech worker, plans
