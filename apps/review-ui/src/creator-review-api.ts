@@ -72,7 +72,9 @@ export function parseCreatorReview(value: unknown, sessionId: string): CreatorRe
   const view = record(value);
   requireValue(view.schema_version === "1.0" && view.session_id === sessionId);
   requireValue(typeof view.status === "string");
+  const progress = view.translation_progress === undefined ? [] : array(view.translation_progress);
   if (view.source === null && view.working === null && view.review_queue === null) {
+    requireValue(progress.length === 0);
     requireValue([
       "created", "capturing", "uploaded", "processing", "speech_failed", "speech_retryable", "handed_off",
     ].includes(view.status));
@@ -113,6 +115,19 @@ export function parseCreatorReview(value: unknown, sessionId: string): CreatorRe
     requireValue(segment.resolution === "unresolved" ? segment.content === null : content(segment.content));
   }
   const blockers = array(working.blockers);
+  const unresolvedIds = new Set(segments.filter((item) => record(item).resolution === "unresolved")
+    .map((item) => record(item).source_segment_id));
+  const progressIds = new Set<string>();
+  for (const item of progress) {
+    const pending = record(item);
+    requireValue(isUuid(pending.source_segment_id) && !progressIds.has(pending.source_segment_id));
+    progressIds.add(pending.source_segment_id);
+    const original = byId.get(pending.source_segment_id);
+    requireValue(original?.source_locale === "es-US"
+      && original.source_segment_version === pending.source_segment_version);
+    requireValue(unresolvedIds.has(pending.source_segment_id));
+    requireValue(["queued", "unconfirmed", "result_saved"].includes(String(pending.state)));
+  }
   for (const item of blockers) {
     const blocker = record(item);
     requireValue(typeof blocker.source_segment_id === "string" && byId.has(blocker.source_segment_id));
@@ -134,6 +149,7 @@ export function parseCreatorReview(value: unknown, sessionId: string): CreatorRe
   for (const item of items) {
     const review = record(item);
     requireValue(isUuid(review.source_segment_id) && !reviewIds.has(review.source_segment_id));
+    requireValue(!progressIds.has(review.source_segment_id));
     reviewIds.add(review.source_segment_id);
     const original = byId.get(review.source_segment_id);
     requireValue(original !== undefined && original.source_locale === "es-US");

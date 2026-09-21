@@ -894,6 +894,11 @@ export interface components {
             source?: components["schemas"]["SourceTranscriptV1"] | null;
             /** Status */
             status: string;
+            /**
+             * Translation Progress
+             * @default []
+             */
+            translation_progress: components["schemas"]["CreatorTranslationProgressV1"][];
             working?: components["schemas"]["EnglishWorkingTranscriptV1"] | null;
         };
         /**
@@ -923,6 +928,24 @@ export interface components {
              * Format: uuid
              */
             translation_id: string;
+        };
+        /**
+         * CreatorTranslationProgressV1
+         * @description Current-source metadata only; never authority to execute or retry a call.
+         */
+        CreatorTranslationProgressV1: {
+            /**
+             * Source Segment Id
+             * Format: uuid
+             */
+            source_segment_id: string;
+            /** Source Segment Version */
+            source_segment_version: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "unconfirmed" | "result_saved";
         };
         /** CreatorTranslationReviewItemV1 */
         CreatorTranslationReviewItemV1: {

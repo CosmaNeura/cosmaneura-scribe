@@ -44,6 +44,7 @@ async def test_rendered_provider_review(flow: Flow, tmp_path: Path, decision: st
     pending_path = tmp_path / "encrypted-native-bridge-fixture.bin"
     cipher = AESGCM(AESGCM.generate_key(bit_length=256))
     requests: list[tuple[str, dict]] = []
+    processing = None
 
     async def review(request: Request):
         headers = {"X-Scribe-Creator-Actor-ID": flow.capture.trial.draft.creator_actor_id}
@@ -63,7 +64,16 @@ async def test_rendered_provider_review(flow: Flow, tmp_path: Path, decision: st
                         media_type="application/json", headers={"Cache-Control": "no-store"})
 
     async def process(_request: Request):
-        await flow.runtime.process(**flow.scope)
+        nonlocal processing
+        flow.translator.block = True
+        processing = asyncio.create_task(flow.runtime.process(**flow.scope))
+        await asyncio.wait_for(flow.translator.started.wait(), timeout=5)
+        return JSONResponse({"processing": True})
+
+    async def finish_translation(_request: Request):
+        assert processing is not None
+        flow.translator.release.set()
+        await asyncio.wait_for(processing, timeout=5)
         return JSONResponse({"processed": True})
 
     async def revoke(_request: Request):
@@ -108,6 +118,7 @@ async def test_rendered_provider_review(flow: Flow, tmp_path: Path, decision: st
         Route("/", index), Route("/assets/{name}", asset),
         Route(f"/v1/captured-sessions/{session_id}/review", review, methods=["GET", "POST"]),
         Route("/trial/process", process, methods=["POST"]),
+        Route("/trial/finish-translation", finish_translation, methods=["POST"]),
         Route("/trial/revoke", revoke, methods=["POST"]),
         Route("/trial/journal", journal, methods=["POST"]),
     ])
@@ -137,6 +148,10 @@ async def test_rendered_provider_review(flow: Flow, tmp_path: Path, decision: st
         if result is not None and result.returncode is None:
             result.kill()
             await result.wait()
+        if processing is not None:
+            if not processing.done():
+                processing.cancel()
+            await asyncio.gather(processing, return_exceptions=True)
         server.should_exit = True
         await task
         listener.close()

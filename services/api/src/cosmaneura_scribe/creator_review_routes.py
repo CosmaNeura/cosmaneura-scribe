@@ -18,12 +18,14 @@ from .canonical_json import canonical_sha256
 from .captured_source_runtime import CapturedSourceRepository, CapturedSourceRepositoryProvider
 from .creator_review_contract_v1 import (
     CreatorTranslationDecisionRequestV1,
+    CreatorTranslationProgressV1,
     CreatorTranslationReviewQueueV1,
     build_creator_translation_review_queue,
 )
 from .external_transcript_v1 import EnglishWorkingTranscriptV1, SourceTranscriptV1
 from .repository import IdempotencyClaimUnavailableError, IdempotencyConflictError
 from .service_auth import get_verified_tenant_id
+from .transcript_constraints import MAX_TRANSCRIPT_SEGMENTS
 from .translation_review_persistence import TranslationReviewPersistenceError
 
 _HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -39,6 +41,9 @@ class CreatorReviewViewV1(BaseModel):
     source: SourceTranscriptV1 | None = Field(default=None, repr=False)
     working: EnglishWorkingTranscriptV1 | None = Field(default=None, repr=False)
     review_queue: CreatorTranslationReviewQueueV1 | None = Field(default=None, repr=False)
+    translation_progress: tuple[CreatorTranslationProgressV1, ...] = Field(
+        default=(), max_length=MAX_TRANSCRIPT_SEGMENTS, repr=False
+    )
 
 
 class CreatorDecisionReceiptV1(BaseModel):
@@ -117,6 +122,10 @@ class CreatorReviewRuntime:
             working=current.working_transcript,
             review_queue=build_creator_translation_review_queue(
                 session_id=session_id, bundle=current.bundle
+            ),
+            translation_progress=await store.creator_translation_progress(
+                tenant_id, session_id, creator_actor_id=actor,
+                source_version=current.bundle.source_transcript.source_transcript_version,
             ),
         )
 

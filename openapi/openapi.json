@@ -1006,6 +1006,15 @@
             "title": "Status",
             "type": "string"
           },
+          "translation_progress": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CreatorTranslationProgressV1"
+            },
+            "maxItems": 10000,
+            "title": "Translation Progress",
+            "type": "array"
+          },
           "working": {
             "anyOf": [
               {
@@ -1072,6 +1081,38 @@
           "decision"
         ],
         "title": "CreatorTranslationDecisionBodyV1",
+        "type": "object"
+      },
+      "CreatorTranslationProgressV1": {
+        "additionalProperties": false,
+        "description": "Current-source metadata only; never authority to execute or retry a call.",
+        "properties": {
+          "source_segment_id": {
+            "format": "uuid",
+            "title": "Source Segment Id",
+            "type": "string"
+          },
+          "source_segment_version": {
+            "minimum": 1.0,
+            "title": "Source Segment Version",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "unconfirmed",
+              "result_saved"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_segment_id",
+          "source_segment_version",
+          "state"
+        ],
+        "title": "CreatorTranslationProgressV1",
         "type": "object"
       },
       "CreatorTranslationReviewItemV1": {

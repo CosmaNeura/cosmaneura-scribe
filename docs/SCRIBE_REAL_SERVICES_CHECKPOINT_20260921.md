@@ -11,7 +11,55 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: recorder-mounted review and durable decisions — continuation
+## Latest: clear translation progress and blocked-work guidance
+
+Continued from clean `b894baf` while the exact Core consumer approval remains
+pending. Providers can now distinguish a queued translation, a request without
+a confirmed result, and a saved result awaiting review publication. Rejected or
+failed translations say they need a new attempt instead of generic pending.
+Refresh never starts/repeats work. Source/quality blockers and explicit creator
+review still control note readiness; no retry command or activation was added.
+
+The existing review response has optional current-source `translation_progress`.
+Its read is scoped to the same live creator, tenant/session and source version,
+without decrypting jobs or using keys/providers. Published attempts override
+lagging job markers. The panel rejects contradictory/foreign progress. OpenAPI
+and capture TypeScript were regenerated. No database migration, new route,
+Core/Auth/IAM/environment change or live trial occurred.
+
+Final rendered desktop/phone scenarios passed with real local API/PostgreSQL and
+the documented synthetic host/Speech/model/native-storage/Core fixtures. They
+now include an in-flight translation before the existing accept/reject/reload/
+revocation checks. Five receiver checks and 18 review-UI checks pass, along with
+TypeScript, ESLint, affected Ruff, strict Pyright, build and ADR/whitespace checks.
+The full regression ran **1,068 tests**: **1,067 passed**, and one protocol check
+failed because it selected system Node 22. All four protocol checks then passed
+with the pinned Node 24; matched test identities confirm passing evidence for
+all 1,068 distinct tests, with zero skips. The initial failed run is retained;
+there was no application-code change to resolve that toolchain failure.
+
+Evidence: `/private/tmp/scribe-review-progress.CGKoxr/verified.xml`, SHA-256
+`8e756b18f663fb5bd6505142dbfed24a971dbf79cd7c4169365beee6d43e0c39`;
+corrected toolchain evidence `node24-protocol.xml`, SHA-256
+`dcd705029b66e5d2a968e8a21b3d4f270b02357e701307e53f787c2cdc302c54`.
+Final screenshots are under `full/`. The new `scribe_review_progress_test`
+database used private Unix socket port 55456 and no TCP listener. Final public
+schema contained only `alembic_version`; owned PID 4301 was verified, stopped and
+confirmed absent. Data/logs remain retained. Prior completed clusters stayed stopped.
+
+Current unsigned provider JS SHA-256:
+`1ac9f72ca302b07671c11442521ce303f12e9e0559e4953fc92cdbebc621f9f7`;
+CSS SHA-256 remains `62c506ac9ad676d4449db2a501c159f8c0d59092dca0bbbb03d59b9f3a8b4987`.
+For future Python regressions, set `CAPTURE_PROTOCOL_NODE` to the recorded Node 24
+binary (or prepend its shim to PATH); Python subtests otherwise select system Node.
+
+The full operational Scribe goal remains open. Current hosted/native binding,
+Core admission/notes/dashboard, actual credential/worker lifecycle, physical
+devices, fidelity and signed releases are not qualified by this progress display.
+The existing [Core review-consumer packet](beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md)
+still needs the owner's explicit approval; it has not been implemented.
+
+## Earlier: recorder-mounted review and durable decisions — continuation
 
 The replacement task read the complete handoff and verified a clean existing
 `codex/beta-preintegration-20260904` checkout at

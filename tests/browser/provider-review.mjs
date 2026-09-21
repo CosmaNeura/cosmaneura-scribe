@@ -14,6 +14,11 @@ try {
   await expect(page.getByText("Recording uploaded", { exact: true })).toBeVisible();
   await page.request.post(`${origin}/trial/process`);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByText("Translation result unconfirmed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Accept English translation" })).toHaveCount(0);
+  await page.screenshot({ path: `${output}/${decision}-unconfirmed.png`, fullPage: true });
+  await page.request.post(`${origin}/trial/finish-translation`);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.getByText("No tengo fiebre.", { exact: true })).toBeVisible();
   await expect(page.getByText("I am not sure when it started.", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Continue to note" })).toHaveCount(0);

@@ -45,6 +45,14 @@ class _StrictProtectedModel(BaseModel):
     )
 
 
+class CreatorTranslationProgressV1(_StrictProtectedModel):
+    """Current-source metadata only; never authority to execute or retry a call."""
+
+    source_segment_id: UUID = Field(repr=False)
+    source_segment_version: int = Field(ge=1, repr=False)
+    state: Literal["queued", "unconfirmed", "result_saved"]
+
+
 class CreatorTranslationReviewItemV1(_StrictProtectedModel):
     source_segment_id: UUID = Field(repr=False)
     source_segment_version: int = Field(ge=1, repr=False)

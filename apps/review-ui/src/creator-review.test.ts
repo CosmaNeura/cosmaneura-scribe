@@ -28,6 +28,38 @@ const view = {
 };
 
 describe("creator review surface", () => {
+  it("distinguishes queued, uncertain and saved translation progress without offering a new call", () => {
+    for (const [state, copy] of [
+      ["queued", "Waiting for this translation to start"],
+      ["unconfirmed", "Translation result unconfirmed"],
+      ["result_saved", "Preparing translation review"],
+    ]) {
+      const pending = { ...view, status: "translation_pending",
+        review_queue: { ...view.review_queue, status: "not_ready", items: [] },
+        translation_progress: [{ source_segment_id: segment, source_segment_version: 1, state }],
+      };
+      const parsed = parseCreatorReview(pending, session);
+      const html = renderCreatorReview({ phase: "ready", view: parsed, notice: "" });
+      expect(html).toContain(copy);
+      expect(html).not.toContain('data-review-action="accepted"');
+      expect(html).not.toContain("English transcript ready");
+    }
+  });
+
+  it("rejects progress for another segment/version or a published review and labels rejected work clearly", () => {
+    for (const progress of [
+      { source_segment_id: working, source_segment_version: 1, state: "queued" },
+      { source_segment_id: segment, source_segment_version: 2, state: "queued" },
+      { source_segment_id: segment, source_segment_version: 1, state: "unconfirmed" },
+    ]) expect(() => parseCreatorReview({ ...view, translation_progress: [progress] }, session)).toThrow();
+    const rejected = { ...view, status: "translation_pending",
+      review_queue: { ...view.review_queue, status: "not_ready", items: [] },
+      working: { ...view.working, blockers: [{ source_segment_id: segment, code: "translation_retry_required" }] },
+    };
+    expect(renderCreatorReview({ phase: "ready", view: parseCreatorReview(rejected, session), notice: "" }))
+      .toContain("Translation needs a new attempt");
+  });
+
   it("shows the actual bilingual review contract, explicit decisions and unassigned speakers", () => {
     const parsed = parseCreatorReview(view, session);
     const html = renderCreatorReview({ phase: "ready", view: parsed, notice: "" });

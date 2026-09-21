@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from cosmaneura_scribe.captured_processing import CapturedProcessingUnavailable
 from cosmaneura_scribe.creator_review_routes import CreatorReviewRuntime
 from cosmaneura_scribe.main import app
 from cosmaneura_scribe.service_auth import (
@@ -154,3 +155,62 @@ async def test_review_body_cannot_supply_creator_or_omit_retry_identity(review):
     )
     assert result.status_code == 422
     assert await flow.counts() == (1, 1, 0)
+
+
+async def test_read_only_progress_tracks_current_jobs_without_replaying_calls(review, monkeypatch):
+    flow, _ = review
+    client, path, headers = flow.capture.client, _path(flow), _headers(flow)
+    await flow.capture.record()
+    await flow.capture.process()
+    await flow.runtime._jobs.prepare_dispatch(**flow.scope)
+
+    async def progress():
+        response = await client.get(path, headers=headers)
+        assert response.status_code == 200
+        view = response.json()
+        spanish = next(row for row in view["source"]["segments"] if row["source_locale"] == "es-US")
+        for item in view["translation_progress"]:
+            assert item["source_segment_id"] == spanish["source_segment_id"]
+            assert item["source_segment_version"] == spanish["source_segment_version"]
+            assert set(item) == {"source_segment_id", "source_segment_version", "state"}
+        return [item["state"] for item in view["translation_progress"]]
+
+    assert await progress() == ["queued"]
+    assert flow.translator.calls == [] and await flow.counts() == (1, 0, 0)
+    flow.translator.block = True
+    saved, publish = asyncio.Event(), asyncio.Event()
+    original = flow.runtime._committer.commit_completed_translation_job
+
+    class PausedCommitter:
+        async def commit_completed_translation_job(self, job):
+            saved.set()
+            await publish.wait()
+            return await original(job)
+
+    async def lose_marker(*args, **kwargs):
+        raise OSError("synthetic marker unavailable")
+
+    monkeypatch.setattr(flow.runtime, "_committer", PausedCommitter())
+    monkeypatch.setattr(flow.runtime._jobs, "mark_attempt_committed", lose_marker)
+    task = asyncio.create_task(flow.runtime.process(**flow.scope))
+    try:
+        await asyncio.wait_for(flow.translator.started.wait(), timeout=5)
+        assert await progress() == ["unconfirmed"]
+        assert await progress() == ["unconfirmed"]
+        assert len(flow.translator.calls) == 1
+        flow.translator.release.set()
+        await asyncio.wait_for(saved.wait(), timeout=5)
+        assert await progress() == ["result_saved"]
+        publish.set()
+        with pytest.raises(CapturedProcessingUnavailable):
+            await asyncio.wait_for(task, timeout=5)
+        # The published attempt is authoritative even when its job marker lags.
+        assert await progress() == []
+        assert len(flow.translator.calls) == 1 and await flow.counts() == (1, 1, 0)
+        assert (await client.get(path, headers=_headers(
+            flow, **{"X-Scribe-Creator-Actor-ID": "other"}
+        ))).status_code == 404
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

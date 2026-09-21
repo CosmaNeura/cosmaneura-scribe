@@ -186,7 +186,7 @@ export function renderCreatorReview(state: CreatorReviewState): string {
   const ready = view?.working?.note_ready === true;
   const subtitle = ready
     ? "English transcript ready"
-    : view === null ? "Your recording" : statusCopy(view.status);
+    : view === null ? "Your recording" : reviewStatusCopy(view);
   return `<section class="creator-review" aria-label="Your recording and transcript">
     <header class="creator-review-header">
       <div><p class="creator-eyebrow">Cosmaneura Scribe</p><h1>Review your recording</h1>
@@ -198,7 +198,9 @@ export function renderCreatorReview(state: CreatorReviewState): string {
       <strong>${escape(subtitle)}</strong>
       <p>${escape(state.notice || (ready
         ? "Review is complete. Your transcript is ready for note preparation."
-        : "Review the proposed English before it is used for a note."))}</p>
+        : view?.status === "translation_pending"
+          ? "The transcript is not ready for a note. Check the messages below for what is still needed."
+          : "Review the proposed English before it is used for a note."))}</p>
     </div>
     ${state.phase === "retry" ? `<button type="button" data-review-action="retry">Retry the same decision</button>` : ""}
     ${state.phase === "loading" ? '<p aria-busy="true">Loading the current recording…</p>' : ""}
@@ -213,6 +215,7 @@ function renderTranscript(view: CreatorReviewView, phase: Phase): string {
   const reviews = new Map((view.review_queue?.items ?? []).map((item) => [item.source_segment_id, item]));
   const resolved = new Map(working.segments.map((item) => [item.source_segment_id, item]));
   const blockers = working.blockers ?? [];
+  const progress = new Map((view.translation_progress ?? []).map((item) => [item.source_segment_id, item.state]));
   return `<div class="creator-transcript-heading"><h2>Transcript</h2>
     <span>Version ${working.working_transcript_version}</span></div>
     <p class="creator-help">English speech stays in English. Spanish is shown beside its translation.
@@ -221,6 +224,7 @@ function renderTranscript(view: CreatorReviewView, phase: Phase): string {
       const review = reviews.get(segment.source_segment_id);
       const english = resolved.get(segment.source_segment_id);
       const issues = blockers.filter((blocker) => blocker.source_segment_id === segment.source_segment_id);
+      const pending = progress.get(segment.source_segment_id);
       const englishText = review?.translated_content ?? english?.content;
       const spanish = segment.source_locale === "es-US";
       return `<li class="creator-segment">
@@ -232,13 +236,38 @@ function renderTranscript(view: CreatorReviewView, phase: Phase): string {
           ${spanish ? `<div><h3>English · ${review ? "proposed translation" : english?.resolution === "spanish_translation" ? "accepted translation" : "not ready"}</h3>
             <p lang="en">${englishText == null ? "Translation is not ready for use." : escape(englishText)}</p></div>` : ""}
         </div>
-        ${review === undefined ? issues.map((issue) => `<p class="creator-blocker">${escape(blockerCopy(issue.code))}</p>`).join("") : `
+        ${review === undefined ? (pending === undefined
+          ? issues.map((issue) => `<p class="creator-blocker">${escape(blockerCopy(issue.code))}</p>`).join("")
+          : `<p class="creator-blocker">${escape(progressCopy(pending))}</p>`) : `
           <div class="creator-review-actions">
             <button type="button" data-review-action="accepted" data-segment="${escape(segment.source_segment_id)}" ${phase === "saving" ? "disabled" : ""}>Accept English translation</button>
             <button type="button" class="creator-reject" data-review-action="rejected" data-segment="${escape(segment.source_segment_id)}" ${phase === "saving" ? "disabled" : ""}>Reject translation</button>
           </div>`}
       </li>`;
     }).join("")}</ol>`;
+}
+
+function reviewStatusCopy(view: CreatorReviewView): string {
+  if (view.status === "quality_blocked") return statusCopy(view.status);
+  const progress = view.translation_progress ?? [];
+  if (progress.some((item) => item.state === "unconfirmed")) return "Translation result unconfirmed";
+  const progressing = new Set(progress.map((item) => item.source_segment_id));
+  if (view.working?.blockers.some((item) => !progressing.has(item.source_segment_id)
+    && ["translation_retry_required", "translation_failed"].includes(item.code))) {
+    return "Translation needs a new attempt";
+  }
+  if (progress.length > 0 && progress.every((item) => item.state === "result_saved")) {
+    return "Preparing translation review";
+  }
+  return statusCopy(view.status);
+}
+
+function progressCopy(state: "queued" | "unconfirmed" | "result_saved"): string {
+  return {
+    queued: "Waiting for this translation to start. Refresh to check progress.",
+    unconfirmed: "This translation request has no confirmed result yet. Refresh later; a second request will not be sent automatically.",
+    result_saved: "The translation result is saved and is being prepared for your review.",
+  }[state];
 }
 
 function statusCopy(status: string): string {

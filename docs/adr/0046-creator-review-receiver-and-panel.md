@@ -91,3 +91,21 @@ native bridge and Core entry are explicit fixtures. This qualifies component/API
 interaction and document-loss recovery, not actual native Keychain, recorder
 hardware, Core SOAP or hosted sign-in. Those bindings remain open; the exact next
 Core consumer packet is `docs/beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md`.
+
+## Read-only translation progress
+
+The review view additionally returns optional `translation_progress` metadata
+for current-source Spanish segments: `queued`, `unconfirmed` or `result_saved`.
+These are storage observations, not proof of a running worker, a failed call,
+translation fidelity or retry authority. Reading never obtains a job key,
+decrypts a job, reserves work, calls a provider or dispatches a worker.
+
+The repository rechecks live creator/source scope in the same transaction as
+the transcript view. Tenant/session/source predicates exclude prior sources;
+published attempts suppress a lagging job marker. Only segment ID/version and
+the fixed state leave the service. The client rejects mismatched, duplicate or
+already-published segment progress. Existing quality/review/English readiness
+remain authoritative. Rejected or failed work is labeled as requiring a new
+attempt; it is never silently replayed. No database migration, new route or
+runtime activation is introduced. Older views without this optional field keep
+their existing generic pending state.

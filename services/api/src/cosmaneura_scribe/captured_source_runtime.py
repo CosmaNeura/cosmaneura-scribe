@@ -17,12 +17,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .azure_speech_source import normalize_azure_source
+from .creator_review_contract_v1 import CreatorTranslationProgressV1
 from .normalized_source_persistence import (
     CAPTURED_NORMALIZATION_PROFILE_ID,
     CAPTURED_TRANSCRIPTION_ADAPTER_ID,
     CAPTURED_TRANSCRIPTION_MODEL_PROFILE_ID,
     CapturedPreSourceStatus,
     CapturedSessionCreate,
+    ConfiguredExternalSessionStatus,
     ConfiguredSourceSessionRecord,
     NormalizedSourceAcceptance,
     consent_authorizes_versioned_session,
@@ -31,6 +33,7 @@ from .postgres_repository import PostgresRepository
 from .repository import CaptureIngestModeError
 from .schemas import Transcript, TranscriptionJob, TranscriptionJobStatus
 from .session_state_v1 import SessionIngestMode
+from .transcript_constraints import MAX_TRANSCRIPT_SEGMENTS
 from .transcription import SttResult
 from .working_transcript_persistence import WorkingTranscriptPublication
 
@@ -95,6 +98,60 @@ class CapturedSourceRepository(PostgresRepository):
         session, now = locked
         self._require_live_normalized_source_session(session, now)
         return session
+
+    async def creator_translation_progress(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        creator_actor_id: str,
+        source_version: int,
+    ) -> tuple[CreatorTranslationProgressV1, ...]:
+        """Read outstanding metadata under the same live creator/source lock.
+
+        No ciphertext, key service, reservation, worker or model is accessed.
+        A published attempt wins over a lagging job commit marker.
+        """
+        session = await self.lock_live_capture(tenant_id, session_id)
+        if (
+            type(source_version) is not int
+            or session.creator_actor_id != creator_actor_id
+            or session.current_source_transcript_version != source_version
+            or session.status == ConfiguredExternalSessionStatus.HANDED_OFF
+        ):
+            raise CapturedSourceUnavailable()
+        rows = (
+            await self._session.execute(
+                text("""
+                SELECT job.source_segment_id, job.source_segment_version,
+                       CASE job.status
+                         WHEN 'reserved' THEN 'queued'
+                         WHEN 'provider_call_started' THEN 'unconfirmed'
+                         WHEN 'provider_result_stored' THEN 'result_saved'
+                       END AS state
+                FROM encrypted_translation_jobs AS job
+                WHERE job.tenant_id = :tenant AND job.session_id = :session
+                  AND job.source_transcript_version = :version
+                  AND job.status IN ('reserved', 'provider_call_started', 'provider_result_stored')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM normalized_translation_attempts AS attempt
+                    WHERE attempt.tenant_id = job.tenant_id
+                      AND attempt.session_id = job.session_id
+                      AND attempt.translation_id = job.translation_id
+                  )
+                ORDER BY job.source_segment_id
+                LIMIT :limit
+            """),
+                {"tenant": tenant_id, "session": session_id, "version": source_version,
+                 "limit": MAX_TRANSCRIPT_SEGMENTS + 1},
+            )
+        ).mappings().all()
+        if (
+            len(rows) > MAX_TRANSCRIPT_SEGMENTS
+            or len({row["source_segment_id"] for row in rows}) != len(rows)
+        ):
+            raise CapturedSourceUnavailable()
+        return tuple(CreatorTranslationProgressV1.model_validate(dict(row)) for row in rows)
 
     async def reconcile_exhausted_speech(
         self, tenant_id: UUID, session_id: UUID, *, max_attempts: int
