@@ -418,3 +418,89 @@ def test_durable_job_rejects_completed_result_from_different_scope() -> None:
             completed_job=adapter_command_job,
             provider_result_stored_at=NOW,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", [
+    "source_content", "source_transcript_version", "source_segment_version",
+    "previous_translation_version", "reserved_at",
+])
+async def test_changed_reservation_at_claim_cannot_reach_provider(mutation: str) -> None:
+    class ChangedClaimStore(_MemoryDurableStore):
+        async def claim_provider_call(self, *args, **kwargs):
+            claimed = await super().claim_provider_call(*args, **kwargs)
+            assert claimed is not None
+            fields = {
+                "source_content": {"source_content": "Otro texto sintetico."},
+                "source_transcript_version": {"expected_source_transcript_version": 4},
+                "source_segment_version": {"expected_source_segment_version": 4},
+                "previous_translation_version": {"expected_previous_translation_version": 2},
+            }
+            if mutation == "reserved_at":
+                return replace(claimed, reserved_at=claimed.reserved_at - timedelta(seconds=1))
+            return replace(claimed, reservation=replace(claimed.reservation, **fields[mutation]))
+
+    store = ChangedClaimStore(_reserved_record())
+    adapter = _CountingAdapter()
+    committer = _RecordingCommitter()
+
+    with pytest.raises(ValueError, match="^durable_translation_job_reservation_conflict$"):
+        await _execute(store, adapter, committer)
+
+    assert adapter.call_count == 0
+    assert committer.fingerprints == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transition", ["lost_claim", "stored_result", "committed"])
+async def test_each_store_transition_preserves_reserved_source(transition: str) -> None:
+    class ChangedTransitionStore(_MemoryDurableStore):
+        def changed(self, record):
+            return replace(
+                record,
+                reservation=replace(record.reservation, source_content="Otro texto sintetico."),
+            )
+
+        async def claim_provider_call(self, *args, **kwargs):
+            claimed = await super().claim_provider_call(*args, **kwargs)
+            if transition == "lost_claim":
+                assert claimed is not None
+                self.record = self.changed(claimed)
+                return None
+            return claimed
+
+        async def store_provider_result(self, *args, **kwargs):
+            stored = await super().store_provider_result(*args, **kwargs)
+            return self.changed(stored) if transition == "stored_result" else stored
+
+        async def mark_attempt_committed(self, *args, **kwargs):
+            committed = await super().mark_attempt_committed(*args, **kwargs)
+            return self.changed(committed) if transition == "committed" else committed
+
+    store = ChangedTransitionStore(_reserved_record())
+    adapter = _CountingAdapter()
+    committer = _RecordingCommitter()
+
+    with pytest.raises(ValueError, match="^durable_translation_job_reservation_conflict$"):
+        await _execute(store, adapter, committer)
+
+    assert adapter.call_count == (0 if transition == "lost_claim" else 1)
+    assert len(committer.fingerprints) == (1 if transition == "committed" else 0)
+
+
+@pytest.mark.asyncio
+async def test_unchanged_competing_claim_does_not_repeat_provider() -> None:
+    class LostClaimStore(_MemoryDurableStore):
+        async def claim_provider_call(self, *args, **kwargs):
+            await super().claim_provider_call(*args, **kwargs)
+            return None
+
+    store = LostClaimStore(_reserved_record())
+    adapter = _CountingAdapter()
+    committer = _RecordingCommitter()
+
+    receipt = await _execute(store, adapter, committer)
+
+    assert receipt.disposition == TranslationExecutionDisposition.PROVIDER_CALL_NOT_REPLAYED
+    assert adapter.call_count == 0
+    assert committer.fingerprints == []

@@ -52,6 +52,15 @@ first adapter change has no route, default setting, schema, worker activation or
 environment mutation. Recovery leaves it unconfigured. Source review and exact
 artifact evidence remain prerequisites to promotion.
 
+The follow-on translation-worker integrity fix stays within the dormant local
+contract: reject a store response that changes the initially read reservation's
+source content, lineage or timestamp, before provider work or writer acceptance
+as applicable. Qualify competing claims and stored-result recovery with fixed
+synthetic tests, then run the complete disposable-database suite. No new store,
+schema, route, consent/auth contract, provider call or runtime activation is part
+of this fix. The production encrypted-store and current-authority admission gates
+remain separate requirements; a matching fingerprint does not establish either.
+
 Initial observations: the physical iPhone 12 is paired, iOS 26.7, Developer Mode
 enabled; Xcode 27 reports its developer disk image cannot be mounted. One Apple
 Development identity is available; no distribution identity was listed. The

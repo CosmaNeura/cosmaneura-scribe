@@ -298,6 +298,19 @@ def _require_job_identity(
         raise ValueError("durable_translation_job_scope_conflict")
 
 
+def _require_reservation_unchanged(
+    record: DurableTranslationJobRecordV1,
+    *,
+    reservation_fingerprint: str,
+    reserved_at: datetime,
+) -> None:
+    if (
+        record.reservation_fingerprint() != reservation_fingerprint
+        or record.reserved_at != reserved_at
+    ):
+        raise ValueError("durable_translation_job_reservation_conflict")
+
+
 async def execute_reserved_translation_job(
     *,
     store: DurableTranslationJobStore,
@@ -319,6 +332,8 @@ async def execute_reserved_translation_job(
         session_id=session_id,
         translation_id=translation_id,
     )
+    reservation_fingerprint = record.reservation_fingerprint()
+    reserved_at = record.reserved_at
 
     provider_called = False
     if record.status == DurableTranslationJobStatus.RESERVED:
@@ -339,6 +354,11 @@ async def execute_reserved_translation_job(
                 tenant_id=tenant_id,
                 session_id=session_id,
                 translation_id=translation_id,
+            )
+            _require_reservation_unchanged(
+                record,
+                reservation_fingerprint=reservation_fingerprint,
+                reserved_at=reserved_at,
             )
             if (
                 record.status != DurableTranslationJobStatus.PROVIDER_CALL_STARTED
@@ -373,6 +393,11 @@ async def execute_reserved_translation_job(
         session_id=session_id,
         translation_id=translation_id,
     )
+    _require_reservation_unchanged(
+        record,
+        reservation_fingerprint=reservation_fingerprint,
+        reserved_at=reserved_at,
+    )
 
     if record.status == DurableTranslationJobStatus.PROVIDER_CALL_STARTED:
         return _receipt(
@@ -400,6 +425,11 @@ async def execute_reserved_translation_job(
         tenant_id=tenant_id,
         session_id=session_id,
         translation_id=translation_id,
+    )
+    _require_reservation_unchanged(
+        committed,
+        reservation_fingerprint=reservation_fingerprint,
+        reserved_at=reserved_at,
     )
     if (
         committed.status != DurableTranslationJobStatus.ATTEMPT_COMMITTED

@@ -426,6 +426,72 @@ worker configuration and connection to the newer capture integration remain
 activation prerequisites. Do not use the in-memory test store as a production
 substitute or treat the real adapter smoke test as a working clinical pipeline.
 
+### Follow-on: preserve translation reservation through worker transitions
+
+A local review found that the dormant worker checked returned tenant/session/job
+IDs but did not compare the protected reservation across store transitions.
+An inconsistent store could return different source text or versions under those
+same IDs; the old worker could call the provider before detecting a mismatch, or
+accept the changed reservation on later result/recovery paths.
+
+The worker now pins the initially read reservation fingerprint and timestamp,
+rejecting changes at claim, competing-claim reload, stored result and committed
+acknowledgement. Claim changes fail before a provider call; stored-result changes
+fail before the attempt writer. Nine new tests cover five claim mutations, three
+later transition mutations and unchanged competing-claim recovery. The eight
+negative cases reproduced failures before the fix; all pass afterward. Existing
+database-retry recovery still reuses the stored result without calling the
+provider again. No protected source or fingerprint is included in the new error.
+
+Focused result: **40 passed**. Full result: **840 passed, zero skipped, in 43.15
+seconds**, including the existing PostgreSQL migration/restricted-role/recovery
+suite. Ruff, strict Pyright, ADR numbering and `git diff --check` pass. The full
+run emitted existing dependency deprecation warnings and old pytest temporary-
+directory cleanup warnings; no manual cleanup of those directories was attempted.
+Future full runs should select a new task-owned `--basetemp` to avoid pytest's
+shared default temporary-history cleanup.
+
+Database tests used only a newly created PostgreSQL 16.15 cluster at
+`/private/tmp/scribe-reservation-qualification.lgdCAk/data`, private Unix socket,
+no TCP listener, database `scribe_reservation_test`. The first sandboxed init
+failed on macOS shared-memory access and removed its own incomplete data directory;
+initialization outside the sandbox then succeeded after verifying that directory
+was absent. Before tests, SQL verified the exact data directory and empty
+`listen_addresses`. After teardown only `alembic_version` remained in `public`.
+The exact server PID/data directory was verified and the server stopped; files
+were retained. No shared database, other checkout, service configuration, provider
+call or API route was changed by this follow-on.
+
+This is a store-response integrity check, **not** a production encrypted store,
+authentication of the initial read, current consent authorization, or full
+bilingual runtime integration. Those gates remain open. Read-only inspection of
+the newer Scribe integration still finds only the same durable-store protocol,
+not a reusable production implementation.
+
+### Next local integration packet — scope extension requested, not approved
+
+ADR 0037's earlier pre-integration restriction explicitly excludes a production
+job-store schema. The completed Speech execution-method exception did not remove
+that restriction. The next proposed extension is limited to the existing local,
+unpushed Scribe branch:
+
+1. Implement encrypted durable translation reservation/result storage using
+   existing dependencies and key-custody interfaces; no plaintext test-store
+   substitute in runtime.
+2. Add only the Scribe-local additive storage migration and qualify it in a new
+   disposable local database. Do not apply it to existing or cloud databases.
+   Account for the newer integration checkout's migration IDs before selection.
+3. Atomically recheck current consent, tenant/session and exact source lineage
+   when claiming provider work, with bounded handling of ambiguous outcomes and
+   no automatic repeat of an uncertain provider call.
+4. Verify process-restart, competing claim, stale source/revocation, wrong-tenant,
+   tamper and lost-acknowledgement cases with synthetic data; preserve the existing
+   immutable attempt and creator-review flow for both standalone and OS callers.
+5. Keep routes, workers and live services disabled; no Core/shared Auth/IAM/Zoom/
+   staging edits, cloud actions, deployment, push or PR. Actual phone identity,
+   reachable HTTPS services and distribution signing remain separate acceptance
+   requirements.
+
 Next sequence:
 
 1. The distinct W13 app is now installed and launched on the physical iPhone.

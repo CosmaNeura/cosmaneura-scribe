@@ -31,6 +31,16 @@ Every record returned by the store is rechecked against the requested tenant, se
 translation identity before a provider call. The returned provider result must match the claimed
 scope and exact completed-job fingerprint.
 
+The worker also pins the initially read reservation fingerprint and reservation
+timestamp for the duration of each execution. Every later store response must
+retain the same protected source content, source lineage and reservation time,
+including a reload after losing a competing claim and the final commit marker.
+A changed claim is rejected before any provider call; a changed result record is
+rejected before the attempt writer. Errors contain only a fixed conflict code,
+never the content or its fingerprint. This detects inconsistent store responses;
+it does not authenticate the first read or replace encrypted storage and current
+consent/source authorization at atomic call admission.
+
 After `provider_result_stored`, any retry calls only the idempotent database writer and uses the
 same completed command. A lost acknowledgement while marking the job committed also replays only
 the writer. If execution is observed in `provider_call_started` without a stored result, the worker
