@@ -1,0 +1,77 @@
+import { describe, expect, it, vi } from "vitest";
+import { HttpCreatorReviewApi, parseCreatorReview } from "./creator-review-api";
+import { renderCreatorReview } from "./creator-review-panel";
+
+const session = "00000000-0000-4000-8000-000000000001";
+const segment = "00000000-0000-4000-8000-000000000002";
+const working = "00000000-0000-4000-8000-000000000003";
+const translation = "00000000-0000-4000-8000-000000000004";
+const view = {
+  schema_version: "1.0", session_id: session, status: "review_required",
+  source: { source_transcript_version: 1, segments: [{
+    source_segment_id: segment, source_segment_version: 1, source_locale: "es-US",
+    speaker_role: "unknown", start_ms: 0, end_ms: 900, content: "No tengo fiebre. <script>bad</script>",
+  }] },
+  working: {
+    source_transcript_version: 1, working_transcript_id: working, working_transcript_version: 2,
+    note_ready: false, segments: [{ source_segment_id: segment, source_segment_version: 1,
+      resolution: "unresolved", content: null }],
+    blockers: [{ source_segment_id: segment, code: "translation_review_required" }],
+  },
+  review_queue: {
+    schema_version: "1.0", session_id: session, source_transcript_version: 1,
+    working_transcript_id: working, working_transcript_version: 2, status: "review_required",
+    items: [{ source_segment_id: segment, source_segment_version: 1,
+      translation_id: translation, translation_version: 1, source_locale: "es-US", target_locale: "en-US",
+      source_content: "No tengo fiebre. <script>bad</script>", translated_content: "I do not have a fever." }],
+  },
+};
+
+describe("creator review surface", () => {
+  it("shows the actual bilingual review contract, explicit decisions and unassigned speakers", () => {
+    const parsed = parseCreatorReview(view, session);
+    const html = renderCreatorReview({ phase: "ready", view: parsed, notice: "" });
+    expect(html).toContain("Spanish · original");
+    expect(html).toContain("English · proposed translation");
+    expect(html).toContain("I do not have a fever.");
+    expect(html).toContain("Accept English translation");
+    expect(html).toContain("Reject translation");
+    expect(html).toContain("Speaker not assigned");
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("English transcript ready for Core");
+  });
+
+  it("rejects cross-session, inconsistent readiness and changed review lineage", () => {
+    expect(() => parseCreatorReview(view, working)).toThrow();
+    expect(() => parseCreatorReview({ ...view, working: { ...view.working, note_ready: true } }, session)).toThrow();
+    expect(() => parseCreatorReview({ ...view, review_queue: { ...view.review_queue, working_transcript_version: 3 } }, session)).toThrow();
+  });
+
+  it("hides protected content while a save is uncertain and offers the same-decision retry", () => {
+    const html = renderCreatorReview({ phase: "retry", view: null, notice: "Save unconfirmed." });
+    expect(html).toContain("Retry the same decision");
+    expect(html).not.toContain("No tengo fiebre");
+    expect(html).not.toContain('data-review-action="accepted"');
+  });
+
+  it("uses only the supplied authenticated transport and forwards the exact retry key", async () => {
+    const transport = vi.fn(async () => new Response(JSON.stringify(view), {
+      headers: { "content-type": "application/json" },
+    }));
+    const api = new HttpCreatorReviewApi(session, transport);
+    expect((await api.read()).session_id).toBe(session);
+    expect(transport).toHaveBeenCalledWith(`/v1/captured-sessions/${session}/review`, { method: "GET" });
+    const request = {
+      schema_version: "1.0" as const, expected_source_transcript_version: 1,
+      source_segment_id: segment, expected_source_segment_version: 1,
+      translation_id: translation, expected_translation_version: 1, decision: "accepted" as const,
+    };
+    transport.mockResolvedValueOnce(new Response(JSON.stringify({
+      schema_version: "1.0", session_id: session, review_id: translation, saved: true,
+    }), { headers: { "content-type": "application/json" } }));
+    await api.decide(request, "review-stable-key");
+    expect(transport).toHaveBeenLastCalledWith(`/v1/captured-sessions/${session}/review`, {
+      method: "POST", body: request, key: "review-stable-key",
+    });
+  });
+});

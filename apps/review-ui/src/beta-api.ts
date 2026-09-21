@@ -123,11 +123,14 @@ export class HttpBetaApi implements BetaApi {
   }
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+export async function readBoundedJson(
+  response: Response,
+  maxBytes: number = MAX_RESPONSE_BYTES,
+): Promise<unknown> {
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     const length = Number(declaredLength);
-    if (!Number.isSafeInteger(length) || length < 0 || length > MAX_RESPONSE_BYTES) {
+    if (!Number.isSafeInteger(length) || length < 0 || length > maxBytes) {
       throw new BetaApiError("invalid_response");
     }
   }
@@ -141,7 +144,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
       const result = await reader.read();
       if (result.done) break;
       totalBytes += result.value.byteLength;
-      if (totalBytes > MAX_RESPONSE_BYTES) {
+      if (totalBytes > maxBytes) {
         await reader.cancel();
         throw new BetaApiError("invalid_response");
       }
