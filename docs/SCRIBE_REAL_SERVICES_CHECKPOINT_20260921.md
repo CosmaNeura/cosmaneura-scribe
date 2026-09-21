@@ -29,7 +29,7 @@ noise, omissions, or end-to-end Core notes. Those remain acceptance work.
 | --- | --- | --- |
 | Real auth/token custody | Reused selected W13 Clerk/Keychain candidate and initiated owner sign-in. Timeout kept workspace closed. No password/token was read or recorded. | Successful owner sign-in, organization/audience verification, restart/refresh, revocation/logout and native-only custody evidence on Mac and iPhone. No new IdP/auth path is proposed. |
 | Real STT/model/translation | Concrete Azure GPT-4.1 translator now implements the existing adapter interface. Final real run returned seven HTTP 200/reference agreements and one HTTP 400 rejection. Azure phrase-language evidence now survives into an opt-in normalized-source bridge. The existing private Speech job passed its live disabled-state check. | Enabled private Speech inference; admitted provider/model profiles; durable normalized receiver/translation/review integration in the current standalone and OS paths. No runtime route or worker registers the new bridge/translator yet. |
-| Physical iPhone | Arm64 device builds, Release-configuration archives and an installable development IPA succeeded; the exported app's signature, entitlements and paired-device profile membership verify. The owner connected the physical phone; Apple confirms wired pairing and Developer Mode. | Apple still reports `passcodeRequired=true`; developer-image mount and installed-app inspection fail with the device-locked error. No install or physical recording was completed. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
+| Physical iPhone | Verified development package installed and launched on the physical iPhone 12 after owner passcode entry. Exact bundle was absent before installation, installed version/build is `1.0/1`, and its process was observed running. Signature and artifact hashes reverified. | Rendered UI, successful Tester login, token custody, recording/interruption/recovery and end-to-end services remain unqualified. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
 | Source fidelity | Fixed tests cover negation, dose, self-correction, uncertainty, pregnancy, allergy, attribution and quoted instruction text. Golden references were defined before service calls. | Quoted-instruction input is rejected; safe blocked/review UX must be exercised. Full consented synthetic audio/translation/Core-note loop and human review remain. Do not change references or bypass provider filtering merely to get a pass. |
 | Signed/reproducible artifacts | Canonical-path clean builds now match compiled payloads and UUIDs; signatures, public entitlements and all 332 source inputs verify. The exact exported development IPA, source and symbols are retained outside temporary storage. | Signing/ZIP bytes still vary; cross-machine/hermetic reproducibility is unproven. No Apple Distribution identity, TestFlight acceptance, desktop notarization, cross-client installer/update acceptance or production artifact set was established. |
 
@@ -214,12 +214,39 @@ matching dSYMs, export options, translation evidence, README and SHA256SUMS.
   2027-09-21 12:20:20 UTC; paired-iPhone membership verified without retaining its
   device list in the evidence record.
 
-This is still the W13 authentication qualification snapshot, whose real
+At the archive checkpoint, this remained the W13 authentication qualification snapshot, whose real
 STT/model/capture service wiring is disabled. Translation service evidence is a
 separate artifact, not proof of connection to this app. No installation, physical
 recording, successful login, TestFlight upload or new Apple account configuration
-was performed in this continuation. Promote the exact verified package for its
+was performed in that archive continuation. Promote the exact verified package for its
 scoped trial; do not rebuild and call it the same artifact.
+
+### Follow-on: physical iPhone installation and launch
+
+After the owner entered the passcode, Apple's device service reported
+`passcodeRequired=false`. The exact `com.cosmasos.synthetic.w13` installed-app
+query succeeded and returned no app, clearing both the lock and overwrite gates.
+All seven existing package checksums passed; the exported executable retained
+SHA-256 `94b8dad6f7e38e4ec547b33e72a404a22547d978bba095ba9e26d8d33fa55700`.
+Strict deep signature verification passed again using macOS trust services.
+
+The preserved **exported** app was installed through Apple's native device
+service. Readback confirms **CosmasOS Synth W13**, bundle
+`com.cosmasos.synthetic.w13`, version/build `1.0/1`. The launch command succeeded;
+a process query filtered to the newly installed bundle path observed PID 21634.
+No existing app was replaced, data reset, recording started, console attached or
+credential/token output collected. No new build, profile, distribution signature
+or upload was performed. The earlier locked-device evidence remains preserved;
+`iphone-installation.json` in the artifact package records this later progress.
+Its SHA-256 is
+`4b669a5adaf828f56d773dc4d5ea2789b2d036fcf71a7c92ae1287bbf694fa68`.
+
+This is physical installation/process evidence, not an observed rendered screen
+or completed native-auth trial. The owner was asked to use the existing Tester
+account through the app's sign-in UI and report the resulting screen/error.
+Actual session claims, Keychain restoration/refresh/logout, reachable backend,
+recording and full service acceptance remain open. The W13 snapshot still has
+STT/model/capture service wiring disabled.
 
 ## Local verification and next acceptance sequence
 
@@ -274,11 +301,10 @@ substitute or treat the real adapter smoke test as a working clinical pipeline.
 
 Next sequence:
 
-1. Owner enters the passcode directly on the USB-connected phone and keeps its
-   Home Screen awake. Apple currently reports it locked despite wired pairing.
-   Preserve existing apps/drafts; check installed app identity before installing
-   the distinct candidate. Then complete selected test-account sign-in and
-   qualify real token custody. Never ask the owner to send a passcode or password.
+1. The distinct W13 app is now installed and launched on the physical iPhone.
+   Complete selected test-account sign-in and qualify real token custody, restart
+   and logout. Preserve all existing apps/drafts and enter credentials only in
+   native/hosted UI; never send a passcode or password to the agent.
 2. Execute the already-approved bounded private Speech enablement through a
    qualified private saved-plan path, retaining all unrelated deployed state.
    Its disabled-state live test has passed. Keep clinical transcription disabled
