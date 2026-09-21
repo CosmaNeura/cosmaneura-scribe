@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+import httpx
 import pytest
 from cosmaneura_scribe.creator_review_contract_v1 import (
     CreatorReviewQueueStatus,
@@ -19,7 +20,9 @@ from cosmaneura_scribe.derived_writer_transactions import (
 from cosmaneura_scribe.external_transcript_v1 import (
     NormalizedSourceTranscriptRequestV1,
     SourceLocale,
+    TranslationOutcome,
     TranslationReviewDecision,
+    WorkingTranscriptBlockerCode,
 )
 from cosmaneura_scribe.handoff import to_master_platform_payload_from_working_transcript
 from cosmaneura_scribe.normalized_source_persistence import (
@@ -39,10 +42,16 @@ from cosmaneura_scribe.translation_attempt_persistence import (
     TranslationAttemptPersistenceError,
     TranslationAttemptWriteDisposition,
 )
+from cosmaneura_scribe.translation_fidelity import SYNTHETIC_CASES
 from cosmaneura_scribe.translation_job_v1 import CompletedTranslationJobV1
+from cosmaneura_scribe.translation_review_persistence import (
+    TranslationReviewPersistenceCode,
+    TranslationReviewPersistenceError,
+)
 from cosmaneura_scribe.working_transcript_persistence import (
     derive_persisted_working_transcript,
 )
+from test_azure_translation import adapter as _azure_adapter
 from test_derived_writer_transactions import _FaultInjectingProvider
 from test_normalized_source_persistence import (
     _consent,
@@ -335,3 +344,89 @@ async def test_completed_provider_result_fails_closed_after_authority_or_lineage
         key[:2] == (tenant_id, draft.id)
         for key in provider.normalized_translation_attempts
     )
+
+
+@pytest.mark.asyncio
+async def test_content_filter_rejection_preserves_source_and_blocks_note_handoff() -> None:
+    case = next(item for item in SYNTHETIC_CASES if item.case_id == "quoted_instruction")
+    provider = InMemoryRepository()
+    tenant_id = uuid4()
+    consent = _consent()
+    draft = _draft(consent)
+    await _seed_configured_session(provider, tenant_id, consent, draft)
+    async with provider.transaction(tenant_id) as store:
+        assert await store.accept_normalized_source_transcript(
+            tenant_id, draft.id, idempotency_key="synthetic-filter-source",
+            request=_request(spanish_content=case.source),
+        )
+        source = await store.get_current_normalized_source_transcript(tenant_id, draft.id)
+        assert await store.publish_current_working_transcript(tenant_id, draft.id)
+    assert source is not None
+    spanish = next(
+        item for item in source.segments if item.source_locale == SourceLocale.SPANISH_US
+    )
+    calls = 0
+
+    def filtered_response(request):
+        nonlocal calls
+        calls += 1
+        assert case.source in request.content.decode()
+        return httpx.Response(400, json={"error": {
+            "code": "content_filter", "innererror": {
+                "code": "ResponsibleAIPolicyViolation",
+                "content_filter_result": {"jailbreak": {"detected": True, "filtered": True}},
+            },
+        }})
+
+    prepared = await prepare_spanish_to_english_attempt(
+        _azure_adapter(filtered_response),
+        ReservedSpanishTranslation(
+            translation_id=uuid4(), expected_source_transcript_version=1,
+            source_segment_id=spanish.source_segment_id,
+            expected_source_segment_version=spanish.source_segment_version,
+            expected_previous_translation_version=0,
+            source_locale=spanish.source_locale, source_content=spanish.content,
+        ),
+    )
+    assert calls == 1
+    assert prepared.outcome == TranslationOutcome.FAILED
+    assert prepared.failure_code == "provider_rejected" and prepared.content is None
+    completed = CompletedTranslationJobV1.from_command(
+        tenant_id=tenant_id, session_id=draft.id, command=prepared,
+    )
+    publication = await commit_translation_attempt_and_publish(
+        provider, tenant_id, draft.id,
+        CompletedTranslationJobV1.model_validate_json(completed.model_dump_json()).to_command(),
+    )
+    assert publication is not None
+    assert publication.status == ConfiguredExternalSessionStatus.TRANSLATION_PENDING
+    working = provider.normalized_working_transcripts[(
+        tenant_id, draft.id, publication.current_working_transcript.working_transcript_version,
+    )].working_transcript
+    assert not working.note_ready
+    assert WorkingTranscriptBlockerCode.TRANSLATION_FAILED in {
+        blocker.code for blocker in working.blockers
+    }
+    async with provider.transaction(tenant_id) as store:
+        assert await store.get_current_normalized_source_transcript(tenant_id, draft.id) == source
+    with pytest.raises(ValueError, match="^working_transcript_not_note_ready$"):
+        to_master_platform_payload_from_working_transcript(
+            encounter_id=draft.appointment_id, session_id=draft.id, working_transcript=working,
+        )
+    decision = CreatorTranslationDecisionRequestV1(
+        schema_version="1.0", expected_source_transcript_version=1,
+        source_segment_id=spanish.source_segment_id,
+        expected_source_segment_version=spanish.source_segment_version,
+        translation_id=prepared.translation_id, expected_translation_version=1,
+        decision=TranslationReviewDecision.ACCEPTED,
+    )
+    with pytest.raises(TranslationReviewPersistenceError) as rejected:
+        await commit_creator_translation_review_and_publish(
+            provider, tenant_id, draft.id,
+            decision.to_authorized_command(
+                review_id=uuid4(), reviewer_actor_id=draft.creator_actor_id,
+                reviewed_at=datetime.now(UTC),
+            ),
+        )
+    assert rejected.value.code == TranslationReviewPersistenceCode.STATE_CONFLICT
+    assert calls == 1

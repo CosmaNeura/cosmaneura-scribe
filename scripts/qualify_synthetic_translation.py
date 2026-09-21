@@ -3,6 +3,8 @@
 No input file, arbitrary endpoint, patient content, model switch or API key is
 accepted. Authentication uses the operator's existing Azure CLI session. Output
 contains only opaque case IDs, agreement states and bounded failure codes.
+Error diagnostics use fixed allowlisted codes/flags, never provider messages,
+request headers, response text or arbitrary returned values.
 """
 
 from __future__ import annotations
@@ -22,6 +24,70 @@ from cosmaneura_scribe.translation_fidelity import SYNTHETIC_CASES, qualify_synt
 
 _ENDPOINT = "https://cosmascode.services.ai.azure.com/openai/v1"
 _DEPLOYMENT = "gpt-4.1"
+_MAX_ERROR_BYTES = 16_384
+_ERROR_CODES = frozenset({
+    "content_filter", "ResponsibleAIPolicyViolation", "invalid_request_error",
+    "InvalidRequest", "context_length_exceeded", "DeploymentNotFound",
+    "OperationNotSupported", "Unauthorized", "PermissionDenied", "RateLimitExceeded",
+})
+_FILTER_CATEGORIES = ("hate", "self_harm", "sexual", "violence", "jailbreak", "indirect_attack")
+
+
+def _unique_error_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_error_key")
+        result[key] = value
+    return result
+
+
+def _error_metadata(raw: bytes) -> dict[str, object]:
+    if len(raw) > _MAX_ERROR_BYTES:
+        return {"diagnostic": "body_limit"}
+    try:
+        body = json.loads(raw, object_pairs_hook=_unique_error_object)
+        if not isinstance(body, dict) or not isinstance(body.get("error"), dict):
+            raise ValueError("error_object_missing")
+        error = body["error"]
+        inner = error.get("innererror")
+        if not isinstance(inner, dict):
+            inner = {}
+        result: dict[str, object] = {"diagnostic": "parsed"}
+        for output_key, value in (("error_code", error.get("code")),
+                                  ("inner_code", inner.get("code"))):
+            result[output_key] = (
+                value if isinstance(value, str) and value in _ERROR_CODES else "other_or_absent"
+            )
+        filters = inner.get("content_filter_result")
+        if not isinstance(filters, dict):
+            filters = {}
+        result["filter_flags"] = [
+            f"{category}_{flag}"
+            for category in _FILTER_CATEGORIES
+            for flag in ("detected", "filtered")
+            if isinstance(filters.get(category), dict)
+            and filters[category].get(flag) is True
+        ]
+        return result
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return {"diagnostic": "invalid_error_body"}
+
+
+async def _read_error_metadata(response: httpx.Response) -> dict[str, object]:
+    # Avoid decoding/compression amplification. This is only a diagnostic probe;
+    # an unknown encoding must not weaken or override the adapter's rejection.
+    if response.headers.get("content-encoding", "identity").lower() != "identity":
+        return {"diagnostic": "encoded_body_not_read"}
+    raw = bytearray()
+    try:
+        async for chunk in response.aiter_raw(chunk_size=1024):
+            if len(raw) + len(chunk) > _MAX_ERROR_BYTES:
+                return {"diagnostic": "body_limit"}
+            raw.extend(chunk)
+        return _error_metadata(bytes(raw))
+    except Exception:
+        return {"diagnostic": "body_unavailable"}
 
 
 class _SelectedSyntheticEndpoint:
@@ -43,6 +109,7 @@ class _StatusOnlyTransport(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self.inner: httpx.AsyncHTTPTransport | None = None
         self.statuses: list[int] = []
+        self.errors: list[dict[str, object]] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         # The adapter closes its client after each one-shot request. Give the
@@ -51,6 +118,12 @@ class _StatusOnlyTransport(httpx.AsyncBaseTransport):
             self.inner = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
         response = await self.inner.handle_async_request(request)
         self.statuses.append(response.status_code)
+        if response.status_code != 200:
+            self.errors.append({
+                "request_index": len(self.statuses) - 1,
+                "http_status": response.status_code,
+                **await _read_error_metadata(response),
+            })
         return response
 
     async def aclose(self) -> None:
@@ -69,6 +142,7 @@ async def run(case_id: str | None) -> dict[str, object]:
         )
         result = await qualify_synthetic_translation(adapter, case_id=case_id)
     result["http_statuses"] = transport.statuses
+    result["error_metadata"] = transport.errors
     return result
 
 

@@ -61,6 +61,14 @@ schema, route, consent/auth contract, provider call or runtime activation is par
 of this fix. The production encrypted-store and current-authority admission gates
 remain separate requirements; a matching fingerprint does not establish either.
 
+The same fixed synthetic provider qualification also permits bounded diagnosis
+of its rejected case. The follow-on changed only the script's metadata collection
+and offline tests, then made one request with the unchanged `quoted_instruction`
+fixture/profile. Actual metadata identifies Azure content filtering; no source,
+prompt, model, reference, filter configuration or retry policy was changed. The
+preserved-source/blocked-handoff behavior is tested locally. Runtime diagnostics,
+user-facing recovery and live clinical activation are not delivered by this check.
+
 Initial observations: the physical iPhone 12 is paired, iOS 26.7, Developer Mode
 enabled; Xcode 27 reports its developer disk image cannot be mounted. One Apple
 Development identity is available; no distribution identity was listed. The

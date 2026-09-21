@@ -32,7 +32,7 @@ noise, omissions, or end-to-end Core notes. Those remain acceptance work.
 | Real auth/token custody | Reused selected W13 Clerk/Keychain candidate and initiated owner sign-in. Timeout kept workspace closed. No password/token was read or recorded. | Successful owner sign-in, organization/audience verification, restart/refresh, revocation/logout and native-only custody evidence on Mac and iPhone. No new IdP/auth path is proposed. |
 | Real STT/model/translation | Concrete Azure GPT-4.1 translator now implements the existing adapter interface. Final real run returned seven HTTP 200/reference agreements and one HTTP 400 rejection. Azure phrase-language evidence now survives into an opt-in normalized-source bridge. The private Speech job passed disabled-state and real, two-case synthetic inference acceptance; its temporary permission is removed. | Admitted provider/model profiles; durable normalized receiver/translation/review integration in the current standalone and OS paths; full mixed-language audio acceptance. No runtime route or worker registers the new bridge/translator yet. |
 | Physical iPhone | Verified development package installed and launched on the physical iPhone 12 after owner passcode entry. Exact bundle was absent before installation, installed version/build is `1.0/1`, and its process was observed running. Signature and artifact hashes reverified. | Rendered UI, successful Tester login, token custody, recording/interruption/recovery and end-to-end services remain unqualified. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
-| Source fidelity | Fixed tests cover negation, dose, self-correction, uncertainty, pregnancy, allergy, attribution and quoted instruction text. Golden references were defined before service calls. | Quoted-instruction input is rejected; safe blocked/review UX must be exercised. Full consented synthetic audio/translation/Core-note loop and human review remain. Do not change references or bypass provider filtering merely to get a pass. |
+| Source fidelity | Fixed tests cover negation, dose, self-correction, uncertainty, pregnancy, allergy, attribution and quoted instruction text. Golden references were defined before service calls. A diagnostic call confirms Azure content filtering rejects the quoted-instruction case; the real adapter and synthetic writer test preserve source and block note handoff/review approval. | User-facing blocked/recovery UX, full consented synthetic audio/translation/Core-note loop and human review remain. Do not change references or bypass provider filtering merely to get a pass. |
 | Signed/reproducible artifacts | Canonical-path clean builds now match compiled payloads and UUIDs; signatures, public entitlements and all 332 source inputs verify. The exact exported development IPA, source and symbols are retained outside temporary storage. | Signing/ZIP bytes still vary; cross-machine/hermetic reproducibility is unproven. No Apple Distribution identity, TestFlight acceptance, desktop notarization, cross-client installer/update acceptance or production artifact set was established. |
 
 ## Translation implementation and final real run
@@ -56,7 +56,8 @@ The service response was pinned to `gpt-4.1-2025-04-14`.
 - Final HTTP statuses: `200, 200, 200, 200, 200, 200, 200, 400`.
 - First seven case IDs matched their fixed references; `quoted_instruction`
   returned `provider_rejected`. No provider error body was retained; the specific
-  reason for HTTP 400 is not established.
+  reason for HTTP 400 was not established in that run. The follow-on diagnostic
+  below identifies the rejection without changing its input or acceptance reference.
 - Evidence: `/private/tmp/scribe-real-services-20260921.ySJT7W/translation-live-final.json`.
 - Evidence SHA-256: `913af2c2be54fe7857f515fc3ec70857528ac7ec230ea6765a855705b0bc2355`.
 
@@ -67,6 +68,56 @@ selected mixed mode supplies Azure with two candidates rather than the invalid
 single locale `en-US+es-US`. Unknown source language remains a note-readiness
 blocker. The legacy raw transcript writer does not persist these locale fields;
 the versioned receiver must be wired before calling bilingual capture complete.
+
+### Follow-on: diagnose the rejected fixed case without weakening filtering
+
+On 2026-09-21, between 13:52:08 and 13:52:32 UTC, one diagnostic request reused
+the exact `quoted_instruction` synthetic case, GPT-4.1 deployment, prompt,
+qualification profile and endpoint. The model adapter and fidelity corpus were not
+edited. Azure returned HTTP 400 with fixed allowlisted metadata:
+
+- `error_code=content_filter`;
+- `inner_code=ResponsibleAIPolicyViolation`;
+- `jailbreak_detected` and `jailbreak_filtered` flags.
+
+This establishes a provider filtering rejection, not a malformed-request or
+authentication diagnosis for this case. It does not establish why Azure's policy
+implementation classified the quotation that way, nor quantify clinical accuracy.
+There was no translated result; the prior seven reference agreements remain
+separate, unchanged evidence. No prompt/source/reference rewrite, alternate
+model, filter setting, endpoint/network change or automatic retry was performed.
+
+The qualification script now reads at most 16 KiB of an uncompressed error body
+and retains only hard-coded codes/true flags. It excludes provider messages,
+unknown field values, headers and raw bodies. Encoded, oversized, malformed,
+duplicate-key and unreadable bodies produce only fixed diagnostic labels.
+Cancellation propagates. Successful response handling is unchanged. These
+diagnostics exist only in the fixed synthetic script; the runtime adapter still
+returns its bounded `provider_rejected` outcome and remains unregistered.
+
+The OpenAI Docs skill directed an official-documentation search and opening of
+[the API error reference](https://developers.openai.com/api/docs/guides/error-codes).
+Its guidance to inspect structured error codes informed the diagnostic approach;
+the specific Azure classification above is actual service evidence, not an
+OpenAI-documentation claim. No new API key or identity path was created. Browser
+documentation access is now working; no Clerk or native-session state was changed.
+
+**54 focused tests pass**, plus Ruff, strict Pyright and `git diff --check`.
+The added offline vertical test feeds the observed error shape through the real
+Azure adapter, completed-job envelope, existing attempt writer and English
+projection. It proves one call, unchanged Spanish source, a failed/null
+translation, `TRANSLATION_FAILED` blocker, rejected Core handoff construction and
+rejected attempted creator acceptance. HTTP/identity and the repository are
+synthetic in this test; it is not a deployed end-to-end or rendered UX trial.
+Tests used task-owned pytest temporary directories, avoiding shared temp cleanup.
+
+Exact metadata evidence is retained in the artifact package as
+`translation-filter-diagnostic.json`, SHA-256
+`de111e141c5f44a3e8f4cf1c90e7cd0124ce06eb1ba82bc58d3346f7fa24c1a1`.
+No additional live request is needed to re-establish this terminal result. Before
+beta, the integrated UI/operations path must make this blocked state clear and
+support a reviewed resolution without omitting source or looping provider calls.
+The encrypted-store scope extension and physical iPhone sign-in remain pending.
 
 ## Private Speech approval and disabled-state acceptance
 
