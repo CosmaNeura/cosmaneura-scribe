@@ -28,6 +28,8 @@ from .normalized_source_persistence import (
     consent_authorizes_versioned_session,
 )
 from .postgres_repository import PostgresRepository
+from .repository import CaptureIngestModeError
+from .schemas import Transcript, TranscriptionJob, TranscriptionJobStatus
 from .session_state_v1 import SessionIngestMode
 from .transcription import SttResult
 from .working_transcript_persistence import WorkingTranscriptPublication
@@ -70,7 +72,63 @@ class CapturedSourcePublication:
 
 class CapturedSourceRepository(PostgresRepository):
     def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session, normalized_ingest_mode=SessionIngestMode.CHUNK_UPLOAD)
+        super().__init__(
+            session,
+            normalized_ingest_mode=SessionIngestMode.CHUNK_UPLOAD,
+            configured_capture=True,
+        )
+
+    async def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None:
+        # The legacy worker probes here before assembling audio. Fail before any
+        # provider call when it is accidentally paired with configured capture.
+        raise CaptureIngestModeError("configured capture requires its source reader")
+
+    async def get_transcript(self, tenant_id: UUID, transcript_id: UUID) -> Transcript | None:
+        raise CaptureIngestModeError("configured capture requires its source reader")
+
+    async def lock_live_capture(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> ConfiguredSourceSessionRecord:
+        locked = await self._lock_normalized_source_session(tenant_id, session_id)
+        if locked is None:
+            raise CapturedSourceUnavailable()
+        session, now = locked
+        self._require_live_normalized_source_session(session, now)
+        return session
+
+    async def recover_completed_speech(
+        self, tenant_id: UUID, session_id: UUID, job: TranscriptionJob
+    ) -> bool:
+        session = await self.lock_live_capture(tenant_id, session_id)
+        if (
+            job.session_id != session_id
+            or job.status != TranscriptionJobStatus.COMPLETED
+            or session.current_source_transcript_version is None
+        ):
+            return False
+        # Metadata-only acknowledgment of the original completed Speech attempt.
+        # Current corrections/reviews are not republished or replaced by this read.
+        receipt = await self._one_or_none(
+            """
+            SELECT receipt.source_transcript_version
+            FROM normalized_source_receipt_keys AS receipt
+            JOIN normalized_source_transcripts AS source
+              ON source.tenant_id = receipt.tenant_id AND source.session_id = receipt.session_id
+             AND source.source_transcript_version = receipt.source_transcript_version
+            JOIN transcription_jobs AS job
+              ON job.tenant_id = receipt.tenant_id AND job.session_id = receipt.session_id
+            WHERE receipt.tenant_id = :tenant AND receipt.session_id = :session
+              AND receipt.source_transcript_version = 1
+              AND receipt.idempotency_key LIKE :prefix
+              AND job.id = :job AND job.attempt_count = :attempt AND job.status = 'completed'
+            """,
+            tenant=tenant_id,
+            session=session_id,
+            job=job.id,
+            attempt=job.attempt_count,
+            prefix=f"captured-speech:{job.id}:{job.attempt_count}:%",
+        )
+        return receipt is not None
 
     async def admit_capture(
         self, tenant_id: UUID, draft: CapturedSessionCreate

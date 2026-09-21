@@ -151,6 +151,20 @@ Implementation and live evidence are recorded in
 
 ### Captured bilingual source — owner-approved 2026-09-21
 
+Next local runtime increment: pair the configured-capture repository explicitly
+with the existing encrypted capture protocol and leased audio assembler. Default
+legacy/imported access stays unchanged; configured capture cannot create legacy
+transcripts or use the legacy worker. Capture status is only a recorder-phase
+projection: bilingual source/translation/review/quality-pending states remain
+`processing`, never `transcript_ready`. Only capture-phase transitions may use
+the recorder writer; source publication/review retain their immutable writers.
+Reuse the leased audio execution/heartbeat mechanism, derive language from the
+immutable admission, and recover completed publication without another Speech
+call. Test actual encrypted synthetic WAV assembly through the capture protocol,
+lease/consent/cancellation negatives, creator review and legacy isolation in a
+new disposable local database. No public route registration, live provider call,
+cloud migration, new permission, client activation or deployment is included.
+
 Follow-on runtime increment: add explicit captured-mode PostgreSQL admission and
 atomic leased Speech-result publication, default off and without public routes.
 Reuse the normalized writer, encrypted execution store and creator-review service;

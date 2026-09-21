@@ -1,7 +1,8 @@
 """Opt-in bridge from actual Azure phrase evidence to the versioned receiver.
 
-No routes or workers import this module. The legacy transcript writer does not
-persist phrase locales and must not be used for the bilingual source handoff.
+The explicit captured worker uses this bridge; no environment registers it by
+default. The legacy transcript writer does not persist phrase locales and must
+not be used for the bilingual source handoff.
 An integration must call this bridge before the consent/tenant-scoped receiver;
 normalization alone is neither authorization nor durable acceptance.
 """

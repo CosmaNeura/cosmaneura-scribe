@@ -239,7 +239,8 @@ async def test_atomic_publication_preserves_capture_identity_and_default_read_fe
     assert tuple(job) == ("completed", None, None)
     async with trial.provider.transaction(trial.tenant) as repository:
         assert await repository.get_versioned_external_session(trial.tenant, trial.draft.id) is None
-        assert await repository.get_session(trial.tenant, trial.draft.id) is None
+        phase = await repository.get_session(trial.tenant, trial.draft.id)
+        assert phase is not None and phase.status.value == "processing"
     default = PostgresRepositoryProvider(trial.provider.engine)
     async with default.transaction(trial.tenant) as repository:
         assert (
@@ -442,6 +443,35 @@ async def test_captured_speech_encrypted_execution_creator_review_and_english_ha
     await trial.runtime.publish_speech_result(
         tenant_id=trial.tenant, session_id=trial.draft.id, completion=completion
     )
+    await _translate_and_review_capture(trial)
+    service = CreatorTranscriptReviewService(trial.provider, enabled=True)
+    scope = dict(
+        tenant_id=trial.tenant,
+        session_id=trial.draft.id,
+        creator_actor_id=trial.draft.creator_actor_id,
+    )
+    await _expire_normalized_source(
+        trial.provider, trial.tenant, trial.draft.id, admin_url=trial.admin_url
+    )
+    with pytest.raises(TranscriptReviewUnavailable):
+        await service.read(**scope)
+    with pytest.raises(CapturedSourceUnavailable):
+        await trial.runtime.publish_speech_result(
+            tenant_id=trial.tenant, session_id=trial.draft.id, completion=completion
+        )
+    async with trial.provider.transaction(trial.tenant) as repository:
+        purged = await repository.purge_normalized_source_content(trial.tenant, trial.draft.id)
+    assert purged is not None and purged.changed
+    assert await trial.counts() == (0, 0, 0)
+    assert (
+        await trial.query(
+            "SELECT count(*) FROM encrypted_translation_jobs "
+            "WHERE tenant_id = :tenant AND session_id = :session"
+        )
+    ).scalar_one() == 0
+
+
+async def _translate_and_review_capture(trial: Trial) -> None:
     service = CreatorTranscriptReviewService(trial.provider, enabled=True)
     scope = dict(
         tenant_id=trial.tenant,
@@ -488,6 +518,9 @@ async def test_captured_speech_encrypted_execution_creator_review_and_english_ha
     assert (await execute()).disposition == TranslationExecutionDisposition.ALREADY_COMMITTED
     assert adapter.call_count == 1
     queue = await service.review_queue(**scope)
+    async with trial.provider.transaction(trial.tenant) as repository:
+        phase = await repository.get_session(trial.tenant, trial.draft.id)
+        assert phase is not None and phase.status.value == "processing"
     item = queue.items[0]
     decision = CreatorTranslationDecisionRequestV1(
         schema_version="1.0",
@@ -521,25 +554,6 @@ async def test_captured_speech_encrypted_execution_creator_review_and_english_ha
         session_id=trial.draft.id,
         working_transcript=reviewed.working_transcript,
     )
-    await _expire_normalized_source(
-        trial.provider, trial.tenant, trial.draft.id, admin_url=trial.admin_url
-    )
-    with pytest.raises(TranscriptReviewUnavailable):
-        await service.read(**scope)
-    with pytest.raises(CapturedSourceUnavailable):
-        await trial.runtime.publish_speech_result(
-            tenant_id=trial.tenant, session_id=trial.draft.id, completion=completion
-        )
-    async with trial.provider.transaction(trial.tenant) as repository:
-        purged = await repository.purge_normalized_source_content(trial.tenant, trial.draft.id)
-    assert purged is not None and purged.changed
-    assert await trial.counts() == (0, 0, 0)
-    assert (
-        await trial.query(
-            "SELECT count(*) FROM encrypted_translation_jobs "
-            "WHERE tenant_id = :tenant AND session_id = :session"
-        )
-    ).scalar_one() == 0
 
 
 @pytest.mark.parametrize("kind", ["unknown", "overlap", "english"])

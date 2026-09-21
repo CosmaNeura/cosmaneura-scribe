@@ -11,7 +11,65 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: atomic captured Speech-result runtime — 18:01 UTC
+## Latest: encrypted capture protocol to bilingual worker — 18:18 UTC
+
+Connected the configured captured format to the existing encrypted recorder
+protocol and audio assembly through an explicitly paired PostgreSQL provider.
+`CapturedTranscriptionWorker` is default off; it reuses extracted lease/heartbeat,
+last-moment consent checks and child-task cancellation from the existing worker.
+Language comes from immutable admission, not a second processing-time choice.
+The admitted adapter, finalized contiguous channels and returned source profile
+must match before the atomic publisher accepts the actual Speech result.
+
+The existing recorder status shape is a capture-phase view only: source,
+translation, review and quality-pending states remain `processing`. They do not
+become ready until the existing source/translation/review writers permit it.
+The capture writer cannot overwrite the actual later source state with that
+projection. Default legacy/imported scopes stay isolated, and an accidentally
+paired legacy worker is rejected before audio/provider access. Completed jobs
+recover an acknowledgment through their original receipt without rereading audio,
+calling Speech or resetting working/review history. ADR 0044 records the boundary.
+
+Final complete Python regression: **1,031 passed, zero failures/errors/skips**,
+61.578 seconds, including 22 new cases. Tests exercise actual FastAPI capture
+routes, restricted PostgreSQL, real AES-GCM encrypted generated WAV chunks and
+the existing audio assembler. Fixed offline Speech evidence then reaches durable
+encrypted translation, explicit creator review and the Core handoff serializer.
+English-only capture requires no translation; bilingual source/English speech and
+speaker identity remain preserved. Captured Speech/model/key/identity/blob-service
+inputs are synthetic/offline fixtures, not actual microphone or live service
+qualification, clinical fidelity, hosted authentication or actual Core SOAP.
+
+New checks cover disabled/wrong tenant/session/unstarted/revoked/legacy/unadmitted
+adapter rejection, invalid source provider/language/channel, provider retry and
+exhaustion, concurrent workers, cancellation, revoked consent at manifest and
+heartbeat, tampered audio, stolen lease, lost publication reply and completed-job
+recovery in a fresh actual Python process with audio/Speech access forbidden.
+The initial test run exposed a missing timestamp in the generated chunk fixture;
+that fixture was corrected. The intermediate complete run passed 1,030 tests;
+the final adapter-admission check brings the final count to 1,031. No runtime or
+database guard was weakened for a test.
+
+Ruff on changed application/tests, strict Pyright across the complete API,
+unchanged OpenAPI regeneration, ADR numbering and whitespace checks pass. JUnit:
+`/private/tmp/scribe-capture-worker.VrujhM/verified.xml`, SHA-256
+`7b27b6fe84102ea254a12f1af05b6c0a35466e11b4322d638f90528c00f57403`.
+The new UTF-8 `scribe_capture_worker_test` database used its private Unix socket
+only, no TCP listener. Fixture cleanup left only `alembic_version`. Verified owned
+PID 57913 is stopped; its data/logs are retained. Other apps, databases, packages
+and owner previews were not changed. No new migration, public API registration,
+auth parser, grant, live provider call, shared-platform change, push or deployment.
+
+Next: automatic transcription/translation dispatch and the paired authenticated
+review/idempotency/status receiver. Terminal exhausted jobs must have explicit
+failure/recovery UX rather than relying on the recorder's `processing` projection.
+Then qualify the actual clients/services/Core SOAP path. The new provider/worker
+is not registered in a running API; existing clients do not automatically use it.
+Real identity/device/fidelity, migration-graph reconciliation and signed release
+remain open. This is concrete integration progress, not MCD activation or closure
+of the full operational goal.
+
+## Earlier: atomic captured Speech-result runtime — 18:01 UTC
 
 Added default-off `CapturedSourceRuntime` and an explicit captured-mode PostgreSQL
 provider. Trusted Core admission creates or exactly reuses an immutable captured
