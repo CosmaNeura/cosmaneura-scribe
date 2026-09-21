@@ -1065,6 +1065,68 @@ class PostgresRepository:
         await self._final_normalized_source_gate(tenant_id, session_id)
         return source
 
+    async def get_creator_working_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        creator_actor_id: str,
+    ) -> WorkingTranscriptDerivation | None:
+        """Validate current persisted evidence under the consent/session lock."""
+        reference = await self.get_versioned_external_session(tenant_id, session_id)
+        if reference is None or reference.creator_actor_id != creator_actor_id:
+            return None
+        locked = await self._lock_working_transcript_session(tenant_id, session_id)
+        if locked is None:
+            return None
+        session, database_now = locked
+        if session.creator_actor_id != creator_actor_id:
+            return None
+        self._require_live_working_session(session, database_now)
+        source_version = session.current_source_transcript_version
+        working_version = session.current_working_transcript_version
+        working_id = session.working_transcript_id
+        if source_version is None or working_version is None or working_id is None:
+            return None
+        source = await self._get_normalized_source_by_version(tenant_id, session_id, source_version)
+        current = await self._get_working_header(tenant_id, session_id, working_version)
+        if (
+            source is None
+            or current is None
+            or current["working_transcript_id"] != working_id
+            or current["source_transcript_version"] != source_version
+        ):
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        await self._validate_working_evidence_bounds(tenant_id, session_id, source_version)
+        derivation = derive_persisted_working_transcript(
+            source,
+            await self._get_working_translation_inputs(tenant_id, session_id, source_version),
+            await self._get_working_review_inputs(tenant_id, session_id, source_version),
+            working_transcript_id=working_id,
+            working_transcript_version=working_version,
+        )
+        if (
+            current["working_fingerprint"] != derivation.working_fingerprint
+            or session.status != derivation.status
+        ):
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        await self.audit(
+            tenant_id=tenant_id,
+            action="normalized_working_transcript.creator_read",
+            entity_type="normalized_working_transcript",
+            entity_id=working_id,
+        )
+        await self._final_working_transcript_gate(
+            tenant_id,
+            session_id,
+            source_version=source_version,
+            working_transcript_id=working_id,
+            working_transcript_version=working_version,
+            status=derivation.status,
+            working_fingerprint=derivation.working_fingerprint,
+        )
+        return derivation
+
     async def publish_current_working_transcript(
         self,
         tenant_id: UUID,
@@ -1077,18 +1139,14 @@ class PostgresRepository:
         self._require_live_working_session(session, database_now)
         source_version = session.current_source_transcript_version
         if source_version is None:
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         source = await self._get_normalized_source_by_version(
             tenant_id,
             session_id,
             source_version,
         )
         if source is None:
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         await self._validate_working_evidence_bounds(
             tenant_id,
             session_id,
@@ -1163,9 +1221,7 @@ class PostgresRepository:
             raise RuntimeError("working transcript version allocation failed")
         next_version = maximum_version + 1
         if (session.working_transcript_id is None) != (next_version == 1):
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         derivation = derive_persisted_working_transcript(
             source,
             translations,
@@ -1174,9 +1230,7 @@ class PostgresRepository:
             working_transcript_version=next_version,
         )
         if not can_publish_working_transcript(session.status, derivation.status):
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
 
         try:
             async with self._session.begin_nested():
@@ -2566,8 +2620,7 @@ class PostgresRepository:
             segment_parameters,
         )
         source_by_id = {
-            item.source_segment_id: item
-            for item in derivation.bundle.source_transcript.segments
+            item.source_segment_id: item for item in derivation.bundle.source_transcript.segments
         }
         blocker_parameters = [
             {
@@ -2703,9 +2756,7 @@ class PostgresRepository:
             contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
         )
         if row is None:
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         if row["content_purged_at"] is not None or (
             row["transcript_content_expires_at"] is not None
             and row["database_now"] >= row["transcript_content_expires_at"]
@@ -2720,9 +2771,7 @@ class PostgresRepository:
             or row["current_working_transcript_version"] != working_transcript_version
             or row["working_fingerprint"] != working_fingerprint
         ):
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
 
     @staticmethod
     def _is_expected_working_integrity_error(error: DBAPIError) -> bool:
@@ -2866,9 +2915,7 @@ class PostgresRepository:
             ConfiguredExternalSessionStatus.HANDED_OFF,
             ConfiguredExternalSessionStatus.FAILED,
         }:
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
 
     async def _insert_normalized_source_receipt_key(
         self,

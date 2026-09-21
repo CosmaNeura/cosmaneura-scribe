@@ -11,7 +11,103 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: separate Scribe URL and iPhone package preflight — 17:00 UTC
+## Latest: branded Scribe URL and local runtime approval — 17:23 UTC
+
+The owner requested a `cosmaneura.com` address, completed Cloudflare sign-in, and
+separately explicitly approved the local runtime-integration packet. The chosen
+standalone URL is now **https://scribe-beta.cosmaneura.com/**. The CosmaBot/CosmasOS
+URL remains separate and was not changed or provisioned here.
+
+Before mutation, both public authoritative DNS and Cloudflare's exact-name
+search found no record. Added only DNS-only CNAME `scribe-beta` targeting
+`green-rock-0cd7d7e0f.7.azurestaticapps.net`, TTL Auto (authoritative TTL 300).
+Then attached that exact hostname using CNAME validation to existing Standard
+Static Web App `cmn-capture-preview-p8x6m2` in
+`cosmaneura-capture-preview-development`. Azure progressed through validation to
+**Ready**, with no error. Both `lakas` and `roxy` authoritative nameservers return
+the expected CNAME. Normal HTTPS GET returns 200 and certificate validation 0.
+The first browser request reached an old certificate during propagation; a
+fresh normal HTTPS request subsequently rendered the site without bypassing
+validation. No certificate warning was overridden.
+
+The resulting screen is still **Cosmaneura Capture — SYNTHETIC DATA · SILENT
+SOURCE**, with disabled consent/record controls. Its initial state subsequently
+reports `synthetic_preview_failed`; this is not a working recording demo or an
+authenticated native API. The hostname succeeds independently of that preview
+initialization failure. Read-only health comparison confirms the branded host
+returns 403 `preview_host_rejected`, while the original Azure hostname returns
+200 synthetic healthy. Live `CAPTURE_PREVIEW_ALLOWED_HOSTS` contains only the
+original Azure hostname. The local preview configuration parser also requires
+an `.azurestaticapps.net` suffix, so blindly changing its live setting would
+break startup. No allowlist or preview source was changed. Making the old preview
+interactive on this alias requires a separately deployable hostname-compatible
+release; the currently approved local runtime packet does not authorize that
+deployment. Prefer connecting the qualified Scribe runtime when that release is
+ready, rather than confusing a repaired silent preview with beta acceptance.
+Do not relabel the preview as the runtime or use this
+web origin as the phone API until a compatible endpoint is actually qualified.
+
+No deployment, source upload, root/www record, other app/auth/Zoom/staging DNS,
+identity or shared database was changed. Readback confirms the clinical Scribe
+environment remains `internal=true`, `publicNetworkAccess=Disabled` and
+`provisioningState=Succeeded`. No live Speech/translation call ran. The alias and
+SWA custom-domain binding are the entire external change. Preserve this binding
+as recorded external state for later IaC reconciliation; no broad infrastructure
+apply or state import was performed. Remove the DNS alias before any future
+retirement of the binding/site to avoid a dangling hostname.
+
+The local runtime approval supersedes the earlier local no-integration
+restriction only: connect Speech, encrypted jobs, translation and creator-only
+review on the existing unpushed branch in disposable synthetic storage, with
+live services disabled. Core/Auth/IAM/Zoom/staging and other repositories stay
+unchanged. The first implementation increment is the persisted creator review
+service in ADR 0041, with qualification below.
+The complete runtime packet and the five owner goals remain incomplete.
+
+### First runtime increment: persisted creator review
+
+Added default-off `CreatorTranscriptReviewService` and repository reads for the
+creator's current, published pre-handoff bilingual evidence. They recheck tenant,
+creator, consent, retention and current source/working versions, reconstruct the
+canonical view from persisted source/attempt/review records and compare it to the
+saved fingerprint/status. Reading cannot publish or approve. Explicit decisions
+reuse the existing immutable writer and its exact retry semantics. Errors expose
+no raw driver context; cancellation propagates. No public route, auth parser,
+settings/permission activation, new migration or live provider was added.
+
+The six-case Speech/encrypted-job/translation seam now uses the application
+reader and compares it to independently loaded PostgreSQL rows, including after
+pool restart. New tests cover wrong tenant/session/creator, missing/unpublished
+source, no publish-on-read, explicit decisions/exact retry/conflicting retry,
+revocation, expiry, corrupt projection, disabled service and cancellation/error
+handling. Identity/Speech/model/network/key material remain synthetic fixtures.
+
+Final complete Python regression: **961 passed, zero failures/errors/skips**,
+61.302 seconds. Ruff and strict Pyright on changed application/repository modules
+pass; OpenAPI regenerated with no difference; ADR and whitespace checks pass.
+JUnit: `/private/tmp/scribe-runtime-review.kVwWZG/verified-results.xml`, SHA-256
+`9df1923676bb5a0af9239b4bf4de15b6d36e23bd227ae6311a4846d2a4cf7513`.
+
+Earlier test invocations corrected the database driver and requested the needed
+local socket permission. Full regression exposed two prior seam-test issues:
+retained encrypted jobs conflicted with an older migration downgrade test, and
+its SQL-only reader sorted quality blockers by random IDs rather than saved
+ordinal. The seam now cleans up its own disposable records through the existing
+retention cascade and reads saved ordinal order. No migration guard was weakened.
+
+The new cluster is `/private/tmp/scribe-runtime-review.kVwWZG/data`, private Unix
+socket only, no TCP listener. Tests used UTF-8 database
+`scribe_runtime_review_utf8_test`; the initially created empty SQL-ASCII database
+was not used. Teardown leaves only `alembic_version` in the tested schema. Retain
+the stopped cluster and logs; other databases/apps are untouched.
+
+Next within the existing approval: connect captured-source provenance and
+translation execution without using the external-source label for Azure capture;
+then connect the authenticated receiver and its durable request-idempotency
+envelope. This application increment is not HTTP/native integration, the full
+runtime packet, live bilingual audio acceptance or release qualification.
+
+## Earlier: separate Scribe URL and iPhone package preflight — 17:00 UTC
 
 The owner requested a beta URL and then explicitly confirmed **two separate
 URLs: standalone Scribe and CosmaBot/CosmasOS**. The existing standalone preview

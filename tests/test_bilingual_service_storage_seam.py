@@ -1,7 +1,8 @@
 """Offline service responses through real disposable storage and existing contracts.
 
-This is deliberately not a runtime: no admission/dispatch/reader is registered,
-and no identity, network, microphone, model or Core service is contacted.
+The creator-review application service reads persisted evidence. No public
+admission/dispatch route is registered, and no identity, network, microphone,
+model or Core service is contacted.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from cosmaneura_scribe.postgres_repository import (
 )
 from cosmaneura_scribe.postgres_translation_jobs import PostgresTranslationJobStore
 from cosmaneura_scribe.schemas import CaptureChannel, SpeakerRole
+from cosmaneura_scribe.transcript_review_service import CreatorTranscriptReviewService
 from cosmaneura_scribe.transcription import (
     AudioTrack,
     AzureSpeechTranscriber,
@@ -54,7 +56,12 @@ from cosmaneura_scribe.translation_review_persistence import TranslationReviewPe
 from sqlalchemy import text
 from test_azure_translation import ENGLISH, SOURCE, adapter, body
 from test_encrypted_translation_jobs import _LocalKeys
-from test_normalized_source_persistence import _consent, _draft, _seed_configured_session
+from test_normalized_source_persistence import (
+    _consent,
+    _draft,
+    _expire_normalized_source,
+    _seed_configured_session,
+)
 from test_transcription import FakeAzureClient, FakeEndpointGuard
 from test_translation_review_persistence import _review_command
 
@@ -117,7 +124,7 @@ async def _saved_working(
                     SELECT source_segment_id, code FROM normalized_working_blockers
                     WHERE tenant_id = :tenant AND session_id = :session
                       AND working_transcript_version = :version
-                    ORDER BY source_segment_id, code
+                    ORDER BY ordinal
                 """),
                     scope,
                 )
@@ -232,6 +239,7 @@ def test_mixed_speech_to_encrypted_job_review_and_saved_english_handoff(
             return httpx.Response(200, json=response)
 
         translator = adapter(model_response)
+        source_accepted = False
         try:
             result = await speech.transcribe(
                 TranscriptionRequest(
@@ -255,11 +263,19 @@ def test_mixed_speech_to_encrypted_job_review_and_saved_english_handoff(
                 assert accepted is not None
                 source = await repository.get_current_normalized_source_transcript(tenant, draft.id)
                 publication = await repository.publish_current_working_transcript(tenant, draft.id)
+            source_accepted = True
             assert source is not None and publication is not None
             assert [s.content for s in source.segments] == [_PROVIDER, SOURCE, _PATIENT_ENGLISH]
             assert source.segments[1].speaker_id == source.segments[2].speaker_id
             assert source.segments[0].speaker_id != source.segments[1].speaker_id
             initial = await _saved_working(provider, tenant, draft.id)
+            review_service = CreatorTranscriptReviewService(provider, enabled=True)
+            creator_scope = dict(
+                tenant_id=tenant,
+                session_id=draft.id,
+                creator_actor_id=draft.creator_actor_id,
+            )
+            assert (await review_service.read(**creator_scope)).working_transcript == initial
             assert not initial.note_ready
             with pytest.raises(ValueError, match="working_transcript_not_note_ready"):
                 to_master_platform_payload_from_working_transcript(
@@ -312,6 +328,7 @@ def test_mixed_speech_to_encrypted_job_review_and_saved_english_handoff(
             # Dispose the connection pool; no in-memory job/projection survives as evidence.
             await provider.close()
             provider = build_postgres_provider(postgres_settings(postgres_urls[1]))
+            review_service = CreatorTranscriptReviewService(provider, enabled=True)
             store = PostgresTranslationJobStore(provider.engine, TranslationJobCipher(keys, keys))
             saved = await store.get_translation_job(tenant, draft.id, reservation.translation_id)
             assert (
@@ -329,6 +346,9 @@ def test_mixed_speech_to_encrypted_job_review_and_saved_english_handoff(
             assert replay.disposition == TranslationExecutionDisposition.ALREADY_COMMITTED
             assert len(calls) == 1
             before_review = await _saved_working(provider, tenant, draft.id)
+            assert (await review_service.read(**creator_scope)).working_transcript == before_review
+            queue = await review_service.review_queue(**creator_scope)
+            assert len(queue.items) == (1 if mode == "translated" else 0)
             assert not before_review.note_ready
             command = _review_command(
                 1,
@@ -378,6 +398,7 @@ def test_mixed_speech_to_encrypted_job_review_and_saved_english_handoff(
                 )
             assert retained == source  # Spanish source/locale/timing/speaker evidence is immutable.
             final = await _saved_working(provider, tenant, draft.id)
+            assert (await review_service.read(**creator_scope)).working_transcript == final
             if mode == "translated":
                 assert final.note_ready
                 assert [s.content for s in final.segments] == [_PROVIDER, ENGLISH, _PATIENT_ENGLISH]
@@ -405,7 +426,21 @@ def test_mixed_speech_to_encrypted_job_review_and_saved_english_handoff(
             assert len(calls) == 1
             assert all(key == bytearray(32) for key in keys.unwrapped)
         finally:
-            await speech.close()
-            await provider.close()
+            try:
+                # This disposable-only fixture must not strand encrypted jobs
+                # ahead of unrelated migration recovery tests. Reuse retention
+                # cascade; never weaken the used-table downgrade guard.
+                if source_accepted:
+                    await _expire_normalized_source(
+                        provider,
+                        tenant,
+                        draft.id,
+                        admin_url=postgres_urls[0],
+                    )
+                    async with provider.transaction(tenant) as repository:
+                        assert await repository.purge_normalized_source_content(tenant, draft.id)
+            finally:
+                await speech.close()
+                await provider.close()
 
     asyncio.run(scenario())

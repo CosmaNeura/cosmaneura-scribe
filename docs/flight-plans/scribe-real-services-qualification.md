@@ -46,6 +46,41 @@ of signing, TLS, API compatibility, login, capture, or release acceptance.
 Recovery is to stop using the diagnostic; no deployed state changes. Exact
 results and outstanding deployment/connection gates are in the checkpoint.
 
+### Branded URL and local runtime approvals — 2026-09-21
+
+The owner requested a real URL under `cosmaneura.com` and completed Cloudflare
+sign-in for `scribe-beta.cosmaneura.com`. The limited external change is one
+DNS-only CNAME to the existing `green-rock-0cd7d7e0f.7.azurestaticapps.net`
+preview, plus that exact hostname binding and managed TLS on Static Web App
+`cmn-capture-preview-p8x6m2`. Inspect for a conflicting record before adding it.
+Leave apex/www, other apps, Auth/IAM/Zoom/staging and the private clinical
+environment unchanged. No source deployment, recording, clinical API exposure
+or identity activation is included. Verify authoritative DNS, Azure validation,
+certificate verification and the rendered synthetic page. Recovery must remove
+the DNS alias before retiring its Azure binding to avoid a dangling hostname;
+perform no resource deletion or unrelated DNS change.
+
+Separately, the owner explicitly stated, “I approve the runtime-integration.”
+This approves connecting the existing Speech adapter, encrypted jobs, translation
+and creator-only transcript review locally on this existing unpushed branch,
+using only a disposable synthetic database with live services disabled. It
+supersedes earlier no-runtime-integration wording for that local packet only.
+No Core/Auth/IAM/Zoom/staging or other-repository edits, push, PR, deployment or
+new live service call. Preserve actual source provenance, current consent,
+tenant/creator boundaries, immutable lineage and fail-closed handoff. An Azure
+captured result must not be mislabeled as an external transcript. Default-off
+runtime integration and migration/contract reconciliation require their own
+local negative/recovery tests before any later promotion is considered.
+
+First runtime increment: default-off creator review application service plus
+tenant/creator/current-evidence reads. No HTTP route or migration is added. Reuse
+the immutable decision writer and preserve exact retry IDs/times; require the
+future receiver to bind them durably. Test both repositories, opaque errors,
+revocation/retention, no publish-on-read and offline encrypted-job seam recovery.
+See ADR 0041 and the checkpoint. DNS/TLS is ready; the older preview's live host
+allowlist rejects the new alias and needs a separately authorized deployable
+release, not an unchecked live configuration edit.
+
 ## Ordered work
 
 1. Add a concrete Azure GPT-4.1 Spanish-to-English adapter behind the existing
