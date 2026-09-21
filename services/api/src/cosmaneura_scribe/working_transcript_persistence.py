@@ -17,6 +17,7 @@ from .external_transcript_v1 import (
 )
 from .normalized_source_persistence import (
     ConfiguredExternalSessionStatus,
+    ConfiguredSourceSessionStatus,
     NormalizedSourceTranscriptRecord,
     derive_working_transcript_status,
 )
@@ -124,9 +125,11 @@ _PROJECTABLE_TRANSITIONS = {
 
 
 def can_publish_working_transcript(
-    current: ConfiguredExternalSessionStatus,
+    current: ConfiguredSourceSessionStatus,
     derived: ConfiguredExternalSessionStatus,
 ) -> bool:
+    if not isinstance(current, ConfiguredExternalSessionStatus):
+        return False
     return derived in _PROJECTABLE_TRANSITIONS.get(current, frozenset())
 
 

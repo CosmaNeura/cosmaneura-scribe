@@ -4,7 +4,7 @@ import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from azure.core.credentials import AccessToken
@@ -43,7 +43,9 @@ from .normalized_source_persistence import (
     VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
     VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID,
     VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID,
+    CapturedPreSourceStatus,
     ConfiguredExternalSessionStatus,
+    ConfiguredSourceSessionStatus,
     ExternalSessionFailureCode,
     ExternalSessionTerminalEventRecord,
     ExternalSessionTerminalFailure,
@@ -58,6 +60,7 @@ from .normalized_source_persistence import (
     VersionedExternalSessionCreate,
     VersionedExternalSessionRecord,
     VersionedExternalTerminalResult,
+    configured_source_session_status,
     consent_authorizes_versioned_session,
     normalized_source_request_fingerprint,
     validate_normalized_source_request_for_session,
@@ -213,8 +216,9 @@ def _versioned_external_session_record(
         transcription_adapter_id=row["transcription_adapter_id"],
         transcription_model_profile_id=row["transcription_model_profile_id"],
         normalization_profile_id=row["normalization_profile_id"],
-        status=ConfiguredExternalSessionStatus(row["status"]),
+        status=configured_source_session_status(row["status"]),
         created_at=row["created_at"],
+        ingest_mode=SessionIngestMode(row.get("ingest_mode", "external_async_transcript")),
         source_received_at=row["source_received_at"],
         transcript_content_expires_at=row["transcript_content_expires_at"],
         content_purged_at=row["content_purged_at"],
@@ -295,7 +299,7 @@ def _external_session_terminal_event_record(
     return ExternalSessionTerminalEventRecord(
         session_id=row["session_id"],
         event_id=row["event_id"],
-        prior_status=ConfiguredExternalSessionStatus(row["prior_status"]),
+        prior_status=configured_source_session_status(row["prior_status"]),
         failure_code=ExternalSessionFailureCode(row["failure_code"]),
         occurred_at=row["occurred_at"],
         principal_type=ExternalSessionTerminalPrincipalType(row["principal_type"]),
@@ -351,19 +355,27 @@ class PostgresRepositoryProvider:
 
 
 class PostgresRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        normalized_ingest_mode: SessionIngestMode = SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT,
+    ) -> None:
+        if not isinstance(cast(object, normalized_ingest_mode), SessionIngestMode):
+            raise ValueError("normalized repository ingest mode is invalid")
         self._session = session
+        self._normalized_ingest_mode = normalized_ingest_mode
 
     async def _require_chunk_upload_session(
         self,
         tenant_id: UUID,
         session_id: UUID,
     ) -> None:
-        # This is the one legacy guard that intentionally sees configured rows:
-        # their external ingest mode must fail closed before any audio child write.
+        # Legacy writers intentionally see the discriminator to reject configured
+        # sessions. Captured-source admission does not activate legacy audio APIs.
         row = await self._one_or_none(
             """
-            SELECT ingest_mode
+            SELECT ingest_mode, transcript_contract_version
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
             """,
@@ -372,7 +384,10 @@ class PostgresRepository:
         )
         if (
             row is not None
-            and SessionIngestMode(row["ingest_mode"]) != SessionIngestMode.CHUNK_UPLOAD
+            and (
+                SessionIngestMode(row["ingest_mode"]) != SessionIngestMode.CHUNK_UPLOAD
+                or row["transcript_contract_version"] is not None
+            )
         ):
             raise CaptureIngestModeError("session does not accept audio chunk capture")
 
@@ -554,7 +569,11 @@ class PostgresRepository:
                   AND scribe_session.tenant_id = lease.tenant_id
                   AND scribe_session.id = lease.session_id
                   AND scribe_session.consent_record_id = :consent_id
-                  AND scribe_session.transcript_contract_version IS NULL
+                  AND (
+                      scribe_session.transcript_contract_version IS NULL
+                      OR (scribe_session.transcript_contract_version = '1.0'
+                          AND scribe_session.ingest_mode = 'chunk_upload')
+                  )
                 """
             ),
             {
@@ -741,6 +760,32 @@ class PostgresRepository:
         )
         return _versioned_external_session_record(row) if row is not None else None
 
+    async def _get_configured_source_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> VersionedExternalSessionRecord | None:
+        row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                   modality, ingest_mode, transcript_contract_version, creator_actor_id,
+                   language_mode,
+                   transcription_adapter_id, transcription_model_profile_id,
+                   normalization_profile_id, status, created_at, source_received_at,
+                   transcript_content_expires_at, content_purged_at,
+                   current_source_transcript_version
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND ingest_mode = :normalized_ingest_mode
+              AND transcript_contract_version = :transcript_contract_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            transcript_contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+            normalized_ingest_mode=self._normalized_ingest_mode.value,
+        )
+        return _versioned_external_session_record(row) if row is not None else None
+
     async def lock_versioned_external_session(
         self,
         tenant_id: UUID,
@@ -864,8 +909,13 @@ class PostgresRepository:
 
         first_receipt = current is None
         if first_receipt:
+            initial_status = (
+                CapturedPreSourceStatus.PROCESSING
+                if session.ingest_mode == SessionIngestMode.CHUNK_UPLOAD
+                else ConfiguredExternalSessionStatus.CREATED
+            )
             if (
-                session.status != ConfiguredExternalSessionStatus.CREATED
+                session.status != initial_status
                 or session.current_source_transcript_version is not None
                 or session.source_received_at is not None
                 or session.transcript_content_expires_at is not None
@@ -883,7 +933,7 @@ class PostgresRepository:
                     status = 'source_received'
                 WHERE tenant_id = :tenant_id AND id = :session_id
                   AND transcript_contract_version = :contract_version
-                  AND status = 'created'
+                  AND status = :initial_status
                   AND source_received_at IS NULL
                   AND transcript_content_expires_at IS NULL
                   AND content_purged_at IS NULL
@@ -894,6 +944,7 @@ class PostgresRepository:
                 tenant_id=tenant_id,
                 session_id=session_id,
                 contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+                initial_status=initial_status.value,
                 retention_seconds=int(NORMALIZED_SOURCE_RETENTION_LIMIT.total_seconds()),
             )
             disposition = NormalizedSourceAcceptanceDisposition.ACCEPTED
@@ -1073,7 +1124,7 @@ class PostgresRepository:
         creator_actor_id: str,
     ) -> WorkingTranscriptDerivation | None:
         """Validate current persisted evidence under the consent/session lock."""
-        reference = await self.get_versioned_external_session(tenant_id, session_id)
+        reference = await self._get_configured_source_session(tenant_id, session_id)
         if reference is None or reference.creator_actor_id != creator_actor_id:
             return None
         locked = await self._lock_working_transcript_session(tenant_id, session_id)
@@ -1914,12 +1965,13 @@ class PostgresRepository:
             SELECT consent_record_id
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
-              AND ingest_mode = 'external_async_transcript'
+              AND ingest_mode = :normalized_ingest_mode
               AND transcript_contract_version = :contract_version
             """,
             tenant_id=tenant_id,
             session_id=session_id,
             contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+            normalized_ingest_mode=self._normalized_ingest_mode.value,
         )
         if reference is None:
             return None
@@ -1927,7 +1979,8 @@ class PostgresRepository:
         row = await self._one_or_none(
             """
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
-                   modality, transcript_contract_version, creator_actor_id, language_mode,
+                   modality, ingest_mode, transcript_contract_version, creator_actor_id,
+                   language_mode,
                    transcription_adapter_id, transcription_model_profile_id,
                    normalization_profile_id, status, created_at, source_received_at,
                    transcript_content_expires_at, content_purged_at,
@@ -1935,7 +1988,7 @@ class PostgresRepository:
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
               AND consent_record_id = :consent_id
-              AND ingest_mode = 'external_async_transcript'
+              AND ingest_mode = :normalized_ingest_mode
               AND transcript_contract_version = :contract_version
             FOR UPDATE
             """,
@@ -1943,6 +1996,7 @@ class PostgresRepository:
             session_id=session_id,
             consent_id=reference["consent_record_id"],
             contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+            normalized_ingest_mode=self._normalized_ingest_mode.value,
         )
         if row is None:
             return None
@@ -1975,7 +2029,7 @@ class PostgresRepository:
         session_id: UUID,
         *,
         event_id: UUID,
-        prior_status: ConfiguredExternalSessionStatus,
+        prior_status: ConfiguredSourceSessionStatus,
         failure_code: ExternalSessionFailureCode,
         principal_type: ExternalSessionTerminalPrincipalType,
         principal_id: str,
@@ -2156,12 +2210,13 @@ class PostgresRepository:
             SELECT consent_record_id
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
-              AND ingest_mode = 'external_async_transcript'
+              AND ingest_mode = :normalized_ingest_mode
               AND transcript_contract_version = :contract_version
             """,
             tenant_id=tenant_id,
             session_id=session_id,
             contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+            normalized_ingest_mode=self._normalized_ingest_mode.value,
         )
         if reference is None:
             return None
@@ -2170,7 +2225,8 @@ class PostgresRepository:
         row = await self._one_or_none(
             """
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
-                   modality, transcript_contract_version, creator_actor_id, language_mode,
+                   modality, ingest_mode, transcript_contract_version, creator_actor_id,
+                   language_mode,
                    transcription_adapter_id, transcription_model_profile_id,
                    normalization_profile_id, status, created_at, source_received_at,
                    transcript_content_expires_at, content_purged_at,
@@ -2178,7 +2234,7 @@ class PostgresRepository:
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
               AND consent_record_id = :consent_id
-              AND ingest_mode = 'external_async_transcript'
+              AND ingest_mode = :normalized_ingest_mode
               AND transcript_contract_version = :contract_version
             FOR UPDATE
             """,
@@ -2186,6 +2242,7 @@ class PostgresRepository:
             session_id=session_id,
             consent_id=consent_id,
             contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+            normalized_ingest_mode=self._normalized_ingest_mode.value,
         )
         if row is None:
             return None
@@ -2208,12 +2265,13 @@ class PostgresRepository:
             SELECT consent_record_id
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
-              AND ingest_mode = 'external_async_transcript'
+              AND ingest_mode = :normalized_ingest_mode
               AND transcript_contract_version = :contract_version
             """,
             tenant_id=tenant_id,
             session_id=session_id,
             contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+            normalized_ingest_mode=self._normalized_ingest_mode.value,
         )
         if reference is None:
             return None
@@ -2222,7 +2280,8 @@ class PostgresRepository:
         row = await self._one_or_none(
             """
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
-                   modality, transcript_contract_version, creator_actor_id, language_mode,
+                   modality, ingest_mode, transcript_contract_version, creator_actor_id,
+                   language_mode,
                    transcription_adapter_id, transcription_model_profile_id,
                    normalization_profile_id, status, created_at, source_received_at,
                    transcript_content_expires_at, content_purged_at,
@@ -2231,7 +2290,7 @@ class PostgresRepository:
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
               AND consent_record_id = :consent_id
-              AND ingest_mode = 'external_async_transcript'
+              AND ingest_mode = :normalized_ingest_mode
               AND transcript_contract_version = :contract_version
             FOR UPDATE
             """,
@@ -2239,6 +2298,7 @@ class PostgresRepository:
             session_id=session_id,
             consent_id=consent_id,
             contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+            normalized_ingest_mode=self._normalized_ingest_mode.value,
         )
         if row is None:
             return None
@@ -2910,7 +2970,7 @@ class PostgresRepository:
             raise WorkingTranscriptPersistenceError(
                 WorkingTranscriptPersistenceCode.RETENTION_EXPIRED
             )
-        if session.status in {
+        if isinstance(session.status, CapturedPreSourceStatus) or session.status in {
             ConfiguredExternalSessionStatus.CREATED,
             ConfiguredExternalSessionStatus.HANDED_OFF,
             ConfiguredExternalSessionStatus.FAILED,

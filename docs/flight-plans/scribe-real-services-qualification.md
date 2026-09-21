@@ -151,6 +151,21 @@ Implementation and live evidence are recorded in
 
 ### Captured bilingual source — owner-approved 2026-09-21
 
+Follow-on runtime increment: add explicit captured-mode PostgreSQL admission and
+atomic leased Speech-result publication, default off and without public routes.
+Reuse the normalized writer, encrypted execution store and creator-review service;
+keep all legacy/imported queries and defaults isolated. Validate exact job ID,
+attempt, lease, source profile, current consent and retention. Bind exact replay to
+an existing receipt; never turn a completed worker retry into a source correction.
+No provider call or worker dispatch is introduced by the result publisher itself.
+Test synthetic result publication, translated creator review, lost commit reply,
+pool/process recovery, concurrent calls, stale/revoked/expired work and rollback.
+Use a new local cluster; tests may remove only their exact generated tenant rows
+with the disposable administrator after assertions, so later historical migration
+rehearsals encounter no configured-capture fixtures. This test-only cleanup may
+disable immutable-row triggers for those rows inside its transaction; it is not a
+runtime deletion/retention path or permission to touch any existing database.
+
 The owner explicitly approved an additional Scribe-only dormant migration to
 connect captured audio to bilingual storage, tested only in a **new disposable
 local database**. No cloud/shared database, Core/Auth/IAM/Zoom/staging edit,

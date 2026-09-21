@@ -11,7 +11,56 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: captured bilingual storage expansion — 17:45 UTC
+## Latest: atomic captured Speech-result runtime — 18:01 UTC
+
+Added default-off `CapturedSourceRuntime` and an explicit captured-mode PostgreSQL
+provider. Trusted Core admission creates or exactly reuses an immutable captured
+session. A trusted worker's result is normalized only after matching current
+consent, job, attempt, lease, language and captured profile. Normalized source,
+initial working projection and job completion commit together; expiry at the
+final lease check rolls back all three. A completed retry must match its existing
+receipt and source; it cannot create a correction or a second transcription.
+No Speech/model call is made by the publisher. ADR 0043 records the boundary.
+
+The same captured-mode provider now reuses the existing encrypted translation
+executor and creator-review service. Source retains the captured Azure profile,
+Spanish/English text, phrase timing and speaker identity without inferring clinical
+roles. Only explicit creator acceptance makes translated English eligible for the
+existing Core handoff serializer. Default imported/legacy readers and writers
+still cannot access these configured captures. Consent revocation closes their
+capture leases. There is no new identity path, route, environment bootstrap,
+public API change, migration, provider invocation, push, PR or deployment.
+
+**1,009 complete Python tests passed, zero failures/errors/skips**, 60.63 seconds.
+The 25 new cases cover exact/conflicting admission, wrong tenant/session/job/
+attempt/token, revoked consent, expired lease, atomic rollback, cancellation,
+concurrent completion, uncertain commit recovery, English-only and quality-blocked
+source, encrypted execution, creator review and retention cascade. One actual
+owned child process exits after publication commits without returning its receipt;
+a fresh process recovers that receipt with one source and working version. Pool
+restart also recovers the encrypted translation job without another adapter call.
+Speech results, model translation and cryptographic key material are synthetic
+fixtures. This is runtime/storage recovery evidence, not live audio, clinical
+fidelity, signed-client or actual Core SOAP acceptance.
+
+Ruff on changed code/tests, strict Pyright across the complete API, unchanged
+OpenAPI regeneration, ADR numbering and whitespace checks pass. JUnit:
+`/private/tmp/scribe-captured-runtime.YZXvdk/full-results.xml`, SHA-256
+`9de715eb59ef5995d41268ddab89c85814890d38e6a7c0fe71f28c4410cb4be1`.
+Fresh UTF-8 database `scribe_captured_runtime_test` used only its private Unix
+socket on the new cluster, no TCP listener. Exact generated tenant rows were
+removed by the declared test-only teardown; the application retention path was
+tested separately before teardown. The final schema contains only
+`alembic_version`. Exact owned PID 49224 was stopped; its data/logs remain. Other
+databases, apps, signed packages and owner previews were untouched.
+
+Next: connect the encrypted capture protocol, audio assembly and leased worker to
+this publisher, then wire automatic durable translation dispatch and the
+authenticated review receiver. Existing clients cannot yet record into the newly
+configured path. Real identity/device/service/fidelity and signed-release gates
+remain open; the overall goal remains active and MCD clinical use is not enabled.
+
+## Earlier: captured bilingual storage expansion — 17:45 UTC
 
 The owner explicitly approved the additional Scribe-only dormant capture/storage
 migration, tested only in a new disposable local database. Revision

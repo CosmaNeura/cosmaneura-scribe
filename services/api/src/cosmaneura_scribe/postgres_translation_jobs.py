@@ -19,6 +19,7 @@ from .normalized_source_persistence import (
     NormalizedSourceTranscriptRecord,
 )
 from .postgres_repository import PostgresRepository
+from .session_state_v1 import SessionIngestMode
 from .translation_adapter import ReservedSpanishTranslation
 from .translation_attempt_persistence import translation_matches_command
 from .translation_execution_v1 import DurableTranslationJobRecordV1, DurableTranslationJobStatus
@@ -76,9 +77,18 @@ class PostgresTranslationJobStore:
     consent -> session -> job is the lock order shared with existing writers.
     """
 
-    def __init__(self, engine: AsyncEngine, cipher: TranslationJobCipher) -> None:
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        cipher: TranslationJobCipher,
+        *,
+        normalized_ingest_mode: SessionIngestMode = SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT,
+    ) -> None:
+        if not isinstance(cast(object, normalized_ingest_mode), SessionIngestMode):
+            raise ValueError("translation store ingest mode is invalid")
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
         self._cipher = cipher
+        self._normalized_ingest_mode = normalized_ingest_mode
 
     @asynccontextmanager
     async def _transaction(
@@ -91,7 +101,9 @@ class PostgresTranslationJobStore:
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(tenant_id)},
             )
-            yield database, PostgresRepository(database)
+            yield database, PostgresRepository(
+                database, normalized_ingest_mode=self._normalized_ingest_mode
+            )
 
     @staticmethod
     async def _now(database: AsyncSession) -> datetime:
