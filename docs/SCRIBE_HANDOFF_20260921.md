@@ -19,6 +19,13 @@ passing local browser/server evidence. Native/hosted activation remains open.
 The checkpoint below remains historical; native/hosted/full-workflow acceptance
 has not been declared complete.
 
+Latest recovery: read `beta/SCRIBE_RECOVERY_20260921.md` before using any temporary
+path below. The temporary W13 and local browser evidence directories are absent;
+committed implementation survives. Verified recovered native inputs, a provider
+build and a separately built diagnostic now live in a durable workspace folder.
+The diagnostic is closed pending the specific launch confirmation required by
+automatic approval review.
+
 ## 1. Your assignment
 
 Take over the existing Scribe implementation at this checkpoint. Preserve the
