@@ -3,11 +3,13 @@
 Status: meaningful implementation and real-service/build evidence; **not a beta
 release or closure of the five owner goals**. All repository edits remain on
 `codex/beta-preintegration-20260904`, based on `1e48c124f355f486d8106c7f7441fd13895c3c97`.
-No push, PR, migration of an existing/shared database, shared Core/Auth/IAM/Zoom/
-staging edit or Azure resource-configuration mutation occurred. Newer integration
-checkouts were read-only. Later migration tests used a new disposable local
-cluster. Following explicit owner approval, one existing disabled Speech job was
-started without overrides; its fail-closed result is recorded below.
+No push, PR, migration of an existing/shared database or shared Core/Auth/IAM/Zoom/
+staging edit occurred. Newer integration checkouts were read-only. Later migration
+tests used a new disposable local cluster. Following explicit owner approval,
+the existing private Speech job passed both disabled-state and enabled synthetic
+acceptance. The enabled trial temporarily changed only its environment settings
+and added one account-scoped Speech User assignment; both were reversed and the
+original resource/output state verified. No clinical runtime was activated.
 
 ## What “clinical evaluation” means here
 
@@ -28,7 +30,7 @@ noise, omissions, or end-to-end Core notes. Those remain acceptance work.
 | Goal | New evidence | Remaining gate |
 | --- | --- | --- |
 | Real auth/token custody | Reused selected W13 Clerk/Keychain candidate and initiated owner sign-in. Timeout kept workspace closed. No password/token was read or recorded. | Successful owner sign-in, organization/audience verification, restart/refresh, revocation/logout and native-only custody evidence on Mac and iPhone. No new IdP/auth path is proposed. |
-| Real STT/model/translation | Concrete Azure GPT-4.1 translator now implements the existing adapter interface. Final real run returned seven HTTP 200/reference agreements and one HTTP 400 rejection. Azure phrase-language evidence now survives into an opt-in normalized-source bridge. The existing private Speech job passed its live disabled-state check. | Enabled private Speech inference; admitted provider/model profiles; durable normalized receiver/translation/review integration in the current standalone and OS paths. No runtime route or worker registers the new bridge/translator yet. |
+| Real STT/model/translation | Concrete Azure GPT-4.1 translator now implements the existing adapter interface. Final real run returned seven HTTP 200/reference agreements and one HTTP 400 rejection. Azure phrase-language evidence now survives into an opt-in normalized-source bridge. The private Speech job passed disabled-state and real, two-case synthetic inference acceptance; its temporary permission is removed. | Admitted provider/model profiles; durable normalized receiver/translation/review integration in the current standalone and OS paths; full mixed-language audio acceptance. No runtime route or worker registers the new bridge/translator yet. |
 | Physical iPhone | Verified development package installed and launched on the physical iPhone 12 after owner passcode entry. Exact bundle was absent before installation, installed version/build is `1.0/1`, and its process was observed running. Signature and artifact hashes reverified. | Rendered UI, successful Tester login, token custody, recording/interruption/recovery and end-to-end services remain unqualified. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
 | Source fidelity | Fixed tests cover negation, dose, self-correction, uncertainty, pregnancy, allergy, attribution and quoted instruction text. Golden references were defined before service calls. | Quoted-instruction input is rejected; safe blocked/review UX must be exercised. Full consented synthetic audio/translation/Core-note loop and human review remain. Do not change references or bypass provider filtering merely to get a pass. |
 | Signed/reproducible artifacts | Canonical-path clean builds now match compiled payloads and UUIDs; signatures, public entitlements and all 332 source inputs verify. The exact exported development IPA, source and symbols are retained outside temporary storage. | Signing/ZIP bytes still vary; cross-machine/hermetic reproducibility is unproven. No Apple Distribution identity, TestFlight acceptance, desktop notarization, cross-client installer/update acceptance or production artifact set was established. |
@@ -104,7 +106,7 @@ The metadata-only device/Speech record is retained in the artifact package as
 `device-and-speech-preflight.json`, SHA-256
 `9408e3d8dfd392a81b7d0b7d7efbe9e117d1991b07e8075a1545e4b71142c14a`.
 
-Enablement remains a technical execution prerequisite, not renewed owner consent:
+At that checkpoint, enablement was a technical prerequisite, not renewed consent:
 follow [Private Speech acceptance](SPEECH_PRIVATE_ACCEPTANCE.md) using a current,
 reviewed saved plan and qualified private infrastructure path. No such runner is
 currently present in the isolated resource inventory. The retired temporary
@@ -139,12 +141,13 @@ hostname, but answers were **not exclusively private and did not match the owned
 private endpoint**. No address was printed, credential requested or HTTP request
 sent. This Mac therefore cannot be called the qualified private runner.
 
-Proposed execution-method exception, **not yet approved or performed**: use this
+Execution-method exception, **explicitly approved by the owner on 2026-09-21**: use this
 Mac only for an authenticated, saved, refresh-enabled management-plane plan
 targeting the existing Speech job and its account-scoped Speech User assignment.
 The job continues to execute audio processing only inside the existing private
 environment. This changes the runbook's private-operator-location requirement,
-not the Speech network boundary; obtain explicit owner direction before use.
+not the Speech network boundary. The scoped approval is recorded in the flight
+plan; the completed saved-plan review, execution and reversal are recorded next.
 
 The reviewed plan must allow only the job's raw gate/backend/owned endpoint and
 private-IP settings plus the single temporary Speech User assignment. Reject
@@ -161,6 +164,83 @@ Native identity remains a separate open gate: the physical app is installed and
 running, but Tester sign-in has not been reported or verified. Browser-based
 identity inspection could not initialize because the computer-use connection was
 unavailable; no Clerk setting or session was changed.
+
+### Follow-on: private live Speech acceptance and verified reversal
+
+The owner's approved management-plane exception was executed on 2026-09-21.
+No new runner was created. Audio stayed inside the existing private job; the Mac
+only performed authenticated management/state operations. The working source was
+an unmodified export of merged `main` commit
+`d6fcdb2d0a94c9f158b74593e0fb18d810209673`, whose infrastructure has no difference
+from the previously inspected `1aab63c` tree. The local branch and remote-tracking
+refs were not moved. OpenTofu 1.12.5 and locked AzureRM 4.81.0 were reused with
+provider registration disabled.
+
+Raw state, plans and apply logs stayed outside Git inside an AES-256 encrypted
+temporary disk image, with ownership enabled and a private mount directory.
+The pre-change Azure state blob was snapshotted conditionally on its ETag at
+`2026-09-21T13:19:09.8023055Z`; that protected remote snapshot is retained. Its
+SHA-256 is `e63dd5bc8bbdd207ac1eb1c727fdcce28d62b952fc4742227357ba1c92d7b996`.
+Lineage remained `9cc263b9-f1e2-dfc8-4a33-a67cb73459a6`; serials were
+**62 before, 63 enabled, 64 restored**. No force unlock or local-state replacement
+was used.
+
+The refreshed, saved enable plan changed exactly two resources: an environment-
+only update to `azurerm_container_app_job.speech_smoke[0]` and creation of its
+single Cognitive Services Speech User assignment, scoped to the owned Speech
+account. Field-level review rejected all other job changes, dependency actions,
+output changes and drift. Live job readback matched the plan before and after.
+The existing API/image mismatch was retained temporarily, not reconciled through
+a full apply. Enable-plan SHA-256:
+`fa5e482e8242cb684ae68fc81b0b81af04678788092d106633dc567a2f727f57`.
+
+Exactly one enabled execution, `cosmaneura-scribe-dev-smoke-0wnnz72`, ran without
+command, argument, image or environment overrides:
+
+- Azure start: `2026-09-21T13:35:11Z`; terminal **Succeeded** at
+  `2026-09-21T13:35:40Z`.
+- Exact-execution event: **`speech_smoke.completed`**, no error class, at
+  `2026-09-21T13:35:38.6728992Z`; runner duration `1428.824` ms.
+- The runner enforces the two hash-pinned, consented synthetic cases and a
+  per-case WER ceiling of **0.25**, positive duration and nonempty segments.
+  Individual WER values are not logged; no numeric per-case result is claimed.
+- The effective execution template matches the enabled job after explicitly
+  verifying empty probe/init/volume defaults and the execution API's extra empty
+  `ephemeralStorage` field. Execution identity is omitted by Azure; the exact
+  dedicated identity was verified from job readback.
+- The image tag remained `eaf343a1152eccf7fff0a96652a1c3731902c30c`. The earlier
+  registry digest is recorded above, but the actual pulled digest is not exposed
+  in the inspected execution response. This remains a release-provenance gap.
+
+After the terminal result, the separately generated and reviewed reverse plan
+was revalidated against the unchanged enabled state (serial 63) and current job.
+Reverse-plan SHA-256:
+`ae951ae0d683f864f70bdacb732513841c3eaa53bf6e862d9daf3add0f51674c`.
+Apply succeeded: one job update and deletion of only the temporary assignment
+`53cd9a48-e2d8-c878-bcd6-f83644037df5`. The gate is false, backend `none`, and
+owned endpoint settings are absent. Role readback shows only the original
+registry-scoped AcrPull assignment. Both executions are terminal; none was retried.
+
+Every resource and output in restored state matches the original snapshot
+exactly: **37 resources; no changed resource content or outputs**. Azure readback
+also verifies the unchanged API revision `cosmaneura-scribe-dev-api--0000004`,
+image `804c4bacd692bc157ab101ff5055d999e00a37cc`, Speech public access disabled,
+local auth disabled, default-deny ACL with zero IP rules and approved private
+connection. Clinical transcription remains disabled. The retained evidence is
+metadata only: no recognized/reference text, audio, endpoint, private IP or token.
+The artifact package retains `speech-private-acceptance.json`, SHA-256
+`07da93fb05a88c8742434a326048d57f1594de13189ba32db0429c909474d5c3`.
+The final backend lease is `available` / `unlocked`.
+After all nine artifact checksums passed, the exact encrypted temporary plan
+image was cleanly detached. Its ephemeral passphrase was not saved; retain the
+protected remote snapshot and metadata receipt, not reusable local apply files.
+The original dormant job, Speech account and registry permission remain intact.
+
+This closes basic real private Speech connectivity and the fixed two-case
+acceptance gate. It does **not** qualify Spanish/English mixed-speaker audio,
+the dormant translation runtime, clinical accuracy, Core SOAP output, native
+identity, an end-to-end physical recording or a beta release. The existing seven-
+case real Spanish-to-English reference agreements remain separate evidence.
 
 ## iPhone artifact provenance and repeat-build result
 
@@ -352,10 +432,9 @@ Next sequence:
    Complete selected test-account sign-in and qualify real token custody, restart
    and logout. Preserve all existing apps/drafts and enter credentials only in
    native/hosted UI; never send a passcode or password to the agent.
-2. Execute the already-approved bounded private Speech enablement through a
-   qualified private saved-plan path, retaining all unrelated deployed state.
-   Its disabled-state live test has passed. Keep clinical transcription disabled
-   until the enabled synthetic acceptance run passes.
+2. Basic private Speech acceptance is complete and its temporary authority is
+   revoked. Do not repeat the terminal trials. Keep clinical transcription off
+   until the separate reconciled runtime and bilingual acceptance gates pass.
 3. Wire the admitted Speech source and real translator through durable receiver,
    current consent/creator checks and review in a reconciled Scribe integration
    slice; reuse the same capability from standalone and CosmasOS.

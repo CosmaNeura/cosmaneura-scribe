@@ -52,7 +52,7 @@ first adapter change has no route, default setting, schema, worker activation or
 environment mutation. Recovery leaves it unconfigured. Source review and exact
 artifact evidence remain prerequisites to promotion.
 
-Current observations: the physical iPhone 12 is paired, iOS 26.7, Developer Mode
+Initial observations: the physical iPhone 12 is paired, iOS 26.7, Developer Mode
 enabled; Xcode 27 reports its developer disk image cannot be mounted. One Apple
 Development identity is available; no distribution identity was listed. The
 owned Azure Scribe Speech resource exists in East US with public access disabled.
@@ -103,3 +103,33 @@ checks before installing the preserved development package. Never overwrite an
 existing unrelated app or collect a password, code or token. The W13 identity
 snapshot still has capture/model services disabled and does not qualify full
 device capture or a phone-reachable backend.
+
+### Approved management-plane execution method
+
+On 2026-09-21 the owner explicitly approved the proposed method instead of
+creating another private infrastructure runner. Use this Mac only for the
+authenticated, refreshed, saved Speech-only infrastructure plan. Audio execution
+remains in the existing private Scribe job. This is the scoped exception to the
+private-operator-location requirement in `SPEECH_PRIVATE_ACCEPTANCE.md`.
+
+Protect the exact existing remote state before planning; keep all plans/state
+outside Git, preserve locking and review current lineage/serial before apply.
+The only permitted enablement changes are the existing smoke job's raw gate,
+backend and owned endpoint/private-IP environment settings, plus its single
+account-scoped Speech User assignment. Reject image/command/identity changes or
+any API, network, key, database, shared IAM or other dependency action. Execute
+the job once without overrides, verify its effective template and retain only
+fixed outcome metadata. After the terminal result, use a fresh reviewed saved
+reverse plan to close the gate and remove only the temporary assignment.
+No new runner, unmerged deployment, PR/push, cohort activation or PHI use is
+authorized. Existing image drift is retained temporarily, not silently reconciled.
+
+Execution completed on 2026-09-21: one enabled, no-override private Speech run
+`cosmaneura-scribe-dev-smoke-0wnnz72` succeeded and emitted
+`speech_smoke.completed`. Both pinned synthetic cases passed the runner's 0.25
+per-case WER ceiling. A reviewed reverse plan then restored the disabled job and
+removed only the temporary account-scoped Speech User assignment. All 37 original
+resource records and outputs match the protected snapshot; state lineage is
+unchanged, serial 62 → 63 → 64. The API image/revision and private Speech network
+boundary are unchanged. No trial retry or clinical activation is authorized by
+this result. See the checkpoint for exact plan hashes, timestamps and limitations.
