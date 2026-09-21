@@ -519,7 +519,89 @@ bilingual runtime integration. Those gates remain open. Read-only inspection of
 the newer Scribe integration still finds only the same durable-store protocol,
 not a reusable production implementation.
 
-### Next local integration packet — scope extension requested, not approved
+### Approved local encrypted-store packet — implemented and rehearsed
+
+The owner explicitly approved a Scribe-only encrypted job store and dormant
+migration, with tests confined to a disposable local database and no cloud/shared
+platform changes. The implementation is on the existing unpushed branch:
+
+- `TranslationJobCipher`: authenticated AES-256-GCM envelopes with fresh job-only
+  keys/nonces, wrapped through the existing RSA-3072 server key-custody interface.
+  Protected source, result and call token are encrypted; scope, lineage, lifecycle
+  times and expiry are authenticated. No plaintext job content/digest in storage
+  metadata or audit; raw SQL/validation exception context is removed.
+- `PostgresTranslationJobStore`: durable reservation, atomic claim, encrypted
+  result and exact immutable-attempt reconciliation. It reuses existing consent
+  and session locks and rejects stale source/content, revoked consent, expired
+  retention and conflicting identities. A committed claim with unknown outcome
+  never automatically calls the provider again, including with a different job ID
+  for the same source/next-attempt slot.
+- Dormant migration `0018_translation_jobs`, parent `0014` here: one new
+  Scribe-only table, forced tenant RLS, monotonic lifecycle and deferred authority
+  guards, source-retention cascade, no role or runtime grant. The distinct revision
+  avoids IDs 0015–0017 observed in the separate integration checkout. The combined
+  migration graph must still be reconciled/rehearsed before promotion.
+- Existing immutable translation attempt, English working projection and
+  creator-only review remain authoritative. A constrained local role using the
+  existing translation-grant pattern plus only job-table access passes the full
+  store/writer path without consent UPDATE, review INSERT or job DELETE rights.
+
+**Final verification: 881 passed, zero skipped, 57.78 seconds.** The new focused
+suite has **30 passing tests**: envelope tamper/tenant/state/time/key failures,
+fresh-process restoration, competing claims, revocation-before-claim, stale
+source/content, encrypted database corruption, retention cleanup, immutable
+attempt/creator review, lost claim/result/writer/marker acknowledgements, downgrade
+and reset rejection, raw-error suppression and constrained-role execution.
+Ruff, strict Pyright, ADR numbering and `git diff --check` pass. OpenAPI was
+regenerated and is unchanged. The 27 full-suite warnings are existing dependency
+deprecations. An older migration-rehearsal test needed its expected head updated
+and its disposable test-role grant restored after recreating the new table;
+runtime/bootstrap permissions were not changed.
+
+All database actions used the newly created PostgreSQL 16.15 cluster at
+`/private/tmp/scribe-encrypted-jobs-qualification.YtD3yU/data`, database
+`scribe_encrypted_jobs_test`, private Unix socket and **no TCP listener**. Before
+shutdown, exact SQL readback verified that path, only `alembic_version` remained
+in `public`, and both test application/job roles were absent. The exact server,
+PID 84227, was stopped and rechecked; data/logs were retained. Final JUnit report:
+`/private/tmp/scribe-encrypted-jobs-qualification.YtD3yU/final-results.xml`, SHA-256
+`d94bd0e6c7e22faeff9503cc515aca23d417de2f63e4c378975eae918e8a7e75`.
+
+No provider/cloud/key-vault calls, shared database changes, runtime registration,
+Core/Auth/IAM/Zoom/staging edits, other checkout edits, new branch, push, PR or
+deployment occurred in this packet. Generated local test keys are not runtime
+key-custody qualification. Independent review, combined migration graph,
+real worker/key authority, current-client receiver/review wiring and complete
+mixed-language physical-device acceptance remain promotion gates. Recovery keeps
+the additive table dormant; nonempty/non-test downgrade is rejected. See ADR 0040.
+
+### Physical phone and older-iOS requirement — latest observation
+
+The reconnected iPhone was detected as available/paired and W13 `1.0/1` remained
+installed. An attempted foreground launch was rejected because the phone had
+locked again. The owner then reported W13 open on the phone. No password, passcode
+or token was collected, and successful Tester sign-in/resulting W13 UI has **not**
+been independently observed.
+
+Xcode 27's Device Hub was opened and the physical **Johns Phone** selected, not a
+simulator. Its View Screen action ultimately reported: “Screen Sharing Unavailable
+Johns Phone must be running iOS 27.0 or above to screen share with this Mac.” This
+is a developer-viewing limitation, not a W13 launch error or product minimum.
+The owner elected to update the phone and will report completion; no further
+device action should be attempted during that update.
+
+The exact preserved W13 app's Info.plist declares `MinimumOSVersion=17.0`; composed
+Xcode/SPM inputs also target 17. Preserve **iOS 17+** as the current compatibility
+target and explicitly qualify older versions. Do not raise the product floor to
+27 merely for screen sharing, or claim an iOS 27 test proves older-version support.
+No device OS update or native deployment-target change was performed by the agent.
+
+### Historical scope request — subsequently approved, 2026-09-21
+
+The owner has now explicitly approved the Scribe-only encrypted job store and
+dormant migration below, tested only in a disposable local database. No cloud or
+shared-platform changes. The following paragraph records the earlier boundary,
+not a remaining approval request. Implementation evidence is recorded separately.
 
 ADR 0037's earlier pre-integration restriction explicitly excludes a production
 job-store schema. The completed Speech execution-method exception did not remove

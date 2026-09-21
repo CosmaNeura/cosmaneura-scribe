@@ -44,6 +44,19 @@ Credentials stay server-side and are never written to source or evidence.
    certificate/profile explicitly. A development signature is not distribution
    acceptance. Publishing/admitting testers requires its applicable authority.
 
+### Older iOS compatibility — owner clarification, 2026-09-21
+
+The owner may update this test phone to iOS 27 to enable Apple's Device Hub screen
+sharing, but explicitly requires support for older iOS releases. The preserved
+W13 IPA declares `MinimumOSVersion=17.0`; its composed Xcode/SPM inputs also target
+iOS 17. Do not raise that target to 27 for tooling convenience. Qualify iOS 17+
+separately: minimum-version build/API availability, representative older OS
+runtime, authentication/Keychain/refresh/logout and capture/recovery on physical
+hardware. A successful iOS 27 test cannot qualify all older releases. Earlier
+generic recorder documentation mentioning iOS 15 does not lower W13's actual
+native-auth composition minimum. If supporting iOS 15/16 becomes required, assess
+SDK/API compatibility explicitly before changing the product support floor.
+
 ## Evidence and recovery
 
 Tier 2: protected text, credentials and cross-service contracts. Run focused
@@ -79,6 +92,37 @@ Implementation and live evidence are recorded in
 [the 2026-09-21 checkpoint](../SCRIBE_REAL_SERVICES_CHECKPOINT_20260921.md).
 
 ## Disposable storage acceptance extension
+
+### Encrypted translation job store — owner-approved 2026-09-21
+
+The owner explicitly approved the Scribe-only encrypted job store and dormant
+migration, tested only in a disposable local database. This supersedes ADR 0037's
+earlier no-store restriction only for this local packet. No cloud or shared
+platform changes, runtime registration, new endpoint, push, PR or deployment.
+
+Tier 2 expand rung: add one encrypted job table, with tenant RLS, immutable
+reservation identity, monotonic transitions and a source-lineage foreign key.
+Reuse the existing RSA-3072 key-publication/unwrapping interfaces, but generate
+fresh job-only AES-256 keys; never reuse a recorder's content key. Authenticate
+scope, state and timestamps with the ciphertext. Reuse existing consent/session
+locks and recheck current source/retention before atomic provider admission.
+An ambiguous started call remains non-replayable. Source-retention deletion must
+cascade to the encrypted jobs. No plaintext content or content digest in audit.
+
+Use a distinct revision `0018_translation_jobs`, parent `0014` on this isolated
+branch. Read-only inspection found revisions 0015–0017 in the separate integration
+checkout; do not edit or import them. Before eventual integration, reconcile the
+migration graph explicitly and rehearse it again; this local parent is not a
+claim that the combined graph is ready to deploy.
+
+Acceptance: fresh local PostgreSQL only, restricted non-owner role, encryption
+and tamper negatives, process restart, competing claims, stale source, revoked
+consent, retention cascade, immutable attempt/review reuse, lost acknowledgements,
+and full regression checks. Tests use generated local RSA keys, not cloud keys.
+Recovery leaves the expand table dormant. A used table cannot be downgraded;
+empty-table removal is permitted only by this disposable-test rehearsal. Stop
+the exact owned database after testing. Independent review and least-privilege
+runtime grants remain promotion gates; existing runtime bootstrap is unchanged.
 
 Run the existing migration/restricted-role/recovery tests against a new local
 PostgreSQL cluster under an owned temporary directory, database name ending in

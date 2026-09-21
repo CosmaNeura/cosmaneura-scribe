@@ -13,6 +13,12 @@ idempotency key, so exactly-once provider execution cannot honestly be claimed.
 No production job-store schema, managed identity, provider SDK, or deployment may be introduced on
 the pre-integration branch while the shared platform is stabilizing.
 
+**Scoped amendment, 2026-09-21:** the owner subsequently approved a Scribe-only
+encrypted job store and dormant additive migration, rehearsed only in a new
+disposable local database. That approval supersedes the no-store/schema portion
+above, not the cloud/shared-platform/runtime-activation boundaries. The concrete
+design and recovery are recorded in ADR 0040 and the real-services flight plan.
+
 ## Decision
 
 Define a dormant durable-store and worker contract with four monotonic states:
@@ -59,8 +65,9 @@ resolution.
 - The current fail-closed ambiguity state can sacrifice automatic progress after a process crash;
   it prevents an unprovable automatic duplicate provider call. Provider-side idempotency may be
   evaluated later under a separate privacy and integration decision.
-- This packet adds no store implementation, migration, table, queue, provider SDK/call, route,
-  setting, secret, Auth/IAM change, environment action, deployment, or live processing.
+- The original contract packet added no store implementation, migration, table, queue,
+  provider SDK/call, route, setting, secret, Auth/IAM change, environment action,
+  deployment, or live processing.
 
 ## Consequences and next gates
 
