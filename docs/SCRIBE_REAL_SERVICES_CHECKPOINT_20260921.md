@@ -560,3 +560,32 @@ Next sequence:
 5. Resolve reproducibility differences and distribution inputs; build/verify the
    exact desktop+iOS artifact set with installer/update/rollback evidence. No
    cohort admission, PHI use, release upload or production activation is implied.
+
+## Completion/blocker audit — 2026-09-21, approximately 13:59 UTC
+
+The full standalone-plus-CosmasOS goal is **not complete**. The last continuation
+made progress by diagnosing the actual filtering response and verifying its
+source-preserving failure path. Current read-only checks establish these gates:
+
+| Required outcome | Authoritative evidence | Remaining blocker |
+| --- | --- | --- |
+| Real native authentication/token custody | W13 installed/launched earlier; no successful owner sign-in or native custody receipt. Current app/process queries cannot reach the phone. | Owner Tester sign-in result, then claim/Keychain/refresh/restart/logout/revocation qualification. Do not read or collect credentials to substitute for that trial. |
+| Real STT/model/Spanish-to-English integration for both clients | Private Speech acceptance passed; seven fixed translation reference agreements and one diagnosed filter rejection; source/translation bridges remain unregistered and `DurableTranslationJobStore` remains only a protocol. | Approval for the proposed local encrypted-store/additive-migration packet, current-authority admission and reconciled runtime integration. The earlier no-new-job-store restriction has not been lifted. |
+| Physical iPhone qualification | The stable hardware identifier now resolves to `Johns Phone`, iPhone 12, state **unavailable**. Exact W13 app queries through both the earlier CoreDevice identifier and the hardware identifier fail with CoreDevice 4016. | Reconnect/unlock the phone and complete sign-in; approved reachable HTTPS backend and real capture/interruption/recovery trials remain. Query failure does not mean the earlier installation was removed. |
+| Source fidelity plus existing Core SOAP evaluation | Fixed synthetic reference and failure-path evidence only; no second note engine introduced. | Complete consented mixed English/Spanish audio → reviewed English → existing Core SOAP output and human evaluation on the integrated service path. |
+| Reproducible signed release artifacts | All ten retained artifact checksums pass. Fresh signing-identity inventory shows one Apple Development identity only. Canonical-path development payload reproducibility is recorded above. | Appropriate distribution/notarization identities, exact integrated release source/artifact selection and installer/update acceptance. Development signing is not a production release. |
+
+The phone's `unavailable` state was verified by name and its recorded hardware
+identifier after the initial CoreDevice lookup failed; no inference was made
+from a timeout alone. The Mac app inventory exposes only the older CosmasOS W6
+qualification app, whose existing state remains protected. No app, auth helper,
+device trial or terminal Speech execution was restarted. No token/data container
+was inspected. The W13 packaged web assets still contain the Mac-local
+`127.0.0.1:8046` backend address; that is not a phone-reachable service.
+
+The encrypted-store approval and native sign-in input have remained outstanding
+through the worker-integrity continuation, filter-diagnostic continuation and
+this audit. Independent safe work in those turns is now finished. Advancing the
+actual integration/device/release requirements needs owner input or the identified
+external-state changes; additional synthetic checkpoints do not close those gates.
+Keep the full goal intact and resume from these saved results when unblocked.
