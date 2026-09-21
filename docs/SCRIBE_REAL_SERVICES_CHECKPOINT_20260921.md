@@ -35,6 +35,92 @@ noise, omissions, or end-to-end Core notes. Those remain acceptance work.
 | Source fidelity | Fixed tests cover negation, dose, self-correction, uncertainty, pregnancy, allergy, attribution and quoted instruction text. Golden references were defined before service calls. A diagnostic call confirms Azure content filtering rejects the quoted-instruction case; the real adapter and synthetic writer test preserve source and block note handoff/review approval. | User-facing blocked/recovery UX, full consented synthetic audio/translation/Core-note loop and human review remain. Do not change references or bypass provider filtering merely to get a pass. |
 | Signed/reproducible artifacts | Canonical-path clean builds now match compiled payloads and UUIDs; signatures, public entitlements and all 332 source inputs verify. The exact exported development IPA, source and symbols are retained outside temporary storage. | Signing/ZIP bytes still vary; cross-machine/hermetic reproducibility is unproven. No Apple Distribution identity, TestFlight acceptance, desktop notarization, cross-client installer/update acceptance or production artifact set was established. |
 
+## Follow-on: bilingual service/storage seam acceptance
+
+After encrypted-store commit `b673fbf`, the same local branch gained a test-only
+composition in `tests/test_bilingual_service_storage_seam.py`. It connects the
+actual Azure Speech result parser/normalizer, existing normalized receiver, real
+encrypted PostgreSQL job store, actual Azure translation adapter, immutable
+attempt/review writers and existing Core handoff serializer. Speech SDK results,
+HTTP responses, credentials, network guards and RSA keys are synthetic. No audio
+recognition, live inference, real user authorization or Core note generation ran.
+
+Six cases pass: successful translation, Azure HTTP filtering, structured refusal,
+incomplete output, unknown source language and overlapping speech. The successful
+case preserves English provider text and a single patient speaker switching from
+Spanish to English; only the Spanish segment reaches the translation adapter.
+Source text/locale/timing/speaker IDs are unchanged in PostgreSQL. Reopening the
+repository/connection pool recovers the committed job without another provider
+call. Persisted English working rows are read independently of in-memory results;
+only creator review permits handoff. Failed translations cannot be accepted, and
+unknown-language/overlap sources cannot reserve provider work. These checks are
+plumbing/contract evidence, not a measurement of clinical transcription accuracy.
+
+**108 related tests passed, zero failures/errors/skips, 8.950 seconds**; Ruff,
+strict Pyright and `git diff --check` pass. This run includes the six new tests
+and existing encrypted-store, Speech-source, Azure translation, execution,
+vertical handoff and fidelity suites. The prior 881-test full run remains the
+unchanged-runtime baseline; the full suite was not rerun for this test-only delta.
+Initial attempts corrected the command's database driver and filled required
+confidence fields in the mocked Speech responses; no runtime was changed.
+
+The fresh disposable PostgreSQL 16.15 cluster used only a private mode-0700 Unix
+socket, with no TCP listener, at `/private/tmp/scribe-bilingual-seam.P5auNi/data`;
+database `scribe_bilingual_seam_test`. Teardown left only `alembic_version` and
+removed the temporary roles. Its exact process (93321) was stopped and the
+stopped state verified; logs/data remain. JUnit evidence:
+`/private/tmp/scribe-bilingual-seam.P5auNi/final-results.xml`, SHA-256
+`db1e8790db0aed3e8968fe713ab559b6cf075bb2950ab53eaffcf4cb1309f206`.
+The existing W13 database was untouched. Its API execution handle `62456` remained
+live when polled; that is not evidence of successful Tester authentication.
+
+The OpenAI Docs skill directed inspection of the official
+[Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
+The new integrated checks carry refusal/incomplete-output rejection through the
+database and review/handoff gates. A valid schema still does not establish
+meaning or fidelity. Model, prompt, reference corpus and provider filters remain
+unchanged; this follow-on made no live model request.
+
+### Remaining seams exposed by this composition
+
+- The source receiver still stamps its existing external-source profile. The
+  test does not admit an Azure recognition profile or connect a captured session
+  to that receiver. Preserve actual provenance in the eventual integration.
+- Persisted working-text inspection here is a test-only SQL reader, not a new
+  creator-authorized endpoint. Runtime reads/dispatch/review and current
+  standalone/CosmasOS clients still require integration.
+- Speaker identity survives language changes, but the parser correctly leaves
+  provider/patient roles unknown. The existing generic handoff labels them
+  `Unknown`; it does not carry speaker IDs. This is **not** acceptable evidence
+  of provider-versus-patient clinical attribution. Qualify explicit role review
+  and downstream attribution; never infer roles merely from spoken language.
+- The phone remains untouched while the owner updates iOS. W13 on the Mac was
+  closed/reopened at the owner's request and its helper window was observed;
+  the actual hosted login form and successful Tester sign-in are not verified.
+
+### Reuse of Core's existing SOAP evaluation
+
+Read-only inspection of `/Users/jw/Desktop/Cosmas/cosmas-os-core-integration`
+(HEAD `e21ba4c1fb1027de8123aca9b8aee25b8a11b612`, dirty; no edits here) found the
+existing live-note suite `tests/job/summarize_test.py` and `tests/eval.py` judge.
+The suite covers schema order, patient/doctor actions, pronouns, subjective versus
+doctor interpretation, current versus prescribed medications, reasons and ROS.
+It is gated by `RUN_LIVE_LLM_TESTS=true` and existing Azure credential settings;
+it was neither imported nor run. Source SHA-256 values:
+
+- `tests/job/summarize_test.py`:
+  `93ff3b13576465679c18aff5017ef3710749f9d10095c9f0ca4dc2cd939da5c1`.
+- `tests/eval.py`:
+  `e4a0318f6fb081991ffe26d3bebc621ec03e0248957d09ef5a55b605125751e7`.
+
+Reuse these criteria and Core's generator when the exact integrated synthetic
+trial is authorized. Add source-to-English checks for negation, doses/units,
+omissions, uncertainty and attribution, with human adjudication of critical
+errors. The existing `n=1, m=2` best-of-two helper is not a fidelity pass rate:
+retain every attempted output/outcome in the qualification denominator. Do not
+create another clinical generator, collect API keys, or change Core to make this
+local test pass. The full five-goal objective remains open.
+
 ## Translation implementation and final real run
 
 `azure_translation.py` uses server-side Entra credentials, fixed Spanish-to-English

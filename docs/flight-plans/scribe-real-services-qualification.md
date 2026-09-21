@@ -124,6 +124,17 @@ empty-table removal is permitted only by this disposable-test rehearsal. Stop
 the exact owned database after testing. Independent review and least-privilege
 runtime grants remain promotion gates; existing runtime bootstrap is unchanged.
 
+Follow-on local acceptance composes the existing Speech-result normalizer,
+versioned source receiver, encrypted job store, actual translation adapter with
+offline HTTP responses, immutable attempt/creator review and English handoff.
+Use the same disposable-only boundary. Cover an English provider with a patient
+switching between Spanish and English, refusal/incomplete results, unknown
+language and overlap. Preserve source and speaker identity, reject handoff until
+review, and reconnect before reconciliation to detect accidental process-memory
+dependencies. This is a test-only composition: it does not register a worker,
+admit an Azure source profile, implement a runtime transcript reader, connect
+Core, exercise real speech recognition or qualify a physical client.
+
 Run the existing migration/restricted-role/recovery tests against a new local
 PostgreSQL cluster under an owned temporary directory, database name ending in
 `_test`, Unix socket only, no TCP listener. Only invented test data is admitted.
