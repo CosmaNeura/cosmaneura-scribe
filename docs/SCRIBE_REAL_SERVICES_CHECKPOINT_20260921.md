@@ -26,9 +26,9 @@ noise, omissions, or end-to-end Core notes. Those remain acceptance work.
 | --- | --- | --- |
 | Real auth/token custody | Reused selected W13 Clerk/Keychain candidate and initiated owner sign-in. Timeout kept workspace closed. No password/token was read or recorded. | Successful owner sign-in, organization/audience verification, restart/refresh, revocation/logout and native-only custody evidence on Mac and iPhone. No new IdP/auth path is proposed. |
 | Real STT/model/translation | Concrete Azure GPT-4.1 translator now implements the existing adapter interface. Final real run returned seven HTTP 200/reference agreements and one HTTP 400 rejection. Azure phrase-language evidence now survives into an opt-in normalized-source bridge. | Private Speech job execution; admitted provider/model profiles; durable normalized receiver/translation/review integration in the current standalone and OS paths. No runtime route or worker registers the new bridge/translator yet. |
-| Physical iPhone | Arm64 device build and two Release-configuration development-signed archives succeeded; signatures and device entitlements verify. | Paired iPhone 12 became unavailable; earlier developer-image services were unavailable. No install or physical recording was completed. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
+| Physical iPhone | Arm64 device builds, Release-configuration archives and an installable development IPA succeeded; the exported app's signature, entitlements and paired-device profile membership verify. | Paired iPhone 12 remains unavailable; earlier developer-image services were unavailable. No install or physical recording was completed. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
 | Source fidelity | Fixed tests cover negation, dose, self-correction, uncertainty, pregnancy, allergy, attribution and quoted instruction text. Golden references were defined before service calls. | Quoted-instruction input is rejected; safe blocked/review UX must be exercised. Full consented synthetic audio/translation/Core-note loop and human review remain. Do not change references or bypass provider filtering merely to get a pass. |
-| Signed/reproducible artifacts | Verified signatures on Debug and Release development candidates; repeated clean archive builds and checked all 332 recorded composition inputs. | Binary hashes differ across clean archives. Byte reproducibility is unproven. No Apple Distribution identity, TestFlight acceptance, desktop notarization, cross-client installer/update acceptance or production artifact set was established. |
+| Signed/reproducible artifacts | Canonical-path clean builds now match compiled payloads and UUIDs; signatures, public entitlements and all 332 source inputs verify. The exact exported development IPA, source and symbols are retained outside temporary storage. | Signing/ZIP bytes still vary; cross-machine/hermetic reproducibility is unproven. No Apple Distribution identity, TestFlight acceptance, desktop notarization, cross-client installer/update acceptance or production artifact set was established. |
 
 ## Translation implementation and final real run
 
@@ -110,8 +110,9 @@ Archive root: `/private/tmp/scribe-real-services-20260921.ySJT7W/`.
 
 Both passed `codesign --verify --deep --strict` using macOS trust services outside
 the sandbox. App Mach-O UUIDs, binaries and signatures differed; ordinary resources
-matched. The reason for binary differences is not established. Do not describe
-this as byte-reproducible or distribution signing. Xcode emitted dependency/API
+matched. At this first checkpoint the reason for binary differences had not been
+isolated; the follow-on below records the canonical-path result. Do not describe
+these signed bytes as reproducible or distribution signing. Xcode emitted dependency/API
 deprecation warnings and a Swift diagnostic saying a command failed with exit 0;
 both archive commands exited 0 and their signed products independently verified.
 
@@ -122,6 +123,67 @@ fresh `-derivedDataPath`/`-archivePath` for each build, the retained
 `-onlyUsePackageVersionsFromResolvedFile`, `DEVELOPMENT_TEAM=JVV65668U6`,
 `CODE_SIGN_STYLE=Automatic`, `CODE_SIGN_IDENTITY='Apple Development'`, `archive`.
 This is a development qualification recipe, not a release workflow.
+
+### Follow-on: canonical build path and installable development package
+
+The next local continuation isolated the earlier binary differences: all three
+Mach-O binaries (App, Capacitor, Cordova) differed only in LC_UUID and embedded
+signatures. The linker already used Apple's `-reproducible` option; merely adding
+the flag was not a new solution. Two fresh builds using the **same canonical
+build path** produced matching UUIDs and matching complete Mach-O bytes outside
+their exact embedded-signature ranges. The app's dSYM UUID also matched both
+builds, so crash-symbol identity was not disabled to obtain agreement.
+
+Those builds used `iphone-repro-one.xcarchive` and `iphone-repro-two.xcarchive`
+under the temporary archive root above. The canonical DerivedData path was
+`iphone-repro-one`; the first finished build directory was moved to the new
+`iphone-repro-one-retained-build` before creating the second from scratch. No
+original archive or client source was removed or modified.
+
+| Binary | SHA-256 with only its embedded-signature range zeroed |
+| --- | --- |
+| App | `4e0f49e9816e8b0f8604c6e4bceb9e315a89d88a52ca204cca9dd1eb764d558f` |
+| Capacitor | `789f27cf276dd5fc9ca5391b539df7a0d76243d11a0c0fe510a19933fd0d8bf3` |
+| Cordova | `c93f85deb79318c165f026665eecd5b82d25b183bd6f0abea2998c5428b9381d` |
+
+App and both matching dSYMs use UUID
+`395BDEE7-DEBE-3468-BCE8-D3A1097217E0`. Resources outside signing records matched.
+Public app entitlements and designated requirements were independently compared
+and matched; both complete app signatures verified with macOS trust services.
+This is reproducible compiled-payload evidence for the selected development
+composition, not byte-identical signatures, a hermetic cross-machine build,
+distribution qualification or completion of the full release goal.
+
+An export-only development IPA was then produced. The initial manual export
+failed because the existing profile is Xcode-managed. The successful export used
+automatic selection of that same cached profile, without
+`-allowProvisioningUpdates` or `-allowProvisioningDeviceRegistration`. Export
+destination was `export`, method `debugging`, with no upload or version management.
+The extracted **exported** app (not merely its pre-export archive) passed strict
+deep signature verification and retained the expected bundle/team/entitlements.
+Its profile explicitly includes the already-paired physical iPhone.
+
+The retained, approximately 11 MB qualification package is at:
+`/Users/jw/Desktop/Cosmas/scribe-device-qualification-20260921.AGGjR0/`.
+It contains the IPA, exact 332 verified composed source inputs, source manifest,
+matching dSYMs, export options, translation evidence, README and SHA256SUMS.
+
+- IPA: `Scribe-W13-development.ipa`.
+- IPA SHA-256: `097754a4370de69921dd1f55f9b851cabaffbd85505f2ff44c7c9ec2cd78eaa8`.
+- Exported executable SHA-256:
+  `94b8dad6f7e38e4ec547b33e72a404a22547d978bba095ba9e26d8d33fa55700`.
+- Exported CodeDirectory SHA-256:
+  `a4c13e7b43c23b2133da005e994a70adbe88adce3bfecb5b3a6728b49b8169f4`.
+- Profile `265a06ef-aa78-45a2-863a-b8694daf4dee`, expiration
+  2027-09-21 12:20:20 UTC; paired-iPhone membership verified without retaining its
+  device list in the evidence record.
+
+This is still the W13 authentication qualification snapshot, whose real
+STT/model/capture service wiring is disabled. Translation service evidence is a
+separate artifact, not proof of connection to this app. No installation, physical
+recording, successful login, TestFlight upload or new Apple account configuration
+was performed in this continuation. Promote the exact verified package for its
+scoped trial; do not rebuild and call it the same artifact.
 
 ## Local verification and next acceptance sequence
 
