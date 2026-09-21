@@ -11,6 +11,69 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
+## Latest: separate Scribe URL and iPhone package preflight — 17:00 UTC
+
+The owner requested a beta URL and then explicitly confirmed **two separate
+URLs: standalone Scribe and CosmaBot/CosmasOS**. The existing standalone preview
+origin is available for the Scribe side:
+
+`https://green-rock-0cd7d7e0f.7.azurestaticapps.net/`
+
+Read-only Azure inspection resolved that origin from Static Web App
+`cmn-capture-preview-p8x6m2` in the dedicated
+`cosmaneura-capture-preview-development` resource group, Standard SKU, no custom
+domains. An ordinary HTTPS GET returned 200 with certificate validation result 0.
+Browser inspection showed **Cosmaneura Capture — SYNTHETIC DATA · SILENT SOURCE**,
+disabled consent/record controls and the explicit notice that this preview does
+not connect to patients, Scribe, Speech or a clinical tenant. No control was used.
+This is an existing, verified **web address**, not a newly provisioned service,
+an authenticated native API, or operational beta acceptance. Do not configure it
+as the phone's API merely because its web page loads.
+
+The separate clinical Scribe environment still reports internal ingress and
+public network access Disabled. The preview API reports Running and HTTPS-only.
+No cloud resource, custom DNS, ingress, identity, token setting, deployment flag,
+app package, shared database or other checkout was changed. CosmasOS's URL work
+remains untouched. Replacing the preview requires a qualified standalone-facing
+API/canonical Core boundary and matched client configuration, exact deployable
+artifacts, reviewed deployment/recovery, and fresh identity/device acceptance.
+The old synthetic preview backend must not be relabeled as that implementation.
+
+The owner-completed iOS update now permits Device Hub screen inspection. The
+physical iPhone 12 displays iOS 27.0 and W13 opens its welcome page. The owner's
+tap on Choose an encounter returned to the top of that page without an observed
+encounter list. The retained package's referenced entry bundle contains the
+Mac-local API origin; the inspected source dispatches this button to the catalog
+read. These are configuration/UI observations, not a proven runtime exception or
+successful Tester sign-in. W13 remains an OS qualification app, not standalone
+Scribe; support remains iOS 17+ and is not qualified by this iOS 27 observation.
+
+Added the offline `scripts/check_ios_candidate.py` diagnostic. It reads the IPA
+without extracting or running it, binds the archive and expected inputs by hash,
+checks bundle/Capacitor identity, iPhone platform, retained iOS 17 floor, native
+auth trial flags, bridge logging, and the referenced Vite entry's API origin.
+It rejects local/numeric/placeholder/credential-bearing destinations, missing or
+mismatched approved origins, ambiguous metadata/assets, unsupported layouts and
+bounded-read violations. It performs **no network or signing check**. The parser
+supports the reviewed Vite/Capacitor native-auth trial shape, not arbitrary JS
+program semantics or every possible standalone package. Even a static pass keeps
+authentication, physical-device, network, signature and release acceptance false.
+It is a manual diagnostic, not a newly installed CI/deployment gate.
+
+Actual W13 IPA SHA-256 remains
+`097754a4370de69921dd1f55f9b851cabaffbd85505f2ff44c7c9ec2cd78eaa8`.
+Its check exits 1 with `api_origin_not_device_candidate` and
+`approved_api_origin_missing`. Comparison with the retained standalone Capture
+bundle identity also reports `bundle_identity_mismatch`. No future beta bundle
+identifier is selected by that comparison. Reports are retained in
+`evidence/ios-candidate-preflight-20260921.json`.
+
+Verification: **83 tests passed, zero skipped**, including 66 new offline cases
+and the existing artifact/beta-gate/ADR checks. Ruff and strict Pyright on the new
+script pass. The existing Starlette dependency warning remains. No database or
+provider call ran. JUnit: `/private/tmp/scribe-ios-preflight.imxSFP/final-results.xml`,
+SHA-256 `6192274475ad4a9e3dfcb71ac5c077494c2e0db7c6d928c0959f67b9fe53fe19`.
+
 ## What “clinical evaluation” means here
 
 Core alone continues to generate SOAP notes. No second clinical note engine is

@@ -1,0 +1,39 @@
+{
+  "observed_at": "2026-09-21T17:00:29Z",
+  "purpose": "Offline retained-IPA diagnostics, not beta acceptance",
+  "w13": {
+    "approved_api_origin_sha256": null,
+    "authentication_verified": false,
+    "check_scope": "offline_capacitor_iphone_candidate",
+    "expected_bundle_id_sha256": "4e4340046ff5ace1ee6b452f15bb56ac28cfecdf854775d47498de7c12cc2f71",
+    "findings": [
+      "api_origin_not_device_candidate",
+      "approved_api_origin_missing"
+    ],
+    "ipa_sha256": "097754a4370de69921dd1f55f9b851cabaffbd85505f2ff44c7c9ec2cd78eaa8",
+    "network_verified": false,
+    "physical_device_verified": false,
+    "release_accepted": false,
+    "schema_version": "1.0",
+    "signature_verified": false,
+    "static_preflight_passed": false
+  },
+  "retained_capture_identity_comparison": {
+    "approved_api_origin_sha256": null,
+    "authentication_verified": false,
+    "check_scope": "offline_capacitor_iphone_candidate",
+    "expected_bundle_id_sha256": "c84d145e0712d3f423690caa3ad6e637191a50d5e823105e5301a89794074eb3",
+    "findings": [
+      "bundle_identity_mismatch",
+      "api_origin_not_device_candidate",
+      "approved_api_origin_missing"
+    ],
+    "ipa_sha256": "097754a4370de69921dd1f55f9b851cabaffbd85505f2ff44c7c9ec2cd78eaa8",
+    "network_verified": false,
+    "physical_device_verified": false,
+    "release_accepted": false,
+    "schema_version": "1.0",
+    "signature_verified": false,
+    "static_preflight_passed": false
+  }
+}

@@ -25,6 +25,27 @@ Clerk native SDK qualification, encrypted recorder and existing Apple/Electron
 packagers. Translation uses the existing GPT-4.1 family and Azure API contract.
 Credentials stay server-side and are never written to source or evidence.
 
+### Separate beta URL direction and offline client check — 2026-09-21
+
+The owner requested a standalone Scribe beta URL distinct from the separate
+CosmaBot/CosmasOS URL. Read-only inspection found the existing isolated Scribe
+capture-preview web origin; its HTTPS page works, but it is the older disabled
+synthetic preview, not the real authenticated Scribe backend. Preserve the private
+clinical environment and do not point the W13 OS app at an incompatible Scribe
+API or conflate its package with standalone Scribe. Existing-user platform
+interoperability remains a distinct identity/authorized-read/canonical-write
+acceptance requirement; separate hostnames do not prevent that integration.
+
+The bounded local follow-on adds only an offline IPA preflight and its tests,
+not authentication, deployment/workflow, runtime, schema or environment changes.
+Run `python scripts/check_ios_candidate.py --ipa <retained-ipa>
+--expected-bundle-id <exact-intended-app-id>`; add `--approved-api-origin` only
+after selecting the actual authorized API, not merely a reachable web site.
+Exit 1 denotes a blocking/unsupported static candidate. Exit 0 is not evidence
+of signing, TLS, API compatibility, login, capture, or release acceptance.
+Recovery is to stop using the diagnostic; no deployed state changes. Exact
+results and outstanding deployment/connection gates are in the checkpoint.
+
 ## Ordered work
 
 1. Add a concrete Azure GPT-4.1 Spanish-to-English adapter behind the existing
