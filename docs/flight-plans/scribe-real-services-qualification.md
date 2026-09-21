@@ -333,3 +333,18 @@ resource records and outputs match the protected snapshot; state lineage is
 unchanged, serial 62 → 63 → 64. The API image/revision and private Speech network
 boundary are unchanged. No trial retry or clinical activation is authorized by
 this result. See the checkpoint for exact plan hashes, timestamps and limitations.
+
+## Provider review surface — local runtime continuation
+
+Tier 2: expose the persisted captured transcript and explicit creator decisions
+through the existing app-only trusted-platform authentication dependency. Core
+must supply freshly authorized creator context; the browser never chooses an
+actor or receives a workload token. Reuse the existing idempotency table and
+immutable review writer in one transaction. No auth parser, shared Core/IAM/Zoom,
+environment setting, migration, live service, deployment or release changes.
+The receiver remains unavailable without explicit server-side runtime binding
+and a tenant allowlist. Build the reusable provider review screen against this
+contract, not the old process-local synthetic ingest contract. Verify the
+record-to-review feature and essential authorization/retry boundaries using a
+new disposable local PostgreSQL cluster; one full regression at packet end.
+Local runtime completion is not existing-user/native sign-in acceptance.

@@ -44,6 +44,7 @@ from .capture_responses import (
 )
 from .consent import ConsentError, ConsentPolicy
 from .consent_routes import build_consent_router
+from .creator_review_routes import router as creator_review_router
 from .delivery_reconciler import (
     complete_delivery_failure,
     complete_delivery_success,
@@ -428,6 +429,7 @@ app.include_router(
         repository_provider_dependency=get_repository_provider,
     )
 )
+app.include_router(creator_review_router)
 
 
 @app.get(
