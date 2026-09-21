@@ -1,17 +1,83 @@
 # Scribe real-service qualification — 2026-09-21
 
 Status: meaningful implementation and real-service/build evidence; **not a beta
-release or closure of the five owner goals**. All repository edits remain on
+release or closure of the five owner goals**. Scribe edits remain on
 `codex/beta-preintegration-20260904`, based on `1e48c124f355f486d8106c7f7441fd13895c3c97`.
-No push, PR, migration of an existing/shared database or shared Core/Auth/IAM/Zoom/
-staging edit occurred. Newer integration checkouts were read-only. Later migration
+The latest increment also includes explicitly approved local Core consumer edits
+in its existing integration checkout. No push, PR, existing/shared database
+migration, Auth/IAM/Zoom/staging edit or deployment occurred. Earlier migration
 tests used a new disposable local cluster. Following explicit owner approval,
 the existing private Speech job passed both disabled-state and enabled synthetic
 acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: clear translation progress and blocked-work guidance
+## Latest: approved local Core creator-review integration
+
+The owner approved the exact Core review-consumer packet ("I approve core
+integration"). Before editing, Scribe was clean at `fea25741eb133eb85779316e650212c5a3669ced`
+and Core's existing detached checkout remained at
+`e21ba4c1fb1027de8123aca9b8aee25b8a11b612`. All 70 existing dirty/untracked Core
+files were snapshotted. Sixty-six remain byte-identical; only the four approved
+existing service modules were extended. No other task was contacted.
+
+Core now accepts `creator_review` and `decide_translation` through its existing
+disabled capture facade. Fresh encounter/admission authorization supplies the
+binding's internal actor, never a doctor-ID inference or browser assertion.
+Scribe's review receiver matches it to the configured session's immutable
+creator and checks processing consent. Core reauthorizes before returning
+protected results. Legacy transcript-status checks remain separate because they
+reject configured bilingual sessions.
+
+The closed consumer validates current source/working/queue/progress lineage,
+English-source preservation and review readiness. The existing server Entra
+transport sends bounded no-store requests, preserving the exact decision and
+retry key, with no automatic retries or provider calls. No new runtime, host,
+schema, authentication policy or note generator was activated.
+
+The final focused run collected 146 Core checks: 145 passed and one collided with
+a fixed synthetic support-user identity in an older reused test helper. The new
+test now creates its own unique identity; all five authority checks then passed.
+Matched test identities establish passing evidence for all 146 distinct Core
+checks, with zero skips. The original failed run is retained. Ruff, Pyright for
+the five changed Core services and whitespace checks pass.
+
+Two separate Scribe receiver processes passed actual local Core-route → HTTP →
+Scribe-receiver accept/reject scenarios. They covered mismatched expected-source
+version, wrong tenant/unmapped creator, ignored browser actor assertion, lost
+committed reply, fresh receiver recovery, one immutable decision, unchanged
+source and consent revocation. Core used real local binding/admission authority;
+its workload authentication and Scribe workload authentication were explicit test
+fixtures. Encrypted WAV, Speech and translation were synthetic fixtures. No live
+service, hosted identity, native device, TLS deployment or SOAP completion is proved.
+
+Evidence is retained in `/private/tmp/scribe-core-review.gsg9ll_6/`:
+
+- `core-increment.patch` separates these nine Core files from prior dirty work;
+  SHA-256 `7d74f9565242d3d143136367711f78f75839f6bdf0f2444d5885e658e93e0594`.
+- `final.xml`: `01d99e003dc350ce1f7ff97f3b0400e43ce446b3bc956caac4b1403360c1ed6a`.
+- `authority-final.xml`: `a183a65099230e53a9c64ffedaa7320a85d7d6582843720e4bfb1b107171ebdb`.
+- `final/test_core_to_scribe_review_and0/` and `...and1/` contain receiver logs/XML.
+  The earlier receiver run used pytest's global temporary root and reported
+  cleanup warnings for pre-existing pytest garbage; the final harness explicitly
+  confines both Core and child receiver temporary directories to owned evidence.
+- Fresh databases `scribe_core_creator_review_test` and `scribe_review_receiver_test`
+  used Unix socket port 55457 with no TCP listener. Core's synthetic model tables
+  remain retained; Scribe teardown left only `alembic_version`. Owned PID 21147
+  was verified, stopped and confirmed absent; `shutdown.json` records the check.
+
+Core remains uncommitted on its existing detached checkout so this task does not
+claim or combine the other work. The before/final manifests and incremental patch
+are retained. No independent review, PR or release is claimed.
+
+Configured ordinary admission still uses the older contract, and Core SOAP still
+consumes the older raw/working-source envelope. The next concrete local proposal
+is [configured admission and Core SOAP](beta/SCRIBE_CONFIGURED_CORE_WORKFLOW_PACKET_20260921.md).
+That packet, native identity/device acceptance, actual runtime credentials and
+signed releases remain open. The historical ~55% operational judgment is not
+raised based on these local tests.
+
+## Earlier: clear translation progress and blocked-work guidance
 
 Continued from clean `b894baf` while the exact Core consumer approval remains
 pending. Providers can now distinguish a queued translation, a request without
@@ -57,7 +123,8 @@ The full operational Scribe goal remains open. Current hosted/native binding,
 Core admission/notes/dashboard, actual credential/worker lifecycle, physical
 devices, fidelity and signed releases are not qualified by this progress display.
 The existing [Core review-consumer packet](beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md)
-still needs the owner's explicit approval; it has not been implemented.
+was pending at that checkpoint; the latest section records its subsequent
+approval and implementation.
 
 ## Earlier: recorder-mounted review and durable decisions — continuation
 

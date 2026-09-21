@@ -1,6 +1,8 @@
-# Creator review through Core — proposed local integration packet
+# Creator review through Core — approved local integration packet
 
-Status: prepared for owner approval; no Core edits or activation performed.
+Status: approved by the owner on 2026-09-21 ("I approve core integration") and
+implemented locally. No activation, push, PR or deployment. See the latest
+section of `../SCRIBE_REAL_SERVICES_CHECKPOINT_20260921.md` for evidence.
 
 ## Provider outcome and verified gap
 
@@ -12,7 +14,7 @@ decision journal and logout/revocation/encounter-change disposal. Its optional
 Continue to note entry calls the host's existing Core flow after a fresh review
 read. It does not deliver a transcript or generate a note itself.
 
-Read-only inspection of `/Users/jw/Desktop/Cosmas/cosmas-os-core-integration`,
+Read-only inspection before approval of `/Users/jw/Desktop/Cosmas/cosmas-os-core-integration`,
 HEAD `e21ba4c1fb1027de8123aca9b8aee25b8a11b612`, found existing dirty/untracked
 capture integration work. It was preserved. The existing closed operation union
 and `ScribeWorkflowClient.capture_operation` have no creator-review read/decision
@@ -26,9 +28,9 @@ legacy `SessionCreate`; it does not configure the new captured bilingual source.
 The two migration histories also remain unreconciled. Do not imply that adding
 the review proxy alone makes new recordings compatible or completes SOAP.
 
-## Smallest next approval requested
+## Approved scope
 
-Approve **local Core receiver/consumer implementation only**, using the existing
+The owner approved **local Core receiver/consumer implementation only**, using the existing
 Core capture facade and synthetic disposable databases. Preserve all existing
 dirty work. Before each edit, inspect its exact local diff. No other task contact.
 
@@ -80,5 +82,5 @@ Recovery leaves this new consumer unused behind the existing disabled facade.
   required. The completed Speech/translation trials stay terminal.
 
 The Scribe handoff section 4 explicitly prohibits shared Core/Auth/IAM/Zoom/staging
-edits without a new exact scoped approval. This packet requests only the first
+edits without a new exact scoped approval. This approval covers only the first
 local Core review consumer increment. The full desktop+iOS Scribe goal stays open.
