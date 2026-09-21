@@ -10,6 +10,7 @@
   "packageManager": "npm@11.5.2",
   "scripts": {
     "build": "vite build",
+    "build:provider": "vite build --config provider.vite.config.ts",
     "check:preview-bundle": "node scripts/check-preview-bundle.mjs",
     "cap:add:android": "cap add android",
     "cap:add:ios": "cap add ios --packagemanager SPM",

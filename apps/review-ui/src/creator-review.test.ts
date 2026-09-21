@@ -38,7 +38,7 @@ describe("creator review surface", () => {
     expect(html).toContain("Reject translation");
     expect(html).toContain("Speaker not assigned");
     expect(html).not.toContain("<script>");
-    expect(html).not.toContain("English transcript ready for Core");
+    expect(html).not.toContain("English transcript ready");
   });
 
   it("rejects cross-session, inconsistent readiness and changed review lineage", () => {

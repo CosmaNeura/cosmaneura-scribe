@@ -348,3 +348,22 @@ contract, not the old process-local synthetic ingest contract. Verify the
 record-to-review feature and essential authorization/retry boundaries using a
 new disposable local PostgreSQL cluster; one full regression at packet end.
 Local runtime completion is not existing-user/native sign-in acceptance.
+
+### Retained provider recorder and recovery continuation
+
+Mount the existing review panel after upload in the retained capture component,
+through an explicit host-supplied admitted session/controller and authorized
+transport. Preserve default preview startup. Require encrypted scoped recovery
+before sending decisions, using the existing native plugin and exact metadata
+only; no new native key authority, database migration or auth parser. Clear the
+view on binding loss and retain honest stop-failure state. Continue to note invokes
+only a supplied existing Core entrypoint after a fresh readiness read.
+
+Qualify actual rendered desktop/phone controls against the existing review API and
+a newly owned disposable PostgreSQL database. Reuse generated encrypted capture
+and offline Speech/model fixtures. Check acceptance, rejection, exact replay after
+document loss, revoked-access clearing and failed host deactivation. This remains
+local integration evidence, with host identity/native storage/Core entry explicit
+fixtures. Run the affected capture/review workspace regression and static checks;
+the prior 1,065-test Python checkpoint remains applicable to unchanged backend
+source. No repeat live-service trial or native installation is included.

@@ -17,6 +17,10 @@ import {
 import { CaptureQueue } from "./queue";
 import { EncryptedIndexedDbQueueStorage } from "./storage";
 import { bootstrapCapturePreview } from "./preview/bootstrap";
+import { HttpCreatorReviewApi } from "../../review-ui/src/creator-review-api";
+import { mountCreatorReview } from "../../review-ui/src/creator-review-panel";
+import { isUuid } from "../../review-ui/src/contracts";
+import type { ProviderCaptureBinding } from "./provider-binding";
 
 const SYNTHETIC_ENCOUNTER = Object.freeze({
   appointmentId: "synthetic-appointment",
@@ -25,7 +29,11 @@ const SYNTHETIC_ENCOUNTER = Object.freeze({
   participantRegions: ["US-NY"],
 });
 
-class CaptureApp extends LitElement {
+export class CaptureApp extends LitElement {
+  #provider: ProviderCaptureBinding | undefined;
+  #providerClosed = false;
+  #providerCloseStatus: "closing" | "closed" | "unconfirmed" = "closing";
+  #disposeReview: (() => void) | undefined;
   #busy = false;
   #consented = false;
   #controller: CaptureFlowController | undefined;
@@ -47,11 +55,25 @@ class CaptureApp extends LitElement {
   };
   #unsubscribe: (() => void) | undefined;
 
+  /** Bind once, before mounting. Default preview startup never supplies this. */
+  public bindProvider(binding: ProviderCaptureBinding): void {
+    if (this.isConnected || this.#provider || this.#providerClosed || !isUuid(binding.sessionId)
+      || binding.signal.aborted || binding.controller.snapshot.sessionId !== binding.sessionId) {
+      throw new Error("Provider recording is unavailable.");
+    }
+    this.#provider = binding;
+    this.#controller = binding.controller;
+    this.#snapshot = binding.controller.snapshot;
+    this.#sourceKind = binding.sourceKind;
+    binding.signal.addEventListener("abort", this.#closeProvider, { once: true });
+  }
+
   protected override createRenderRoot(): HTMLElement {
     return this;
   }
 
   public override disconnectedCallback(): void {
+    if (this.#provider) this.#closeProvider();
     this.#unsubscribe?.();
     this.#flowStore?.close();
     this.#queueStorage?.close();
@@ -61,6 +83,17 @@ class CaptureApp extends LitElement {
   }
 
   protected override firstUpdated(): void {
+    if (this.#providerClosed) return;
+    if (this.#provider) {
+      this.#unsubscribe = this.#provider.controller.subscribe((snapshot) => {
+        if (snapshot.sessionId !== this.#provider?.sessionId) { this.#closeProvider(); return; }
+        this.#snapshot = snapshot;
+        this.requestUpdate();
+      });
+      if (this.#providerClosed) this.#unsubscribe();
+      this.#syncReview();
+      return;
+    }
     void this.#run(async () => {
       await bootstrapCapturePreview();
       this.#releaseCaptureFlowLock = await acquireCaptureFlowLock();
@@ -76,27 +109,84 @@ class CaptureApp extends LitElement {
     });
   }
 
+  protected override updated(): void { this.#syncReview(); }
+
+  #syncReview(): void {
+    const binding = this.#provider;
+    if (!binding || this.#providerClosed) return;
+    const root = this.querySelector<HTMLElement>("[data-provider-review]");
+    const available = ["processing", "complete"].includes(this.#snapshot.state);
+    if (!available || root === null) {
+      this.#disposeReview?.();
+      this.#disposeReview = undefined;
+    } else if (!this.#disposeReview) {
+      this.#disposeReview = mountCreatorReview(root,
+        new HttpCreatorReviewApi(binding.sessionId, binding.authorizedRequest), {
+          journal: binding.journal,
+          ...(binding.continueToNote ? { continueToNote: binding.continueToNote } : {}),
+        });
+    }
+  }
+
+  readonly #closeProvider = (): void => {
+    if (this.#providerClosed) return;
+    this.#providerClosed = true;
+    this.#unsubscribe?.();
+    this.#disposeReview?.();
+    this.#disposeReview = undefined;
+    const binding = this.#provider;
+    this.#provider = undefined;
+    this.#controller = undefined;
+    binding?.signal.removeEventListener("abort", this.#closeProvider);
+    // Clear protected DOM synchronously; late recorder/API replies cannot restore it.
+    this.querySelector(".shell")?.setAttribute("hidden", "");
+    this.#snapshot = { ...this.#snapshot, sessionId: null, transcript: null, transcriptionStatus: null };
+    this.requestUpdate();
+    if (binding) void Promise.resolve().then(() => binding.deactivate()).then(() => {
+      this.#providerCloseStatus = "closed";
+      this.requestUpdate();
+    }, () => {
+      this.#providerCloseStatus = "unconfirmed";
+      this.requestUpdate();
+    });
+  };
+
   protected override render(): TemplateResult {
+    if (this.#providerClosed) return html`<p role="status">${this.#providerCloseStatus === "closing"
+      ? "Closing recording…"
+      : this.#providerCloseStatus === "unconfirmed"
+        ? "Recording stop could not be confirmed. Stop recording in the native app before continuing."
+        : "Recording closed. Return to your authorized encounters to continue."}</p>`;
+    const provider = this.#provider;
+    const captureFinished = provider && ["processing", "complete"].includes(this.#snapshot.state);
     return html`
       <div class="shell">
         <header>
-          <span class="brand">Cosmaneura Capture</span>
-          <span class="status" data-testid="synthetic-only">
-            ${this.#sourceKind === "microphone"
+          <span class="brand">${provider ? "Cosmaneura Scribe" : "Cosmaneura Capture"}</span>
+          <span class="status" data-testid=${provider ? "provider-recording" : "synthetic-only"}>
+            ${provider ? "Your recording" : this.#sourceKind === "microphone"
               ? "Synthetic data · Microphone test"
               : "Synthetic data · Silent source"}
           </span>
         </header>
         <main>
-          <p class="eyebrow">Phase 3 foreground flow</p>
-          <h1>Consented recording, safely staged</h1>
+          <p class="eyebrow">${provider ? "Record · Review · Prepare note" : "Phase 3 foreground flow"}</p>
+          <h1>${captureFinished ? "Your encounter" : provider ? "Your encounter recording" : "Consented recording, safely staged"}</h1>
           <p class="intro">
-            ${this.#sourceKind === "microphone"
+            ${captureFinished ? "Recording uploaded. Review the transcript below before preparing your note."
+              : provider ? "Record this consented encounter, then review its transcript before preparing your note."
+              : this.#sourceKind === "microphone"
               ? "This preview uses synthetic identifiers with an explicitly enabled foreground microphone test adapter."
               : "This preview uses synthetic identifiers and a silent generated source; microphone access is disabled by default."}
-            It never connects to a patient, Scribe, Azure Speech, or a clinical tenant.
+            ${provider ? "" : "It never connects to a patient, Scribe, Azure Speech, or a clinical tenant."}
           </p>
 
+          ${captureFinished ? html`<p>Recorded ${formatDuration(this.#snapshot.elapsedSeconds)}
+            · ${provider.languageMode === "english_spanish" ? "English and Spanish" : "English"}</p>`
+            : provider ? html`<section class="flow-card"><h2>Recording prepared</h2>
+            <p>Encounter and consent confirmed through your workspace.</p>
+            <p>${provider.languageMode === "english_spanish" ? "English and Spanish · Translate Spanish to English" : "English"}</p>
+          </section>` : html`
           <section class="flow-card" aria-labelledby="consent-title">
             <div>
               <p class="step">Step 1</p>
@@ -124,25 +214,25 @@ class CaptureApp extends LitElement {
             >
               Prepare secure session
             </button>
-          </section>
+          </section>`}
 
-          <section class="flow-card recorder" aria-labelledby="record-title">
+          ${captureFinished ? "" : html`<section class="flow-card recorder" aria-labelledby="record-title">
             <div>
               <p class="step">Step 2</p>
               <h2 id="record-title">Record</h2>
               <p>
-                ${this.#sourceKind === "microphone"
+                ${provider ? "Keep this app in the foreground while recording. Start and stop deliberately."
+                  : this.#sourceKind === "microphone"
                   ? "The foreground microphone test adapter is explicitly enabled for synthetic test data."
                   : "Microphone capture is disabled; the button emits valid silent WAV chunks."}
-                The initial server-authorized recording window is fixed and is not renewed in this
-                preview.
+                ${provider ? "" : "The initial server-authorized recording window is fixed and is not renewed in this preview."}
               </p>
             </div>
             <div class="record-actions">
               <button
                 data-testid="record-button"
                 class="record-button"
-                aria-label=${this.#sourceKind === "microphone"
+                aria-label=${provider ? "Start recording" : this.#sourceKind === "microphone"
                   ? "Start foreground microphone test recording"
                   : "Start silent synthetic recording"}
                 ?disabled=${this.#snapshot.state !== "ready" || this.#busy}
@@ -160,9 +250,17 @@ class CaptureApp extends LitElement {
                 Stop and upload
               </button>
             </div>
-          </section>
+          </section>`}
 
-          <section class="flow-card" aria-labelledby="status-title">
+          ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
+            <p role="status">${this.#snapshot.state === "recording" ? "Recording"
+              : this.#snapshot.state === "paused" ? "Recording interrupted — stopped"
+              : this.#snapshot.state === "uploading" ? "Uploading your recording"
+              : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace" : "Ready to record"}</p>
+            <p>Elapsed ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
+            ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
+              Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
+          </section>`) : html`<section class="flow-card" aria-labelledby="status-title">
             <div>
               <p class="step">Step 3</p>
               <h2 id="status-title">Status</h2>
@@ -204,7 +302,7 @@ class CaptureApp extends LitElement {
                   it closes.
                 </p>`
               : ""}
-            ${this.#snapshot.state === "processing"
+            ${!provider && this.#snapshot.state === "processing"
               ? html`
                   <button
                     data-testid="refresh-status"
@@ -216,10 +314,11 @@ class CaptureApp extends LitElement {
                   </button>
                 `
               : ""}
-            ${this.#renderTranscript()}
-          </section>
+            ${provider ? "" : this.#renderTranscript()}
+          </section>`}
 
-          <p class="fixed-status" role="status">${this.#snapshot.statusCode}</p>
+          ${provider ? html`<div data-provider-review></div>`
+            : html`<p class="fixed-status" role="status">${this.#snapshot.statusCode}</p>`}
         </main>
       </div>
     `;

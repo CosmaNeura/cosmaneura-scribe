@@ -57,3 +57,37 @@ Recovery is to leave the runtime unbound/disabled and the existing storage intac
 There is no deployment, cloud migration, external provider call, cohort enrollment
 or release approval in this packet. Later PRs require independent review and
 must respect the change budget; generated contracts belong with their receiver.
+
+## Local continuation: retained recorder and decision recovery — 2026-09-21
+
+The retained `CaptureApp` now accepts a one-time provider binding before mount.
+Its existing controller supplies the admitted session, capture state and Start/
+Stop actions. After upload the same component mounts the review panel and shows
+the recording summary, with completed controls removed. The default preview
+startup remains synthetic. A separate provider library build is available for
+the authenticated host; it is not an installed native app or a login system.
+
+The binding requires the host's authorized transport, per-environment/creator/
+session recovery journal and an abort signal. Abort/teardown clears protected
+content and suppresses late replies. The host still owns source termination and
+the native recording indicator until stop confirms. A failed deactivation must
+be shown as unconfirmed, never silently labeled stopped. Continue to note is
+offered only when the host supplies its existing Core entrypoint; the panel
+freshly reads readiness and passes no source content to that callback.
+
+The panel writes a strict metadata-only decision/key before sending it. Its
+native adapter reuses the secure-queue plugin's device-only encryption and
+create/compare-and-swap operations. Reserved `creator-review-v1:` keys are
+excluded from audio queue enumeration. No native key, encryption codec, plugin,
+database schema or authentication parser is changed. A stable opaque recovery
+scope must come from the authenticated host. Reauthorization precedes recovery;
+reload requires explicit exact retry. A confirmed receipt/conflict permits only
+revision-checked clearing of that operation. There is no plaintext fallback.
+
+Actual browser controls at desktop and phone widths exercise the built recorder
+component, persisted review receiver and PostgreSQL with generated encrypted
+capture already uploaded. Speech/model, host identity, disk-backed encrypted
+native bridge and Core entry are explicit fixtures. This qualifies component/API
+interaction and document-loss recovery, not actual native Keychain, recorder
+hardware, Core SOAP or hosted sign-in. Those bindings remain open; the exact next
+Core consumer packet is `docs/beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md`.

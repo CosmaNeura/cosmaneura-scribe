@@ -2,8 +2,12 @@ import {
   CreatorReviewError,
   type CreatorReviewApi,
   type CreatorReviewView,
-  type ReviewDecision,
 } from "./creator-review-api";
+import {
+  parsePendingReviewDecision,
+  type CreatorReviewJournal,
+  type PendingReviewDecision,
+} from "./creator-review-journal";
 import "./creator-review.css";
 
 type Phase = "loading" | "ready" | "saving" | "retry" | "unavailable";
@@ -13,13 +17,34 @@ export interface CreatorReviewState {
   readonly notice: string;
 }
 
+export interface CreatorReviewOptions {
+  readonly journal?: CreatorReviewJournal;
+  /** The host reauthorizes and opens its existing Core note flow. No source text is sent. */
+  readonly continueToNote?: () => Promise<void>;
+}
+
 /** Mount in the authenticated standalone or OS shell; dispose on logout/session change. */
-export function mountCreatorReview(root: HTMLElement, api: CreatorReviewApi): () => void {
+export function mountCreatorReview(
+  root: HTMLElement, api: CreatorReviewApi, options: CreatorReviewOptions = {},
+): () => void {
   let state: CreatorReviewState = { phase: "loading", view: null, notice: "" };
-  let pending: { request: ReviewDecision; key: string } | null = null;
+  let pending: PendingReviewDecision | null = null;
   let disposed = false;
   let generation = 0;
-  const render = (): void => { if (!disposed) root.innerHTML = renderCreatorReview(state); };
+  let recovered = false;
+  let continuing = false;
+  const render = (): void => {
+    if (disposed) return;
+    root.innerHTML = renderCreatorReview(state);
+    if (state.phase === "ready" && state.view?.working?.note_ready && options.continueToNote) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.reviewAction = "continue";
+      button.disabled = continuing;
+      button.textContent = continuing ? "Opening note…" : "Continue to note";
+      root.querySelector(".creator-status")?.append(button);
+    }
+  };
 
   const refresh = async (): Promise<void> => {
     if (disposed || pending !== null) return;
@@ -29,6 +54,19 @@ export function mountCreatorReview(root: HTMLElement, api: CreatorReviewApi): ()
     try {
       const view = await api.read();
       if (disposed || request !== generation) return;
+      // A fresh authorized read must succeed before opening local recovery metadata.
+      if (!recovered && options.journal) {
+        const saved = await options.journal.load();
+        if (disposed || request !== generation) return;
+        pending = saved === null ? null : parsePendingReviewDecision(saved);
+      }
+      recovered = true;
+      if (pending !== null) {
+        state = { phase: "retry", view: null,
+          notice: "A previous decision needs confirmation. Retry that same decision to recover its result." };
+        render();
+        return;
+      }
       state = { ...state, phase: "ready", view };
     } catch {
       if (disposed || request !== generation) return;
@@ -46,17 +84,28 @@ export function mountCreatorReview(root: HTMLElement, api: CreatorReviewApi): ()
     state = { ...state, phase: "saving", notice: "Saving your decision…" };
     render();
     try {
+      if (options.journal) await options.journal.save(operation);
+      if (disposed) return;
       await api.decide(operation.request, operation.key);
       if (disposed) return;
+      if (options.journal) await options.journal.clear(operation.key);
+      if (disposed) return;
       pending = null;
-      state = { ...state, notice: "Decision saved. Reloading the current transcript…" };
+      state = { ...state, notice: "Decision saved." };
       await refresh();
     } catch (error) {
       if (disposed) return;
       if (error instanceof CreatorReviewError && error.kind === "conflict") {
-        pending = null;
-        state = { ...state, notice: "The review changed. Check the current version before deciding again." };
-        await refresh();
+        try {
+          if (options.journal) await options.journal.clear(operation.key);
+          if (disposed) return;
+          pending = null;
+          state = { ...state, notice: "The review changed. Check the current version before deciding again." };
+          await refresh();
+        } catch {
+          state = { phase: "retry", view: null, notice: "Recovery storage is unavailable. Retry to confirm the saved decision." };
+          render();
+        }
       } else {
         // Preserve only the exact metadata request, not protected transcript text.
         state = {
@@ -68,12 +117,34 @@ export function mountCreatorReview(root: HTMLElement, api: CreatorReviewApi): ()
     }
   };
 
+  const continueToNote = async (): Promise<void> => {
+    if (continuing || disposed || pending !== null || state.phase !== "ready" || !options.continueToNote) return;
+    continuing = true;
+    render();
+    try {
+      const view = await api.read();
+      if (disposed) return;
+      state = { ...state, view };
+      if (view.working?.note_ready !== true) {
+        state = { ...state, notice: "The transcript changed. Complete its current review before preparing a note." };
+      } else {
+        await options.continueToNote();
+      }
+    } catch {
+      state = { phase: "unavailable", view: null, notice: "The note could not be opened. Check access and refresh before trying again." };
+    } finally {
+      continuing = false;
+      render();
+    }
+  };
+
   const onClick = (event: MouseEvent): void => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     const button = target.closest<HTMLButtonElement>("button[data-review-action]");
     if (button === null || !root.contains(button) || button.disabled) return;
     const action = button.dataset.reviewAction;
+    if (action === "continue") { void continueToNote(); return; }
     if (action === "refresh") { void refresh(); return; }
     if (action === "retry") { void save(); return; }
     if (pending !== null || state.phase !== "ready" || state.view?.review_queue == null) return;
@@ -114,7 +185,7 @@ export function renderCreatorReview(state: CreatorReviewState): string {
   const view = state.view;
   const ready = view?.working?.note_ready === true;
   const subtitle = ready
-    ? "English transcript ready for Core"
+    ? "English transcript ready"
     : view === null ? "Your recording" : statusCopy(view.status);
   return `<section class="creator-review" aria-label="Your recording and transcript">
     <header class="creator-review-header">
@@ -126,7 +197,7 @@ export function renderCreatorReview(state: CreatorReviewState): string {
     <div class="creator-status ${ready ? "creator-ready" : ""}" role="status">
       <strong>${escape(subtitle)}</strong>
       <p>${escape(state.notice || (ready
-        ? "Translation review is complete. This does not create, sign or save a SOAP note."
+        ? "Review is complete. Your transcript is ready for note preparation."
         : "Review the proposed English before it is used for a note."))}</p>
     </div>
     ${state.phase === "retry" ? `<button type="button" data-review-action="retry">Retry the same decision</button>` : ""}

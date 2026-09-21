@@ -11,7 +11,75 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: provider review receiver and reusable screen — 18:53 UTC
+## Latest: recorder-mounted review and durable decisions — continuation
+
+The replacement task read the complete handoff and verified a clean existing
+`codex/beta-preintegration-20260904` checkout at
+`99324d87628ec22f038f5ee9a4918de8cb46abb8`. The full Scribe goal is active again;
+the historical pause applied only to the old task. No other task was contacted.
+
+The retained capture component now accepts a one-time authorized host binding
+and mounts the existing provider review panel after upload. The provider sees
+the recording summary, original Spanish, proposed/accepted English, preserved
+English speech, explicit accept/reject and current blockers. Completed capture
+controls no longer push the review below a large technical status panel. A
+host-supplied Continue to note action requires a fresh ready transcript and opens
+the existing Core entrypoint without passing source text. Default preview startup
+is unchanged; no hosted/native authentication or clinical endpoint was activated.
+
+Decisions now journal exact metadata/key before transmission. The native adapter
+reuses the existing encrypted secure-queue plugin with atomic create/CAS and
+revision-checked clearing; its reserved keys do not enter audio queue enumeration.
+Fresh authorization precedes journal recovery and reload requires explicit exact
+retry. Abort/disconnect clears protected display and ignores late replies. The
+host owns source termination/native recording indication; an unconfirmed stop
+is not reported as closed. No native key/codec, server schema or auth parser changed.
+
+Verification: full capture workspace **125 passed** and full review workspace
+**16 passed**. The local actual API/PostgreSQL browser packet passed six focused
+checks (two rendered scenarios plus four receiver regressions). After the final
+stop-state correction, both rendered scenarios passed again: desktop acceptance,
+phone rejection, committed-but-lost reply, document reload with a new journal/API
+instance, identical retry, one persisted review, revoked-access clearing, and
+confirmed/unconfirmed host deactivation. TypeScript, both workspace ESLint,
+affected Ruff, strict API Pyright, provider build, ADR numbering and whitespace
+checks passed. The prior complete 1,065-test Python result remains the checkpoint
+for unchanged backend code; it was not rerun merely on resumption.
+
+The actual encrypted capture protocol ran on generated WAV before the UI mounted.
+The already-uploaded recorder host, identity, Speech/model, encrypted disk-backed
+native bridge and Core entry are explicit fixtures. This is rendered component/API
+and reload-recovery evidence, **not physical capture, actual Keychain, hosted login,
+actual Core SOAP, a signed native package or operational MCD acceptance**.
+
+Evidence root: `/private/tmp/scribe-provider-workflow.6am8cH/`. The final two-scenario
+JUnit is `final-browser.xml`, SHA-256
+`8b441e1b76f6a7f349c89cfc1c05bc6380ccf1a00b93c6a1c10effadced7299c`.
+The preceding six-check result is `verified.xml`, SHA-256
+`8ee92e0b790de9adfadbd19eb0ca3da76a91416b947d1df47d9c0c2196cd0dd9`.
+Final desktop/phone PNGs are under `pytest-stop/`; they contain invented data.
+The disposable UTF-8 database `scribe_provider_workflow_test` used private Unix
+socket port 55455 with no TCP listener. Final public schema contained only
+`alembic_version`. Exact owned PID 95541 was verified, stopped and confirmed
+absent. Its database/logs and earlier trial artifacts remain retained.
+
+Local unsigned provider bundle: `apps/capture/dist/provider/provider-capture.js`,
+SHA-256 `76160d24570985039779a36995f764acd7bd01eb984aa39d5945e5b93ba1f878`;
+CSS SHA-256 `62c506ac9ad676d4449db2a501c159f8c0d59092dca0bbbb03d59b9f3a8b4987`.
+This library is ready for host integration; it is not mounted in an authenticated
+standalone native release. No previous W13 package was replaced or relabeled.
+
+Read-only Core inspection found the missing review operations/creator header,
+legacy-only capture admission and incompatible source contract. The next exact
+local Core review-consumer request is
+[`SCRIBE_PROVIDER_CORE_PACKET_20260921.md`](beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md).
+Its owner approval was requested and is pending. Do not treat Scribe local-runtime
+approval as Core-write authority. Configured admission, combined migration base,
+real identity/services, physical iPhone/iOS 17+, Core notes/dashboard, fidelity,
+signed releases and founder activation remain open. The full goal and prior
+approximately 55% readiness judgment are unchanged.
+
+## Earlier: provider review receiver and reusable screen — 18:53 UTC
 
 The owner requested a detailed handoff and explicitly approved pausing this goal
 after that handoff. Resume from `docs/SCRIBE_HANDOFF_20260921.md`, not the entire
