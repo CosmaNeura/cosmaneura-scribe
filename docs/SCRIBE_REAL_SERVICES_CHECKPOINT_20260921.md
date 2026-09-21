@@ -56,6 +56,23 @@ no successful login/callback or custody acceptance is established. Port 8046 had
 no observed listener. The next critical-path work is actual native sign-in and
 authenticated host composition, preserving all identity/policy boundaries.
 
+The local provider increment is committed as
+`abea802b0d3c66e5945d74024ee1ecd5c3a8f899`. Its clean-source preview build passes
+the mandatory microphone/attestation boundary check, and its separate provider
+bundle builds. `committed-builds.json` in the evidence root binds the artifacts.
+
+Native presentation diagnosis is prepared at
+`/private/tmp/scribe-w13-presentation.gtjhyhm2/`. Its separate Mac candidate was
+compiled from the retained pinned W13 native source, adding only fixed stage
+markers and relocating existing metadata diagnostics. Bundle/configuration,
+callback and Keychain policy are unchanged. All 315 original Mac candidate
+manifest entries still match. The original unavailable W13 process was quit.
+Automatic approval review rejected launching the newly built diagnostic because
+it requires user confirmation at launch time. The specific launch question is
+pending; the diagnostic has not run. Do not bypass that decision, restart the
+old API/database, or infer hosted-login success. This is a presentation
+diagnostic, not a new beta release or a native provider-workspace composition.
+
 ## Previous: approved configured admission and Core SOAP workflow
 
 The owner approved "the configured admission and Core soap packet." Work stayed
