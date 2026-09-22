@@ -27,9 +27,11 @@ The owner approved the initial diagnostic launch, which stalled in a synchronous
 Keychain read and was stopped by exact PID. The corrected R2 candidate preserves
 authentication policy and adds a bounded background startup check. After the
 owner's explicit R2 launch approval, its actual window remained responsive through
-a Keychain timeout. The owner reports a macOS Keychain prompt; completion of that
-prompt is pending. See the recovery document for exact evidence and candidate
-identity before any further launch.
+a Keychain timeout. The owner completed multiple macOS password prompts. Exact
+item metadata shows four saved R2 access entries and one remaining item without
+one; completion of that remaining permission prompt is pending. Keep the same
+approved binary unchanged. See the recovery document for exact evidence and
+candidate identity before any further launch.
 
 ## 1. Your assignment
 

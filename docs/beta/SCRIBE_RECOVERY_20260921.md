@@ -100,14 +100,33 @@ A metadata-only system Keychain status check returned success, unlocked=true,
 read_permission=true and write_permission=true; no credential values were read
 by that status check. This does not prove item-specific authorization.
 
-The owner subsequently reported that a Keychain prompt is visible. They were
-asked to complete only the dialog naming W13, entering a password only in the
-macOS dialog if requested. Confirmation that the dialog has closed is pending.
+The owner subsequently reported a visible Keychain prompt, then confirmed it
+closed after requiring their password at least half a dozen times. The owner
+entered it in macOS; no credential was collected by the agent. This repeated
+prompt experience is a recovery failure, not accepted provider onboarding.
+
+A prompt-free inspector requested only references and access-control metadata
+for the five exact W13 items, with password-data output pointers null. It made
+no Keychain changes. `w13-access-metadata-corrected.json` shows the unchanged R2
+app path listed for decrypt access on four items. `cachedClientServerDate` did
+not list R2. The first `w13-access-metadata.json` has invalid ACL status numbers
+from an incorrect C return-type binding; **do not use that first file as evidence**.
+The binding was corrected against the SDK header before the valid check.
+
+Native app control closed the timed-out window and its following observation
+showed a fresh R2 startup. This check also reached its safe timeout. The owner
+has been asked whether the remaining W13 prompt closed after selecting Always
+Allow; **that response is pending**. The app remains responsive with sign-in
+disabled. No SDK sign-in or callback has been observed.
+
 Keep this exact approved R2 binary unchanged while completing the prompt; a
-rebuild changes its ad hoc code identity. After the dialog finishes, reopen the
-same R2 candidate and verify its own UI. The timed-out process cannot accept a
-late successful preflight or proceed to sign-in. Do not clear credentials or
-interpret a denied or stalled read as a signed-out session.
+rebuild changes its ad hoc code identity. Once the remaining item permission is
+resolved, reopen the same R2 candidate and verify its own UI. The timed-out
+process cannot accept a late successful preflight or proceed to sign-in. Do not
+clear credentials or interpret a denied or stalled read as a signed-out session.
+The 20-second bound proved UI responsiveness, but was too short for this manual
+multi-item permission sequence. Stable signing and acceptable authentication UX
+remain release requirements; do not claim this diagnostic is a provider app.
 
 The owner enters Tester credentials directly in the secure UI. Actual callback,
 strict native identity/token binding, restart/logout custody, authenticated
