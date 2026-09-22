@@ -1,5 +1,14 @@
 # Electron desktop companion foundation
 
+2026-09-22 continuation: a separate, dormant
+[native macOS audio source](native/ScribeDesktopAudio/README.md) now implements
+ScreenCaptureKit/AVFoundation input for the full provider workflow. Its source
+compiles and ten local data/disabled-start checks pass. Main-process alignment,
+mixing, encrypted capture integration, native lifecycle and physical Meet/Zoom
+acceptance remain open. It is not mounted in this Electron foundation. The
+historical pilot description below describes its existing mock and Recall plan;
+no Recall dependency or live service has been added.
+
 This directory contains the disabled-by-default Phase 3 foundation for an Electron desktop
 companion that will eventually host Recall.ai's Desktop Recording SDK in the Electron main process.
 It is not a recorder, is not clinically deployable, and currently uses a metadata-only mock adapter.

@@ -1,5 +1,26 @@
 # Local provider workspace — 2026-09-21
 
+## Native desktop audio source preparation — 2026-09-22
+
+The desktop foundation still has its original mock adapter, but a separate native
+macOS 14.2 source now implements selected-window ScreenCaptureKit audio plus
+AVFoundation microphone input. It preserves source timestamps and channels,
+bounds/clears native delivery, and retains partial-start/failed-stop resources.
+It requires the existing main-process authority/indicator and is disabled by
+default. No raw audio is exposed to the renderer.
+
+Ten Swift checks and the complete native source compile pass with warnings as
+errors, using generated samples and in-memory AVFoundation buffers. No physical
+source, permission prompt or app was started. See
+[ADR 0054](../adr/0054-native-macos-meeting-audio-source.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-audio-20260922.uiZP2V/`.
+
+Main-process alignment/mixing, encryption/upload, native lifetime fault checks,
+actual host packaging, Windows and physical acceptance remain open. Chrome window
+selection does not prove tab-isolated audio; its actual capture extent must be
+qualified and disclosed before activation. The separate iOS identity packet
+remains unapplied while the owner's decision is pending.
+
 ## Standalone application startup — 2026-09-22
 
 The provider entry now exports `mountNativeProviderIOSApplication` to compose

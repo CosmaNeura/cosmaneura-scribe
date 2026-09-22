@@ -1,0 +1,12 @@
+// swift-tools-version: 6.0
+import PackageDescription
+
+let package = Package(
+    name: "ScribeDesktopAudio",
+    platforms: [.macOS("14.2")],
+    products: [.library(name: "ScribeDesktopAudio", targets: ["ScribeDesktopAudio"])],
+    targets: [
+        .target(name: "ScribeDesktopAudio"),
+        .testTarget(name: "ScribeDesktopAudioTests", dependencies: ["ScribeDesktopAudio"]),
+    ]
+)
