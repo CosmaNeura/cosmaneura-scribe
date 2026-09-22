@@ -154,8 +154,10 @@ The owner explicitly approved the **build 4 native-session correction**. It is
 installed and launched; the corrected private iPhone receiver is active at the
 same endpoint, with the original database and TLS files preserved. See
 [the exact review and activation checkpoint](W13_NATIVE_SESSION_CORRECTION_20260922.md).
-The physical phone displays the signed-in welcome. The owner has been asked to
-tap Choose an encounter once; authenticated catalog acceptance remains pending.
+The corrected receiver returned an authenticated catalog at **13:16:35 UTC**,
+and the owner confirmed **Invented connection visit** on the iPhone. No local
+request was running. The first phone/backend/authenticated-catalog gate has
+passed; full provider-workspace and native lifecycle acceptance remain open.
 
 ## Resume safely
 

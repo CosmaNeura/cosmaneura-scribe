@@ -3,8 +3,43 @@
 **Approved, activated, installed and launched.** The owner explicitly approved
 installing/launching build 4 and activating the corrected private receiver.
 This is a Tier 2 authentication change for the existing private synthetic iPhone
-catalog. Authenticated encounter loading awaits the physical catalog result;
-the full desktop/mobile beta remains incomplete.
+catalog. **Phone-to-private-backend authenticated catalog loading passed** on
+2026-09-22. The full desktop/mobile beta remains incomplete.
+
+## Physical catalog acceptance
+
+The corrected receiver recorded `private_tls_request_received` at
+**13:16:34.110674 UTC**, followed by `authenticated_catalog_returned` at
+**13:16:35.146250 UTC**. No local request had been sent since activation. The
+owner then confirmed **“I see invented connection visit.”** This establishes
+the owner's first priority: the physical phone reaches the private backend and
+loads its creator-authorized encounter catalog with the real native session.
+
+`phone-catalog-acceptance.json` binds the result to the installed build and stage
+evidence. No raw token, claim value or credential was captured. This is catalog
+acceptance in the reviewed synthetic profile, not complete workspace opening,
+recording/Core workflow, MCD cohort, iOS 17 or release acceptance. Native
+refresh/restart/logout/revocation and identity-continuity acceptance are scoped
+separately below.
+
+## Native session continuation
+
+The owner fully closed W13 through the iPhone app switcher. Device Hub reopened
+the same installed build 4, and the phone view returned to its signed-in welcome.
+The owner tapped Choose an encounter and confirmed the same invented visit
+returned without another sign-in. The receiver independently recorded a fresh
+authenticated catalog at **13:22:47.783614 UTC**. This establishes same-device
+session restoration and renewed authenticated access after a full app restart.
+The unchanged driver requests `getToken(skipCache: true)`; no token values or
+expiry claims were captured, so do not label this an injected expiry test.
+
+The owner then tapped Sign out and confirmed the encounter disappeared and the
+signed-out/sign-in view appeared. Signed-out persistence after another full
+restart is pending the owner's close action. Remote session revocation, a new
+sign-in returning to the same creator, cross-client continuity and the full
+standalone authentication matrix remain unqualified.
+`native-session-restart-checkpoint.json` preserves the observations and stage
+hashes. No Mac R2, Keychain setting or authentication implementation changed.
 
 ## Activation checkpoint
 
@@ -44,9 +79,8 @@ receiver instead require the browser-origin claim. Build 4 permits **absence
 only**, explicitly for the native iPhone catalog call. Null, malformed, empty
 or wrong `azp` still fails. No Clerk setting or session template changes.
 
-The expected next result is a freshly authenticated catalog containing
-**Invented connection visit**. That remains a physical acceptance step, not a
-result established by offline tests.
+The physical catalog result above establishes the proposed correction's first
+acceptance step. The offline tests alone did not establish it.
 
 ## Exact scope and authorization effect
 
@@ -112,7 +146,9 @@ The first receiver check failed its expected-success assertion inside the
 restricted sandbox; its log remains preserved. The same unchanged check passed
 with access to the existing private database socket. The initial package/logs
 are also retained; the final archive is `W13-native-session-r2.xcarchive`.
-No real token, microphone, Speech, translation or note-generation trial ran.
+Package preparation used no real token, microphone, Speech, translation or
+note-generation trial. The later physical catalog checks above use the existing
+native session; no completed Speech/translation trial was repeated.
 
 ## Activation and recovery flight plan
 
@@ -124,7 +160,7 @@ storage, PHI boundaries, CI/deployment workflows, environment configuration, or
 production data.” That specific absent-origin native-rule decision is now
 recorded; do not request it again for the same approved package and scope.
 
-Activation sequence (steps 1–3 completed; physical acceptance pending):
+Activation sequence (all four steps completed for the physical catalog):
 
 1. Verify the candidate manifest and fresh device connection. Verify the owned
    original receiver's executable, working directory and listener; last observed

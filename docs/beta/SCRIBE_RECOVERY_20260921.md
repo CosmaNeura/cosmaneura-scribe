@@ -10,8 +10,10 @@ identifies the native application-origin check, without proving other claims
 valid. The owner then explicitly approved the signed
 [build 4 native-session correction](W13_NATIVE_SESSION_CORRECTION_20260922.md).
 Build 4 is installed and launched, and the corrected private iPhone receiver is
-active on the same endpoint with the existing database/TLS files. The phone shows
-the signed-in welcome; the physical catalog check is pending. No completed
+active on the same endpoint with the existing database/TLS files. At **13:16:35
+UTC** the receiver returned the authenticated catalog, and the owner confirmed
+the invented encounter visible on the phone. The first phone/backend/catalog
+gate passed; provider workflow and native lifecycle acceptance remain open. No completed
 live-service trial was repeated. The earlier recovery history below remains
 historical.
 
