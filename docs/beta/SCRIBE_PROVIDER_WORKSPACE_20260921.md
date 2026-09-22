@@ -1,5 +1,29 @@
 # Local provider workspace — 2026-09-21
 
+## Desktop provider recorder controls — 2026-09-22
+
+The existing provider UI now accepts a desktop recorder command/state view.
+Main composes its native helper, encrypted capture/recovery flow and existing
+fresh-authority/lease/indicator controller. Startup cancellation, confirmed stop
+before upload, failed-stop retry and interrupted reopening are connected. The
+view shows startup, source scope and incomplete coverage without receiving audio,
+keys, storage handles, window IDs or credentials. Default preview and the iOS
+resource/foreground path remain unchanged.
+
+All 63 desktop/202 capture checks, types/lint, provider/main builds, three compiled
+desktop DOM checks and ten existing application checks pass. The new main checks
+use real Swift/Node pipes and encrypted SQLite with explicitly invented audio,
+consent and a local BFF. See [ADR 0059](../adr/0059-desktop-provider-recorder-composition.md)
+and `/Users/jw/Desktop/Cosmas/scribe-desktop-provider-20260922.vqbwAd/`.
+
+Next assemble the actual standalone desktop main/preload runtime with its native
+picker/indicator, device key custody and provider backend/journal ports. Actual
+Core runtime configuration and the pending standalone identity decision remain
+external dependencies. No Electron app was installed/launched; desktop/mobile
+physical, session/fidelity and signed release/operations acceptance are unfinished.
+W13, Mac R2, private receiver, Core/OS source and protected authority files are
+unchanged; no completed live-service trial was repeated.
+
 ## Durable desktop capture and provider recovery — 2026-09-22
 
 Desktop main-process storage now retains encrypted flow/queue records, locally

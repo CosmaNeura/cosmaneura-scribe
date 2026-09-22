@@ -90,6 +90,9 @@ class DesktopChunkBridge implements NativePcmBridge {
       await this.persistCoverage({ phase: "started", value: start });
       if (discard || closed) throw failure();
     });
+    // Cancellation can close the handle before the shared source starts awaiting
+    // ready. Observe rejection now while preserving it for every actual awaiter.
+    void ready.catch(() => undefined);
     const stop = (options: { readonly mode: "drain" | "discard" }): Promise<NativePcmStopResult> => {
       if (closed) return Promise.resolve({ finalPcmPacket: null });
       if (options.mode === "discard") { discard = true; chunker.discard(); }

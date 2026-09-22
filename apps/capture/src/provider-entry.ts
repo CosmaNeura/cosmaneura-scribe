@@ -11,7 +11,9 @@ export function mountProviderCapture(root: HTMLElement, binding: ProviderCapture
   return () => app.remove();
 }
 
-export type { ProviderCaptureBinding } from "./provider-binding";
+export type { ProviderCaptureBinding, ProviderRecorderController, PreparedProviderRecorder, ProviderRecorderSnapshot } from "./provider-binding";
+export { connectDesktopRecorderView } from "./provider/desktop-recorder-view";
+export type { DesktopRecorderPort } from "./provider/desktop-recorder-view";
 export { NativeCreatorReviewJournal } from "../../review-ui/src/native-review-journal";
 export { mountProviderWorkspace } from "./provider/workspace";
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderEncounter,

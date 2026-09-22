@@ -15,3 +15,5 @@ export * from "./pcm-capture-source.js";
 export * from "./protocol.js";
 export * from "./recording-indicator.js";
 export * from "./recording-lease.js";
+export * from "./provider-recorder.js";
+export * from "./provider-recorder-ipc.js";

@@ -414,7 +414,6 @@ export class DesktopCaptureController {
       throw new CompanionControllerError("adapter_failure");
     }
 
-    this.#closed = true;
     this.#grant = null;
     try {
       await this.#indicator.publish(this.#inactiveIndicator());
@@ -423,6 +422,7 @@ export class DesktopCaptureController {
       throw new CompanionControllerError("indicator_failure");
     }
     this.#releaseLease();
+    this.#closed = true;
     this.#captureSessionId = null;
     this.#transition("stopped", requestId, null);
     this.#unsubscribeAdapter();

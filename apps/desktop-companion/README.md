@@ -11,12 +11,15 @@ The actual Swift-to-main transport now uses a dedicated helper and bounded
 inherited pipes. Generated audio crosses the real Swift/Node boundary into WAV;
 stop waits for the child to exit. Durable main-process flow/queue, protected key,
 journal and coverage stores now pass actual file/process-loss recovery. The
-trusted host still needs native key custody and provider UI composition; native
-lifetime and physical Meet/Zoom acceptance remain open. See
+main recorder now composes the authority/lease/indicator controller with this
+flow and connects a fixed command/state view to the provider workspace. The
+trusted host still needs actual native custody, picker/indicator and executable
+main/preload/backend assembly; physical Meet/Zoom acceptance remains open. See
 [ADR 0056](../../docs/adr/0056-desktop-pcm-encrypted-capture-adapter.md) and
 [ADR 0057](../../docs/adr/0057-desktop-native-process-transport.md) and
-[ADR 0058](../../docs/adr/0058-durable-desktop-provider-storage.md).
-It is not mounted in this Electron foundation. The
+[ADR 0058](../../docs/adr/0058-durable-desktop-provider-storage.md) and
+[ADR 0059](../../docs/adr/0059-desktop-provider-recorder-composition.md).
+No installed Electron application mounts this composition yet. The
 historical pilot description below describes its existing mock and Recall plan;
 no Recall dependency or live service has been added.
 
