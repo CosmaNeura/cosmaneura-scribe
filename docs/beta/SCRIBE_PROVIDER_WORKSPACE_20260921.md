@@ -1,5 +1,18 @@
 # Local provider workspace — 2026-09-21
 
+## Recorder correction and native presentation — 2026-09-22
+
+Recorder setup now uses Core's existing creator-review read to identify and
+reauthorize the configured session. Its former capabilities/session comparison
+could not succeed against the real schema. Twenty isolated receiver checks now
+pass, including final-reply revocation and recovery states. The new private
+fixture cluster is stopped. Default-disabled macOS 14.2 window-picker/recording
+presentation source also typechecks; it has no installed/native IPC acceptance.
+The desktop grant/lease contract is documented as unresolved and unapplied.
+See the [receiver/native checkpoint](../SCRIBE_RECEIVER_NATIVE_CHECKPOINT_20260922.md).
+The pending identity/runtime decisions and Core release/mobile configuration
+gaps below remain open. No completed installed or live-service trial was repeated.
+
 ## Core release reconciliation and desktop resource factory — 2026-09-22
 
 The active Core production/staging revisions both have Scribe workflow disabled

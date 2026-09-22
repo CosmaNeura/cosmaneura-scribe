@@ -33,7 +33,7 @@ bounded JSON with `Cache-Control: no-store` and fixed failure codes.
 | --- | --- |
 | `catalog` | `{}`; returns the current creator's provisioned Core encounter/workspace observations. Core permission is resolved again when opened. |
 | `mount` | `workspace_id`; negotiates actual Core authority, returning the scope, display row and stable recovery UUID required by the provider host. |
-| `recorder` | `workspace_id`, `binding_ref`, `session_id`, `request_nonce`; confirms that Core's current capabilities belong to the requested admitted session. Starts no recording. |
+| `recorder` | `workspace_id`, `binding_ref`, `session_id`, `request_nonce`; uses Core's existing creator-review read to reauthorize and identify the requested admitted session, including before a transcript exists. Returns only the native revision/session identifiers and starts no recording. |
 | `capture-admissions` | The existing `CoreCaptureClient` envelope, including configured language and all-party consent. |
 | `capture-operations` | The existing envelope for capture/upload, creator review and translation decisions. |
 | `capture-notes` | The existing Core SOAP read/templates/prepare/save/resolve envelope. |

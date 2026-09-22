@@ -1,5 +1,17 @@
 # Scribe real service and client qualification
 
+### Receiver correction and native presentation — 2026-09-22
+
+Within the existing local integration scope, replace the receiver's impossible
+capabilities/session comparison with the existing configured creator-review read.
+Preserve exact session checks and suppress review content in the recorder reply.
+The actual schema fixture reproduces the old 422; twenty isolated receiver checks
+now pass (ADR 0051 amendment). Prepare default-disabled native picker/indicator
+source using existing Apple frameworks, preserving macOS 14.2 and all protected
+authority/audio/helper source. Typecheck only; installed GUI/physical acceptance
+remains open (ADR 0063). The unresolved desktop grant/lease design is documented
+separately; no new server authority, dependency or runtime profile is applied.
+
 ### Desktop resource connection — 2026-09-22
 
 Within the approved local provider controls below, compose authorized backend

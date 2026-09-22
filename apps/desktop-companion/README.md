@@ -48,6 +48,13 @@ packaged `provider-host.mjs`. See [ADR 0062](../../docs/adr/0062-desktop-provide
 and the [Core release packet](../../docs/beta/SCRIBE_CORE_RELEASE_PACKET_20260922.md)
 for the verified local scope and remaining configuration/identity gaps.
 
+`MacProviderPresentation.swift` now supplies disabled native window-picker and
+persistent recording-presentation source for macOS 14.2. It is typechecked but
+not connected to the host or installed. See [ADR 0063](../../docs/adr/0063-native-provider-presentation.md).
+The [desktop authority design](../../docs/beta/SCRIBE_DESKTOP_START_AUTHORITY_DESIGN_20260922.md)
+records the unresolved server grant and lease-order contract; no authority or
+client ordering change is applied.
+
 This directory contains the disabled-by-default Phase 3 foundation for an Electron desktop
 companion that will eventually host Recall.ai's Desktop Recording SDK in the Electron main process.
 It is not a recorder, is not clinically deployable, and currently uses a metadata-only mock adapter.
