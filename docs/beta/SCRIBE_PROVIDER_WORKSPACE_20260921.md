@@ -1,5 +1,21 @@
 # Local provider workspace — 2026-09-21
 
+## Desktop audio-channel preparation — 2026-09-22
+
+The recorder now preserves an authorized source's mixed/system-audio channel
+through reservation, encrypted retention, interruption, reopening and capture
+completion. It previously labeled every recording as microphone audio. Retained
+work rejects a different source channel and cannot be rewritten as microphone
+work. Existing microphone records and the default preview keep their version-2
+shape; new non-microphone flow records use version 3, which older clients reject.
+
+Both channel recovery checks and all 192 capture checks pass locally, with
+invented consent/audio and the existing loopback protocol fixture. See
+[ADR 0050](../adr/0050-capture-channel-bound-recovery.md) and evidence at
+`/Users/jw/Desktop/Cosmas/scribe-provider-channels-20260922.ulHYxlkX/`.
+The actual desktop audio producer, app hosting and physical Meet/Zoom acceptance
+remain open. No native app, service, consent policy or shared schema changed.
+
 ## Server-side Core provider transport — 2026-09-22
 
 `ProviderCoreTransport` now connects the current provider request contracts to

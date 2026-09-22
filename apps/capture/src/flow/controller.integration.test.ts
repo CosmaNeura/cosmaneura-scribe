@@ -32,6 +32,64 @@ const TEST_ENCOUNTER = Object.freeze({
 });
 
 describe("CaptureFlowController", () => {
+  it.each(["mixed", "system_audio"] as const)("preserves configured %s audio through interruption and upload recovery", async channel => {
+    const server = createMockBffServer();
+    const origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const flowName = TEST_CRYPTO.randomUUID(), queueName = TEST_CRYPTO.randomUUID();
+    let flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: flowName, indexedDB, crypto: TEST_CRYPTO });
+    let queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: queueName, indexedDB, crypto: TEST_CRYPTO });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+    const source = new InspectableCaptureSource(channel);
+    const first = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    const controllers = [first];
+    try {
+      const consent = await bff.createConsent({ appointment_id: TEST_ENCOUNTER.appointmentId,
+        practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId,
+        participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "channel-consent-0001" });
+      const session = await bff.createSession({ appointment_id: TEST_ENCOUNTER.appointmentId,
+        practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId,
+        consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "channel-session-0001" });
+      const reserve = vi.spyOn(bff, "reserveChunks"), complete = vi.spyOn(bff, "completeCapture");
+      await first.prepareConfigured(session.id);
+      expect(reserve.mock.calls[0]![1].channel).toBe(channel);
+      expect(await flowStore.getPreparationState()).toMatchObject({ schemaVersion: 3, channel });
+      expect(source.startCalls).toBe(0);
+      await first.startRecording(); await source.emit(); await first.deactivate();
+      const active = (await flowStore.getActiveCaptureState())!;
+      expect(active).toMatchObject({ schemaVersion: 3, channel, phase: "paused", recordedChunks: 1 });
+      await expect(flowStore.putActiveCaptureState({ ...active, channel: channel === "mixed" ? "system_audio" : "mixed" })).rejects.toThrow("active_capture_conflict");
+      const { channel: savedChannel, ...legacy } = active;
+      expect(savedChannel).toBe(channel);
+      await expect(flowStore.putActiveCaptureState({ ...legacy, schemaVersion: 2 })).rejects.toThrow("active_capture_conflict");
+      expect((await queueStorage.list()).every(row => row.reservation.channel === channel)).toBe(true);
+      expect(complete).not.toHaveBeenCalled();
+      flowStore.close(); queueStorage.close();
+      flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: flowName, indexedDB, crypto: TEST_CRYPTO });
+      queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: queueName, indexedDB, crypto: TEST_CRYPTO });
+      const wrong = createControllerWithSource({ bff, flowStore, queueStorage, origin, source: new InspectableCaptureSource() });
+      controllers.push(wrong);
+      const capabilities = vi.spyOn(bff, "getCapabilities");
+      await expect(wrong.restore()).rejects.toThrow("capture_channel_conflict");
+      expect(capabilities).not.toHaveBeenCalled();
+      expect(await flowStore.getActiveCaptureState()).toEqual(active);
+      const recoveredSource = new InspectableCaptureSource(channel);
+      const recovered = createControllerWithSource({ bff, flowStore, queueStorage, origin, source: recoveredSource });
+      controllers.push(recovered);
+      expect(await recovered.restore()).toBe(true);
+      expect(recovered.snapshot.state).toBe("paused");
+      expect(recoveredSource.startCalls).toBe(0);
+      await recovered.stopRecording();
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(complete.mock.calls[0]![1].channels).toEqual([{ channel, final_sequence_number: 0 }]);
+      expect(recovered.snapshot.state).toBe("processing");
+    } finally {
+      for (const controller of controllers) await controller.deactivate().catch(() => undefined);
+      flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
+
   it("keeps configured native capture paused until an interrupted recorder confirms stop", async () => {
     const server = createMockBffServer();
     const origin = await listenOnEphemeralLoopback(server);
@@ -692,6 +750,7 @@ class OneChunkSyntheticSource implements CaptureSource {
 
 class InspectableCaptureSource implements CaptureSource {
   public readonly kind = "synthetic" as const;
+  public constructor(public readonly channel: "microphone" | "mixed" | "system_audio" = "microphone") {}
   public capabilities: CaptureSourceStartOptions["capabilities"] | null = null;
   public lastChunk: CapturedWavChunk | null = null;
   public startCalls = 0;
