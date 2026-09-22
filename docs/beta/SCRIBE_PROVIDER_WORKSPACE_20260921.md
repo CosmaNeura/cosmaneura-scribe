@@ -17,8 +17,9 @@ logout before reading its recovery journal. Evidence and both bundles are at
 `/Users/jw/Desktop/Cosmas/scribe-provider-ios17-20260922.dPhRFH/`.
 Focused provider tests, lint, typecheck and build pass. This proves removal of
 one compatibility blocker, **not physical iOS 17 acceptance or complete native
-host composition**. The installed W13 build 2 and its pending phone catalog
-trial are unchanged; see [the private connection checkpoint](W13_PRIVATE_CONNECTION_20260922.md).
+host composition**. W13 build 2 subsequently reached the private backend from
+the phone but failed native session verification before catalog loading; see
+[the private connection checkpoint](W13_PRIVATE_CONNECTION_20260922.md).
 
 ## Existing local workflow
 

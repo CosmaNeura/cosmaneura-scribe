@@ -13,8 +13,13 @@
                 _ = try await transport.read(path: "/connection")
                 guard auth.state().revision == revision else { return Self.reject(call) }
                 let token: String
+                let observation = self.observedDriver?.beginObservation()
                 do { token = try await auth.token(expectedRevision: revision) }
-                catch { call.reject("Workspace token unavailable", "workspace_token_unavailable"); return }
+                catch {
+                    call.reject("Workspace token unavailable", self.observedDriver?.failureCode(for: observation)
+                        ?? "workspace_token_unavailable")
+                    return
+                }
                 let data = try await transport.read(path: "/workspaces", token: token)
                 guard auth.state().phase == .ready, auth.state().revision == revision else { return Self.reject(call) }
                 guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]], rows.count <= 100

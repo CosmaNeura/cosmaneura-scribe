@@ -181,4 +181,21 @@ try {
   assert.equal(native.text().includes("Invented private visit"), false);
 } finally { await native.close(); }
 console.log(`Private native catalog transport retries without renderer tokens and discards replies after logout${installedPrivateEntry ? " against the exported app asset" : ""}.`);
+const tokenFailure = await harness(nativeBundle);
+try {
+  tokenFailure.setCatalog(async () => {
+    await tokenFailure.emit(unavailable);
+    throw { code: "workspace_token_app_binding_missing", message: "private SDK detail" };
+  });
+  await tokenFailure.click("Choose an encounter");
+  await tokenFailure.poll();
+  assert.ok(tokenFailure.text().includes("Secure session is unavailable"));
+  assert.ok(tokenFailure.text().includes("app_binding_missing"));
+  assert.equal(tokenFailure.text().includes("private SDK detail"), false);
+  await tokenFailure.emit(restored);
+  assert.ok(tokenFailure.text().includes("app_binding_missing"));
+  assert.equal(tokenFailure.requests(), 0);
+  assert.equal(tokenFailure.tokenRequests(), 0);
+} finally { await tokenFailure.close(); }
+console.log("Only the fixed native token failure category remains visible through unavailable/ready transitions.");
 await assert.rejects(repairBundle(Buffer.from("different candidate")), /Unrecognized W13 input/);

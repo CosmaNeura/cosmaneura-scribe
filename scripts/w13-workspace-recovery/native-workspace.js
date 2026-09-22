@@ -3,6 +3,8 @@
 // Keychain, token policy and API authorization are not changed by this adapter.
 export function createWorkspaceRecovery({ React, jsx, WorkspaceAuth, availableByDefault,
   StatusScreen, EncounterWorkspace, parseState, parseToken, sameState, privateCatalog = false }) {
+  const tokenFailureCodes = new Set(["app_binding_missing", "app_binding_mismatch", "request_failed", "request_pending",
+    "empty", "identity_changed", "policy_passed", "policy_rejected"].map(code => "workspace_token_" + code));
   return function NativeAuthenticatedWorkspace({ plugin = WorkspaceAuth,
     available = availableByDefault(), createIdentity }) {
     const [state, setState] = React.useState(null);
@@ -46,7 +48,8 @@ export function createWorkspaceRecovery({ React, jsx, WorkspaceAuth, availableBy
               (!scope.current?.identity || sameAccount(scope.current, expected))) {
             const code = error?.code;
             setAccessFailed(code === "workspace_connection_unavailable" ? "connection" :
-              code === "workspace_jwt_rejected" ? "server" : code === "workspace_access_denied" ? "access" : true);
+              code === "workspace_jwt_rejected" ? "server" : code === "workspace_access_denied" ? "access" :
+                tokenFailureCodes.has(code) ? code : true);
           }
           // Native provider errors are intentionally discarded at the UI boundary.
           // eslint-disable-next-line preserve-caught-error
@@ -124,13 +127,13 @@ export function createWorkspaceRecovery({ React, jsx, WorkspaceAuth, availableBy
         accessFailed === "connection" ? "Could not connect securely to the workspace on your Mac. Check that both devices are connected, then choose an encounter to retry." :
         accessFailed === "server" ? "The workspace could not verify this session. Your sign-in has been retained; access needs to be checked." :
         accessFailed === "access" ? "This account does not currently have access to the test workspace. Your sign-in has been retained." :
-          "Workspace access could not be verified. Choose an encounter to retry. Your sign-in has been retained." }),
+          tokenFailureDetail(accessFailed) ?? "Workspace access could not be verified. Choose an encounter to retry. Your sign-in has been retained." }),
       jsx.jsx(EncounterWorkspace, { authenticated: identity,
         accountControls: jsx.jsx("button", { className: "button secondary",
           onClick: () => void act("signOut"), children: "Sign out" }) }, state.revision),
     ] });
     if (state?.phase === "unavailable" || failed) return jsx.jsx(StatusScreen, { title: "Secure session is unavailable",
-      detail: "Reopen the app to check your session again. Your workspace is closed." });
+      detail: tokenFailureDetail(accessFailed) ?? "Reopen the app to check your session again. Your workspace is closed." });
     if (!state || state.phase === "loading") return jsx.jsx(StatusScreen, { title: "Checking your session",
       detail: "Your workspace will open after your account is verified.", role: "status" });
     const pending = state.phase === "signOutPending";
@@ -144,5 +147,10 @@ export function createWorkspaceRecovery({ React, jsx, WorkspaceAuth, availableBy
     return left.identity?.userId === right.identity?.userId &&
       left.identity?.sessionId === right.identity?.sessionId &&
       left.identity?.organizationId === right.identity?.organizationId;
+  }
+  function tokenFailureDetail(code) {
+    return tokenFailureCodes.has(code)
+      ? `The private connection succeeded, but session verification failed (${code.slice("workspace_token_".length)}). Your workspace remains closed.`
+      : null;
   }
 }

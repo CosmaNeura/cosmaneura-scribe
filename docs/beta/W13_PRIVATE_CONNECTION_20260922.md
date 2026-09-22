@@ -75,14 +75,16 @@ Passed:
   signature validation and successful in-place installation; Python/JS lint.
 
 Observed on the phone: build 2 launches to the existing signed-in welcome with
-“Sign out.” This is session-restoration evidence, not yet JWT/API acceptance.
-No post-install request has reached the receiver at this checkpoint. Device Hub
-shows the app, but forwarded swipes/taps have had no effect. The owner was asked
-to tap **Choose an encounter** on the physical phone and allow the expected
-private local-network connection if prompted. That result is pending.
+“Sign out.” After the owner's physical **Choose an encounter** taps, the receiver
+recorded two new `private_tls_request_received` stages at **12:02:50 and 12:03:00
+UTC on September 22**. No local TLS check was running. The owner then reported
+**“Secure session is unavailable.”** This establishes phone-to-private-backend
+TLS reachability, but token acquisition/validation fails before the authenticated
+catalog call. No `authenticated_catalog_returned` or other catalog result has
+been observed. The exact native failure remains unproven.
 
-Do not report phone reachability or authenticated encounter loading as passed
-until both the fixed receiver stages and visible invented encounter establish
+Do not report authenticated encounter loading as passed until the fixed
+`authenticated_catalog_returned` stage and visible invented encounter establish
 it. `device-trial-start.json` records **two pre-device local TLS requests**;
 those must not be counted as phone traffic. `candidate-manifest.json` records the
 pre-install package; `iphone-update-result.json` and
@@ -90,6 +92,53 @@ pre-install package; `iphone-update-result.json` and
 `installed-checkpoint.json` binds those receipts, the exported package and actual
 composed sources by SHA-256. At that readback, receiver PID **97451** and private
 PostgreSQL PID **94522** matched their expected executables; recheck before use.
+
+## Session failure candidate — build 3
+
+Prepared in a separate owned artifact directory (same checkout and branch):
+
+`/Users/jw/Desktop/Cosmas/scribe-w13-session-20260922.ZR3yR7`
+
+Build 3 adds a wrapper around the existing native driver's single fresh-token
+request. It returns the original token or error unchanged, observes the original
+policy's result, and retains only an allowlisted failure category. No token,
+claim value or SDK error detail is logged or sent to the renderer. The original
+seven native authentication sources and account/endpoint configuration remain
+unchanged. The existing coordinator still enforces every authorization check.
+
+The fixed category remains visible through unavailable/ready transitions, so
+the next physical attempt can distinguish request failure, empty token, identity
+change, policy rejection and a missing/mismatched application-origin claim.
+These categories are diagnostic evidence, not permission to relax policy; a
+missing-origin category does not establish that all other claims are valid.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `export/App.ipa` | `a7f4d1298f2c5929b898aad622ae49d3774702bf4ad1e27345fbf00b59dcf8a0` |
+| Exported `public/assets/index-BOeSnvhj.js` | `e503f130c5173ab0ea49b10c60920d976f8940813715e866d466177f8c39ea2f` |
+
+Offline Swift checks establish unchanged driver result/error behavior and
+continued policy rejection. The exact exported web asset passes fixed-category
+persistence, private transport, retry, logout and stale-result checks. Archive,
+development export and deep/strict signature verification pass. The first web
+check's fixture-timing failure is preserved separately; the corrected fixture
+waits for the native result before asserting. No live Speech/translation trial
+was repeated.
+
+**Build 3 is not installed.** The installation attempt failed before completion
+with CoreDevice error 4016. A fresh read-only device inventory reports the same
+paired iPhone with an unavailable tunnel (last connection **12:09 UTC**).
+Build 2 remains the last confirmed installation. The owner has been asked to
+reconnect and unlock the phone/Mac. Preserve `iphone-update-result.json` and use
+a new receipt filename when retrying the exact candidate.
+
+Read-only contract review: [Clerk session-token documentation](https://clerk.com/docs/guides/sessions/session-tokens)
+states that `azp` comes from the original Frontend API `Origin` and can be absent.
+The retained native SDK middleware deliberately omits `Origin`, while the
+retained client and receiver require the configured `azp`. This makes a contract
+mismatch a concrete hypothesis, **not a confirmed diagnosis**. No Clerk setting,
+template, native policy or receiver authentication policy was changed. Do not
+add the browser header or weaken validation speculatively.
 
 ## Resume safely
 

@@ -21,7 +21,9 @@ files and records their hashes. No source in that reference checkout is edited.
   installation or cloud settings change is part of these scripts.
 - `prepare_ios.py` copies the exact retained W13 source, adds the bounded native
   catalog bridge and endpoint-specific TLS transport, and preserves native auth
-  source hashes. `prepare_web.mjs` then patches only the recognized retained entry.
+  source hashes. Current preparation requires an explicit `--build` of at least
+  3 and includes the observational driver described below. `prepare_web.mjs`
+  then patches only the recognized retained entry.
   Neither operation is an in-place source or installed-app update.
 - `check_receiver.py <owned-root>` uses offline signing keys and the real frozen
   verifier/catalog against that new database. It cannot establish real Clerk
@@ -48,3 +50,13 @@ calls `/workspaces`. It validates the bounded catalog and identity revision
 before exposing encounter data. This retains the JWT natively for this operation.
 All other provider workflow operations still need their existing authorized
 Core integration; this catalog method must not become a generic URL/HTTP bridge.
+
+`W13ObservedAuthDriver.swift` forwards the original driver unchanged and observes
+one existing fresh-token call. Only an allowlisted failure category survives;
+token/claim values and SDK errors never enter diagnostic output. Original
+`NativeWorkspaceAuth` and `NativeTokenPolicy` still decide access. Compile
+`check-token-observation.swift` with that wrapper and the original native module
+to check unchanged result/error behavior and continued rejection offline.
+An application-binding category identifies that defect only; it does not prove
+the remaining claims passed. This observation must never become an alternate
+authorization implementation.

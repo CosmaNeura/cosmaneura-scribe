@@ -4,10 +4,14 @@ Latest continuation: [W13 private connection checkpoint](W13_PRIVATE_CONNECTION_
 The owner continued the private connection packet and made phone-reachable
 authenticated encounter loading the first priority. The owned private TLS
 receiver is running, and W13 build 2 is installed with the native catalog
-connection and persistent error/retry correction. The phone retains its signed-in
-welcome; its actual connection/catalog result is pending a physical tap. Do not
-count local TLS tests as phone acceptance. No completed live-service trial was
-repeated. The earlier recovery history below remains historical.
+connection and persistent error/retry correction. The owner's physical taps
+reached the private TLS receiver, then W13 reported “Secure session is
+unavailable” before an authenticated catalog request. Build 3 preserves the
+original auth checks and adds only fixed failure-category reporting; it passes
+offline/package verification but is not installed because the iPhone connection
+dropped. Build 2 remains the last confirmed installation. No completed
+live-service trial was repeated. The earlier recovery history below remains
+historical.
 
 The existing Scribe checkout remained clean at `622648a`, with provider workflow
 implementation `abea802b0d3c66e5945d74024ee1ecd5c3a8f899` intact. No branch,
