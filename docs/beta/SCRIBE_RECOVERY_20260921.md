@@ -12,10 +12,18 @@ valid. The owner then explicitly approved the signed
 Build 4 is installed and launched, and the corrected private iPhone receiver is
 active on the same endpoint with the existing database/TLS files. At **13:16:35
 UTC** the receiver returned the authenticated catalog, and the owner confirmed
-the invented encounter visible on the phone. The first phone/backend/catalog
-gate passed; provider workflow and native lifecycle acceptance remain open. No completed
-live-service trial was repeated. The earlier recovery history below remains
-historical.
+the invented encounter visible on the phone. The same encounter returned after
+a full app restart without another sign-in. Explicit sign-out hid the encounter,
+and another full restart remained signed out. Fresh sign-in/creator continuity,
+remote revocation and the complete native lifecycle matrix remain open.
+
+The standalone iOS provider resource composition is committed at `9bbf7d1`:
+native recorder, creator-scoped recovery stores, recording lock and configured
+upload connection now compose with the provider workflow. Its authenticated Core
+connection and actual native packaging/acceptance remain open; it is not installed
+in W13. See [the provider checkpoint](SCRIBE_PROVIDER_WORKSPACE_20260921.md).
+No completed live-service trial was repeated. The earlier recovery history below
+remains historical.
 
 The existing Scribe checkout remained clean at `622648a`, with provider workflow
 implementation `abea802b0d3c66e5945d74024ee1ecd5c3a8f899` intact. No branch,

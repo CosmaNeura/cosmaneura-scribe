@@ -43,12 +43,42 @@ view, uses the scoped journal, reauthorizes recorder acquisition, excludes
 foreign records, releases its lock and clears on revocation. Native/Core calls
 are explicit offline fixtures; no audio or live provider operation runs.
 
+The default preview was rebuilt separately at `9bbf7d1`; its preview guard passed.
+The provider host and its flow-store namespace remain absent from that preview,
+whose microphone mode remains disabled. `preview-build.log` and
+`preview-guard.log` retain these local checks; no preview was deployed.
+
 This closes the native resource-composition gap in source and the provider
 bundle. The standalone native identity/authorized Core connection still must be
 bound to it, then packaged and qualified on devices. This code is not installed
 in W13 build 4. W13 remains the separately approved OS native-session snapshot,
 not a relabeled standalone Scribe release. Complete desktop hosting, native
 lifecycle, physical capture, real-service fidelity and distribution remain open.
+
+### Next connection boundary
+
+Read-only reconciliation found the protected Core checkout still at
+`e21ba4c1fb1027de8123aca9b8aee25b8a11b612`; all 82 dirty file paths, statuses and
+hashes match the retained recovery manifest. The shorter default Git status
+count groups untracked directories. `provider-ios-host-final-checkpoint.json`
+preserves this comparison and verifies the source/artifact hashes above.
+
+Core already provides the required identity path: a native user session reaches
+`/embed/v1/context-tokens/exchange`, then server-held workload authority resolves
+`/service/v1/agent/mount-context/resolve` and
+`/service/v1/agent/scribe/capture-bindings/resolve`. Reuse that separation for
+the standalone connection. The read-only OS client
+`src/cosmas_os/adapters/core_capture_admission.py` demonstrates this exchange,
+but its admission payload lacks `configured_capture` and its operation contract
+lacks `creator_review`/`decide_translation`. It cannot be selected unchanged as
+the configured provider backend. The current Scribe `CoreCaptureClient` and
+approved Core receiver already carry those contracts.
+
+The next implementation must bind that current client to freshly authorized
+Core encounter context through the actual standalone native/server host.
+W13's two-route catalog receiver supplies neither Core mount authority nor
+workload credentials. This inspection changed no Core/OS source, identity
+configuration or running receiver and grants no new activation authority.
 
 ## Native iOS provider source — 2026-09-22
 

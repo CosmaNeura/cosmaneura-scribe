@@ -34,12 +34,18 @@ The unchanged driver requests `getToken(skipCache: true)`; no token values or
 expiry claims were captured, so do not label this an injected expiry test.
 
 The owner then tapped Sign out and confirmed the encounter disappeared and the
-signed-out/sign-in view appeared. Signed-out persistence after another full
-restart is pending the owner's close action. Remote session revocation, a new
-sign-in returning to the same creator, cross-client continuity and the full
-standalone authentication matrix remain unqualified.
-`native-session-restart-checkpoint.json` preserves the observations and stage
-hashes. No Mac R2, Keychain setting or authentication implementation changed.
+signed-out/sign-in view appeared. After the owner fully closed the app again,
+Device Hub reopened the unchanged build 4. Its actual phone view showed **“Sign
+in to Cosmas”** and the Sign in button, with no encounter visible. Signed-out
+persistence after a full restart passed. `native-signout-restart-checkpoint.json`
+records this later result; the earlier restart receipt is preserved unchanged.
+
+A fresh Tester sign-in followed by Choose an encounter is pending. The receiver
+still contains only the two accepted catalog requests recorded above. Remote
+session revocation, return to the same creator after a new sign-in, cross-client
+continuity and the full standalone authentication matrix remain unqualified.
+`native-session-restart-checkpoint.json` preserves the earlier observations and
+stage hashes. No Mac R2, Keychain setting or authentication implementation changed.
 
 ## Activation checkpoint
 
