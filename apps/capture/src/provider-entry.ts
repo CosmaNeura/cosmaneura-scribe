@@ -22,3 +22,5 @@ export type { AuthorizedCoreRequest, CoreCaptureScope } from "./provider/core-cl
 export { createProviderIOSCaptureSource } from "./provider/ios-capture-source";
 export { createProviderIOSHost } from "./provider/ios-host";
 export type { ProviderIOSBackend, AuthorizedProviderIOSMount } from "./provider/ios-host";
+export { connectNativeProviderIOSBackend } from "./provider/native-backend";
+export type { NativeProviderBackend, NativeProviderOptions } from "./provider/native-backend";

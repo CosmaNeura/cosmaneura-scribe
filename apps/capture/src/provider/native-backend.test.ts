@@ -1,0 +1,188 @@
+import { webcrypto } from "node:crypto";
+import { Capacitor } from "@capacitor/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CoreCaptureClient } from "./core-client";
+import { connectNativeProviderIOSBackend, type NativeProviderOptions, type ProviderNativePlugin } from "./native-backend";
+
+const workspace = "10000000-0000-4000-8000-000000000001";
+const recovery = "20000000-0000-4000-8000-000000000002";
+const session = "30000000-0000-4000-8000-000000000003";
+const appointment = "appointment_01j00000000000000000000000";
+const binding = "scribe_capture_binding_01j00000000000000000000000";
+type NativeRequest = Parameters<ProviderNativePlugin["providerRequest"]>[0];
+type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
+type NativeState = Awaited<ReturnType<ProviderNativePlugin["getProviderState"]>>;
+
+beforeEach(() => {
+  vi.useFakeTimers(); vi.stubGlobal("crypto", webcrypto);
+  vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
+  vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
+  vi.spyOn(Capacitor, "getPlatform").mockReturnValue("ios");
+  vi.spyOn(Capacitor, "isPluginAvailable").mockReturnValue(true);
+});
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+function fixture() {
+  const abort = new AbortController(), removed = vi.fn(async () => undefined);
+  let state: NativeState = { phase: "ready", revision: crypto.randomUUID(), providerReady: true };
+  let listener: (state: NativeState) => void = () => undefined;
+  const encounter = { appointmentRef: appointment, title: "Invented visit", detail: "Offline fixture" };
+  const reply = (request: NativeRequest, value?: unknown, status = 200): NativeReply => {
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+    const receipt = { session_id: session };
+    const result = request.action === "catalog" ? { revision: request.revision,
+      encounters: [{ workspaceId: workspace, ...encounter }] }
+      : request.action === "mount" ? { revision: request.revision, workspaceId: workspace,
+        recoveryScope: recovery, appointmentRef: appointment, bindingRef: binding, encounter }
+        : request.action === "recorder" ? { revision: request.revision, session_id: body.session_id }
+          : { contract_version: "1", workspace_id: workspace, binding_ref: binding,
+            request_nonce: body.request_nonce, checked_at: new Date().toISOString(),
+            appointment_ref: appointment, operation_ref: "scribe_admission_01j00000000000000000000000",
+            session_id: session, consent_record_id: crypto.randomUUID(), receipt,
+            operation: (body.operation as { kind: string } | undefined)?.kind, action: body.action };
+    return { requestId: request.requestId, revision: request.revision, status, body: JSON.stringify(value ?? result) };
+  };
+  const plugin = {
+    getProviderState: vi.fn(async () => state),
+    addListener: vi.fn<ProviderNativePlugin["addListener"]>(async (_event, callback) => {
+      listener = callback; return { remove: removed };
+    }),
+    providerRequest: vi.fn<ProviderNativePlugin["providerRequest"]>(async request => reply(request)),
+    cancelProviderRequest: vi.fn(async () => undefined),
+    getToken: vi.fn(() => { throw new Error("A native token must not be requested by JavaScript"); }),
+  };
+  const coreOpen = vi.fn(async () => undefined);
+  const options: NativeProviderOptions = { signal: abort.signal,
+    uploadTarget: { putCompleteEnvelope: vi.fn(async () => undefined) },
+    core: { createEncounter: vi.fn(async () => undefined), openEncounter: coreOpen } };
+  return { options, plugin, removed, abort, reply, coreOpen, get state() { return state; },
+    setState: (value: NativeState, emit = true) => { state = value; if (emit) listener(state); },
+    connect: () => connectNativeProviderIOSBackend(options, plugin) };
+}
+
+describe("native provider connection", () => {
+  it("connects catalog, scope, actual Core client and recorder reauthorization without a JS token", async () => {
+    const f = fixture(), backend = await f.connect();
+    try {
+      expect(await backend.listEncounters(backend.signal)).toHaveLength(1);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.recoveryScope).toBe(recovery); expect(mount.uploadTarget).toBe(f.options.uploadTarget);
+      const client = new CoreCaptureClient(mount.scope, mount.request, mount.signal);
+      expect(await client.admit({ key: "invented-admission-key", languageMode: "en-US+es-US",
+        attestation: { modality: "in_person", participant_regions: ["US-NY"], method: "verbal_attestation",
+          all_parties_consented: true, granted_at: new Date().toISOString() } })).toBe(session);
+      await mount.reauthorizeRecorder(session, backend.signal);
+      await client.operation(session, { kind: "creator_review" });
+      await client.note(session, "templates");
+      await mount.openInCore(null);
+      expect(f.coreOpen).toHaveBeenCalledWith(appointment, null, backend.signal);
+      expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual([
+        "catalog", "mount", "capture-admissions", "recorder", "capture-operations", "capture-notes", "mount",
+      ]);
+      expect(f.plugin.providerRequest.mock.calls[2]![0].key).toBe("invented-admission-key");
+      for (const [request] of f.plugin.providerRequest.mock.calls) {
+        expect(Object.keys(request).sort()).toEqual(["action", "body", "key", "requestId", "revision"]);
+      }
+      expect(f.plugin.getToken).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+    expect(f.removed).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels native I/O on logout and discards an uncooperative late reply", async () => {
+    const f = fixture(), backend = await f.connect(), wire = deferred<NativeReply>();
+    f.plugin.providerRequest.mockImplementationOnce(() => wire.promise);
+    const pending = backend.listEncounters(backend.signal);
+    const rejected = expect(pending).rejects.toThrow("provider_native_connection_unavailable");
+    const request = f.plugin.providerRequest.mock.calls[0]![0];
+    f.setState({ phase: "signedOut", revision: crypto.randomUUID() });
+    await rejected;
+    expect(f.plugin.cancelProviderRequest).toHaveBeenCalledWith({ requestId: request.requestId });
+    wire.resolve(f.reply(request)); await Promise.resolve();
+    expect(backend.signal.aborted).toBe(true);
+    await expect(backend.openEncounter(appointment, new AbortController().signal)).rejects.toThrow();
+    await backend.dispose(); expect(f.removed).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an encounter request without cancelling the signed-in backend", async () => {
+    const f = fixture(), backend = await f.connect(), operation = new AbortController(), wire = deferred<NativeReply>();
+    await backend.listEncounters(backend.signal);
+    f.plugin.providerRequest.mockImplementationOnce(() => wire.promise);
+    const pending = backend.openEncounter(appointment, operation.signal);
+    const rejected = expect(pending).rejects.toThrow();
+    const request = f.plugin.providerRequest.mock.calls.at(-1)![0];
+    operation.abort(); await rejected;
+    expect(backend.signal.aborted).toBe(false);
+    wire.resolve(f.reply(request)); await Promise.resolve();
+    expect(f.plugin.cancelProviderRequest).toHaveBeenCalledWith({ requestId: request.requestId });
+    await backend.dispose();
+  });
+
+  it("rejects a stale initial state and removes a listener that arrives after cancellation", async () => {
+    const f = fixture(), read = deferred<NativeState>();
+    f.plugin.getProviderState.mockImplementationOnce(() => read.promise);
+    const connecting = f.connect(), rejected = expect(connecting).rejects.toThrow();
+    await Promise.resolve(); await Promise.resolve();
+    const old = f.state;
+    f.setState({ phase: "ready", revision: crypto.randomUUID() }); read.resolve(old);
+    await rejected; expect(f.removed).toHaveBeenCalledTimes(1);
+    const late = fixture(), added = deferred<{ remove: typeof late.removed }>();
+    late.plugin.addListener.mockImplementationOnce(() => added.promise);
+    const another = late.connect(), cancelled = expect(another).rejects.toThrow();
+    late.abort.abort(); added.resolve({ remove: late.removed });
+    await cancelled; expect(late.removed).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("detects a passive native session change without requesting tokens", async () => {
+    const f = fixture(), backend = await f.connect();
+    f.setState({ phase: "signedOut", revision: crypto.randomUUID() }, false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(backend.signal.aborted).toBe(true); expect(f.plugin.getToken).not.toHaveBeenCalled();
+    await backend.dispose(); expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("sends no provider payload unless native logging and endpoint readiness are confirmed", async () => {
+    const f = fixture();
+    f.setState({ phase: "ready", revision: crypto.randomUUID(), providerReady: false });
+    await expect(f.connect()).rejects.toThrow();
+    expect(f.plugin.providerRequest).not.toHaveBeenCalled();
+    expect(f.removed).toHaveBeenCalledTimes(1);
+    const active = fixture(), backend = await active.connect();
+    active.setState({ ...active.state, providerReady: false }, false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(backend.signal.aborted).toBe(true); await backend.dispose();
+  });
+
+  it("closes on access revocation but preserves recovery on a Core conflict", async () => {
+    const f = fixture(), backend = await f.connect();
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    const body = { workspace_id: workspace, binding_ref: binding, request_nonce: crypto.randomUUID() };
+    f.plugin.providerRequest.mockImplementationOnce(async request => f.reply(request, {}, 409));
+    const response = await mount.request("/service/v1/agent/scribe/capture-notes", body, "same-save-key", backend.signal);
+    expect(response.status).toBe(409); expect(backend.signal.aborted).toBe(false);
+    f.plugin.providerRequest.mockImplementationOnce(async request => f.reply(request, {}, 403));
+    await expect(mount.request("/service/v1/agent/scribe/capture-notes", body, "same-save-key", backend.signal)).rejects.toMatchObject({ status: 403 });
+    expect(backend.signal.aborted).toBe(true); await backend.dispose();
+  });
+
+  it("rejects scope substitution, arbitrary paths and synchronous native failures", async () => {
+    const f = fixture(), backend = await f.connect();
+    await backend.listEncounters(backend.signal);
+    f.plugin.providerRequest.mockImplementationOnce(async request => ({ ...f.reply(request),
+      body: JSON.stringify({ revision: request.revision, workspaceId: crypto.randomUUID() }) }));
+    await expect(backend.openEncounter(appointment, backend.signal)).rejects.toThrow();
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    const calls = f.plugin.providerRequest.mock.calls.length;
+    await expect(mount.request("https://foreign.invalid/", {}, "invented-key", backend.signal)).rejects.toThrow();
+    expect(f.plugin.providerRequest).toHaveBeenCalledTimes(calls);
+    f.plugin.providerRequest.mockImplementationOnce(() => { throw new Error("private SDK error"); });
+    await expect(backend.listEncounters(backend.signal)).rejects.toThrow("provider_native_connection_unavailable");
+    await backend.dispose(); expect(f.plugin.cancelProviderRequest).not.toHaveBeenCalled();
+  });
+});

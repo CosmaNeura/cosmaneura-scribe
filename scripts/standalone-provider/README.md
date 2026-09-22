@@ -64,3 +64,30 @@ Speech/translation service or real Core mutation is exercised by these checks.
 
 See [ADR 0051](../../docs/adr/0051-standalone-provider-receiver.md) for activation
 boundaries and the current evidence directory.
+
+## Native binding
+
+`prepare_native_bridge.py` prepares a separate copy of the retained bridge with
+`getProviderState`, `providerRequest` and `cancelProviderRequest`. It preserves
+native auth source hashes, removes the token-returning and W13 catalog methods
+from the registered interface, and starts/configures no app. It requires a new
+output directory. `NativeProviderConnection.swift` reuses the current native
+session owner; `ProviderNativeTransport.swift` sends the six fixed actions to
+one explicit private HTTPS receiver with the exact CA/leaf pin. Neither creates
+or changes the native identity, callback, Keychain or system trust configuration.
+
+`connectNativeProviderIOSBackend` is exported by the provider entry. Supply the
+already authorized upload target/Core navigation, then pass the connected backend
+to `createProviderIOSHost` and mount the existing workspace. Do not use the old
+W13 bridge as a fallback: it does not have the new methods. Native readiness must
+confirm the receiver profile and disabled bridge logging before provider payloads
+can be sent. Retain `loggingBehavior: "none"` in the actual app package.
+
+`check-native-provider.swift` exercises the real native session owner with offline
+driver/wire fixtures and an in-memory access block. `test_native_receiver.py` runs
+the compiled `check-native-receiver.swift` against one temporary TLS receiver,
+with a new fixture database, offline signed token and explicit Core wire replies.
+The token travels over stdin, never argv or a file. Wrong-pin and logout rejection
+are included. These checks do not access the phone, Keychain or live services.
+See [ADR 0052](../../docs/adr/0052-native-provider-receiver-bridge.md) for evidence
+and the still-open standalone identity/runtime/physical acceptance boundary.

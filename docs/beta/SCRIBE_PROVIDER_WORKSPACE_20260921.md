@@ -1,5 +1,28 @@
 # Local provider workspace — 2026-09-21
 
+## Native provider receiver connection — 2026-09-22
+
+The iOS backend now connects the current provider host to the fixed receiver
+through the existing native session owner. Native code obtains each fresh SDK
+token and keeps it out of JavaScript. The bridge handles request cancellation,
+logout/session changes, late replies, stable server recovery scope and Core
+conflicts. It reports provider readiness only when its receiver profile is valid
+and Capacitor bridge logging is disabled.
+
+Eight backend checks, nine compiled native checks, the complete iOS-17-targeted
+bridge typecheck and built provider UI check pass. A real native HTTPS roundtrip
+also passes with an offline signed identity and an isolated database: catalog,
+mount, configured admission, review and note templates reach the receiver/Core
+wire fixture; a wrong TLS pin and post-logout request are rejected.
+See [ADR 0052](../adr/0052-native-provider-receiver-bridge.md) and evidence at
+`/Users/jw/Desktop/Cosmas/scribe-provider-native-bridge-20260922.WPYCoIZE/`.
+
+W13 and Mac R2 remain unchanged. This is not a standalone app installation or
+live Core acceptance. The retained authentication configuration permits only
+CosmasOS synthetic bundle identities; the standalone Scribe identity/callback,
+reviewed Core runtime/account correspondence, upload target and Core navigation
+still need their concrete app configuration and end-to-end acceptance.
+
 ## Standalone provider receiver preparation — 2026-09-22
 
 The server transport's fresh-authority callback is now bound to the existing
