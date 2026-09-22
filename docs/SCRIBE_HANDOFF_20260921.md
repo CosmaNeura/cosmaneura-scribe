@@ -1,5 +1,12 @@
 # Scribe implementation handoff — 2026-09-21
 
+**2026-09-22 timed stopping point:** the owner requested about 15 more minutes of
+work, a stable checkpoint, then a prompt for another chat. Start the next chat
+with [SCRIBE_HANDOFF_20260922.md](SCRIBE_HANDOFF_20260922.md). It records ADR 0061,
+the settled shared-Core decision, actual release metadata/contract gap, unapplied
+runtime/identity proposals, accepted tests and exact remaining critical path.
+This older document retains historical approval and qualification detail.
+
 This is the continuation prompt and current checkpoint for the user-created
 replacement task. Read this file completely. Do not import the entire old
 conversation or restart completed work. Statements about live services/devices

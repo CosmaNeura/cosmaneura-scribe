@@ -1,5 +1,21 @@
 # Local provider workspace — 2026-09-21
 
+## Packaged desktop host and shared Core decision — 2026-09-22
+
+The dormant desktop main/preload host now builds the complete provider workspace
+with fixed verified assets, security before window loading, and native ownership
+retained through confirmed shutdown/retry. All 75 desktop checks, types, affected
+lint, host build and three compiled full workflow checks using the built preload
+pass. See [ADR 0061](../adr/0061-packaged-desktop-provider-host.md).
+Electron is not installed; the native/backend factory is still missing.
+
+The owner chose existing Core ownership/shared infrastructure for Scribe and
+CosmasOS, with isolated qualification before the provider cohort. Read the
+[decision and release gap](SCRIBE_SHARED_CORE_DECISION_20260922.md), the
+[unapplied runtime packet](SCRIBE_DESKTOP_RUNTIME_PACKET_20260922.md), and the
+[bounded new-chat checkpoint](../SCRIBE_HANDOFF_20260922.md). No installed app,
+Core/OS, private service or completed trial was changed/repeated.
+
 ## Desktop backend, journal and complete provider UI connection — 2026-09-22
 
 The desktop main/preload bridge now connects encounter selection/creation,

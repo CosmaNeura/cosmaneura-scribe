@@ -6,10 +6,10 @@ import { createHash, webcrypto } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { SourceTextModule } from "node:vm";
+import { SourceTextModule, runInNewContext } from "node:vm";
 
-const [bundle, mainBundle, jsdomPath] = process.argv.slice(2);
-if (!bundle || !mainBundle || !jsdomPath) throw new Error("Usage: check-desktop-workspace-ui.mjs provider.js main-ipc.mjs jsdom-module");
+const [bundle, mainBundle, jsdomPath, preloadBundle] = process.argv.slice(2);
+if (!bundle || !mainBundle || !jsdomPath) throw new Error("Usage: check-desktop-workspace-ui.mjs provider.js main-ipc.mjs jsdom-module [compiled-preload.cjs]");
 const { JSDOM } = await import(pathToFileURL(jsdomPath));
 const { DesktopProviderWorkspaceIpc, installDesktopProviderPreload } = await import(pathToFileURL(mainBundle));
 const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "app://cosmas/provider.html", runScripts: "outside-only", pretendToBeVisual: true });
@@ -130,7 +130,12 @@ const rendererPort = {
   on: (...args) => rendererEvents.on(...args), removeListener: (...args) => rendererEvents.removeListener(...args),
 };
 const exposed = {}, boundary = new DesktopProviderWorkspaceIpc(ipc, renderer, host); boundary.install();
-installDesktopProviderPreload({ exposeInMainWorld(name, value) { exposed[name] = value; } }, rendererPort);
+const contextBridge = { exposeInMainWorld(name, value) { exposed[name] = value; } };
+if (preloadBundle) {
+  runInNewContext(await readFile(preloadBundle, "utf8"), { TextEncoder, require(name) {
+    assert.equal(name, "electron"); return { contextBridge, ipcRenderer: rendererPort };
+  } }, { timeout: 1000 });
+} else installDesktopProviderPreload(contextBridge, rendererPort);
 let dispose;
 try {
   assert.deepEqual(Object.keys(exposed).sort(), ["scribeProvider", "scribeRecorder"]);
@@ -161,7 +166,7 @@ try {
   for (const method of ["create", "open", "review_load", "review_save", "review_clear", "core", "journal_save", "open_core", "disconnect"]) assert.ok(methods.includes(method), method);
   await dispose(); dispose = null; await boundary.dispose();
   assert.equal(authObservers.size, 0); assert.equal(handlers.size, 0); assert.equal(rendererEvents.eventNames().length, 0);
-  process.stdout.write(JSON.stringify({ checks: 3, compiled_provider_ui: true, actual_main_preload_mapping: true, sender_rejection_before_native_access: true,
+  process.stdout.write(JSON.stringify({ checks: 3, compiled_provider_ui: true, actual_main_preload_mapping: true, compiled_preload: Boolean(preloadBundle), sender_rejection_before_native_access: true,
     explicit_review_before_note: true, journaled_note_edit_and_core_navigation: true, revocation_clears_content: true,
     actual_electron: false, real_backend: false, physical_recording: false }) + "\n");
 } finally { await dispose?.(); await boundary.dispose(); dom.window.close(); }

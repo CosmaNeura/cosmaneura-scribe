@@ -15,17 +15,28 @@ main recorder now composes the authority/lease/indicator controller with this
 flow and connects a fixed command/state view to the provider workspace. The
 complete provider main/preload bridge now connects encounter actions, scoped
 journals, explicit review decisions, existing Core note editing and navigation.
-The trusted host still needs actual native custody, picker/indicator, executable
-bootstraps and its configured native/backend factory; physical Meet/Zoom acceptance
+The dormant packaged main/preload bootstrap now builds with fixed verified
+renderer assets and confirmed native cleanup before shutdown. The trusted host
+still needs an approved runtime, actual native custody, picker/indicator and its
+configured native/backend factory; physical Meet/Zoom acceptance
 remains open. See
 [ADR 0056](../../docs/adr/0056-desktop-pcm-encrypted-capture-adapter.md) and
 [ADR 0057](../../docs/adr/0057-desktop-native-process-transport.md) and
 [ADR 0058](../../docs/adr/0058-durable-desktop-provider-storage.md) and
 [ADR 0059](../../docs/adr/0059-desktop-provider-recorder-composition.md) and
-[ADR 0060](../../docs/adr/0060-desktop-provider-workspace-bridge.md).
+[ADR 0060](../../docs/adr/0060-desktop-provider-workspace-bridge.md) and
+[ADR 0061](../../docs/adr/0061-packaged-desktop-provider-host.md).
 No installed Electron application mounts this composition yet. The
 historical pilot description below describes its existing mock and Recall plan;
 no Recall dependency or live service has been added.
+
+To emit the dormant host artifacts with existing tooling, run from the repository
+root: `node scripts/build-desktop-provider-host.mjs <provider-build-directory> <new-output-directory>`.
+The output explicitly has `launch_ready: false`: it contains no Electron runtime,
+actual `provider-host.mjs`, native helper/configuration or signed app bundle.
+Read the [unapplied runtime proposal](../../docs/beta/SCRIBE_DESKTOP_RUNTIME_PACKET_20260922.md)
+and [shared Core decision](../../docs/beta/SCRIBE_SHARED_CORE_DECISION_20260922.md)
+before further packaging/configuration work.
 
 This directory contains the disabled-by-default Phase 3 foundation for an Electron desktop
 companion that will eventually host Recall.ai's Desktop Recording SDK in the Electron main process.

@@ -49,6 +49,10 @@ export class DesktopProviderWorkspaceIpc {
     for (const event of exits) this.renderer.on(event, this.onExit);
   }
   async dispose(): Promise<void> {
+    if (!this.revoked && this.validRenderer()) {
+      try { this.renderer.send(DESKTOP_PROVIDER_CHANNELS.event, { kind: "session", state: { phase: "unavailable", revision: crypto.randomUUID() } }); }
+      catch { /* A gone renderer cannot retain visible content; cleanup still runs. */ }
+    }
     this.revoked = true; this.unsubscribe?.(); this.unsubscribe = undefined;
     if (this.installed) this.ipc.removeHandler(DESKTOP_PROVIDER_CHANNELS.request);
     this.installed = false;

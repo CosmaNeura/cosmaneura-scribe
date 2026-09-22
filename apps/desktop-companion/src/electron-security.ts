@@ -113,10 +113,10 @@ export interface ElectronSessionSecurityPort {
     onHeadersReceived(
       listener: (
         details: {
-          readonly responseHeaders?: Readonly<Record<string, readonly string[]>>;
+          readonly responseHeaders?: Record<string, string | string[]>;
         },
         callback: (response: {
-          readonly responseHeaders: Readonly<Record<string, readonly string[]>>;
+          readonly responseHeaders: Record<string, string | string[]>;
         }) => void,
       ) => void,
     ): void;
