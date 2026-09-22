@@ -1,5 +1,27 @@
 # Local provider workspace — 2026-09-21
 
+## iOS 17 host compatibility correction — 2026-09-22
+
+The provider entry previously called `AbortSignal.any` when opening an encounter.
+Early iOS 17 WebViews do not provide that API, so the existing build could fail
+before reaching the host's encounter authorization. The corrected entry uses one
+owned AbortController per encounter, forwards host/current-encounter revocation,
+and removes upstream listeners when that encounter closes. No global polyfill,
+auth-policy change or native-app update is required for this source correction.
+
+`scripts/check-provider-ios17.mjs` renders the actual built provider entry with
+`AbortSignal.any` unavailable. The retained baseline fails opening; the corrected
+bundle reaches recording preparation, clears on logout/revocation, cancels the
+previous encounter on switching, and rejects an opening that finishes after
+logout before reading its recovery journal. Evidence and both bundles are at
+`/Users/jw/Desktop/Cosmas/scribe-provider-ios17-20260922.dPhRFH/`.
+Focused provider tests, lint, typecheck and build pass. This proves removal of
+one compatibility blocker, **not physical iOS 17 acceptance or complete native
+host composition**. The installed W13 build 2 and its pending phone catalog
+trial are unchanged; see [the private connection checkpoint](W13_PRIVATE_CONNECTION_20260922.md).
+
+## Existing local workflow
+
 The owner approved completing the local configured capture → review → existing
 Core SOAP and creator encounter flow. The separate provider bundle now exposes
 that UI as `mountProviderWorkspace(root, host)`. Providers can choose an

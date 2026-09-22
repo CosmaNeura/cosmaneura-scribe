@@ -199,13 +199,16 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const open = async (ref: string): Promise<void> => {
     await clearEncounter(); const n = generation;
-    encounterAbort = new AbortController();
-    const opened = await host.openEncounter(ref, AbortSignal.any([host.signal, encounterAbort.signal]));
+    const opening = new AbortController();
+    encounterAbort = opening;
+    forwardAbort(host.signal, opening);
+    const opened = await host.openEncounter(ref, opening.signal);
     if (!current(n)) return;
     requireValue(opened.encounter.appointmentRef === ref && opened.scope.appointmentRef === ref && !opened.signal.aborted);
     context = opened;
     encounterLabel.textContent = opened.encounter.title;
-    const signal = AbortSignal.any([host.signal, encounterAbort.signal, opened.signal]);
+    forwardAbort(opened.signal, opening);
+    const signal = opening.signal;
     client = new CoreCaptureClient(opened.scope, opened.request, signal);
     signal.addEventListener("abort", () => {
       if (!current(n)) return;
@@ -357,3 +360,12 @@ function escape(value: string): string {
 }
 
 class RecorderStopUnconfirmed extends Error {}
+
+/** Early iOS 17 WebViews lack AbortSignal.any. Keep one owned encounter lifetime. */
+function forwardAbort(source: AbortSignal, target: AbortController): void {
+  if (target.signal.aborted || source === target.signal) return;
+  const abort = (): void => target.abort(source.reason);
+  if (source.aborted) { abort(); return; }
+  source.addEventListener("abort", abort, { once: true });
+  target.signal.addEventListener("abort", () => source.removeEventListener("abort", abort), { once: true });
+}
