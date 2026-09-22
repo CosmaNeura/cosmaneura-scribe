@@ -1,50 +1,19 @@
 import "../capture-app";
 import type { CaptureApp } from "../capture-app";
 import type { PreparedProviderRecorder } from "../provider-binding";
-import { CaptureFlowController, type CaptureFlowStore } from "../flow";
-import type { CaptureSource } from "../capture";
-import type { CaptureQueueStorage } from "../queue/types";
+import { CaptureFlowController } from "../flow";
 import { CaptureQueue } from "../queue/capture-queue";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
-import type { CiphertextUploadTarget } from "../bff/contracts";
 import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
-import type { CreatorReviewJournal } from "../../../review-ui/src/creator-review-journal";
 import { mountCreatorReview } from "../../../review-ui/src/creator-review-panel";
 import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
-  type AuthorizedCoreRequest, type CoreCaptureScope, type LanguageMode } from "./core-client";
+  type LanguageMode } from "./core-client";
 import { noteTemplates, parseDraft, pendingSave, resolveNote, reviewedSource, saveNote,
   type CoreDraft, type CoreNoteTemplate, type ReviewedSource } from "./core-notes";
-import { assertProgress, type JournalSnapshot, type ProviderProgress, type ProviderWorkspaceJournal } from "./workspace-journal";
+import { assertProgress, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
+import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources } from "./workspace-contracts";
+export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
-
-/** Core supplies these display values through its existing authorized encounter list. */
-export interface ProviderEncounter { readonly appointmentRef: string; readonly title: string; readonly detail: string }
-export interface ProviderRecorderResources {
-  readonly source: CaptureSource;
-  readonly flowStore: CaptureFlowStore;
-  readonly queueStorage: CaptureQueueStorage;
-  readonly uploadTarget: CiphertextUploadTarget;
-  /** Release the host's exclusive flow lock/storage handles after source stop. */
-  readonly release: () => Promise<void>;
-}
-export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | PreparedProviderRecorder> {
-  readonly encounter: ProviderEncounter;
-  readonly scope: CoreCaptureScope;
-  readonly request: AuthorizedCoreRequest;
-  readonly signal: AbortSignal;
-  readonly journal: ProviderWorkspaceJournal;
-  readonly reviewJournal: (sessionId: string) => CreatorReviewJournal;
-  /** Reauthorize and acquire the existing exclusive, creator-scoped recorder stores. */
-  readonly recorder: (sessionId: string, signal: AbortSignal) => Promise<R>;
-  readonly openInCore: (noteRef: string | null) => Promise<void>;
-}
-export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
-  readonly signal: AbortSignal;
-  readonly listEncounters: (signal: AbortSignal) => Promise<readonly ProviderEncounter[]>;
-  /** Uses Core's existing encounter/mount authorization, never a browser actor claim. */
-  readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedProviderEncounter<R>>;
-  readonly createEncounter: (signal: AbortSignal) => Promise<void>;
-}
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {

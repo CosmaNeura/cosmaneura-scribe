@@ -34,9 +34,14 @@ composed the main-process recorder with the existing authority/lease/indicator
 controller and connected a fixed command/state view to the provider workspace.
 The new local fixture passes native Start/Stop, stop-before-upload, cancellation,
 failed-stop retry and paused recovery; 63 desktop/202 capture checks, types/lint,
-provider/main builds and 13 compiled DOM/application checks pass. Actual standalone
-runtime bootstraps, native picker/indicator and key custody, desktop provider
-backend/journal ports and native lifecycle/physical acceptance remain open.
+provider/main builds and 13 compiled DOM/application checks pass. ADR 0060 then
+connected desktop backend/journal ports and the complete provider application
+through fixed main/preload actions. Six new lifecycle checks and a compiled
+review-to-Core-note/edit/navigation fixture pass: 69 desktop/202 capture checks,
+types/lint, provider/main builds and 16 compiled DOM/application checks in total.
+Native/backend data in this new fixture are invented. Actual standalone runtime
+bootstraps and native/backend factories, native picker/indicator and key custody,
+actual Core configuration and installed lifecycle/physical acceptance remain open.
 No installed app, Keychain, physical recording or live trial ran.
 Read the newest sections of
 `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` for their source/evidence and exact

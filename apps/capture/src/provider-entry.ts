@@ -14,6 +14,8 @@ export function mountProviderCapture(root: HTMLElement, binding: ProviderCapture
 export type { ProviderCaptureBinding, ProviderRecorderController, PreparedProviderRecorder, ProviderRecorderSnapshot } from "./provider-binding";
 export { connectDesktopRecorderView } from "./provider/desktop-recorder-view";
 export type { DesktopRecorderPort } from "./provider/desktop-recorder-view";
+export { mountDesktopProviderApplication, createDesktopProviderApplicationHost } from "./provider/desktop-application";
+export type { DesktopProviderPort } from "./provider/desktop-host-protocol";
 export { NativeCreatorReviewJournal } from "../../review-ui/src/native-review-journal";
 export { mountProviderWorkspace } from "./provider/workspace";
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderEncounter,

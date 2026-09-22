@@ -13,12 +13,16 @@ stop waits for the child to exit. Durable main-process flow/queue, protected key
 journal and coverage stores now pass actual file/process-loss recovery. The
 main recorder now composes the authority/lease/indicator controller with this
 flow and connects a fixed command/state view to the provider workspace. The
-trusted host still needs actual native custody, picker/indicator and executable
-main/preload/backend assembly; physical Meet/Zoom acceptance remains open. See
+complete provider main/preload bridge now connects encounter actions, scoped
+journals, explicit review decisions, existing Core note editing and navigation.
+The trusted host still needs actual native custody, picker/indicator, executable
+bootstraps and its configured native/backend factory; physical Meet/Zoom acceptance
+remains open. See
 [ADR 0056](../../docs/adr/0056-desktop-pcm-encrypted-capture-adapter.md) and
 [ADR 0057](../../docs/adr/0057-desktop-native-process-transport.md) and
 [ADR 0058](../../docs/adr/0058-durable-desktop-provider-storage.md) and
-[ADR 0059](../../docs/adr/0059-desktop-provider-recorder-composition.md).
+[ADR 0059](../../docs/adr/0059-desktop-provider-recorder-composition.md) and
+[ADR 0060](../../docs/adr/0060-desktop-provider-workspace-bridge.md).
 No installed Electron application mounts this composition yet. The
 historical pilot description below describes its existing mock and Recall plan;
 no Recall dependency or live service has been added.

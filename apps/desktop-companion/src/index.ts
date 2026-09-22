@@ -17,3 +17,5 @@ export * from "./recording-indicator.js";
 export * from "./recording-lease.js";
 export * from "./provider-recorder.js";
 export * from "./provider-recorder-ipc.js";
+export * from "./provider-workspace-main.js";
+export * from "./provider-workspace-ipc.js";

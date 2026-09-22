@@ -1,5 +1,30 @@
 # Local provider workspace — 2026-09-21
 
+## Desktop backend, journal and complete provider UI connection — 2026-09-22
+
+The desktop main/preload bridge now connects encounter selection/creation,
+retained provider and review journals, explicit translation decisions, existing
+Core note operations/navigation and the previously qualified recorder view.
+Main owns the authenticated host and current recorder; the renderer has fixed
+actions and intended provider content. Session changes clear content immediately,
+late work stays owned through cleanup, and saturated content requests cannot
+prevent cancellation/native logout. Failed recorder attachment/stop blocks
+replacement until the same owner's cleanup succeeds.
+
+All 69 desktop/202 capture checks, both typechecks, affected lint, provider/main
+builds and 16 compiled DOM/application checks pass. The new DOM check exercises
+actual main/preload mapping with invented backend/session/consent data through
+translation review, journaled SOAP edits and Core navigation. See
+[ADR 0060](../adr/0060-desktop-provider-workspace-bridge.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-workspace-20260922.YKxJkx/`.
+
+Next assemble the executable host and its actual native/backend factory. No
+Electron dependency was selected/installed. Native picker/indicator, device key
+custody, pending standalone identity configuration, actual Core runtime, installed
+desktop/mobile acceptance, fidelity and signed operations remain open. W13, R2,
+private services, Core/OS and protected authority files are preserved; no accepted
+phone or completed live-service trial was repeated.
+
 ## Desktop provider recorder controls — 2026-09-22
 
 The existing provider UI now accepts a desktop recorder command/state view.
