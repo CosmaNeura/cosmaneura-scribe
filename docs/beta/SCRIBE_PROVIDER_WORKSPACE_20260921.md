@@ -36,9 +36,11 @@ Evidence is retained at
 This completes the provider source connection at the code/bundle level. It does
 **not** complete the native provider host: real encounter/mount authorization,
 Core transport, native storage composition and device acceptance remain. W13
-build 2 is still the last installed app; build 3 is the separately prepared
-session-diagnostic update. The phone remains unavailable to Xcode at the latest
-check, and its reconnect request remains pending.
+build 3 is now installed and launched; the reconnected phone reaches private
+TLS but reports `app_binding_missing` before catalog loading. The signed
+[build 4 native-session correction](W13_NATIVE_SESSION_CORRECTION_20260922.md)
+is prepared and tested, awaiting approval of its specific authentication-rule
+change. Neither W13 package mounts this complete provider bundle yet.
 
 ## iOS 17 host compatibility correction — 2026-09-22
 
