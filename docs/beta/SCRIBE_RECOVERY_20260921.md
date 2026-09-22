@@ -1,5 +1,12 @@
 # Scribe recovery after the abrupt stop — 2026-09-21
 
+Latest continuation: [W13 encounter connection repair](W13_ENCOUNTER_CONNECTION_REPAIR_20260921.md)
+reproduces and corrects the disappearing access error and unbounded catalog read
+in a prepared local web asset. The installed phone app is unchanged. Its
+simulator-only API address and missing phone-reachable runtime still prevent
+workspace acceptance; the bounded private HTTPS connection packet is proposed,
+not activated. No new login or live-service trial was performed.
+
 The existing Scribe checkout remained clean at `622648a`, with provider workflow
 implementation `abea802b0d3c66e5945d74024ee1ecd5c3a8f899` intact. No branch,
 worktree, Core source, auth policy or external service was changed during recovery.
