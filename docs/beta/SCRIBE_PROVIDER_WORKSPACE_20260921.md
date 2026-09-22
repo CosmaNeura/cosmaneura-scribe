@@ -1,5 +1,25 @@
 # Local provider workspace — 2026-09-21
 
+## Desktop PCM into encrypted capture — 2026-09-22
+
+The desktop main-process source now adapts mixed PCM into the existing
+WAV/encryption/reservation/upload workflow. A Node check encrypted generated PCM,
+decrypted and verified its WAV samples, reopened retained mixed capture state,
+uploaded once and reached configured processing. Native input, BFF and IndexedDB
+are explicit offline fixtures; this is not installed-app, real Core authorization
+or operating-system storage acceptance.
+
+The iOS PCM lifecycle was extracted for reuse; foreground policy and
+Capacitor/native auth/storage bridges are unchanged. Eleven desktop and 47 iOS
+checks pass, with typecheck/lint. See
+[ADR 0056](../adr/0056-desktop-pcm-encrypted-capture-adapter.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-encrypted-capture-20260922.uS0Pdu/`.
+
+Next bind the actual Swift-to-main transport, durable main-process stores and
+provider UI/authority. Start/tail coverage must be retained and shown. W13,
+Mac R2, private receiver, Core and pending standalone identity remain unchanged.
+No native app or live trial ran.
+
 ## Desktop clock alignment and PCM conversion — 2026-09-22
 
 The native desktop producer now carries source sample positions into a mixed

@@ -1,5 +1,13 @@
 # Native iOS recorder used by the provider entry
 
+2026-09-22 continuation: `IosNativeMicrophoneCaptureSource` now wraps the extracted
+`NativePcmCaptureSource` lifecycle. Foreground policy and native error mapping
+remain in the iOS adapter; all 47 existing source/Capacitor checks pass. Desktop
+uses the shared lifecycle from its trusted main process with an explicit
+activation handshake and normal-stop drain option. Neither is enabled by the
+iOS wrapper. See [ADR 0056](../../../../docs/adr/0056-desktop-pcm-encrypted-capture-adapter.md).
+The original reuse hashes below are historical; this branch tracks current source.
+
 The provider entry exports `createProviderIOSCaptureSource()`. It requires native
 iOS and the `IOSPCM` plugin, and fails without them. Construction does not request
 microphone permission or record. The authorized host supplies the resulting

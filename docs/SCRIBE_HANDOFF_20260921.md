@@ -19,9 +19,12 @@ While that decision remained pending, a dormant macOS audio producer (ADR 0054)
 compiled and passed ten generated-audio/data/disabled-start checks. It is not
 mounted in Electron. The subsequent native mixer (ADR 0055) aligns both source
 clocks into 16 kHz mono PCM, retaining explicit start/tail coverage and separate
-normal-drain/failure-discard behavior. Main-process WAV/encrypted capture/host
-integration and native lifecycle/physical acceptance remain open. No recording
-or live trial ran.
+normal-drain/failure-discard behavior. ADR 0056 then connected a desktop PCM driver
+contract to the existing WAV/encrypted capture/recovery flow in Node, preserving
+iOS foreground policy through a shared lifecycle. Eleven desktop and 47 iOS
+checks pass with explicit native/BFF/storage fixtures. Actual Swift-to-main
+transport, durable host stores/UI and native lifecycle/physical acceptance remain
+open. No native recording or live trial ran.
 Read the newest sections of
 `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` for their source/evidence and exact
 remaining native/runtime boundaries. W13 build 4's catalog, signed-in restart,

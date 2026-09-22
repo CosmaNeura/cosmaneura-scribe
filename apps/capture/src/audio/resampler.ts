@@ -158,7 +158,7 @@ export function floatToPcm16(sample: number): number {
   return Math.round(bounded * 32_767);
 }
 
-export function pcm16ToLittleEndianBytes(samples: Int16Array): Uint8Array {
+export function pcm16ToLittleEndianBytes(samples: Int16Array): Uint8Array<ArrayBuffer> {
   const output = new Uint8Array(samples.length * 2);
   const view = new DataView(output.buffer);
   for (let index = 0; index < samples.length; index += 1) {

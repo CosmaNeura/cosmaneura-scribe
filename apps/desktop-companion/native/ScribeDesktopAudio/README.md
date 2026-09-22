@@ -94,7 +94,10 @@ No enabled OS source, permission prompt, physical microphone or meeting was used
 Native asynchronous start/stop failure injection and physical lifecycle behavior
 remain unqualified, along with physical long-session clock drift, source silence
 behavior, echo, encrypted recovery, main-process hosting, Windows and release
-packaging. No UI, storage or network implementation consumes the PCM packets yet.
+packaging. A TypeScript main-process adapter now joins the driver contract's PCM
+packets into the existing WAV/encrypted capture flow (ADR 0056), tested with
+explicit native/BFF/storage fixtures. The actual Swift-to-main transport and
+durable provider host remain unbound; no installed UI consumes this source yet.
 
 See [ADR 0054](../../../../docs/adr/0054-native-macos-meeting-audio-source.md) and
 [ADR 0055](../../../../docs/adr/0055-host-clock-aligned-desktop-pcm.md).
