@@ -38,6 +38,16 @@ Read the [unapplied runtime proposal](../../docs/beta/SCRIBE_DESKTOP_RUNTIME_PAC
 and [shared Core decision](../../docs/beta/SCRIBE_SHARED_CORE_DECISION_20260922.md)
 before further packaging/configuration work.
 
+The local `createDesktopProviderConnection` factory in
+`src/provider-workspace-factory.ts` now composes an authorized backend with actual
+encrypted journals/flow/queue/coverage and the existing recorder. The native host
+must supply device custody, picker/indicator, verified helper and the backend's
+fresh desktop authority; the factory supplies no defaults for them. It retains
+failed-stop and late-acquisition ownership. It is not yet bound to the missing
+packaged `provider-host.mjs`. See [ADR 0062](../../docs/adr/0062-desktop-provider-resource-factory.md)
+and the [Core release packet](../../docs/beta/SCRIBE_CORE_RELEASE_PACKET_20260922.md)
+for the verified local scope and remaining configuration/identity gaps.
+
 This directory contains the disabled-by-default Phase 3 foundation for an Electron desktop
 companion that will eventually host Recall.ai's Desktop Recording SDK in the Electron main process.
 It is not a recorder, is not clinically deployable, and currently uses a metadata-only mock adapter.

@@ -1,5 +1,25 @@
 # Local provider workspace — 2026-09-21
 
+## Core release reconciliation and desktop resource factory — 2026-09-22
+
+The active Core production/staging revisions both have Scribe workflow disabled
+and omit the capture/service configuration. Production's current registry tag
+binding is now known, but its running replica digest is not attested. Staging's
+Clerk issuer differs from W13's qualified issuer; the pending bundle identity
+alone cannot connect it. The existing note page uses appointment IDs, and its
+single-transcript read needs reconciliation with retained reviewed-source versions.
+See the [Core release/configuration packet](SCRIBE_CORE_RELEASE_PACKET_20260922.md).
+
+The new desktop resource connection factory composes the actual encrypted stores,
+provider/review journals, Core client and recorder with supplied native/backend
+ports. It retains ownership through late acquisition, revocation and failed stop.
+Four new checks plus twelve existing main/host checks, desktop types, affected lint,
+build and a compiled Node import pass. See [ADR 0062](../adr/0062-desktop-provider-resource-factory.md).
+Fixtures do not establish native/installed acceptance. The packaged native factory,
+real custody/picker/indicator and backend desktop start grant remain unfinished.
+Identity/runtime proposals, installed apps, Core/OS sources and completed trials
+are preserved; no deployment or configuration write occurred.
+
 ## Packaged desktop host and shared Core decision — 2026-09-22
 
 The dormant desktop main/preload host now builds the complete provider workspace

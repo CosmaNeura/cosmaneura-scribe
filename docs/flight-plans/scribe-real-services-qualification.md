@@ -1,5 +1,16 @@
 # Scribe real service and client qualification
 
+### Desktop resource connection — 2026-09-22
+
+Within the approved local provider controls below, compose authorized backend
+mounts with the existing encrypted desktop stores, journals, Core client and
+recorder. Keep native custody and fresh backend start authority supplied by the
+reviewed host; invent no identity, key, capability or environment. Retain failed-
+stop ownership and late acquisitions; verify scoped journal recovery and actual
+Core envelope binding using invented inputs. ADR 0062 records the passing checks.
+The new connection remains unmounted; recovery preserves stored records. Core
+release/issuer/receiver configuration remains a separate, unapplied packet.
+
 ### Approved local provider controls — 2026-09-21
 
 The owner approved completing the local configured capture → review → existing

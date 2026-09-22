@@ -2,6 +2,14 @@
 
 Status: prepared for the owner's decision; **not approved or applied**.
 
+Subsequent read-only reconciliation found that existing staging Core uses
+`https://resolved-emu-53.clerk.accounts.dev`, while this exact proposal retains
+W13's `sharp-bluegill-3253` issuer. Approval of the bundle patch below does not
+authorize an issuer change and does not establish shared-Core authentication.
+Prepare a separately reviewed staging identity/account amendment before connection;
+see [the Core release packet](SCRIBE_CORE_RELEASE_PACKET_20260922.md). The original
+patch and qualified native inputs remain unchanged.
+
 The existing native configuration accepts only CosmasOS synthetic app identities.
 A separate Scribe application therefore needs one exact additional iOS identity.
 The complete provider startup now reuses the current native sign-in/session owner,
