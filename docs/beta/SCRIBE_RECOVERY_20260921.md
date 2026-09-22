@@ -14,8 +14,10 @@ active on the same endpoint with the existing database/TLS files. At **13:16:35
 UTC** the receiver returned the authenticated catalog, and the owner confirmed
 the invented encounter visible on the phone. The same encounter returned after
 a full app restart without another sign-in. Explicit sign-out hid the encounter,
-and another full restart remained signed out. Fresh sign-in/creator continuity,
-remote revocation and the complete native lifecycle matrix remain open.
+and another full restart remained signed out. A fresh emailed-code sign-in then
+returned the same creator encounter, with a new authenticated catalog receipt at
+**13:42:00 UTC**. Remote revocation, cross-client continuity and the complete
+native lifecycle matrix remain open.
 
 The standalone iOS provider resource composition is committed at `9bbf7d1`:
 native recorder, creator-scoped recovery stores, recording lock and configured

@@ -40,10 +40,14 @@ in to Cosmas”** and the Sign in button, with no encounter visible. Signed-out
 persistence after a full restart passed. `native-signout-restart-checkpoint.json`
 records this later result; the earlier restart receipt is preserved unchanged.
 
-A fresh Tester sign-in followed by Choose an encounter is pending. The receiver
-still contains only the two accepted catalog requests recorded above. Remote
-session revocation, return to the same creator after a new sign-in, cross-client
-continuity and the full standalone authentication matrix remain unqualified.
+A fresh Tester sign-in followed by Choose an encounter also passed. The owner
+used Clerk's existing emailed-code flow and confirmed the same invented visit
+returned. The receiver recorded the third fresh authenticated catalog at
+**13:42:00.256639 UTC**. `native-fresh-signin-checkpoint.json` records this
+same-device return to the creator's encounter after sign-out and new sign-in.
+No password was collected or changed. Remote session revocation, injected
+expiry, cross-client continuity and the full standalone authentication matrix
+remain unqualified.
 `native-session-restart-checkpoint.json` preserves the earlier observations and
 stage hashes. No Mac R2, Keychain setting or authentication implementation changed.
 
