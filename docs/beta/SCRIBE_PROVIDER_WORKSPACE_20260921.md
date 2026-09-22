@@ -1,5 +1,26 @@
 # Local provider workspace — 2026-09-21
 
+## Standalone provider receiver preparation — 2026-09-22
+
+The server transport's fresh-authority callback is now bound to the existing
+verified identity, active human, creator workspace, confirmed Core encounter and
+reviewed Core account records in a separate FastAPI receiver. Its six fixed native
+routes cover catalog, mount, recorder reauthorization and configured capture,
+review and Core note requests. Workload credentials stay server-side; Core still
+decides each clinical operation. W13's working receiver/app are unchanged.
+
+Fourteen local checks pass against an isolated socket-only PostgreSQL fixture
+with the actual retained schema/verifier, offline signing keys and Core wire
+responses. The current TypeScript provider client completes its admission,
+review and note sequence through the receiver. Revocation and changed creator
+correspondence during Core I/O suppress the result. This is source preparation;
+no standalone endpoint or real Core configuration has been activated.
+
+See [ADR 0051](../adr/0051-standalone-provider-receiver.md) and
+`/Users/jw/Desktop/Cosmas/scribe-provider-receiver-20260922.pnahj9UO/`.
+The actual native request/upload binding, existing Core creation/navigation,
+reviewed runtime configuration and physical end-to-end acceptance remain open.
+
 ## Desktop audio-channel preparation — 2026-09-22
 
 The recorder now preserves an authorized source's mixed/system-audio channel
