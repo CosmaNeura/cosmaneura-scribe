@@ -23,8 +23,13 @@ Latest recovery: read `beta/SCRIBE_RECOVERY_20260921.md` before using any tempor
 path below. The temporary W13 and local browser evidence directories are absent;
 committed implementation survives. Verified recovered native inputs, a provider
 build and a separately built diagnostic now live in a durable workspace folder.
-The diagnostic is closed pending the specific launch confirmation required by
-automatic approval review.
+The owner approved the initial diagnostic launch, which stalled in a synchronous
+Keychain read and was stopped by exact PID. The corrected R2 candidate preserves
+authentication policy and adds a bounded background startup check. After the
+owner's explicit R2 launch approval, its actual window remained responsive through
+a Keychain timeout. The owner reports a macOS Keychain prompt; completion of that
+prompt is pending. See the recovery document for exact evidence and candidate
+identity before any further launch.
 
 ## 1. Your assignment
 
