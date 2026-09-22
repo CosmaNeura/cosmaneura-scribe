@@ -2,7 +2,8 @@
 
 Source preparation for the standalone desktop workflow. This package has no
 external dependency and uses ScreenCaptureKit plus AVFoundation on macOS 14.2+.
-It is not mounted in Electron, signed, installed or enabled. It does not replace
+It now builds a dedicated helper, but is not mounted in Electron, release-signed,
+installed or enabled. It does not replace
 the existing desktop authority, recording indicator or source lease.
 
 `MacMeetingAudio` defaults to disabled. Its trusted main-process owner must:
@@ -40,8 +41,8 @@ The producer emits microphone and system audio separately, with their original
 rates/channels, common host-clock timestamps and source sample positions. It
 copies bounded float PCM from AVFoundation/CoreMedia buffers and retains
 interleaved order. `AlignedMeetingPCM` now accepts those frames and emits mixed
-16 kHz mono PCM16 packets. Main-process WAV/encryption/upload and host integration
-remain open; sending raw frames to the renderer is not an alternative.
+16 kHz mono PCM16 packets. The main-process adapter reuses WAV/encryption/upload;
+durable host integration remains open. Raw frames never enter renderer IPC.
 
 The trusted host constructs the mixer with the Core-derived output-frame bound,
 then passes it as `MacMeetingAudio.start`'s sink. Its PCM sink must be ready for
@@ -83,21 +84,25 @@ failed stop retains its native handles. Concurrent cleanup shares its attempt;
 an older failed waiter cannot overwrite a newer retry. The owner must retain this
 actor until shutdown is confirmed; dropping it is not a termination proof.
 
-Twenty-three local Swift checks cover bounded native delivery, rejection/clearing,
+Twenty-six local Swift checks cover bounded native delivery, rejection/clearing,
 normal/failing stop drain, actual in-memory AVFoundation conversion,
 disabled/pre-stopped source refusal, aligned mixed PCM, clock drift, gaps,
-waveform timing, output limits and final partial periods. Two golden cases also
+waveform timing, output limits, final partial periods and bounded private-pipe
+command/packet handling. Two golden cases also
 pass the independent `scripts/check-desktop-mixer-golden.py` rational reference.
 They use explicit invented consent and generated samples. The
 complete source compiles with Swift 6 and warnings as errors for macOS 14.2.
 No enabled OS source, permission prompt, physical microphone or meeting was used.
-Native asynchronous start/stop failure injection and physical lifecycle behavior
+Operating-system asynchronous start/stop failure injection and physical lifecycle behavior
 remain unqualified, along with physical long-session clock drift, source silence
 behavior, echo, encrypted recovery, main-process hosting, Windows and release
 packaging. A TypeScript main-process adapter now joins the driver contract's PCM
 packets into the existing WAV/encrypted capture flow (ADR 0056), tested with
-explicit native/BFF/storage fixtures. The actual Swift-to-main transport and
-durable provider host remain unbound; no installed UI consumes this source yet.
+explicit native/BFF/storage fixtures. The actual Swift-to-main transport now uses
+a dedicated helper and the Node `NativeProcessPCMDriver`; the durable provider
+host remains unbound. No installed UI consumes this source yet. See ADR 0057 for
+inherited-pipe bounds, startup/packet acknowledgement, failed-stop retry and
+parent-loss exit behavior.
 
 See [ADR 0054](../../../../docs/adr/0054-native-macos-meeting-audio-source.md) and
 [ADR 0055](../../../../docs/adr/0055-host-clock-aligned-desktop-pcm.md).

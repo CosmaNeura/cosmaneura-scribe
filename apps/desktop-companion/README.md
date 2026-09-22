@@ -3,13 +3,16 @@
 2026-09-22 continuation: a separate, dormant
 [native macOS audio source](native/ScribeDesktopAudio/README.md) now implements
 ScreenCaptureKit/AVFoundation input and host-clock-aligned mixed 16 kHz PCM for
-the full provider workflow. Its source compiles and 23 local checks pass, with
+the full provider workflow. Its source compiles and 26 local checks pass, with
 independent exact-rational PCM goldens. A main-process PCM adapter now reuses
 the existing WAV/encryption/upload/recovery flow; eleven local desktop checks
 include decrypting the retained WAV and reopening/uploading mixed capture once.
-The actual Swift-to-main transport, durable host stores/UI, native lifecycle and
+The actual Swift-to-main transport now uses a dedicated helper and bounded
+inherited pipes. Generated audio crosses the real Swift/Node boundary into WAV;
+stop waits for the child to exit. Durable host stores/UI, native lifetime and
 physical Meet/Zoom acceptance remain open. See
-[ADR 0056](../../docs/adr/0056-desktop-pcm-encrypted-capture-adapter.md).
+[ADR 0056](../../docs/adr/0056-desktop-pcm-encrypted-capture-adapter.md) and
+[ADR 0057](../../docs/adr/0057-desktop-native-process-transport.md).
 It is not mounted in this Electron foundation. The
 historical pilot description below describes its existing mock and Recall plan;
 no Recall dependency or live service has been added.

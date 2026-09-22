@@ -23,8 +23,11 @@ normal-drain/failure-discard behavior. ADR 0056 then connected a desktop PCM dri
 contract to the existing WAV/encrypted capture/recovery flow in Node, preserving
 iOS foreground policy through a shared lifecycle. Eleven desktop and 47 iOS
 checks pass with explicit native/BFF/storage fixtures. Actual Swift-to-main
-transport, durable host stores/UI and native lifecycle/physical acceptance remain
-open. No native recording or live trial ran.
+transport was then implemented in ADR 0057: a dedicated Swift helper and Node
+driver pass actual pipe/WAV, cancellation, backpressure, stop-retry and
+parent-loss exit checks using an invented source. The production helper compiles
+but remains unactivated. Durable host stores/UI and native lifecycle/physical
+acceptance remain open. No physical recording or live trial ran.
 Read the newest sections of
 `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` for their source/evidence and exact
 remaining native/runtime boundaries. W13 build 4's catalog, signed-in restart,

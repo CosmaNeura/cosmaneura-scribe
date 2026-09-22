@@ -6,6 +6,7 @@ export * from "./electron-ipc.js";
 export * from "./electron-security.js";
 export * from "./mock-capture-adapter.js";
 export * from "./native-pcm-driver.js";
+export * from "./native-process-driver.js";
 export * from "./pcm-capture-source.js";
 export * from "./protocol.js";
 export * from "./recording-indicator.js";

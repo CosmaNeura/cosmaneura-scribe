@@ -1,5 +1,30 @@
 # Local provider workspace — 2026-09-21
 
+## Actual desktop native process transport — 2026-09-22
+
+The Swift microphone/system producer now has a dedicated helper and a Node
+driver consumed by the existing PCM/WAV adapter. The actual cross-language pipe
+passes generated-audio delivery, final partial WAV, cancellation, backpressure,
+failed-stop retry and discard-upgrade checks. A deliberately unresponsive source
+also proves that parent loss ends the dedicated process at its cleanup deadline.
+The production helper compiles but was not activated against physical audio.
+All 52 desktop and 26 native checks pass, along with typecheck, affected lint and
+the Node driver build.
+
+The driver verifies the packaged helper path/hash, bounds startup before native
+spawn and waits for process exit before confirming stop. It carries fixed source
+selection/limits and metadata/PCM only; credentials and raw audio stay outside
+the renderer. Acknowledgement includes completed WAV persistence; partial chunks
+remain bounded in memory until completion/drain. See
+[ADR 0057](../adr/0057-desktop-native-process-transport.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-native-pipe-20260922.eMXizG/`.
+
+Next compose durable main-process stores and provider controls/authority. The
+desktop host is still uninstalled; this is not physical Meet/Zoom, native
+permission/indicator, complete Core runtime or signed release acceptance. W13,
+Mac R2, private receiver and pending standalone identity remain unchanged.
+No completed phone or live-service trial was repeated.
+
 ## Desktop PCM into encrypted capture — 2026-09-22
 
 The desktop main-process source now adapts mixed PCM into the existing

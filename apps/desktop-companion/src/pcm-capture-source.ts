@@ -86,7 +86,7 @@ class DesktopChunkBridge implements NativePcmBridge {
 
     const ready = native.ready.then(async value => {
       if (discard || closed) throw failure();
-      start = parseStart(value);
+      start = parseDesktopPCMStart(value);
       await this.persistCoverage({ phase: "started", value: start });
       if (discard || closed) throw failure();
     });
@@ -108,7 +108,7 @@ class DesktopChunkBridge implements NativePcmBridge {
             return { finalPcmPacket: null };
           }
           if (!start || completion === null) throw failure();
-          const verified = parseCompletion(completion, start, receivedFrames);
+          const verified = parseDesktopPCMCompletion(completion, start, receivedFrames);
           await this.persistCoverage({ phase: "stopped", value: verified });
           if (discard) {
             chunker.discard(); closed = true; active = false;
@@ -165,7 +165,7 @@ function nanoseconds(value: unknown): string {
     || BigInt(value) > 18_446_744_073_709_551_615n) throw failure();
   return value;
 }
-function parseStart(value: unknown): DesktopPCMStart {
+export function parseDesktopPCMStart(value: unknown): DesktopPCMStart {
   const data = object(value, ["hostTimeNanoseconds", "microphonePrerollNanoseconds", "systemPrerollNanoseconds"]);
   const start = Object.freeze({ hostTimeNanoseconds: nanoseconds(data.hostTimeNanoseconds),
     microphonePrerollNanoseconds: nanoseconds(data.microphonePrerollNanoseconds),
@@ -174,10 +174,10 @@ function parseStart(value: unknown): DesktopPCMStart {
     && start.systemPrerollNanoseconds !== "0") throw failure();
   return start;
 }
-function parseCompletion(value: unknown, start: DesktopPCMStart, frames: number): DesktopPCMCompletion {
+export function parseDesktopPCMCompletion(value: unknown, start: DesktopPCMStart, frames: number): DesktopPCMCompletion {
   const data = object(value, ["start", "endHostTimeNanoseconds", "outputFrames",
     "microphoneTailNanoseconds", "systemTailNanoseconds"]);
-  const receivedStart = parseStart(data.start);
+  const receivedStart = parseDesktopPCMStart(data.start);
   if (JSON.stringify(receivedStart) !== JSON.stringify(start) || !Number.isSafeInteger(data.outputFrames)
     || data.outputFrames !== frames || frames < 1) throw failure();
   const end = nanoseconds(data.endHostTimeNanoseconds);
