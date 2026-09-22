@@ -17,8 +17,11 @@ The separate Scribe identity/callback packet is prepared but unapplied, with the
 owner's decision pending; do not infer approval from the prior W13 grants.
 While that decision remained pending, a dormant macOS audio producer (ADR 0054)
 compiled and passed ten generated-audio/data/disabled-start checks. It is not
-mounted in Electron; main-process mixing/encrypted capture integration and native
-lifecycle/physical acceptance remain open. No recording or live trial ran.
+mounted in Electron. The subsequent native mixer (ADR 0055) aligns both source
+clocks into 16 kHz mono PCM, retaining explicit start/tail coverage and separate
+normal-drain/failure-discard behavior. Main-process WAV/encrypted capture/host
+integration and native lifecycle/physical acceptance remain open. No recording
+or live trial ran.
 Read the newest sections of
 `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` for their source/evidence and exact
 remaining native/runtime boundaries. W13 build 4's catalog, signed-in restart,

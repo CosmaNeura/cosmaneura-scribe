@@ -1,5 +1,24 @@
 # Local provider workspace — 2026-09-21
 
+## Desktop clock alignment and PCM conversion — 2026-09-22
+
+The native desktop producer now carries source sample positions into a mixed
+16 kHz mono PCM sink. It aligns microphone/system audio by observed host times,
+checks sample continuity independently of clock drift, and reports the actual
+common start and unmatched tails. Normal stop can drain accepted input; failures
+discard it. Missing audio is never filled with silence or replaced by a source.
+
+This is native source functionality, still unmounted in an app. Main-process
+WAV/encryption/upload and recording-UI integration remain the next desktop work.
+Physical timing/silence/Meet/Zoom behavior and native lifetime acceptance remain
+open. See [ADR 0055](../adr/0055-host-clock-aligned-desktop-pcm.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-mixer-20260922.IPmHEd/` for exact local
+conversion/delivery checks and the independently calculated PCM goldens.
+The complete native source compiles with warnings as errors; 23 Swift checks and
+two exact-rational golden cases pass. This does not establish physical fidelity.
+W13, Mac R2, private receiver, Core and pending standalone identity configuration
+remain unchanged; no native source, permission prompt or live service ran.
+
 ## Native desktop audio source preparation — 2026-09-22
 
 The desktop foundation still has its original mock adapter, but a separate native

@@ -2,10 +2,11 @@
 
 2026-09-22 continuation: a separate, dormant
 [native macOS audio source](native/ScribeDesktopAudio/README.md) now implements
-ScreenCaptureKit/AVFoundation input for the full provider workflow. Its source
-compiles and ten local data/disabled-start checks pass. Main-process alignment,
-mixing, encrypted capture integration, native lifecycle and physical Meet/Zoom
-acceptance remain open. It is not mounted in this Electron foundation. The
+ScreenCaptureKit/AVFoundation input and host-clock-aligned mixed 16 kHz PCM for
+the full provider workflow. Its source compiles and 23 local checks pass, with
+independent exact-rational PCM goldens. Main-process WAV/encrypted capture
+integration, native lifecycle and physical Meet/Zoom acceptance remain open.
+It is not mounted in this Electron foundation. The
 historical pilot description below describes its existing mock and Recall plan;
 no Recall dependency or live service has been added.
 

@@ -1,0 +1,20 @@
+{
+  "conversion_version": "host-aligned-area-v1",
+  "source_sample_rate_hz": 44100,
+  "input_pcm_f32le_hex": "000080bf000040bf000000bf000080be000000000000803e0000003f0000403f0000803f0000403f0000003f0000803e00000000000080be000000bf000040bf000080bf000000bf000000000000003f0000803f00000000",
+  "nominal_reference_pcm_s16le_hex": "2c9daef4304c4c5c400273aa1fda0040",
+  "cases": [
+    {
+      "frame_counts": [11, 11],
+      "host_offsets_ns": [0, 249433],
+      "expected_end_offset_ns": 498866,
+      "expected_pcm_s16le_hex": "2c9daef4304c4c5c400273aa1fda0040"
+    },
+    {
+      "frame_counts": [1, 4, 2, 7, 8],
+      "host_offsets_ns": [0, 22676, 113379, 158730, 317460],
+      "expected_end_offset_ns": 498866,
+      "expected_pcm_s16le_hex": "2b9daef4304c4c5c400273aa20da0040"
+    }
+  ]
+}

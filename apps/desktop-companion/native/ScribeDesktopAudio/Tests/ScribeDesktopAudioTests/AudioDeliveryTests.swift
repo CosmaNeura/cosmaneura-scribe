@@ -67,6 +67,26 @@ private final class Sink: DesktopAudioSink, @unchecked Sendable {
     #expect(sink.times.isEmpty); #expect(sink.errors.isEmpty); #expect(a.isClear && b.isClear)
 }
 
+@Test func normalStopDrainsAcceptedFramesAndRejectsLaterInput() async throws {
+    let consent = ConsentedFixture(), sink = Sink(), queue = DispatchQueue(label: "synthetic.normal-stop")
+    queue.suspend()
+    let gate = AudioDelivery(sink: sink, queue: queue, onFailure: { _ in })
+    let a = try consent.frame(1), b = try consent.frame(2), late = try consent.frame(3)
+    gate.offer(a); gate.offer(b); gate.seal(); gate.offer(late)
+    queue.resume(); await gate.drain()
+    #expect(sink.times == [1, 2]); #expect(sink.errors.isEmpty)
+    #expect(a.isClear && b.isClear && late.isClear)
+}
+
+@Test func failedNormalStopDrainDiscardsRemainingFramesAndReportsOnce() async throws {
+    let consent = ConsentedFixture(), sink = Sink(accepted: false), queue = DispatchQueue(label: "synthetic.failed-drain")
+    queue.suspend()
+    let gate = AudioDelivery(sink: sink, queue: queue, onFailure: { _ in })
+    let a = try consent.frame(1), b = try consent.frame(2)
+    gate.offer(a); gate.offer(b); gate.seal(); queue.resume(); await gate.drain()
+    #expect(sink.times == [1]); #expect(sink.errors == [.sinkRejected]); #expect(a.isClear && b.isClear)
+}
+
 @Test func sourceTimestampsAreIndependentAndNeverSilentlyReordered() async throws {
     let consent = ConsentedFixture(), sink = Sink(), gate = AudioDelivery(sink: sink, onFailure: { _ in })
     let microphone = try consent.frame(100), system = try consent.frame(100, channel: .systemAudio)
@@ -109,8 +129,9 @@ private final class Sink: DesktopAudioSink, @unchecked Sendable {
             if interleaved { data[0][i * 2] = 0.125; data[0][i * 2 + 1] = -0.25 }
             else { data[0][i] = 0.125; data[1][i] = -0.25 }
         }
-        let frame = try AudioOutput.frame(buffer, channel: .systemAudio, time: CMTime(value: 3, timescale: 2))
+        let frame = try AudioOutput.frame(buffer, channel: .systemAudio, time: CMTime(value: 3, timescale: 2), sourceSamplePosition: 72_000)
         #expect(frame.hostTimeNanoseconds == 1_500_000_000)
+        #expect(frame.sourceSamplePosition == 72_000)
         #expect(frame.sampleRate == 48_000 && frame.channels == 2 && frame.frameCount == 4)
         frame.withSamples { samples in
             #expect(Array(samples) == [0.125, -0.25, 0.125, -0.25, 0.125, -0.25, 0.125, -0.25])

@@ -37,11 +37,35 @@ tab-isolated based on its window filter. App/window selection and one active
 meeting still require the existing controller's deliberate start/consent flow.
 
 The producer emits microphone and system audio separately, with their original
-rates/channels and a common host-clock timestamp. It copies bounded float PCM from
-AVFoundation/CoreMedia buffers and retains interleaved order. This increment does
-not align clocks over a long recording, mix/downsample audio, encode WAV, encrypt
-or upload it. Those main-process connections to the existing Scribe/Core flow are
-the next work; sending raw frames to the provider renderer is not an alternative.
+rates/channels, common host-clock timestamps and source sample positions. It
+copies bounded float PCM from AVFoundation/CoreMedia buffers and retains
+interleaved order. `AlignedMeetingPCM` now accepts those frames and emits mixed
+16 kHz mono PCM16 packets. Main-process WAV/encryption/upload and host integration
+remain open; sending raw frames to the renderer is not an alternative.
+
+The trusted host constructs the mixer with the Core-derived output-frame bound,
+then passes it as `MacMeetingAudio.start`'s sink. Its PCM sink must be ready for
+authorized input. `DesktopPCMSink.started` reports the first interval covered by
+both sources; keep the UI in starting state until that boundary is accepted.
+Adjacent host anchors determine each source's actual sampling interval, with
+exact source-position continuity checked before mixing. Stereo channels and then
+the two sources are averaged. A missing source/sample, clock jump or format
+change fails; no silence or alternate source is invented.
+
+On a deliberate normal stop, await `source.stop(mode: .drain)` and only then call
+`mixer.finish()`. Finish returns the actual covered end and unmatched tail lengths.
+Preserve/expose incomplete coverage in the host outcome. Startup pre-roll is also
+explicit. The final pending frame uses the last observed clock slope. For an
+interruption, failed source or abort, use the default discard stop and
+`mixer.discard()`; retain already encrypted work for the existing recovery flow.
+An OS stop timeout is not permission to finish or release the source handle.
+
+PCM packets have sequential frame offsets and at most 4,096 samples. Their
+synchronous consumer must copy/encrypt within the callback and must not wait for
+network I/O. Packets clear after consumption/rejection. Each input track retains
+at most four resolved frames plus one pending frame. `host-aligned-area-v1` has
+its own exact-rational clock goldens; it does not change the existing nominal-rate
+resampler or assert identical bytes when measured clock anchors differ.
 
 Both sources enter one serial native delivery queue, limited to four admitted
 frames of at most 8,192 samples per channel and two channels. Overflow, repeated
@@ -53,19 +77,24 @@ window titles, URLs, filesystem path or credential is logged.
 
 Device/engine changes, a stream failure, workstation lock, sleep or capture-window
 expiry terminate input. Ordinary application focus loss does not stop desktop
-telehealth capture. Stop freezes delivery, stops the microphone, waits for a
+telehealth capture. Stop closes delivery admission, stops the microphone, waits for a
 pending ScreenCaptureKit start, stops that stream and drains queued input. A
 failed stop retains its native handles. Concurrent cleanup shares its attempt;
 an older failed waiter cannot overwrite a newer retry. The owner must retain this
 actor until shutdown is confirmed; dropping it is not a termination proof.
 
-Ten local Swift checks cover bounded native delivery, rejection/clearing,
-timestamps, actual in-memory AVFoundation conversion and disabled/pre-stopped
-source refusal. They use explicit invented consent and generated samples. The
+Twenty-three local Swift checks cover bounded native delivery, rejection/clearing,
+normal/failing stop drain, actual in-memory AVFoundation conversion,
+disabled/pre-stopped source refusal, aligned mixed PCM, clock drift, gaps,
+waveform timing, output limits and final partial periods. Two golden cases also
+pass the independent `scripts/check-desktop-mixer-golden.py` rational reference.
+They use explicit invented consent and generated samples. The
 complete source compiles with Swift 6 and warnings as errors for macOS 14.2.
 No enabled OS source, permission prompt, physical microphone or meeting was used.
 Native asynchronous start/stop failure injection and physical lifecycle behavior
-remain unqualified, along with mixing, clock drift, echo, silence/gap handling,
-encrypted recovery, main-process hosting, Windows and release packaging.
+remain unqualified, along with physical long-session clock drift, source silence
+behavior, echo, encrypted recovery, main-process hosting, Windows and release
+packaging. No UI, storage or network implementation consumes the PCM packets yet.
 
-See [ADR 0054](../../../../docs/adr/0054-native-macos-meeting-audio-source.md).
+See [ADR 0054](../../../../docs/adr/0054-native-macos-meeting-audio-source.md) and
+[ADR 0055](../../../../docs/adr/0055-host-clock-aligned-desktop-pcm.md).

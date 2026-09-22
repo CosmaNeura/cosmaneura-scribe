@@ -19,6 +19,8 @@ public struct MeetingAudioSelection: Sendable, Equatable {
     }
 }
 
+public enum DesktopAudioStopMode: Sendable { case drain, discard }
+
 /// Dormant native producer, to be owned by the trusted desktop main process.
 /// The existing controller must obtain fresh consent/lease authority and publish
 /// its persistent indicator before start. This producer does not replace that
@@ -80,10 +82,12 @@ public actor MacMeetingAudio {
             guard format.commonFormat == .pcmFormatFloat32, (1...2).contains(format.channelCount),
                   (16_000...96_000).contains(format.sampleRate) else { throw DesktopAudioFailure.invalidAudio }
             session.engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, time in
-                guard time.isHostTimeValid else { delivery.fail(.invalidAudio); return }
+                guard time.isHostTimeValid, time.isSampleTimeValid,
+                      time.sampleRate == buffer.format.sampleRate else { delivery.fail(.invalidAudio); return }
                 do {
                     let stamp = CMClockMakeHostTimeFromSystemUnits(time.hostTime)
-                    delivery.offer(try AudioOutput.frame(buffer, channel: .microphone, time: stamp))
+                    delivery.offer(try AudioOutput.frame(buffer, channel: .microphone, time: stamp,
+                                                        sourceSamplePosition: time.sampleTime))
                 } catch { delivery.fail(.invalidAudio) }
             }
             session.tapInstalled = true
@@ -112,10 +116,11 @@ public actor MacMeetingAudio {
     /// deliveries clear. Failure retains the same handles for a cleanup retry.
     /// The main controller still bounds this call and retains its lease/indicator
     /// on timeout; it must not treat cancellation as proof the OS stopped capture.
-    public func stop() async throws {
+    public func stop(mode: DesktopAudioStopMode = .discard) async throws {
         guard let session = active else { phase = .stopped; return }
         phase = .stopping
-        session.delivery.freeze()
+        if mode == .drain { session.delivery.seal() }
+        else { session.delivery.freeze() }
         session.deadline?.cancel()
         session.engine.stop()
         if session.tapInstalled {
@@ -222,13 +227,18 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
             buffer.frameLength = AVAudioFrameCount(count)
             guard CMSampleBufferCopyPCMDataIntoAudioBufferList(sampleBuffer, at: 0, frameCount: Int32(count),
                 into: buffer.mutableAudioBufferList) == noErr else { throw DesktopAudioFailure.invalidAudio }
-            let stamp = CMSyncConvertTime(CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
+            let presentation = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let position = CMTimeConvertScale(presentation, timescale: Int32(format.sampleRate), method: .roundHalfAwayFromZero)
+            guard position.isNumeric else { throw DesktopAudioFailure.invalidAudio }
+            let stamp = CMSyncConvertTime(presentation,
                                          from: clock, to: CMClockGetHostTimeClock())
-            delivery.offer(try Self.frame(buffer, channel: .systemAudio, time: stamp))
+            delivery.offer(try Self.frame(buffer, channel: .systemAudio, time: stamp,
+                                         sourceSamplePosition: position.value))
         } catch { delivery.fail(.invalidAudio) }
     }
 
-    static func frame(_ buffer: AVAudioPCMBuffer, channel: DesktopAudioChannel, time: CMTime) throws -> DesktopAudioFrame {
+    static func frame(_ buffer: AVAudioPCMBuffer, channel: DesktopAudioChannel, time: CMTime,
+                      sourceSamplePosition: Int64? = nil) throws -> DesktopAudioFrame {
         let frames = Int(buffer.frameLength), channels = Int(buffer.format.channelCount)
         let rate = buffer.format.sampleRate
         let stamp = CMTimeConvertScale(time, timescale: 1_000_000_000, method: .roundHalfAwayFromZero)
@@ -245,6 +255,6 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
             }
         }
         return try DesktopAudioFrame(channel: channel, sampleRate: Int(rate), channels: channels,
-            hostTimeNanoseconds: UInt64(stamp.value), samples: values)
+            hostTimeNanoseconds: UInt64(stamp.value), sourceSamplePosition: sourceSamplePosition, samples: values)
     }
 }

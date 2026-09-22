@@ -7,6 +7,6 @@ let package = Package(
     products: [.library(name: "ScribeDesktopAudio", targets: ["ScribeDesktopAudio"])],
     targets: [
         .target(name: "ScribeDesktopAudio"),
-        .testTarget(name: "ScribeDesktopAudioTests", dependencies: ["ScribeDesktopAudio"]),
+        .testTarget(name: "ScribeDesktopAudioTests", dependencies: ["ScribeDesktopAudio"], resources: [.copy("Fixtures")]),
     ]
 )
