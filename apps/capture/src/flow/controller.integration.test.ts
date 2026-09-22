@@ -20,6 +20,8 @@ import { CaptureQueue } from "../queue/capture-queue";
 import { EncryptedIndexedDbQueueStorage } from "../storage/encrypted-indexeddb";
 import { CaptureFlowController } from "./controller";
 import { EncryptedIndexedDbFlowStore } from "./encrypted-store";
+import { FakeIosNativePcmBridge } from "../native/fake-ios-native-pcm-bridge";
+import { IosNativeMicrophoneCaptureSource } from "../native/ios-native-microphone-source";
 
 const TEST_CRYPTO = webcrypto as unknown as Crypto;
 const TEST_ENCOUNTER = Object.freeze({
@@ -30,6 +32,53 @@ const TEST_ENCOUNTER = Object.freeze({
 });
 
 describe("CaptureFlowController", () => {
+  it("keeps configured native capture paused until an interrupted recorder confirms stop", async () => {
+    const server = createMockBffServer();
+    const origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const native = new FakeIosNativePcmBridge();
+    const source = new IosNativeMicrophoneCaptureSource(native);
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin));
+    const controller = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    try {
+      await expect(controller.startRecording()).rejects.toThrow("capture_state_conflict");
+      expect(native.startCalls).toBe(0);
+      const consent = await bff.createConsent({ appointment_id: TEST_ENCOUNTER.appointmentId,
+        practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId,
+        participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "native-consent-0001" });
+      const admitted = await bff.createSession({ appointment_id: TEST_ENCOUNTER.appointmentId,
+        practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId,
+        consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "native-session-0001" });
+      const complete = vi.spyOn(bff, "completeCapture");
+      await controller.prepareConfigured(admitted.id);
+      expect(native.startCalls).toBe(0);
+      await controller.startRecording();
+      expect(native.startCalls).toBe(1);
+      const pcm = new Uint8Array(640); pcm.fill(17); // Invented 20-ms PCM, no device audio.
+      await native.emitPcmPacket({ sequenceNumber: 0, pcmBytes: pcm });
+      expect(pcm.every((value) => value === 0)).toBe(true);
+      native.failNextStops(5);
+      native.emitInterruption("ios_audio_session_interrupted");
+      await vi.waitFor(() => expect(native.stopCalls).toBeGreaterThan(0));
+      await expect(controller.stopRecording()).rejects.toMatchObject({ code: "audio_capture_native_stop_failed" });
+      expect(controller.snapshot).toMatchObject({ state: "paused", recordedChunks: 1,
+        statusCode: "audio_capture_native_stop_failed" });
+      expect(complete).not.toHaveBeenCalled();
+      expect((await queueStorage.list()).filter((record) => record.state === "encrypted")).toHaveLength(1);
+      native.failNextStops(0);
+      await controller.stopRecording();
+      expect(controller.snapshot).toMatchObject({ state: "processing", recordedChunks: 1 });
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(native.stopModes.every((mode) => mode === "discard")).toBe(true);
+    } finally {
+      native.failNextStops(0); await source.stop();
+      flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
+
   it("recovers configured preparation, uploads once, and restores review without legacy admission or transcript calls", async () => {
     const server = createMockBffServer();
     const origin = await listenOnEphemeralLoopback(server);

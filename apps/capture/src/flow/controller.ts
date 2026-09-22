@@ -16,6 +16,7 @@ import type {
   Transcript,
 } from "../bff/contracts";
 import { BffResponseError } from "../bff/http-client";
+import { AudioCaptureError } from "../audio/errors";
 import type {
   CapturedWavChunk,
   CaptureSource,
@@ -443,6 +444,14 @@ export class CaptureFlowController {
       try {
         await this.#source.stop();
       } catch (error) {
+        if (isUnconfirmedNativeStop(error)) {
+          // An interruption is not proof that the native audio session closed.
+          // Keep the same source, encrypted queue and stop action available.
+          await this.#sourcePausePersistence;
+          await this.#saveActivePhase("paused");
+          this.#setSnapshot({ state: "paused", statusCode: error.code });
+          throw error;
+        }
         if (!this.#sourcePausedBySignal) throw error;
       }
       this.#sourceStarted = false;
@@ -455,7 +464,7 @@ export class CaptureFlowController {
       this.#setSnapshot({ state: "uploading", statusCode: "synthetic_preview_uploading" });
       await this.#drainAndComplete();
     } catch (error) {
-      this.#fail();
+      if (!isUnconfirmedNativeStop(error) || this.#snapshot.state !== "paused") this.#fail();
       throw error;
     }
   }
@@ -980,6 +989,10 @@ export class CaptureFlowController {
     this.#snapshot = { ...this.#snapshot, ...patch };
     for (const listener of this.#listeners) listener(this.snapshot);
   }
+}
+
+function isUnconfirmedNativeStop(error: unknown): error is AudioCaptureError {
+  return error instanceof AudioCaptureError && error.code === "audio_capture_native_stop_failed";
 }
 
 function restoredSnapshotState(phase: ActiveCapturePhase): CaptureFlowState {

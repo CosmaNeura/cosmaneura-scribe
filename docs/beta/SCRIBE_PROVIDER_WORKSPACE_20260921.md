@@ -1,5 +1,45 @@
 # Local provider workspace — 2026-09-21
 
+## Native iOS provider source — 2026-09-22
+
+The provider bundle now exports `createProviderIOSCaptureSource()` for the real
+host's recorder acquisition. It reuses the existing Scribe native PCM source and
+Capacitor bridge, requires native iOS plus `IOSPCM`, and never falls back to a
+synthetic source. Construction does not start audio. The existing configured
+consent/admission and explicit Record action still gate capture. No native
+Swift/auth source, external package or default preview source changed.
+
+Integration exposed and fixed a real stop-handling gap: after interruption, the
+controller previously ignored the native source's unconfirmed-stop failure and
+could continue uploading. It now retains the encrypted recording and same native
+handle, stays paused, and retries stop before upload/completion. The provider
+screen no longer claims an interrupted recorder is stopped; it shows explicit
+stop/retry guidance. The existing web source's terminal-error behavior remains.
+
+Evidence is retained at
+`/Users/jw/Desktop/Cosmas/scribe-provider-native-20260922.zi6kceir/`:
+
+- `baseline.log`: the new configured-native integration check reproduces the
+  incorrect completion after failed stop.
+- `corrected-tests.log`: 69 focused native/provider/flow checks pass.
+- `capture-tests.log`: all 184 capture checks pass after the shared stop change.
+- `provider/`: actual compiled provider entry, including the native source.
+  `rendered-native.log` verifies the actual bundle's unconfirmed-stop guidance,
+  retry, disabled Record, clearing on revocation and absent-plugin rejection.
+  `rendered-ios17.log` repeats the necessary compatibility check against this
+  changed bundle with `AbortSignal.any` absent.
+- Lint, typecheck and provider build pass. The integration fixture uses invented
+  PCM only after an explicit synthetic consent/session and exercises the real
+  encrypted queue and loopback upload path. No device microphone or live
+  Speech/translation call runs in these checks.
+
+This completes the provider source connection at the code/bundle level. It does
+**not** complete the native provider host: real encounter/mount authorization,
+Core transport, native storage composition and device acceptance remain. W13
+build 2 is still the last installed app; build 3 is the separately prepared
+session-diagnostic update. The phone remains unavailable to Xcode at the latest
+check, and its reconnect request remains pending.
+
 ## iOS 17 host compatibility correction — 2026-09-22
 
 The provider entry previously called `AbortSignal.any` when opening an encounter.

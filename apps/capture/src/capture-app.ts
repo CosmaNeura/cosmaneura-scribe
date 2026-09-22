@@ -246,14 +246,17 @@ export class CaptureApp extends LitElement {
                 ?disabled=${!this.#canStop() || this.#busy}
                 @click=${this.#stop}
               >
-                Stop and upload
+                ${this.#snapshot.statusCode === "audio_capture_native_stop_failed"
+                  ? "Retry stop and upload" : "Stop and upload"}
               </button>
             </div>
           </section>`}
 
           ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
             <p role="status">${this.#snapshot.state === "recording" ? "Recording"
-              : this.#snapshot.state === "paused" ? "Recording interrupted — stopped"
+              : this.#snapshot.statusCode === "audio_capture_native_stop_failed"
+                ? "Recording stop is unconfirmed. Retry stopping before continuing."
+              : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : this.#snapshot.state === "uploading" ? "Uploading your recording"
               : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace" : "Ready to record"}</p>
             <p>Recording window used ${formatDuration(this.#snapshot.elapsedSeconds)}</p>

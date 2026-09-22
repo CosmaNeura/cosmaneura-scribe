@@ -19,3 +19,4 @@ export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderEncoun
 export { NativeProviderWorkspaceJournal } from "./provider/workspace-journal";
 export type { ProviderWorkspaceJournal, JournalSnapshot, ProviderProgress } from "./provider/workspace-journal";
 export type { AuthorizedCoreRequest, CoreCaptureScope } from "./provider/core-client";
+export { createProviderIOSCaptureSource } from "./provider/ios-capture-source";

@@ -1,0 +1,69 @@
+{
+  "purpose": "Reuse the retained native iOS PCM adapter in the standalone provider entry; native Swift plugin remains supplied by the retained W13 host.",
+  "source_commit": "21812cca758dfe75fd736a2ca4ba919235c9fed2",
+  "files": [
+    {
+      "source": "21812cca758dfe75fd736a2ca4ba919235c9fed2:apps/capture/src/native/capacitor-ios-native-pcm-bridge.ts",
+      "source_sha256": "18b4ffb5ac439ddd1ee1a80dbbee210863c281ad25860eece69a6e44d1df63d5",
+      "path": "apps/capture/src/native/capacitor-ios-native-pcm-bridge.ts",
+      "imported_sha256": "0f7eb995371cf513bd26358ceb678cfe62a287b01db05b890c748ee85a9f17fa",
+      "change": "Local internal PCM module import only"
+    },
+    {
+      "source": "21812cca758dfe75fd736a2ca4ba919235c9fed2:apps/capture/src/native/capacitor-ios-native-pcm-bridge.test.ts",
+      "source_sha256": "b07f10495d90cfd372c64c4ba8582d082e31e9c95509fb89d810f79a4c0f8daa",
+      "path": "apps/capture/src/native/capacitor-ios-native-pcm-bridge.test.ts",
+      "imported_sha256": "816c6dacdf553e4fe84f1ae53578b7fdf8d6338671971e125073afbee5195d3a",
+      "change": "Local internal PCM module import only"
+    },
+    {
+      "source": "21812cca758dfe75fd736a2ca4ba919235c9fed2:apps/capture/src/native/ios-native-microphone-source.ts",
+      "source_sha256": "ef1a308c69721a714a8608856fbc22ef3c51bdd3559f615f020570e3b816c935",
+      "path": "apps/capture/src/native/ios-native-microphone-source.ts",
+      "imported_sha256": "ef1a308c69721a714a8608856fbc22ef3c51bdd3559f615f020570e3b816c935",
+      "change": "Unchanged"
+    },
+    {
+      "source": "21812cca758dfe75fd736a2ca4ba919235c9fed2:apps/capture/src/native/ios-native-microphone-source.test.ts",
+      "source_sha256": "e12f53890b367b986b0e1e1bef5e436a74403abb6966f637fc5a44708785c530",
+      "path": "apps/capture/src/native/ios-native-microphone-source.test.ts",
+      "imported_sha256": "e12f53890b367b986b0e1e1bef5e436a74403abb6966f637fc5a44708785c530",
+      "change": "Unchanged"
+    },
+    {
+      "source": "21812cca758dfe75fd736a2ca4ba919235c9fed2:apps/capture/src/native/ios-native-pcm-bridge.ts",
+      "source_sha256": "7111e8e4c69205f3ceb6131cb690bf3ccaa7d5165ea8e91038fa18c6e8f9f4f2",
+      "path": "apps/capture/src/native/ios-native-pcm-bridge.ts",
+      "imported_sha256": "7111e8e4c69205f3ceb6131cb690bf3ccaa7d5165ea8e91038fa18c6e8f9f4f2",
+      "change": "Unchanged"
+    },
+    {
+      "source": "21812cca758dfe75fd736a2ca4ba919235c9fed2:apps/capture/src/native/fake-ios-native-pcm-bridge.ts",
+      "source_sha256": "04f4f674ca1eef98d2bd1c9d65cf338990723f24a745c1c240a122622805c836",
+      "path": "apps/capture/src/native/fake-ios-native-pcm-bridge.ts",
+      "imported_sha256": "04f4f674ca1eef98d2bd1c9d65cf338990723f24a745c1c240a122622805c836",
+      "change": "Unchanged"
+    },
+    {
+      "source": "/Users/jw/Desktop/Cosmas/scribe-beta-recovery-20260921.weuh90ow/retained-inputs/apps/capture/native-plugins/ios-pcm-capacitor/src/index.ts",
+      "source_sha256": "d657ed96ce605cf68cd9b1d39590770ac8b19e609b03bb9324f36f5bb9538c17",
+      "path": "apps/capture/src/native/capacitor-pcm/index.ts",
+      "imported_sha256": "d657ed96ce605cf68cd9b1d39590770ac8b19e609b03bb9324f36f5bb9538c17",
+      "change": "Unchanged"
+    },
+    {
+      "source": "/Users/jw/Desktop/Cosmas/scribe-beta-recovery-20260921.weuh90ow/retained-inputs/apps/capture/native-plugins/ios-pcm-capacitor/src/codec.ts",
+      "source_sha256": "947e2960599f720c068fe3751675dca059b055af41c6db8aa89e49b4108d03a4",
+      "path": "apps/capture/src/native/capacitor-pcm/codec.ts",
+      "imported_sha256": "947e2960599f720c068fe3751675dca059b055af41c6db8aa89e49b4108d03a4",
+      "change": "Unchanged"
+    },
+    {
+      "source": "/Users/jw/Desktop/Cosmas/scribe-beta-recovery-20260921.weuh90ow/retained-inputs/apps/capture/native-plugins/ios-pcm-capacitor/src/definitions.ts",
+      "source_sha256": "2526d608d3704f2e60099e7a00b54b25651361fe3bc2d44eba9e1c2ef9047c71",
+      "path": "apps/capture/src/native/capacitor-pcm/definitions.ts",
+      "imported_sha256": "2526d608d3704f2e60099e7a00b54b25651361fe3bc2d44eba9e1c2ef9047c71",
+      "change": "Unchanged"
+    }
+  ]
+}
