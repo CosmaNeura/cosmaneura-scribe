@@ -19,7 +19,9 @@ temporary W13 candidate and local evidence directories are absent. See
 `beta/SCRIBE_RECOVERY_20260921.md` for verified durable archive recovery, the
 rebuilt provider bundle and approved native diagnostic. That unchanged Mac R2
 build now completes real hosted sign-in/native callback and restores its signed-in
-state after reopening. JWT/API acceptance and mobile sign-in remain open. The
+state after reopening. The existing W13 app is also visibly open on the physical
+iPhone after owner unlock; encounter loading has not established an API result.
+JWT/API acceptance and a fresh mobile sign-in/custody trial remain open. The
 recovery document supersedes the historical failed native observations below.
 Temporary evidence links below describe the historical run, not presently
 retained files. No completed live-service trial was repeated.

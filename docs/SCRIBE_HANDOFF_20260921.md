@@ -30,10 +30,11 @@ owner's explicit R2 launch approval, its actual window remained responsive throu
 a Keychain timeout. The owner completed the macOS permission prompts; all five
 R2 access entries are now saved. The unchanged app reopened successfully, finished
 its interrupted sign-out, completed real native sign-in and restored its signed-in
-state after another reopen. JWT/API acceptance remains open. The physical iPhone
-and its existing W13 installation are available; owner foregrounding of W13 for
-the mobile sign-in check is pending. Keep the same approved Mac binary unchanged.
-See the recovery document for exact evidence and candidate identity.
+state after another reopen. JWT/API acceptance remains open. After the owner
+unlocked the physical iPhone, the agent opened its existing W13 installation and
+verified the welcome screen. One encounter-loading attempt did not establish a
+workspace/API result. Keep the same approved Mac binary unchanged. See the
+recovery document for exact evidence and the remaining native/backend boundaries.
 
 ## 1. Your assignment
 

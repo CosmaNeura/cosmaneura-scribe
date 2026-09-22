@@ -148,12 +148,31 @@ query timed out; the same read-only query outside the sandbox succeeded. These
 are connection/package checks, not mobile authentication acceptance.
 
 Device Hub's physical-phone Apps view exposes the existing W13 installation.
-Its Launch action was invoked, but the following device view did not show W13
-in the foreground. Do not infer launch success from that action alone. The owner
-was asked to open CosmasOS Synth W13 on the phone; **that response is pending**.
-No phone app was installed, replaced, reset or removed. No further phone-screen
-inspection should occur until W13 is foreground. The existing phone package
-still has the historical loopback API limitation; mobile API access is unqualified.
+Initial Launch actions did not establish foreground success. The phone was then
+observed at its passcode screen, and a read-only CoreDevice check confirmed
+`passcodeRequired=true`. The owner unlocked it directly. A subsequent scoped
+check returned `passcodeRequired=false`; no passcode was read or entered by the
+agent.
+
+The agent launched the existing W13 through Device Hub after unlock. Its actual
+phone screen displayed the CosmasOS workspace welcome page and Sign out control,
+and the owner independently confirmed it was open on screen. No phone app was
+installed, replaced, reset or removed. The visible welcome state does not prove
+a fresh Tester sign-in, exact native identity, JWT claims or API authorization.
+
+One explicit “Choose an encounter” action showed Loading. The following
+observations were back at the welcome page, with no encounter list or successful
+API result established. No recording, consent mutation, clinical save or new
+Speech/translation trial was started. The exact failure layer is unresolved;
+do not label it a token or network failure without additional evidence.
+
+The retained phone bundle still embeds `http://127.0.0.1:8046`. On the phone that
+address does not reach the Mac. This remains a known configuration limitation,
+independently of the unqualified native token/API path. The existing Core capture
+facade requires Entra workload authentication plus trusted mount/interaction
+context; a native user JWT cannot simply be sent to that facade as a substitute.
+The approved authenticated host composition and a qualified phone-reachable
+backend remain required. The original phone is left on W13's welcome screen.
 
 Keep this exact approved R2 binary unchanged during the trial; a rebuild changes
 its ad hoc code identity. No new R2 launch approval is needed. Do not clear
