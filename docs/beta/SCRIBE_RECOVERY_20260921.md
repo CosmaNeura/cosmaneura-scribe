@@ -107,30 +107,64 @@ prompt experience is a recovery failure, not accepted provider onboarding.
 
 A prompt-free inspector requested only references and access-control metadata
 for the five exact W13 items, with password-data output pointers null. It made
-no Keychain changes. `w13-access-metadata-corrected.json` shows the unchanged R2
+no Keychain changes. Its first valid command output showed the unchanged R2
 app path listed for decrypt access on four items. `cachedClientServerDate` did
-not list R2. The first `w13-access-metadata.json` has invalid ACL status numbers
+not list R2. The later `w13-access-metadata-corrected.json` contains the fresh
+all-five observation after the owner's final permission. The first
+`w13-access-metadata.json` has invalid ACL status numbers
 from an incorrect C return-type binding; **do not use that first file as evidence**.
 The binding was corrected against the SDK header before the valid check.
 
 Native app control closed the timed-out window and its following observation
 showed a fresh R2 startup. This check also reached its safe timeout. The owner
-has been asked whether the remaining W13 prompt closed after selecting Always
-Allow; **that response is pending**. The app remains responsive with sign-in
-disabled. No SDK sign-in or callback has been observed.
+then reported completing the remaining Keychain dialog. A fresh prompt-free
+metadata check confirms R2 is now listed for decrypt access on **all five** items.
 
-Keep this exact approved R2 binary unchanged while completing the prompt; a
-rebuild changes its ad hoc code identity. Once the remaining item permission is
-resolved, reopen the same R2 candidate and verify its own UI. The timed-out
-process cannot accept a late successful preflight or proceed to sign-in. Do not
-clear credentials or interpret a denied or stalled read as a signed-out session.
-The 20-second bound proved UI responsiveness, but was too short for this manual
+Reopening the exact unchanged R2 app passed its Keychain check in approximately
+11 ms. The existing durable guard correctly restored `signOutPending`. Explicit
+“Sign out / finish sign-out” completed and the actual window displayed “Signed
+out. Ready for Tester sign-in.” Explicit sign-in then reached `hosted_url_ready`,
+`anchor_requested` and `system_start_true`. The owner completed login in the
+secure Cosmas/Clerk window. The fixed stage log then recorded `callback_received`,
+`hosted_signin_completed`, `state_ready` and `native_signin_completed`. The actual
+native window confirmed a session was present. The unchanged driver requires an
+active, nonexpired session and the configured organization before returning ready.
+No password, code, credential, callback URL or identity value was output.
+
+The same R2 app was closed and reopened once more. Its Keychain check completed
+in approximately 10 ms, and its actual window returned to the native signed-in
+state without starting another hosted login. All 275 source/app manifest hashes
+still match the approved R2 candidate. This establishes native callback and
+signed-in-state restoration for this build. It does **not** establish strict
+JWT claim/API acceptance, exact identity continuity across restart, token
+refresh/revocation, or server logout of this new session. R2 remains signed in.
+
+### Physical iPhone continuation
+
+The exact iPhone UDID still resolves to Johns Phone, physical iPhone 12,
+available/paired. A scoped installed-app query confirms
+`com.cosmasos.synthetic.w13`, version 1.0/build 1. A sandboxed CoreDevice status
+query timed out; the same read-only query outside the sandbox succeeded. These
+are connection/package checks, not mobile authentication acceptance.
+
+Device Hub's physical-phone Apps view exposes the existing W13 installation.
+Its Launch action was invoked, but the following device view did not show W13
+in the foreground. Do not infer launch success from that action alone. The owner
+was asked to open CosmasOS Synth W13 on the phone; **that response is pending**.
+No phone app was installed, replaced, reset or removed. No further phone-screen
+inspection should occur until W13 is foreground. The existing phone package
+still has the historical loopback API limitation; mobile API access is unqualified.
+
+Keep this exact approved R2 binary unchanged during the trial; a rebuild changes
+its ad hoc code identity. No new R2 launch approval is needed. Do not clear
+credentials or interpret a denied or stalled read as a signed-out session. The
+20-second bound proved UI responsiveness, but was too short for the manual
 multi-item permission sequence. Stable signing and acceptable authentication UX
 remain release requirements; do not claim this diagnostic is a provider app.
 
-The owner enters Tester credentials directly in the secure UI. Actual callback,
-strict native identity/token binding, restart/logout custody, authenticated
-provider host composition, phone-reachable approved backend and distribution
-acceptance remain open. No SDK sign-in result alone establishes usable MCD beta
-access. Latest owner-facing full desktop/mobile estimate is approximately 60%
+The owner enters Tester credentials directly in the secure UI. Strict native
+identity/token binding, refresh/logout/revocation custody, authenticated provider
+host composition, phone-reachable approved backend and distribution acceptance
+remain open. No SDK sign-in result alone establishes usable MCD beta access.
+Latest owner-facing full desktop/mobile estimate is approximately 60%
 (55–65% range), an engineering judgment rather than a measured completion score.

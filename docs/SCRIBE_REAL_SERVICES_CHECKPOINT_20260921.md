@@ -17,7 +17,10 @@ original resource/output state verified. No clinical runtime was activated.
 Recovery update: after an abrupt stop, the source commits remain intact but the
 temporary W13 candidate and local evidence directories are absent. See
 `beta/SCRIBE_RECOVERY_20260921.md` for verified durable archive recovery, the
-rebuilt provider bundle and separate native diagnostic awaiting launch approval.
+rebuilt provider bundle and approved native diagnostic. That unchanged Mac R2
+build now completes real hosted sign-in/native callback and restores its signed-in
+state after reopening. JWT/API acceptance and mobile sign-in remain open. The
+recovery document supersedes the historical failed native observations below.
 Temporary evidence links below describe the historical run, not presently
 retained files. No completed live-service trial was repeated.
 

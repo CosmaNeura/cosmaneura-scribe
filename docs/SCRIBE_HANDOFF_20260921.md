@@ -27,11 +27,13 @@ The owner approved the initial diagnostic launch, which stalled in a synchronous
 Keychain read and was stopped by exact PID. The corrected R2 candidate preserves
 authentication policy and adds a bounded background startup check. After the
 owner's explicit R2 launch approval, its actual window remained responsive through
-a Keychain timeout. The owner completed multiple macOS password prompts. Exact
-item metadata shows four saved R2 access entries and one remaining item without
-one; completion of that remaining permission prompt is pending. Keep the same
-approved binary unchanged. See the recovery document for exact evidence and
-candidate identity before any further launch.
+a Keychain timeout. The owner completed the macOS permission prompts; all five
+R2 access entries are now saved. The unchanged app reopened successfully, finished
+its interrupted sign-out, completed real native sign-in and restored its signed-in
+state after another reopen. JWT/API acceptance remains open. The physical iPhone
+and its existing W13 installation are available; owner foregrounding of W13 for
+the mobile sign-in check is pending. Keep the same approved Mac binary unchanged.
+See the recovery document for exact evidence and candidate identity.
 
 ## 1. Your assignment
 
