@@ -26,8 +26,12 @@ checks pass with explicit native/BFF/storage fixtures. Actual Swift-to-main
 transport was then implemented in ADR 0057: a dedicated Swift helper and Node
 driver pass actual pipe/WAV, cancellation, backpressure, stop-retry and
 parent-loss exit checks using an invented source. The production helper compiles
-but remains unactivated. Durable host stores/UI and native lifecycle/physical
-acceptance remain open. No physical recording or live trial ran.
+but remains unactivated. ADR 0058 then added durable main-process capture/queue,
+protected session-key, journal and coverage stores. A real-file generated-audio
+fixture survives SIGKILL/WAL recovery and uploads once through the existing flow.
+All 57 desktop and 200 capture checks pass. Actual native key custody, provider
+main-process/UI composition and native lifecycle/physical acceptance remain open.
+No Keychain, physical recording or live trial ran.
 Read the newest sections of
 `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` for their source/evidence and exact
 remaining native/runtime boundaries. W13 build 4's catalog, signed-in restart,

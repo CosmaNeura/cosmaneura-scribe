@@ -9,10 +9,13 @@ the existing WAV/encryption/upload/recovery flow; eleven local desktop checks
 include decrypting the retained WAV and reopening/uploading mixed capture once.
 The actual Swift-to-main transport now uses a dedicated helper and bounded
 inherited pipes. Generated audio crosses the real Swift/Node boundary into WAV;
-stop waits for the child to exit. Durable host stores/UI, native lifetime and
-physical Meet/Zoom acceptance remain open. See
+stop waits for the child to exit. Durable main-process flow/queue, protected key,
+journal and coverage stores now pass actual file/process-loss recovery. The
+trusted host still needs native key custody and provider UI composition; native
+lifetime and physical Meet/Zoom acceptance remain open. See
 [ADR 0056](../../docs/adr/0056-desktop-pcm-encrypted-capture-adapter.md) and
-[ADR 0057](../../docs/adr/0057-desktop-native-process-transport.md).
+[ADR 0057](../../docs/adr/0057-desktop-native-process-transport.md) and
+[ADR 0058](../../docs/adr/0058-durable-desktop-provider-storage.md).
 It is not mounted in this Electron foundation. The
 historical pilot description below describes its existing mock and Recall plan;
 no Recall dependency or live service has been added.

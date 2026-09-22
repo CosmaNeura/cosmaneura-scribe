@@ -1,5 +1,27 @@
 # Local provider workspace — 2026-09-21
 
+## Durable desktop capture and provider recovery — 2026-09-22
+
+Desktop main-process storage now retains encrypted flow/queue records, locally
+wrapped session keys, existing provider/review journals and native coverage.
+A real-file check records through the qualified Swift generated-audio helper,
+SIGKILLs its writer with SQLite open, recovers the ciphertext/key from WAL and
+uploads once through the existing capture controller. Reopening is paused and
+does not start a source. Five new storage checks, all 57 desktop/200 capture
+checks, typechecks and affected lint pass.
+
+See [ADR 0058](../adr/0058-durable-desktop-provider-storage.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-durable-20260922.nt9C50/`.
+This uses an ephemeral fixture custody key, not Keychain or actual native key
+provisioning. The default browser/iOS key path remains unchanged. No installed
+app, service, Core/OS tree or completed live trial was changed/repeated.
+
+Next compose the provider recorder in the trusted desktop main process and
+connect its commands/snapshots to the existing provider UI. Actual native key
+custody, complete Core runtime, standalone identity/packages and device/release
+acceptance remain open. Source, store, key and upload handles must remain outside
+the renderer. W13, Mac R2 and the private receiver stay preserved.
+
 ## Actual desktop native process transport — 2026-09-22
 
 The Swift microphone/system producer now has a dedicated helper and a Node
