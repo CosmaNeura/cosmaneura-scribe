@@ -7,6 +7,17 @@ source to `AuthorizedProviderEncounter.recorder` while retaining its existing
 exclusive lock and creator-scoped stores. The existing controller starts it only
 after configured consent/admission and an explicit provider Record action.
 
+`createProviderIOSHost(existingConnection)` now assembles these native resources
+and the existing encrypted stores/journals for `mountProviderWorkspace`. The
+connection must freshly authorize the Core encounter, supply the stable
+environment/creator recovery scope and upload transport, and reauthorize each
+recorder acquisition. The host selects only that creator/workspace/session's
+native queue and refuses a different pending session. Failed stop retains the
+native source and exclusive lock for retry. The flow/session-key store continues
+to use encrypted IndexedDB/WebCrypto; physical custody remains to be qualified.
+Neither entry constructs the authenticated Core connection or changes native
+authentication. See `docs/beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` for scope.
+
 The PCM bridge, source and their existing checks are reused from local Scribe
 commit `21812cc`. The internal `capacitor-pcm` transport definitions, codec and
 registration are unchanged copies of the retained W13 package's TypeScript

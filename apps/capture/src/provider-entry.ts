@@ -20,3 +20,5 @@ export { NativeProviderWorkspaceJournal } from "./provider/workspace-journal";
 export type { ProviderWorkspaceJournal, JournalSnapshot, ProviderProgress } from "./provider/workspace-journal";
 export type { AuthorizedCoreRequest, CoreCaptureScope } from "./provider/core-client";
 export { createProviderIOSCaptureSource } from "./provider/ios-capture-source";
+export { createProviderIOSHost } from "./provider/ios-host";
+export type { ProviderIOSBackend, AuthorizedProviderIOSMount } from "./provider/ios-host";

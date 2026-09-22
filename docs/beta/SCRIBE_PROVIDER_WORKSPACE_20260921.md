@@ -1,5 +1,55 @@
 # Local provider workspace — 2026-09-21
 
+## iOS provider host composition — 2026-09-22
+
+`createProviderIOSHost(existingConnection)` now assembles the real iOS recorder,
+provider/review journals, scoped audio queue, encrypted flow store, exclusive
+recording lock and configured upload target for `mountProviderWorkspace`.
+The existing authenticated Core/native connection still owns encounter listing,
+creation, mount authorization, recorder reauthorization and Core navigation.
+It supplies the stable server-bound environment/creator recovery UUID and
+`AuthorizedCoreRequest`; the new host never acquires a workload credential or
+turns a Clerk token into Core workload authority.
+
+Recorder acquisition requires native iOS, IOSPCM and SecureQueue, then locks and
+freshly reauthorizes before opening retained stores. Construction never requests
+microphone permission or starts audio. The current controller retains explicit
+consent/admission and Start. Queue keys bind recovery scope, workspace and
+session; foreign/legacy records are never fetched. A mismatched saved session
+fails without clearing it. Failed native stop retains the same source and lock
+until explicit retry succeeds. Cancellation during asynchronous store opening
+closes only the failed acquisition's handles.
+
+Audio queue and provider/review journals use the existing device-encrypted
+SecureQueue. Flow records and session keys retain the existing encrypted
+IndexedDB/WebCrypto profile; this increment does not claim native Keychain
+custody for those keys. It introduces no native storage implementation or
+credential namespace change. The unscoped queue reader excludes the new reserved
+provider namespace, preserving separation from its previous records.
+
+Local evidence:
+`/Users/jw/Desktop/Cosmas/scribe-provider-ios-host-20260922.ocw3v6ik/`.
+Six new host checks cover reopening retained state, creator/workspace/session
+separation, pending-session preservation, unconfirmed-stop ownership,
+reauthorization/native-store failure and cancellation during storage open.
+All **190 capture checks** are accounted for: 177 passed in the initial run;
+13 HTTP fixture checks initially failed with sandbox `listen EPERM`, then all
+13 passed with loopback socket access in `capture-http-tests.log`. The original
+failure log remains. Typecheck, affected lint and provider build pass.
+
+`rendered-host.log` verifies the actual built entry with `AbortSignal.any`
+absent: native-host composition reaches the provider recording preparation
+view, uses the scoped journal, reauthorizes recorder acquisition, excludes
+foreign records, releases its lock and clears on revocation. Native/Core calls
+are explicit offline fixtures; no audio or live provider operation runs.
+
+This closes the native resource-composition gap in source and the provider
+bundle. The standalone native identity/authorized Core connection still must be
+bound to it, then packaged and qualified on devices. This code is not installed
+in W13 build 4. W13 remains the separately approved OS native-session snapshot,
+not a relabeled standalone Scribe release. Complete desktop hosting, native
+lifecycle, physical capture, real-service fidelity and distribution remain open.
+
 ## Native iOS provider source — 2026-09-22
 
 The provider bundle now exports `createProviderIOSCaptureSource()` for the real
@@ -40,8 +90,10 @@ build 3 is now installed and launched; the reconnected phone reaches private
 TLS but reports `app_binding_missing` before catalog loading. The signed
 [build 4 native-session correction](W13_NATIVE_SESSION_CORRECTION_20260922.md)
 was explicitly approved and is now installed and launched, with the corrected
-private receiver active. The phone's physical catalog check is pending. Neither
-W13 package mounts this complete provider bundle yet.
+private receiver active. The physical catalog gate passed: the receiver returned
+the authenticated catalog at **13:16:35 UTC**, and the owner confirmed the
+invented encounter visible. Neither W13 package mounts this complete provider
+bundle yet; native lifecycle and full provider workflow acceptance remain open.
 
 ## iOS 17 host compatibility correction — 2026-09-22
 
