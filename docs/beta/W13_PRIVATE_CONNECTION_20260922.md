@@ -150,11 +150,12 @@ confirms this check blocks the current native request. It does not yet establish
 successful authentication under a corrected policy. No Clerk setting, template
 or running receiver authentication policy changed.
 
-The signed **build 4 candidate and private iPhone receiver correction** are
-prepared, tested and awaiting approval of the specific authentication-rule
-change. See [the exact review and activation packet](W13_NATIVE_SESSION_CORRECTION_20260922.md).
-Build 3 and the original receiver remain active; do not activate the proposal
-solely because an earlier launch was approved.
+The owner explicitly approved the **build 4 native-session correction**. It is
+installed and launched; the corrected private iPhone receiver is active at the
+same endpoint, with the original database and TLS files preserved. See
+[the exact review and activation checkpoint](W13_NATIVE_SESSION_CORRECTION_20260922.md).
+The physical phone displays the signed-in welcome. The owner has been asked to
+tap Choose an encounter once; authenticated catalog acceptance remains pending.
 
 ## Resume safely
 
@@ -162,8 +163,8 @@ solely because an earlier launch was approved.
    `private_tls_request_received` establishes the phone's connection only when
    no local test is running. `authenticated_catalog_returned` plus the visible
    invented encounter establishes the first end-to-end gate. Diagnose failures
-   through fixed codes; never print tokens. Apply the prepared native-session
-   rule only after approval of its exact scope.
+   through fixed codes; never print tokens. The exact build 4 native-session
+   rule and private receiver activation are approved and active.
 2. Preserve the running receiver and private database. Verify their executable,
    listener and owned directory before restarting or stopping anything. Do not
    rerun seeding, replace the certificate, rebuild Mac R2 or replay completed
@@ -179,6 +180,6 @@ solely because an earlier launch was approved.
 
 No other tasks were contacted. Core and CosmasOS checkouts were read-only;
 foreign changes, demos 8125/8195, other apps and simulators remain protected.
-No shared database, running auth policy, credential namespace, ACL or system Keychain
-setting was changed. No push, PR, merge, cloud action or completed live-service
-trial was performed.
+The approved private receiver's native-session rule changed as documented above.
+No shared database, credential namespace, ACL or system Keychain setting changed.
+No push, PR, merge, cloud action or completed live-service trial was performed.

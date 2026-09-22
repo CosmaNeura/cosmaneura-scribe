@@ -7,11 +7,13 @@ receiver is running, and W13 build 3 is installed and launched after the owner
 reconnected the phone. The physical request reached private TLS, then the app
 reported `app_binding_missing` before an authenticated catalog request. This
 identifies the native application-origin check, without proving other claims
-valid. The signed [build 4 native-session correction](W13_NATIVE_SESSION_CORRECTION_20260922.md)
-and private iPhone receiver are prepared and tested, awaiting approval of that
-specific authentication-rule change. Build 3 and the original receiver remain
-active. No completed live-service trial was repeated. The earlier recovery
-history below remains historical.
+valid. The owner then explicitly approved the signed
+[build 4 native-session correction](W13_NATIVE_SESSION_CORRECTION_20260922.md).
+Build 4 is installed and launched, and the corrected private iPhone receiver is
+active on the same endpoint with the existing database/TLS files. The phone shows
+the signed-in welcome; the physical catalog check is pending. No completed
+live-service trial was repeated. The earlier recovery history below remains
+historical.
 
 The existing Scribe checkout remained clean at `622648a`, with provider workflow
 implementation `abea802b0d3c66e5945d74024ee1ecd5c3a8f899` intact. No branch,

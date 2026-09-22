@@ -39,8 +39,9 @@ Core transport, native storage composition and device acceptance remain. W13
 build 3 is now installed and launched; the reconnected phone reaches private
 TLS but reports `app_binding_missing` before catalog loading. The signed
 [build 4 native-session correction](W13_NATIVE_SESSION_CORRECTION_20260922.md)
-is prepared and tested, awaiting approval of its specific authentication-rule
-change. Neither W13 package mounts this complete provider bundle yet.
+was explicitly approved and is now installed and launched, with the corrected
+private receiver active. The phone's physical catalog check is pending. Neither
+W13 package mounts this complete provider bundle yet.
 
 ## iOS 17 host compatibility correction — 2026-09-22
 

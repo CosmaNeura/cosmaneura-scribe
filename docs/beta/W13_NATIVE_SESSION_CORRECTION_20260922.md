@@ -1,9 +1,32 @@
 # W13 native-session correction — exact activation review
 
-**Prepared and development signed; not installed or activated.** This is a
-Tier 2 authentication change for the existing private synthetic iPhone catalog.
-Build 3 and the original receiver remain active. Authenticated encounter loading
-and the full desktop/mobile beta remain incomplete.
+**Approved, activated, installed and launched.** The owner explicitly approved
+installing/launching build 4 and activating the corrected private receiver.
+This is a Tier 2 authentication change for the existing private synthetic iPhone
+catalog. Authenticated encounter loading awaits the physical catalog result;
+the full desktop/mobile beta remains incomplete.
+
+## Activation checkpoint
+
+The approved package and all 376 bound hashes were reverified from clean Scribe
+commit `2bb1d5873dec39c21cab5f0a2d90436fc7240264`. The wired iPhone was paired and
+connected. Only the verified original receiver PID 97451 was stopped. The
+corrected receiver is PID **33224**, listening on the same private
+`192.168.1.36:8446` endpoint from the owned candidate directory. The private
+PostgreSQL PID **94522**, database and TLS files were preserved.
+
+The in-place installation succeeded, and a scoped device query confirms
+`com.cosmasos.synthetic.w13`, version **1.0/build 4**. Device Hub launched it;
+the physical phone view showed the existing signed-in welcome and Sign out.
+The owner was asked to tap Choose an encounter once. No local health request
+has been sent to the corrected receiver, so subsequent stage evidence can be
+distinguished from local testing.
+
+`owner-activation-approval.json`, `iphone-install-build4.json`,
+`iphone-installed-build4.json` and `activated-installed-checkpoint.json` preserve
+approval, installation, build verification and activation evidence in the owned
+directory below. The original candidate manifest remains an immutable
+pre-activation receipt; use this later checkpoint for actual runtime state.
 
 ## Observed problem and proposed result
 
@@ -93,14 +116,15 @@ No real token, microphone, Speech, translation or note-generation trial ran.
 
 ## Activation and recovery flight plan
 
-Owner approval is required for the exact rule above. Existing launch and local
-Core approvals remain valid for their scopes. This packet applies the repository
+The owner has approved the exact rule above and the installation/launch and
+receiver activation. Existing local Core approvals remain valid for their
+scopes. The prepared packet applied the repository
 [Ask first rule](../../AGENTS.md): “Changes to auth/session, consent, transcript
 storage, PHI boundaries, CI/deployment workflows, environment configuration, or
-production data.” The requested new decision is the absent-origin native rule
-and its private receiver activation.
+production data.” That specific absent-origin native-rule decision is now
+recorded; do not request it again for the same approved package and scope.
 
-After approval:
+Activation sequence (steps 1–3 completed; physical acceptance pending):
 
 1. Verify the candidate manifest and fresh device connection. Verify the owned
    original receiver's executable, working directory and listener; last observed
