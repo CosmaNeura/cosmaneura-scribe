@@ -2,7 +2,7 @@
 // Applied only to the hash-verified, retained W13 web asset. The native SDK,
 // Keychain, token policy and API authorization are not changed by this adapter.
 export function createWorkspaceRecovery({ React, jsx, WorkspaceAuth, availableByDefault,
-  StatusScreen, EncounterWorkspace, parseState, parseToken, sameState }) {
+  StatusScreen, EncounterWorkspace, parseState, parseToken, sameState, privateCatalog = false }) {
   return function NativeAuthenticatedWorkspace({ plugin = WorkspaceAuth,
     available = availableByDefault(), createIdentity }) {
     const [state, setState] = React.useState(null);
@@ -33,7 +33,29 @@ export function createWorkspaceRecovery({ React, jsx, WorkspaceAuth, availableBy
           throw new Error("Native session unavailable");
         }
       }
-      return createIdentity ? createIdentity(expected, stillCurrent) : { mode: "clerk_jwt", getToken };
+      async function getCatalog() {
+        try {
+          if (!stillCurrent()) throw new Error();
+          const result = await plugin.getWorkspaceCatalog({ expectedRevision: expected.revision });
+          if (!stillCurrent() || result?.revision !== expected.revision || !Array.isArray(result.encounters) ||
+              result.encounters.length > 100) throw new Error();
+          setAccessFailed(false);
+          return result.encounters;
+        } catch (error) {
+          if (scope?.active && !scope.pending && session.current === scope &&
+              (!scope.current?.identity || sameAccount(scope.current, expected))) {
+            const code = error?.code;
+            setAccessFailed(code === "workspace_connection_unavailable" ? "connection" :
+              code === "workspace_jwt_rejected" ? "server" : code === "workspace_access_denied" ? "access" : true);
+          }
+          // Native provider errors are intentionally discarded at the UI boundary.
+          // eslint-disable-next-line preserve-caught-error
+          throw new Error("Native workspace unavailable");
+        }
+      }
+      return createIdentity ? createIdentity(expected, stillCurrent) : {
+        mode: "clerk_jwt", getToken, ...(privateCatalog ? { getCatalog } : {}),
+      };
     }, [state, plugin, createIdentity]);
 
     React.useLayoutEffect(() => {
@@ -99,7 +121,10 @@ export function createWorkspaceRecovery({ React, jsx, WorkspaceAuth, availableBy
       detail: "Complete or cancel the sign-in window to return to Cosmas.", role: "status" });
     if (state?.phase === "ready" && identity) return jsx.jsxs(React.Fragment, { children: [
       accessFailed && jsx.jsx("div", { role: "alert", className: "team-banner", children:
-        "Workspace access could not be verified. Choose an encounter to retry. Your sign-in has been retained." }),
+        accessFailed === "connection" ? "Could not connect securely to the workspace on your Mac. Check that both devices are connected, then choose an encounter to retry." :
+        accessFailed === "server" ? "The workspace could not verify this session. Your sign-in has been retained; access needs to be checked." :
+        accessFailed === "access" ? "This account does not currently have access to the test workspace. Your sign-in has been retained." :
+          "Workspace access could not be verified. Choose an encounter to retry. Your sign-in has been retained." }),
       jsx.jsx(EncounterWorkspace, { authenticated: identity,
         accountControls: jsx.jsx("button", { className: "button secondary",
           onClick: () => void act("signOut"), children: "Sign out" }) }, state.revision),

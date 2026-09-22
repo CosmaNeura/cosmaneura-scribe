@@ -1,11 +1,13 @@
 # Scribe recovery after the abrupt stop — 2026-09-21
 
-Latest continuation: [W13 encounter connection repair](W13_ENCOUNTER_CONNECTION_REPAIR_20260921.md)
-reproduces and corrects the disappearing access error and unbounded catalog read
-in a prepared local web asset. The installed phone app is unchanged. Its
-simulator-only API address and missing phone-reachable runtime still prevent
-workspace acceptance; the bounded private HTTPS connection packet is proposed,
-not activated. No new login or live-service trial was performed.
+Latest continuation: [W13 private connection checkpoint](W13_PRIVATE_CONNECTION_20260922.md).
+The owner continued the private connection packet and made phone-reachable
+authenticated encounter loading the first priority. The owned private TLS
+receiver is running, and W13 build 2 is installed with the native catalog
+connection and persistent error/retry correction. The phone retains its signed-in
+welcome; its actual connection/catalog result is pending a physical tap. Do not
+count local TLS tests as phone acceptance. No completed live-service trial was
+repeated. The earlier recovery history below remains historical.
 
 The existing Scribe checkout remained clean at `622648a`, with provider workflow
 implementation `abea802b0d3c66e5945d74024ee1ecd5c3a8f899` intact. No branch,

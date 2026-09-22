@@ -1,5 +1,10 @@
 # W13 encounter connection repair — 2026-09-21
 
+**Superseded status:** the owner continued this packet on 2026-09-22. The owned
+private TLS receiver is running and W13 build 2 is installed; physical catalog
+acceptance is pending. See [the current checkpoint](W13_PRIVATE_CONNECTION_20260922.md).
+The description and approval gap below record the earlier starting point.
+
 The physical phone is running a W13 authentication qualification package whose
 workspace API is compiled as `http://127.0.0.1:8046`. That is the phone's own
 loopback address, not this Mac. The old local server/runtime is absent. A successful

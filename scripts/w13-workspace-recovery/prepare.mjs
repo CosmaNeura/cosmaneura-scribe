@@ -7,7 +7,7 @@ export const INPUT_SHA256 = "900f26844b8b9d134c2a12a00ae9f7cd7a40282ee3a2578b79d
 const here = dirname(fileURLToPath(import.meta.url));
 export const sha256 = value => createHash("sha256").update(value).digest("hex");
 
-export async function repairBundle(bytes) {
+export async function repairBundle(bytes, { privateCatalog = false } = {}) {
   if (sha256(bytes) !== INPUT_SHA256) throw new Error("Unrecognized W13 input; no output prepared");
   const original = bytes.toString("utf8");
   const component = (await readFile(join(here, "native-workspace.js"), "utf8")).replace("export function", "function");
@@ -16,7 +16,7 @@ export async function repairBundle(bytes) {
   if (start < 0 || end < start) throw new Error("W13 component boundary missing");
   let result = original.slice(0, start) + component + `
 const Q1 = createWorkspaceRecovery({React:O,jsx:f,WorkspaceAuth:DA,availableByDefault:qA,
-  StatusScreen:Cn,EncounterWorkspace:om,parseState:G1,parseToken:$1,sameState:rp});
+  StatusScreen:Cn,EncounterWorkspace:om,parseState:G1,parseToken:$1,sameState:rp,privateCatalog:${privateCatalog}});
 ` + original.slice(end);
   function replaceOnce(before, after) {
     if (result.split(before).length !== 2) throw new Error("W13 request boundary changed");
@@ -29,6 +29,7 @@ const Q1 = createWorkspaceRecovery({React:O,jsx:f,WorkspaceAuth:DA,availableByDe
   replaceOnce('headers:l,body:r===void 0?void 0:JSON.stringify(r)',
     'headers:l,...(signal?{signal}:{}),body:r===void 0?void 0:JSON.stringify(r)');
   replaceOnce('catalog:n=>zt("/workspaces",n)', `catalog:async n=>{
+    if(${privateCatalog})return n.getCatalog();
     const controller=new AbortController();
     const timeout=window.setTimeout(()=>controller.abort(),30000);
     try{return await zt("/workspaces",n,undefined,controller.signal)}

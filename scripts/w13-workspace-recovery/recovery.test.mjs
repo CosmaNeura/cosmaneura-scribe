@@ -6,8 +6,8 @@ import { pathToFileURL } from "node:url";
 import { SourceTextModule } from "node:vm";
 import { repairBundle } from "./prepare.mjs";
 
-const [input, jsdomModule] = process.argv.slice(2);
-if (!input || !jsdomModule) throw new Error("Usage: recovery.test.mjs retained-entry.js installed-jsdom-module");
+const [input, jsdomModule, installedPrivateEntry] = process.argv.slice(2);
+if (!input || !jsdomModule) throw new Error("Usage: recovery.test.mjs retained-entry.js installed-jsdom-module [exported-private-entry.js]");
 const { JSDOM } = await import(pathToFileURL(jsdomModule));
 const bytes = await readFile(input);
 const corrected = await repairBundle(bytes);
@@ -41,8 +41,10 @@ async function harness(bundle) {
   let listener;
   let tokenRequests = 0;
   let requests = 0;
+  let catalogRequests = 0;
   let fetchImpl = async () => new Response(JSON.stringify(result));
   let tokenImpl = async ({ expectedRevision }) => ({ token, revision: expectedRevision });
+  let catalogImpl = async ({ expectedRevision }) => ({ encounters: result, revision: expectedRevision });
   window.fetch = async (url, options) => {
     assert.equal(url, "http://127.0.0.1:8046/workspaces");
     assert.equal(options.headers.get("Authorization"), `Bearer ${token}`);
@@ -53,6 +55,7 @@ async function harness(bundle) {
   const plugin = {
     getState: async () => structuredClone(state),
     getToken: async options => { tokenRequests++; return tokenImpl(options); },
+    getWorkspaceCatalog: async options => { catalogRequests++; return catalogImpl(options); },
     addListener: async (_event, callback) => { listener = callback; return { remove: async () => { listener = undefined; } }; },
     signOut: async () => { state = signedOut; },
     signIn: async () => { throw new Error("Unrequested sign-in"); },
@@ -79,6 +82,7 @@ async function harness(bundle) {
       button.click(); await settle();
     },
     setFetch: value => { fetchImpl = value; }, setToken: value => { tokenImpl = value; },
+    setCatalog: value => { catalogImpl = value; }, catalogRequests: () => catalogRequests,
     async emit(value) { state = value; listener?.(value); await settle(); },
     async poll() { for (const callback of intervals.values()) callback(); await settle(); },
     async timeout() { for (const callback of [...deadlines.values()]) callback(); await settle(); },
@@ -151,4 +155,30 @@ try {
   assert.ok(late.text().includes("Sign in to Cosmas"));
 } finally { await late.close(); }
 console.log("A token completing after logout cannot send a workspace request or restore private content.");
+
+const nativeBundle = installedPrivateEntry
+  ? await readFile(installedPrivateEntry, "utf8")
+  : await repairBundle(bytes, { privateCatalog: true });
+const native = await harness(nativeBundle);
+try {
+  native.setCatalog(async () => { throw { code: "workspace_connection_unavailable" }; });
+  await native.click("Choose an encounter");
+  assert.ok(native.text().includes("Could not connect securely to the workspace on your Mac"));
+  await native.poll();
+  assert.ok(native.text().includes("Could not connect securely to the workspace on your Mac"));
+  native.setCatalog(async ({ expectedRevision }) => ({ encounters: result, revision: expectedRevision }));
+  await native.click("Choose an encounter");
+  assert.ok(native.text().includes("Invented private visit"));
+  assert.equal(native.requests(), 0);
+  assert.equal(native.tokenRequests(), 0);
+  assert.equal(native.catalogRequests(), 2);
+  let finish;
+  native.setCatalog(() => new Promise(resolve => { finish = resolve; }));
+  await native.click("Refresh encounters");
+  await native.click("Sign out");
+  finish({ encounters: result, revision: first.revision });
+  await native.poll();
+  assert.equal(native.text().includes("Invented private visit"), false);
+} finally { await native.close(); }
+console.log(`Private native catalog transport retries without renderer tokens and discards replies after logout${installedPrivateEntry ? " against the exported app asset" : ""}.`);
 await assert.rejects(repairBundle(Buffer.from("different candidate")), /Unrecognized W13 input/);

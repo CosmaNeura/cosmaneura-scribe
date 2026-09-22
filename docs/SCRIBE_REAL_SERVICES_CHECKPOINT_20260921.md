@@ -1,5 +1,10 @@
 # Scribe real-service qualification — 2026-09-21
 
+Latest continuation: [W13 private connection, 2026-09-22](beta/W13_PRIVATE_CONNECTION_20260922.md).
+The owned TLS receiver is running and W13 build 2 is installed. Actual phone
+JWT/catalog acceptance remains pending; the historical status below does not
+supersede that checkpoint.
+
 Status: meaningful implementation and real-service/build evidence; **not a beta
 release or closure of the five owner goals**. Scribe edits remain on
 `codex/beta-preintegration-20260904`, based on `1e48c124f355f486d8106c7f7441fd13895c3c97`.
