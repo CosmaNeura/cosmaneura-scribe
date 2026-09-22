@@ -1,0 +1,12 @@
+--- a/Sources/CosmasNativeAuth/NativeClerkConfiguration.swift
++++ b/Sources/CosmasNativeAuth/NativeClerkConfiguration.swift
+@@ -5,6 +5,9 @@
+     case desktopApp = "app://cosmas"
+ 
+     public func accepts(bundleIdentifier: String) -> Bool {
++        if self == .appleWebView && bundleIdentifier == "com.cosmaneura.scribe.beta" {
++            return true
++        }
+         let pattern = self == .appleWebView
+             ? "^com\\.cosmasos\\.synthetic(?:\\.w[1-9][0-9]*[a-z]?)?$"
+             : "^com\\.cosmasos\\.synthetic\\.desktop\\.auth(?:\\.w[1-9][0-9]*[a-z]?)?$"

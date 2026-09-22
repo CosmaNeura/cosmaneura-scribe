@@ -24,3 +24,6 @@ export { createProviderIOSHost } from "./provider/ios-host";
 export type { ProviderIOSBackend, AuthorizedProviderIOSMount } from "./provider/ios-host";
 export { connectNativeProviderIOSBackend } from "./provider/native-backend";
 export type { NativeProviderBackend, NativeProviderOptions } from "./provider/native-backend";
+export { mountNativeProviderIOSApplication } from "./provider/native-application";
+export { mountProviderApplication } from "./provider/application";
+export type { ProviderApplicationHost, ProviderSessionState } from "./provider/application";

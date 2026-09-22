@@ -1,23 +1,18 @@
-import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
+import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import type { CiphertextUploadTarget } from "../bff/contracts";
 import { BffResponseError } from "../bff/http-client";
 import { QueueInvariantError } from "../queue/errors";
 import { isUuid } from "../../../review-ui/src/contracts";
 import { record, reference } from "./core-client";
 import type { ProviderIOSBackend } from "./ios-host";
+import { nativeProviderPlugin, type ProviderAction as Action, type NativeProviderState as NativeState,
+  type ProviderNativePlugin } from "./native-plugin";
 import type { ProviderEncounter } from "./workspace";
 
-type Action = "catalog" | "mount" | "recorder" | "capture-admissions" | "capture-operations" | "capture-notes";
 const limits: Record<Action, number> = { catalog: 2, mount: 256, recorder: 1024,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
-interface NativeState { readonly phase: string; readonly revision: string; readonly providerReady?: boolean }
-interface NativeReply { readonly requestId: string; readonly revision: string; readonly status: number; readonly body: string }
-export interface ProviderNativePlugin {
-  getProviderState(): Promise<NativeState>;
-  addListener(event: "authStateChanged", listener: (state: NativeState) => void): Promise<PluginListenerHandle>;
-  providerRequest(request: { requestId: string; revision: string; action: Action; key: string; body: string }): Promise<NativeReply>;
-  cancelProviderRequest(request: { requestId: string }): Promise<void>;
-}
+type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
+export type { ProviderNativePlugin } from "./native-plugin";
 export interface NativeProviderOptions {
   readonly signal: AbortSignal;
   /** Existing authorized ciphertext target and Core navigation, configured by the native host. */
@@ -28,14 +23,13 @@ export interface NativeProviderOptions {
   };
 }
 export interface NativeProviderBackend extends ProviderIOSBackend { dispose(): Promise<void> }
-const nativePlugin = registerPlugin<ProviderNativePlugin>("CosmasWorkspaceAuth");
 
 /** Bind the existing signed-in iOS session to the fixed provider receiver.
  * The plugin obtains a fresh SDK token natively for every operation. This module
  * never calls getToken, receives credentials or accepts a backend URL/headers.
  */
 export async function connectNativeProviderIOSBackend(options: NativeProviderOptions,
-  plugin: ProviderNativePlugin = nativePlugin): Promise<NativeProviderBackend> {
+  plugin: ProviderNativePlugin = nativeProviderPlugin): Promise<NativeProviderBackend> {
   if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios"
     || !Capacitor.isPluginAvailable("CosmasWorkspaceAuth")) throw unavailable();
   const abort = new AbortController();

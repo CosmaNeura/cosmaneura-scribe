@@ -91,3 +91,19 @@ The token travels over stdin, never argv or a file. Wrong-pin and logout rejecti
 are included. These checks do not access the phone, Keychain or live services.
 See [ADR 0052](../../docs/adr/0052-native-provider-receiver-bridge.md) for evidence
 and the still-open standalone identity/runtime/physical acceptance boundary.
+
+## Standalone startup
+
+`mountNativeProviderIOSApplication(root, { uploadTarget, core })` composes the
+native session, backend, iOS resource host and provider workspace. Supply the
+reviewed existing upload target/Core creation and navigation callbacks; the
+function does not invent them or configure a native identity. Retain and await
+its async disposer. If disposal rejects, preserve that handle and retry cleanup
+before opening another host; recorded work and an unconfirmed native stop must
+not be discarded. The UI provides the same explicit cleanup retry during use.
+
+`check-provider-application.mjs` qualifies the built entry's startup/lifecycle
+with offline native/Core hosts. It does not install an app or access credentials.
+The proposed `standalone-identity.patch` is **not applied**. Its exact scope and
+pending owner decision are in the
+[identity packet](../../docs/beta/SCRIBE_STANDALONE_IOS_IDENTITY_PACKET_20260922.md).

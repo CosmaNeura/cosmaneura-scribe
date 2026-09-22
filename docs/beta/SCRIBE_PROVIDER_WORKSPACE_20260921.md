@@ -1,5 +1,30 @@
 # Local provider workspace — 2026-09-21
 
+## Standalone application startup — 2026-09-22
+
+The provider entry now exports `mountNativeProviderIOSApplication` to compose
+native sign-in, the receiver backend, iOS recorder host and complete provider
+workspace. It owns restored sessions, explicit reopen, immediate clearing on
+access changes, sign-out while connecting, late connection disposal and retry of
+unconfirmed recording cleanup. The native authentication implementation remains
+unchanged; a failed sign-out cannot silently reopen the old ready session.
+
+Ten checks against the actual compiled UI and eight backend checks pass. The
+native startup reaches recording preparation using explicit offline Capacitor
+responses, without fetching a token in JavaScript or requesting a microphone.
+Typecheck, lint, provider build and preview isolation checks pass. See
+[ADR 0053](../adr/0053-standalone-provider-application-lifecycle.md) and
+`/Users/jw/Desktop/Cosmas/scribe-provider-application-20260922.FhyAep/`.
+
+The reconnected iPhone was verified ready by a read-only query. No new app has
+been installed. The [standalone identity packet](SCRIBE_STANDALONE_IOS_IDENTITY_PACKET_20260922.md)
+contains the exact, unapplied native configuration change; the owner's decision
+is pending. Real Core runtime/account correspondence, upload, Core navigation and
+native packaging remain open. Existing Core/Scribe checkout roots contain no
+active local `.env` configuration; the old full browser fixture directory is
+absent as already recorded. No running/shared Core service was selected or
+modified to fill that gap.
+
 ## Native provider receiver connection — 2026-09-22
 
 The iOS backend now connects the current provider host to the fixed receiver
