@@ -1,5 +1,29 @@
 # Local provider workspace — 2026-09-21
 
+## Server-side Core provider transport — 2026-09-22
+
+`ProviderCoreTransport` now connects the current provider request contracts to
+Core's existing user-context exchange, server workload/mount resolution and
+creator/encounter capture binding. It supports configured admission, creator
+review decisions and existing Core SOAP read/prepare/save/recovery. Each operation
+reauthorizes the current identity and encounter before and after I/O; workload
+and mount credentials remain on the server. There is no automatic mutation retry.
+
+The actual TypeScript `CoreCaptureClient` executes its admission, review and
+note request sequence through this Python transport in the focused local check.
+All seventeen checks pass with Node 24, including changed identity, revocation,
+concurrency, lost replies and cancellation. Core and identity responses are
+explicit offline fixtures: this is client/transport interoperability, not a new
+Core/database/model trial or live authentication acceptance. See
+[ADR 0049](../adr/0049-standalone-provider-core-transport.md) and evidence at
+`/Users/jw/Desktop/Cosmas/scribe-provider-core-20260922.bRpB0BTG/`.
+
+The component is unregistered and disabled by default. The actual standalone
+native/server host must still bind its fresh identity/grant/creator authorizer,
+reviewed Core origin/workload credential source, encounter list/creation and
+native request lifetime. W13's catalog receiver and installed build remain
+unchanged. No protected Core/OS source or authentication policy was modified.
+
 ## iOS provider host composition — 2026-09-22
 
 `createProviderIOSHost(existingConnection)` now assembles the real iOS recorder,
