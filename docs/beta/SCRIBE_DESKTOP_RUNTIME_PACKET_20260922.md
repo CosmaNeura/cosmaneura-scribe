@@ -1,6 +1,22 @@
 # Desktop runtime proposal — 2026-09-22
 
-Status: concrete dependency proposal prepared; **not approved or applied**.
+Status: **owner approved; exact dependency patch and local runtime install completed**.
+
+The owner explicitly approved this dependency/install proposal on 2026-09-22.
+Electron 44.4.3 is pinned in the desktop workspace and installed in this checkout.
+Only the seven proposed package entries were added; no existing version changed.
+The resulting lockfile is byte-identical to the approved proposal. Lifecycle
+scripts were disabled during npm installation; the separately inspected Electron
+installer then downloaded/extracted the exact arm64 runtime. Its archive SHA256
+matches the approved checksum below. The current main/preload entry typechecks
+against the installed declarations. No Electron process was launched.
+
+The upstream runtime is ad-hoc/linker-signed, has no TeamIdentifier or sealed
+resources, and fails strict app-bundle signature verification. It is a local
+development dependency, not signed Scribe distribution evidence. No re-signing
+or trust change was attempted. Evidence is retained at
+`/Users/jw/Desktop/Cosmas/scribe-approved-platforms-20260922.wvwvqtad/`.
+See [the applied checkpoint](../SCRIBE_APPROVED_PLATFORM_CHECKPOINT_20260922.md).
 
 The complete provider workspace now has a dormant Electron main/preload entry
 and fixed packaged renderer. Its actual native/backend factory is still absent.
@@ -27,9 +43,9 @@ Evidence directory:
   for inspection; package code/install scripts were not executed.
 - Published `electron-v44.4.3-darwin-arm64.zip` SHA256:
   `6b728f5dcfae74f3f936f2bca5b3cd9b9659ffea464f67939f004acb55425a85`.
-  The native zip was not downloaded, verified against this checksum, signature
-  checked, installed or launched. Registry signatures were not independently
-  verified. Published checksums are not signed app provenance.
+  At proposal preparation the zip had not been downloaded. The approved install
+  now verifies the checksum and records the signature limitation above. Registry
+  signatures were not independently verified. Checksums are not signed app provenance.
 
 Actual main/preload entry source typechecks against these Electron declarations.
 The sandboxed compiled preload exposes only the existing restricted bridges and
@@ -39,9 +55,8 @@ review-to-Core-note fixture pass with fakes; no actual Electron process ran.
 ## Review scope and remaining work
 
 Repository `AGENTS.md`, Permission boundaries, says **"New dependencies/services"**
-are ask-first. The owner has not approved this Electron dependency. Prepare the
-exact adoption/install action and request only that missing scope; do not treat
-this document, a checksum, or prior W13 launch approval as approval.
+are ask-first. The owner's explicit approval now covers this exact adoption and
+local install; do not request it again. It does not extend the scope below.
 
 Dependency adoption alone does not approve runtime launch, a native Keychain
 implementation, Core/environment configuration or signed distribution. The
@@ -50,6 +65,7 @@ native source picker and persistent indicator, device key custody and durable
 stores. No default fixture, credential, environment or SDK is supplied by the
 host. The host builder marks `launch_ready: false` and lists missing inputs.
 
-Recover by leaving the new host unmounted and the dependency patch unapplied.
+Recovery leaves the new host unmounted; the dependency remains pinned for
+reproducible preparation.
 Do not rebuild/resign/restart Mac R2, reuse its data/credential namespace, replace
 CosmaneuraCapture/W13 or alter existing receiver/TLS/database resources.

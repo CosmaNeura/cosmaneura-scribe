@@ -1,5 +1,17 @@
 # Scribe real service and client qualification
 
+### Approved native identity and Electron preparation — 2026-09-22
+
+The owner explicitly approved both exact packets. Apply only the three-line
+standalone iOS identity patch to a new copy of qualified native source, compile
+the provider composition for iOS 17 and verify its identity boundary without
+SDK/Keychain/network calls. Adopt the exact Electron 44.4.3 manifest/lockfile
+patch and install its pinned development runtime without launch. These actions
+are completed in `SCRIBE_APPROVED_PLATFORM_CHECKPOINT_20260922.md`; original
+native/Core/protected sources remain unchanged. Tier 2. Core environment/issuer,
+new server authority, runtime launch and installed/distribution acceptance remain
+outside these approvals. Recovery leaves the prepared clients unmounted.
+
 ### Receiver correction and native presentation — 2026-09-22
 
 Within the existing local integration scope, replace the receiver's impossible

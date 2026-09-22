@@ -1,6 +1,18 @@
 # Standalone Scribe iOS identity — proposed 2026-09-22
 
-Status: prepared for the owner's decision; **not approved or applied**.
+Status: **owner approved; applied to a new owned source copy and locally compiled**.
+
+The owner explicitly approved this identity/build proposal on 2026-09-22. The
+exact three-line patch is applied only under
+`/Users/jw/Desktop/Cosmas/scribe-approved-platforms-20260922.wvwvqtad/ios/native-auth/`.
+All 247 qualified source files remain unchanged at their original location.
+The copied package also contains the previously prepared provider bridge.
+The new auth and complete bridge compile to static libraries targeting iOS 17.0;
+their Mach-O build commands confirm that minimum. The standalone callback passes,
+eight near-match/origin/production-key cases are rejected, and retained W13 and
+desktop profiles remain valid. These checks make no SDK, Keychain or network call.
+The selected public build profile remains disabled; no app was signed, installed
+or launched. See [the applied checkpoint](../SCRIBE_APPROVED_PLATFORM_CHECKPOINT_20260922.md).
 
 Subsequent read-only reconciliation found that existing staging Core uses
 `https://resolved-emu-53.clerk.accounts.dev`, while this exact proposal retains
@@ -19,7 +31,7 @@ the still-missing full runtime or an installable package is ready.
 
 ## Exact local change
 
-Apply the three-line [proposed patch](../../scripts/standalone-provider/standalone-identity.patch)
+Apply the three-line [approved patch](../../scripts/standalone-provider/standalone-identity.patch)
 only to a new owned copy of the qualified iPhone native auth package. Allow the
 exact bundle `com.cosmaneura.scribe.beta` for `capacitor://localhost`. Keep the
 existing native token validation, sign-in/out, deadlines, SDK driver and secure
@@ -54,7 +66,7 @@ Mac R2, OS/Core source or the older installed Cosmaneura Capture app.
 
 ## Qualification and recovery
 
-After approval, qualify the exact new bundle/callback and reject near-matching
+Qualify the exact new bundle/callback and reject near-matching
 bundle IDs, the desktop origin and production Clerk keys. Keep the accepted W13
 configuration valid. Compile the new native composition with the iOS 17 target
 and the retained dependencies. Bind source/artifact hashes in the build receipt.
@@ -81,4 +93,5 @@ The owner-requested boundaries in
 [handoff section 4](../SCRIBE_HANDOFF_20260921.md#4-non-negotiable-deconfliction-and-authority)
 say: “New schema/auth/consent/environment/service/release scope requires approval.”
 The earlier W13 build-4 installation grant covered that exact W13 profile. This
-separate Scribe bundle/callback is the additional auth configuration under review.
+separate Scribe bundle/callback is the additional auth configuration now approved
+within this exact local build scope. Do not request that approval again.

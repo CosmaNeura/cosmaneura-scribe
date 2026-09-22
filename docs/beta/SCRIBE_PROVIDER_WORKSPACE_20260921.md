@@ -1,5 +1,16 @@
 # Local provider workspace — 2026-09-21
 
+## Approved platform preparation — 2026-09-22
+
+The owner approved both pending iOS identity/build and Electron dependency/install
+packets. The exact Electron 44.4.3 graph/runtime is installed locally. The iOS patch
+is applied only to a new native source copy; auth and provider bridge static
+libraries compile for iOS 17 and the identity boundary checks pass. Original
+native/Core/protected source remains unchanged. No complete app was launched or
+installed. See the [applied checkpoint](../SCRIBE_APPROVED_PLATFORM_CHECKPOINT_20260922.md)
+for evidence, the Electron signature limitation, and remaining Core/native gates.
+Earlier pending-approval statements below are historical and superseded.
+
 ## Recorder correction and native presentation — 2026-09-22
 
 Recorder setup now uses Core's existing creator-review read to identify and

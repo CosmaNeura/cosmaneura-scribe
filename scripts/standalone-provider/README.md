@@ -104,6 +104,10 @@ not be discarded. The UI provides the same explicit cleanup retry during use.
 
 `check-provider-application.mjs` qualifies the built entry's startup/lifecycle
 with offline native/Core hosts. It does not install an app or access credentials.
-The proposed `standalone-identity.patch` is **not applied**. Its exact scope and
-pending owner decision are in the
+The owner approved `standalone-identity.patch`; it is applied only to the new
+source copy recorded in the
 [identity packet](../../docs/beta/SCRIBE_STANDALONE_IOS_IDENTITY_PACKET_20260922.md).
+`check-standalone-identity.swift` validates the copied configuration's exact
+bundle/callback and rejection boundaries without SDK, Keychain or network use.
+The prepared native libraries target iOS 17. No complete app is installed or
+connected to a Core receiver by this build preparation.

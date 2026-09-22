@@ -12,5 +12,8 @@
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "electron": "44.4.3"
   }
 }
