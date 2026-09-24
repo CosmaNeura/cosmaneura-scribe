@@ -4,6 +4,7 @@ import { QueueInvariantError } from "../queue/errors";
 import {
   FLOW_RECORD_SCHEMA_VERSION,
   CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
+  CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
   type ActiveCaptureState,
   type CaptureFlowStore,
   type CapturePreparationState,
@@ -411,6 +412,12 @@ function validCaptureChannelVersion(value: Record<string, unknown>): boolean {
       && (value.channel === "mixed" || value.channel === "system_audio");
 }
 
+function validActiveChannelVersion(value: Record<string, unknown>): boolean {
+  return validCaptureChannelVersion(value) && value.continuation === undefined
+    || value.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION && value.reviewAfterUpload === true
+      && (value.channel === undefined || value.channel === "mixed" || value.channel === "system_audio");
+}
+
 export function assertPreparationState(value: unknown): asserts value is CapturePreparationState {
   if (isRecord(value) && value.mode === "configured_core") {
     if (Object.keys(value).filter(key => key !== "channel").sort().join(",") !==
@@ -511,7 +518,7 @@ export function assertActiveCaptureState(value: unknown): asserts value is Activ
   if (
     !isRecord(value) ||
     (value.reviewAfterUpload !== undefined && value.reviewAfterUpload !== true) ||
-    !validCaptureChannelVersion(value) ||
+    !validActiveChannelVersion(value) ||
     (value.schemaVersion === CHANNEL_FLOW_RECORD_SCHEMA_VERSION && value.reviewAfterUpload !== true) ||
     typeof value.sessionId !== "string" ||
     !isRecord(value.lease) ||
@@ -541,20 +548,68 @@ export function assertActiveCaptureState(value: unknown): asserts value is Activ
     throw new QueueInvariantError("invalid_active_capture_state");
   }
   assertLease(value.lease, value.sessionId);
+  if (value.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION) {
+    const next = value.continuation;
+    if (!isRecord(next) || Object.keys(next).sort().join(",") !==
+        "firstSequenceNumber,prepared,previousLease,renewIdempotencyKey,reservationCount"
+      || typeof next.prepared !== "boolean"
+      || !Number.isSafeInteger(next.firstSequenceNumber) || (next.firstSequenceNumber as number) < 0
+      || (next.firstSequenceNumber as number) > (value.recordedChunks as number)
+      || !Number.isSafeInteger(next.reservationCount) || (next.reservationCount as number) < 1
+      || (next.reservationCount as number) > 90
+      || (next.firstSequenceNumber as number) + (next.reservationCount as number) > 1000
+      || typeof next.renewIdempotencyKey !== "string" || !isRecord(next.previousLease)) {
+      throw new QueueInvariantError("invalid_active_capture_state");
+    }
+    assertIdempotencyKey(next.renewIdempotencyKey); assertLease(next.previousLease, value.sessionId);
+    if (next.previousLease.lease_id !== value.lease.lease_id
+      || ![next.previousLease.generation, (next.previousLease.generation as number) + 1].includes(value.lease.generation)
+      || value.lease.generation === next.previousLease.generation && value.phase !== "paused"
+      || next.prepared === false && value.phase !== "paused"
+      || next.prepared === true && value.lease.generation !== (next.previousLease.generation as number) + 1
+      || value.phase !== "paused" && value.captureAuthorizedUntil !== value.lease.expires_at) {
+      throw new QueueInvariantError("invalid_active_capture_state");
+    }
+  }
 }
 
 export function assertActiveCaptureProgression(
   existing: ActiveCaptureState,
   replacement: ActiveCaptureState,
 ): void {
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  const begins = replacement.continuation !== undefined
+    && replacement.continuation.renewIdempotencyKey !== existing.continuation?.renewIdempotencyKey;
+  const prepared = existing.continuation?.prepared === false && replacement.continuation?.prepared === true
+    && same({ ...existing.continuation, prepared: true }, replacement.continuation)
+    && existing.phase === "paused" && replacement.phase === "ready"
+    && replacement.lease.generation === existing.continuation.previousLease.generation + 1
+    && replacement.captureAuthorizedUntil === replacement.lease.expires_at;
+  const renewed = existing.continuation !== undefined && same(existing.continuation, replacement.continuation)
+    && same(existing.lease, existing.continuation.previousLease)
+    && replacement.lease.lease_id === existing.lease.lease_id
+    && replacement.lease.session_id === existing.sessionId
+    && replacement.lease.generation === existing.lease.generation + 1
+    && replacement.lease.receipt_id !== existing.lease.receipt_id
+    && Date.parse(replacement.lease.expires_at) > Date.parse(replacement.lease.issued_at)
+    && replacement.captureAuthorizedUntil === null && existing.phase === "paused" && replacement.phase === "paused";
+  if (begins && (existing.reviewAfterUpload !== true || existing.phase !== "paused" || replacement.phase !== "paused"
+    || !same(existing.lease, replacement.continuation.previousLease)
+    || replacement.continuation.firstSequenceNumber !== existing.recordedChunks
+    || replacement.continuation.prepared !== false || existing.continuation?.prepared === false
+      && !(existing.lease.generation === existing.continuation.previousLease.generation + 1
+        && Date.parse(replacement.continuation.previousLease.issued_at) >= Date.parse(existing.lease.issued_at)))) {
+    throw new QueueInvariantError("active_capture_conflict");
+  }
   if (
-    JSON.stringify(existing.lease) !== JSON.stringify(replacement.lease) ||
-    existing.schemaVersion !== replacement.schemaVersion || existing.channel !== replacement.channel ||
+    (!same(existing.lease, replacement.lease) && !renewed) ||
+    (!same(existing.continuation, replacement.continuation) && !begins && !prepared) ||
+    (existing.schemaVersion !== replacement.schemaVersion && !(begins && replacement.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION)) || existing.channel !== replacement.channel ||
     existing.reviewAfterUpload !== replacement.reviewAfterUpload ||
     existing.completeIdempotencyKey !== replacement.completeIdempotencyKey ||
     existing.startedAt !== replacement.startedAt ||
     existing.aggregatePlaintextBudgetBytes !== replacement.aggregatePlaintextBudgetBytes ||
-    !nullableStable(existing.captureAuthorizedUntil, replacement.captureAuthorizedUntil) ||
+    (!nullableStable(existing.captureAuthorizedUntil, replacement.captureAuthorizedUntil) && !renewed) ||
     replacement.recordedChunks < existing.recordedChunks ||
     replacement.recordedPlaintextBytes < existing.recordedPlaintextBytes
   ) {

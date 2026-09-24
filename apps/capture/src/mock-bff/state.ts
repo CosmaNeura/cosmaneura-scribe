@@ -335,10 +335,7 @@ export class MockCaptureService {
         protocol_version: PROTOCOL_VERSION,
         batch_id: this.idFactory(),
         session_id: this.sessionId,
-        capture_authorized_until: addSeconds(
-          this.now(),
-          RESERVATION_WINDOW_SECONDS,
-        ).toISOString(),
+        capture_authorized_until: lease.expires_at,
         reservations,
       };
     });

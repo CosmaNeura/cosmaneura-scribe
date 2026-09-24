@@ -78,6 +78,19 @@ describe("MockCaptureService", () => {
     expect(JSON.stringify(first)).not.toContain("22222222-2222-4222-8222-222222222222");
   });
 
+  it("keeps delayed reservations within the existing lease deadline", () => {
+    let now = new Date("2026-09-22T12:00:00.000Z");
+    const service = createService(() => now);
+    const lease = service.issueLease({ protocol_version: "1.0" }, "lease-deadline-0001");
+    const request = { protocol_version: "1.0" as const, capture_lease_id: lease.lease_id,
+      capture_lease_generation: lease.generation, channel: "mixed" as const,
+      first_sequence_number: 0, count: 1 };
+    now = new Date(now.getTime() + 30_000);
+    expect(service.reserveChunks(request, "reserve-delayed-0001").capture_authorized_until).toBe(lease.expires_at);
+    now = new Date(lease.expires_at);
+    expect(() => service.reserveChunks({ ...request, first_sequence_number: 1 }, "reserve-expired-0001")).toThrow(MockBffError);
+  });
+
   it("refreshes an expired credential without changing object or AAD", () => {
     let now = new Date("2026-08-17T12:00:00.000Z");
     const service = createService(() => now);

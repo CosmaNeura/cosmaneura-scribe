@@ -18,6 +18,8 @@ export interface ProviderRecorderController {
   subscribe(listener: (snapshot: ProviderRecorderSnapshot) => void): () => void;
   startRecording(): Promise<void>;
   stopRecording(): Promise<void>;
+  pauseRecording?(): Promise<void>;
+  resumeRecording?(): Promise<void>;
   refreshTranscriptionStatus(): Promise<void>;
   refreshPermissions?(): Promise<void>;
 }
@@ -48,6 +50,8 @@ export interface ProviderCaptureBinding {
   /** Abort on sign-out, revocation, encounter change or native host teardown. */
   readonly signal: AbortSignal;
   readonly deactivate: () => Promise<void>;
+  /** Retries the retained upload/completion after confirmed native stop. Never records. */
+  readonly resumePendingUpload?: () => Promise<void>;
   /** Optional until the host has a qualified existing Core note entrypoint. */
   readonly continueToNote?: () => Promise<void>;
 }

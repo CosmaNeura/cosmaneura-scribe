@@ -90,6 +90,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/captured-sessions/{session_id}/source-start/{action}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Source Start */
+        post: operations["source_start_v1_captured_sessions__session_id__source_start__action__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/consents": {
         parameters: {
             query?: never;
@@ -558,6 +575,29 @@ export interface components {
              */
             protocol_version: "1.0";
         };
+        /** CaptureContinuity */
+        CaptureContinuity: {
+            /**
+             * Continuity
+             * @default interrupted_or_unconfirmed
+             * @constant
+             */
+            continuity: "interrupted_or_unconfirmed";
+            /**
+             * Missing Audio
+             * @default unknown
+             * @constant
+             */
+            missing_audio: "unknown";
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /** Starts */
+            starts: components["schemas"]["NativeIntervalStart"][];
+        };
         /** CaptureLeaseIssueRequest */
         CaptureLeaseIssueRequest: {
             /**
@@ -994,6 +1034,7 @@ export interface components {
         CreatorReviewQueueStatus: "not_ready" | "review_required" | "complete" | "quality_blocked";
         /** CreatorReviewViewV1 */
         CreatorReviewViewV1: {
+            capture_continuity?: components["schemas"]["CaptureContinuity"] | null;
             review_queue?: components["schemas"]["CreatorTranslationReviewQueueV1"] | null;
             /**
              * Schema Version
@@ -1232,6 +1273,16 @@ export interface components {
             /** Transcript Data */
             transcript_data: components["schemas"]["LegacyTranscriptEntry"][];
         };
+        /** NativeIntervalStart */
+        NativeIntervalStart: {
+            /** First Sequence Number */
+            first_sequence_number: number;
+            /**
+             * Source Start Id
+             * Format: uuid
+             */
+            source_start_id: string;
+        };
         /** RsaPublicJwk */
         RsaPublicJwk: {
             /**
@@ -1316,6 +1367,52 @@ export interface components {
          * @enum {string}
          */
         SourceLocale: "en-US" | "es-US" | "unknown";
+        /** SourceStartIntent */
+        SourceStartIntent: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /**
+             * Capture Authorized Until
+             * Format: date-time
+             */
+            capture_authorized_until: string;
+            /**
+             * First Sequence Number
+             * @default 0
+             */
+            first_sequence_number: number;
+            /** Lease Generation */
+            lease_generation: number;
+            /**
+             * Lease Id
+             * Format: uuid
+             */
+            lease_id: string;
+            /**
+             * Lease Receipt Id
+             * Format: uuid
+             */
+            lease_receipt_id: string;
+            /**
+             * Owner Proof
+             * Format: password
+             */
+            owner_proof: string;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "desktop_companion" | "ios_microphone";
+        };
         /** SourceTranscriptSegmentV1 */
         SourceTranscriptSegmentV1: {
             /** Content */
@@ -1702,6 +1799,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CreatorDecisionReceiptV1"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    source_start_v1_captured_sessions__session_id__source_start__action__post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+                action: "prepare" | "authorize" | "cancel" | "stop";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceStartIntent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

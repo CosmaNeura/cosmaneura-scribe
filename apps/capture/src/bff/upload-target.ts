@@ -25,6 +25,7 @@ export class HttpCiphertextUploadTarget implements CiphertextUploadTarget {
   public constructor(
     allowedOrigins: readonly string[],
     private readonly fetchImplementation: typeof fetch = fetch,
+    private readonly transport: "complete_envelope" | "azure_block_blob" = "complete_envelope",
   ) {
     if (allowedOrigins.length === 0) {
       throw new Error("at least one ciphertext upload origin is required");
@@ -62,6 +63,7 @@ export class HttpCiphertextUploadTarget implements CiphertextUploadTarget {
       body,
       headers: {
         "Content-Type": "application/octet-stream",
+        ...(this.transport === "azure_block_blob" ? { "x-ms-blob-type": "BlockBlob" } : {}),
         ...(receipt === null ? {} : { "X-Capture-Upload-Receipt": receipt }),
       },
       credentials: "omit",

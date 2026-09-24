@@ -250,11 +250,20 @@ export class CaptureApp extends LitElement {
                 @click=${this.#stop}
               >
                 ${this.#snapshot.desktop?.phase === "starting" ? "Cancel start"
+                  : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
                   : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
                   ? "Retry stop and upload" : "Stop and upload"}
               </button>
+              ${provider?.controller.pauseRecording && this.#snapshot.state === "recording" ? html`<button
+                class="secondary" data-testid="pause-recording" ?disabled=${this.#busy || this.#stopping}
+                @click=${this.#pause}>Pause recording</button>` : ""}
+              ${provider?.controller.resumeRecording && this.#snapshot.state === "paused" ? html`<button
+                class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
+                @click=${this.#resume}>Resume recording</button>` : ""}
               ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
                 data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Check recording permissions</button>` : ""}
+              ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
+                ?disabled=${this.#busy || this.#stopping} @click=${this.#retryUpload}>Retry upload</button>` : ""}
             </div>
           </section>`}
 
@@ -263,6 +272,10 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
               : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
               : this.#snapshot.desktop?.phase === "permission_required" ? "Allow microphone and screen recording in macOS Settings, then check permissions."
+              : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
+              : this.#snapshot.statusCode === "capture_paused" ? "Recording is paused. Resume when ready, or stop and upload. Missing speech during the pause cannot be recovered."
+              : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
+              : this.#snapshot.statusCode === "capture_upload_pending" ? "Recording has stopped. Your saved recording is waiting for upload confirmation. Check your connection and retry."
               : this.#snapshot.state === "uploading" ? "Uploading your recording"
               : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace"
               : this.#snapshot.desktop?.phase === "stopped" ? "Recording stopped"
@@ -270,6 +283,8 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.state === "recording" ? "Recording"
               : this.#snapshot.statusCode === "audio_capture_native_stop_failed"
                 ? "Recording stop is unconfirmed. Retry stopping before continuing."
+              : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
+                ? "Recording has stopped. Retry confirmation before uploading."
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : "Ready to record"}</p>
             <p>Recording window used ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
@@ -395,8 +410,16 @@ export class CaptureApp extends LitElement {
     void this.#run(async () => this.#requireController().refreshPermissions?.());
   };
 
+  readonly #pause = (): void => { void this.#run(async () => this.#requireController().pauseRecording?.()); };
+  readonly #resume = (): void => { void this.#run(async () => this.#requireController().resumeRecording?.()); };
+
   readonly #refreshStatus = (): void => {
     void this.#run(async () => this.#requireController().refreshTranscriptionStatus());
+  };
+
+  readonly #retryUpload = (): void => {
+    if (!this.#canRetryUpload() || this.#stopping) return;
+    void this.#run(async () => this.#provider!.resumePendingUpload!());
   };
 
   async #getController(): Promise<CaptureFlowController> {
@@ -454,6 +477,12 @@ export class CaptureApp extends LitElement {
   #canStop(): boolean {
     if (this.#snapshot.desktop) return ["starting", "recording", "interrupted", "stop_unconfirmed"].includes(this.#snapshot.desktop.phase);
     return this.#snapshot.state === "recording" || this.#snapshot.state === "paused";
+  }
+
+  #canRetryUpload(): boolean {
+    return !!this.#provider?.resumePendingUpload && !this.#providerClosed && !this.#provider.signal.aborted
+      && this.#snapshot.state === "uploading" && this.#snapshot.statusCode === "capture_upload_pending"
+      && (!this.#snapshot.desktop || this.#snapshot.desktop.phase === "stopped");
   }
 }
 
