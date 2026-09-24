@@ -71,8 +71,10 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
         configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        configuration.timeoutIntervalForRequest = operation.action == .note ? 110 : 20
-        configuration.timeoutIntervalForResource = operation.action == .note ? 120 : 30
+        // Admission includes two Core phases plus receiver authorization. This
+        // waiting budget never authorizes recording or renews source authority.
+        configuration.timeoutIntervalForRequest = operation.action == .admission ? 200 : operation.action == .note ? 110 : 20
+        configuration.timeoutIntervalForResource = operation.action == .admission ? 210 : operation.action == .note ? 120 : 30
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: endpoint.appendingPathComponent("provider/v1/" + operation.action.rawValue))

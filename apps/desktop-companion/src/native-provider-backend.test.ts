@@ -7,6 +7,39 @@ function preparedReply(grant: Record<string, unknown>) {
     coordinatorInode: "2", captureDevice: "1", captureInode: "3" } };
 }
 
+it("keeps admission RPC alive beyond native HTTP while retaining its key and cancellation", async () => {
+  const signal = new AbortController().signal, attempt = new AbortController();
+  const revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
+  const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
+  const encounter = { appointmentRef, title: "Invented visit", detail: "Admission budget fixture" };
+  const calls: { payload: Record<string, unknown>; signal: AbortSignal | undefined; timeout: number | undefined }[] = [];
+  const request = vi.fn(async (_method: string, payload: Record<string, unknown>, operationSignal?: AbortSignal, timeout?: number) => {
+    calls.push({ payload, signal: operationSignal, timeout });
+    return { status: 200, body: JSON.stringify(payload.action === "catalog"
+      ? { revision, encounters: [{ ...encounter, workspaceId }] }
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+  });
+  const native = { signal, request, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
+    addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  await backend.listEncounters(signal);
+  const mount = await backend.openEncounter(appointmentRef, signal);
+  const body = { workspace_id: workspaceId, binding_ref: bindingRef, attestation: null };
+  await mount.request("/service/v1/agent/scribe/capture-admissions", body, "retained-admission-key", attempt.signal);
+  const admission = calls.at(-1)!;
+  expect(admission.timeout).toBeGreaterThan(210_000); // Native resource deadline.
+  expect(admission.payload.key).toBe("retained-admission-key");
+  expect(JSON.parse(admission.payload.body as string)).toEqual(body);
+  expect(calls.slice(0, -1).every(call => call.timeout === 35_000)).toBe(true);
+  attempt.abort();
+  expect(admission.signal?.aborted).toBe(true);
+  await expect(mount.request("/service/v1/agent/scribe/capture-admissions", body,
+    "retained-admission-key", attempt.signal)).rejects.toThrow();
+  expect(calls.filter(call => call.payload.action === "capture-admissions")).toHaveLength(1);
+  await mount.release?.(); await backend.dispose();
+});
+
 it("retains an unacknowledged preparation until native cleanup confirms it before another attempt", async () => {
   const signal = new AbortController().signal, revision = crypto.randomUUID();
   const workspaceId = crypto.randomUUID(), sessionId = crypto.randomUUID();
