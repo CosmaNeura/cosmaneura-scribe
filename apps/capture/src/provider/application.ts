@@ -7,6 +7,10 @@ import "./application.css";
 export type { ProviderSessionState } from "./native-plugin";
 export interface ProviderApplicationHost {
   readonly session: NativeProviderSession;
+  /** Trusted host supports volatile, same-account native cessation recovery. */
+  readonly supportsRecorderStopReauthentication?: true;
+  /** Main may own a preparation before the renderer obtains its recorder. */
+  readonly supportsWorkspaceCloseReauthentication?: true;
   /** Returns the current authorized provider workflow, never credentials. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost; dispose(): Promise<void> }>;
 }
@@ -25,6 +29,7 @@ interface Scope {
  * unconfirmed stop so it can be retried instead of opening a second recorder.
  */
 export function mountProviderApplication(root: HTMLElement, host: ProviderApplicationHost): () => Promise<void> {
+  const supportsStopReauthentication = host.supportsRecorderStopReauthentication === true;
   let state: ProviderSessionState | null = null, observations = 0;
   let scope: Scope | undefined, listener: PluginListenerHandle | undefined;
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
@@ -63,6 +68,11 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         ? "Recording stop could not be confirmed. Retry stopping it before reopening your workspace. Your saved work is retained."
         : "Your workspace could not finish closing. Retry closing it before continuing. Your saved work is retained.";
       recovery.innerHTML = button("stop", recorderStopUnconfirmed ? "Retry stopping recorder" : "Retry closing workspace");
+      if ((supportsStopReauthentication && recorderStopUnconfirmed || host.supportsWorkspaceCloseReauthentication === true)
+        && (phase === "signedOut" || phase === "unavailable")) {
+        message.textContent += " Sign in with the same account to finish closing your workspace.";
+        recovery.innerHTML += button("sign-in-stop", recorderStopUnconfirmed ? "Sign in to finish stopping" : "Sign in to finish closing");
+      }
     } else if (logoutPending) {
       title.textContent = "Sign-out needs attention";
       message.textContent = "Your workspace is closed. Retry sign-out to finish.";
@@ -184,6 +194,17 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
         await read();
       } else if (action === "stop") {
         await close();
+      } else if (action === "sign-in-stop") {
+        if (!(supportsStopReauthentication && recorderStopUnconfirmed || host.supportsWorkspaceCloseReauthentication === true) || !stopUnconfirmed
+          || (state?.phase !== "signedOut" && state?.phase !== "unavailable")) return;
+        // Keep the old workspace and recorder fenced. Authentication can recover
+        // its native cessation request; no new recorder/workspace opens here.
+        accessClosed = true; invalidate();
+        const before = observations;
+        const value = await host.session.signIn();
+        if (before === observations) accept(value);
+        await read();
+        if (sessionState()?.phase === "ready") await close();
       } else if (action === "sign-in") {
         await close();
         const before = observations;

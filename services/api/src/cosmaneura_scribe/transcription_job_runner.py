@@ -195,5 +195,15 @@ def main() -> None:
         raise SystemExit(1) from None
 
 
+async def close_job_resources(closers: list[AsyncCloser]) -> None:
+    """Share the existing cancellation-shielded cleanup with configured workers."""
+    await _close_without_cancellation(closers)
+
+
+async def run_job_with_signal_cancellation(run: JobRun) -> bool:
+    """Share SIGTERM/SIGINT cancellation without selecting the legacy worker."""
+    return await _run_with_signal_cancellation(run)
+
+
 if __name__ == "__main__":
     main()

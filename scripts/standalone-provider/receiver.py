@@ -1,7 +1,8 @@
 """Standalone provider receiver composition; no import-time runtime or activation.
 
 The host supplies the retained, hash-verified OS identity/account models and an
-owned database. This reuses their verifier and creator access checks unchanged.
+owned database. This reuses their verifier and creator access checks, with an
+explicitly separate Core personal-session profile in the proposed identity copy.
 Only the existing Core transport can perform clinical operations. There is no
 synthetic identity mode, credential fallback, seeding, schema change or listener.
 """
@@ -25,19 +26,25 @@ from cosmaneura_scribe.provider_core_transport import (
     ProviderCoreUnavailable,
 )
 from cosmas_os.api.auth import (
+    CORE_STAGING_PERSONAL,
     AccessDenied,
     AuthenticationFailed,
+    ClerkTokenVerifier,
+    CoreProviderIdentity,
     RequestIdentity,
     TokenVerifier,
+    authenticate_core_provider,
     authenticate_request,
+    core_provider_configuration_valid,
 )
 from cosmas_os.application import workspace as ws
 from cosmas_os.config import Settings
-from cosmas_os.models import CoreCaptureAccount, EncounterWorkspace
+from cosmas_os.models import CoreCaptureAccount, CoreProviderAccount, EncounterWorkspace
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import SecretStr
-from sqlalchemy import Engine, select
+from sqlalchemy import Connection, Engine, select
+from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -47,6 +54,7 @@ _LIMITS = {
     "catalog": 2,
     "mount": 256,
     "recorder": 1024,
+    "source-start": 4096,
     "capture-admissions": 2048,
     "capture-operations": 4_194_304,
     "capture-notes": 262_144 + 8192,
@@ -61,6 +69,7 @@ class ReceiverProfile:
     core_origin: str
     environment_id: UUID
     native_origins: frozenset[str]
+    identity_profile: str = "clerk-organization-v1"
 
     def __post_init__(self) -> None:
         for value in (self.origin, self.core_origin):
@@ -85,6 +94,18 @@ class ReceiverProfile:
         ):
             raise ValueError("provider_profile_invalid")
 
+        if self.identity_profile not in {"clerk-organization-v1", CORE_STAGING_PERSONAL}:
+            raise ValueError("provider_profile_invalid")
+        if self.identity_profile == CORE_STAGING_PERSONAL and (
+            self.core_origin != "https://staging-app.cosmaneura.com"
+            or not self.native_origins <= frozenset({"capacitor://localhost", "app://cosmas"})
+            or self.origin != (
+                "https://cosmaneura-staging-scribe-native."
+                "politesmoke-7989878f.northcentralus.azurecontainerapps.io"
+            )
+        ):
+            raise ValueError("provider_profile_invalid")
+
 
 class ProviderReceiver:
     """Bind real normalized identity and reviewed Core correspondence per request.
@@ -99,7 +120,7 @@ class ProviderReceiver:
     def __init__(
         self,
         profile: ReceiverProfile,
-        engine: Engine,
+        engine: Engine | AsyncEngine,
         settings: Settings,
         verifier: TokenVerifier,
         workload_token: Callable[[], Awaitable[SecretStr]],
@@ -107,10 +128,20 @@ class ProviderReceiver:
         enabled: bool = False,
         core_http: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        authentication_valid = not settings.workspace_authentication_errors()
+        if profile.identity_profile == CORE_STAGING_PERSONAL:
+            authentication_valid = (
+                core_provider_configuration_valid(settings)
+                and isinstance(verifier, ClerkTokenVerifier)
+                and verifier.core_provider_session
+                and verifier._settings == settings
+            )
+        elif isinstance(verifier, ClerkTokenVerifier) and verifier.core_provider_session:
+            authentication_valid = False
         if (
             settings.auth_mode != "clerk_jwt"
             or not settings.beta_box_id
-            or settings.workspace_authentication_errors()
+            or not authentication_valid
             or not profile.native_origins <= set(settings.allowed_origins)
             or not profile.native_origins <= set(settings.authorized_parties)
         ):
@@ -118,6 +149,17 @@ class ProviderReceiver:
         self.profile, self.engine, self.settings = profile, engine, settings
         self.verifier, self.workload_token = verifier, workload_token
         self.enabled, self.core_http = enabled is True, core_http
+
+    async def registry_read[T](self, operation: Callable[[Engine | Connection], T]) -> T:
+        if isinstance(self.engine, AsyncEngine):
+            # Each call starts a new, consistent, read-only registry snapshot.
+            # Remote operations recheck authority through another fresh call.
+            async with self.engine.connect() as connection:
+                connection = await connection.execution_options(
+                    isolation_level="REPEATABLE READ", postgresql_readonly=True,
+                )
+                return await connection.run_sync(operation)
+        return await run_in_threadpool(operation, self.engine)
 
     def app(self) -> FastAPI:
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -173,7 +215,9 @@ class ProviderReceiver:
                 body = await _read(request, _LIMITS[action])
                 if action == "catalog":
                     _require(not body)
-                    rows = await run_in_threadpool(self.catalog, authorization)
+                    rows = await self.registry_read(
+                        lambda bind: self.catalog(authorization, bind=bind)
+                    )
                     if not self.enabled:
                         raise AccessDenied()
                     return _reply(200, {"revision": str(revision), "encounters": rows})
@@ -187,12 +231,9 @@ class ProviderReceiver:
                 async def fresh() -> AuthorizedCoreProvider:
                     if not self.enabled:
                         raise AccessDenied()
-                    return await run_in_threadpool(
-                        self.context,
-                        authorization,
-                        revision,
-                        workspace_id,
-                    )
+                    return await self.registry_read(lambda bind: self.context(
+                        authorization, revision, workspace_id, bind=bind
+                    ))
 
                 transport = ProviderCoreTransport(
                     self.profile.core_origin,
@@ -206,12 +247,9 @@ class ProviderReceiver:
                         _require(set(body) == {"workspace_id"})
                         mount = await transport.open()
                         # Use a fresh authorized observation for the display row.
-                        context, encounter = await run_in_threadpool(
-                            self.selected,
-                            authorization,
-                            revision,
-                            workspace_id,
-                        )
+                        context, encounter = await self.registry_read(lambda bind: self.selected(
+                            authorization, revision, workspace_id, bind=bind
+                        ))
                         _require(context.selection == mount.selection)
                         result = {
                             **mount.client_scope(),
@@ -226,7 +264,14 @@ class ProviderReceiver:
                         ):
                             raise InvalidRequest()
                         mount = CoreProviderMount(context.selection, binding)
-                        if action == "recorder":
+                        if action == "source-start":
+                            # Only the native owner uses this endpoint. Generic
+                            # renderer capture-operations still rejects its kind.
+                            result = await transport.request(
+                                mount, _CORE + "capture-operations", body, key,
+                                native_start=True,
+                            )
+                        elif action == "recorder":
                             _require(
                                 set(body)
                                 == {
@@ -277,7 +322,15 @@ class ProviderReceiver:
 
         return app
 
-    def identity(self, session: Session, authorization: str) -> RequestIdentity:
+    def identity(
+        self, session: Session, authorization: str
+    ) -> RequestIdentity | CoreProviderIdentity:
+        if self.profile.identity_profile == CORE_STAGING_PERSONAL:
+            if not isinstance(self.verifier, ClerkTokenVerifier):
+                raise AuthenticationFailed("authentication configuration is unavailable")
+            return authenticate_core_provider(
+                session, self.settings, authorization=authorization, verifier=self.verifier,
+            )
         return authenticate_request(
             session,
             self.settings,
@@ -288,7 +341,19 @@ class ProviderReceiver:
         )
 
     @staticmethod
-    def account(session: Session, identity: RequestIdentity) -> CoreCaptureAccount:
+    def account(
+        session: Session, identity: RequestIdentity | CoreProviderIdentity
+    ) -> CoreCaptureAccount | CoreProviderAccount:
+        if isinstance(identity, CoreProviderIdentity):
+            account = session.scalar(select(CoreProviderAccount).where(
+                CoreProviderAccount.id == identity.core_account_id,
+                CoreProviderAccount.box_id == identity.box_id,
+                CoreProviderAccount.principal_id == identity.principal_id,
+                CoreProviderAccount.revoked_at.is_(None),
+            ))
+            if not account or not account.reviewed_by.strip() or not account.evidence_ref.strip():
+                raise AccessDenied()
+            return account
         accounts = list(
             session.scalars(
                 select(CoreCaptureAccount).where(
@@ -305,8 +370,13 @@ class ProviderReceiver:
             raise AccessDenied()
         return accounts[0]
 
-    def selected(self, authorization: str, revision: UUID, workspace_id: UUID):
-        with Session(self.engine) as session:
+    def selected(self, authorization: str, revision: UUID, workspace_id: UUID,
+                 *, bind: Engine | Connection | None = None):
+        selected_bind = bind if bind is not None else self.engine
+        if isinstance(selected_bind, AsyncEngine):
+            raise InvalidRequest()
+        row_locks = not isinstance(self.engine, AsyncEngine)
+        with Session(selected_bind) as session:
             identity = self.identity(session, authorization)
             account = self.account(session, identity)
             workspace = ws._workspace(
@@ -314,12 +384,14 @@ class ProviderReceiver:
                 identity.box_id,
                 identity.principal_id,
                 str(workspace_id),
+                row_locks=row_locks,
             )
             appointment = ws._encounter(
                 session,
                 identity.box_id,
                 workspace.appointment_id,
                 workspace.patient_link_id,
+                row_locks=row_locks,
             )
             if appointment.source != "cosmaneura_core":
                 raise AccessDenied()
@@ -343,11 +415,15 @@ class ProviderReceiver:
                 "detail": "",
             }
 
-    def context(self, authorization: str, revision: UUID, workspace_id: UUID):
-        return self.selected(authorization, revision, workspace_id)[0]
+    def context(self, authorization: str, revision: UUID, workspace_id: UUID,
+                *, bind: Engine | Connection | None = None):
+        return self.selected(authorization, revision, workspace_id, bind=bind)[0]
 
-    def catalog(self, authorization: str):
-        with Session(self.engine) as session:
+    def catalog(self, authorization: str, *, bind: Engine | Connection | None = None):
+        selected_bind = bind if bind is not None else self.engine
+        if isinstance(selected_bind, AsyncEngine):
+            raise InvalidRequest()
+        with Session(selected_bind) as session:
             identity = self.identity(session, authorization)
             account_id = self.account(session, identity).id
             workspaces = session.scalars(
@@ -369,6 +445,7 @@ class ProviderReceiver:
                         identity.box_id,
                         workspace.appointment_id,
                         workspace.patient_link_id,
+                        row_locks=not isinstance(self.engine, AsyncEngine),
                     )
                 except ws.WorkspaceError:
                     continue
@@ -388,7 +465,7 @@ class ProviderReceiver:
                     }
                 )
             # Re-read identity/account after the catalog queries as well.
-        with Session(self.engine) as session:
+        with Session(selected_bind) as session:
             if self.identity(session, authorization) != identity:
                 raise AccessDenied()
             if self.account(session, identity).id != account_id:

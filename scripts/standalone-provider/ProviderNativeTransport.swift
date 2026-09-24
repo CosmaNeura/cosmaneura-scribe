@@ -1,18 +1,38 @@
 import Foundation
 import Security
 import CryptoKit
+import CosmasNativeAuth
 
-/// One explicitly configured private receiver, six fixed POST routes. Its trust
-/// anchor is scoped to this URLSession; system trust and Keychain are untouched.
+/// Six fixed POST routes. Private pinned TLS and the proposed staging system-TLS
+/// profile are explicit alternatives. Neither changes system trust or Keychain.
 final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDelegate,
     URLSessionTaskDelegate, @unchecked Sendable {
     private let endpoint: URL
     private let host: String
     private let port: Int
-    private let anchor: SecCertificate
-    private let leafSHA256: String
+    private let anchor: SecCertificate?
+    private let leafSHA256: String?
+    private let workspaceOrigin: NativeWorkspaceOrigin
+    static let stagingHost = "cosmaneura-staging-scribe-native.politesmoke-7989878f.northcentralus.azurecontainerapps.io"
 
-    init(settings: [String: Any]) throws {
+    init(settings: [String: Any], workspaceOrigin: NativeWorkspaceOrigin = .appleWebView) throws {
+        guard workspaceOrigin == .appleWebView
+            || Bundle.main.bundleIdentifier == "com.cosmaneura.scribe.beta.desktop.auth" else {
+            throw ProviderNativeError.unavailable
+        }
+        self.workspaceOrigin = workspaceOrigin
+        if settings["profile"] != nil {
+            guard Set(settings.keys) == ["profile", "endpoint"],
+                  settings["profile"] as? String == "core-staging-https-v1",
+                  let value = settings["endpoint"] as? String,
+                  value == "https://" + Self.stagingHost, let endpoint = URL(string: value) else {
+                throw ProviderNativeError.unavailable
+            }
+            self.endpoint = endpoint; self.host = Self.stagingHost; self.port = 443
+            self.anchor = nil; self.leafSHA256 = nil
+            super.init()
+            return
+        }
         guard Set(settings.keys) == ["endpoint", "caDER", "leafSHA256"],
               let value = settings["endpoint"] as? String,
               let components = URLComponents(string: value), components.scheme == "https",
@@ -57,7 +77,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: endpoint.appendingPathComponent("provider/v1/" + operation.action.rawValue))
         request.httpMethod = "POST"; request.httpBody = operation.body
-        request.setValue("capacitor://localhost", forHTTPHeaderField: "Origin")
+        request.setValue(workspaceOrigin.rawValue, forHTTPHeaderField: "Origin")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
@@ -90,12 +110,22 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               challenge.protectionSpace.host == host, challenge.protectionSpace.port == port,
-              let trust = challenge.protectionSpace.serverTrust,
-              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first,
-              SHA256.hash(data: SecCertificateCopyData(leaf) as Data).map({ String(format: "%02x", $0) }).joined() == leafSHA256,
-              SecTrustSetAnchorCertificates(trust, [anchor] as CFArray) == errSecSuccess,
-              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
-              SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host as CFString)) == errSecSuccess,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.cancelAuthenticationChallenge, nil); return
+        }
+        if let anchor, let leafSHA256 {
+            guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first,
+                  SHA256.hash(data: SecCertificateCopyData(leaf) as Data).map({ String(format: "%02x", $0) }).joined() == leafSHA256,
+                  SecTrustSetAnchorCertificates(trust, [anchor] as CFArray) == errSecSuccess,
+                  SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess else {
+                completionHandler(.cancelAuthenticationChallenge, nil); return
+            }
+        } else if anchor != nil || leafSHA256 != nil || host != Self.stagingHost || port != 443 {
+            completionHandler(.cancelAuthenticationChallenge, nil); return
+        }
+        // Public profile uses the platform's normal trust chain and exact DNS
+        // name. A copied private CA/pin can never enter this profile's settings.
+        guard SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host as CFString)) == errSecSuccess,
               SecTrustEvaluateWithError(trust, nil) else {
             completionHandler(.cancelAuthenticationChallenge, nil); return
         }

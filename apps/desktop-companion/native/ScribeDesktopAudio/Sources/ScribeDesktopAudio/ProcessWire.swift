@@ -5,7 +5,7 @@ import Foundation
 /// credential interface. Frames are u32 big-endian length, u8 kind, then body.
 /// Kind 1 is bounded metadata JSON; kind 2 is u32 frame offset + PCM16LE.
 enum ProcessCommand: Sendable {
-    case start(MeetingAudioSelection, duration: Int, frames: Int)
+    case start(MeetingAudioSelection, duration: Int, frames: Int, fence: NativeFenceTicket)
     case activate, heartbeat
     case acknowledge(Int)
     case stop(Int, DesktopAudioStopMode)
@@ -19,7 +19,7 @@ enum ProcessCommand: Sendable {
         }
         switch kind {
         case "start":
-            try keys(["type", "application", "processID", "windowID", "maximumDurationSeconds", "maximumOutputFrames"])
+            try keys(["type", "application", "processID", "windowID", "maximumDurationSeconds", "maximumOutputFrames", "processFence"])
             guard let raw = value["application"] as? String,
                   let application = MeetingAudioSelection.Application(rawValue: raw) else { throw DesktopAudioFailure.selectionChanged }
             let pid = try integer(value["processID"], maximum: Int(Int32.max))
@@ -28,7 +28,7 @@ enum ProcessCommand: Sendable {
             let frames = try integer(value["maximumOutputFrames"], maximum: 1_382_400_000)
             guard frames <= duration * 16_000 else { throw DesktopAudioFailure.invalidAudio }
             return .start(try MeetingAudioSelection(application: application, processID: Int32(pid), windowID: UInt32(window)),
-                          duration: duration, frames: frames)
+                          duration: duration, frames: frames, fence: try NativeFenceTicket(value["processFence"]))
         case "activate": try keys(["type"]); return .activate
         case "heartbeat": try keys(["type"]); return .heartbeat
         case "ack": try keys(["type", "firstFrame"]); return .acknowledge(try integer(value["firstFrame"], minimum: 0))

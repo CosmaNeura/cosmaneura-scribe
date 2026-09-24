@@ -25,7 +25,8 @@ const until = async predicate => {
 const button = id => root.querySelector(`[data-testid="${id}"]`);
 function fixture() {
   const abort = new window.AbortController(), recorderId = webcrypto.randomUUID(), listeners = new Set(), calls = [];
-  let sequence = 0, reviewStatus = "created", holdStart = null, failStop = false, saved = null;
+  let sequence = 0, reviewStatus = "created", holdStart = null, failStop = false, saved = null, failUpload = false;
+  let retryCalls = 0, finishFirstRetry;
   let snapshot = { sessionId, state: "ready", statusCode: "capture_ready", recordedChunks: 0, queuedChunks: 3, elapsedSeconds: 0,
     remainingBudgetSeconds: 30, remainingAuthoritySeconds: 30, transcriptionStatus: null, transcript: null,
     desktop: { phase: "ready", coverage: "not_started", trimmedStartMs: 0, trimmedEndMs: null } };
@@ -50,10 +51,18 @@ function fixture() {
         } else if (failStop) {
           ok = false; failStop = false;
           change({ state: "paused" }, { phase: "stop_unconfirmed", coverage: "incomplete" });
+        } else if (failUpload) {
+          ok = false;
+          change({ state: "uploading", statusCode: "capture_upload_pending" }, { phase: "stopped", coverage: "complete" });
         } else {
           reviewStatus = "processing";
           change({ state: "processing" }, { phase: "stopped", coverage: "incomplete" });
         }
+      } else if (command.kind === "resume") {
+        assert.equal(snapshot.state, "uploading"); assert.equal(snapshot.desktop.phase, "stopped");
+        retryCalls++;
+        if (retryCalls === 1) { await new Promise(resolve => { finishFirstRetry = resolve; }); ok = false; }
+        else { reviewStatus = "processing"; change({ state: "processing", statusCode: "capture_processing" }, {}); }
       }
       return { requestId: command.requestId, ok, state: command.kind === "deactivate" ? null : state() };
     },
@@ -78,7 +87,7 @@ function fixture() {
   };
   return { host, abort, calls, listeners, change,
     hold() { let resolve; const promise = new Promise(done => { resolve = done; }); holdStart = { promise, resolve }; },
-    failStop() { failStop = true; } };
+    failStop() { failStop = true; }, failUpload() { failUpload = true; }, finishFirstRetry() { finishFirstRetry(); } };
 }
 let checks = 0;
 async function open(f) {
@@ -102,13 +111,28 @@ try {
     assert.match(root.textContent, /first 4 ms/u); g.failStop(); button("stop-button").click();
     await until(() => /stop is unconfirmed/u.test(root.textContent));
     assert.equal(button("record-button").disabled, true); assert.equal(button("stop-button").disabled, false);
+    assert.equal(button("retry-upload"), null);
     button("stop-button").click(); await until(() => /Recording uploaded/u.test(root.textContent));
     assert.ok(root.querySelector("[data-provider-review]")); assert.match(root.textContent, /coverage is incomplete/u);
     checks++;
     g.abort.abort(); assert.equal(root.textContent.includes("Invented desktop visit"), false);
     await until(() => g.calls.includes("deactivate")); assert.equal(g.listeners.size, 0); checks++;
   } finally { await dispose(); }
+  const retry = fixture(); retry.failUpload(); dispose = await open(retry);
+  try {
+    button("record-button").click(); await until(() => /audio are aligned/u.test(root.textContent));
+    button("stop-button").click(); await until(() => button("retry-upload") && !button("retry-upload").disabled);
+    assert.match(root.textContent, /saved recording is waiting for upload confirmation/u);
+    assert.equal(button("record-button").disabled, true); assert.equal(button("stop-button").disabled, true);
+    button("retry-upload").click();
+    await until(() => retry.calls.filter(v => v === "resume").length === 1 && button("retry-upload").disabled);
+    retry.finishFirstRetry(); await until(() => !button("retry-upload").disabled);
+    button("retry-upload").click(); await until(() => /Recording uploaded/u.test(root.textContent));
+    assert.deepEqual(retry.calls.slice(0, 5), ["read", "start", "stop", "resume", "resume"]);
+    assert.equal(button("retry-upload"), null); assert.ok(root.querySelector("[data-provider-review]"));
+    checks++;
+  } finally { await dispose(); }
   process.stdout.write(JSON.stringify({ checks, compiled_provider_workspace: true, desktop_command_view: true,
-    startup_cancel: true, stop_retry_and_review: true, immediate_revocation_clear: true,
+    startup_cancel: true, stop_retry_and_review: true, upload_retry_and_review: true, immediate_revocation_clear: true,
     actual_electron: false, physical_recording: false }) + "\n");
 } finally { dom.window.close(); }

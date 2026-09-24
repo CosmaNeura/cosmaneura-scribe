@@ -1,3 +1,4 @@
+import { parseNativeProcessFence, type NativeProcessFence } from "./native-process-fence.js";
 import { spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -26,6 +27,8 @@ export interface NativeProcessDriverOptions {
   /** Fresh existing capability/consent/lease/indicator authority. No credentials
    * or renderer-supplied authority fields are passed through the pipe. */
   readonly authorizeSelectedWindow: () => Promise<AuthorizedDesktopSelection>;
+  /** Required for actual capture-v2 starts; supplied only by the native backend. */
+  readonly getProcessFence?: () => NativeProcessFence;
 }
 type Child = ChildProcessByStdio<Writable, Readable, null>;
 type Sink = Parameters<DesktopPCMDriver["start"]>[1];
@@ -43,7 +46,7 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
     requireMain();
     try {
       if (!this.options.enabled || !this.options.isSessionActive()) return false;
-      await verifyHelper(this.options);
+      await verifyNativeHelper(this.options);
       if (!this.options.isSessionActive()) return false;
       return await probe(this.options.helperPath) && this.options.isSessionActive();
     } catch { return false; }
@@ -89,7 +92,7 @@ class ProcessSession implements DesktopPCMDriverSession {
   private async prepare(): Promise<void> {
     const selection = Object.freeze({ ...await this.options.authorizeSelectedWindow() });
     if (this.cancelled) return;
-    await verifyHelper(this.options);
+    await verifyNativeHelper(this.options);
     if (this.cancelled) return;
     const duration = Math.floor((selection.captureAuthorizedUntil - Date.now()) / 1000);
     if (!this.options.isSessionActive() || !exactKeys({ ...selection },
@@ -98,7 +101,8 @@ class ProcessSession implements DesktopPCMDriverSession {
       || !integer(selection.processID, 1, 2_147_483_647) || !integer(selection.windowID, 1, 4_294_967_295)
       || !Number.isSafeInteger(selection.captureAuthorizedUntil) || !integer(duration, 1, 86_400)) throw failure();
     this.maximumFrames = Math.min(this.maximumFrames, duration * 16_000);
-    const child = launch(this.options.helperPath, "--capture-v1");
+    const processFence = parseNativeProcessFence(this.options.getProcessFence?.());
+    const child = launch(this.options.helperPath, "--capture-v2");
     this.child = child;
     child.stdout.on("data", (bytes: Buffer) => {
       try { this.decoder.push(bytes, (kind, payload) => { this.receive(kind, payload); }); }
@@ -115,7 +119,7 @@ class ProcessSession implements DesktopPCMDriverSession {
       this.stops.clear(); this.exited.resolve();
     });
     this.send({ type: "start", application: selection.application, processID: selection.processID,
-      windowID: selection.windowID, maximumDurationSeconds: duration, maximumOutputFrames: this.maximumFrames });
+      windowID: selection.windowID, maximumDurationSeconds: duration, maximumOutputFrames: this.maximumFrames, processFence });
     this.captureTimer = setTimeout(() => { this.fail("failed"); }, Math.max(0, selection.captureAuthorizedUntil - Date.now()));
     this.heartbeat = setInterval(() => {
       if (this.closingInput) return;
@@ -234,7 +238,7 @@ class ProcessSession implements DesktopPCMDriverSession {
 function launch(path: string, mode: string): Child {
   return spawn(path, [mode], { stdio: ["pipe", "pipe", "ignore"], env: {}, cwd: dirname(path), windowsHide: true });
 }
-async function verifyHelper(options: NativeProcessDriverOptions): Promise<void> {
+export async function verifyNativeHelper(options: Pick<NativeProcessDriverOptions, "helperPath" | "helperSha256">): Promise<void> {
   if (!isAbsolute(options.helperPath) || !/^[a-f0-9]{64}$/u.test(options.helperSha256)
     || await realpath(options.helperPath) !== options.helperPath) throw failure();
   const file = await open(options.helperPath, constants.O_RDONLY | constants.O_NOFOLLOW);

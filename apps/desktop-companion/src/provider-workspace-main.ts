@@ -102,7 +102,13 @@ export class DesktopProviderWorkspaceMain {
         const observation = this.observations;
         const value = await (request.method === "sign_in" ? this.host.session.signIn() : this.host.session.signOut());
         if (observation === this.observations) this.accept(value);
-        await closing; return this.state;
+        if (request.method === "sign_in") {
+          // Initial cessation can fail while signed out. Retry its retained
+          // owner after authentication; a different account still cannot clear it.
+          await closing.catch(() => undefined);
+          await this.closeConnection();
+        } else await closing;
+        return this.state;
       } finally { this.sessionBusy = false; }
     }
     if (request.method === "disconnect") {
@@ -207,8 +213,17 @@ export class DesktopProviderWorkspaceMain {
     } else if (path !== "/service/v1/agent/scribe/capture-admissions" && path !== "/service/v1/agent/scribe/capture-notes") throw unavailable();
     const response = await encounter.value.request(path, body, payload.key, signal);
     if (signal.aborted || ![200, 401, 403, 409, 422, 503].includes(response.status)) throw unavailable();
-    // Never forward proxy error bodies, headers, upload URLs or recorder BFF operations.
-    return { status: response.status, body: response.status === 200 ? await readBoundedJson(response, 8 * 1024 * 1024) : null };
+    if (response.status === 200) return { status: 200, body: await readBoundedJson(response, 8 * 1024 * 1024) };
+    // Permit one native-sanitized recovery outcome, never arbitrary error content.
+    if (path === "/service/v1/agent/scribe/capture-admissions" && response.status === 409
+      && response.headers.get("content-type")?.split(";", 1)[0] === "application/json") {
+      const failure = object(await readBoundedJson(response, 1024));
+      if (signal.aborted) throw unavailable();
+      if (Object.keys(failure).length === 1 && failure.detail === "provider_consent_required") {
+        return { status: 409, body: { detail: "provider_consent_required" } };
+      }
+    }
+    return { status: response.status, body: null };
   }
   private async requireSession(encounter: Encounter, value: unknown): Promise<void> {
     const sessionId = uuid(value), saved = await encounter.value.journal.load();

@@ -54,6 +54,8 @@ function fixture() {
     }),
     providerRequest: vi.fn<ProviderNativePlugin["providerRequest"]>(async request => reply(request)),
     cancelProviderRequest: vi.fn(async () => undefined),
+    prepareProviderSource: vi.fn<ProviderNativePlugin["prepareProviderSource"]>(async value => ({ revision: value.revision, sessionId: value.sessionId })),
+    closeProviderSource: vi.fn(async () => undefined),
     getToken: vi.fn(() => { throw new Error("A native token must not be requested by JavaScript"); }),
   };
   const coreOpen = vi.fn(async () => undefined);

@@ -1,3 +1,4 @@
+import { DesktopPcmCaptureSource } from "./pcm-capture-source.js";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { realpathSync } from "node:fs";
@@ -10,7 +11,7 @@ import { HttpCaptureBff } from "../../capture/src/bff/http-client";
 import { HttpCiphertextUploadTarget } from "../../capture/src/bff/upload-target";
 import { connectDesktopRecorderView, parseDesktopRecorderState,
   type DesktopRecorderPort } from "../../capture/src/provider/desktop-recorder-view";
-import { DesktopProviderRecorder, type DesktopProviderRecorderOptions } from "./provider-recorder.js";
+import { DesktopProviderRecorder, type DesktopProviderRecorderOptions, type PreparedDesktopCapture } from "./provider-recorder.js";
 import { DesktopProviderRecorderIpc } from "./provider-recorder-ipc.js";
 import { DurableDesktopRecordStore } from "./durable-record-store.js";
 import { DurableDesktopFlowStore } from "./durable-flow-store.js";
@@ -24,8 +25,13 @@ const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "200
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const close of cleanup.reverse()) await close(); cleanup.length = 0; });
 
-async function fixture() {
-  if (!helperPath) throw new Error("separate compiled invented audio fixture required");
+async function fixture(nativeStub = false) {
+  if (!helperPath && !nativeStub) throw new Error("separate compiled invented audio fixture required");
+  const nativeAvailability = nativeStub ? vi.spyOn(NativeProcessPCMDriver.prototype, "getAvailability").mockResolvedValue(true) : undefined;
+  const nativeStart = nativeStub ? vi.spyOn(NativeProcessPCMDriver.prototype, "start").mockImplementation(() => {
+    throw new Error("Native I/O deliberately excluded from window-order checks");
+  }) : undefined;
+  if (nativeStub) cleanup.push(() => { nativeAvailability!.mockRestore(); nativeStart!.mockRestore(); });
   const directory = await mkdtemp(join(realpathSync(tmpdir()), "scribe-desktop-provider-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt", "wrapKey", "unwrapKey"]);
@@ -52,7 +58,7 @@ async function fixture() {
       captureCapability: { capabilityId: crypto.randomUUID(), secret: "invented-start-capability", expiresAt } };
   });
   const selectWindow = vi.fn(async () => {
-    expect(indicator.current()).toMatchObject({ visible: true, phase: "recording" });
+    expect(indicator.current()?.visible).not.toBe(true);
     return { application: "com.google.Chrome" as const, processID: 1, windowID: 1 };
   });
   const complete = vi.spyOn(bff, "completeCapture");
@@ -66,11 +72,14 @@ async function fixture() {
       coverage: new DurableDesktopCoverage(store.namespace("coverage"), session.id) };
   };
   const options: DesktopProviderRecorderOptions = { enabled: true, sessionId: session.id, signal: abort.signal,
-    createBff: () => bff, authorizeMount: async () => ({ grant, status: "created" }), authority: { authorizeStart: authority },
+    createBff: () => bff, authorizePreparation: async () => ({ sessionId: session.id, status: "created" }),
+    authorizeMount: async () => ({ grant, status: "created" }), authority: { authorizeStart: authority },
     indicator, ...resources(), uploadTarget: new HttpCiphertextUploadTarget([origin]),
-    native: { helperPath, helperSha256: createHash("sha256").update(await readFile(helperPath)).digest("hex"), isSessionActive: () => !abort.signal.aborted },
-    selectWindow, release };
-  return { options, indicator, abort, authority, selectWindow, release, complete, session,
+    native: { helperPath: helperPath ?? "/unused-native-ordering-fixture",
+      helperSha256: nativeStub ? "0".repeat(64) : createHash("sha256").update(await readFile(helperPath!)).digest("hex"),
+      isSessionActive: () => !abort.signal.aborted },
+    selectWindow, release, retireSource: vi.fn(async () => undefined) };
+  return { options, indicator, abort, authority, selectWindow, release, complete, session, nativeStart, nativeAvailability,
     open: async (overrides: Partial<DesktopProviderRecorderOptions> = {}) => {
       const recorder = await DesktopProviderRecorder.open({ ...options, ...overrides }); owned.push(recorder); return recorder;
     },
@@ -104,6 +113,37 @@ function wire(recorder: DesktopProviderRecorder) {
 }
 
 describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () => {
+  it("continues through renderer commands with fresh ownership and durable interval coverage", async () => {
+    const f = await fixture(); let boundary: DesktopProviderRecorderIpc | undefined;
+    try {
+      const mount = vi.fn(f.options.authorizeMount), recorder = await f.open({ authorizeMount: mount });
+      const w = wire(recorder); boundary = w.boundary;
+      const view = await connectDesktopRecorderView(w.port, f.session.id, f.abort.signal);
+      await view.controller.startRecording();
+      await vi.waitFor(() => expect(view.controller.snapshot.recordedChunks).toBeGreaterThanOrEqual(2));
+      await view.controller.pauseRecording!();
+      expect(f.indicator.current()?.visible).toBe(false); expect(f.complete).not.toHaveBeenCalled();
+      const before = view.controller.snapshot.recordedChunks;
+      const retained = await f.options.queueStorage.list();
+      const key = await f.options.flowStore.getSessionKeyState(f.session.id);
+      await view.controller.resumeRecording!();
+      expect(mount).toHaveBeenCalledTimes(2); expect(f.authority).toHaveBeenCalledTimes(2);
+      expect(mount.mock.calls[1]![0]).toMatchObject({ firstSequenceNumber: before, captureLeaseGeneration: 2 });
+      expect(f.selectWindow).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(view.controller.snapshot.recordedChunks).toBeGreaterThan(before));
+      expect(await f.options.flowStore.getSessionKeyState(f.session.id)).toEqual(key);
+      for (const row of retained.filter(row => row.state !== "reserved")) {
+        expect(await f.options.queueStorage.get(row.reservation.objectId)).toEqual(row);
+      }
+      await view.controller.stopRecording();
+      expect(view.controller.snapshot).toMatchObject({ state: "processing", desktop: { coverage: "incomplete" } });
+      expect(f.complete).toHaveBeenCalledTimes(1);
+      expect(f.complete.mock.calls[0]![1]).toMatchObject({ capture_lease_generation: 2,
+        channels: [{ channel: "mixed", final_sequence_number: view.controller.snapshot.recordedChunks - 1 }] });
+      expect(JSON.stringify(w.messages)).not.toMatch(/invented-start-capability|wrappedDek|pcmBytes|windowID/u);
+    } finally { await boundary?.dispose(); await f.close(); }
+  });
+
   it("routes view Start/Stop through real native capture, clears indicator before slow upload, and rejects foreign commands", async () => {
     const f = await fixture(), upload = deferred<void>(), entered = deferred<void>();
     let boundary: DesktopProviderRecorderIpc | undefined;
@@ -196,7 +236,7 @@ describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () =
       const fresh = new AbortController();
       const reopened = await f.open({ ...resources, signal: fresh.signal,
         native: { ...f.options.native, isSessionActive: () => true },
-        authorizeMount: async signal => ({ ...await f.options.authorizeMount(signal), status: "capturing" }) });
+        authorizePreparation: async () => ({ sessionId: f.session.id, status: "capturing" }) });
       expect(reopened.snapshot.state).toBe("paused"); expect(reopened.snapshot.desktop?.coverage).toBe("incomplete");
       expect(f.selectWindow).toHaveBeenCalledTimes(1);
       await reopened.stopRecording(); expect(f.complete).toHaveBeenCalledTimes(1);
@@ -208,14 +248,450 @@ describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () =
     try {
       await expect(f.open({ enabled: false })).rejects.toThrow();
       expect(f.release).not.toHaveBeenCalled();
-      await expect(f.open({ authorizeMount: async signal => {
-        const value = await f.options.authorizeMount(signal); return { ...value, grant: { ...value.grant as object, captureSessionId: crypto.randomUUID() } };
-      } })).rejects.toThrow();
-      expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
+      const recorder = await f.open({ authorizeMount: async (prepared, signal) => {
+        const value = await f.options.authorizeMount(prepared, signal); return { ...value, grant: { ...value.grant as object, captureSessionId: crypto.randomUUID() } };
+      } });
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(f.selectWindow).toHaveBeenCalledTimes(1); expect(f.authority).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });
 });
+describe("window choice before server start authority", () => {
+  it("waits for deliberate choice without requesting authority or starting native I/O", async () => {
+    const f = await fixture(true), choosing = deferred(), chosen = deferred();
+    const selection = vi.fn(async () => {
+      choosing.resolve(); await chosen.promise;
+      return { application: "com.google.Chrome" as const, processID: 1, windowID: 1 };
+    });
+    try {
+      const recorder = await f.open({ selectWindow: selection });
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await choosing.promise;
+      expect(f.authority).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.indicator.current()?.visible).not.toBe(true);
+      chosen.resolve(); await rejected; // Stub rejects only when native start is finally attempted.
+      expect(f.authority).toHaveBeenCalledTimes(1);
+      expect(f.nativeStart).toHaveBeenCalledTimes(1);
+      expect(selection).toHaveBeenCalledTimes(1);
+    } finally { chosen.resolve(); await f.close(); }
+  });
+
+  it("cancels a pending choice without waiting for its late result or spending start authority", async () => {
+    const f = await fixture(true), choosing = deferred(), chosen = deferred();
+    try {
+      const recorder = await f.open({ selectWindow: async () => {
+        choosing.resolve(); await chosen.promise;
+        return { application: "com.google.Chrome", processID: 1, windowID: 1 };
+      } });
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await choosing.promise;
+      await recorder.stopRecording(); await rejected;
+      expect(f.authority).not.toHaveBeenCalled();
+      chosen.resolve(); await Promise.resolve();
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.complete).not.toHaveBeenCalled();
+      expect(f.indicator.current()).toMatchObject({ visible: false });
+    } finally { chosen.resolve(); await f.close(); }
+  });
+
+  it("reauthorizes after the choice and rejects a revoked grant before native I/O", async () => {
+    const f = await fixture(true), choosing = deferred(), chosen = deferred();
+    let revoked = false;
+    const authority = vi.fn(async () => {
+      expect(revoked).toBe(true);
+      return { schemaVersion: 1, decision: "denied", denialCode: "revoked" };
+    });
+    try {
+      const recorder = await f.open({ authority: { authorizeStart: authority }, selectWindow: async () => {
+        choosing.resolve(); await chosen.promise;
+        return { application: "com.google.Chrome", processID: 1, windowID: 1 };
+      } });
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await choosing.promise; expect(authority).not.toHaveBeenCalled();
+      revoked = true; chosen.resolve(); await rejected;
+      expect(authority).toHaveBeenCalledTimes(1);
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.indicator.current()?.visible).not.toBe(true);
+    } finally { chosen.resolve(); await f.close(); }
+  });
+
+  it("does not accept a late choice after owner revocation", async () => {
+    const f = await fixture(true), choosing = deferred(), chosen = deferred();
+    try {
+      const recorder = await f.open({ selectWindow: async () => {
+        choosing.resolve(); await chosen.promise;
+        return { application: "com.google.Chrome", processID: 1, windowID: 1 };
+      } });
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await choosing.promise; f.abort.abort(); await rejected;
+      await recorder.deactivate(); chosen.resolve(); await Promise.resolve();
+      expect(f.authority).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.release).toHaveBeenCalledTimes(1);
+    } finally { chosen.resolve(); await f.close(); }
+  });
+});
+
+it.skipIf(!helperPath)("connects a delayed window choice to fresh source ownership, native chunks and one upload", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const f = await fixture(), choosing = deferred(), chosen = deferred();
+  let preparedAt: number | null = null;
+  const mount = vi.fn(async (prepared: PreparedDesktopCapture, signal: AbortSignal) => {
+    preparedAt = Date.now();
+    return f.options.authorizeMount(prepared, signal);
+  });
+  const authorizeStart = vi.fn(async () => {
+    if (preparedAt === null || Date.now() - preparedAt >= 120_000) throw new Error("source preparation expired");
+    return f.authority();
+  });
+  const retireSource = vi.fn(async () => {
+    expect(f.indicator.current()?.visible).toBe(false);
+    expect(f.complete).not.toHaveBeenCalled();
+  });
+  try {
+    const recorder = await f.open({ authorizeMount: mount, authority: { authorizeStart }, retireSource,
+      selectWindow: async () => {
+        choosing.resolve(); await chosen.promise;
+        return { application: "com.google.Chrome", processID: 1, windowID: 1 };
+      } });
+    const starting = recorder.startRecording();
+    await choosing.promise;
+    vi.setSystemTime(Date.now() + 121_000);
+    chosen.resolve(); await starting;
+    expect(recorder.snapshot.desktop?.phase).toBe("recording");
+    await vi.waitFor(() => expect(recorder.snapshot.recordedChunks).toBeGreaterThanOrEqual(2));
+    await recorder.stopRecording();
+    expect(recorder.snapshot.state).toBe("processing");
+    expect(recorder.snapshot.desktop?.coverage).toBe("complete");
+    expect(mount).toHaveBeenCalledTimes(1); expect(authorizeStart).toHaveBeenCalledTimes(1);
+    expect(retireSource).toHaveBeenCalledTimes(1); expect(f.complete).toHaveBeenCalledTimes(1);
+    retireSource.mockResolvedValue(undefined);
+  } finally { chosen.resolve(); retireSource.mockResolvedValue(undefined); await f.close(); vi.useRealTimers(); }
+});
+
+it.skipIf(!helperPath)("retains paused desktop capture and encrypted chunks until a lost server stop reply is retried", async () => {
+  const f = await fixture();
+  const nativeStart = vi.spyOn(NativeProcessPCMDriver.prototype, "start");
+  const upload = vi.spyOn(f.options.uploadTarget, "putCompleteEnvelope");
+  const retireSource = vi.fn(async () => undefined)
+    .mockRejectedValueOnce(new Error("invented lost server stop reply"));
+  let boundary: DesktopProviderRecorderIpc | undefined;
+  try {
+    const recorder = await f.open({ retireSource }), w = wire(recorder); boundary = w.boundary;
+    const view = await connectDesktopRecorderView(w.port, f.session.id, f.abort.signal);
+    await view.controller.startRecording();
+    await vi.waitFor(() => expect(view.controller.snapshot.recordedChunks).toBeGreaterThanOrEqual(2));
+    await expect(view.controller.stopRecording()).rejects.toThrow();
+    expect(f.indicator.current()?.visible).toBe(false);
+    expect(view.controller.snapshot).toMatchObject({ state: "paused", statusCode: "capture_stop_acknowledgement_pending",
+      desktop: { phase: "interrupted", coverage: "complete" } });
+    expect((await f.options.flowStore.getActiveCaptureState())?.phase).toBe("paused");
+    const encrypted = (await f.options.queueStorage.list()).filter(chunk => chunk.state === "encrypted");
+    expect(encrypted.length).toBeGreaterThanOrEqual(2);
+    expect(upload).not.toHaveBeenCalled(); expect(f.complete).not.toHaveBeenCalled();
+    await expect(view.controller.startRecording()).rejects.toThrow();
+    await view.controller.stopRecording();
+    expect(view.controller.snapshot.state).toBe("processing");
+    expect(view.controller.snapshot.statusCode).not.toBe("capture_stop_acknowledgement_pending");
+    expect(upload).toHaveBeenCalledTimes(encrypted.length); expect(f.complete).toHaveBeenCalledTimes(1);
+    expect(retireSource).toHaveBeenCalledTimes(2); expect(nativeStart).toHaveBeenCalledTimes(1);
+    expect(f.authority).toHaveBeenCalledTimes(1);
+  } finally { await boundary?.dispose(); await f.close(); nativeStart.mockRestore(); }
+});
+
+describe("prepared desktop start", () => {
+  it("checks current Core session before lease work and sends saved receipts only after window choice", async () => {
+    const f = await fixture(true), bff = f.options.createBff(f.abort.signal);
+    const issue = vi.spyOn(bff, "issueLease");
+    const preflight = vi.fn(async () => {
+      expect(await f.options.flowStore.getActiveCaptureState()).toBeNull();
+      expect(await f.options.flowStore.getPreparationState()).toBeNull();
+      return { sessionId: f.session.id, status: "created" as const };
+    });
+    const mount = vi.fn(async (prepared: PreparedDesktopCapture, signal: AbortSignal) => {
+      const active = (await f.options.flowStore.getActiveCaptureState())!;
+      expect(active.phase).toBe("ready"); expect(active.captureAuthorizedUntil).not.toBeNull();
+      expect(prepared).toEqual({ sessionId: f.session.id, captureLeaseId: active.lease.lease_id,
+        leaseReceiptId: active.lease.receipt_id, captureLeaseGeneration: active.lease.generation,
+        captureAuthorizedUntil: active.captureAuthorizedUntil });
+      expect(Object.isFrozen(prepared)).toBe(true);
+      return f.options.authorizeMount(prepared, signal);
+    });
+    try {
+      const recorder = await f.open({ authorizePreparation: preflight, authorizeMount: mount });
+      expect(recorder.snapshot.desktop?.phase).toBe("ready");
+      expect(preflight).toHaveBeenCalledBefore(issue); expect(mount).not.toHaveBeenCalled();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.selectWindow).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      await expect(recorder.startRecording()).rejects.toThrow(); // The native-I/O stub rejects.
+      expect(issue).toHaveBeenCalledBefore(mount); expect(f.selectWindow).toHaveBeenCalledBefore(mount);
+      expect(mount).toHaveBeenCalledBefore(f.authority); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
+  it("rejects revoked preflight before writing preparation, binding a key or issuing a lease", async () => {
+    const f = await fixture(true), bff = f.options.createBff(f.abort.signal);
+    const preparation = vi.spyOn(f.options.flowStore, "putPreparationState");
+    const bind = vi.spyOn(bff, "bindSessionAudioKey"), issue = vi.spyOn(bff, "issueLease");
+    const mount = vi.fn(f.options.authorizeMount);
+    try {
+      await expect(f.open({ authorizePreparation: async () => { throw new Error("invented revocation"); }, authorizeMount: mount })).rejects.toThrow();
+      expect(preparation).not.toHaveBeenCalled(); expect(bind).not.toHaveBeenCalled(); expect(issue).not.toHaveBeenCalled();
+      expect(mount).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+  it("rejects a changed session in preflight before lease work", async () => {
+    const f = await fixture(true), issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");
+    try {
+      await expect(f.open({ authorizePreparation: async () => ({ sessionId: crypto.randomUUID(), status: "created" }) })).rejects.toThrow();
+      expect(issue).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+  it("retains and reuses the same lease after a lost grant reply instead of issuing another lease", async () => {
+    const f = await fixture(true), issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");
+    let prepared!: PreparedDesktopCapture;
+    try {
+      const first = await f.open({ authorizeMount: async value => {
+        prepared = value; throw new Error("invented lost grant reply");
+      } });
+      await expect(first.startRecording()).rejects.toThrow("invented lost grant reply");
+      expect(issue).toHaveBeenCalledTimes(1);
+      await first.deactivate();
+      const resources = await f.reopen();
+      const retried = vi.fn(async (value: PreparedDesktopCapture, signal: AbortSignal) => {
+        expect(value).toEqual(prepared); return f.options.authorizeMount(value, signal);
+      });
+      const recorder = await f.open({ ...resources, authorizeMount: retried });
+      expect(recorder.snapshot.desktop?.phase).toBe("ready"); expect(retried).not.toHaveBeenCalled();
+      expect(issue).toHaveBeenCalledTimes(1); expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.authority).not.toHaveBeenCalled();
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(retried).toHaveBeenCalledTimes(1); expect(issue).toHaveBeenCalledTimes(1);
+      expect(f.nativeStart).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
+  it.each(["generation", "deadline"])("rejects changed %s while the backend grant is pending", async field => {
+    const f = await fixture(true);
+    try {
+      const recorder = await f.open({ authorizeMount: async (prepared, signal) => {
+        const active = (await f.options.flowStore.getActiveCaptureState())!;
+        await f.options.flowStore.putActiveCaptureState(field === "generation"
+          ? { ...active, lease: { ...active.lease, generation: active.lease.generation + 1 } }
+          : { ...active, captureAuthorizedUntil: new Date(Date.parse(active.captureAuthorizedUntil!) - 1_000).toISOString() });
+        return f.options.authorizeMount(prepared, signal);
+      } });
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(f.nativeAvailability).toHaveBeenCalledTimes(1);
+      expect(f.nativeStart).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+  it("restores confirmed-upload metadata without requesting a new grant or native availability", async () => {
+    const f = await fixture(true);
+    try {
+      const first = await f.open(), active = (await f.options.flowStore.getActiveCaptureState())!;
+      // Invented persisted upload receipt state; no physical/audio trial is run.
+      await f.options.flowStore.putActiveCaptureState({ ...active, phase: "processing", recordedChunks: 1 });
+      await first.deactivate();
+      const resources = await f.reopen(), mount = vi.fn(f.options.authorizeMount);
+      f.nativeAvailability!.mockClear();
+      const restored = await f.open({ ...resources, authorizePreparation: async () => ({ sessionId: f.session.id, status: "processing" }), authorizeMount: mount });
+      expect(restored.snapshot.state).toBe("processing"); expect(mount).not.toHaveBeenCalled();
+      expect(f.nativeAvailability).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+  it.each(["capturing", "processing"] as const)("does not initialize fresh capture storage for existing %s work", async status => {
+    const f = await fixture(true), issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");
+    try {
+      await expect(f.open({ authorizePreparation: async () => ({ sessionId: f.session.id, status }) })).rejects.toThrow();
+      expect(issue).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+  it("rejects a changed backend capture status after preparation and before native acquisition", async () => {
+    const f = await fixture(true);
+    try {
+      const recorder = await f.open({ authorizeMount: async (prepared, signal) => ({
+        ...await f.options.authorizeMount(prepared, signal), status: "capturing",
+      }) });
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(f.nativeAvailability).toHaveBeenCalledTimes(1); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
+  it("refreshes native permission availability without reserving source ownership", async () => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);
+    try {
+      f.nativeAvailability!.mockResolvedValue(false);
+      const recorder = await f.open({ authorizeMount: mount });
+      expect(recorder.snapshot.desktop?.phase).toBe("permission_required");
+      expect(mount).not.toHaveBeenCalled(); expect(f.selectWindow).not.toHaveBeenCalled();
+      f.nativeAvailability!.mockResolvedValue(true); await recorder.refreshPermissions();
+      expect(recorder.snapshot.desktop?.phase).toBe("ready"); expect(mount).not.toHaveBeenCalled();
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(mount).toHaveBeenCalledTimes(1); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
+
+  it("retires preparation when permissions change after window choice and takes a fresh preparation on retry", async () => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);
+    const retireSource = vi.fn(async () => { expect(f.nativeStart).not.toHaveBeenCalled(); });
+    try {
+      const recorder = await f.open({ authorizeMount: mount, retireSource });
+      const link = wire(recorder), view = await connectDesktopRecorderView(link.port, f.session.id, f.abort.signal);
+      f.nativeAvailability!.mockResolvedValue(false);
+      await view.controller.startRecording();
+      expect(view.controller.snapshot.state).toBe("ready");
+      expect(view.controller.snapshot.desktop?.phase).toBe("permission_required");
+      expect(retireSource).toHaveBeenCalledTimes(1); expect(f.authority).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled(); expect(f.complete).not.toHaveBeenCalled();
+      f.nativeAvailability!.mockResolvedValue(true);
+      await view.controller.refreshPermissions!();
+      expect(view.controller.snapshot.desktop?.phase).toBe("ready"); expect(mount).toHaveBeenCalledTimes(1);
+      retireSource.mockImplementation(async () => undefined);
+      await expect(view.controller.startRecording()).rejects.toThrow(); // Deliberate native-I/O exclusion.
+      expect(mount).toHaveBeenCalledTimes(2); expect(f.selectWindow).toHaveBeenCalledTimes(2);
+      expect(f.authority).toHaveBeenCalledTimes(1); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+      await view.deactivate(); await link.boundary.dispose();
+    } finally { await f.close(); }
+  });
+
+  it("keeps permission recovery blocked until the unused preparation retirement is confirmed", async () => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);
+    const retireSource = vi.fn(async (): Promise<void> => { throw new Error("fixture retirement reply unavailable"); });
+    try {
+      const recorder = await f.open({ authorizeMount: mount, retireSource });
+      f.nativeAvailability!.mockResolvedValue(false);
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(recorder.snapshot.desktop?.phase).toBe("permission_required");
+      f.nativeAvailability!.mockResolvedValue(true);
+      await expect(recorder.refreshPermissions()).rejects.toThrow();
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(mount).toHaveBeenCalledTimes(1); expect(f.authority).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled(); expect(f.complete).not.toHaveBeenCalled();
+      retireSource.mockImplementation(async () => undefined);
+      await recorder.refreshPermissions();
+      expect(recorder.snapshot.desktop?.phase).toBe("ready"); expect(mount).toHaveBeenCalledTimes(1);
+    } finally { retireSource.mockImplementation(async () => undefined); await f.close(); }
+  });
+
+  it("waits for a pending preparation on Stop, then retires it without native start", async () => {
+    const f = await fixture(true), entered = deferred(), reply = deferred();
+    const retireSource = vi.fn(async () => undefined);
+    try {
+      const recorder = await f.open({ retireSource, authorizeMount: async (prepared, signal) => {
+        entered.resolve(); await reply.promise;
+        expect(signal.aborted).toBe(false);
+        return f.options.authorizeMount(prepared, signal);
+      } });
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await entered.promise; const stopping = recorder.stopRecording();
+      expect(retireSource).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
+      reply.resolve(); await stopping; await rejected;
+      expect(retireSource).toHaveBeenCalledTimes(1);
+      expect(f.nativeStart).not.toHaveBeenCalled(); expect(f.complete).not.toHaveBeenCalled();
+    } finally { reply.resolve(); await f.close(); }
+  });
+});
+
+describe("cancelled preparation recovery", () => {
+  it("returns the IPC view to ready after cancelling a choice and requires a fresh choice", async () => {
+    const f = await fixture(true), choosing = deferred(), chosen = deferred();
+    const mount = vi.fn(f.options.authorizeMount);
+    const selection = vi.fn().mockImplementationOnce(async () => {
+      choosing.resolve(); await chosen.promise;
+      return { application: "com.google.Chrome", processID: 1, windowID: 1 };
+    }).mockImplementation(f.options.selectWindow);
+    try {
+      const recorder = await f.open({ selectWindow: selection, authorizeMount: mount });
+      const link = wire(recorder), view = await connectDesktopRecorderView(link.port, f.session.id, f.abort.signal);
+      const before = await f.options.flowStore.getActiveCaptureState();
+      const starting = view.controller.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await choosing.promise;
+      await view.controller.stopRecording(); await rejected;
+      expect(view.controller.snapshot).toMatchObject({ state: "ready", recordedChunks: 0, desktop: { phase: "ready" } });
+      expect(await f.options.flowStore.getActiveCaptureState()).toEqual(before);
+      expect(mount).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
+      chosen.resolve(); await Promise.resolve();
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      await expect(view.controller.startRecording()).rejects.toThrow(); // Native I/O is deliberately stubbed.
+      expect(selection).toHaveBeenCalledTimes(2); expect(mount).toHaveBeenCalledTimes(1);
+      expect(f.authority).toHaveBeenCalledTimes(1); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+      expect(f.complete).not.toHaveBeenCalled();
+      await view.deactivate(); await link.boundary.dispose();
+    } finally { chosen.resolve(); await f.close(); }
+  });
+
+  it("retains expired authority after cancellation instead of obtaining a new lease", async () => {
+    const f = await fixture(true), choosing = deferred(), chosen = deferred();
+    try {
+      const recorder = await f.open({ selectWindow: async () => {
+        choosing.resolve(); await chosen.promise;
+        return { application: "com.google.Chrome", processID: 1, windowID: 1 };
+      } });
+      const before = await f.options.flowStore.getActiveCaptureState();
+      const issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await choosing.promise;
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.parse(before!.lease.expires_at) + 1_000);
+      await recorder.stopRecording(); await rejected;
+      expect(recorder.snapshot).toMatchObject({ state: "paused", statusCode: "capture_authority_expired",
+        desktop: { phase: "interrupted" } });
+      expect((await f.options.flowStore.getActiveCaptureState())!.lease).toEqual(before!.lease);
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(issue).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled(); expect(f.complete).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); chosen.resolve(); await f.close(); }
+  });
+
+  it("requires confirmed retirement after a cancelled preparation before taking another owner", async () => {
+    const f = await fixture(true), entered = deferred(), reply = deferred();
+    const mount = vi.fn(f.options.authorizeMount).mockImplementationOnce(async (prepared, signal) => {
+      entered.resolve(); await reply.promise; return f.options.authorizeMount(prepared, signal);
+    });
+    const retireSource = vi.fn(async (): Promise<void> => undefined)
+      .mockRejectedValueOnce(new Error("fixture lost retirement reply"));
+    try {
+      const recorder = await f.open({ authorizeMount: mount, retireSource });
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await entered.promise;
+      const stopping = recorder.stopRecording(), stopRejected = expect(stopping).rejects.toThrow();
+      reply.resolve(); await rejected; await stopRejected;
+      expect(recorder.snapshot.statusCode).toBe("capture_stop_acknowledgement_pending");
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(mount).toHaveBeenCalledTimes(1); expect(f.authority).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      await recorder.stopRecording();
+      expect(retireSource).toHaveBeenCalledTimes(2);
+      expect(recorder.snapshot).toMatchObject({ state: "ready", desktop: { phase: "ready" } });
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(mount).toHaveBeenCalledTimes(2); expect(f.authority).toHaveBeenCalledTimes(1);
+      expect(f.nativeStart).toHaveBeenCalledTimes(1); expect(f.complete).not.toHaveBeenCalled();
+    } finally { reply.resolve(); await f.close(); }
+  });
+});
+
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve };
 }
+
+it("retains desktop custody through unconfirmed native stop and lost server stop acknowledgement", async () => {
+  const f = await fixture(true);
+  const retireSource = vi.fn(async () => undefined);
+  const stopped = vi.spyOn(DesktopPcmCaptureSource.prototype, "stop");
+  try {
+    const recorder = await f.open({ retireSource });
+    stopped.mockRejectedValue(new Error("unconfirmed native stop"));
+    await expect(recorder.deactivate()).rejects.toThrow();
+    expect(retireSource).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+    stopped.mockResolvedValue(undefined);
+    retireSource.mockRejectedValueOnce(new Error("lost server stop reply"));
+    await expect(recorder.deactivate()).rejects.toThrow("lost server stop reply");
+    expect(f.release).not.toHaveBeenCalled();
+    await recorder.deactivate();
+    expect(retireSource).toHaveBeenCalledTimes(2); expect(f.release).toHaveBeenCalledTimes(1);
+    expect(stopped).toHaveBeenCalledBefore(retireSource);
+    expect(f.nativeStart).not.toHaveBeenCalled();
+  } finally { stopped.mockResolvedValue(undefined); await f.close(); stopped.mockRestore(); }
+});

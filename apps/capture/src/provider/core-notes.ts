@@ -1,4 +1,4 @@
-import type { CreatorReviewView } from "../../../review-ui/src/creator-review-api";
+import { parseCaptureContinuity, type CaptureContinuity, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
 import { isUuid } from "../../../review-ui/src/contracts";
 import { type CoreCaptureClient, record, reference, requireValue } from "./core-client";
 
@@ -7,6 +7,7 @@ export interface ReviewedSource {
   readonly source_version: number;
   readonly working_transcript_id: string;
   readonly working_version: number;
+  readonly capture_continuity?: CaptureContinuity;
 }
 export interface CoreNoteTemplate { schema_ref: string; note_type: string; field_names: string[] }
 export interface CoreDraft {
@@ -28,11 +29,13 @@ export function reviewedSource(view: CreatorReviewView): ReviewedSource {
   requireValue(view.status === "transcript_ready" && view.working?.note_ready && view.source);
   return { kind: "reviewed_english", source_version: view.source.source_transcript_version,
     working_transcript_id: view.working.working_transcript_id,
-    working_version: view.working.working_transcript_version };
+    working_version: view.working.working_transcript_version,
+    ...(view.capture_continuity ? { capture_continuity: parseCaptureContinuity(view.capture_continuity) } : {}) };
 }
 export function sameSource(left: ReviewedSource, right: ReviewedSource): boolean {
   return left.kind === right.kind && left.source_version === right.source_version
-    && left.working_transcript_id === right.working_transcript_id && left.working_version === right.working_version;
+    && left.working_transcript_id === right.working_transcript_id && left.working_version === right.working_version
+    && canonical(left.capture_continuity ?? null) === canonical(right.capture_continuity ?? null);
 }
 export async function noteTemplates(client: CoreCaptureClient, session: string): Promise<CoreNoteTemplate[]> {
   const value = await client.note(session, "templates");
@@ -107,7 +110,9 @@ export function validPendingSave(value: unknown): value is PendingNoteSave {
     && validFields(value.edit.fields, value.fieldOrder);
 }
 function validSource(value: unknown): value is ReviewedSource {
-  return closed(value, "kind,source_version,working_transcript_id,working_version") && value.kind === "reviewed_english"
+  const withContinuity = record(value) && Object.hasOwn(value, "capture_continuity");
+  if (withContinuity) { try { parseCaptureContinuity(value.capture_continuity); } catch { return false; } }
+  return closed(value, "kind,source_version,working_transcript_id,working_version" + (withContinuity ? ",capture_continuity" : "")) && value.kind === "reviewed_english"
     && isUuid(value.working_transcript_id) && Number.isSafeInteger(value.source_version) && Number(value.source_version) > 0
     && Number.isSafeInteger(value.working_version) && Number(value.working_version) > 0;
 }

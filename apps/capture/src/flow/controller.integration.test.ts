@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
-import { HttpCaptureBff } from "../bff/http-client";
+import { BffResponseError, HttpCaptureBff } from "../bff/http-client";
 import type { CaptureBff } from "../bff/contracts";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import { HttpCiphertextUploadTarget } from "../bff/upload-target";
@@ -32,6 +32,126 @@ const TEST_ENCOUNTER = Object.freeze({
 });
 
 describe("CaptureFlowController", () => {
+  it.each(["microphone", "mixed"] as const)("continues %s with retained ciphertext and exact renewal/reservation recovery", async channel => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory(), flowName = TEST_CRYPTO.randomUUID(), queueName = TEST_CRYPTO.randomUUID();
+    let flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: flowName, indexedDB, crypto: TEST_CRYPTO });
+    let queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: queueName, indexedDB, crypto: TEST_CRYPTO });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin)), source = new InspectableCaptureSource(channel);
+    const first = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    const controllers = [first];
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId,
+        patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person",
+        method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() },
+      { idempotencyKey: "continuation-fixture-consent" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" },
+        { idempotencyKey: "continuation-fixture-session" });
+      const complete = vi.spyOn(bff, "completeCapture");
+      await first.prepareConfigured(session.id); await first.startRecording(); await source.emit();
+      const encrypted = (await queueStorage.list()).find(item => item.state === "encrypted")!;
+      const originalKey = await flowStore.getSessionKeyState(session.id);
+      await first.pauseRecording(); expect(complete).not.toHaveBeenCalled();
+      const renew = bff.renewLease.bind(bff), renewSpy = vi.spyOn(bff, "renewLease").mockImplementationOnce(async (...args) => {
+        await renew(...args); throw new Error("invented lost renewal reply");
+      });
+      await expect(first.resumeRecording()).rejects.toThrow("invented lost renewal reply");
+      expect(source.startCalls).toBe(1);
+      const pending = (await flowStore.getActiveCaptureState())!;
+      expect(pending).toMatchObject({ schemaVersion: 4, phase: "paused", continuation: { prepared: false, firstSequenceNumber: 1 } });
+      await expect(flowStore.putActiveCaptureState({ ...pending, schemaVersion: channel === "microphone" ? 2 : 3 })).rejects.toThrow();
+      await first.deactivate(); flowStore.close(); queueStorage.close();
+      flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: flowName, indexedDB, crypto: TEST_CRYPTO });
+      queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: queueName, indexedDB, crypto: TEST_CRYPTO });
+      const secondSource = new InspectableCaptureSource(channel);
+      const second = createControllerWithSource({ bff, flowStore, queueStorage, origin, source: secondSource }); controllers.push(second);
+      expect(await second.restore()).toBe(true); expect(second.snapshot.state).toBe("paused");
+      expect(secondSource.startCalls).toBe(0);
+      const reserve = bff.reserveChunks.bind(bff), reserveSpy = vi.spyOn(bff, "reserveChunks").mockImplementationOnce(async (...args) => {
+        await reserve(...args); throw new Error("invented lost reservation reply");
+      });
+      await expect(second.resumeRecording()).rejects.toThrow("invented lost reservation reply");
+      expect(secondSource.startCalls).toBe(0); expect(renewSpy.mock.calls[1]).toEqual(renewSpy.mock.calls[0]);
+      await second.resumeRecording();
+      expect(reserveSpy.mock.calls[1]).toEqual(reserveSpy.mock.calls[0]);
+      expect(reserveSpy.mock.calls[1]![1]).toMatchObject({ first_sequence_number: 1, capture_lease_generation: 2 });
+      expect(renewSpy).toHaveBeenCalledTimes(2); expect(secondSource.startCalls).toBe(1);
+      expect(await queueStorage.get(encrypted.reservation.objectId)).toEqual(encrypted);
+      expect(await flowStore.getSessionKeyState(session.id)).toEqual(originalKey);
+      await secondSource.emit();
+      expect((await queueStorage.list()).filter(row => row.state === "encrypted").map(row => row.reservation.sequenceNumber).sort()).toEqual([0, 1]);
+      await second.stopRecording(); expect(second.snapshot.state).toBe("processing");
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(complete.mock.calls[0]![1]).toMatchObject({ capture_lease_generation: 2, channels: [{ channel, final_sequence_number: 1 }] });
+    } finally {
+      for (const controller of controllers) await controller.deactivate().catch(() => undefined);
+      flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
+
+  it.each(["upload", "completion", "denied"] as const)("retains configured %s work and retries only recoverable upload failures", async stage => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin)), source = new InspectableCaptureSource();
+    let now = Date.now();
+    const controller = createControllerWithSource({ bff, flowStore, queueStorage, origin, source, now: () => new Date(now) });
+    try {
+      const consent = await bff.createConsent({ appointment_id: TEST_ENCOUNTER.appointmentId,
+        practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId,
+        participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "upload-retry-consent" });
+      const session = await bff.createSession({ appointment_id: TEST_ENCOUNTER.appointmentId,
+        practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId,
+        consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "upload-retry-session" });
+      const issue = vi.spyOn(bff, "issueLease"), reserve = vi.spyOn(bff, "reserveChunks");
+      const complete = bff.completeCapture.bind(bff), completeSpy = vi.spyOn(bff, "completeCapture");
+      const register = vi.spyOn(bff, "registerChunk");
+      await controller.prepareConfigured(session.id);
+      await controller.startRecording(); await source.emit();
+      const retained = await flowStore.getActiveCaptureState();
+      const encrypted = (await queueStorage.list()).find(row => row.state === "encrypted")!;
+      if (stage === "upload") vi.spyOn(bff, "authorizeUpload").mockRejectedValueOnce(new Error("synthetic offline authorization"));
+      else if (stage === "denied") vi.spyOn(bff, "authorizeUpload").mockRejectedValueOnce(new BffResponseError(403, "forbidden", null));
+      else completeSpy.mockImplementationOnce(async (...args) => {
+        await complete(...args); throw new Error("synthetic lost completion reply");
+      });
+      await expect(controller.stopRecording()).rejects.toThrow();
+      if (stage === "denied") {
+        expect(controller.snapshot.state).toBe("error"); expect(completeSpy).not.toHaveBeenCalled();
+        expect(source.startCalls).toBe(1); expect(source.stopCalls).toBe(1);
+        expect((await queueStorage.get(encrypted.reservation.objectId))?.retry.upload.terminalCode).not.toBeNull();
+        return;
+      }
+      expect(controller.snapshot).toMatchObject({ state: "uploading", statusCode: "capture_upload_pending", recordedChunks: 1 });
+      expect(await flowStore.getActiveCaptureState()).toMatchObject({
+        phase: stage === "upload" ? "uploading" : "completing", lease: retained!.lease,
+        completeIdempotencyKey: retained!.completeIdempotencyKey,
+      });
+      if (stage === "upload") {
+        expect(await queueStorage.get(encrypted.reservation.objectId)).toMatchObject({
+          reservation: encrypted.reservation, sha256: "sha256" in encrypted ? encrypted.sha256 : undefined,
+        });
+        expect(completeSpy).not.toHaveBeenCalled();
+      }
+      await expect(controller.startRecording()).rejects.toThrow("capture_state_conflict");
+      now += 120_000; // Advance only the local retry clock; no wall-clock wait or provider retry.
+      await controller.resumePendingWork();
+      expect(controller.snapshot.state).toBe("processing");
+      expect(source.startCalls).toBe(1); expect(source.stopCalls).toBe(1);
+      expect(issue).toHaveBeenCalledTimes(1); expect(reserve).toHaveBeenCalledTimes(1);
+      expect(register).toHaveBeenCalledTimes(1);
+      expect(completeSpy).toHaveBeenCalledTimes(stage === "upload" ? 1 : 2);
+      expect(completeSpy.mock.calls.every(call => call[2].idempotencyKey === retained!.completeIdempotencyKey)).toBe(true);
+      if (stage === "completion") expect(completeSpy.mock.calls[1]).toEqual(completeSpy.mock.calls[0]);
+    } finally {
+      await controller.deactivate().catch(() => undefined);
+      flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
+
   it.each(["mixed", "system_audio"] as const)("preserves configured %s audio through interruption and upload recovery", async channel => {
     const server = createMockBffServer();
     const origin = await listenOnEphemeralLoopback(server);

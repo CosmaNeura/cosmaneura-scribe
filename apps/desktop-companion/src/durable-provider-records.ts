@@ -36,36 +36,82 @@ export class DurableDesktopCoverage {
     if (!coverage || Object.keys(coverage).sort().join(",") !== "phase,value"
       || coverage.phase !== "started" && coverage.phase !== "stopped") throw failure();
     const prior = await this.read();
+    const last = prior?.intervals?.at(-1);
+    const previous = last ? last.coverage : prior?.value;
     if (coverage.phase === "started") {
       const start = parseDesktopPCMStart(coverage.value);
-      if (prior && JSON.stringify(prior.value) !== JSON.stringify({ phase: "started", value: start })) throw failure();
-      if (prior) return;
+      if (previous && JSON.stringify(previous) !== JSON.stringify({ phase: "started", value: start })) throw failure();
+      if (previous) return;
     } else {
-      if (!prior) throw failure();
-      const start = prior.value.phase === "started" ? prior.value.value : prior.value.value.start;
+      if (!previous) throw failure();
+      const start = previous.phase === "started" ? previous.value : previous.value.start;
       parseDesktopPCMCompletion(coverage.value, start, coverage.value.outputFrames);
-      if (prior.value.phase === "stopped") {
-        if (JSON.stringify(prior.value) !== JSON.stringify(coverage)) throw failure();
+      if (previous.phase === "stopped") {
+        if (JSON.stringify(previous) !== JSON.stringify(coverage)) throw failure();
         return;
       }
     }
-    const bytes = new TextEncoder().encode(JSON.stringify(coverage));
+    const value = prior?.intervals ? { schemaVersion: 2, intervals: prior.intervals.map((item, index) =>
+      index === prior.intervals!.length - 1 ? { ...item, coverage } : item) } : coverage;
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
     try { await this.records.save(uuid(this.attemptId), prior?.revision ?? null, bytes); }
     finally { bytes.fill(0); }
   };
-  async load(): Promise<DesktopPCMCoverage | null> { return (await this.read())?.value ?? null; }
-  private async read(): Promise<{ value: DesktopPCMCoverage; revision: number } | null> {
+  async load(): Promise<DesktopPCMCoverage | null> {
+    const prior = await this.read();
+    return prior?.intervals ? prior.intervals.at(-1)!.coverage : prior?.value ?? null;
+  }
+  /** Called after confirmed physical/server stop, before a fresh source start.
+   * Receipt ID makes retries exact even for a zero-chunk interval. */
+  async beginInterval(receiptId: string, firstSequenceNumber: number): Promise<void> {
+    uuid(receiptId);
+    if (!Number.isSafeInteger(firstSequenceNumber) || firstSequenceNumber < 0 || firstSequenceNumber > 999) throw failure();
+    const prior = await this.read();
+    const intervals: CoverageInterval[] = prior?.intervals ?? [
+      { receiptId: this.attemptId, firstSequenceNumber: 0, coverage: prior?.value ?? null }];
+    const existing = intervals.find(item => item.receiptId === receiptId);
+    if (existing) {
+      if (intervals.at(-1) !== existing || existing.firstSequenceNumber !== firstSequenceNumber) throw failure();
+      return;
+    }
+    if (intervals.length >= 1000 || firstSequenceNumber < intervals.at(-1)!.firstSequenceNumber) throw failure();
+    const bytes = new TextEncoder().encode(JSON.stringify({ schemaVersion: 2,
+      intervals: [...intervals, { receiptId, firstSequenceNumber, coverage: null }] }));
+    try { await this.records.save(uuid(this.attemptId), prior?.revision ?? null, bytes); }
+    finally { bytes.fill(0); }
+  }
+  private async read(): Promise<{ value: DesktopPCMCoverage | null; intervals?: CoverageInterval[]; revision: number } | null> {
     const record = await this.records.get(uuid(this.attemptId));
     if (!record) return null;
     try {
-      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(record.data)) as DesktopPCMCoverage;
-      if (!value || Object.keys(value).sort().join(",") !== "phase,value") throw failure();
-      if (value.phase === "started") parseDesktopPCMStart(value.value);
-      else if (value.phase === "stopped") {
-        const start: DesktopPCMStart = parseDesktopPCMStart(value.value.start);
-        parseDesktopPCMCompletion(value.value, start, value.value.outputFrames);
-      } else throw failure();
+      const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(record.data));
+      if (typeof value === "object" && value !== null && "schemaVersion" in value && value.schemaVersion === 2) {
+        if (Object.keys(value).sort().join(",") !== "intervals,schemaVersion" || !("intervals" in value)
+          || !Array.isArray(value.intervals) || value.intervals.length < 2 || value.intervals.length > 1000) throw failure();
+        const seen = new Set<string>(); let first = 0;
+        for (const item of value.intervals as CoverageInterval[]) {
+          if (!item || Object.keys(item).sort().join(",") !== "coverage,firstSequenceNumber,receiptId"
+            || !Number.isSafeInteger(item.firstSequenceNumber) || item.firstSequenceNumber < first
+            || item.firstSequenceNumber > 999 || seen.size === 0 && item.firstSequenceNumber !== 0
+            || seen.has(uuid(item.receiptId))) throw failure();
+          if (item.coverage !== null) validateCoverage(item.coverage);
+          seen.add(item.receiptId); first = item.firstSequenceNumber;
+        }
+        return { value: null, intervals: value.intervals as CoverageInterval[], revision: record.revision };
+      }
+      validateCoverage(value);
       return { value, revision: record.revision };
     } finally { record.data.fill(0); }
   }
+}
+
+interface CoverageInterval { readonly receiptId: string; readonly firstSequenceNumber: number; readonly coverage: DesktopPCMCoverage | null }
+function validateCoverage(value: unknown): asserts value is DesktopPCMCoverage {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "phase,value") throw failure();
+  const coverage = value as DesktopPCMCoverage;
+  if (coverage.phase === "started") parseDesktopPCMStart(coverage.value);
+  else if (coverage.phase === "stopped") {
+    const start: DesktopPCMStart = parseDesktopPCMStart(coverage.value.start);
+    parseDesktopPCMCompletion(coverage.value, start, coverage.value.outputFrames);
+  } else throw failure();
 }

@@ -36,8 +36,26 @@ export class CoreCaptureClient {
   }
 
   async admit(intent: AdmissionIntent): Promise<string> {
+    return this.admitWithAttestation(intent, intent.attestation);
+  }
+
+  /** Resume server custody before considering another consent submission. */
+  async recoverAdmission(intent: AdmissionIntent): Promise<string | null> {
+    try { return await this.admitWithAttestation(intent, null); }
+    catch (error) {
+      if (error instanceof BffResponseError && error.code === "core_capture_consent_required") return null;
+      throw error;
+    }
+  }
+
+  /** Called only after the clinician explicitly reconfirms the displayed consent. */
+  async renewAdmission(intent: AdmissionIntent): Promise<string> {
+    return this.admitWithAttestation(intent, { ...intent.attestation, granted_at: new Date().toISOString() });
+  }
+
+  private async admitWithAttestation(intent: AdmissionIntent, attestation: AdmissionIntent["attestation"] | null): Promise<string> {
     const value = await this.send("capture-admissions", {
-      attestation: intent.attestation,
+      attestation,
       configured_capture: { schema_version: "1.0", language_mode: intent.languageMode },
     }, intent.key);
     requireValue(reference(value.operation_ref, "scribe_admission")
@@ -92,7 +110,17 @@ export class CoreCaptureClient {
       ...payload, binding_ref: this.scope.bindingRef, workspace_id: this.scope.workspaceId, request_nonce: nonce,
     }, key, this.signal);
     requireValue(!this.signal.aborted);
-    if (response.status !== 200) throw new BffResponseError(response.status, "core_capture_unconfirmed", null);
+    if (response.status !== 200) {
+      if (action === "capture-admissions" && response.status === 409
+        && response.headers.get("content-type")?.split(";", 1)[0] === "application/json") {
+        const failure: unknown = await readBoundedJson(response, 1024);
+        requireValue(!this.signal.aborted);
+        if (record(failure) && Object.keys(failure).length === 1 && failure.detail === "provider_consent_required") {
+          throw new BffResponseError(409, "core_capture_consent_required", null);
+        }
+      }
+      throw new BffResponseError(response.status, "core_capture_unconfirmed", null);
+    }
     requireValue(response.headers.get("content-type")?.split(";", 1)[0] === "application/json");
     const value: unknown = await readBoundedJson(response, 8 * 1024 * 1024);
     requireValue(!this.signal.aborted && record(value) && value.contract_version === "1"

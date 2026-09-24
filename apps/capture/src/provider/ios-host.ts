@@ -5,6 +5,7 @@ import { acquireCaptureFlowLock } from "../flow/capture-lock";
 import { EncryptedIndexedDbFlowStore } from "../flow/encrypted-store";
 import type { CiphertextUploadTarget } from "../bff/contracts";
 import { QueueInvariantError } from "../queue/errors";
+import { CaptureStopAcknowledgementPending } from "../capture/stop-confirmation";
 import type { CaptureChunkRecord, CaptureQueueStorage } from "../queue/types";
 import { NativePluginQueueStorage, type NativeQueueRecordPlugin } from "../storage/native-plugin";
 import { createProviderIOSCaptureSource } from "./ios-capture-source";
@@ -18,6 +19,16 @@ export interface AuthorizedProviderIOSMount extends Omit<AuthorizedProviderEncou
   readonly uploadTarget: CiphertextUploadTarget;
   /** Rechecks the selected creator, encounter, admission and session on the server. */
   readonly reauthorizeRecorder: (sessionId: string, signal: AbortSignal) => Promise<void>;
+  readonly prepareNativeSource: (prepared: PreparedProviderIOSCapture, signal: AbortSignal) => Promise<void>;
+  readonly releaseNativeSource: (sessionId: string) => Promise<void>;
+}
+export interface PreparedProviderIOSCapture {
+  readonly sessionId: string;
+  readonly leaseId: string;
+  readonly leaseReceiptId: string;
+  readonly leaseGeneration: number;
+  readonly captureAuthorizedUntil: string;
+  readonly firstSequenceNumber?: number;
 }
 export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedProviderIOSMount>;
@@ -91,21 +102,49 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     current();
     const ownedFlow = flow;
     let closed = false, closing: Promise<void> | null = null;
+    let stopping: Promise<void> | null = null;
+    const stopSource = (): Promise<void> => stopping ??= (async () => {
+      await source.stop();
+      try { await mount.releaseNativeSource(sessionId); }
+      catch { throw new CaptureStopAcknowledgementPending(); }
+    })().finally(() => { stopping = null; });
     const release = (): Promise<void> => {
       if (closed) return Promise.resolve();
       return closing ??= (async () => {
         try {
           // Even an early/mistaken release cannot drop ownership of an unconfirmed
           // native stop. Retain the same source and lock for the explicit retry.
-          await source.stop();
+          await stopSource();
           ownedFlow.close(); await unlock(); closed = true;
         } catch (error) { closing = null; throw error; }
       })();
     };
     return {
-      source: { kind: source.kind, start: options => {
-        current(); if (closed || closing) throw unavailable(); return source.start(options);
-      }, stop: () => source.stop() },
+      source: { kind: source.kind, start: async options => {
+        current(); if (closed || closing || stopping || options.signal?.aborted) throw unavailable();
+        const active = await ownedFlow.getActiveCaptureState(); current();
+        if (!active || active.phase !== "recording" || active.sessionId !== sessionId
+          // Version 2 flow records implicitly carry the microphone channel.
+          || (active.channel ?? "microphone") !== "microphone" || active.reviewAfterUpload !== true
+          || active.lease.session_id !== sessionId || active.captureAuthorizedUntil === null
+          || !Number.isFinite(Date.parse(active.captureAuthorizedUntil))
+          || Date.parse(active.captureAuthorizedUntil) <= Date.now()
+          || Date.parse(active.captureAuthorizedUntil) > Date.parse(active.lease.expires_at)) throw unavailable();
+        const prepared = Object.freeze({ sessionId, leaseId: uuid(active.lease.lease_id),
+          leaseReceiptId: uuid(active.lease.receipt_id), leaseGeneration: active.lease.generation,
+          captureAuthorizedUntil: active.captureAuthorizedUntil,
+          ...(active.continuation?.firstSequenceNumber ? { firstSequenceNumber: active.continuation.firstSequenceNumber } : {}) });
+        await mount.prepareNativeSource(prepared, signal); current();
+        const checked = await ownedFlow.getActiveCaptureState(); current();
+        if (closed || closing || options.signal?.aborted || !checked || checked.phase !== "recording"
+          || checked.sessionId !== sessionId || (checked.channel ?? "microphone") !== "microphone"
+          || checked.lease.lease_id !== prepared.leaseId
+          || checked.lease.receipt_id !== prepared.leaseReceiptId
+          || checked.lease.generation !== prepared.leaseGeneration
+          || (checked.continuation?.firstSequenceNumber ?? 0) !== (prepared.firstSequenceNumber ?? 0)
+          || checked.captureAuthorizedUntil !== prepared.captureAuthorizedUntil) throw unavailable();
+        return source.start(options);
+      }, stop: stopSource },
       flowStore: ownedFlow, queueStorage, uploadTarget: mount.uploadTarget, release,
     };
   } catch (error) {

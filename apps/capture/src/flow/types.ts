@@ -9,6 +9,16 @@ import type {
 export const FLOW_RECORD_SCHEMA_VERSION = 2 as const;
 /** Non-microphone records fail closed in older microphone-only clients. */
 export const CHANNEL_FLOW_RECORD_SCHEMA_VERSION = 3 as const;
+/** A continued recording must never be opened by a one-interval writer. */
+export const CONTINUATION_FLOW_RECORD_SCHEMA_VERSION = 4 as const;
+
+export interface CaptureContinuation {
+  readonly prepared: boolean;
+  readonly firstSequenceNumber: number;
+  readonly reservationCount: number;
+  readonly previousLease: CaptureLeaseReceipt;
+  readonly renewIdempotencyKey: string;
+}
 
 export type ActiveCapturePhase =
   | "ready"
@@ -53,7 +63,9 @@ export interface PreparedCaptureSession {
 }
 
 export interface ActiveCaptureState {
-  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION;
+  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION
+    | typeof CONTINUATION_FLOW_RECORD_SCHEMA_VERSION;
+  readonly continuation?: CaptureContinuation;
   readonly channel?: ChunkReservationBatchRequest["channel"];
   readonly sessionId: string;
   readonly lease: CaptureLeaseReceipt;
