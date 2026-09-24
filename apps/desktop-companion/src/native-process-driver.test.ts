@@ -48,9 +48,10 @@ describe("private native pipe framing", () => {
   });
   it("bounds authority startup and prevents late authorization from spawning a source", async () => {
     vi.useFakeTimers();
-    const authorized = deferred<void>(), failures: DesktopPCMFailure[] = [];
+    const authorized = deferred<void>(), failures: DesktopPCMFailure[] = [], events: string[] = [];
     try {
       const driver = new NativeProcessPCMDriver({ enabled: true, helperPath: "/must-not-run", helperSha256: "0".repeat(64),
+        diagnostics: event => { events.push(event); throw new Error("unavailable diagnostic sink"); },
         isSessionActive: () => true, authorizeSelectedWindow: async () => {
           await authorized.promise;
           return { application: "com.google.Chrome", processID: 1, windowID: 1, captureAuthorizedUntil: Date.now() + 60_000 };
@@ -61,9 +62,11 @@ describe("private native pipe framing", () => {
       const rejected = expect(session.ready).rejects.toThrow();
       await vi.advanceTimersByTimeAsync(15_000); await rejected;
       expect(failures).toEqual(["failed"]);
+      expect(events).toEqual(["audio_start_pending", "audio_start_timeout", "audio_failed"]);
       expect(await session.stop({ mode: "discard" })).toBeNull();
       authorized.resolve(); await vi.advanceTimersByTimeAsync(1);
       expect(failures).toEqual(["failed"]);
+      expect(events).toEqual(["audio_start_pending", "audio_start_timeout", "audio_failed"]);
     } finally { authorized.resolve(); vi.useRealTimers(); }
   });
 });

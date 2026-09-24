@@ -79,7 +79,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
             openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
             indicator: presentation, presentation, selectWindow: presentation.selectWindow,
-            native: { ...audioOptions, isSessionActive: () => !linked.aborted && native.isReady() },
+            native: { ...audioOptions, diagnostics, isSessionActive: () => !linked.aborted && native.isReady() },
           }, linked);
           const owned = { workspace: connection.workspace,
             dispose: async () => { await connection.dispose(); connections.delete(owned); } };
