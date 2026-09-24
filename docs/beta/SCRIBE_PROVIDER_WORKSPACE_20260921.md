@@ -1,5 +1,138 @@
 # Local provider workspace — 2026-09-21
 
+## Actual desktop native process transport — 2026-09-22
+
+The Swift microphone/system producer now has a dedicated helper and a Node
+driver consumed by the existing PCM/WAV adapter. The actual cross-language pipe
+passes generated-audio delivery, final partial WAV, cancellation, backpressure,
+failed-stop retry and discard-upgrade checks. A deliberately unresponsive source
+also proves that parent loss ends the dedicated process at its cleanup deadline.
+The production helper compiles but was not activated against physical audio.
+All 52 desktop and 26 native checks pass, along with typecheck, affected lint and
+the Node driver build.
+
+The driver verifies the packaged helper path/hash, bounds startup before native
+spawn and waits for process exit before confirming stop. It carries fixed source
+selection/limits and metadata/PCM only; credentials and raw audio stay outside
+the renderer. Acknowledgement includes completed WAV persistence; partial chunks
+remain bounded in memory until completion/drain. See
+[ADR 0057](../adr/0057-desktop-native-process-transport.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-native-pipe-20260922.eMXizG/`.
+
+Next compose durable main-process stores and provider controls/authority. The
+desktop host is still uninstalled; this is not physical Meet/Zoom, native
+permission/indicator, complete Core runtime or signed release acceptance. W13,
+Mac R2, private receiver and pending standalone identity remain unchanged.
+No completed phone or live-service trial was repeated.
+
+## Desktop PCM into encrypted capture — 2026-09-22
+
+The desktop main-process source now adapts mixed PCM into the existing
+WAV/encryption/reservation/upload workflow. A Node check encrypted generated PCM,
+decrypted and verified its WAV samples, reopened retained mixed capture state,
+uploaded once and reached configured processing. Native input, BFF and IndexedDB
+are explicit offline fixtures; this is not installed-app, real Core authorization
+or operating-system storage acceptance.
+
+The iOS PCM lifecycle was extracted for reuse; foreground policy and
+Capacitor/native auth/storage bridges are unchanged. Eleven desktop and 47 iOS
+checks pass, with typecheck/lint. See
+[ADR 0056](../adr/0056-desktop-pcm-encrypted-capture-adapter.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-encrypted-capture-20260922.uS0Pdu/`.
+
+Next bind the actual Swift-to-main transport, durable main-process stores and
+provider UI/authority. Start/tail coverage must be retained and shown. W13,
+Mac R2, private receiver, Core and pending standalone identity remain unchanged.
+No native app or live trial ran.
+
+## Desktop clock alignment and PCM conversion — 2026-09-22
+
+The native desktop producer now carries source sample positions into a mixed
+16 kHz mono PCM sink. It aligns microphone/system audio by observed host times,
+checks sample continuity independently of clock drift, and reports the actual
+common start and unmatched tails. Normal stop can drain accepted input; failures
+discard it. Missing audio is never filled with silence or replaced by a source.
+
+This is native source functionality, still unmounted in an app. Main-process
+WAV/encryption/upload and recording-UI integration remain the next desktop work.
+Physical timing/silence/Meet/Zoom behavior and native lifetime acceptance remain
+open. See [ADR 0055](../adr/0055-host-clock-aligned-desktop-pcm.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-mixer-20260922.IPmHEd/` for exact local
+conversion/delivery checks and the independently calculated PCM goldens.
+The complete native source compiles with warnings as errors; 23 Swift checks and
+two exact-rational golden cases pass. This does not establish physical fidelity.
+W13, Mac R2, private receiver, Core and pending standalone identity configuration
+remain unchanged; no native source, permission prompt or live service ran.
+
+## Native desktop audio source preparation — 2026-09-22
+
+The desktop foundation still has its original mock adapter, but a separate native
+macOS 14.2 source now implements selected-window ScreenCaptureKit audio plus
+AVFoundation microphone input. It preserves source timestamps and channels,
+bounds/clears native delivery, and retains partial-start/failed-stop resources.
+It requires the existing main-process authority/indicator and is disabled by
+default. No raw audio is exposed to the renderer.
+
+Ten Swift checks and the complete native source compile pass with warnings as
+errors, using generated samples and in-memory AVFoundation buffers. No physical
+source, permission prompt or app was started. See
+[ADR 0054](../adr/0054-native-macos-meeting-audio-source.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-audio-20260922.uiZP2V/`.
+
+Main-process alignment/mixing, encryption/upload, native lifetime fault checks,
+actual host packaging, Windows and physical acceptance remain open. Chrome window
+selection does not prove tab-isolated audio; its actual capture extent must be
+qualified and disclosed before activation. The separate iOS identity packet
+remains unapplied while the owner's decision is pending.
+
+## Standalone application startup — 2026-09-22
+
+The provider entry now exports `mountNativeProviderIOSApplication` to compose
+native sign-in, the receiver backend, iOS recorder host and complete provider
+workspace. It owns restored sessions, explicit reopen, immediate clearing on
+access changes, sign-out while connecting, late connection disposal and retry of
+unconfirmed recording cleanup. The native authentication implementation remains
+unchanged; a failed sign-out cannot silently reopen the old ready session.
+
+Ten checks against the actual compiled UI and eight backend checks pass. The
+native startup reaches recording preparation using explicit offline Capacitor
+responses, without fetching a token in JavaScript or requesting a microphone.
+Typecheck, lint, provider build and preview isolation checks pass. See
+[ADR 0053](../adr/0053-standalone-provider-application-lifecycle.md) and
+`/Users/jw/Desktop/Cosmas/scribe-provider-application-20260922.FhyAep/`.
+
+The reconnected iPhone was verified ready by a read-only query. No new app has
+been installed. The [standalone identity packet](SCRIBE_STANDALONE_IOS_IDENTITY_PACKET_20260922.md)
+contains the exact, unapplied native configuration change; the owner's decision
+is pending. Real Core runtime/account correspondence, upload, Core navigation and
+native packaging remain open. Existing Core/Scribe checkout roots contain no
+active local `.env` configuration; the old full browser fixture directory is
+absent as already recorded. No running/shared Core service was selected or
+modified to fill that gap.
+
+## Native provider receiver connection — 2026-09-22
+
+The iOS backend now connects the current provider host to the fixed receiver
+through the existing native session owner. Native code obtains each fresh SDK
+token and keeps it out of JavaScript. The bridge handles request cancellation,
+logout/session changes, late replies, stable server recovery scope and Core
+conflicts. It reports provider readiness only when its receiver profile is valid
+and Capacitor bridge logging is disabled.
+
+Eight backend checks, nine compiled native checks, the complete iOS-17-targeted
+bridge typecheck and built provider UI check pass. A real native HTTPS roundtrip
+also passes with an offline signed identity and an isolated database: catalog,
+mount, configured admission, review and note templates reach the receiver/Core
+wire fixture; a wrong TLS pin and post-logout request are rejected.
+See [ADR 0052](../adr/0052-native-provider-receiver-bridge.md) and evidence at
+`/Users/jw/Desktop/Cosmas/scribe-provider-native-bridge-20260922.WPYCoIZE/`.
+
+W13 and Mac R2 remain unchanged. This is not a standalone app installation or
+live Core acceptance. The retained authentication configuration permits only
+CosmasOS synthetic bundle identities; the standalone Scribe identity/callback,
+reviewed Core runtime/account correspondence, upload target and Core navigation
+still need their concrete app configuration and end-to-end acceptance.
+
 ## Standalone provider receiver preparation — 2026-09-22
 
 The server transport's fresh-authority callback is now bound to the existing

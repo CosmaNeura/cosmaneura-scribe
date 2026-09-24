@@ -8,7 +8,27 @@ are dated evidence, not promises about their present state.
 2026-09-22 provider continuation: while the owner disconnected the phone, local
 work added the Core transport (ADR 0049), configured mixed/system-audio recovery
 (ADR 0050), and a separate receiver bound to the retained identity and reviewed
-Core correspondence (ADR 0051). Read the newest sections of
+Core correspondence (ADR 0051). The native provider bridge (ADR 0052) then passed
+local native HTTPS/authorization and built-UI checks with offline identities/Core
+responses; it remains uninstalled and has no standalone app identity configured.
+After the owner returned with the phone connected, standalone application
+startup/cleanup (ADR 0053) passed ten compiled-UI checks and eight backend checks.
+The separate Scribe identity/callback packet is prepared but unapplied, with the
+owner's decision pending; do not infer approval from the prior W13 grants.
+While that decision remained pending, a dormant macOS audio producer (ADR 0054)
+compiled and passed ten generated-audio/data/disabled-start checks. It is not
+mounted in Electron. The subsequent native mixer (ADR 0055) aligns both source
+clocks into 16 kHz mono PCM, retaining explicit start/tail coverage and separate
+normal-drain/failure-discard behavior. ADR 0056 then connected a desktop PCM driver
+contract to the existing WAV/encrypted capture/recovery flow in Node, preserving
+iOS foreground policy through a shared lifecycle. Eleven desktop and 47 iOS
+checks pass with explicit native/BFF/storage fixtures. Actual Swift-to-main
+transport was then implemented in ADR 0057: a dedicated Swift helper and Node
+driver pass actual pipe/WAV, cancellation, backpressure, stop-retry and
+parent-loss exit checks using an invented source. The production helper compiles
+but remains unactivated. Durable host stores/UI and native lifecycle/physical
+acceptance remain open. No physical recording or live trial ran.
+Read the newest sections of
 `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` for their source/evidence and exact
 remaining native/runtime boundaries. W13 build 4's catalog, signed-in restart,
 logout, signed-out restart and fresh emailed-code sign-in are accepted separately;

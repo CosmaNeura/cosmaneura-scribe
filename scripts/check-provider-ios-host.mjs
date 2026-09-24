@@ -20,7 +20,7 @@ Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, indexedDB: 
 window.fetch = () => { throw new Error("Unexpected network request"); };
 window.CapacitorCustomPlatform = { name: "ios" }; // Explicit fixture, never part of the product bundle.
 window.Capacitor = {
-  PluginHeaders: [{ name: "IOSPCM", methods: [] }, { name: "SecureQueue",
+  PluginHeaders: [{ name: "IOSPCM", methods: [] }, { name: "CosmasWorkspaceAuth", methods: [] }, { name: "SecureQueue",
     methods: ["get", "list", "create", "compareAndSwap"].map(name => ({ name, rtype: "promise" })) }],
   nativePromise: async (plugin, method, options) => {
     calls.push({ plugin, method, key: options?.key });
@@ -73,5 +73,37 @@ try {
   abort.abort(); await settle();
   assert.equal(root.childElementCount, 0);
   await assert.rejects(authorized.recorder(session, abort.signal), /provider_native_scope_unavailable/);
+  // Exercise the actual built native backend and iOS host together. Only the
+  // native RPC responses/navigation are fixtures; the connection and UI are not.
+  const nativeAbort = new window.AbortController(), revision = webcrypto.randomUUID();
+  let nativeStateChanged, listenerRemoved = false;
+  const nativeCalls = [];
+  const backend = await module.namespace.connectNativeProviderIOSBackend({ signal: nativeAbort.signal,
+    uploadTarget: { putCompleteEnvelope: unavailable },
+    core: { createEncounter: unavailable, openEncounter: unavailable },
+  }, {
+    getProviderState: async () => ({ phase: "ready", revision, providerReady: true }),
+    addListener: async (_event, callback) => { nativeStateChanged = callback;
+      return { remove: async () => { listenerRemoved = true; } }; },
+    cancelProviderRequest: async () => undefined,
+    providerRequest: async request => {
+      nativeCalls.push(request.action);
+      assert.ok(["catalog", "mount"].includes(request.action));
+      const body = request.action === "catalog" ? { revision, encounters: [{ ...encounter, workspaceId: workspace }] }
+        : { revision, encounter, recoveryScope: recovery, workspaceId: workspace,
+          appointmentRef: appointment, bindingRef: "scribe_capture_binding_01j00000000000000000000000" };
+      return { requestId: request.requestId, revision, status: 200, body: JSON.stringify(body) };
+    },
+  });
+  const connectedRoot = window.document.createElement("div"); window.document.body.append(connectedRoot);
+  const closeConnected = module.namespace.mountProviderWorkspace(connectedRoot, module.namespace.createProviderIOSHost(backend));
+  try {
+    await settle(); connectedRoot.querySelector('[data-workspace-action="open"]').click(); await settle();
+    assert.ok(connectedRoot.textContent.includes("Prepare recording"));
+    assert.deepEqual(nativeCalls, ["catalog", "mount"]);
+    nativeStateChanged({ phase: "signedOut", revision: webcrypto.randomUUID() }); await settle();
+    assert.equal(connectedRoot.childElementCount, 0); assert.equal(listenerRemoved, true);
+  } finally { await closeConnected(); await backend.dispose(); }
   console.log("Built iOS host mounts the provider preparation view, scopes native recovery, reauthorizes recorder acquisition, excludes foreign records, releases its lock, and clears on revocation without AbortSignal.any. Native/Core implementations are offline fixtures; no audio or services run.");
+  console.log("The built native provider backend also reaches recording preparation through catalog/mount RPC and clears the actual provider UI on native sign-out, without retrieving a token in JavaScript.");
 } finally { await dispose(); dom.window.close(); }
