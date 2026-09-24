@@ -44,9 +44,12 @@ algorithm has separate committed goldens checked with exact Fraction arithmetic.
 It does not claim arbitrary callback segmentation gives identical bytes when
 the measured clock anchors themselves differ.
 
-Each track retains at most four resolved frames plus one pending frame, with the
-existing 8,192-frame native input bound. Output packets contain at most 4,096 PCM
-frames and sequential frame offsets. The owner supplies the Core-derived total
+Each track retains at most 40,960 mono samples, 128 input buffers and two seconds
+of nominal source audio, with the existing 8,192-frame native input bound. The
+sample ceiling preserves the former five maximum-size buffers while allowing
+different callback sizes and bounded startup skew. The metadata and duration
+ceilings prevent tiny or low-rate buffers from extending retention. Output
+packets contain at most 4,096 PCM frames and sequential frame offsets. The owner supplies the Core-derived total
 output bound. Missing/slow sources fail at the queue bound. Samples clear after
 consumption, rejection, discard and drain; downstream copies remain their owner's
 responsibility. Sink calls are synchronous and must not wait for network I/O.

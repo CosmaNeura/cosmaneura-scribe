@@ -112,12 +112,85 @@ private final class PCMSink: DesktopPCMSink, @unchecked Sendable {
     let fixture = MixerFixture(), sink = PCMSink()
     let mixer = try AlignedMeetingPCM(maximumOutputFrames: 16_000, sink: sink)
     let data = Array(repeating: Float(0.5), count: 480)
-    for i in 0..<5 {
+    for i in 0..<85 {
         #expect(mixer.receive(try fixture.frame(.microphone, offset: UInt64(i * 10_000_000),
             position: Int64(i * 480), samples: data)))
     }
-    #expect(!mixer.receive(try fixture.frame(.microphone, offset: 50_000_000, position: 2400, samples: data)))
+    #expect(!mixer.receive(try fixture.frame(.microphone, offset: 850_000_000, position: 40_800, samples: data)))
     #expect(sink.errors == [.bufferOverflow]); #expect(sink.values.isEmpty); #expect(sink.starts.isEmpty)
+}
+
+@Test func delayedSystemStartupRetainsBoundedPrerollAndReportsActualCoverage() throws {
+    let fixture = MixerFixture(), sink = PCMSink()
+    let mixer = try AlignedMeetingPCM(maximumOutputFrames: 16_000, sink: sink)
+    let data = Array(repeating: Float(0.5), count: 1024)
+    for i in 0..<12 {
+        #expect(mixer.receive(try fixture.frame(.microphone,
+            offset: UInt64((Double(i * 1024) / 48_000 * 1_000_000_000).rounded()),
+            position: Int64(i * 1024), samples: data)))
+    }
+    #expect(sink.starts.isEmpty); #expect(sink.values.isEmpty)
+    for i in 0..<2 {
+        #expect(mixer.receive(try fixture.frame(.systemAudio,
+            offset: 200_000_000 + UInt64((Double(i * 1024) / 48_000 * 1_000_000_000).rounded()),
+            position: Int64(i * 1024), samples: data)))
+    }
+    let result = try mixer.finish()
+    #expect(sink.errors.isEmpty); #expect(sink.starts.count == 1)
+    #expect(result.start.microphonePrerollNanoseconds == 200_000_000)
+    #expect(result.start.systemPrerollNanoseconds == 0)
+    #expect(result.outputFrames == 683)
+    #expect(sink.values.allSatisfy { $0 == 16_384 })
+}
+
+@Test func disparateCallbackSizesPreserveBothSourcesWithoutOverflowOrMissingSamples() throws {
+    let fixture = MixerFixture()
+    for largeChannel in [DesktopAudioChannel.microphone, .systemAudio] {
+        let smallChannel: DesktopAudioChannel = largeChannel == .microphone ? .systemAudio : .microphone
+        let sink = PCMSink(), mixer = try AlignedMeetingPCM(maximumOutputFrames: 16_000, sink: sink)
+        for i in 0..<24 {
+            let position = i * 1024
+            let offset = UInt64((Double(position) / 48_000 * 1_000_000_000).rounded())
+            if i % 8 == 0 {
+                #expect(mixer.receive(try fixture.frame(largeChannel, offset: offset,
+                    position: Int64(position), samples: Array(repeating: Float(0.5), count: 8192))))
+            }
+            #expect(mixer.receive(try fixture.frame(smallChannel, offset: offset,
+                position: Int64(position), samples: Array(repeating: Float(0.5), count: 1024))))
+        }
+        let result = try mixer.finish()
+        #expect(sink.errors.isEmpty); #expect(result.outputFrames == 8192)
+        #expect(sink.values.count == 8192); #expect(sink.values.allSatisfy { $0 == 16_384 })
+    }
+}
+
+@Test func absentSourceIsAlsoBoundedByElapsedAudioAndMetadata() throws {
+    let fixture = MixerFixture()
+    for count in [1, 480] {
+        let sink = PCMSink(), mixer = try AlignedMeetingPCM(maximumOutputFrames: 16_000, sink: sink)
+        let accepted = count == 1 ? 128 : 66
+        for i in 0..<accepted {
+            #expect(mixer.receive(try fixture.frame(.microphone, offset: UInt64(i * count * 62_500),
+                position: Int64(i * count), rate: 16_000, samples: Array(repeating: Float(0.5), count: count))))
+        }
+        #expect(!mixer.receive(try fixture.frame(.microphone, offset: UInt64(accepted * count * 62_500),
+            position: Int64(accepted * count), rate: 16_000, samples: Array(repeating: Float(0.5), count: count))))
+        #expect(sink.errors == [.bufferOverflow]); #expect(sink.starts.isEmpty); #expect(sink.values.isEmpty)
+    }
+}
+
+@Test func largestBuffersAtLowestSupportedRateCanEstablishBothClockAnchors() throws {
+    let fixture = MixerFixture(), sink = PCMSink()
+    let mixer = try AlignedMeetingPCM(maximumOutputFrames: 40_000, sink: sink)
+    for i in 0..<3 {
+        for channel in [DesktopAudioChannel.microphone, .systemAudio] {
+            #expect(mixer.receive(try fixture.frame(channel, offset: UInt64(i * 512_000_000),
+                position: Int64(i * 8192), rate: 16_000, samples: Array(repeating: Float(0.5), count: 8192))))
+        }
+    }
+    let result = try mixer.finish()
+    #expect(sink.errors.isEmpty); #expect(result.outputFrames == 24_576)
+    #expect(sink.values.count == 24_576); #expect(sink.values.allSatisfy { $0 == 16_384 })
 }
 
 @Test func sourceWithoutClockPositionCannotEnterAlignedConversion() throws {

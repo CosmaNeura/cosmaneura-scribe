@@ -64,7 +64,12 @@ An OS stop timeout is not permission to finish or release the source handle.
 PCM packets have sequential frame offsets and at most 4,096 samples. Their
 synchronous consumer must copy/encrypt within the callback and must not wait for
 network I/O. Packets clear after consumption/rejection. Each input track retains
-at most four resolved frames plus one pending frame. `host-aligned-area-v1` has
+at most 40,960 mono samples (the former five maximum-size input buffers), 128
+buffers, and two seconds of nominal source audio. Those independent ceilings
+allow startup skew and different callback sizes without increasing the maximum
+raw sample retention. A missing or persistently slow source still fails closed.
+ScreenCaptureKit startup completes before the microphone engine starts; ownership
+and cancellation are rechecked after that suspension. `host-aligned-area-v1` has
 its own exact-rational clock goldens; it does not change the existing nominal-rate
 resampler or assert identical bytes when measured clock anchors differ.
 

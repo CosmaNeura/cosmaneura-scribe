@@ -163,12 +163,26 @@ private struct ClockSpan {
 }
 
 private struct ClockTrack {
+    // Bound retained audio independently of OS callback size/cadence. The
+    // sample ceiling matches the former five maximum-size (8,192) buffers.
+    // Separate metadata/time ceilings also bound tiny or slow-rate callbacks.
+    private static let maximumRetainedSamples = 40_960
+    private static let maximumRetainedFrames = 128
+    private static let maximumRetainedNanoseconds = 2_000_000_000.0
     var pending: MonoFrame?
     var spans: [ClockSpan] = []
     var firstStart: UInt64?
     var nanosecondsPerFrame: Double?
 
     mutating func push(_ frame: MonoFrame) throws {
+        let retainedSamples = spans.reduce(pending?.count ?? 0) { $0 + $1.frame.count }
+        let retainedFrames = spans.count + (pending == nil ? 0 : 1)
+        guard frame.count <= Self.maximumRetainedSamples - retainedSamples,
+              retainedFrames < Self.maximumRetainedFrames else { throw DesktopAudioFailure.bufferOverflow }
+        let oldest = spans.first?.frame.start ?? pending?.start ?? frame.start
+        guard frame.start >= oldest else { throw DesktopAudioFailure.clockDiscontinuity }
+        let retainedDuration = Double(frame.start - oldest) + Double(frame.count) * 1_000_000_000 / Double(frame.rate)
+        guard retainedDuration <= Self.maximumRetainedNanoseconds else { throw DesktopAudioFailure.bufferOverflow }
         if let previous = pending {
             let (nextPosition, overflow) = previous.position.addingReportingOverflow(Int64(previous.count))
             guard !overflow, frame.position == nextPosition, frame.rate == previous.rate,
@@ -180,7 +194,6 @@ private struct ClockTrack {
             // This is a rejection ceiling, not a claim about hardware accuracy.
             // A lost source sample still fails the independent position check.
             guard (0.995...1.005).contains(ratio) else { throw DesktopAudioFailure.clockDiscontinuity }
-            guard spans.count < 4 else { throw DesktopAudioFailure.bufferOverflow }
             spans.append(ClockSpan(frame: previous, end: frame.start))
             nanosecondsPerFrame = period
         } else { firstStart = frame.start }
@@ -191,7 +204,7 @@ private struct ClockTrack {
         guard let pending, let period = nanosecondsPerFrame else { throw DesktopAudioFailure.clockDiscontinuity }
         let duration = UInt64((Double(pending.count) * period).rounded())
         let (end, overflow) = pending.start.addingReportingOverflow(duration)
-        guard !overflow, end > pending.start, spans.count < 5 else { throw DesktopAudioFailure.clockDiscontinuity }
+        guard !overflow, end > pending.start else { throw DesktopAudioFailure.clockDiscontinuity }
         spans.append(ClockSpan(frame: pending, end: end)); self.pending = nil
     }
 

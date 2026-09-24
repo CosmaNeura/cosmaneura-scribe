@@ -6,12 +6,18 @@ import Testing
     func command(_ values: [String: Any]) throws -> Data {
         var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: values)); return data
     }
+    let epoch = UUID().uuidString.lowercased()
     var start: [String: Any] = ["type": "start", "application": "com.google.Chrome", "processID": 1,
-        "windowID": 1, "maximumDurationSeconds": 60, "maximumOutputFrames": 16_000]
-    guard case .start(let selection, let duration, let frames) = try ProcessCommand.parse(command(start)) else {
+        "windowID": 1, "maximumDurationSeconds": 60, "maximumOutputFrames": 16_000,
+        "processFence": ["epoch": epoch, "coordinatorDevice": "1", "coordinatorInode": "2",
+                         "captureDevice": "1", "captureInode": "3"]]
+    guard case .start(let selection, let duration, let frames, let fence) = try ProcessCommand.parse(command(start)) else {
         Issue.record("Missing selected source command"); return
     }
     #expect(selection.processID == 1 && duration == 60 && frames == 16_000)
+    #expect(fence.epoch == epoch)
+    var missingFence = start; missingFence.removeValue(forKey: "processFence")
+    #expect(throws: DesktopAudioFailure.self) { try ProcessCommand.parse(command(missingFence)) }
     start["processID"] = true
     #expect(throws: DesktopAudioFailure.self) { try ProcessCommand.parse(command(start)) }
     start["processID"] = 1; start["token"] = "invented-disallowed-field"
