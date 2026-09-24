@@ -19,7 +19,11 @@ from .capture_protocol_v1 import (
     PROTOCOL_VERSION,
     RESERVATION_PLAINTEXT_BUDGET_BYTES,
 )
-from .external_transcript_v1 import NormalizedSourceTranscriptRequestV1
+from .external_transcript_v1 import (
+    NormalizedSourceTranscriptRequestV1,
+    TranslationRecordV1,
+    TranslationReviewEvidenceV1,
+)
 from .normalized_source_persistence import (
     NORMALIZED_SOURCE_RETENTION_PRINCIPAL_ID,
     ConfiguredExternalSessionStatus,
@@ -64,6 +68,15 @@ from .schemas import (
 )
 from .session_state_v1 import SessionIngestMode, can_transition_session
 from .transcript_constraints import NORMALIZED_SOURCE_RETENTION_LIMIT
+from .working_transcript_persistence import (
+    NormalizedWorkingTranscriptRecord,
+    WorkingTranscriptPersistenceCode,
+    WorkingTranscriptPersistenceError,
+    WorkingTranscriptPublication,
+    WorkingTranscriptPublishDisposition,
+    can_publish_working_transcript,
+    derive_persisted_working_transcript,
+)
 
 
 class IdempotencyConflictError(ValueError):
@@ -333,6 +346,12 @@ class Repository(Protocol):
         tenant_id: UUID,
         session_id: UUID,
     ) -> NormalizedSourceTranscriptRecord | None: ...
+
+    async def publish_current_working_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> WorkingTranscriptPublication | None: ...
 
     async def fail_versioned_external_session(
         self,
@@ -634,6 +653,15 @@ class InMemoryRepository:
     normalized_source_receipt_keys: dict[
         tuple[UUID, UUID, str], NormalizedSourceReceiptKeyRecord
     ] = field(default_factory=lambda: {})
+    normalized_translation_attempts: dict[
+        tuple[UUID, UUID, int, UUID], TranslationRecordV1
+    ] = field(default_factory=lambda: {})
+    normalized_translation_reviews: dict[
+        tuple[UUID, UUID, int, UUID], TranslationReviewEvidenceV1
+    ] = field(default_factory=lambda: {})
+    normalized_working_transcripts: dict[
+        tuple[UUID, UUID, int], NormalizedWorkingTranscriptRecord
+    ] = field(default_factory=lambda: {})
     external_session_terminal_events: dict[
         tuple[UUID, UUID], ExternalSessionTerminalEventRecord
     ] = field(default_factory=lambda: {})
@@ -678,6 +706,9 @@ class InMemoryRepository:
                 copy.deepcopy(self.versioned_external_sessions),
                 copy.deepcopy(self.normalized_source_transcripts),
                 copy.deepcopy(self.normalized_source_receipt_keys),
+                copy.deepcopy(self.normalized_translation_attempts),
+                copy.deepcopy(self.normalized_translation_reviews),
+                copy.deepcopy(self.normalized_working_transcripts),
                 copy.deepcopy(self.external_session_terminal_events),
                 copy.deepcopy(self.session_audio_keys),
                 copy.deepcopy(self.capture_leases),
@@ -706,6 +737,9 @@ class InMemoryRepository:
                     self.versioned_external_sessions,
                     self.normalized_source_transcripts,
                     self.normalized_source_receipt_keys,
+                    self.normalized_translation_attempts,
+                    self.normalized_translation_reviews,
+                    self.normalized_working_transcripts,
                     self.external_session_terminal_events,
                     self.session_audio_keys,
                     self.capture_leases,
@@ -996,6 +1030,9 @@ class InMemoryRepository:
             source_received_at=session.source_received_at or received_at,
             transcript_content_expires_at=expires_at,
             current_source_transcript_version=version,
+            current_working_transcript_version=(
+                None if not first_receipt else session.current_working_transcript_version
+            ),
         )
         self.versioned_external_sessions[(tenant_id, session_id)] = updated_session
         self.normalized_source_transcripts[(tenant_id, session_id, version)] = source
@@ -1040,6 +1077,143 @@ class InMemoryRepository:
         )
         self._require_live_normalized_source_session(session, datetime.now(UTC))
         return source
+
+    async def publish_current_working_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> WorkingTranscriptPublication | None:
+        reference = self.versioned_external_sessions.get((tenant_id, session_id))
+        if reference is None:
+            return None
+        consent = await self.lock_consent(tenant_id, reference.consent_record_id)
+        session = self.versioned_external_sessions.get((tenant_id, session_id))
+        if session is None or session.consent_record_id != reference.consent_record_id:
+            return None
+        if not consent_authorizes_versioned_session(consent, session):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.CONSENT_INVALID
+            )
+        self._require_live_working_session(session, datetime.now(UTC))
+        source_version = session.current_source_transcript_version
+        if source_version is None:
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+        source = self.normalized_source_transcripts.get(
+            (tenant_id, session_id, source_version)
+        )
+        if source is None:
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+        translations = tuple(
+            value
+            for key, value in self.normalized_translation_attempts.items()
+            if key[:3] == (tenant_id, session_id, source_version)
+        )
+        reviews = tuple(
+            value
+            for key, value in self.normalized_translation_reviews.items()
+            if key[:3] == (tenant_id, session_id, source_version)
+        )
+        working_id = session.working_transcript_id or uuid4()
+        current_version = session.current_working_transcript_version
+        if current_version is not None:
+            current = self.normalized_working_transcripts.get(
+                (tenant_id, session_id, current_version)
+            )
+            if (
+                current is None
+                or current.working_transcript.working_transcript_id != working_id
+                or current.working_transcript.working_transcript_version != current_version
+                or current.working_transcript.source_transcript_version != source_version
+            ):
+                raise WorkingTranscriptPersistenceError(
+                    WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                )
+            derivation = derive_persisted_working_transcript(
+                source,
+                translations,
+                reviews,
+                working_transcript_id=working_id,
+                working_transcript_version=current_version,
+            )
+            if current.working_fingerprint == derivation.working_fingerprint:
+                if session.status != derivation.status:
+                    raise WorkingTranscriptPersistenceError(
+                        WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                    )
+                self._require_live_working_session(
+                    self.versioned_external_sessions[(tenant_id, session_id)],
+                    datetime.now(UTC),
+                )
+                return self._working_publication(
+                    current,
+                    session_id=session_id,
+                    source_transcript_version=source_version,
+                    status=derivation.status,
+                    disposition=WorkingTranscriptPublishDisposition.REPLAYED,
+                )
+
+        existing_versions = [
+            version
+            for row_tenant, row_session, version in self.normalized_working_transcripts
+            if (row_tenant, row_session) == (tenant_id, session_id)
+        ]
+        next_version = max(existing_versions, default=0) + 1
+        if (session.working_transcript_id is None) != (next_version == 1):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+        derivation = derive_persisted_working_transcript(
+            source,
+            translations,
+            reviews,
+            working_transcript_id=working_id,
+            working_transcript_version=next_version,
+        )
+        if not can_publish_working_transcript(session.status, derivation.status):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+        created_at = datetime.now(UTC)
+        record = NormalizedWorkingTranscriptRecord(
+            working_transcript=derivation.working_transcript,
+            working_fingerprint=derivation.working_fingerprint,
+            translation_inputs=derivation.bundle.translations,
+            review_inputs=derivation.bundle.translation_reviews,
+            created_at=created_at,
+        )
+        self.versioned_external_sessions[(tenant_id, session_id)] = replace(
+            session,
+            status=derivation.status,
+            working_transcript_id=working_id,
+            current_working_transcript_version=next_version,
+        )
+        self.normalized_working_transcripts[(tenant_id, session_id, next_version)] = record
+        disposition = (
+            WorkingTranscriptPublishDisposition.PUBLISHED
+            if next_version == 1
+            else WorkingTranscriptPublishDisposition.REPLACED
+        )
+        await self.audit(
+            tenant_id=tenant_id,
+            action="normalized_working_transcript.published",
+            entity_type="normalized_working_transcript",
+            entity_id=working_id,
+        )
+        self._require_live_working_session(
+            self.versioned_external_sessions[(tenant_id, session_id)],
+            datetime.now(UTC),
+        )
+        return self._working_publication(
+            record,
+            session_id=session_id,
+            source_transcript_version=source_version,
+            status=derivation.status,
+            disposition=disposition,
+        )
 
     async def fail_versioned_external_session(
         self,
@@ -1172,6 +1346,7 @@ class InMemoryRepository:
             status=status,
             content_purged_at=now,
             current_source_transcript_version=None,
+            current_working_transcript_version=None,
         )
         self.versioned_external_sessions[(tenant_id, session_id)] = purged
         self._delete_normalized_source_content(tenant_id, session_id)
@@ -1194,6 +1369,21 @@ class InMemoryRepository:
             for key, value in self.normalized_source_receipt_keys.items()
             if key[:2] != (tenant_id, session_id)
         }
+        self.normalized_translation_attempts = {
+            key: value
+            for key, value in self.normalized_translation_attempts.items()
+            if key[:2] != (tenant_id, session_id)
+        }
+        self.normalized_translation_reviews = {
+            key: value
+            for key, value in self.normalized_translation_reviews.items()
+            if key[:2] != (tenant_id, session_id)
+        }
+        self.normalized_working_transcripts = {
+            key: value
+            for key, value in self.normalized_working_transcripts.items()
+            if key[:2] != (tenant_id, session_id)
+        }
 
     def _current_normalized_source(
         self,
@@ -1204,6 +1394,47 @@ class InMemoryRepository:
         if version is None:
             return None
         return self.normalized_source_transcripts.get((tenant_id, session.id, version))
+
+    @staticmethod
+    def _working_publication(
+        record: NormalizedWorkingTranscriptRecord,
+        *,
+        session_id: UUID,
+        source_transcript_version: int,
+        status: ConfiguredExternalSessionStatus,
+        disposition: WorkingTranscriptPublishDisposition,
+    ) -> WorkingTranscriptPublication:
+        working = record.working_transcript
+        return WorkingTranscriptPublication(
+            session_id=session_id,
+            working_transcript_id=working.working_transcript_id,
+            working_transcript_version=working.working_transcript_version,
+            source_transcript_version=source_transcript_version,
+            status=status,
+            created_at=record.created_at,
+            disposition=disposition,
+        )
+
+    @staticmethod
+    def _require_live_working_session(
+        session: VersionedExternalSessionRecord,
+        now: datetime,
+    ) -> None:
+        if session.content_purged_at is not None or (
+            session.transcript_content_expires_at is not None
+            and now >= session.transcript_content_expires_at
+        ):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.RETENTION_EXPIRED
+            )
+        if session.status in {
+            ConfiguredExternalSessionStatus.CREATED,
+            ConfiguredExternalSessionStatus.HANDED_OFF,
+            ConfiguredExternalSessionStatus.FAILED,
+        }:
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
 
     @staticmethod
     def _terminal_failure_matches(

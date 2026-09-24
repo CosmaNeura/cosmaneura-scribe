@@ -139,6 +139,8 @@ class VersionedExternalSessionRecord:
     transcript_content_expires_at: datetime | None = None
     content_purged_at: datetime | None = None
     current_source_transcript_version: int | None = None
+    working_transcript_id: UUID | None = None
+    current_working_transcript_version: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("appointment_id", "practitioner_id", "patient_id"):
@@ -162,6 +164,14 @@ class VersionedExternalSessionRecord:
             value = getattr(self, name)
             if value is not None and (value.tzinfo is None or value.utcoffset() is None):
                 raise ValueError(f"{name} must include a UTC offset")
+        if (
+            self.current_working_transcript_version is not None
+            and (
+                self.working_transcript_id is None
+                or self.current_working_transcript_version < 1
+            )
+        ):
+            raise ValueError("current working transcript version requires an identity")
 
     def __repr__(self) -> str:
         return "VersionedExternalSessionRecord(<protected>)"

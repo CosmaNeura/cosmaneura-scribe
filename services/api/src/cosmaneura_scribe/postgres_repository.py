@@ -11,6 +11,7 @@ from azure.core.credentials import AccessToken
 from azure.identity.aio import DefaultAzureCredential
 from sqlalchemy import text
 from sqlalchemy.engine import URL
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -31,6 +32,10 @@ from .external_transcript_v1 import (
     NormalizedSourceTranscriptRequestV1,
     SourceLocale,
     TranscriptLanguageMode,
+    TranslationOutcome,
+    TranslationRecordV1,
+    TranslationReviewDecision,
+    TranslationReviewEvidenceV1,
 )
 from .normalized_source_persistence import (
     NORMALIZED_SOURCE_RETENTION_PRINCIPAL_ID,
@@ -107,7 +112,20 @@ from .schemas import (
 )
 from .session_state_v1 import SessionIngestMode
 from .settings import Settings
-from .transcript_constraints import NORMALIZED_SOURCE_RETENTION_LIMIT
+from .transcript_constraints import (
+    MAX_TRANSCRIPT_CONTENT_CHARS,
+    MAX_TRANSCRIPT_SEGMENTS,
+    NORMALIZED_SOURCE_RETENTION_LIMIT,
+)
+from .working_transcript_persistence import (
+    WorkingTranscriptDerivation,
+    WorkingTranscriptPersistenceCode,
+    WorkingTranscriptPersistenceError,
+    WorkingTranscriptPublication,
+    WorkingTranscriptPublishDisposition,
+    can_publish_working_transcript,
+    derive_persisted_working_transcript,
+)
 
 AZURE_POSTGRES_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
 MAXIMUM_CAPTURE_AUTHORIZATION_SECONDS = CAPTURE_LEASE_TTL_SECONDS
@@ -180,6 +198,8 @@ def _versioned_external_session_record(
         transcript_content_expires_at=row["transcript_content_expires_at"],
         content_purged_at=row["content_purged_at"],
         current_source_transcript_version=row["current_source_transcript_version"],
+        working_transcript_id=row.get("working_transcript_id"),
+        current_working_transcript_version=row.get("current_working_transcript_version"),
     )
 
 
@@ -993,6 +1013,242 @@ class PostgresRepository:
         await self._final_normalized_source_gate(tenant_id, session_id)
         return source
 
+    async def publish_current_working_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> WorkingTranscriptPublication | None:
+        locked = await self._lock_working_transcript_session(tenant_id, session_id)
+        if locked is None:
+            return None
+        session, database_now = locked
+        self._require_live_working_session(session, database_now)
+        source_version = session.current_source_transcript_version
+        if source_version is None:
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+        source = await self._get_normalized_source_by_version(
+            tenant_id,
+            session_id,
+            source_version,
+        )
+        if source is None:
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+        await self._validate_working_evidence_bounds(
+            tenant_id,
+            session_id,
+            source_version,
+        )
+        translations = await self._get_working_translation_inputs(
+            tenant_id,
+            session_id,
+            source_version,
+        )
+        reviews = await self._get_working_review_inputs(
+            tenant_id,
+            session_id,
+            source_version,
+        )
+        working_id = session.working_transcript_id or uuid4()
+        current_version = session.current_working_transcript_version
+        if current_version is not None:
+            current = await self._get_working_header(
+                tenant_id,
+                session_id,
+                current_version,
+            )
+            if (
+                current is None
+                or current["working_transcript_id"] != working_id
+                or current["source_transcript_version"] != source_version
+            ):
+                raise WorkingTranscriptPersistenceError(
+                    WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                )
+            current_derivation = derive_persisted_working_transcript(
+                source,
+                translations,
+                reviews,
+                working_transcript_id=working_id,
+                working_transcript_version=current_version,
+            )
+            if current["working_fingerprint"] == current_derivation.working_fingerprint:
+                if session.status != current_derivation.status:
+                    raise WorkingTranscriptPersistenceError(
+                        WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                    )
+                await self._final_working_transcript_gate(
+                    tenant_id,
+                    session_id,
+                    source_version=source_version,
+                    working_transcript_id=working_id,
+                    working_transcript_version=current_version,
+                    status=current_derivation.status,
+                    working_fingerprint=current_derivation.working_fingerprint,
+                )
+                return WorkingTranscriptPublication(
+                    session_id=session_id,
+                    working_transcript_id=working_id,
+                    working_transcript_version=current_version,
+                    source_transcript_version=source_version,
+                    status=current_derivation.status,
+                    created_at=current["created_at"],
+                    disposition=WorkingTranscriptPublishDisposition.REPLAYED,
+                )
+
+        maximum_version = await self._session.scalar(
+            text(
+                "SELECT COALESCE(max(working_transcript_version), 0) "
+                "FROM normalized_working_transcripts "
+                "WHERE tenant_id = :tenant_id AND session_id = :session_id"
+            ),
+            {"tenant_id": tenant_id, "session_id": session_id},
+        )
+        if not isinstance(maximum_version, int):
+            raise RuntimeError("working transcript version allocation failed")
+        next_version = maximum_version + 1
+        if (session.working_transcript_id is None) != (next_version == 1):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+        derivation = derive_persisted_working_transcript(
+            source,
+            translations,
+            reviews,
+            working_transcript_id=working_id,
+            working_transcript_version=next_version,
+        )
+        if not can_publish_working_transcript(session.status, derivation.status):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+
+        try:
+            async with self._session.begin_nested():
+                updated = await self._session.execute(
+                    text(
+                        """
+                        UPDATE scribe_sessions
+                        SET working_transcript_id = :working_transcript_id,
+                            current_working_transcript_version = :next_version,
+                            status = :status
+                        WHERE tenant_id = :tenant_id AND id = :session_id
+                          AND transcript_contract_version = :contract_version
+                          AND current_source_transcript_version = :source_version
+                          AND working_transcript_id IS NOT DISTINCT FROM :prior_working_id
+                          AND current_working_transcript_version
+                              IS NOT DISTINCT FROM :prior_working_version
+                          AND status = :prior_status
+                          AND content_purged_at IS NULL
+                          AND clock_timestamp() < transcript_content_expires_at
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "contract_version": VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+                        "source_version": source_version,
+                        "working_transcript_id": working_id,
+                        "next_version": next_version,
+                        "prior_working_id": session.working_transcript_id,
+                        "prior_working_version": current_version,
+                        "prior_status": session.status.value,
+                        "status": derivation.status.value,
+                    },
+                )
+                if updated.scalar_one_or_none() is None:
+                    await self._require_fresh_live_working_session(session)
+                    raise WorkingTranscriptPersistenceError(
+                        WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                    )
+                await self._insert_working_children(
+                    tenant_id,
+                    session_id,
+                    source_version=source_version,
+                    working_transcript_version=next_version,
+                    derivation=derivation,
+                )
+                created_at = await self._insert_working_header(
+                    tenant_id,
+                    session_id,
+                    source_version=source_version,
+                    working_transcript_id=working_id,
+                    working_transcript_version=next_version,
+                    derivation=derivation,
+                )
+                await self.audit(
+                    tenant_id=tenant_id,
+                    action="normalized_working_transcript.published",
+                    entity_type="normalized_working_transcript",
+                    entity_id=working_id,
+                )
+                await self._force_working_transcript_constraints()
+                await self._final_working_transcript_gate(
+                    tenant_id,
+                    session_id,
+                    source_version=source_version,
+                    working_transcript_id=working_id,
+                    working_transcript_version=next_version,
+                    status=derivation.status,
+                    working_fingerprint=derivation.working_fingerprint,
+                )
+                rearmed = await self._session.execute(
+                    text(
+                        """
+                        UPDATE scribe_sessions SET status = status
+                        WHERE tenant_id = :tenant_id AND id = :session_id
+                          AND transcript_contract_version = :contract_version
+                          AND current_source_transcript_version = :source_version
+                          AND working_transcript_id = :working_transcript_id
+                          AND current_working_transcript_version = :working_version
+                          AND status = :status
+                          AND content_purged_at IS NULL
+                          AND clock_timestamp() < transcript_content_expires_at
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "contract_version": VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+                        "source_version": source_version,
+                        "working_transcript_id": working_id,
+                        "working_version": next_version,
+                        "status": derivation.status.value,
+                    },
+                )
+                if rearmed.scalar_one_or_none() is None:
+                    await self._require_fresh_live_working_session(session)
+                    raise WorkingTranscriptPersistenceError(
+                        WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                    )
+        except DBAPIError as error:
+            if self._is_expected_working_integrity_error(error):
+                await self._require_fresh_live_working_session(session)
+                raise WorkingTranscriptPersistenceError(
+                    WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                ) from None
+            raise
+
+        disposition = (
+            WorkingTranscriptPublishDisposition.PUBLISHED
+            if next_version == 1
+            else WorkingTranscriptPublishDisposition.REPLACED
+        )
+        return WorkingTranscriptPublication(
+            session_id=session_id,
+            working_transcript_id=working_id,
+            working_transcript_version=next_version,
+            source_transcript_version=source_version,
+            status=derivation.status,
+            created_at=created_at,
+            disposition=disposition,
+        )
+
     async def fail_versioned_external_session(
         self,
         tenant_id: UUID,
@@ -1129,7 +1385,8 @@ class PostgresRepository:
             UPDATE scribe_sessions
             SET status = :target_status,
                 content_purged_at = clock_timestamp(),
-                current_source_transcript_version = NULL
+                current_source_transcript_version = NULL,
+                current_working_transcript_version = NULL
             WHERE tenant_id = :tenant_id AND id = :session_id
               AND transcript_contract_version = :contract_version
               AND status = :prior_status
@@ -1365,6 +1622,15 @@ class PostgresRepository:
                 ) OR EXISTS (
                     SELECT 1 FROM normalized_source_receipt_keys
                     WHERE tenant_id = :tenant_id AND session_id = :session_id
+                ) OR EXISTS (
+                    SELECT 1 FROM normalized_translation_attempts
+                    WHERE tenant_id = :tenant_id AND session_id = :session_id
+                ) OR EXISTS (
+                    SELECT 1 FROM normalized_translation_reviews
+                    WHERE tenant_id = :tenant_id AND session_id = :session_id
+                ) OR EXISTS (
+                    SELECT 1 FROM normalized_working_transcripts
+                    WHERE tenant_id = :tenant_id AND session_id = :session_id
                 )
                 """
             ),
@@ -1467,6 +1733,61 @@ class PostgresRepository:
             raise RuntimeError("database clock is unavailable")
         return session, database_now
 
+    async def _lock_working_transcript_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> tuple[VersionedExternalSessionRecord, datetime] | None:
+        reference = await self._one_or_none(
+            """
+            SELECT consent_record_id
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND ingest_mode = 'external_async_transcript'
+              AND transcript_contract_version = :contract_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if reference is None:
+            return None
+        consent_id = reference["consent_record_id"]
+        await self._lock_consent_scope(tenant_id, consent_id)
+        row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                   modality, transcript_contract_version, creator_actor_id, language_mode,
+                   transcription_adapter_id, transcription_model_profile_id,
+                   normalization_profile_id, status, created_at, source_received_at,
+                   transcript_content_expires_at, content_purged_at,
+                   current_source_transcript_version, working_transcript_id,
+                   current_working_transcript_version
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND consent_record_id = :consent_id
+              AND ingest_mode = 'external_async_transcript'
+              AND transcript_contract_version = :contract_version
+            FOR UPDATE
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            consent_id=consent_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if row is None:
+            return None
+        session = _versioned_external_session_record(row)
+        consent = await self.get_consent(tenant_id, consent_id)
+        if not consent_authorizes_versioned_session(consent, session):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.CONSENT_INVALID
+            )
+        database_now = await self._session.scalar(text("SELECT clock_timestamp()"))
+        if not isinstance(database_now, datetime):
+            raise RuntimeError("database clock is unavailable")
+        return session, database_now
+
     @staticmethod
     def _require_live_normalized_source_session(
         session: VersionedExternalSessionRecord,
@@ -1539,6 +1860,483 @@ class PostgresRepository:
             session_id=session_id,
             source_transcript_version=source_transcript_version,
         )
+
+    async def _get_working_translation_inputs(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        source_transcript_version: int,
+    ) -> tuple[TranslationRecordV1, ...]:
+        rows = await self._session.execute(
+            text(
+                """
+                SELECT translation_id, translation_version, source_segment_id,
+                       source_segment_version, source_locale, target_locale, content,
+                       outcome, translation_adapter_id, translation_model_profile_id,
+                       created_at, failure_code
+                FROM normalized_translation_attempts
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                  AND source_transcript_version = :source_transcript_version
+                ORDER BY source_segment_id, source_segment_version,
+                         translation_version, translation_id
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "source_transcript_version": source_transcript_version,
+            },
+        )
+        try:
+            return tuple(
+                TranslationRecordV1(
+                    translation_id=row["translation_id"],
+                    translation_version=row["translation_version"],
+                    source_segment_id=row["source_segment_id"],
+                    source_segment_version=row["source_segment_version"],
+                    source_locale=row["source_locale"],
+                    target_locale=row["target_locale"],
+                    content=row["content"],
+                    outcome=TranslationOutcome(row["outcome"]),
+                    translation_adapter_id=row["translation_adapter_id"],
+                    translation_model_profile_id=row["translation_model_profile_id"],
+                    created_at=row["created_at"],
+                    failure_code=row["failure_code"],
+                )
+                for row in rows.mappings()
+            )
+        except (TypeError, ValueError):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.EVIDENCE_INVALID
+            ) from None
+
+    async def _validate_working_evidence_bounds(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        source_transcript_version: int,
+    ) -> None:
+        row = await self._one_or_none(
+            """
+            SELECT
+                (SELECT count(*) FROM normalized_translation_attempts
+                 WHERE tenant_id = :tenant_id AND session_id = :session_id
+                   AND source_transcript_version = :source_transcript_version)
+                    AS translation_count,
+                (SELECT COALESCE(sum(char_length(content)), 0)
+                 FROM normalized_translation_attempts
+                 WHERE tenant_id = :tenant_id AND session_id = :session_id
+                   AND source_transcript_version = :source_transcript_version)
+                    AS translation_chars,
+                (SELECT count(*) FROM normalized_translation_reviews
+                 WHERE tenant_id = :tenant_id AND session_id = :session_id
+                   AND source_transcript_version = :source_transcript_version)
+                    AS review_count
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_transcript_version=source_transcript_version,
+        )
+        if row is None:
+            raise RuntimeError("working evidence bounds are unavailable")
+        counts = (
+            row["translation_count"],
+            row["translation_chars"],
+            row["review_count"],
+        )
+        if not all(isinstance(value, int) for value in counts):
+            raise RuntimeError("working evidence bounds are invalid")
+        if (
+            row["translation_count"] > MAX_TRANSCRIPT_SEGMENTS
+            or row["translation_chars"] > MAX_TRANSCRIPT_CONTENT_CHARS
+            or row["review_count"] > MAX_TRANSCRIPT_SEGMENTS
+        ):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.EVIDENCE_INVALID
+            )
+
+    async def _get_working_review_inputs(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        source_transcript_version: int,
+    ) -> tuple[TranslationReviewEvidenceV1, ...]:
+        rows = await self._session.execute(
+            text(
+                """
+                SELECT review_id, translation_id, translation_version,
+                       source_segment_id, source_segment_version, decision,
+                       reviewer_actor_id, reviewed_at
+                FROM normalized_translation_reviews
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                  AND source_transcript_version = :source_transcript_version
+                ORDER BY source_segment_id, source_segment_version,
+                         translation_version, translation_id, reviewed_at,
+                         review_id, reviewer_actor_id, decision
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "source_transcript_version": source_transcript_version,
+            },
+        )
+        try:
+            return tuple(
+                TranslationReviewEvidenceV1(
+                    review_id=row["review_id"],
+                    translation_id=row["translation_id"],
+                    translation_version=row["translation_version"],
+                    source_segment_id=row["source_segment_id"],
+                    source_segment_version=row["source_segment_version"],
+                    decision=TranslationReviewDecision(row["decision"]),
+                    reviewer_actor_id=row["reviewer_actor_id"],
+                    reviewed_at=row["reviewed_at"],
+                )
+                for row in rows.mappings()
+            )
+        except (TypeError, ValueError):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.EVIDENCE_INVALID
+            ) from None
+
+    async def _get_working_header(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        working_transcript_version: int,
+    ) -> dict[str, Any] | None:
+        return await self._one_or_none(
+            """
+            SELECT working_transcript_id, working_transcript_version,
+                   source_transcript_version, working_fingerprint, created_at
+            FROM normalized_working_transcripts
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+              AND working_transcript_version = :working_transcript_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            working_transcript_version=working_transcript_version,
+        )
+
+    async def _insert_working_children(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        source_version: int,
+        working_transcript_version: int,
+        derivation: WorkingTranscriptDerivation,
+    ) -> None:
+        translation_parameters = [
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "working_version": working_transcript_version,
+                "source_version": source_version,
+                "source_segment_id": item.source_segment_id,
+                "source_segment_version": item.source_segment_version,
+                "translation_id": item.translation_id,
+                "translation_version": item.translation_version,
+            }
+            for item in derivation.bundle.translations
+        ]
+        if translation_parameters:
+            await self._session.execute(
+                text(
+                    """
+                    INSERT INTO normalized_working_translation_inputs (
+                        tenant_id, session_id, working_transcript_version,
+                        source_transcript_version, source_segment_id,
+                        source_segment_version, translation_id, translation_version
+                    ) VALUES (
+                        :tenant_id, :session_id, :working_version,
+                        :source_version, :source_segment_id,
+                        :source_segment_version, :translation_id, :translation_version
+                    )
+                    """
+                ),
+                translation_parameters,
+            )
+        review_parameters = [
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "working_version": working_transcript_version,
+                "source_version": source_version,
+                "source_segment_id": item.source_segment_id,
+                "source_segment_version": item.source_segment_version,
+                "translation_id": item.translation_id,
+                "translation_version": item.translation_version,
+                "review_id": item.review_id,
+            }
+            for item in derivation.bundle.translation_reviews
+        ]
+        if review_parameters:
+            await self._session.execute(
+                text(
+                    """
+                    INSERT INTO normalized_working_review_inputs (
+                        tenant_id, session_id, working_transcript_version,
+                        source_transcript_version, source_segment_id,
+                        source_segment_version, translation_id,
+                        translation_version, review_id
+                    ) VALUES (
+                        :tenant_id, :session_id, :working_version,
+                        :source_version, :source_segment_id,
+                        :source_segment_version, :translation_id,
+                        :translation_version, :review_id
+                    )
+                    """
+                ),
+                review_parameters,
+            )
+        segment_parameters = [
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "working_version": working_transcript_version,
+                "ordinal": ordinal,
+                "source_version": source_version,
+                "source_segment_id": item.source_segment_id,
+                "source_segment_version": item.source_segment_version,
+                "source_locale": item.source_locale.value,
+                "speaker_id": item.speaker_id,
+                "speaker_role": item.speaker_role.value,
+                "start_ms": item.start_ms,
+                "end_ms": item.end_ms,
+                "resolution": item.resolution.value,
+                "content": item.content,
+                "translation_id": item.translation_id,
+                "translation_version": item.translation_version,
+                "translation_review_id": item.translation_review_id,
+            }
+            for ordinal, item in enumerate(derivation.working_transcript.segments)
+        ]
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO normalized_working_segments (
+                    tenant_id, session_id, working_transcript_version, ordinal,
+                    source_transcript_version, source_segment_id,
+                    source_segment_version, source_locale, speaker_id, speaker_role,
+                    start_ms, end_ms, resolution, content, translation_id,
+                    translation_version, translation_review_id
+                ) VALUES (
+                    :tenant_id, :session_id, :working_version, :ordinal,
+                    :source_version, :source_segment_id, :source_segment_version,
+                    :source_locale, :speaker_id, :speaker_role, :start_ms, :end_ms,
+                    :resolution, :content, :translation_id, :translation_version,
+                    :translation_review_id
+                )
+                """
+            ),
+            segment_parameters,
+        )
+        source_by_id = {
+            item.source_segment_id: item
+            for item in derivation.bundle.source_transcript.segments
+        }
+        blocker_parameters = [
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "working_version": working_transcript_version,
+                "ordinal": ordinal,
+                "source_version": source_version,
+                "source_segment_id": item.source_segment_id,
+                "source_segment_version": source_by_id[
+                    item.source_segment_id
+                ].source_segment_version,
+                "code": item.code.value,
+            }
+            for ordinal, item in enumerate(derivation.working_transcript.blockers)
+        ]
+        if blocker_parameters:
+            await self._session.execute(
+                text(
+                    """
+                    INSERT INTO normalized_working_blockers (
+                        tenant_id, session_id, working_transcript_version, ordinal,
+                        source_transcript_version, source_segment_id,
+                        source_segment_version, code
+                    ) VALUES (
+                        :tenant_id, :session_id, :working_version, :ordinal,
+                        :source_version, :source_segment_id,
+                        :source_segment_version, :code
+                    )
+                    """
+                ),
+                blocker_parameters,
+            )
+
+    async def _insert_working_header(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        source_version: int,
+        working_transcript_id: UUID,
+        working_transcript_version: int,
+        derivation: WorkingTranscriptDerivation,
+    ) -> datetime:
+        created_at = await self._session.scalar(
+            text(
+                """
+                INSERT INTO normalized_working_transcripts (
+                    tenant_id, session_id, working_transcript_id,
+                    working_transcript_version, source_transcript_version,
+                    schema_version, segment_count, blocker_count,
+                    translation_input_count, review_input_count,
+                    total_content_chars, working_fingerprint
+                ) VALUES (
+                    :tenant_id, :session_id, :working_transcript_id,
+                    :working_version, :source_version, '1.0', :segment_count,
+                    :blocker_count, :translation_count, :review_count,
+                    :content_chars, :working_fingerprint
+                )
+                RETURNING created_at
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "working_transcript_id": working_transcript_id,
+                "working_version": working_transcript_version,
+                "source_version": source_version,
+                "segment_count": len(derivation.working_transcript.segments),
+                "blocker_count": len(derivation.working_transcript.blockers),
+                "translation_count": len(derivation.bundle.translations),
+                "review_count": len(derivation.bundle.translation_reviews),
+                "content_chars": sum(
+                    len(item.content)
+                    for item in derivation.working_transcript.segments
+                    if item.content is not None
+                ),
+                "working_fingerprint": derivation.working_fingerprint,
+            },
+        )
+        if not isinstance(created_at, datetime):
+            raise RuntimeError("working transcript creation time is unavailable")
+        return created_at
+
+    async def _force_working_transcript_constraints(self) -> None:
+        constraints = """
+            scribe_sessions_current_working_transcript_fkey,
+            scribe_sessions_external_precommit,
+            scribe_sessions_working_projection_precommit,
+            fk_working_translation_input_header,
+            fk_working_review_input_header,
+            fk_working_segment_header,
+            fk_working_blocker_header,
+            normalized_working_transcripts_complete,
+            normalized_translation_attempts_precommit_fence,
+            normalized_translation_reviews_precommit_fence,
+            normalized_translation_attempts_current_working_membership,
+            normalized_translation_reviews_current_working_membership
+        """
+        await self._session.execute(text(f"SET CONSTRAINTS {constraints} IMMEDIATE"))
+        await self._session.execute(text(f"SET CONSTRAINTS {constraints} DEFERRED"))
+
+    async def _final_working_transcript_gate(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        source_version: int,
+        working_transcript_id: UUID,
+        working_transcript_version: int,
+        status: ConfiguredExternalSessionStatus,
+        working_fingerprint: str,
+    ) -> None:
+        row = await self._one_or_none(
+            """
+            SELECT session.status, session.current_source_transcript_version,
+                   session.working_transcript_id,
+                   session.current_working_transcript_version,
+                   session.transcript_content_expires_at, session.content_purged_at,
+                   working.working_fingerprint, clock_timestamp() AS database_now
+            FROM scribe_sessions AS session
+            JOIN normalized_working_transcripts AS working
+              ON working.tenant_id = session.tenant_id
+             AND working.session_id = session.id
+             AND working.working_transcript_version =
+                 session.current_working_transcript_version
+            WHERE session.tenant_id = :tenant_id AND session.id = :session_id
+              AND session.transcript_contract_version = :contract_version
+            FOR UPDATE OF session
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if row is None:
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+        if row["content_purged_at"] is not None or (
+            row["transcript_content_expires_at"] is not None
+            and row["database_now"] >= row["transcript_content_expires_at"]
+        ):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.RETENTION_EXPIRED
+            )
+        if (
+            row["status"] != status.value
+            or row["current_source_transcript_version"] != source_version
+            or row["working_transcript_id"] != working_transcript_id
+            or row["current_working_transcript_version"] != working_transcript_version
+            or row["working_fingerprint"] != working_fingerprint
+        ):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
+
+    @staticmethod
+    def _is_expected_working_integrity_error(error: DBAPIError) -> bool:
+        candidates = (
+            error.orig,
+            getattr(error.orig, "__cause__", None),
+            getattr(error.orig, "__context__", None),
+        )
+        return any(
+            getattr(candidate, "sqlstate", None) in {"23503", "23505", "23514"}
+            for candidate in candidates
+            if candidate is not None
+        )
+
+    async def _require_fresh_live_working_session(
+        self,
+        session: VersionedExternalSessionRecord,
+    ) -> None:
+        database_now = await self._session.scalar(text("SELECT clock_timestamp()"))
+        if not isinstance(database_now, datetime):
+            raise RuntimeError("database clock is unavailable")
+        try:
+            self._require_live_working_session(session, database_now)
+        except WorkingTranscriptPersistenceError as error:
+            raise WorkingTranscriptPersistenceError(error.code) from None
+
+    @staticmethod
+    def _require_live_working_session(
+        session: VersionedExternalSessionRecord,
+        database_now: datetime,
+    ) -> None:
+        if session.content_purged_at is not None or (
+            session.transcript_content_expires_at is not None
+            and database_now >= session.transcript_content_expires_at
+        ):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.RETENTION_EXPIRED
+            )
+        if session.status in {
+            ConfiguredExternalSessionStatus.CREATED,
+            ConfiguredExternalSessionStatus.HANDED_OFF,
+            ConfiguredExternalSessionStatus.FAILED,
+        }:
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT
+            )
 
     async def _insert_normalized_source_receipt_key(
         self,
