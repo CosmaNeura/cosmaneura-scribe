@@ -6,6 +6,28 @@ export type CreatorReviewView = components["schemas"]["CreatorReviewViewV1"];
 export type ReviewItem = components["schemas"]["CreatorTranslationReviewItemV1"];
 export type ReviewDecision = components["schemas"]["CreatorTranslationDecisionBodyV1"];
 export type ReviewReceipt = components["schemas"]["CreatorDecisionReceiptV1"];
+export type CaptureContinuity = components["schemas"]["CaptureContinuity"];
+
+/** Closed native restart evidence. It supplies no missing audio or gap duration. */
+export function parseCaptureContinuity(value: unknown): CaptureContinuity {
+  const evidence = record(value);
+  requireValue(Object.keys(evidence).sort().join(",") === "continuity,missing_audio,schema_version,starts"
+    && evidence.schema_version === "1.0" && evidence.continuity === "interrupted_or_unconfirmed"
+    && evidence.missing_audio === "unknown");
+  const starts = array(evidence.starts);
+  requireValue(starts.length >= 2 && starts.length <= 1000);
+  const ids = new Set<string>();
+  let position = 0;
+  for (const [index, value] of starts.entries()) {
+    const start = record(value);
+    requireValue(Object.keys(start).sort().join(",") === "first_sequence_number,source_start_id"
+      && isUuid(start.source_start_id) && !ids.has(start.source_start_id)
+      && Number.isSafeInteger(start.first_sequence_number) && Number(start.first_sequence_number) >= position
+      && Number(start.first_sequence_number) < 1000 && (index !== 0 || start.first_sequence_number === 0));
+    ids.add(start.source_start_id); position = Number(start.first_sequence_number);
+  }
+  return evidence as unknown as CaptureContinuity;
+}
 
 /** The existing authenticated shell/BFF supplies this. Never pass a workload token to a view. */
 export type AuthorizedReviewRequest = (
@@ -72,9 +94,10 @@ export function parseCreatorReview(value: unknown, sessionId: string): CreatorRe
   const view = record(value);
   requireValue(view.schema_version === "1.0" && view.session_id === sessionId);
   requireValue(typeof view.status === "string");
+  if (Object.hasOwn(view, "capture_continuity")) parseCaptureContinuity(view.capture_continuity);
   const progress = view.translation_progress === undefined ? [] : array(view.translation_progress);
   if (view.source === null && view.working === null && view.review_queue === null) {
-    requireValue(progress.length === 0);
+    requireValue(progress.length === 0 && !Object.hasOwn(view, "capture_continuity"));
     requireValue([
       "created", "capturing", "uploaded", "processing", "speech_failed", "speech_retryable", "handed_off",
     ].includes(view.status));

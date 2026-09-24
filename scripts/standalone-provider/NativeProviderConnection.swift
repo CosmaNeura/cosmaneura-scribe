@@ -10,6 +10,7 @@ enum ProviderNativeError: String, Error, Sendable {
 
 enum ProviderNativeAction: String, Sendable {
     case catalog, mount, recorder
+    case sourceStart = "source-start"
     case admission = "capture-admissions", operation = "capture-operations", note = "capture-notes"
 
     var bodyLimit: Int {
@@ -17,6 +18,7 @@ enum ProviderNativeAction: String, Sendable {
         case .catalog: 2
         case .mount: 256
         case .recorder: 1024
+        case .sourceStart: 4096
         case .admission: 2048
         case .operation: 4_194_304
         case .note: 262_144 + 8192
@@ -25,7 +27,7 @@ enum ProviderNativeAction: String, Sendable {
     var responseLimit: Int {
         switch self {
         case .catalog: 65_536
-        case .mount, .recorder: 8192
+        case .mount, .recorder, .sourceStart: 8192
         case .admission, .operation, .note: 8 * 1024 * 1024
         }
     }
@@ -42,12 +44,24 @@ struct ProviderNativeRequest: Sendable {
         guard let identifier = UUID(uuidString: id), identifier.uuidString.lowercased() == id,
               UUID(uuidString: revision)?.uuidString.lowercased() == revision,
               let operation = ProviderNativeAction(rawValue: action),
+              operation != .sourceStart,
               key.range(of: "^[A-Za-z0-9._:-]{8,255}$", options: .regularExpression) != nil,
               body.utf8.count <= operation.bodyLimit, let data = body.data(using: .utf8),
               (try? JSONSerialization.jsonObject(with: data)) is [String: Any]
         else { throw ProviderNativeError.invalidRequest }
         self.id = identifier; self.revision = revision; self.action = operation
         self.key = key; self.body = data
+    }
+
+    // Not reachable from the generic Capacitor/renderer string-action initializer.
+    init(nativeStartID: UUID, revision: String, key: String, body: Data) throws {
+        guard UUID(uuidString: revision)?.uuidString.lowercased() == revision,
+              key.range(of: "^[A-Za-z0-9._:-]{8,255}$", options: .regularExpression) != nil,
+              body.count <= ProviderNativeAction.sourceStart.bodyLimit,
+              (try? JSONSerialization.jsonObject(with: body)) is [String: Any]
+        else { throw ProviderNativeError.invalidRequest }
+        self.id = nativeStartID; self.revision = revision; self.action = .sourceStart
+        self.key = key; self.body = body
     }
 }
 
@@ -92,6 +106,21 @@ protocol ProviderNativeWire: Sendable {
         for (_, operation) in pending { operation.task.cancel() }
     }
 
+    /// Native-only cessation recovery after the same account signs in again.
+    /// The immutable connection retains its original issuer/transport policy.
+    func stopRevision(for identity: NativeAuthIdentity) throws -> String {
+        try stopRevision(userID: identity.userID, organizationID: identity.organizationID)
+    }
+
+    func stopRevision(userID: String, organizationID: String?) throws -> String {
+        let state = auth.state()
+        guard !closed, state.phase == .ready, let current = state.identity,
+              current.userID == userID, current.organizationID == organizationID else {
+            throw ProviderNativeError.unavailable
+        }
+        return state.revision
+    }
+
     func send(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
         guard !closed, pending[request.id] == nil, pending.count < 8 else {
             throw ProviderNativeError.unavailable
@@ -113,8 +142,7 @@ protocol ProviderNativeWire: Sendable {
             }
             if reply.status != 200 {
                 // Do not forward arbitrary proxy/SDK/error content to JavaScript.
-                return ProviderNativeReply(status: reply.status,
-                    body: Data("{\"detail\":\"provider_request_unconfirmed\"}".utf8))
+                return Self.sanitizedFailure(reply, action: request.action)
             }
             guard (try? JSONSerialization.jsonObject(with: reply.body)) is [String: Any] else {
                 throw ProviderNativeError.response
@@ -131,6 +159,17 @@ protocol ProviderNativeWire: Sendable {
         } onCancel: {
             operation.cancel()
         }
+    }
+
+    static func sanitizedFailure(_ reply: ProviderNativeReply, action: ProviderNativeAction) -> ProviderNativeReply {
+        if action == .admission, reply.status == 409, reply.body.count <= 1024,
+           let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+           Set(value.keys) == ["detail"], value["detail"] as? String == "core_provider_consent_required" {
+            return ProviderNativeReply(status: 409,
+                body: Data("{\"detail\":\"provider_consent_required\"}".utf8))
+        }
+        return ProviderNativeReply(status: reply.status,
+            body: Data("{\"detail\":\"provider_request_unconfirmed\"}".utf8))
     }
 
     private func current(_ revision: String) throws {

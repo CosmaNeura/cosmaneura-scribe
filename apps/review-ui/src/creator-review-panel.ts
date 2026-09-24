@@ -202,6 +202,7 @@ export function renderCreatorReview(state: CreatorReviewState): string {
           ? "The transcript is not ready for a note. Check the messages below for what is still needed."
           : "Review the proposed English before it is used for a note."))}</p>
     </div>
+    ${view?.capture_continuity ? '<p class="creator-blocker" role="status">Recording continuity is unconfirmed. Review for missing speech before using a note. Gap lengths are unknown.</p>' : ""}
     ${state.phase === "retry" ? `<button type="button" data-review-action="retry">Retry the same decision</button>` : ""}
     ${state.phase === "loading" ? '<p aria-busy="true">Loading the current recording…</p>' : ""}
     ${view?.source != null && view.working != null ? renderTranscript(view, state.phase) : ""}

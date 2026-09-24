@@ -15,7 +15,7 @@ const dom = new JSDOM('<!doctype html><div id="root"></div>', {
 const window = dom.window, root = window.document.getElementById("root");
 Object.defineProperty(window.AbortSignal, "any", { value: undefined, configurable: true });
 Object.defineProperty(window, "crypto", { value: webcrypto });
-Object.assign(window, { Headers, Response, TextEncoder, TextDecoder });
+Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
 window.fetch = () => { throw new Error("Unexpected network request"); };
 let nativeState = { phase: "signedOut", revision: webcrypto.randomUUID() };
 const nativeCalls = [], nativeListeners = new Map(), warnings = [];
@@ -138,6 +138,70 @@ try {
       await until(() => f.closes === 1);
       assert.equal(visible(), false); assert.equal(f.connects, 1);
     } finally { await dispose(); }
+  });
+  await check(async () => {
+    const f = fixture(), connect = f.host.connect;
+    f.host.supportsRecorderStopReauthentication = true;
+    const sessionId = "10000000-0000-4000-8000-000000000001";
+    const scope = { workspaceId: "20000000-0000-4000-8000-000000000002",
+      bindingRef: "scribe_capture_binding_01j00000000000000000000000",
+      appointmentRef: "appointment_01j00000000000000000000000" };
+    const forbidden = () => { throw new Error("No capture, upload, note or journal write in logout recovery"); };
+    let stopAttempts = 0, stopped = false, matchingAccount = false;
+    f.host.connect = async signal => {
+      const connected = await connect(signal), workspace = connected.workspace;
+      workspace.openEncounter = async () => ({
+        encounter: (await workspace.listEncounters())[0], scope, signal,
+        request: async (_path, body) => {
+          assert.equal(body.operation.kind, "creator_review");
+          return Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+            operation: "creator_review", receipt: { schema_version: "1.0", session_id: sessionId,
+              status: "capturing", source: null, working: null, review_queue: null } });
+        },
+        journal: { load: async () => ({ revision: "1", progress: { sessionId, uploaded: false, pendingSave: null,
+          admission: { key: webcrypto.randomUUID(), languageMode: "en-US", attestation: {
+            modality: "in_person", participant_regions: ["US-NY"], method: "verbal_attestation",
+            all_parties_consented: true, granted_at: new Date().toISOString(),
+          } } } }), save: forbidden },
+        reviewJournal: () => ({ load: forbidden, save: forbidden }), openInCore: forbidden,
+        recorder: async () => {
+          const snapshot = { sessionId, state: "paused", statusCode: "capture_recovered_paused",
+            recordedChunks: 1, queuedChunks: 1, elapsedSeconds: 1, remainingBudgetSeconds: 60,
+            remainingAuthoritySeconds: 60, transcriptionStatus: null, transcript: null };
+          return { sourceKind: "microphone", controller: {
+            snapshot, subscribe(listener) { listener(snapshot); return () => {}; },
+            startRecording: forbidden, stopRecording: forbidden,
+          }, deactivate: async () => {
+            stopAttempts++;
+            if (f.state.phase !== "ready" || !matchingAccount) throw new Error("Native cessation unconfirmed");
+            stopped = true;
+          }, resumePendingWork: forbidden, releaseUploadedCapture: forbidden };
+        },
+      });
+      return connected;
+    };
+    const dispose = mountProviderApplication(root, f.host);
+    try {
+      await until(visible); root.querySelector('[data-workspace-action="open"]').click();
+      await until(() => root.querySelector("cosmaneura-capture"));
+      click("sign-out"); await until(() => root.querySelector('[data-session-action="sign-in-stop"]')?.disabled === false);
+      assert.equal(visible(), false); assert.equal(stopped, false);
+      assert.equal(root.querySelector('[data-session-action="open"]'), null);
+      // Native same-account checking rejects this fixture's first sign-in.
+      click("sign-in-stop"); await until(() => f.signIns === 1 && root.getAttribute("aria-busy") === "false");
+      assert.equal(stopped, false); assert.equal(f.connects, 1);
+      assert.equal(root.querySelector('[data-session-action="open"]'), null);
+      click("sign-out"); await until(() => root.querySelector('[data-session-action="sign-in-stop"]')?.disabled === false);
+      matchingAccount = true; click("sign-in-stop");
+      await until(() => stopped && root.querySelector('[data-session-action="open"]')?.disabled === false);
+      assert.equal(f.signIns, 2); assert.ok(stopAttempts >= 3);
+      assert.equal(visible(), false); assert.equal(f.connects, 1, "Recovery must not reopen automatically");
+      click("open"); await until(visible); assert.equal(f.connects, 2);
+    } finally {
+      matchingAccount = true;
+      if (f.state.phase !== "ready") f.change("ready");
+      await turn(); await dispose();
+    }
   });
   await check(async () => {
     const forbidden = () => { throw new Error("No upload, Core creation or navigation in startup check"); };
