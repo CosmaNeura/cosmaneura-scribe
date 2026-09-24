@@ -25,8 +25,9 @@ describe("NativePluginQueueStorage", () => {
     const storage = new NativePluginQueueStorage(plugin);
     await storage.create(reservedRecord());
     await plugin.create({ key: `creator-review-v1:${TENANT_ID}:${SESSION_ID}`, data: btoa("review metadata") });
+    await plugin.create({ key: `provider-workspace-v1:${TENANT_ID}:${SESSION_ID}`, data: btoa("provider recovery") });
     expect(await storage.list()).toEqual([reservedRecord()]);
-    expect((await plugin.list()).keys).toHaveLength(2);
+    expect((await plugin.list()).keys).toHaveLength(3);
   });
   it("maps logical revisions onto atomic opaque native revisions", async () => {
     const plugin = new FakeSecureQueuePlugin();

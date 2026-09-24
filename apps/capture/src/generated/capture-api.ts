@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/captured-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admit Captured Session */
+        post: operations["admit_captured_session_v1_captured_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/captured-sessions/{session_id}/review": {
         parameters: {
             query?: never;
@@ -651,6 +668,104 @@ export interface components {
             /** Practitioner Id */
             practitioner_id: string;
             status: components["schemas"]["SessionStatus"];
+        };
+        /**
+         * CapturedAdmissionReceiptV1
+         * @description Immutable admission metadata; never permission to start or resume capture.
+         */
+        CapturedAdmissionReceiptV1: {
+            /** Appointment Id */
+            appointment_id: string;
+            /**
+             * Consent Record Id
+             * Format: uuid
+             */
+            consent_record_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Creator Actor Id */
+            creator_actor_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Ingest Mode
+             * @default chunk_upload
+             * @constant
+             */
+            ingest_mode: "chunk_upload";
+            language_mode: components["schemas"]["TranscriptLanguageMode"];
+            modality: components["schemas"]["CaptureModality"];
+            /**
+             * Normalization Profile Id
+             * @default azure_phrase_en_es_evidence_v1
+             * @constant
+             */
+            normalization_profile_id: "azure_phrase_en_es_evidence_v1";
+            /** Patient Id */
+            patient_id: string;
+            /** Practitioner Id */
+            practitioner_id: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "1.0";
+            /**
+             * Status
+             * @default admitted
+             * @constant
+             */
+            status: "admitted";
+            /**
+             * Transcript Contract Version
+             * @default 1.0
+             * @constant
+             */
+            transcript_contract_version: "1.0";
+            /**
+             * Transcription Adapter Id
+             * @default azure_ai_speech
+             * @constant
+             */
+            transcription_adapter_id: "azure_ai_speech";
+            /**
+             * Transcription Model Profile Id
+             * @default azure_fast_transcription_en_es_v1
+             * @constant
+             */
+            transcription_model_profile_id: "azure_fast_transcription_en_es_v1";
+        };
+        /** CapturedAdmissionRequestV1 */
+        CapturedAdmissionRequestV1: {
+            /** Appointment Id */
+            appointment_id: string;
+            /**
+             * Consent Record Id
+             * Format: uuid
+             */
+            consent_record_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            language_mode: components["schemas"]["TranscriptLanguageMode"];
+            modality: components["schemas"]["CaptureModality"];
+            /** Patient Id */
+            patient_id: string;
+            /** Practitioner Id */
+            practitioner_id: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "1.0";
         };
         /** ChunkReceipt */
         ChunkReceipt: {
@@ -1474,6 +1589,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AudioEncryptionPublicKey"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admit_captured_session_v1_captured_sessions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapturedAdmissionRequestV1"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapturedAdmissionReceiptV1"];
                 };
             };
             /** @description Validation Error */

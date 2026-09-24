@@ -405,8 +405,27 @@ function assertReservationIntent(value: unknown): asserts value is ReservationIn
 }
 
 function assertPreparationState(value: unknown): asserts value is CapturePreparationState {
+  if (isRecord(value) && value.mode === "configured_core") {
+    if (Object.keys(value).sort().join(",") !==
+        "completeIdempotencyKey,leaseIdempotencyKey,leaseRequest,mode,schemaVersion,sessionId,startedAt"
+      || value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION
+      || typeof value.startedAt !== "string" || !Number.isFinite(Date.parse(value.startedAt))
+      || typeof value.sessionId !== "string" || typeof value.completeIdempotencyKey !== "string"
+      || (value.leaseIdempotencyKey !== null && typeof value.leaseIdempotencyKey !== "string")
+      || (value.leaseRequest !== null && (!isRecord(value.leaseRequest)
+        || Object.keys(value.leaseRequest).join(",") !== "protocol_version"
+        || value.leaseRequest.protocol_version !== "1.0"))
+      || (value.leaseIdempotencyKey === null) !== (value.leaseRequest === null)) {
+      throw new QueueInvariantError("invalid_preparation_state");
+    }
+    assertUuid(value.sessionId, "invalid_preparation_state");
+    assertIdempotencyKey(value.completeIdempotencyKey);
+    if (value.leaseIdempotencyKey !== null) assertIdempotencyKey(value.leaseIdempotencyKey);
+    return;
+  }
   if (
     !isRecord(value) ||
+    (value.mode !== undefined && value.mode !== "direct") ||
     value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION ||
     typeof value.startedAt !== "string" ||
     typeof value.consentIdempotencyKey !== "string" ||
@@ -442,6 +461,16 @@ function assertPreparationProgression(
   existing: CapturePreparationState,
   replacement: CapturePreparationState,
 ): void {
+  if (existing.mode === "configured_core" || replacement.mode === "configured_core") {
+    if (existing.mode !== "configured_core" || replacement.mode !== "configured_core"
+      || existing.sessionId !== replacement.sessionId || existing.startedAt !== replacement.startedAt
+      || existing.completeIdempotencyKey !== replacement.completeIdempotencyKey
+      || !nullableStable(existing.leaseIdempotencyKey, replacement.leaseIdempotencyKey)
+      || !nullableStableJson(existing.leaseRequest, replacement.leaseRequest)) {
+      throw new QueueInvariantError("preparation_state_conflict");
+    }
+    return;
+  }
   if (
     existing.startedAt !== replacement.startedAt ||
     existing.consentIdempotencyKey !== replacement.consentIdempotencyKey ||
@@ -472,6 +501,7 @@ function nullableStableJson(
 function assertActiveCaptureState(value: unknown): asserts value is ActiveCaptureState {
   if (
     !isRecord(value) ||
+    (value.reviewAfterUpload !== undefined && value.reviewAfterUpload !== true) ||
     value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION ||
     typeof value.sessionId !== "string" ||
     !isRecord(value.lease) ||
@@ -509,6 +539,7 @@ function assertActiveCaptureProgression(
 ): void {
   if (
     JSON.stringify(existing.lease) !== JSON.stringify(replacement.lease) ||
+    existing.reviewAfterUpload !== replacement.reviewAfterUpload ||
     existing.completeIdempotencyKey !== replacement.completeIdempotencyKey ||
     existing.startedAt !== replacement.startedAt ||
     existing.aggregatePlaintextBudgetBytes !== replacement.aggregatePlaintextBudgetBytes ||

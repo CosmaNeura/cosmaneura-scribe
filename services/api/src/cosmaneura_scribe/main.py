@@ -42,6 +42,7 @@ from .capture_responses import (
     chunk_receipt_response,
     reservation_batch_response,
 )
+from .captured_admission_routes import router as captured_admission_router
 from .consent import ConsentError, ConsentPolicy
 from .consent_routes import build_consent_router
 from .creator_review_routes import router as creator_review_router
@@ -430,6 +431,7 @@ app.include_router(
     )
 )
 app.include_router(creator_review_router)
+app.include_router(captured_admission_router)
 
 
 @app.get(

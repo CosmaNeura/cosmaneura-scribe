@@ -494,6 +494,167 @@
         "title": "CaptureSession",
         "type": "object"
       },
+      "CapturedAdmissionReceiptV1": {
+        "additionalProperties": false,
+        "description": "Immutable admission metadata; never permission to start or resume capture.",
+        "properties": {
+          "appointment_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Appointment Id",
+            "type": "string"
+          },
+          "consent_record_id": {
+            "format": "uuid",
+            "title": "Consent Record Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "creator_actor_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "title": "Creator Actor Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "ingest_mode": {
+            "const": "chunk_upload",
+            "default": "chunk_upload",
+            "title": "Ingest Mode",
+            "type": "string"
+          },
+          "language_mode": {
+            "$ref": "#/components/schemas/TranscriptLanguageMode"
+          },
+          "modality": {
+            "$ref": "#/components/schemas/CaptureModality"
+          },
+          "normalization_profile_id": {
+            "const": "azure_phrase_en_es_evidence_v1",
+            "default": "azure_phrase_en_es_evidence_v1",
+            "title": "Normalization Profile Id",
+            "type": "string"
+          },
+          "patient_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "practitioner_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Practitioner Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "status": {
+            "const": "admitted",
+            "default": "admitted",
+            "title": "Status",
+            "type": "string"
+          },
+          "transcript_contract_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Transcript Contract Version",
+            "type": "string"
+          },
+          "transcription_adapter_id": {
+            "const": "azure_ai_speech",
+            "default": "azure_ai_speech",
+            "title": "Transcription Adapter Id",
+            "type": "string"
+          },
+          "transcription_model_profile_id": {
+            "const": "azure_fast_transcription_en_es_v1",
+            "default": "azure_fast_transcription_en_es_v1",
+            "title": "Transcription Model Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "id",
+          "appointment_id",
+          "practitioner_id",
+          "patient_id",
+          "consent_record_id",
+          "modality",
+          "language_mode",
+          "creator_actor_id",
+          "created_at"
+        ],
+        "title": "CapturedAdmissionReceiptV1",
+        "type": "object"
+      },
+      "CapturedAdmissionRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "appointment_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Appointment Id",
+            "type": "string"
+          },
+          "consent_record_id": {
+            "format": "uuid",
+            "title": "Consent Record Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "language_mode": {
+            "$ref": "#/components/schemas/TranscriptLanguageMode"
+          },
+          "modality": {
+            "$ref": "#/components/schemas/CaptureModality"
+          },
+          "patient_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "practitioner_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Practitioner Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "id",
+          "appointment_id",
+          "practitioner_id",
+          "patient_id",
+          "consent_record_id",
+          "modality",
+          "language_mode"
+        ],
+        "title": "CapturedAdmissionRequestV1",
+        "type": "object"
+      },
       "ChunkReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -2316,6 +2477,87 @@
           }
         ],
         "summary": "Get Audio Encryption Public Key"
+      }
+    },
+    "/v1/captured-sessions": {
+      "post": {
+        "operationId": "admit_captured_session_v1_captured_sessions_post",
+        "parameters": [
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapturedAdmissionRequestV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapturedAdmissionReceiptV1"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Admit Captured Session",
+        "tags": [
+          "configured-capture"
+        ]
       }
     },
     "/v1/captured-sessions/{session_id}/review": {

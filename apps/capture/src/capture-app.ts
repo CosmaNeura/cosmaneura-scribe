@@ -181,8 +181,7 @@ export class CaptureApp extends LitElement {
             ${provider ? "" : "It never connects to a patient, Scribe, Azure Speech, or a clinical tenant."}
           </p>
 
-          ${captureFinished ? html`<p>Recorded ${formatDuration(this.#snapshot.elapsedSeconds)}
-            · ${provider.languageMode === "english_spanish" ? "English and Spanish" : "English"}</p>`
+          ${captureFinished ? html`<p>${provider.languageMode === "english_spanish" ? "English and Spanish" : "English"}</p>`
             : provider ? html`<section class="flow-card"><h2>Recording prepared</h2>
             <p>Encounter and consent confirmed through your workspace.</p>
             <p>${provider.languageMode === "english_spanish" ? "English and Spanish · Translate Spanish to English" : "English"}</p>
@@ -257,7 +256,7 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.state === "paused" ? "Recording interrupted — stopped"
               : this.#snapshot.state === "uploading" ? "Uploading your recording"
               : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace" : "Ready to record"}</p>
-            <p>Elapsed ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
+            <p>Recording window used ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
             ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`) : html`<section class="flow-card" aria-labelledby="status-title">

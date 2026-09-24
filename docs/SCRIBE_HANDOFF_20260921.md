@@ -10,10 +10,31 @@ clean HEAD `99324d87628ec22f038f5ee9a4918de8cb46abb8`. Read the latest section o
 `SCRIBE_REAL_SERVICES_CHECKPOINT_20260921.md` for the subsequent recorder-mounted
 review, durable decisions and browser/API evidence. The bounded Core consumer
 packet in `beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md` was subsequently approved
-and implemented locally. The next configured-admission/Core SOAP packet is in
-`beta/SCRIBE_CONFIGURED_CORE_WORKFLOW_PACKET_20260921.md`; it remains proposed.
+and implemented locally. The configured-admission/Core SOAP packet in
+`beta/SCRIBE_CONFIGURED_CORE_WORKFLOW_PACKET_20260921.md` was then explicitly
+approved and implemented locally. The owner then approved the full local provider
+controls. See `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md`, the newest checkpoint
+and ADR 0048 for the mounted encounter/record/review/Core-note workflow and its
+passing local browser/server evidence. Native/hosted activation remains open.
 The checkpoint below remains historical; native/hosted/full-workflow acceptance
 has not been declared complete.
+
+Latest recovery: read `beta/SCRIBE_RECOVERY_20260921.md` before using any temporary
+path below. The temporary W13 and local browser evidence directories are absent;
+committed implementation survives. Verified recovered native inputs, a provider
+build and a separately built diagnostic now live in a durable workspace folder.
+The owner approved the initial diagnostic launch, which stalled in a synchronous
+Keychain read and was stopped by exact PID. The corrected R2 candidate preserves
+authentication policy and adds a bounded background startup check. After the
+owner's explicit R2 launch approval, its actual window remained responsive through
+a Keychain timeout. The owner completed the macOS permission prompts; all five
+R2 access entries are now saved. The unchanged app reopened successfully, finished
+its interrupted sign-out, completed real native sign-in and restored its signed-in
+state after another reopen. JWT/API acceptance remains open. After the owner
+unlocked the physical iPhone, the agent opened its existing W13 installation and
+verified the welcome screen. One encounter-loading attempt did not establish a
+workspace/API result. Keep the same approved Mac binary unchanged. See the
+recovery document for exact evidence and the remaining native/backend boundaries.
 
 ## 1. Your assignment
 

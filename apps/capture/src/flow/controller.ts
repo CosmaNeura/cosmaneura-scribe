@@ -33,6 +33,8 @@ import {
   type CaptureFlowState,
   type CaptureFlowStore,
   type CapturePreparationState,
+  type DirectCapturePreparationState,
+  type ConfiguredCapturePreparationState,
   type ReservationIntent,
   type SessionKeyBindingState,
 } from "./types";
@@ -94,6 +96,7 @@ export class CaptureFlowController {
   #sourcePausedBySignal = false;
   #sourcePausePersistence: Promise<void> | null = null;
   #sourceStarted = false;
+  #reviewAfterUpload = false;
   #recordingAbortController: AbortController | null = null;
   #chunkPersistence: Promise<void> = Promise.resolve();
   #authorityExpiryRequested = false;
@@ -158,8 +161,16 @@ export class CaptureFlowController {
     this.#setSnapshot({ state: "preparing", statusCode: "synthetic_preview_restoring" });
     try {
       this.#activeState = active;
+      this.#reviewAfterUpload = active.reviewAfterUpload === true;
       this.#sessionId = active.sessionId;
       this.#lease = active.lease;
+      if (active.reviewAfterUpload && active.phase === "processing") {
+        // Upload was confirmed durably. Review reauthorizes through Core; no
+        // expired recorder lease, audio key or legacy transcript is needed.
+        this.#setSnapshot({ state: "processing", statusCode: "capture_processing",
+          sessionId: active.sessionId, recordedChunks: active.recordedChunks });
+        return true;
+      }
       const keyState = await this.#flowStore.getSessionKeyState(active.sessionId);
       if (keyState === null) throw new QueueInvariantError("session_key_missing");
       await this.#bindStoredSessionKey(keyState);
@@ -246,7 +257,33 @@ export class CaptureFlowController {
     }
   }
 
-  async #continuePreparation(initial: CapturePreparationState): Promise<void> {
+  /** Core has already reserved consent, creator, language and the session. */
+  public async prepareConfigured(sessionId: string): Promise<void> {
+    this.#requireState("idle");
+    this.#setSnapshot({ state: "preparing", statusCode: "capture_preparing" });
+    try {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(sessionId)) {
+        throw new QueueInvariantError("invalid_admitted_session");
+      }
+      const preparation: ConfiguredCapturePreparationState = {
+        mode: "configured_core",
+        schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
+        sessionId,
+        startedAt: this.#now().toISOString(),
+        completeIdempotencyKey: this.#operationKey("complete"),
+        leaseIdempotencyKey: null,
+        leaseRequest: null,
+      };
+      // Persist before key binding, lease issuance or any audio access.
+      await this.#flowStore.putPreparationState(preparation);
+      await this.#continuePreparation(preparation);
+    } catch (error) {
+      this.#fail();
+      throw error;
+    }
+  }
+
+  async #prepareDirectAdmission(initial: DirectCapturePreparationState): Promise<DirectCapturePreparationState> {
     let preparation = initial;
     const consent = await this.#bff.createConsent(preparation.consentRequest, {
       idempotencyKey: preparation.consentIdempotencyKey,
@@ -288,11 +325,19 @@ export class CaptureFlowController {
       preparation = { ...preparation, sessionId: session.id };
       await this.#flowStore.putPreparationState(preparation);
     }
-    this.#sessionId = session.id;
-    this.#setSnapshot({ sessionId: session.id });
+    return preparation;
+  }
 
-    await this.#bindSessionKey(session.id);
-    this.#setCapabilities(await this.#bff.getCapabilities(session.id));
+  async #continuePreparation(initial: CapturePreparationState): Promise<void> {
+    let preparation = initial.mode === "configured_core" ? initial : await this.#prepareDirectAdmission(initial);
+    const sessionId = preparation.sessionId;
+    if (sessionId === null) throw new QueueInvariantError("preparation_state_incomplete");
+    this.#reviewAfterUpload = preparation.mode === "configured_core";
+    this.#sessionId = sessionId;
+    this.#setSnapshot({ sessionId });
+
+    await this.#bindSessionKey(sessionId);
+    this.#setCapabilities(await this.#bff.getCapabilities(sessionId));
     if (preparation.leaseRequest === null || preparation.leaseIdempotencyKey === null) {
       preparation = {
         ...preparation,
@@ -307,7 +352,7 @@ export class CaptureFlowController {
       throw new QueueInvariantError("preparation_state_incomplete");
     }
     this.#lease = await this.#bff.issueLease(
-      session.id,
+      sessionId,
       leaseRequest,
       { idempotencyKey: leaseIdempotencyKey },
     );
@@ -316,7 +361,7 @@ export class CaptureFlowController {
     }
     this.#activeState = {
       schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
-      sessionId: session.id,
+      sessionId,
       lease: this.#lease,
       captureAuthorizedUntil: null,
       aggregatePlaintextBudgetBytes:
@@ -326,6 +371,7 @@ export class CaptureFlowController {
       recordedChunks: 0,
       recordedPlaintextBytes: 0,
       startedAt: preparation.startedAt,
+      ...(this.#reviewAfterUpload ? { reviewAfterUpload: true as const } : {}),
     };
     await this.#flowStore.putActiveCaptureState(this.#activeState);
     await this.#recoverReservationIntents();
@@ -414,6 +460,20 @@ export class CaptureFlowController {
     }
   }
 
+  /** Host teardown stops acquisition and retains recoverable work without upload. */
+  public async deactivate(): Promise<void> {
+    this.#clearAuthorityTimeout();
+    this.#recordingAbortController?.abort();
+    await this.#source.stop();
+    await this.#chunkPersistence;
+    await this.#sourcePausePersistence;
+    this.#sourceStarted = false;
+    if (this.#activeState?.phase === "recording") {
+      await this.#saveActivePhase("paused");
+      this.#setSnapshot({ state: "paused", statusCode: "capture_recovered_paused" });
+    }
+  }
+
   public async resumePendingWork(): Promise<void> {
     const active = this.#requireActiveState();
     try {
@@ -438,6 +498,9 @@ export class CaptureFlowController {
   }
 
   public async refreshTranscriptionStatus(): Promise<void> {
+    // The mounted creator-review panel owns configured processing/readiness.
+    // Do not project accepted English into a fabricated legacy transcript.
+    if (this.#reviewAfterUpload) return;
     const sessionId = this.#requireSessionId();
     const status = await this.#bff.getTranscriptionStatus(sessionId);
     this.#setSnapshot({ transcriptionStatus: status });
@@ -451,6 +514,16 @@ export class CaptureFlowController {
       await this.#flowStore.clearCompletedCapture(sessionId);
       this.#activeState = null;
     }
+  }
+
+  /** The confirmed upload no longer needs local audio custody. */
+  public async releaseUploadedCapture(): Promise<void> {
+    if (this.#reviewAfterUpload && this.#activeState === null && this.#snapshot.state === "processing") return;
+    if (!this.#reviewAfterUpload || this.#activeState?.phase !== "processing") {
+      throw new QueueInvariantError("capture_state_conflict");
+    }
+    await this.#flowStore.clearCompletedCapture(this.#requireSessionId());
+    this.#activeState = null;
   }
 
   async #drainAndComplete(): Promise<void> {
