@@ -26,7 +26,7 @@ export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal"
 /** Compose the real native recorder and recovery stores with the existing Core host.
  * This neither creates an identity nor substitutes a transport for Core authority.
  */
-export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWorkspaceHost {
+export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWorkspaceHost<ProviderRecorderResources> {
   requireNative();
   return {
     signal: backend.signal,

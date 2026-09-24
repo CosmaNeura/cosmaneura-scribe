@@ -84,3 +84,26 @@ authentication-policy exceptions. No completed live-service trial was repeated.
 This does not establish live Core/Clerk or model acceptance, a standalone native
 connection, encounter creation/navigation, ciphertext transport, physical audio,
 remote revocation timing, SOAP fidelity, or a signed provider release.
+
+## Recorder session correction — 2026-09-22
+
+The first fixture incorrectly added `session_id` to the capabilities receipt.
+The actual Core/Scribe schema has no such field, so the receiver rejected real
+recorder setup with 422. The corrected schema fixture reproduces that failure.
+The receiver now uses the existing configured `creator_review` read, verifies
+schema version and exact session ID, and returns only native revision/session
+identifiers. That read works before a transcript exists and rechecks current
+configured creator/consent. It also permits authorization for retained-work
+recovery without claiming permission to start another recording.
+
+Twenty focused receiver checks pass in the new owned socket-only fixture at
+`/Users/jw/Desktop/Cosmas/scribe-provider-receiver-20260922.z4ahzgk8/`.
+New checks cover created/capturing/uploaded states, exact output redaction, Core
+denial, unsupported schema and identity revocation during the final Core reply.
+The existing wrong-session check also passes. The actual verifier/schema and
+TypeScript client are reused; keys and Core responses are offline fixtures.
+Ruff and receiver typecheck pass. The database is stopped with files retained.
+Setup/import/typecheck-path failures are retained separately from the final
+passing logs; the reproduced 422 is in `recorder-regression-before-r3.log`.
+No native TLS/device or live-service trial was repeated, and no authority,
+schema, runtime configuration or receiver route was added.

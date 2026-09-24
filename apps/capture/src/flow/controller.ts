@@ -8,6 +8,7 @@ import {
 
 import type {
   CaptureBff,
+  AudioEncryptionPublicKey,
   CaptureCapabilities,
   CaptureLeaseReceipt,
   CaptureTranscriptionStatus,
@@ -27,7 +28,7 @@ import type {
 import { QueueInvariantError } from "../queue/errors";
 import type { CaptureQueue } from "../queue/capture-queue";
 import type { CaptureQueueTransport, ChunkReservation } from "../queue/types";
-import { createWrappedSessionKey } from "./session-key";
+import { createWrappedSessionKey, type WrappedSessionKey } from "./session-key";
 import {
   FLOW_RECORD_SCHEMA_VERSION,
   CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
@@ -69,11 +70,16 @@ export interface CaptureFlowControllerOptions {
   readonly queueTransport: CaptureQueueTransport;
   readonly source: CaptureSource;
   readonly crypto?: Crypto;
+  /** Trusted host key custody; the default browser/iOS key path is unchanged. */
+  readonly createSessionKey?: CaptureSessionKeyFactory;
   readonly now?: () => Date;
   readonly idFactory?: () => string;
   readonly scheduleTimeout?: (callback: () => void, delayMs: number) => unknown;
   readonly cancelTimeout?: (handle: unknown) => void;
 }
+
+export type CaptureSessionKeyFactory = (sessionId: string, published: AudioEncryptionPublicKey,
+  crypto: Crypto) => Promise<WrappedSessionKey>;
 
 type SnapshotListener = (snapshot: CaptureFlowSnapshot) => void;
 
@@ -85,6 +91,7 @@ export class CaptureFlowController {
   readonly #source: CaptureSource;
   readonly #channel: CaptureAudioChannel;
   readonly #crypto: Crypto;
+  readonly #createSessionKey: CaptureSessionKeyFactory;
   readonly #now: () => Date;
   readonly #idFactory: () => string;
   readonly #scheduleTimeout: (callback: () => void, delayMs: number) => unknown;
@@ -130,6 +137,7 @@ export class CaptureFlowController {
       throw new QueueInvariantError("capture_channel_invalid");
     }
     this.#crypto = options.crypto ?? globalThis.crypto;
+    this.#createSessionKey = options.createSessionKey ?? ((_sessionId, published, crypto) => createWrappedSessionKey(published, crypto));
     this.#now = options.now ?? (() => new Date());
     this.#idFactory = options.idFactory ?? (() => this.#crypto.randomUUID());
     this.#scheduleTimeout = options.scheduleTimeout ?? ((callback, delayMs) =>
@@ -605,7 +613,7 @@ export class CaptureFlowController {
     readonly key: CryptoKey;
   }> {
     const published = await this.#bff.getAudioEncryptionKey();
-    const wrapped = await createWrappedSessionKey(published, this.#crypto);
+    const wrapped = await this.#createSessionKey(sessionId, published, this.#crypto);
     return {
       key: wrapped.key,
       state: {

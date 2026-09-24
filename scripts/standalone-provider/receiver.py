@@ -244,13 +244,18 @@ class ProviderReceiver:
                                     "workspace_id": str(workspace_id),
                                     "binding_ref": binding,
                                     "request_nonce": str(_uuid(body["request_nonce"])),
-                                    "operation": {"kind": "capabilities"},
+                                    # This existing read rechecks the configured
+                                    # creator/consent and identifies the session,
+                                    # including before any transcript exists.
+                                    # Capabilities have no session_id.
+                                    "operation": {"kind": "creator_review"},
                                 },
                                 key,
                             )
                             receipt = result.get("receipt")
                             _require(
                                 isinstance(receipt, dict)
+                                and receipt.get("schema_version") == "1.0"
                                 and receipt.get("session_id") == session_id
                             )
                             result = {"revision": str(revision), "session_id": session_id}

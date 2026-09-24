@@ -1,49 +1,19 @@
 import "../capture-app";
 import type { CaptureApp } from "../capture-app";
-import { CaptureFlowController, type CaptureFlowStore } from "../flow";
-import type { CaptureSource } from "../capture";
-import type { CaptureQueueStorage } from "../queue/types";
+import type { PreparedProviderRecorder } from "../provider-binding";
+import { CaptureFlowController } from "../flow";
 import { CaptureQueue } from "../queue/capture-queue";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
-import type { CiphertextUploadTarget } from "../bff/contracts";
 import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
-import type { CreatorReviewJournal } from "../../../review-ui/src/creator-review-journal";
 import { mountCreatorReview } from "../../../review-ui/src/creator-review-panel";
 import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
-  type AuthorizedCoreRequest, type CoreCaptureScope, type LanguageMode } from "./core-client";
+  type LanguageMode } from "./core-client";
 import { noteTemplates, parseDraft, pendingSave, resolveNote, reviewedSource, saveNote,
   type CoreDraft, type CoreNoteTemplate, type ReviewedSource } from "./core-notes";
-import { assertProgress, type JournalSnapshot, type ProviderProgress, type ProviderWorkspaceJournal } from "./workspace-journal";
+import { assertProgress, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
+import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources } from "./workspace-contracts";
+export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
-
-/** Core supplies these display values through its existing authorized encounter list. */
-export interface ProviderEncounter { readonly appointmentRef: string; readonly title: string; readonly detail: string }
-export interface ProviderRecorderResources {
-  readonly source: CaptureSource;
-  readonly flowStore: CaptureFlowStore;
-  readonly queueStorage: CaptureQueueStorage;
-  readonly uploadTarget: CiphertextUploadTarget;
-  /** Release the host's exclusive flow lock/storage handles after source stop. */
-  readonly release: () => Promise<void>;
-}
-export interface AuthorizedProviderEncounter {
-  readonly encounter: ProviderEncounter;
-  readonly scope: CoreCaptureScope;
-  readonly request: AuthorizedCoreRequest;
-  readonly signal: AbortSignal;
-  readonly journal: ProviderWorkspaceJournal;
-  readonly reviewJournal: (sessionId: string) => CreatorReviewJournal;
-  /** Reauthorize and acquire the existing exclusive, creator-scoped recorder stores. */
-  readonly recorder: (sessionId: string, signal: AbortSignal) => Promise<ProviderRecorderResources>;
-  readonly openInCore: (noteRef: string | null) => Promise<void>;
-}
-export interface ProviderWorkspaceHost {
-  readonly signal: AbortSignal;
-  readonly listEncounters: (signal: AbortSignal) => Promise<readonly ProviderEncounter[]>;
-  /** Uses Core's existing encounter/mount authorization, never a browser actor claim. */
-  readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedProviderEncounter>;
-  readonly createEncounter: (signal: AbortSignal) => Promise<void>;
-}
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
@@ -53,7 +23,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let journal: JournalSnapshot = { revision: null, progress: null };
   let encounterAbort: AbortController | null = null;
   let closeRecorder: (() => Promise<void>) | null = null;
-  let acquiringRecorder: Promise<ProviderRecorderResources> | null = null;
+  let acquiringRecorder: Promise<ProviderRecorderResources | PreparedProviderRecorder> | null = null;
   let disposeContent: (() => void) | null = null;
   let templates: CoreNoteTemplate[] = [], source: ReviewedSource | null = null, draft: CoreDraft | null = null;
   let currentSchema = "";
@@ -152,40 +122,50 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(!progress().uploaded);
     const acquisition = activeContext.recorder(id, activeClient.signal);
     acquiringRecorder = acquisition;
-    let resources: ProviderRecorderResources;
+    let resources: ProviderRecorderResources | PreparedProviderRecorder;
     try { resources = await acquisition; }
     finally { if (acquiringRecorder === acquisition) acquiringRecorder = null; }
-    const controller = new CaptureFlowController({ bff: new CoreCaptureBff(activeClient, id),
-      flowStore: resources.flowStore, queue: new CaptureQueue(resources.queueStorage), source: resources.source,
-      queueTransport: new BffCaptureQueueTransport(new CoreCaptureBff(activeClient, id), resources.uploadTarget) });
+    const native = "controller" in resources ? resources : null;
+    const local = "flowStore" in resources ? resources : null;
+    const localController = local ? new CaptureFlowController({ bff: new CoreCaptureBff(activeClient, id),
+      flowStore: local.flowStore, queue: new CaptureQueue(local.queueStorage), source: local.source,
+      queueTransport: new BffCaptureQueueTransport(new CoreCaptureBff(activeClient, id), local.uploadTarget) }) : null;
+    const controller = native?.controller ?? localController!;
+    const lifecycle = native ?? localController!;
     let closing: Promise<void> | null = null;
     const close = (): Promise<void> => closing ??= (async () => {
-      try { await controller.deactivate(); await resources.release(); }
+      try {
+        await lifecycle.deactivate();
+        if (local) await local.release();
+      }
       catch { closing = null; throw new RecorderStopUnconfirmed(); }
     })();
     closeRecorder = close;
     if (!authorized(n)) { await close(); return; }
-    const active = await resources.flowStore.getActiveCaptureState();
-    const preparing = await resources.flowStore.getPreparationState();
-    requireValue((active === null || active.sessionId === id && active.reviewAfterUpload === true)
-      && (preparing === null || preparing.sessionId === id && preparing.mode === "configured_core")
-      && (view.status !== "capturing" || active !== null || preparing !== null));
-    if (!await controller.restore()) await controller.prepareConfigured(id);
+    if (local && localController) {
+      const active = await local.flowStore.getActiveCaptureState();
+      const preparing = await local.flowStore.getPreparationState();
+      requireValue((active === null || active.sessionId === id && active.reviewAfterUpload === true)
+        && (preparing === null || preparing.sessionId === id && preparing.mode === "configured_core")
+        && (view.status !== "capturing" || active !== null || preparing !== null));
+      if (!await localController.restore()) await localController.prepareConfigured(id);
+    }
     requireValue(controller.snapshot.sessionId === id);
     if (!authorized(n)) { await close(); return; }
     show("");
     const app = document.createElement("cosmaneura-capture") as CaptureApp;
-    app.bindProvider({ sessionId: id, controller, sourceKind: resources.source.kind,
+    app.bindProvider({ sessionId: id, controller, sourceKind: native?.sourceKind ?? local!.source.kind,
+      ...(native ? { captureMode: native.captureMode } : {}),
       languageMode: progress().admission.languageMode === "en-US" ? "english" : "english_spanish",
       authorizedRequest: activeClient.reviewRequest(id), journal: activeContext.reviewJournal(id),
       signal: activeClient.signal, deactivate: close, continueToNote: async () => {
         await persist({ ...progress(), uploaded: true });
-        await controller.releaseUploadedCapture();
+        await lifecycle.releaseUploadedCapture();
         await openNotes();
       } });
     content.replaceChildren(app);
     disposeContent = () => app.remove();
-    if (controller.snapshot.state === "uploading") await controller.resumePendingWork();
+    if (controller.snapshot.state === "uploading") await lifecycle.resumePendingWork();
   };
   const admit = async (): Promise<void> => {
     requireValue(client);

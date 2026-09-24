@@ -20,7 +20,7 @@ import { bootstrapCapturePreview } from "./preview/bootstrap";
 import { HttpCreatorReviewApi } from "../../review-ui/src/creator-review-api";
 import { mountCreatorReview } from "../../review-ui/src/creator-review-panel";
 import { isUuid } from "../../review-ui/src/contracts";
-import type { ProviderCaptureBinding } from "./provider-binding";
+import type { ProviderCaptureBinding, ProviderRecorderController, ProviderRecorderSnapshot } from "./provider-binding";
 
 const SYNTHETIC_ENCOUNTER = Object.freeze({
   appointmentId: "synthetic-appointment",
@@ -35,13 +35,14 @@ export class CaptureApp extends LitElement {
   #providerCloseStatus: "closing" | "closed" | "unconfirmed" = "closing";
   #disposeReview: (() => void) | undefined;
   #busy = false;
+  #stopping = false;
   #consented = false;
   #controller: CaptureFlowController | undefined;
   #sourceKind: CaptureSource["kind"] = "synthetic";
   #flowStore: EncryptedIndexedDbFlowStore | undefined;
   #queueStorage: EncryptedIndexedDbQueueStorage | undefined;
   #releaseCaptureFlowLock: ReleaseCaptureFlowLock | undefined;
-  #snapshot: CaptureFlowSnapshot = {
+  #snapshot: ProviderRecorderSnapshot = {
     state: "idle",
     statusCode: "synthetic_preview_idle",
     sessionId: null,
@@ -62,7 +63,6 @@ export class CaptureApp extends LitElement {
       throw new Error("Provider recording is unavailable.");
     }
     this.#provider = binding;
-    this.#controller = binding.controller;
     this.#snapshot = binding.controller.snapshot;
     this.#sourceKind = binding.sourceKind;
     binding.signal.addEventListener("abort", this.#closeProvider, { once: true });
@@ -220,7 +220,9 @@ export class CaptureApp extends LitElement {
               <p class="step">Step 2</p>
               <h2 id="record-title">Record</h2>
               <p>
-                ${provider ? "Keep this app in the foreground while recording. Start and stop deliberately."
+                ${provider?.captureMode === "desktop_meeting"
+                  ? "Choose your Meet window in Chrome or your Zoom window when starting. This records your microphone and the selected application’s audio; other audio from that application may be included."
+                  : provider ? "Keep this app in the foreground while recording. Start and stop deliberately."
                   : this.#sourceKind === "microphone"
                   ? "The foreground microphone test adapter is explicitly enabled for synthetic test data."
                   : "Microphone capture is disabled; the button emits valid silent WAV chunks."}
@@ -234,7 +236,8 @@ export class CaptureApp extends LitElement {
                 aria-label=${provider ? "Start recording" : this.#sourceKind === "microphone"
                   ? "Start foreground microphone test recording"
                   : "Start silent synthetic recording"}
-                ?disabled=${this.#snapshot.state !== "ready" || this.#busy}
+                ?disabled=${this.#snapshot.state !== "ready" || this.#busy || this.#stopping
+                  || this.#snapshot.desktop !== undefined && this.#snapshot.desktop.phase !== "ready"}
                 @click=${this.#record}
               >
                 <span aria-hidden="true"></span>
@@ -243,22 +246,32 @@ export class CaptureApp extends LitElement {
               <button
                 data-testid="stop-button"
                 class="secondary"
-                ?disabled=${!this.#canStop() || this.#busy}
+                ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && this.#busy}
                 @click=${this.#stop}
               >
-                ${this.#snapshot.statusCode === "audio_capture_native_stop_failed"
+                ${this.#snapshot.desktop?.phase === "starting" ? "Cancel start"
+                  : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
                   ? "Retry stop and upload" : "Stop and upload"}
               </button>
+              ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
+                data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Check recording permissions</button>` : ""}
             </div>
           </section>`}
 
           ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
-            <p role="status">${this.#snapshot.state === "recording" ? "Recording"
+            <p role="status">${this.#snapshot.desktop?.phase === "starting" ? "Starting microphone and meeting audio…"
+              : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
+              : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
+              : this.#snapshot.desktop?.phase === "permission_required" ? "Allow microphone and screen recording in macOS Settings, then check permissions."
+              : this.#snapshot.state === "uploading" ? "Uploading your recording"
+              : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace"
+              : this.#snapshot.desktop?.phase === "stopped" ? "Recording stopped"
+              : this.#snapshot.desktop?.phase === "interrupted" ? "Recording interrupted. Confirm stop before uploading."
+              : this.#snapshot.state === "recording" ? "Recording"
               : this.#snapshot.statusCode === "audio_capture_native_stop_failed"
                 ? "Recording stop is unconfirmed. Retry stopping before continuing."
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
-              : this.#snapshot.state === "uploading" ? "Uploading your recording"
-              : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace" : "Ready to record"}</p>
+              : "Ready to record"}</p>
             <p>Recording window used ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
             ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
@@ -319,6 +332,16 @@ export class CaptureApp extends LitElement {
             ${provider ? "" : this.#renderTranscript()}
           </section>`}
 
+          ${provider && this.#snapshot.desktop ? html`<p data-testid="desktop-coverage" role="status">
+            ${this.#snapshot.desktop.coverage === "incomplete"
+              ? "Recording coverage is incomplete. Review the retained audio and transcript for missing speech."
+              : this.#snapshot.desktop.coverage === "aligned" ? "Microphone and meeting audio are aligned."
+              : this.#snapshot.desktop.coverage === "complete" ? "Recording retained the interval covered by both microphone and meeting audio."
+              : "Recording has not started."}
+            ${this.#snapshot.desktop.trimmedStartMs > 0 ? ` The first ${this.#snapshot.desktop.trimmedStartMs} ms before both sources were available was excluded.` : ""}
+            ${(this.#snapshot.desktop.trimmedEndMs ?? 0) > 0 ? ` The final ${this.#snapshot.desktop.trimmedEndMs} ms without both sources was excluded.` : ""}
+          </p>` : ""}
+
           ${provider ? html`<div data-provider-review></div>`
             : html`<p class="fixed-status" role="status">${this.#snapshot.statusCode}</p>`}
         </main>
@@ -356,7 +379,20 @@ export class CaptureApp extends LitElement {
   };
 
   readonly #stop = (): void => {
+    if (this.#snapshot.desktop) {
+      if (this.#stopping) return;
+      this.#stopping = true; this.requestUpdate();
+      // Startup can be cancelled even while its Start promise is pending.
+      void this.#requireController().stopRecording().catch(() => undefined).finally(() => {
+        this.#stopping = false; this.requestUpdate();
+      });
+      return;
+    }
     void this.#run(async () => this.#requireController().stopRecording());
+  };
+
+  readonly #refreshPermissions = (): void => {
+    void this.#run(async () => this.#requireController().refreshPermissions?.());
   };
 
   readonly #refreshStatus = (): void => {
@@ -388,7 +424,8 @@ export class CaptureApp extends LitElement {
     return this.#controller;
   }
 
-  #requireController(): CaptureFlowController {
+  #requireController(): ProviderRecorderController {
+    if (this.#provider) return this.#provider.controller;
     if (this.#controller === undefined) throw new Error("capture flow is not prepared");
     return this.#controller;
   }
@@ -415,6 +452,7 @@ export class CaptureApp extends LitElement {
   }
 
   #canStop(): boolean {
+    if (this.#snapshot.desktop) return ["starting", "recording", "interrupted", "stop_unconfirmed"].includes(this.#snapshot.desktop.phase);
     return this.#snapshot.state === "recording" || this.#snapshot.state === "paused";
   }
 }

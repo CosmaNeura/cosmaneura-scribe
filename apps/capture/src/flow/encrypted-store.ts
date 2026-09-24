@@ -385,7 +385,7 @@ async function getOrCreateLocalKey(database: IDBDatabase, crypto: Crypto): Promi
   });
 }
 
-function assertReservationIntent(value: unknown): asserts value is ReservationIntent {
+export function assertReservationIntent(value: unknown): asserts value is ReservationIntent {
   if (
     !isRecord(value) ||
     value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION ||
@@ -411,7 +411,7 @@ function validCaptureChannelVersion(value: Record<string, unknown>): boolean {
       && (value.channel === "mixed" || value.channel === "system_audio");
 }
 
-function assertPreparationState(value: unknown): asserts value is CapturePreparationState {
+export function assertPreparationState(value: unknown): asserts value is CapturePreparationState {
   if (isRecord(value) && value.mode === "configured_core") {
     if (Object.keys(value).filter(key => key !== "channel").sort().join(",") !==
         "completeIdempotencyKey,leaseIdempotencyKey,leaseRequest,mode,schemaVersion,sessionId,startedAt"
@@ -465,7 +465,7 @@ function assertPreparationState(value: unknown): asserts value is CapturePrepara
   }
 }
 
-function assertPreparationProgression(
+export function assertPreparationProgression(
   existing: CapturePreparationState,
   replacement: CapturePreparationState,
 ): void {
@@ -507,7 +507,7 @@ function nullableStableJson(
   return existing === null || JSON.stringify(existing) === JSON.stringify(replacement);
 }
 
-function assertActiveCaptureState(value: unknown): asserts value is ActiveCaptureState {
+export function assertActiveCaptureState(value: unknown): asserts value is ActiveCaptureState {
   if (
     !isRecord(value) ||
     (value.reviewAfterUpload !== undefined && value.reviewAfterUpload !== true) ||
@@ -543,7 +543,7 @@ function assertActiveCaptureState(value: unknown): asserts value is ActiveCaptur
   assertLease(value.lease, value.sessionId);
 }
 
-function assertActiveCaptureProgression(
+export function assertActiveCaptureProgression(
   existing: ActiveCaptureState,
   replacement: ActiveCaptureState,
 ): void {
@@ -593,7 +593,7 @@ function isActiveCapturePhase(value: unknown): value is ActiveCaptureState["phas
   );
 }
 
-function assertSessionKeyState(value: unknown): asserts value is SessionKeyBindingState {
+export function assertSessionKeyState(value: unknown): asserts value is SessionKeyBindingState {
   if (
     !isRecord(value) ||
     value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION ||
@@ -626,7 +626,7 @@ function assertAesKey(key: CryptoKey, code: string): void {
   }
 }
 
-function assertSessionDek(key: CryptoKey): void {
+export function assertSessionDek(key: CryptoKey): void {
   const algorithm = key.algorithm as AesKeyAlgorithm;
   if (
     key.type !== "secret" ||

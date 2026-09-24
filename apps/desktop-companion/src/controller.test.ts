@@ -860,4 +860,26 @@ describe("DesktopCaptureController", () => {
       competing.handleRendererCommand(command("start", "request-other-start")),
     ).rejects.toMatchObject({ code: "lease_unavailable" });
   });
+
+  it("retries an incomplete shutdown after the indicator becomes available", async () => {
+    const session = grant("shutdown-indicator"), lease = new SingleRecordingLease();
+    const indicator = new InMemoryRecordingIndicator();
+    let refuse = true;
+    const controller = new DesktopCaptureController(new MockDesktopCaptureAdapter(), {
+      publish: value => !value.visible && refuse ? Promise.reject(new Error("invented indicator failure")) : indicator.publish(value),
+    }, options(new StaticAuthority(authorization(session)), lease));
+    await controller.initializeFromBackend(session, "request-init");
+    await controller.handleRendererCommand(command("start", "request-start"));
+    await expect(controller.shutdownFromMain("request-shutdown")).rejects.toMatchObject({ code: "indicator_failure" });
+    expect(controller.snapshot().state).toBe("failed");
+    refuse = false;
+    await controller.shutdownFromMain("request-retry");
+    expect(controller.snapshot().state).toBe("stopped"); expect(indicator.current()).toMatchObject({ visible: false });
+    const next = grant("after-shutdown-indicator");
+    const other = new DesktopCaptureController(new MockDesktopCaptureAdapter(), new InMemoryRecordingIndicator(),
+      options(new StaticAuthority(authorization(next)), lease));
+    await other.initializeFromBackend(next, "request-other-init");
+    await other.handleRendererCommand(command("start", "request-other-start"));
+    await other.shutdownFromMain("request-other-close");
+  });
 });

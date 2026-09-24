@@ -6,8 +6,10 @@ import {
   PACKAGED_APP_SCHEME,
   RENDERER_CONTENT_SECURITY_POLICY,
   requireElectronSingleInstance,
-  type ElectronWebContentsSecurityPort,
+  type ElectronWebContentsSecurityPort, type ElectronSessionSecurityPort,
 } from "./electron-security.js";
+
+type HeadersHandler = Parameters<ElectronSessionSecurityPort["webRequest"]["onHeadersReceived"]>[0];
 
 class FakeWebContents implements ElectronWebContentsSecurityPort {
   readonly listeners = new Map<
@@ -31,16 +33,7 @@ class FakeWebContents implements ElectronWebContentsSecurityPort {
         details: unknown,
       ) => boolean)
     | null = null;
-  headersHandler:
-    | ((
-        details: {
-          readonly responseHeaders?: Readonly<Record<string, readonly string[]>>;
-        },
-        callback: (response: {
-          readonly responseHeaders: Readonly<Record<string, readonly string[]>>;
-        }) => void,
-      ) => void)
-    | null = null;
+  headersHandler: HeadersHandler | null = null;
   readonly session = {
     setPermissionRequestHandler: (
       handler: (
@@ -69,20 +62,7 @@ class FakeWebContents implements ElectronWebContentsSecurityPort {
       this.listeners.set(event, listener);
     },
     webRequest: {
-      onHeadersReceived: (
-        listener: (
-          details: {
-            readonly responseHeaders?: Readonly<
-              Record<string, readonly string[]>
-            >;
-          },
-          callback: (response: {
-            readonly responseHeaders: Readonly<
-              Record<string, readonly string[]>
-            >;
-          }) => void,
-        ) => void,
-      ): void => {
+      onHeadersReceived: (listener: HeadersHandler): void => {
         this.headersHandler = listener;
       },
     },
@@ -198,7 +178,7 @@ describe("Electron renderer security", () => {
     );
     expect(externalNavigationPrevented).toBe(true);
 
-    let responseHeaders: Readonly<Record<string, readonly string[]>> = {};
+    let responseHeaders: Record<string, string | string[]> = {};
     contents.headersHandler?.(
       { responseHeaders: { Existing: ["value"] } },
       (response) => {

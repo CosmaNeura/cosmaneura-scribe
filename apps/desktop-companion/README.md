@@ -9,13 +9,54 @@ the existing WAV/encryption/upload/recovery flow; eleven local desktop checks
 include decrypting the retained WAV and reopening/uploading mixed capture once.
 The actual Swift-to-main transport now uses a dedicated helper and bounded
 inherited pipes. Generated audio crosses the real Swift/Node boundary into WAV;
-stop waits for the child to exit. Durable host stores/UI, native lifetime and
-physical Meet/Zoom acceptance remain open. See
+stop waits for the child to exit. Durable main-process flow/queue, protected key,
+journal and coverage stores now pass actual file/process-loss recovery. The
+main recorder now composes the authority/lease/indicator controller with this
+flow and connects a fixed command/state view to the provider workspace. The
+complete provider main/preload bridge now connects encounter actions, scoped
+journals, explicit review decisions, existing Core note editing and navigation.
+The dormant packaged main/preload bootstrap now builds with fixed verified
+renderer assets and confirmed native cleanup before shutdown. The trusted host
+still needs an approved runtime, actual native custody, picker/indicator and its
+configured native/backend factory; physical Meet/Zoom acceptance
+remains open. See
 [ADR 0056](../../docs/adr/0056-desktop-pcm-encrypted-capture-adapter.md) and
-[ADR 0057](../../docs/adr/0057-desktop-native-process-transport.md).
-It is not mounted in this Electron foundation. The
+[ADR 0057](../../docs/adr/0057-desktop-native-process-transport.md) and
+[ADR 0058](../../docs/adr/0058-durable-desktop-provider-storage.md) and
+[ADR 0059](../../docs/adr/0059-desktop-provider-recorder-composition.md) and
+[ADR 0060](../../docs/adr/0060-desktop-provider-workspace-bridge.md) and
+[ADR 0061](../../docs/adr/0061-packaged-desktop-provider-host.md).
+No installed Electron application mounts this composition yet. The
 historical pilot description below describes its existing mock and Recall plan;
 no Recall dependency or live service has been added.
+
+To emit the dormant host artifacts with existing tooling, run from the repository
+root: `node scripts/build-desktop-provider-host.mjs <provider-build-directory> <new-output-directory>`.
+The output explicitly has `launch_ready: false`: it contains no Electron runtime,
+actual `provider-host.mjs`, native helper/configuration or signed app bundle.
+Electron 44.4.3 is now approved and installed as a development dependency in this
+checkout. The builder above still emits host files only; it does not copy the
+runtime into a signed app or supply the missing native/backend factory.
+Read the [applied runtime packet](../../docs/beta/SCRIBE_DESKTOP_RUNTIME_PACKET_20260922.md)
+and [shared Core decision](../../docs/beta/SCRIBE_SHARED_CORE_DECISION_20260922.md)
+before further packaging/configuration work.
+
+The local `createDesktopProviderConnection` factory in
+`src/provider-workspace-factory.ts` now composes an authorized backend with actual
+encrypted journals/flow/queue/coverage and the existing recorder. The native host
+must supply device custody, picker/indicator, verified helper and the backend's
+fresh desktop authority; the factory supplies no defaults for them. It retains
+failed-stop and late-acquisition ownership. It is not yet bound to the missing
+packaged `provider-host.mjs`. See [ADR 0062](../../docs/adr/0062-desktop-provider-resource-factory.md)
+and the [Core release packet](../../docs/beta/SCRIBE_CORE_RELEASE_PACKET_20260922.md)
+for the verified local scope and remaining configuration/identity gaps.
+
+`MacProviderPresentation.swift` now supplies disabled native window-picker and
+persistent recording-presentation source for macOS 14.2. It is typechecked but
+not connected to the host or installed. See [ADR 0063](../../docs/adr/0063-native-provider-presentation.md).
+The [desktop authority design](../../docs/beta/SCRIBE_DESKTOP_START_AUTHORITY_DESIGN_20260922.md)
+records the unresolved server grant and lease-order contract; no authority or
+client ordering change is applied.
 
 This directory contains the disabled-by-default Phase 3 foundation for an Electron desktop
 companion that will eventually host Recall.ai's Desktop Recording SDK in the Electron main process.

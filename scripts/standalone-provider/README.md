@@ -33,7 +33,7 @@ bounded JSON with `Cache-Control: no-store` and fixed failure codes.
 | --- | --- |
 | `catalog` | `{}`; returns the current creator's provisioned Core encounter/workspace observations. Core permission is resolved again when opened. |
 | `mount` | `workspace_id`; negotiates actual Core authority, returning the scope, display row and stable recovery UUID required by the provider host. |
-| `recorder` | `workspace_id`, `binding_ref`, `session_id`, `request_nonce`; confirms that Core's current capabilities belong to the requested admitted session. Starts no recording. |
+| `recorder` | `workspace_id`, `binding_ref`, `session_id`, `request_nonce`; uses Core's existing creator-review read to reauthorize and identify the requested admitted session, including before a transcript exists. Returns only the native revision/session identifiers and starts no recording. |
 | `capture-admissions` | The existing `CoreCaptureClient` envelope, including configured language and all-party consent. |
 | `capture-operations` | The existing envelope for capture/upload, creator review and translation decisions. |
 | `capture-notes` | The existing Core SOAP read/templates/prepare/save/resolve envelope. |
@@ -104,6 +104,10 @@ not be discarded. The UI provides the same explicit cleanup retry during use.
 
 `check-provider-application.mjs` qualifies the built entry's startup/lifecycle
 with offline native/Core hosts. It does not install an app or access credentials.
-The proposed `standalone-identity.patch` is **not applied**. Its exact scope and
-pending owner decision are in the
+The owner approved `standalone-identity.patch`; it is applied only to the new
+source copy recorded in the
 [identity packet](../../docs/beta/SCRIBE_STANDALONE_IOS_IDENTITY_PACKET_20260922.md).
+`check-standalone-identity.swift` validates the copied configuration's exact
+bundle/callback and rejection boundaries without SDK, Keychain or network use.
+The prepared native libraries target iOS 17. No complete app is installed or
+connected to a Core receiver by this build preparation.

@@ -1,5 +1,136 @@
 # Local provider workspace — 2026-09-21
 
+## Approved platform preparation — 2026-09-22
+
+The owner approved both pending iOS identity/build and Electron dependency/install
+packets. The exact Electron 44.4.3 graph/runtime is installed locally. The iOS patch
+is applied only to a new native source copy; auth and provider bridge static
+libraries compile for iOS 17 and the identity boundary checks pass. Original
+native/Core/protected source remains unchanged. No complete app was launched or
+installed. See the [applied checkpoint](../SCRIBE_APPROVED_PLATFORM_CHECKPOINT_20260922.md)
+for evidence, the Electron signature limitation, and remaining Core/native gates.
+Earlier pending-approval statements below are historical and superseded.
+
+## Recorder correction and native presentation — 2026-09-22
+
+Recorder setup now uses Core's existing creator-review read to identify and
+reauthorize the configured session. Its former capabilities/session comparison
+could not succeed against the real schema. Twenty isolated receiver checks now
+pass, including final-reply revocation and recovery states. The new private
+fixture cluster is stopped. Default-disabled macOS 14.2 window-picker/recording
+presentation source also typechecks; it has no installed/native IPC acceptance.
+The desktop grant/lease contract is documented as unresolved and unapplied.
+See the [receiver/native checkpoint](../SCRIBE_RECEIVER_NATIVE_CHECKPOINT_20260922.md).
+The pending identity/runtime decisions and Core release/mobile configuration
+gaps below remain open. No completed installed or live-service trial was repeated.
+
+## Core release reconciliation and desktop resource factory — 2026-09-22
+
+The active Core production/staging revisions both have Scribe workflow disabled
+and omit the capture/service configuration. Production's current registry tag
+binding is now known, but its running replica digest is not attested. Staging's
+Clerk issuer differs from W13's qualified issuer; the pending bundle identity
+alone cannot connect it. The existing note page uses appointment IDs, and its
+single-transcript read needs reconciliation with retained reviewed-source versions.
+See the [Core release/configuration packet](SCRIBE_CORE_RELEASE_PACKET_20260922.md).
+
+The new desktop resource connection factory composes the actual encrypted stores,
+provider/review journals, Core client and recorder with supplied native/backend
+ports. It retains ownership through late acquisition, revocation and failed stop.
+Four new checks plus twelve existing main/host checks, desktop types, affected lint,
+build and a compiled Node import pass. See [ADR 0062](../adr/0062-desktop-provider-resource-factory.md).
+Fixtures do not establish native/installed acceptance. The packaged native factory,
+real custody/picker/indicator and backend desktop start grant remain unfinished.
+Identity/runtime proposals, installed apps, Core/OS sources and completed trials
+are preserved; no deployment or configuration write occurred.
+
+## Packaged desktop host and shared Core decision — 2026-09-22
+
+The dormant desktop main/preload host now builds the complete provider workspace
+with fixed verified assets, security before window loading, and native ownership
+retained through confirmed shutdown/retry. All 75 desktop checks, types, affected
+lint, host build and three compiled full workflow checks using the built preload
+pass. See [ADR 0061](../adr/0061-packaged-desktop-provider-host.md).
+Electron is not installed; the native/backend factory is still missing.
+
+The owner chose existing Core ownership/shared infrastructure for Scribe and
+CosmasOS, with isolated qualification before the provider cohort. Read the
+[decision and release gap](SCRIBE_SHARED_CORE_DECISION_20260922.md), the
+[unapplied runtime packet](SCRIBE_DESKTOP_RUNTIME_PACKET_20260922.md), and the
+[bounded new-chat checkpoint](../SCRIBE_HANDOFF_20260922.md). No installed app,
+Core/OS, private service or completed trial was changed/repeated.
+
+## Desktop backend, journal and complete provider UI connection — 2026-09-22
+
+The desktop main/preload bridge now connects encounter selection/creation,
+retained provider and review journals, explicit translation decisions, existing
+Core note operations/navigation and the previously qualified recorder view.
+Main owns the authenticated host and current recorder; the renderer has fixed
+actions and intended provider content. Session changes clear content immediately,
+late work stays owned through cleanup, and saturated content requests cannot
+prevent cancellation/native logout. Failed recorder attachment/stop blocks
+replacement until the same owner's cleanup succeeds.
+
+All 69 desktop/202 capture checks, both typechecks, affected lint, provider/main
+builds and 16 compiled DOM/application checks pass. The new DOM check exercises
+actual main/preload mapping with invented backend/session/consent data through
+translation review, journaled SOAP edits and Core navigation. See
+[ADR 0060](../adr/0060-desktop-provider-workspace-bridge.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-workspace-20260922.YKxJkx/`.
+
+Next assemble the executable host and its actual native/backend factory. No
+Electron dependency was selected/installed. Native picker/indicator, device key
+custody, pending standalone identity configuration, actual Core runtime, installed
+desktop/mobile acceptance, fidelity and signed operations remain open. W13, R2,
+private services, Core/OS and protected authority files are preserved; no accepted
+phone or completed live-service trial was repeated.
+
+## Desktop provider recorder controls — 2026-09-22
+
+The existing provider UI now accepts a desktop recorder command/state view.
+Main composes its native helper, encrypted capture/recovery flow and existing
+fresh-authority/lease/indicator controller. Startup cancellation, confirmed stop
+before upload, failed-stop retry and interrupted reopening are connected. The
+view shows startup, source scope and incomplete coverage without receiving audio,
+keys, storage handles, window IDs or credentials. Default preview and the iOS
+resource/foreground path remain unchanged.
+
+All 63 desktop/202 capture checks, types/lint, provider/main builds, three compiled
+desktop DOM checks and ten existing application checks pass. The new main checks
+use real Swift/Node pipes and encrypted SQLite with explicitly invented audio,
+consent and a local BFF. See [ADR 0059](../adr/0059-desktop-provider-recorder-composition.md)
+and `/Users/jw/Desktop/Cosmas/scribe-desktop-provider-20260922.vqbwAd/`.
+
+Next assemble the actual standalone desktop main/preload runtime with its native
+picker/indicator, device key custody and provider backend/journal ports. Actual
+Core runtime configuration and the pending standalone identity decision remain
+external dependencies. No Electron app was installed/launched; desktop/mobile
+physical, session/fidelity and signed release/operations acceptance are unfinished.
+W13, Mac R2, private receiver, Core/OS source and protected authority files are
+unchanged; no completed live-service trial was repeated.
+
+## Durable desktop capture and provider recovery — 2026-09-22
+
+Desktop main-process storage now retains encrypted flow/queue records, locally
+wrapped session keys, existing provider/review journals and native coverage.
+A real-file check records through the qualified Swift generated-audio helper,
+SIGKILLs its writer with SQLite open, recovers the ciphertext/key from WAL and
+uploads once through the existing capture controller. Reopening is paused and
+does not start a source. Five new storage checks, all 57 desktop/200 capture
+checks, typechecks and affected lint pass.
+
+See [ADR 0058](../adr/0058-durable-desktop-provider-storage.md) and
+`/Users/jw/Desktop/Cosmas/scribe-desktop-durable-20260922.nt9C50/`.
+This uses an ephemeral fixture custody key, not Keychain or actual native key
+provisioning. The default browser/iOS key path remains unchanged. No installed
+app, service, Core/OS tree or completed live trial was changed/repeated.
+
+Next compose the provider recorder in the trusted desktop main process and
+connect its commands/snapshots to the existing provider UI. Actual native key
+custody, complete Core runtime, standalone identity/packages and device/release
+acceptance remain open. Source, store, key and upload handles must remain outside
+the renderer. W13, Mac R2 and the private receiver stay preserved.
+
 ## Actual desktop native process transport — 2026-09-22
 
 The Swift microphone/system producer now has a dedicated helper and a Node

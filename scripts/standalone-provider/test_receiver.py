@@ -41,6 +41,7 @@ receiver = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = receiver
 spec.loader.exec_module(receiver)
 
+from cosmaneura_scribe.schemas import CaptureCapabilities  # noqa: E402
 from cosmas_os.api.auth import ClerkTokenVerifier  # noqa: E402
 from cosmas_os.db import Base  # noqa: E402
 from cosmas_os.models import (  # noqa: E402
@@ -104,6 +105,10 @@ class CoreWire:
         self.calls = []
         self.after = None
         self.saved = []
+        self.operations = []
+        self.review_status = "created"
+        self.review_http_status = 200
+        self.review_schema_version = "1.0"
 
     async def handle(self, request):
         selected = self.selection
@@ -169,9 +174,43 @@ class CoreWire:
                         consent_record_id=str(uuid4()),
                     )
                 elif path.endswith("capture-operations"):
-                    result.update(
-                        operation=data["operation"]["kind"], receipt={"session_id": SESSION_ID}
-                    )
+                    kind = data["operation"]["kind"]
+                    self.operations.append(kind)
+                    if kind == "capabilities":
+                        # The actual receipt deliberately has no session_id.
+                        receipt = CaptureCapabilities(
+                            protocol_version="1.0",
+                            media={
+                                "media_type": "audio/wav",
+                                "encoding": "pcm_s16le",
+                                "channels": 1,
+                                "sample_rate_hz": 16000,
+                            },
+                            target_chunk_duration_ms=5000,
+                            max_envelope_bytes=200000,
+                            max_chunks=1000,
+                            remaining_aggregate_plaintext_bytes=32000000,
+                            capture_lease_ttl_seconds=300,
+                            reservation_window_seconds=60,
+                            max_reservations_per_batch=10,
+                            upload_concurrency=2,
+                        ).model_dump(mode="json")
+                    elif kind == "creator_review":
+                        if self.review_http_status != 200:
+                            return httpx.Response(self.review_http_status, headers=headers)
+                        # CreatorReviewViewV1 before a source transcript exists.
+                        receipt = {
+                            "schema_version": self.review_schema_version,
+                            "session_id": SESSION_ID,
+                            "status": self.review_status,
+                            "source": None,
+                            "working": None,
+                            "review_queue": None,
+                            "translation_progress": [],
+                        }
+                    else:
+                        receipt = {"session_id": SESSION_ID}
+                    result.update(operation=kind, receipt=receipt)
                 else:
                     result.update(action=data["action"], receipt={"session_id": SESSION_ID})
                     if data["action"] in {"save", "resolve"}:
@@ -417,6 +456,57 @@ async def test_catalog_mount_and_recorder_use_existing_identity_and_core(harness
             },
         )
         assert wrong.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["created", "capturing", "uploaded"])
+async def test_recorder_uses_session_review_and_returns_only_native_scope(harness, status):
+    h = harness
+    h.wire.review_status = status
+    async with client(h) as c:
+        result = await c.post(
+            "/provider/v1/recorder",
+            json={
+                "workspace_id": h.workspace,
+                "binding_ref": BINDING,
+                "session_id": SESSION_ID,
+                "request_nonce": str(uuid4()),
+            },
+        )
+    assert result.status_code == 200
+    assert result.json() == {"revision": h.revision, "session_id": SESSION_ID}
+    assert result.headers["cache-control"] == "no-store"
+    assert h.wire.operations == ["creator_review"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["core_denied", "unsupported_schema", "revoked_during_reply"])
+async def test_recorder_does_not_publish_denied_or_revoked_session(harness, failure):
+    h = harness
+    if failure == "core_denied":
+        h.wire.review_http_status = 403
+    elif failure == "unsupported_schema":
+        h.wire.review_schema_version = "2.0"
+    else:
+
+        def revoke_after_review(path):
+            if path.endswith("capture-operations"):
+                h.mutate(ExternalIdentity, h.identity, active=False)
+
+        h.wire.after = revoke_after_review
+    async with client(h) as c:
+        result = await c.post(
+            "/provider/v1/recorder",
+            json={
+                "workspace_id": h.workspace,
+                "binding_ref": BINDING,
+                "session_id": SESSION_ID,
+                "request_nonce": str(uuid4()),
+            },
+        )
+    assert result.status_code == (422 if failure == "unsupported_schema" else 403)
+    assert "session_id" not in result.json() and "revision" not in result.json()
+    assert h.wire.operations == ["creator_review"]
 
 
 @pytest.mark.asyncio

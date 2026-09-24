@@ -1,5 +1,12 @@
 # Scribe implementation handoff — 2026-09-21
 
+**2026-09-22 timed stopping point:** the owner requested about 15 more minutes of
+work, a stable checkpoint, then a prompt for another chat. Start the next chat
+with [SCRIBE_HANDOFF_20260922.md](SCRIBE_HANDOFF_20260922.md). It records ADR 0061,
+the settled shared-Core decision, actual release metadata/contract gap, unapplied
+runtime/identity proposals, accepted tests and exact remaining critical path.
+This older document retains historical approval and qualification detail.
+
 This is the continuation prompt and current checkpoint for the user-created
 replacement task. Read this file completely. Do not import the entire old
 conversation or restart completed work. Statements about live services/devices
@@ -26,8 +33,23 @@ checks pass with explicit native/BFF/storage fixtures. Actual Swift-to-main
 transport was then implemented in ADR 0057: a dedicated Swift helper and Node
 driver pass actual pipe/WAV, cancellation, backpressure, stop-retry and
 parent-loss exit checks using an invented source. The production helper compiles
-but remains unactivated. Durable host stores/UI and native lifecycle/physical
-acceptance remain open. No physical recording or live trial ran.
+but remains unactivated. ADR 0058 then added durable main-process capture/queue,
+protected session-key, journal and coverage stores. A real-file generated-audio
+fixture survives SIGKILL/WAL recovery and uploads once through the existing flow.
+All 57 desktop and 200 capture checks passed at that checkpoint. ADR 0059 then
+composed the main-process recorder with the existing authority/lease/indicator
+controller and connected a fixed command/state view to the provider workspace.
+The new local fixture passes native Start/Stop, stop-before-upload, cancellation,
+failed-stop retry and paused recovery; 63 desktop/202 capture checks, types/lint,
+provider/main builds and 13 compiled DOM/application checks pass. ADR 0060 then
+connected desktop backend/journal ports and the complete provider application
+through fixed main/preload actions. Six new lifecycle checks and a compiled
+review-to-Core-note/edit/navigation fixture pass: 69 desktop/202 capture checks,
+types/lint, provider/main builds and 16 compiled DOM/application checks in total.
+Native/backend data in this new fixture are invented. Actual standalone runtime
+bootstraps and native/backend factories, native picker/indicator and key custody,
+actual Core configuration and installed lifecycle/physical acceptance remain open.
+No installed app, Keychain, physical recording or live trial ran.
 Read the newest sections of
 `beta/SCRIBE_PROVIDER_WORKSPACE_20260921.md` for their source/evidence and exact
 remaining native/runtime boundaries. W13 build 4's catalog, signed-in restart,
