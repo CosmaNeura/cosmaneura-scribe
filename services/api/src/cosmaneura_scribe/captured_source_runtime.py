@@ -7,16 +7,18 @@ transcript upload. No route, recorder, provider call or worker is activated here
 from __future__ import annotations
 
 import hashlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .azure_speech_source import normalize_azure_source
+from .capture_continuity import CaptureContinuity, NativeIntervalStart
 from .creator_review_contract_v1 import CreatorTranslationProgressV1
 from .normalized_source_persistence import (
     CAPTURED_NORMALIZATION_PROFILE_ID,
@@ -30,7 +32,12 @@ from .normalized_source_persistence import (
     consent_authorizes_versioned_session,
 )
 from .postgres_repository import PostgresRepository
-from .repository import CaptureIngestModeError
+from .repository import (
+    CaptureChannelFinalization,
+    CaptureChannelFinalizationDraft,
+    CaptureFinalizationError,
+    CaptureIngestModeError,
+)
 from .schemas import Transcript, TranscriptionJob, TranscriptionJobStatus
 from .session_state_v1 import SessionIngestMode
 from .transcript_constraints import MAX_TRANSCRIPT_SEGMENTS
@@ -81,6 +88,75 @@ class CapturedSourceRepository(PostgresRepository):
             configured_capture=True,
         )
 
+    async def finalize_capture_channels(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        declarations: tuple[CaptureChannelFinalizationDraft, ...],
+    ) -> tuple[CaptureChannelFinalization, ...]:
+        await self.lock_live_capture(tenant_id, session_id)
+        active = await self._session.scalar(
+            text("""
+            SELECT EXISTS (SELECT 1 FROM source_start_attempts
+                WHERE tenant_id = :tenant AND session_id = :session
+                    AND state IN ('prepared', 'issued'))
+        """),
+            {"tenant": tenant_id, "session": session_id},
+        )
+        if active:
+            raise CaptureFinalizationError
+        starts = await self._native_interval_starts(tenant_id, session_id)
+        declared = {item.channel.value: item.last_sequence_number for item in declarations}
+        if any(
+            row["first_sequence_number"]
+            > declared.get("mixed" if row["source"] == "desktop_companion" else "microphone", -2)
+            + 1
+            for row in starts
+        ):
+            raise CaptureFinalizationError
+        return await super().finalize_capture_channels(tenant_id, session_id, declarations)
+
+    async def _native_interval_starts(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> Sequence[RowMapping]:
+        rows = (
+            (
+                await self._session.execute(
+                    text("""
+            SELECT id, source, first_sequence_number, state FROM source_start_attempts
+            WHERE tenant_id = :tenant AND session_id = :session AND issued_at IS NOT NULL
+            ORDER BY first_sequence_number, prepared_at, id LIMIT 1001
+        """),
+                    {"tenant": tenant_id, "session": session_id},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if len(rows) > 1000 or any(row["state"] != "stopped" for row in rows):
+            raise CapturedSourceUnavailable()
+        return rows
+
+    async def capture_continuity(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> CaptureContinuity | None:
+        # Caller holds the live creator/source session lock. These starts cannot
+        # change after finalization; they do not claim actual audio or gap duration.
+        rows = await self._native_interval_starts(tenant_id, session_id)
+        if len(rows) < 2:
+            return None
+        return CaptureContinuity(
+            starts=tuple(
+                NativeIntervalStart(
+                    source_start_id=row["id"],
+                    first_sequence_number=row["first_sequence_number"],
+                )
+                for row in rows
+            )
+        )
+
     async def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None:
         # The legacy worker probes here before assembling audio. Fail before any
         # provider call when it is accidentally paired with configured capture.
@@ -121,8 +197,9 @@ class CapturedSourceRepository(PostgresRepository):
         ):
             raise CapturedSourceUnavailable()
         rows = (
-            await self._session.execute(
-                text("""
+            (
+                await self._session.execute(
+                    text("""
                 SELECT job.source_segment_id, job.source_segment_version,
                        CASE job.status
                          WHEN 'reserved' THEN 'queued'
@@ -142,14 +219,20 @@ class CapturedSourceRepository(PostgresRepository):
                 ORDER BY job.source_segment_id
                 LIMIT :limit
             """),
-                {"tenant": tenant_id, "session": session_id, "version": source_version,
-                 "limit": MAX_TRANSCRIPT_SEGMENTS + 1},
+                    {
+                        "tenant": tenant_id,
+                        "session": session_id,
+                        "version": source_version,
+                        "limit": MAX_TRANSCRIPT_SEGMENTS + 1,
+                    },
+                )
             )
-        ).mappings().all()
-        if (
-            len(rows) > MAX_TRANSCRIPT_SEGMENTS
-            or len({row["source_segment_id"] for row in rows}) != len(rows)
-        ):
+            .mappings()
+            .all()
+        )
+        if len(rows) > MAX_TRANSCRIPT_SEGMENTS or len(
+            {row["source_segment_id"] for row in rows}
+        ) != len(rows):
             raise CapturedSourceUnavailable()
         return tuple(CreatorTranslationProgressV1.model_validate(dict(row)) for row in rows)
 

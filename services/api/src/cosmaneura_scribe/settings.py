@@ -63,6 +63,10 @@ class Settings(BaseSettings):
         le=128 * 1_024 * 1_024,
     )
     capture_protocol_enabled: bool = False
+    # Owner: Scribe; initial shared-Core cohort: one explicitly approved tenant.
+    # Default off; review by 2026-09-30. Never inferred from external-ingest flags.
+    configured_capture_enabled: bool = False
+    configured_capture_tenant_ids: frozenset[UUID] = frozenset[UUID]()
     # Owner: Scribe; cohort: none (dark); review by 2026-09-30.
     beta_preview_host_enabled: bool = False
     # Owner: founder; cohort: one synthetic practice; review by 2026-09-30.
@@ -110,6 +114,9 @@ class Settings(BaseSettings):
     database_delivery_reconciler_principal_object_id: UUID | None = None
     # Bootstrap authority only; this does not enable a caller or translation provider.
     derived_writer_database_permissions_enabled: bool = False
+    # Owner: Scribe; cohort: the explicit shared-Core tenant; review 2026-09-30.
+    # Bootstrap only. Neither this switch nor a grant activates a worker.
+    configured_worker_database_permissions_enabled: bool = False
 
     transcription_backend: Literal["none", "azure"] = "none"
     azure_speech_endpoint: AnyHttpUrl | None = None
@@ -221,6 +228,14 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "derived writer database permissions require the complete translation principal"
                 )
+        if self.configured_worker_database_permissions_enabled and (
+            not self.derived_writer_database_permissions_enabled
+            or self.database_transcription_principal_name is None
+            or self.database_translation_principal_name is None
+            or len(self.configured_capture_tenant_ids) != 1
+            or self.transcription_job_enabled
+        ):
+            raise ValueError("configured worker permissions require separate roles and one cohort")
         if self.master_platform_handoff_enabled:
             if self.master_platform_base_url is None or self.master_platform_scope is None:
                 raise ValueError(
@@ -251,6 +266,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "capture_protocol_enabled requires workflow authentication and PostgreSQL"
             )
+        if len(self.configured_capture_tenant_ids) > 1 or any(
+            tenant.int == 0 for tenant in self.configured_capture_tenant_ids
+        ):
+            raise ValueError("configured capture supports one explicit nonzero tenant")
+        if self.configured_capture_enabled and (
+            not self.capture_protocol_enabled or not self.configured_capture_tenant_ids
+        ):
+            raise ValueError("configured capture requires the capture protocol and explicit cohort")
         if any(tenant_id.int == 0 for tenant_id in self.external_ingest_beta_tenant_ids):
             raise ValueError("external ingest beta tenant IDs must be nonzero")
         if len(self.external_ingest_beta_tenant_ids) > 1:

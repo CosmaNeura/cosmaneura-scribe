@@ -12,9 +12,10 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
 from .canonical_json import canonical_sha256
+from .capture_continuity import CaptureContinuity
 from .captured_source_runtime import CapturedSourceRepository, CapturedSourceRepositoryProvider
 from .creator_review_contract_v1 import (
     CreatorTranslationDecisionRequestV1,
@@ -44,6 +45,14 @@ class CreatorReviewViewV1(BaseModel):
     translation_progress: tuple[CreatorTranslationProgressV1, ...] = Field(
         default=(), max_length=MAX_TRANSCRIPT_SEGMENTS, repr=False
     )
+    capture_continuity: CaptureContinuity | None = None
+
+    @model_serializer(mode="wrap")
+    def compatible_continuity(self, handler: SerializerFunctionWrapHandler):
+        result = handler(self)
+        if self.capture_continuity is None:
+            result.pop("capture_continuity", None)
+        return result
 
 
 class CreatorDecisionReceiptV1(BaseModel):
@@ -124,9 +133,12 @@ class CreatorReviewRuntime:
                 session_id=session_id, bundle=current.bundle
             ),
             translation_progress=await store.creator_translation_progress(
-                tenant_id, session_id, creator_actor_id=actor,
+                tenant_id,
+                session_id,
+                creator_actor_id=actor,
                 source_version=current.bundle.source_transcript.source_transcript_version,
             ),
+            capture_continuity=await store.capture_continuity(tenant_id, session_id),
         )
 
     async def read(self, tenant_id: UUID, session_id: UUID, actor: str) -> CreatorReviewViewV1:

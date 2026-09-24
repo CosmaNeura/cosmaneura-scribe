@@ -122,13 +122,29 @@ from .service_auth import (
 )
 from .session_state_v1 import SessionIngestMode, can_transition_session
 from .settings import Settings, get_settings
+from .source_start_routes import router as source_start_router
 from .storage import AudioStorage, build_audio_storage
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
+async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
     configure_service_logging()
-    yield
+    configured = get_settings().configured_capture_enabled
+    if configured:
+        from .configured_capture_service import bind_configured_capture_service
+        from .postgres_repository import PostgresRepositoryProvider
+
+        provider = get_repository_provider()
+        if not isinstance(provider, PostgresRepositoryProvider):
+            raise RuntimeError("Configured capture requires the PostgreSQL service provider.")
+        bind_configured_capture_service(application, get_settings(), provider)
+    try:
+        yield
+    finally:
+        if configured:
+            from .configured_capture_service import unbind_configured_capture_service
+
+            unbind_configured_capture_service(application)
     if get_repository_provider.cache_info().currsize:
         await get_repository_provider().close()
         get_repository_provider.cache_clear()
@@ -280,6 +296,28 @@ async def get_repository(
 
 
 Repository = Annotated[RepositoryContract, Depends(get_repository)]
+
+
+async def get_capture_protocol_provider(
+    session_id: UUID, tenant_id: TenantId, provider: Provider, settings: RuntimeSettings,
+) -> RepositoryProvider:
+    from .configured_capture_service import select_capture_protocol_provider
+
+    return await select_capture_protocol_provider(provider, settings, tenant_id, session_id)
+
+
+CaptureProvider = Annotated[RepositoryProvider, Depends(get_capture_protocol_provider)]
+
+
+async def get_capture_protocol_repository(
+    tenant_id: TenantId, provider: CaptureProvider,
+) -> AsyncIterator[RepositoryContract]:
+    async with provider.transaction(tenant_id) as transaction:
+        yield transaction
+
+
+CaptureRepository = Annotated[RepositoryContract, Depends(get_capture_protocol_repository)]
+
 Policy = Annotated[ConsentPolicy, Depends(get_consent_policy)]
 Storage = Annotated[AudioStorage, Depends(get_audio_storage)]
 Handoff = Annotated[MasterPlatformHandoff, Depends(get_master_platform_handoff)]
@@ -432,6 +470,7 @@ app.include_router(
 )
 app.include_router(creator_review_router)
 app.include_router(captured_admission_router)
+app.include_router(source_start_router)
 
 
 @app.get(
@@ -592,7 +631,7 @@ async def bind_session_audio_key(
     payload: SessionAudioKeyCreate,
     tenant_id: TenantId,
     idempotency_key: IdempotencyKey,
-    store: Repository,
+    store: CaptureRepository,
     policy: Policy,
     key_provider: EncryptionKeys,
 ) -> SessionAudioKeyReceipt:
@@ -675,7 +714,7 @@ async def get_capture_capabilities(
     session_id: UUID,
     response: Response,
     tenant_id: TenantId,
-    provider: Provider,
+    provider: CaptureProvider,
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureCapabilities:
@@ -722,7 +761,7 @@ async def issue_capture_lease(
     payload: CaptureLeaseIssueRequest,
     tenant_id: TenantId,
     idempotency_key: IdempotencyKey,
-    provider: Provider,
+    provider: CaptureProvider,
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureLeaseReceipt:
@@ -776,7 +815,7 @@ async def renew_capture_lease(
     payload: CaptureLeaseRenewRequest,
     tenant_id: TenantId,
     idempotency_key: IdempotencyKey,
-    provider: Provider,
+    provider: CaptureProvider,
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureLeaseReceipt:
@@ -832,7 +871,7 @@ async def reserve_audio_chunks(
     payload: ChunkReservationBatchRequest,
     tenant_id: TenantId,
     idempotency_key: IdempotencyKey,
-    provider: Provider,
+    provider: CaptureProvider,
     policy: Policy,
     settings: RuntimeSettings,
 ) -> ChunkReservationBatchReceipt:
@@ -921,7 +960,7 @@ async def authorize_reserved_chunk_upload(
     response: Response,
     tenant_id: TenantId,
     idempotency_key: IdempotencyKey,
-    provider: Provider,
+    provider: CaptureProvider,
     policy: Policy,
     audio_storage: Storage,
     settings: RuntimeSettings,
@@ -1013,7 +1052,7 @@ async def get_reserved_chunk_receipt(
     object_id: UUID,
     response: Response,
     tenant_id: TenantId,
-    provider: Provider,
+    provider: CaptureProvider,
     settings: RuntimeSettings,
 ) -> ChunkReceipt:
     _require_capture_protocol(settings)
@@ -1185,7 +1224,7 @@ async def register_chunk(
     payload: AudioChunkRegister,
     tenant_id: TenantId,
     idempotency_key: IdempotencyKey,
-    store: Repository,
+    store: CaptureRepository,
     policy: Policy,
     settings: RuntimeSettings,
 ) -> AudioChunk:
@@ -1336,7 +1375,7 @@ async def complete_capture_protocol_session(
     payload: CaptureCompleteRequest,
     tenant_id: TenantId,
     idempotency_key: IdempotencyKey,
-    provider: Provider,
+    provider: CaptureProvider,
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureSession:

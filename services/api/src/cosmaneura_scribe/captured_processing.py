@@ -158,18 +158,7 @@ class CapturedProcessingRuntime:
 
     @staticmethod
     def _state(batch: TranslationDispatchBatch) -> CapturedProcessingState:
-        if batch.status == ConfiguredExternalSessionStatus.QUALITY_BLOCKED:
-            return CapturedProcessingState.QUALITY_BLOCKED
-        if batch.status == ConfiguredExternalSessionStatus.TRANSCRIPT_READY:
-            return CapturedProcessingState.TRANSCRIPT_READY
-        if batch.status == ConfiguredExternalSessionStatus.REVIEW_REQUIRED:
-            return CapturedProcessingState.REVIEW_REQUIRED
-        if batch.unconfirmed_count:
-            # In flight or uncertain: neither a failed call nor permission to repeat it.
-            return CapturedProcessingState.TRANSLATION_UNCONFIRMED
-        if batch.retry_required_count:
-            return CapturedProcessingState.TRANSLATION_RETRY_REQUIRED
-        return CapturedProcessingState.TRANSLATION_PENDING
+        return captured_processing_state(batch)
 
     async def run_pending(
         self, *, tenant_id: UUID, limit: int = 8, after: UUID | None = None
@@ -192,3 +181,18 @@ class CapturedProcessingRuntime:
         return CapturedDispatchPage(
             tuple(receipts), targets[-1] if targets and len(targets) == limit else None
         )
+
+
+def captured_processing_state(batch: TranslationDispatchBatch) -> CapturedProcessingState:
+    if batch.status == ConfiguredExternalSessionStatus.QUALITY_BLOCKED:
+        return CapturedProcessingState.QUALITY_BLOCKED
+    if batch.status == ConfiguredExternalSessionStatus.TRANSCRIPT_READY:
+        return CapturedProcessingState.TRANSCRIPT_READY
+    if batch.status == ConfiguredExternalSessionStatus.REVIEW_REQUIRED:
+        return CapturedProcessingState.REVIEW_REQUIRED
+    if batch.unconfirmed_count:
+        # In flight or uncertain: neither a failed call nor permission to repeat it.
+        return CapturedProcessingState.TRANSLATION_UNCONFIRMED
+    if batch.retry_required_count:
+        return CapturedProcessingState.TRANSLATION_RETRY_REQUIRED
+    return CapturedProcessingState.TRANSLATION_PENDING

@@ -56,7 +56,7 @@ async def _ensure_database_principals(settings: Settings) -> None:
                             to_jsonb(principal) ->> 'objectid'
                         )
                         FROM pg_catalog.pgaadauth_list_principals(false) AS principal
-                        WHERE principal.rolename = :role_name
+                        WHERE principal.rolname = :role_name
                         """
                     ),
                     {"role_name": principal.role_name},
@@ -77,6 +77,32 @@ async def _ensure_database_principals(settings: Settings) -> None:
                             "object_id": str(principal.object_id),
                         },
                     )
+                    # Azure PostgreSQL 16 grants the creator ADMIN OPTION on a
+                    # new Entra role, without INHERIT or SET. Remove that grant
+                    # before enforcing the runtime role's no-membership rule.
+                    creator_grant = await connection.scalar(
+                        text(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+                                JOIN pg_catalog.pg_roles AS application_role
+                                  ON application_role.oid = membership.roleid
+                                WHERE application_role.rolname = :role_name
+                                  AND membership.member = (
+                                      SELECT oid FROM pg_catalog.pg_roles
+                                      WHERE rolname = current_user
+                                  )
+                                  AND membership.admin_option
+                                  AND NOT membership.inherit_option
+                                  AND NOT membership.set_option
+                            )
+                            """
+                        ),
+                        {"role_name": principal.role_name},
+                    )
+                    if creator_grant:
+                        role = _quoted_identifier(connection, principal.role_name)
+                        await connection.execute(text(f"REVOKE {role} FROM CURRENT_USER"))
                 unsafe_role = await connection.scalar(
                     text(
                         """
@@ -240,6 +266,8 @@ async def _ensure_no_acl_survivor(
 async def _ensure_no_application_default_privileges(
     connection: AsyncConnection,
     role_names: tuple[str, ...],
+    *,
+    managed_azure_postgres: bool = False,
 ) -> None:
     survives = await connection.scalar(
         text(
@@ -264,10 +292,22 @@ async def _ensure_no_application_default_privileges(
                   AND NOT creator.rolsuper
                   AND pg_catalog.has_schema_privilege(creator.oid, 'public', 'CREATE')
                   AND creator.oid <> 'pg_database_owner'::regrole
+                  AND NOT (
+                      :managed_azure_postgres AND EXISTS (
+                          SELECT 1 FROM pg_catalog.pg_roles AS platform_admin
+                          WHERE platform_admin.rolname = 'azure_pg_admin'
+                            AND pg_catalog.pg_has_role(
+                                creator.oid, platform_admin.oid, 'MEMBER'
+                            )
+                      )
+                  )
             )
             """
         ),
-        {"role_names": list(role_names)},
+        {
+            "role_names": list(role_names),
+            "managed_azure_postgres": managed_azure_postgres,
+        },
     )
     if survives:
         raise RuntimeError("Uncontrolled public-schema CREATE or default privileges remain")
@@ -338,6 +378,14 @@ async def _deny_implicit_future_permissions(settings: Settings) -> None:
             await _ensure_no_application_default_privileges(
                 connection,
                 tuple(principal.role_name for principal in principals),
+                # Azure's platform administrators retain schema authority like
+                # PostgreSQL superusers. Runtime roles cannot be members of any
+                # role, including azure_pg_admin, as checked before this step.
+                managed_azure_postgres=(
+                    settings.database_url is None
+                    and settings.database_ssl
+                    and (settings.database_host or "").endswith(".postgres.database.azure.com")
+                ),
             )
     finally:
         await provider.close()
@@ -455,6 +503,15 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                     f"audio_chunk_reservation_batch_items, "
                     f"audio_upload_authorization_receipts, "
                     f"capture_channel_finalizations TO {role}"
+                )
+            )
+            await connection.execute(
+                text(f"GRANT SELECT, INSERT ON source_start_attempts, source_start_retirements TO {role}")
+            )
+            await connection.execute(
+                text(
+                    "GRANT UPDATE (state, issued_at, expires_at, stopped_at) "
+                    f"ON source_start_attempts TO {role}"
                 )
             )
             await connection.execute(
@@ -725,6 +782,134 @@ async def _grant_translation_permissions(settings: Settings) -> None:
         await provider.close()
 
 
+async def _grant_configured_worker_permissions(settings: Settings) -> None:
+    """Opt in after the ordinary grant reset; never union the two worker roles.
+
+    The existing transcription/translation roles become dedicated to configured
+    capture. Existing legacy jobs must remain off. Disabled rebootstrap revokes
+    these grants; retained restrictive policies do not reopen old workloads.
+    """
+    if not settings.configured_worker_database_permissions_enabled:
+        return
+    speech_name = settings.database_transcription_principal_name
+    speech_id = settings.database_transcription_principal_object_id
+    translation_name = settings.database_translation_principal_name
+    translation_id = settings.database_translation_principal_object_id
+    runtime_name = settings.database_runtime_principal_name
+    if (
+        speech_name is None or speech_id is None or translation_name is None
+        or translation_id is None or runtime_name is None
+    ):
+        raise RuntimeError("configured_worker_principals_unavailable")
+    tenant = next(iter(settings.configured_capture_tenant_ids))
+    provider = build_postgres_provider(settings)
+    try:
+        async with provider.engine.begin() as connection:
+            await connection.execute(text("SET LOCAL lock_timeout = '5s'"))
+            await connection.execute(text("SET LOCAL statement_timeout = '60s'"))
+            speech = _quoted_identifier(connection, speech_name)
+            translation = _quoted_identifier(connection, translation_name)
+            runtime = _quoted_identifier(connection, runtime_name)
+            await connection.execute(text(
+                f"GRANT SELECT ON capture_channel_finalizations TO {speech}"
+            ))
+            await connection.execute(text(
+                "GRANT SELECT, INSERT ON normalized_source_transcripts, "
+                f"normalized_source_segments, normalized_source_receipt_keys TO {speech}"
+            ))
+            await connection.execute(text(
+                "GRANT SELECT (creator_actor_id, language_mode, transcription_adapter_id, "
+                "transcription_model_profile_id, normalization_profile_id, source_received_at, "
+                "transcript_content_expires_at, content_purged_at, "
+                "current_source_transcript_version, working_transcript_id, "
+                f"current_working_transcript_version) ON scribe_sessions TO {speech}"
+            ))
+            await connection.execute(text(
+                "GRANT UPDATE (source_received_at, transcript_content_expires_at, "
+                "current_source_transcript_version, working_transcript_id, "
+                f"current_working_transcript_version) ON scribe_sessions TO {speech}"
+            ))
+            await connection.execute(text(
+                "GRANT SELECT ON normalized_translation_attempts, "
+                f"normalized_translation_reviews TO {speech}"
+            ))
+            await _grant_working_transcript_permissions(connection, speech)
+            await connection.execute(text(
+                "GRANT SELECT ON normalized_source_receipt_keys, "
+                f"transcription_jobs TO {translation}"
+            ))
+            await connection.execute(text(
+                f"GRANT SELECT, INSERT ON encrypted_translation_jobs TO {translation}"
+            ))
+            await connection.execute(text(
+                "GRANT UPDATE (status, provider_call_started_at, provider_result_stored_at, "
+                "attempt_committed_at, key_version, wrapped_dek, nonce, ciphertext) "
+                f"ON encrypted_translation_jobs TO {translation}"
+            ))
+            await connection.execute(text(
+                "GRANT SELECT (tenant_id, session_id, translation_id, source_transcript_version, "
+                "source_segment_id, source_segment_version, previous_translation_version, status) "
+                f"ON encrypted_translation_jobs TO {runtime}"
+            ))
+            # Replace the earlier external-transcript restriction with its exact
+            # configured-capture counterpart. Tenant RLS remains in force.
+            policy = _quoted_identifier(
+                connection, _translation_session_scope_policy_name(translation_id)
+            )
+            await connection.execute(text(f"DROP POLICY IF EXISTS {policy} ON scribe_sessions"))
+            scope = (
+                "(ingest_mode='chunk_upload' AND transcript_contract_version='1.0' AND "
+                "status IN ('translation_pending','review_required',"
+                "'transcript_ready','quality_blocked'))"
+            )
+            await connection.execute(text(
+                f"CREATE POLICY {policy} ON scribe_sessions AS RESTRICTIVE FOR ALL "
+                f"TO {translation} USING {scope} WITH CHECK {scope}"
+            ))
+            policy = _quoted_identifier(connection, f"scribe_speech_mode_{speech_id.hex}")
+            await connection.execute(text(f"DROP POLICY IF EXISTS {policy} ON scribe_sessions"))
+            scope = "(ingest_mode='chunk_upload' AND transcript_contract_version='1.0')"
+            await connection.execute(text(
+                f"CREATE POLICY {policy} ON scribe_sessions "
+                f"AS RESTRICTIVE FOR ALL TO {speech} USING {scope} WITH CHECK {scope}"
+            ))
+            policy = _quoted_identifier(connection, f"scribe_completed_speech_{translation_id.hex}")
+            await connection.execute(text(f"DROP POLICY IF EXISTS {policy} ON transcription_jobs"))
+            await connection.execute(text(
+                f"CREATE POLICY {policy} ON transcription_jobs "
+                f"AS RESTRICTIVE FOR SELECT TO {translation} USING (status='completed')"
+            ))
+            common = (
+                "consent_records", "scribe_sessions", "transcription_jobs",
+                "normalized_source_transcripts", "normalized_source_segments",
+                "normalized_source_receipt_keys", "normalized_translation_attempts",
+                "normalized_translation_reviews", "normalized_working_transcripts",
+                "normalized_working_translation_inputs", "normalized_working_review_inputs",
+                "normalized_working_segments", "normalized_working_blockers", "audit_events",
+            )
+            scopes = {
+                speech_id.hex: (speech, common + (
+                    "audio_chunks", "session_audio_keys", "transcripts",
+                    "capture_channel_finalizations",
+                )),
+                translation_id.hex: (translation, common + ("encrypted_translation_jobs",)),
+            }
+            for stage, (role, tables) in scopes.items():
+                for table in tables:
+                    table_sql = _quoted_identifier(connection, table)
+                    policy_sql = _quoted_identifier(connection, f"scribe_configured_{stage}_cohort")
+                    await connection.execute(text(
+                        f"DROP POLICY IF EXISTS {policy_sql} ON {table_sql}"
+                    ))
+                    await connection.execute(text(
+                        f"CREATE POLICY {policy_sql} ON {table_sql} AS RESTRICTIVE FOR ALL "
+                        f"TO {role} USING (tenant_id='{tenant}'::uuid) "
+                        f"WITH CHECK (tenant_id='{tenant}'::uuid)"
+                    ))
+    finally:
+        await provider.close()
+
+
 async def _grant_delivery_reconciler_permissions(settings: Settings) -> None:
     role_name = settings.database_delivery_reconciler_principal_name
     if role_name is None:
@@ -806,6 +991,7 @@ async def bootstrap_database(settings: Settings | None = None) -> None:
     await _grant_transcription_permissions(settings)
     await _grant_delivery_reconciler_permissions(settings)
     await _grant_translation_permissions(settings)
+    await _grant_configured_worker_permissions(settings)
 
 
 def main() -> None:
