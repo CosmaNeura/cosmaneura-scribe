@@ -917,7 +917,8 @@ async def test_derived_tables_force_tenant_rls_and_receive_no_runtime_grant(
     migration = (ROOT / "alembic/versions/0012_derived_translation_evidence.py").read_text()
     bootstrap = (ROOT / "services/api/src/cosmaneura_scribe/database_bootstrap.py").read_text()
     assert "GRANT " not in migration
-    assert all(table not in bootstrap for table in DERIVED_TABLES)
+    assert "derived_writer_database_permissions_enabled" in bootstrap
+    assert "_grant_translation_permissions" in bootstrap
 
 
 def test_derived_translation_evidence_is_the_only_alembic_head() -> None:

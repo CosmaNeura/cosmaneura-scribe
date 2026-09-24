@@ -104,8 +104,12 @@ class Settings(BaseSettings):
     database_runtime_principal_object_id: UUID | None = None
     database_transcription_principal_name: str | None = None
     database_transcription_principal_object_id: UUID | None = None
+    database_translation_principal_name: str | None = None
+    database_translation_principal_object_id: UUID | None = None
     database_delivery_reconciler_principal_name: str | None = None
     database_delivery_reconciler_principal_object_id: UUID | None = None
+    # Bootstrap authority only; this does not enable a caller or translation provider.
+    derived_writer_database_permissions_enabled: bool = False
 
     transcription_backend: Literal["none", "azure"] = "none"
     azure_speech_endpoint: AnyHttpUrl | None = None
@@ -150,6 +154,13 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "the transcription database principal must be distinct from the runtime"
                 )
+        if (self.database_translation_principal_name is None) != (
+            self.database_translation_principal_object_id is None
+        ):
+            raise ValueError(
+                "database_translation_principal_name and "
+                "database_translation_principal_object_id must be configured together"
+            )
         if (self.database_delivery_reconciler_principal_name is None) != (
             self.database_delivery_reconciler_principal_object_id is None
         ):
@@ -172,6 +183,43 @@ class Settings(BaseSettings):
             ):
                 raise ValueError(
                     "the delivery reconciler database principal must be distinct from other roles"
+                )
+        if self.database_translation_principal_name is not None:
+            principal_names = {
+                self.database_runtime_principal_name,
+                self.database_transcription_principal_name,
+                self.database_delivery_reconciler_principal_name,
+            }
+            principal_object_ids = {
+                self.database_runtime_principal_object_id,
+                self.database_transcription_principal_object_id,
+                self.database_delivery_reconciler_principal_object_id,
+            }
+            if (
+                self.database_translation_principal_name in principal_names
+                or self.database_translation_principal_object_id in principal_object_ids
+            ):
+                raise ValueError(
+                    "the translation database principal must be distinct from other roles"
+                )
+        if self.derived_writer_database_permissions_enabled:
+            if self.repository_backend != "postgres":
+                raise ValueError(
+                    "derived writer database permissions require the PostgreSQL repository"
+                )
+            if (
+                self.database_runtime_principal_name is None
+                or self.database_runtime_principal_object_id is None
+            ):
+                raise ValueError(
+                    "derived writer database permissions require the complete runtime principal"
+                )
+            if (
+                self.database_translation_principal_name is None
+                or self.database_translation_principal_object_id is None
+            ):
+                raise ValueError(
+                    "derived writer database permissions require the complete translation principal"
                 )
         if self.master_platform_handoff_enabled:
             if self.master_platform_base_url is None or self.master_platform_scope is None:

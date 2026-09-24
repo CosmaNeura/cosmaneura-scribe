@@ -199,6 +199,65 @@ def test_delivery_reconciler_database_principal_is_complete_and_distinct() -> No
         )
 
 
+def test_derived_writer_database_permissions_are_false_default_and_dependency_closed() -> None:
+    defaults = Settings()
+    assert defaults.derived_writer_database_permissions_enabled is False
+
+    runtime_object_id = uuid4()
+    translation_object_id = uuid4()
+    enabled: dict[str, object] = {
+        "derived_writer_database_permissions_enabled": True,
+        "repository_backend": "postgres",
+        "database_url": "postgresql+asyncpg://test:test@localhost/scribe",
+        "database_ssl": False,
+        "database_runtime_principal_name": "scribe-runtime",
+        "database_runtime_principal_object_id": runtime_object_id,
+        "database_translation_principal_name": "scribe-translation",
+        "database_translation_principal_object_id": translation_object_id,
+    }
+    assert Settings(**enabled).derived_writer_database_permissions_enabled is True
+
+    for overrides, expected_error in (
+        ({"repository_backend": "memory"}, "PostgreSQL"),
+        ({"database_runtime_principal_name": None}, "runtime"),
+        ({"database_runtime_principal_object_id": None}, "runtime"),
+        ({"database_translation_principal_name": None}, "translation"),
+        ({"database_translation_principal_object_id": None}, "translation"),
+    ):
+        with pytest.raises(ValidationError, match=expected_error):
+            Settings(**(enabled | overrides))
+
+
+def test_all_database_principal_names_and_object_ids_are_pairwise_distinct() -> None:
+    configured: dict[str, object] = {
+        "database_runtime_principal_name": "scribe-runtime",
+        "database_runtime_principal_object_id": uuid4(),
+        "database_transcription_principal_name": "scribe-transcription",
+        "database_transcription_principal_object_id": uuid4(),
+        "database_translation_principal_name": "scribe-translation",
+        "database_translation_principal_object_id": uuid4(),
+        "database_delivery_reconciler_principal_name": "scribe-delivery-reconciler",
+        "database_delivery_reconciler_principal_object_id": uuid4(),
+    }
+    Settings(**configured)
+
+    principals = (
+        ("database_runtime_principal_name", "database_runtime_principal_object_id"),
+        ("database_transcription_principal_name", "database_transcription_principal_object_id"),
+        ("database_translation_principal_name", "database_translation_principal_object_id"),
+        (
+            "database_delivery_reconciler_principal_name",
+            "database_delivery_reconciler_principal_object_id",
+        ),
+    )
+    for first_index, (first_name, first_object_id) in enumerate(principals):
+        for second_name, second_object_id in principals[first_index + 1 :]:
+            with pytest.raises(ValidationError, match="distinct"):
+                Settings(**(configured | {second_name: configured[first_name]}))
+            with pytest.raises(ValidationError, match="distinct"):
+                Settings(**(configured | {second_object_id: configured[first_object_id]}))
+
+
 def test_enabled_delivery_reconciler_job_requires_closed_dependencies() -> None:
     configuration: dict[str, object] = {
         "managed_identity_client_id": uuid4(),

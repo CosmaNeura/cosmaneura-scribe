@@ -911,4 +911,5 @@ def test_writer_remains_internal_and_dormant() -> None:
     bootstrap = (
         root / "services" / "api" / "src" / "cosmaneura_scribe" / "database_bootstrap.py"
     ).read_text()
-    assert "normalized_translation_reviews" not in bootstrap
+    assert "derived_writer_database_permissions_enabled" in bootstrap
+    assert "_grant_translation_permissions" in bootstrap
