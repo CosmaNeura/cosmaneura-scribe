@@ -91,6 +91,7 @@ from .translation_review_persistence import (
 )
 from .working_transcript_persistence import (
     NormalizedWorkingTranscriptRecord,
+    WorkingTranscriptDerivation,
     WorkingTranscriptPersistenceCode,
     WorkingTranscriptPersistenceError,
     WorkingTranscriptPublication,
@@ -373,6 +374,14 @@ class Repository(Protocol):
         tenant_id: UUID,
         session_id: UUID,
     ) -> WorkingTranscriptPublication | None: ...
+
+    async def get_creator_working_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        creator_actor_id: str,
+    ) -> WorkingTranscriptDerivation | None: ...
 
     async def record_translation_attempt_and_publish(
         self,
@@ -688,9 +697,9 @@ class InMemoryRepository:
     normalized_source_receipt_keys: dict[
         tuple[UUID, UUID, str], NormalizedSourceReceiptKeyRecord
     ] = field(default_factory=lambda: {})
-    normalized_translation_attempts: dict[
-        tuple[UUID, UUID, int, UUID], TranslationRecordV1
-    ] = field(default_factory=lambda: {})
+    normalized_translation_attempts: dict[tuple[UUID, UUID, int, UUID], TranslationRecordV1] = (
+        field(default_factory=lambda: {})
+    )
     normalized_translation_reviews: dict[
         tuple[UUID, UUID, int, UUID], TranslationReviewEvidenceV1
     ] = field(default_factory=lambda: {})
@@ -1113,6 +1122,72 @@ class InMemoryRepository:
         self._require_live_normalized_source_session(session, datetime.now(UTC))
         return source
 
+    async def get_creator_working_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        creator_actor_id: str,
+    ) -> WorkingTranscriptDerivation | None:
+        """Read only the creator's current published evidence; never publish on read."""
+        reference = self.versioned_external_sessions.get((tenant_id, session_id))
+        if reference is None or reference.creator_actor_id != creator_actor_id:
+            return None
+        consent = await self.lock_consent(tenant_id, reference.consent_record_id)
+        session = self.versioned_external_sessions.get((tenant_id, session_id))
+        if (
+            session is None
+            or session.creator_actor_id != creator_actor_id
+            or session.consent_record_id != reference.consent_record_id
+        ):
+            return None
+        if not consent_authorizes_versioned_session(consent, session):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.CONSENT_INVALID
+            )
+        self._require_live_working_session(session, datetime.now(UTC))
+        source_version = session.current_source_transcript_version
+        working_version = session.current_working_transcript_version
+        if (
+            source_version is None
+            or working_version is None
+            or session.working_transcript_id is None
+        ):
+            return None
+        source = self.normalized_source_transcripts.get((tenant_id, session_id, source_version))
+        current = self.normalized_working_transcripts.get((tenant_id, session_id, working_version))
+        if source is None or current is None:
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        derivation = derive_persisted_working_transcript(
+            source,
+            tuple(
+                value
+                for key, value in self.normalized_translation_attempts.items()
+                if key[:3] == (tenant_id, session_id, source_version)
+            ),
+            tuple(
+                value
+                for key, value in self.normalized_translation_reviews.items()
+                if key[:3] == (tenant_id, session_id, source_version)
+            ),
+            working_transcript_id=session.working_transcript_id,
+            working_transcript_version=working_version,
+        )
+        if (
+            current.working_fingerprint != derivation.working_fingerprint
+            or current.working_transcript != derivation.working_transcript
+            or session.status != derivation.status
+        ):
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        await self.audit(
+            tenant_id=tenant_id,
+            action="normalized_working_transcript.creator_read",
+            entity_type="normalized_working_transcript",
+            entity_id=session.working_transcript_id,
+        )
+        self._require_live_working_session(session, datetime.now(UTC))
+        return derivation
+
     async def publish_current_working_transcript(
         self,
         tenant_id: UUID,
@@ -1132,16 +1207,10 @@ class InMemoryRepository:
         self._require_live_working_session(session, datetime.now(UTC))
         source_version = session.current_source_transcript_version
         if source_version is None:
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
-        source = self.normalized_source_transcripts.get(
-            (tenant_id, session_id, source_version)
-        )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        source = self.normalized_source_transcripts.get((tenant_id, session_id, source_version))
         if source is None:
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         translations = tuple(
             value
             for key, value in self.normalized_translation_attempts.items()
@@ -1198,9 +1267,7 @@ class InMemoryRepository:
         ]
         next_version = max(existing_versions, default=0) + 1
         if (session.working_transcript_id is None) != (next_version == 1):
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         derivation = derive_persisted_working_transcript(
             source,
             translations,
@@ -1209,9 +1276,7 @@ class InMemoryRepository:
             working_transcript_version=next_version,
         )
         if not can_publish_working_transcript(session.status, derivation.status):
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         created_at = datetime.now(UTC)
         record = NormalizedWorkingTranscriptRecord(
             working_transcript=derivation.working_transcript,
@@ -1803,9 +1868,7 @@ class InMemoryRepository:
             ConfiguredExternalSessionStatus.HANDED_OFF,
             ConfiguredExternalSessionStatus.FAILED,
         }:
-            raise WorkingTranscriptPersistenceError(
-                WorkingTranscriptPersistenceCode.STATE_CONFLICT
-            )
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
 
     @staticmethod
     def _terminal_failure_matches(

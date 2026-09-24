@@ -25,6 +25,62 @@ Clerk native SDK qualification, encrypted recorder and existing Apple/Electron
 packagers. Translation uses the existing GPT-4.1 family and Azure API contract.
 Credentials stay server-side and are never written to source or evidence.
 
+### Separate beta URL direction and offline client check — 2026-09-21
+
+The owner requested a standalone Scribe beta URL distinct from the separate
+CosmaBot/CosmasOS URL. Read-only inspection found the existing isolated Scribe
+capture-preview web origin; its HTTPS page works, but it is the older disabled
+synthetic preview, not the real authenticated Scribe backend. Preserve the private
+clinical environment and do not point the W13 OS app at an incompatible Scribe
+API or conflate its package with standalone Scribe. Existing-user platform
+interoperability remains a distinct identity/authorized-read/canonical-write
+acceptance requirement; separate hostnames do not prevent that integration.
+
+The bounded local follow-on adds only an offline IPA preflight and its tests,
+not authentication, deployment/workflow, runtime, schema or environment changes.
+Run `python scripts/check_ios_candidate.py --ipa <retained-ipa>
+--expected-bundle-id <exact-intended-app-id>`; add `--approved-api-origin` only
+after selecting the actual authorized API, not merely a reachable web site.
+Exit 1 denotes a blocking/unsupported static candidate. Exit 0 is not evidence
+of signing, TLS, API compatibility, login, capture, or release acceptance.
+Recovery is to stop using the diagnostic; no deployed state changes. Exact
+results and outstanding deployment/connection gates are in the checkpoint.
+
+### Branded URL and local runtime approvals — 2026-09-21
+
+The owner requested a real URL under `cosmaneura.com` and completed Cloudflare
+sign-in for `scribe-beta.cosmaneura.com`. The limited external change is one
+DNS-only CNAME to the existing `green-rock-0cd7d7e0f.7.azurestaticapps.net`
+preview, plus that exact hostname binding and managed TLS on Static Web App
+`cmn-capture-preview-p8x6m2`. Inspect for a conflicting record before adding it.
+Leave apex/www, other apps, Auth/IAM/Zoom/staging and the private clinical
+environment unchanged. No source deployment, recording, clinical API exposure
+or identity activation is included. Verify authoritative DNS, Azure validation,
+certificate verification and the rendered synthetic page. Recovery must remove
+the DNS alias before retiring its Azure binding to avoid a dangling hostname;
+perform no resource deletion or unrelated DNS change.
+
+Separately, the owner explicitly stated, “I approve the runtime-integration.”
+This approves connecting the existing Speech adapter, encrypted jobs, translation
+and creator-only transcript review locally on this existing unpushed branch,
+using only a disposable synthetic database with live services disabled. It
+supersedes earlier no-runtime-integration wording for that local packet only.
+No Core/Auth/IAM/Zoom/staging or other-repository edits, push, PR, deployment or
+new live service call. Preserve actual source provenance, current consent,
+tenant/creator boundaries, immutable lineage and fail-closed handoff. An Azure
+captured result must not be mislabeled as an external transcript. Default-off
+runtime integration and migration/contract reconciliation require their own
+local negative/recovery tests before any later promotion is considered.
+
+First runtime increment: default-off creator review application service plus
+tenant/creator/current-evidence reads. No HTTP route or migration is added. Reuse
+the immutable decision writer and preserve exact retry IDs/times; require the
+future receiver to bind them durably. Test both repositories, opaque errors,
+revocation/retention, no publish-on-read and offline encrypted-job seam recovery.
+See ADR 0041 and the checkpoint. DNS/TLS is ready; the older preview's live host
+allowlist rejects the new alias and needs a separately authorized deployable
+release, not an unchecked live configuration edit.
+
 ## Ordered work
 
 1. Add a concrete Azure GPT-4.1 Spanish-to-English adapter behind the existing
@@ -43,6 +99,19 @@ Credentials stay server-side and are never written to source or evidence.
    and installer/update behavior, and identify any unavailable distribution
    certificate/profile explicitly. A development signature is not distribution
    acceptance. Publishing/admitting testers requires its applicable authority.
+
+### Older iOS compatibility — owner clarification, 2026-09-21
+
+The owner may update this test phone to iOS 27 to enable Apple's Device Hub screen
+sharing, but explicitly requires support for older iOS releases. The preserved
+W13 IPA declares `MinimumOSVersion=17.0`; its composed Xcode/SPM inputs also target
+iOS 17. Do not raise that target to 27 for tooling convenience. Qualify iOS 17+
+separately: minimum-version build/API availability, representative older OS
+runtime, authentication/Keychain/refresh/logout and capture/recovery on physical
+hardware. A successful iOS 27 test cannot qualify all older releases. Earlier
+generic recorder documentation mentioning iOS 15 does not lower W13's actual
+native-auth composition minimum. If supporting iOS 15/16 becomes required, assess
+SDK/API compatibility explicitly before changing the product support floor.
 
 ## Evidence and recovery
 
@@ -79,6 +148,94 @@ Implementation and live evidence are recorded in
 [the 2026-09-21 checkpoint](../SCRIBE_REAL_SERVICES_CHECKPOINT_20260921.md).
 
 ## Disposable storage acceptance extension
+
+### Captured bilingual source — owner-approved 2026-09-21
+
+Follow-on runtime increment: add explicit captured-mode PostgreSQL admission and
+atomic leased Speech-result publication, default off and without public routes.
+Reuse the normalized writer, encrypted execution store and creator-review service;
+keep all legacy/imported queries and defaults isolated. Validate exact job ID,
+attempt, lease, source profile, current consent and retention. Bind exact replay to
+an existing receipt; never turn a completed worker retry into a source correction.
+No provider call or worker dispatch is introduced by the result publisher itself.
+Test synthetic result publication, translated creator review, lost commit reply,
+pool/process recovery, concurrent calls, stale/revoked/expired work and rollback.
+Use a new local cluster; tests may remove only their exact generated tenant rows
+with the disposable administrator after assertions, so later historical migration
+rehearsals encounter no configured-capture fixtures. This test-only cleanup may
+disable immutable-row triggers for those rows inside its transaction; it is not a
+runtime deletion/retention path or permission to touch any existing database.
+
+The owner explicitly approved an additional Scribe-only dormant migration to
+connect captured audio to bilingual storage, tested only in a **new disposable
+local database**. No cloud/shared database, Core/Auth/IAM/Zoom/staging edit,
+push, PR or deployment. This does not permit converting existing recordings.
+
+Tier 2 expand rung: admit newly configured `chunk_upload` sessions with immutable
+creator/language/Azure-source profiles. Preserve every existing unconfigured
+capture and configured imported session. Captured sessions must traverse capture,
+upload and processing before receiving normalized source; imported sessions keep
+their direct source-receipt path. Only capture/audio/job child roots are permitted
+for configured capture. Legacy transcript/delivery writes remain fenced so they
+cannot bypass bilingual review. Reuse the existing normalized source, translation,
+working projection, consent, tenant and retention guards; no second transcript
+store or external-source relabeling.
+
+First qualify the dormant schema and its unchanged legacy behavior. Runtime
+admission, leased Speech-result persistence, dispatch and authenticated routes
+follow separately within the local runtime approval. Existing endpoints stay
+unmodified and cannot see the new configured captures. A schema pass is not
+capture-to-translation or beta acceptance. Record the new local revision after
+`0018_translation_jobs`; reconcile the separate integration graph before promotion.
+
+Recovery leaves the expansion dormant. Reversing its guards is allowed only in
+the disposable-test database with no configured captures, under table locks;
+refuse removal after use. Test tenant isolation, immutable provenance, forbidden
+shortcuts/children, source/translation/review guards, preservation across upgrade,
+unused downgrade/reapply, and the complete regression. Keep the stopped local
+cluster/evidence and do not touch existing databases or other running apps.
+
+### Encrypted translation job store — owner-approved 2026-09-21
+
+The owner explicitly approved the Scribe-only encrypted job store and dormant
+migration, tested only in a disposable local database. This supersedes ADR 0037's
+earlier no-store restriction only for this local packet. No cloud or shared
+platform changes, runtime registration, new endpoint, push, PR or deployment.
+
+Tier 2 expand rung: add one encrypted job table, with tenant RLS, immutable
+reservation identity, monotonic transitions and a source-lineage foreign key.
+Reuse the existing RSA-3072 key-publication/unwrapping interfaces, but generate
+fresh job-only AES-256 keys; never reuse a recorder's content key. Authenticate
+scope, state and timestamps with the ciphertext. Reuse existing consent/session
+locks and recheck current source/retention before atomic provider admission.
+An ambiguous started call remains non-replayable. Source-retention deletion must
+cascade to the encrypted jobs. No plaintext content or content digest in audit.
+
+Use a distinct revision `0018_translation_jobs`, parent `0014` on this isolated
+branch. Read-only inspection found revisions 0015–0017 in the separate integration
+checkout; do not edit or import them. Before eventual integration, reconcile the
+migration graph explicitly and rehearse it again; this local parent is not a
+claim that the combined graph is ready to deploy.
+
+Acceptance: fresh local PostgreSQL only, restricted non-owner role, encryption
+and tamper negatives, process restart, competing claims, stale source, revoked
+consent, retention cascade, immutable attempt/review reuse, lost acknowledgements,
+and full regression checks. Tests use generated local RSA keys, not cloud keys.
+Recovery leaves the expand table dormant. A used table cannot be downgraded;
+empty-table removal is permitted only by this disposable-test rehearsal. Stop
+the exact owned database after testing. Independent review and least-privilege
+runtime grants remain promotion gates; existing runtime bootstrap is unchanged.
+
+Follow-on local acceptance composes the existing Speech-result normalizer,
+versioned source receiver, encrypted job store, actual translation adapter with
+offline HTTP responses, immutable attempt/creator review and English handoff.
+Use the same disposable-only boundary. Cover an English provider with a patient
+switching between Spanish and English, refusal/incomplete results, unknown
+language and overlap. Preserve source and speaker identity, reject handoff until
+review, and reconnect before reconciliation to detect accidental process-memory
+dependencies. This is a test-only composition: it does not register a worker,
+admit an Azure source profile, implement a runtime transcript reader, connect
+Core, exercise real speech recognition or qualify a physical client.
 
 Run the existing migration/restricted-role/recovery tests against a new local
 PostgreSQL cluster under an owned temporary directory, database name ending in

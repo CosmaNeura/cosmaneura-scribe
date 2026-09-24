@@ -11,6 +11,269 @@ acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
+## Latest: atomic captured Speech-result runtime — 18:01 UTC
+
+Added default-off `CapturedSourceRuntime` and an explicit captured-mode PostgreSQL
+provider. Trusted Core admission creates or exactly reuses an immutable captured
+session. A trusted worker's result is normalized only after matching current
+consent, job, attempt, lease, language and captured profile. Normalized source,
+initial working projection and job completion commit together; expiry at the
+final lease check rolls back all three. A completed retry must match its existing
+receipt and source; it cannot create a correction or a second transcription.
+No Speech/model call is made by the publisher. ADR 0043 records the boundary.
+
+The same captured-mode provider now reuses the existing encrypted translation
+executor and creator-review service. Source retains the captured Azure profile,
+Spanish/English text, phrase timing and speaker identity without inferring clinical
+roles. Only explicit creator acceptance makes translated English eligible for the
+existing Core handoff serializer. Default imported/legacy readers and writers
+still cannot access these configured captures. Consent revocation closes their
+capture leases. There is no new identity path, route, environment bootstrap,
+public API change, migration, provider invocation, push, PR or deployment.
+
+**1,009 complete Python tests passed, zero failures/errors/skips**, 60.63 seconds.
+The 25 new cases cover exact/conflicting admission, wrong tenant/session/job/
+attempt/token, revoked consent, expired lease, atomic rollback, cancellation,
+concurrent completion, uncertain commit recovery, English-only and quality-blocked
+source, encrypted execution, creator review and retention cascade. One actual
+owned child process exits after publication commits without returning its receipt;
+a fresh process recovers that receipt with one source and working version. Pool
+restart also recovers the encrypted translation job without another adapter call.
+Speech results, model translation and cryptographic key material are synthetic
+fixtures. This is runtime/storage recovery evidence, not live audio, clinical
+fidelity, signed-client or actual Core SOAP acceptance.
+
+Ruff on changed code/tests, strict Pyright across the complete API, unchanged
+OpenAPI regeneration, ADR numbering and whitespace checks pass. JUnit:
+`/private/tmp/scribe-captured-runtime.YZXvdk/full-results.xml`, SHA-256
+`9de715eb59ef5995d41268ddab89c85814890d38e6a7c0fe71f28c4410cb4be1`.
+Fresh UTF-8 database `scribe_captured_runtime_test` used only its private Unix
+socket on the new cluster, no TCP listener. Exact generated tenant rows were
+removed by the declared test-only teardown; the application retention path was
+tested separately before teardown. The final schema contains only
+`alembic_version`. Exact owned PID 49224 was stopped; its data/logs remain. Other
+databases, apps, signed packages and owner previews were untouched.
+
+Next: connect the encrypted capture protocol, audio assembly and leased worker to
+this publisher, then wire automatic durable translation dispatch and the
+authenticated review receiver. Existing clients cannot yet record into the newly
+configured path. Real identity/device/service/fidelity and signed-release gates
+remain open; the overall goal remains active and MCD clinical use is not enabled.
+
+## Earlier: captured bilingual storage expansion — 17:45 UTC
+
+The owner explicitly approved the additional Scribe-only dormant capture/storage
+migration, tested only in a new disposable local database. Revision
+`0019_captured_bilingual` follows `0018_translation_jobs`; ADR 0042 records the
+decision and boundaries. No existing recording is converted or backfilled.
+
+New configured `chunk_upload` sessions can retain their actual capture provenance
+through normalized source, encrypted translation jobs, creator review and English
+working storage. Their state path requires capture/upload/processing before
+source receipt. Exact immutable Azure-source profiles replace any need to label
+them as external imports. Audio/job child roots are allowed; legacy raw-transcript
+and delivery writes remain prohibited. Imported sessions and unconfigured capture
+retain their prior behavior. No public route, runtime registration, application
+query widening, new grant, Core/Auth/IAM/Zoom/staging change or live call occurred.
+
+Final complete Python regression: **984 passed, zero failures/errors/skips**,
+78.63 seconds, including 23 new migration checks. Real PostgreSQL checks cover
+restricted non-owner operation, creator review before ready projection, unchanged
+source/role/profile evidence, tenant isolation, current-consent/source/retention
+job fences, terminal failures, legacy-query exclusion, row/privilege preservation
+across expand/reversal and refusal to reverse a used capture format. The initial
+fixture had a SQL typo; the first full run also exposed an older test that
+compared 0014's retained guards with the now-newer head. The test now verifies
+0014-to-0013 retention and exact restoration of the complete current head.
+No production guard was weakened to satisfy either test.
+
+Ruff and strict Pyright for the new migration/tests pass; OpenAPI regeneration is
+unchanged, ADR numbering and whitespace checks pass. JUnit:
+`/private/tmp/scribe-captured-bilingual.vfCl4X/verified-results.xml`, SHA-256
+`e4009f893a49042eb04ba576c65df0a3d2d30fef3ca650bb7be4076d05f9d88d`.
+The new UTF-8 database `scribe_captured_bilingual_test` used only its private
+Unix socket, no TCP listener. Teardown left only `alembic_version`; the exact
+owned cluster is stopped and its data/logs retained. No other database/app was
+stopped or changed.
+
+This is the schema foundation, **not a connected recording-to-note runtime**.
+Next: trusted configured-capture admission and leased Speech-result persistence,
+then durable translation dispatch and authenticated review/idempotency, followed
+by exact client/service acceptance. Existing app paths deliberately cannot read
+these new configured captures yet. Combined migration-graph reconciliation and
+independent review remain prerequisites to promotion.
+
+### Owner-requested MCD readiness estimate
+
+For actual MCD provider operation on desktop and iOS, estimate **about 55%
+(50–60% range)**. This is engineering judgment across implementation and remaining
+acceptance, not a measured completion or clinical-accuracy score. Strong local
+storage/service foundations do not close the release gates: real existing-user
+authentication and token custody; integrated capture → Spanish-to-English review
+→ Core SOAP → authorized MCD dashboard; physical-client/older-iOS recovery;
+mixed-language fidelity acceptance; and signed/distributed artifacts plus an
+approved PHI-capable operating environment. The stabilized shared platform has
+not been requalified in this task. Nothing here enables MCD clinical use.
+
+## Earlier: branded Scribe URL and local runtime approval — 17:23 UTC
+
+The owner requested a `cosmaneura.com` address, completed Cloudflare sign-in, and
+separately explicitly approved the local runtime-integration packet. The chosen
+standalone URL is now **https://scribe-beta.cosmaneura.com/**. The CosmaBot/CosmasOS
+URL remains separate and was not changed or provisioned here.
+
+Before mutation, both public authoritative DNS and Cloudflare's exact-name
+search found no record. Added only DNS-only CNAME `scribe-beta` targeting
+`green-rock-0cd7d7e0f.7.azurestaticapps.net`, TTL Auto (authoritative TTL 300).
+Then attached that exact hostname using CNAME validation to existing Standard
+Static Web App `cmn-capture-preview-p8x6m2` in
+`cosmaneura-capture-preview-development`. Azure progressed through validation to
+**Ready**, with no error. Both `lakas` and `roxy` authoritative nameservers return
+the expected CNAME. Normal HTTPS GET returns 200 and certificate validation 0.
+The first browser request reached an old certificate during propagation; a
+fresh normal HTTPS request subsequently rendered the site without bypassing
+validation. No certificate warning was overridden.
+
+The resulting screen is still **Cosmaneura Capture — SYNTHETIC DATA · SILENT
+SOURCE**, with disabled consent/record controls. Its initial state subsequently
+reports `synthetic_preview_failed`; this is not a working recording demo or an
+authenticated native API. The hostname succeeds independently of that preview
+initialization failure. Read-only health comparison confirms the branded host
+returns 403 `preview_host_rejected`, while the original Azure hostname returns
+200 synthetic healthy. Live `CAPTURE_PREVIEW_ALLOWED_HOSTS` contains only the
+original Azure hostname. The local preview configuration parser also requires
+an `.azurestaticapps.net` suffix, so blindly changing its live setting would
+break startup. No allowlist or preview source was changed. Making the old preview
+interactive on this alias requires a separately deployable hostname-compatible
+release; the currently approved local runtime packet does not authorize that
+deployment. Prefer connecting the qualified Scribe runtime when that release is
+ready, rather than confusing a repaired silent preview with beta acceptance.
+Do not relabel the preview as the runtime or use this
+web origin as the phone API until a compatible endpoint is actually qualified.
+
+No deployment, source upload, root/www record, other app/auth/Zoom/staging DNS,
+identity or shared database was changed. Readback confirms the clinical Scribe
+environment remains `internal=true`, `publicNetworkAccess=Disabled` and
+`provisioningState=Succeeded`. No live Speech/translation call ran. The alias and
+SWA custom-domain binding are the entire external change. Preserve this binding
+as recorded external state for later IaC reconciliation; no broad infrastructure
+apply or state import was performed. Remove the DNS alias before any future
+retirement of the binding/site to avoid a dangling hostname.
+
+The local runtime approval supersedes the earlier local no-integration
+restriction only: connect Speech, encrypted jobs, translation and creator-only
+review on the existing unpushed branch in disposable synthetic storage, with
+live services disabled. Core/Auth/IAM/Zoom/staging and other repositories stay
+unchanged. The first implementation increment is the persisted creator review
+service in ADR 0041, with qualification below.
+The complete runtime packet and the five owner goals remain incomplete.
+
+### First runtime increment: persisted creator review
+
+Added default-off `CreatorTranscriptReviewService` and repository reads for the
+creator's current, published pre-handoff bilingual evidence. They recheck tenant,
+creator, consent, retention and current source/working versions, reconstruct the
+canonical view from persisted source/attempt/review records and compare it to the
+saved fingerprint/status. Reading cannot publish or approve. Explicit decisions
+reuse the existing immutable writer and its exact retry semantics. Errors expose
+no raw driver context; cancellation propagates. No public route, auth parser,
+settings/permission activation, new migration or live provider was added.
+
+The six-case Speech/encrypted-job/translation seam now uses the application
+reader and compares it to independently loaded PostgreSQL rows, including after
+pool restart. New tests cover wrong tenant/session/creator, missing/unpublished
+source, no publish-on-read, explicit decisions/exact retry/conflicting retry,
+revocation, expiry, corrupt projection, disabled service and cancellation/error
+handling. Identity/Speech/model/network/key material remain synthetic fixtures.
+
+Final complete Python regression: **961 passed, zero failures/errors/skips**,
+61.302 seconds. Ruff and strict Pyright on changed application/repository modules
+pass; OpenAPI regenerated with no difference; ADR and whitespace checks pass.
+JUnit: `/private/tmp/scribe-runtime-review.kVwWZG/verified-results.xml`, SHA-256
+`9df1923676bb5a0af9239b4bf4de15b6d36e23bd227ae6311a4846d2a4cf7513`.
+
+Earlier test invocations corrected the database driver and requested the needed
+local socket permission. Full regression exposed two prior seam-test issues:
+retained encrypted jobs conflicted with an older migration downgrade test, and
+its SQL-only reader sorted quality blockers by random IDs rather than saved
+ordinal. The seam now cleans up its own disposable records through the existing
+retention cascade and reads saved ordinal order. No migration guard was weakened.
+
+The new cluster is `/private/tmp/scribe-runtime-review.kVwWZG/data`, private Unix
+socket only, no TCP listener. Tests used UTF-8 database
+`scribe_runtime_review_utf8_test`; the initially created empty SQL-ASCII database
+was not used. Teardown leaves only `alembic_version` in the tested schema. Retain
+the stopped cluster and logs; other databases/apps are untouched.
+
+Next within the existing approval: connect captured-source provenance and
+translation execution without using the external-source label for Azure capture;
+then connect the authenticated receiver and its durable request-idempotency
+envelope. This application increment is not HTTP/native integration, the full
+runtime packet, live bilingual audio acceptance or release qualification.
+
+## Earlier: separate Scribe URL and iPhone package preflight — 17:00 UTC
+
+The owner requested a beta URL and then explicitly confirmed **two separate
+URLs: standalone Scribe and CosmaBot/CosmasOS**. The existing standalone preview
+origin is available for the Scribe side:
+
+`https://green-rock-0cd7d7e0f.7.azurestaticapps.net/`
+
+Read-only Azure inspection resolved that origin from Static Web App
+`cmn-capture-preview-p8x6m2` in the dedicated
+`cosmaneura-capture-preview-development` resource group, Standard SKU, no custom
+domains. An ordinary HTTPS GET returned 200 with certificate validation result 0.
+Browser inspection showed **Cosmaneura Capture — SYNTHETIC DATA · SILENT SOURCE**,
+disabled consent/record controls and the explicit notice that this preview does
+not connect to patients, Scribe, Speech or a clinical tenant. No control was used.
+This is an existing, verified **web address**, not a newly provisioned service,
+an authenticated native API, or operational beta acceptance. Do not configure it
+as the phone's API merely because its web page loads.
+
+The separate clinical Scribe environment still reports internal ingress and
+public network access Disabled. The preview API reports Running and HTTPS-only.
+No cloud resource, custom DNS, ingress, identity, token setting, deployment flag,
+app package, shared database or other checkout was changed. CosmasOS's URL work
+remains untouched. Replacing the preview requires a qualified standalone-facing
+API/canonical Core boundary and matched client configuration, exact deployable
+artifacts, reviewed deployment/recovery, and fresh identity/device acceptance.
+The old synthetic preview backend must not be relabeled as that implementation.
+
+The owner-completed iOS update now permits Device Hub screen inspection. The
+physical iPhone 12 displays iOS 27.0 and W13 opens its welcome page. The owner's
+tap on Choose an encounter returned to the top of that page without an observed
+encounter list. The retained package's referenced entry bundle contains the
+Mac-local API origin; the inspected source dispatches this button to the catalog
+read. These are configuration/UI observations, not a proven runtime exception or
+successful Tester sign-in. W13 remains an OS qualification app, not standalone
+Scribe; support remains iOS 17+ and is not qualified by this iOS 27 observation.
+
+Added the offline `scripts/check_ios_candidate.py` diagnostic. It reads the IPA
+without extracting or running it, binds the archive and expected inputs by hash,
+checks bundle/Capacitor identity, iPhone platform, retained iOS 17 floor, native
+auth trial flags, bridge logging, and the referenced Vite entry's API origin.
+It rejects local/numeric/placeholder/credential-bearing destinations, missing or
+mismatched approved origins, ambiguous metadata/assets, unsupported layouts and
+bounded-read violations. It performs **no network or signing check**. The parser
+supports the reviewed Vite/Capacitor native-auth trial shape, not arbitrary JS
+program semantics or every possible standalone package. Even a static pass keeps
+authentication, physical-device, network, signature and release acceptance false.
+It is a manual diagnostic, not a newly installed CI/deployment gate.
+
+Actual W13 IPA SHA-256 remains
+`097754a4370de69921dd1f55f9b851cabaffbd85505f2ff44c7c9ec2cd78eaa8`.
+Its check exits 1 with `api_origin_not_device_candidate` and
+`approved_api_origin_missing`. Comparison with the retained standalone Capture
+bundle identity also reports `bundle_identity_mismatch`. No future beta bundle
+identifier is selected by that comparison. Reports are retained in
+`evidence/ios-candidate-preflight-20260921.json`.
+
+Verification: **83 tests passed, zero skipped**, including 66 new offline cases
+and the existing artifact/beta-gate/ADR checks. Ruff and strict Pyright on the new
+script pass. The existing Starlette dependency warning remains. No database or
+provider call ran. JUnit: `/private/tmp/scribe-ios-preflight.imxSFP/final-results.xml`,
+SHA-256 `6192274475ad4a9e3dfcb71ac5c077494c2e0db7c6d928c0959f67b9fe53fe19`.
+
 ## What “clinical evaluation” means here
 
 Core alone continues to generate SOAP notes. No second clinical note engine is
@@ -34,6 +297,92 @@ noise, omissions, or end-to-end Core notes. Those remain acceptance work.
 | Physical iPhone | Verified development package installed and launched on the physical iPhone 12 after owner passcode entry. Exact bundle was absent before installation, installed version/build is `1.0/1`, and its process was observed running. Signature and artifact hashes reverified. | Rendered UI, successful Tester login, token custody, recording/interruption/recovery and end-to-end services remain unqualified. Phone also needs an approved reachable HTTPS backend, not the Mac's localhost. |
 | Source fidelity | Fixed tests cover negation, dose, self-correction, uncertainty, pregnancy, allergy, attribution and quoted instruction text. Golden references were defined before service calls. A diagnostic call confirms Azure content filtering rejects the quoted-instruction case; the real adapter and synthetic writer test preserve source and block note handoff/review approval. | User-facing blocked/recovery UX, full consented synthetic audio/translation/Core-note loop and human review remain. Do not change references or bypass provider filtering merely to get a pass. |
 | Signed/reproducible artifacts | Canonical-path clean builds now match compiled payloads and UUIDs; signatures, public entitlements and all 332 source inputs verify. The exact exported development IPA, source and symbols are retained outside temporary storage. | Signing/ZIP bytes still vary; cross-machine/hermetic reproducibility is unproven. No Apple Distribution identity, TestFlight acceptance, desktop notarization, cross-client installer/update acceptance or production artifact set was established. |
+
+## Follow-on: bilingual service/storage seam acceptance
+
+After encrypted-store commit `b673fbf`, the same local branch gained a test-only
+composition in `tests/test_bilingual_service_storage_seam.py`. It connects the
+actual Azure Speech result parser/normalizer, existing normalized receiver, real
+encrypted PostgreSQL job store, actual Azure translation adapter, immutable
+attempt/review writers and existing Core handoff serializer. Speech SDK results,
+HTTP responses, credentials, network guards and RSA keys are synthetic. No audio
+recognition, live inference, real user authorization or Core note generation ran.
+
+Six cases pass: successful translation, Azure HTTP filtering, structured refusal,
+incomplete output, unknown source language and overlapping speech. The successful
+case preserves English provider text and a single patient speaker switching from
+Spanish to English; only the Spanish segment reaches the translation adapter.
+Source text/locale/timing/speaker IDs are unchanged in PostgreSQL. Reopening the
+repository/connection pool recovers the committed job without another provider
+call. Persisted English working rows are read independently of in-memory results;
+only creator review permits handoff. Failed translations cannot be accepted, and
+unknown-language/overlap sources cannot reserve provider work. These checks are
+plumbing/contract evidence, not a measurement of clinical transcription accuracy.
+
+**108 related tests passed, zero failures/errors/skips, 8.950 seconds**; Ruff,
+strict Pyright and `git diff --check` pass. This run includes the six new tests
+and existing encrypted-store, Speech-source, Azure translation, execution,
+vertical handoff and fidelity suites. The prior 881-test full run remains the
+unchanged-runtime baseline; the full suite was not rerun for this test-only delta.
+Initial attempts corrected the command's database driver and filled required
+confidence fields in the mocked Speech responses; no runtime was changed.
+
+The fresh disposable PostgreSQL 16.15 cluster used only a private mode-0700 Unix
+socket, with no TCP listener, at `/private/tmp/scribe-bilingual-seam.P5auNi/data`;
+database `scribe_bilingual_seam_test`. Teardown left only `alembic_version` and
+removed the temporary roles. Its exact process (93321) was stopped and the
+stopped state verified; logs/data remain. JUnit evidence:
+`/private/tmp/scribe-bilingual-seam.P5auNi/final-results.xml`, SHA-256
+`db1e8790db0aed3e8968fe713ab559b6cf075bb2950ab53eaffcf4cb1309f206`.
+The existing W13 database was untouched. Its API execution handle `62456` remained
+live when polled; that is not evidence of successful Tester authentication.
+
+The OpenAI Docs skill directed inspection of the official
+[Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
+The new integrated checks carry refusal/incomplete-output rejection through the
+database and review/handoff gates. A valid schema still does not establish
+meaning or fidelity. Model, prompt, reference corpus and provider filters remain
+unchanged; this follow-on made no live model request.
+
+### Remaining seams exposed by this composition
+
+- The source receiver still stamps its existing external-source profile. The
+  test does not admit an Azure recognition profile or connect a captured session
+  to that receiver. Preserve actual provenance in the eventual integration.
+- Persisted working-text inspection here is a test-only SQL reader, not a new
+  creator-authorized endpoint. Runtime reads/dispatch/review and current
+  standalone/CosmasOS clients still require integration.
+- Speaker identity survives language changes, but the parser correctly leaves
+  provider/patient roles unknown. The existing generic handoff labels them
+  `Unknown`; it does not carry speaker IDs. This is **not** acceptable evidence
+  of provider-versus-patient clinical attribution. Qualify explicit role review
+  and downstream attribution; never infer roles merely from spoken language.
+- The phone remains untouched while the owner updates iOS. W13 on the Mac was
+  closed/reopened at the owner's request and its helper window was observed;
+  the actual hosted login form and successful Tester sign-in are not verified.
+
+### Reuse of Core's existing SOAP evaluation
+
+Read-only inspection of `/Users/jw/Desktop/Cosmas/cosmas-os-core-integration`
+(HEAD `e21ba4c1fb1027de8123aca9b8aee25b8a11b612`, dirty; no edits here) found the
+existing live-note suite `tests/job/summarize_test.py` and `tests/eval.py` judge.
+The suite covers schema order, patient/doctor actions, pronouns, subjective versus
+doctor interpretation, current versus prescribed medications, reasons and ROS.
+It is gated by `RUN_LIVE_LLM_TESTS=true` and existing Azure credential settings;
+it was neither imported nor run. Source SHA-256 values:
+
+- `tests/job/summarize_test.py`:
+  `93ff3b13576465679c18aff5017ef3710749f9d10095c9f0ca4dc2cd939da5c1`.
+- `tests/eval.py`:
+  `e4a0318f6fb081991ffe26d3bebc621ec03e0248957d09ef5a55b605125751e7`.
+
+Reuse these criteria and Core's generator when the exact integrated synthetic
+trial is authorized. Add source-to-English checks for negation, doses/units,
+omissions, uncertainty and attribution, with human adjudication of critical
+errors. The existing `n=1, m=2` best-of-two helper is not a fidelity pass rate:
+retain every attempted output/outcome in the qualification denominator. Do not
+create another clinical generator, collect API keys, or change Core to make this
+local test pass. The full five-goal objective remains open.
 
 ## Translation implementation and final real run
 
@@ -519,7 +868,89 @@ bilingual runtime integration. Those gates remain open. Read-only inspection of
 the newer Scribe integration still finds only the same durable-store protocol,
 not a reusable production implementation.
 
-### Next local integration packet — scope extension requested, not approved
+### Approved local encrypted-store packet — implemented and rehearsed
+
+The owner explicitly approved a Scribe-only encrypted job store and dormant
+migration, with tests confined to a disposable local database and no cloud/shared
+platform changes. The implementation is on the existing unpushed branch:
+
+- `TranslationJobCipher`: authenticated AES-256-GCM envelopes with fresh job-only
+  keys/nonces, wrapped through the existing RSA-3072 server key-custody interface.
+  Protected source, result and call token are encrypted; scope, lineage, lifecycle
+  times and expiry are authenticated. No plaintext job content/digest in storage
+  metadata or audit; raw SQL/validation exception context is removed.
+- `PostgresTranslationJobStore`: durable reservation, atomic claim, encrypted
+  result and exact immutable-attempt reconciliation. It reuses existing consent
+  and session locks and rejects stale source/content, revoked consent, expired
+  retention and conflicting identities. A committed claim with unknown outcome
+  never automatically calls the provider again, including with a different job ID
+  for the same source/next-attempt slot.
+- Dormant migration `0018_translation_jobs`, parent `0014` here: one new
+  Scribe-only table, forced tenant RLS, monotonic lifecycle and deferred authority
+  guards, source-retention cascade, no role or runtime grant. The distinct revision
+  avoids IDs 0015–0017 observed in the separate integration checkout. The combined
+  migration graph must still be reconciled/rehearsed before promotion.
+- Existing immutable translation attempt, English working projection and
+  creator-only review remain authoritative. A constrained local role using the
+  existing translation-grant pattern plus only job-table access passes the full
+  store/writer path without consent UPDATE, review INSERT or job DELETE rights.
+
+**Final verification: 881 passed, zero skipped, 57.78 seconds.** The new focused
+suite has **30 passing tests**: envelope tamper/tenant/state/time/key failures,
+fresh-process restoration, competing claims, revocation-before-claim, stale
+source/content, encrypted database corruption, retention cleanup, immutable
+attempt/creator review, lost claim/result/writer/marker acknowledgements, downgrade
+and reset rejection, raw-error suppression and constrained-role execution.
+Ruff, strict Pyright, ADR numbering and `git diff --check` pass. OpenAPI was
+regenerated and is unchanged. The 27 full-suite warnings are existing dependency
+deprecations. An older migration-rehearsal test needed its expected head updated
+and its disposable test-role grant restored after recreating the new table;
+runtime/bootstrap permissions were not changed.
+
+All database actions used the newly created PostgreSQL 16.15 cluster at
+`/private/tmp/scribe-encrypted-jobs-qualification.YtD3yU/data`, database
+`scribe_encrypted_jobs_test`, private Unix socket and **no TCP listener**. Before
+shutdown, exact SQL readback verified that path, only `alembic_version` remained
+in `public`, and both test application/job roles were absent. The exact server,
+PID 84227, was stopped and rechecked; data/logs were retained. Final JUnit report:
+`/private/tmp/scribe-encrypted-jobs-qualification.YtD3yU/final-results.xml`, SHA-256
+`d94bd0e6c7e22faeff9503cc515aca23d417de2f63e4c378975eae918e8a7e75`.
+
+No provider/cloud/key-vault calls, shared database changes, runtime registration,
+Core/Auth/IAM/Zoom/staging edits, other checkout edits, new branch, push, PR or
+deployment occurred in this packet. Generated local test keys are not runtime
+key-custody qualification. Independent review, combined migration graph,
+real worker/key authority, current-client receiver/review wiring and complete
+mixed-language physical-device acceptance remain promotion gates. Recovery keeps
+the additive table dormant; nonempty/non-test downgrade is rejected. See ADR 0040.
+
+### Physical phone and older-iOS requirement — latest observation
+
+The reconnected iPhone was detected as available/paired and W13 `1.0/1` remained
+installed. An attempted foreground launch was rejected because the phone had
+locked again. The owner then reported W13 open on the phone. No password, passcode
+or token was collected, and successful Tester sign-in/resulting W13 UI has **not**
+been independently observed.
+
+Xcode 27's Device Hub was opened and the physical **Johns Phone** selected, not a
+simulator. Its View Screen action ultimately reported: “Screen Sharing Unavailable
+Johns Phone must be running iOS 27.0 or above to screen share with this Mac.” This
+is a developer-viewing limitation, not a W13 launch error or product minimum.
+The owner elected to update the phone and will report completion; no further
+device action should be attempted during that update.
+
+The exact preserved W13 app's Info.plist declares `MinimumOSVersion=17.0`; composed
+Xcode/SPM inputs also target 17. Preserve **iOS 17+** as the current compatibility
+target and explicitly qualify older versions. Do not raise the product floor to
+27 merely for screen sharing, or claim an iOS 27 test proves older-version support.
+No device OS update or native deployment-target change was performed by the agent.
+
+### Historical scope request — subsequently approved, 2026-09-21
+
+The owner has now explicitly approved the Scribe-only encrypted job store and
+dormant migration below, tested only in a disposable local database. No cloud or
+shared-platform changes. The following paragraph records the earlier boundary,
+not a remaining approval request. Implementation evidence is recorded separately.
 
 ADR 0037's earlier pre-integration restriction explicitly excludes a production
 job-store schema. The completed Speech execution-method exception did not remove

@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import cast
 from uuid import UUID
 
 from .canonical_json import canonical_sha256
@@ -16,11 +17,15 @@ from .external_transcript_v1 import (
     WorkingTranscriptBlockerCode,
 )
 from .schemas import CaptureModality, ConsentRecord, SpeakerRole
+from .session_state_v1 import SessionIngestMode
 
 VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT = "1.0"
 VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID = "core_normalized_source_v1"
 VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID = "external_transcript_micro_beta_v1"
 VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID = "en_es_us_locale_normalization_v1"
+CAPTURED_TRANSCRIPTION_ADAPTER_ID = "azure_ai_speech"
+CAPTURED_TRANSCRIPTION_MODEL_PROFILE_ID = "azure_fast_transcription_en_es_v1"
+CAPTURED_NORMALIZATION_PROFILE_ID = "azure_phrase_en_es_evidence_v1"
 NORMALIZED_SOURCE_RETENTION_PRINCIPAL_ID = "retention_worker_v1"
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -34,6 +39,21 @@ class ConfiguredExternalSessionStatus(StrEnum):
     TRANSCRIPT_READY = "transcript_ready"
     HANDED_OFF = "handed_off"
     FAILED = "failed"
+
+
+class CapturedPreSourceStatus(StrEnum):
+    CAPTURING = "capturing"
+    UPLOADED = "uploaded"
+    PROCESSING = "processing"
+
+
+type ConfiguredSourceSessionStatus = ConfiguredExternalSessionStatus | CapturedPreSourceStatus
+
+
+def configured_source_session_status(value: str) -> ConfiguredSourceSessionStatus:
+    if value in {status.value for status in CapturedPreSourceStatus}:
+        return CapturedPreSourceStatus(value)
+    return ConfiguredExternalSessionStatus(value)
 
 
 def derive_working_transcript_status(
@@ -118,7 +138,15 @@ class VersionedExternalSessionCreate:
 
 
 @dataclass(frozen=True, repr=False)
-class VersionedExternalSessionRecord:
+class CapturedSessionCreate(VersionedExternalSessionCreate):
+    """Same trusted Core admission fields, with a distinct captured-source intent."""
+
+    def __repr__(self) -> str:
+        return "CapturedSessionCreate(<protected>)"
+
+
+@dataclass(frozen=True, repr=False)
+class ConfiguredSourceSessionRecord:
     """Internal configured-session record that is never a public response model."""
 
     id: UUID
@@ -133,8 +161,9 @@ class VersionedExternalSessionRecord:
     transcription_adapter_id: str
     transcription_model_profile_id: str
     normalization_profile_id: str
-    status: ConfiguredExternalSessionStatus
+    status: ConfiguredSourceSessionStatus
     created_at: datetime
+    ingest_mode: SessionIngestMode = SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT
     source_received_at: datetime | None = None
     transcript_content_expires_at: datetime | None = None
     content_purged_at: datetime | None = None
@@ -143,6 +172,21 @@ class VersionedExternalSessionRecord:
     current_working_transcript_version: int | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(cast(object, self.ingest_mode), SessionIngestMode):
+            raise ValueError("configured source ingest mode is invalid")
+        if not isinstance(
+            cast(object, self.status), (ConfiguredExternalSessionStatus, CapturedPreSourceStatus)
+        ):
+            raise ValueError("configured source status is invalid")
+        if self.ingest_mode == SessionIngestMode.CHUNK_UPLOAD:
+            if (
+                self.transcription_adapter_id != CAPTURED_TRANSCRIPTION_ADAPTER_ID
+                or self.transcription_model_profile_id != CAPTURED_TRANSCRIPTION_MODEL_PROFILE_ID
+                or self.normalization_profile_id != CAPTURED_NORMALIZATION_PROFILE_ID
+            ):
+                raise ValueError("captured source profile is invalid")
+        elif isinstance(self.status, CapturedPreSourceStatus):
+            raise ValueError("imported source cannot have capture state")
         for name in ("appointment_id", "practitioner_id", "patient_id"):
             _validate_external_id(name, getattr(self, name))
         for name in (
@@ -164,17 +208,19 @@ class VersionedExternalSessionRecord:
             value = getattr(self, name)
             if value is not None and (value.tzinfo is None or value.utcoffset() is None):
                 raise ValueError(f"{name} must include a UTC offset")
-        if (
-            self.current_working_transcript_version is not None
-            and (
-                self.working_transcript_id is None
-                or self.current_working_transcript_version < 1
-            )
+        if self.current_working_transcript_version is not None and (
+            self.working_transcript_id is None or self.current_working_transcript_version < 1
         ):
             raise ValueError("current working transcript version requires an identity")
 
     def __repr__(self) -> str:
+        if self.ingest_mode == SessionIngestMode.CHUNK_UPLOAD:
+            return "ConfiguredSourceSessionRecord(<protected>)"
         return "VersionedExternalSessionRecord(<protected>)"
+
+
+# Historical callers keep their existing type name and default imported mode.
+VersionedExternalSessionRecord = ConfiguredSourceSessionRecord
 
 
 def build_versioned_external_session_record(
@@ -320,7 +366,7 @@ class ExternalSessionTerminalFailure:
 class ExternalSessionTerminalEventRecord:
     session_id: UUID
     event_id: UUID
-    prior_status: ConfiguredExternalSessionStatus
+    prior_status: ConfiguredSourceSessionStatus
     failure_code: ExternalSessionFailureCode
     occurred_at: datetime
     principal_type: ExternalSessionTerminalPrincipalType
@@ -352,7 +398,7 @@ class VersionedExternalTerminalResult:
 @dataclass(frozen=True, repr=False)
 class NormalizedSourcePurgeResult:
     session_id: UUID
-    status: ConfiguredExternalSessionStatus
+    status: ConfiguredSourceSessionStatus
     content_purged_at: datetime
     terminal_event: ExternalSessionTerminalEventRecord | None
     changed: bool

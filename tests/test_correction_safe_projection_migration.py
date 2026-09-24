@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from alembic.config import Config
+from conftest import APP_ROLE
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -92,6 +93,22 @@ async def _current_revision(database_url: str) -> str:
         await engine.dispose()
 
 
+async def _restore_recreated_test_table_permissions(database_url: str) -> None:
+    # This historical downgrade also removes/recreates the later empty job table.
+    # Restore only its disposable test-role grant, never runtime/bootstrap grants.
+    engine = create_async_engine(database_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "GRANT SELECT, INSERT, UPDATE, DELETE "
+                    f"ON encrypted_translation_jobs TO {APP_ROLE}"
+                )
+            )
+    finally:
+        await engine.dispose()
+
+
 def _assert_hardened(definitions: dict[str, tuple[str, bool, list[str] | None]]) -> None:
     assert set(definitions) == set(HARDENED_FUNCTIONS)
     for definition, security_definer, configuration in definitions.values():
@@ -127,16 +144,23 @@ def test_forward_retained_recovery_is_safe_and_reapplicable(
     before = asyncio.run(_function_metadata(admin_url))
     _assert_hardened(before)
     try:
+        # Later expansions intentionally change the allowed ingest modes. Verify
+        # 0014's retained recovery against 0014 itself, then require an exact
+        # restoration of the complete current head after reapplication below.
+        command.downgrade(config, "0014")
+        prior_expansion = asyncio.run(_function_metadata(admin_url))
+        _assert_hardened(prior_expansion)
         command.downgrade(config, "0013")
         assert asyncio.run(_current_revision(admin_url)) == "0013"
         retained = asyncio.run(_function_metadata(admin_url))
         _assert_hardened(retained)
-        assert retained == before
+        assert retained == prior_expansion
         assert asyncio.run(_public_execute_functions(admin_url)) == set()
     finally:
         command.upgrade(config, "head")
+        asyncio.run(_restore_recreated_test_table_permissions(admin_url))
 
-    assert asyncio.run(_current_revision(admin_url)) == "0014"
+    assert asyncio.run(_current_revision(admin_url)) == "0019_captured_bilingual"
     reapplied = asyncio.run(_function_metadata(admin_url))
     _assert_hardened(reapplied)
     assert reapplied == before
@@ -144,16 +168,12 @@ def test_forward_retained_recovery_is_safe_and_reapplicable(
 
 
 def test_downgrade_is_disposable_database_only() -> None:
-    migration = (
-        ROOT / "alembic/versions/0014_correction_safe_projection.py"
-    ).read_text()
+    migration = (ROOT / "alembic/versions/0014_correction_safe_projection.py").read_text()
     assert "current_database() !~ '_test$'" in migration
 
 
 def test_migration_does_not_expand_authority_or_hide_pointer_mutation() -> None:
-    migration = (
-        ROOT / "alembic/versions/0014_correction_safe_projection.py"
-    ).read_text()
+    migration = (ROOT / "alembic/versions/0014_correction_safe_projection.py").read_text()
     assert "GRANT " not in migration
     assert "CREATE ROLE" not in migration
     assert "SECURITY DEFINER" not in migration
