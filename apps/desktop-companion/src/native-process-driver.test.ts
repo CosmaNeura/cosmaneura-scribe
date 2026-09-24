@@ -123,6 +123,19 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
       expect(packets).not.toHaveBeenCalled();
     } finally { await session.stop({ mode: "discard" }).catch(() => undefined); }
   });
+  it("confirms discard after an owned child exits before ready without a stop receipt", async () => {
+    const packets = vi.fn(async () => undefined), failures: DesktopPCMFailure[] = [];
+    const session = (await driver(7)).start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+      onPcmPacket: packets, onFailure: code => { failures.push(code); },
+    });
+    try {
+      await expect(session.ready).rejects.toThrow("desktop_native_process_failed");
+      expect(await session.stop({ mode: "discard" })).toBeNull();
+      expect(await session.stop({ mode: "discard" })).toBeNull();
+      expect(packets).not.toHaveBeenCalled();
+      expect(failures).toEqual(["failed"]);
+    } finally { await session.stop({ mode: "discard" }); }
+  });
   it("retains the same child for failed-stop retry and handles drain-to-discard upgrade", async () => {
     for (const failedFirst of [true, false]) {
       const native = await driver(failedFirst ? 2 : 1), gate = deferred<void>();
