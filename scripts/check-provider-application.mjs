@@ -19,6 +19,7 @@ Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredC
 window.fetch = () => { throw new Error("Unexpected network request"); };
 let nativeState = { phase: "signedOut", revision: webcrypto.randomUUID() };
 const nativeCalls = [], nativeListeners = new Map(), warnings = [];
+let mountGate = null, mountFailure = false, journalFailure = false;
 window.console.warn = value => { warnings.push(value); };
 window.CapacitorCustomPlatform = { name: "ios" };
 window.Capacitor = {
@@ -35,6 +36,7 @@ window.Capacitor = {
   async nativePromise(plugin, method, options) {
     nativeCalls.push(`${plugin}.${method}`);
     if (plugin === "SecureQueue" && method === "get") {
+      if (journalFailure) throw Object.assign(new Error("Private storage detail must not be displayed"), { code: "SECURE_QUEUE_UNAVAILABLE" });
       throw Object.assign(new Error("No saved fixture record"), { code: "SECURE_QUEUE_NOT_FOUND" });
     }
     assert.equal(plugin, "CosmasWorkspaceAuth");
@@ -47,6 +49,11 @@ window.Capacitor = {
       return nativeState;
     }
     if (method === "providerRequest") {
+      if (options.action === "mount") {
+        await mountGate?.promise;
+        if (mountFailure) return { requestId: options.requestId, revision: options.revision, status: 503,
+          body: '{"detail":"provider_request_unconfirmed"}' };
+      }
       assert.ok(["catalog", "mount"].includes(options.action), "No clinical mutation in startup check");
       const encounter = { appointmentRef: "appointment_01j00000000000000000000000",
         title: "Invented app visit", detail: "Native connection fixture" };
@@ -106,7 +113,49 @@ function fixture(phase = "ready") {
 let checks = 0;
 async function check(run) { root.replaceChildren(); await run(); checks++; }
 try {
-  for (const recovery of ["empty", "reopen"]) await check(async () => {
+  await check(async () => {
+    nativeState = { phase: "ready", revision: webcrypto.randomUUID() };
+    let coreOpens = 0;
+    const forbidden = () => { throw new Error("No capture or note operation in navigation regression"); };
+    const dispose = module.namespace.mountNativeProviderIOSApplication(root, {
+      uploadTarget: { putCompleteEnvelope: forbidden },
+      core: { createEncounter: async () => { coreOpens++; }, openEncounter: forbidden },
+    });
+    try {
+      await until(visible);
+      assert.equal(root.querySelector('[data-workspace-action="create"]').textContent, "Open Core dashboard");
+      assert.ok(root.textContent.includes("It does not create an encounter"));
+      root.querySelector('[data-workspace-action="create"]').click();
+      await until(() => coreOpens === 1 && root.getAttribute("aria-busy") === "false");
+      await turn();
+      mountGate = deferred(); mountFailure = true;
+      root.querySelector('[data-workspace-action="open"]').click();
+      await until(() => root.textContent.includes("Opening encounter"));
+      const heading = root.querySelector('[data-workspace-content] h1');
+      await new Promise(resolve => setTimeout(resolve, 5200));
+      assert.equal(root.querySelector('[data-workspace-content] h1'), heading, "Polling must not remount an in-flight encounter");
+      mountGate.resolve(); mountGate = null;
+      await until(() => root.textContent.includes("Encounter could not open"));
+      assert.ok(root.textContent.includes("encounter connection could not be confirmed"));
+      mountFailure = false; journalFailure = true;
+      root.querySelector('[data-workspace-action="open"]').click();
+      await until(() => root.textContent.includes("saved encounter recovery could not be confirmed"));
+      assert.equal(root.textContent.includes("Private storage detail"), false);
+      journalFailure = false;
+      root.querySelector('[data-workspace-action="open"]').click();
+      await until(() => root.textContent.includes("Prepare recording"));
+      const consent = root.querySelector('[name="consent"]'); consent.focus();
+      await new Promise(resolve => setTimeout(resolve, 5200));
+      assert.equal(root.querySelector('[name="consent"]'), consent, "Polling must retain the opened encounter and consent control");
+      assert.equal(window.document.activeElement, consent); assert.equal(consent.checked, false);
+      assert.equal(nativeCalls.some(call => call.startsWith("IOSPCM.")), false);
+    } finally {
+      mountGate?.resolve(); mountGate = null; mountFailure = false; journalFailure = false;
+      await dispose(); nativeState = { phase: "signedOut", revision: webcrypto.randomUUID() };
+      nativeCalls.length = 0;
+    }
+  });
+  for (const recovery of ["empty", "reopen", "custody"]) await check(async () => {
     const f = fixture(), connect = f.host.connect;
     const sessionId = "10000000-0000-4000-8000-000000000001";
     const scope = { workspaceId: "20000000-0000-4000-8000-000000000002",
@@ -134,6 +183,12 @@ try {
           reviewJournal: () => ({ load: forbidden, save: forbidden }), openInCore: forbidden,
           recorder: async id => {
             assert.equal(id, sessionId);
+            if (recovery === "custody") return {
+              source: { kind: "microphone", start: forbidden, stop: async () => {} },
+              flowStore: { getActiveCaptureState: async () => null, getPreparationState: async () => null },
+              queueStorage: {}, uploadTarget: { putCompleteEnvelope: forbidden },
+              release: async () => { deactivated++; },
+            };
             const snapshot = { sessionId, state: recovery === "empty" ? "paused" : "error",
               statusCode: recovery === "empty" ? "capture_no_saved_audio" : "capture_reopen_required",
               recordedChunks: 0, queuedChunks: 1, elapsedSeconds: 0, remainingBudgetSeconds: 60,
@@ -153,6 +208,16 @@ try {
     const dispose = mountProviderApplication(root, f.host);
     try {
       await until(visible); root.querySelector('[data-workspace-action="open"]').click();
+      if (recovery === "custody") {
+        await until(() => root.textContent.includes("Recording access needed on this device"));
+        assert.ok(root.textContent.includes("continue on that device"));
+        assert.equal(root.querySelector('[data-testid="record-button"]'), null);
+        assert.equal(resumed, 0);
+        root.querySelector('[data-workspace-action="encounters"]').click();
+        await until(() => root.querySelector('[data-workspace-action="open"]'));
+        assert.equal(deactivated, 1); assert.equal(opened, 1);
+        return;
+      }
       await until(() => root.querySelector('[data-testid="record-button"]'));
       assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
       assert.equal(root.querySelector('[data-testid="stop-button"]').disabled, recovery === "reopen");

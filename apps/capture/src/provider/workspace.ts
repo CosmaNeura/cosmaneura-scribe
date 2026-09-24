@@ -2,6 +2,7 @@ import "../capture-app";
 import type { CaptureApp } from "../capture-app";
 import type { PreparedProviderRecorder } from "../provider-binding";
 import { CaptureFlowController } from "../flow";
+import { CaptureDeviceCustodyError } from "../capture/device-custody";
 import { CaptureQueue } from "../queue/capture-queue";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
@@ -28,6 +29,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let templates: CoreNoteTemplate[] = [], source: ReviewedSource | null = null, draft: CoreDraft | null = null;
   let currentSchema = "";
   let consentRenewalOffered = false;
+  let openingRef: string | null = null;
+  let step = "request";
   root.classList.add("provider-workspace");
   root.innerHTML = `<header class="provider-header"><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
     <p data-workspace-notice role="status"></p><div data-workspace-content></div>`;
@@ -54,6 +57,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     content.replaceChildren(); draft = null; source = null; templates = [];
     encounterLabel.textContent = "";
     consentRenewalOffered = false;
+    openingRef = null;
     context = null; client = null; journal = { revision: null, progress: null };
     // A host acquisition can finish after revocation. Await its ownership handoff
     // so disposal cannot report success before those late handles are closed.
@@ -66,22 +70,29 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const run = async (action: () => Promise<void>): Promise<void> => {
     if (disposed || busy || host.signal.aborted) return;
-    busy = true; notice.textContent = "";
+    busy = true; notice.textContent = ""; step = "request";
     root.setAttribute("aria-busy", "true");
     try { await action(); }
     catch (error) {
-      if (!disposed) {
+      if (!disposed && !host.signal.aborted) {
         notice.textContent = error instanceof RecorderStopUnconfirmed
           ? "Recording stop could not be confirmed. Stop it in the native app before continuing."
-          : "This action could not be confirmed. Your saved work is retained. Reopen this encounter to recover before continuing.";
-        if (context && journal.progress?.pendingSave) {
+          : error instanceof CaptureDeviceCustodyError
+            ? "This device could not confirm access to the recording key or saved recording state. Your saved work is retained."
+            : `The ${step} could not be confirmed. Your saved work is retained. Return to Your encounters and reopen this encounter to recover.`;
+        if (error instanceof CaptureDeviceCustodyError) {
+          show('<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p><button data-workspace-action="encounters">Your encounters</button>');
+        } else if (context && journal.progress?.pendingSave) {
           show('<h1>Confirm your previous save</h1><p>Your exact edits are retained for recovery.</p><button data-workspace-action="resolve">Recover note save</button>');
+        } else if (openingRef) {
+          show(`<h1>Encounter could not open</h1><p>Check your connection, then retry. Recording has not started.</p><button data-workspace-action="open" data-appointment="${escape(openingRef)}">Retry opening encounter</button>`);
         }
       }
     } finally { busy = false; root.removeAttribute("aria-busy"); }
   };
   const list = async (): Promise<void> => {
     await clearEncounter();
+    step = "encounter list";
     const n = generation;
     show("<h1>Your encounters</h1><p>Loading your authorized encounters…</p>");
     const encounters = await host.listEncounters(host.signal);
@@ -90,9 +101,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     for (const e of encounters) requireValue(reference(e.appointmentRef, "appointment")
       && typeof e.title === "string" && e.title.length <= 300 && typeof e.detail === "string" && e.detail.length <= 1000);
     show(`<h1>Your encounters</h1><p>Choose an encounter to record, review, or continue its note.</p>
-      <button data-workspace-action="create">New encounter</button><ul class="provider-encounters">${encounters.map(e =>
+      <button data-workspace-action="create">Open Core dashboard</button><p>This opens Core in your browser, where a separate sign-in may be required. It does not create an encounter. After an encounter is assigned to you in Core, return here and select Your encounters to refresh.</p><ul class="provider-encounters">${encounters.map(e =>
       `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(e.detail)}</span></button></li>`).join("")}</ul>
-      ${encounters.length ? "" : "<p>No encounters are available. Create one through Core to begin.</p>"}`);
+      ${encounters.length ? "" : "<p>No encounters are available. Ask your practice to assign an encounter in Core.</p>"}`);
   };
   const preparation = (): void => {
     requireValue(context);
@@ -125,6 +136,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const recordOrReview = async (): Promise<void> => {
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
+    step = "recording status check";
     const view = await new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read();
     if (!authorized(n)) return;
     if (!["created", "capturing"].includes(view.status)) {
@@ -133,6 +145,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       return;
     }
     requireValue(!progress().uploaded);
+    step = "device recording access";
     const acquisition = activeContext.recorder(id, activeClient.signal);
     acquiringRecorder = acquisition;
     let resources: ProviderRecorderResources | PreparedProviderRecorder;
@@ -159,8 +172,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       const active = await local.flowStore.getActiveCaptureState();
       const preparing = await local.flowStore.getPreparationState();
       requireValue((active === null || active.sessionId === id && active.reviewAfterUpload === true)
-        && (preparing === null || preparing.sessionId === id && preparing.mode === "configured_core")
-        && (view.status !== "capturing" || active !== null || preparing !== null));
+        && (preparing === null || preparing.sessionId === id && preparing.mode === "configured_core"));
+      if (view.status === "capturing" && active === null && preparing === null) throw new CaptureDeviceCustodyError();
+      step = "secure recording preparation";
       if (!await localController.restore()) await localController.prepareConfigured(id);
     }
     requireValue(controller.snapshot.sessionId === id);
@@ -184,6 +198,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const admit = async (mode: "initial" | "recover" | "renew" = "initial"): Promise<void> => {
     requireValue(client);
     const n = generation;
+    step = "recording admission";
     show("<h2>Preparing your recording…</h2>");
     const intent = progress().admission;
     const id = await (mode === "recover" ? client.recoverAdmission(intent)
@@ -196,6 +211,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const open = async (ref: string): Promise<void> => {
     await clearEncounter(); const n = generation;
+    openingRef = ref; step = "encounter connection";
+    show("<h1>Opening encounter</h1><p>Checking access and restoring your saved work…</p>");
     const opening = new AbortController();
     encounterAbort = opening;
     forwardAbort(host.signal, opening);
@@ -212,6 +229,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       void clearEncounter().catch(() => { if (!disposed) notice.textContent = "Recording stop could not be confirmed. Stop it in the native app before continuing."; });
       notice.textContent = "Encounter access ended. Return to your encounters to continue.";
     }, { once: true });
+    step = "saved encounter recovery";
     const loaded = await opened.journal.load();
     if (!authorized(n)) return;
     journal = loaded;
@@ -222,6 +240,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       } else if (loaded.progress.sessionId) await recordOrReview();
       else show(`<h1>Recover recording preparation</h1><p>Confirm the original request before starting another recording.</p><button data-workspace-action="admit">Retry preparation</button>`);
     } else preparation();
+    if (current(n)) openingRef = null;
   };
   async function openNotes(): Promise<void> {
     requireValue(client && context);

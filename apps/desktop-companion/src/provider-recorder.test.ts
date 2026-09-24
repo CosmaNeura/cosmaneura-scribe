@@ -402,10 +402,13 @@ describe("window choice before server start authority", () => {
       const recorder = await f.open({ selectWindow: selection });
       const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
       await choosing.promise;
+      expect(recorder.snapshot).toMatchObject({ statusCode: "capture_window_selection_pending",
+        recordedChunks: 0, desktop: { phase: "starting", coverage: "not_started" } });
       expect(f.authority).not.toHaveBeenCalled();
       expect(f.nativeStart).not.toHaveBeenCalled();
       expect(f.indicator.current()?.visible).not.toBe(true);
       chosen.resolve(); await rejected; // Stub rejects only when native start is finally attempted.
+      expect(recorder.snapshot.statusCode).not.toBe("capture_window_selection_pending");
       expect(f.authority).toHaveBeenCalledTimes(1);
       expect(f.nativeStart).toHaveBeenCalledTimes(1);
       expect(selection).toHaveBeenCalledTimes(1);

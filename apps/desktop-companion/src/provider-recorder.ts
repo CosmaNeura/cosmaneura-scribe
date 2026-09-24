@@ -80,6 +80,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private capability: OneTimeCaptureCapability | null = null;
   private attempt: AbortController | null = null;
   private selectedWindow: Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil"> | null = null;
+  private choosingWindow = false;
   private operation: Promise<void> | null = null;
   private action: "prepare" | "start" | "other" | null = null;
   private stopping: Promise<void> | null = null;
@@ -212,7 +213,8 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : ["paused", "error", "ready", "recording"].includes(flow.state) && !this.closed ? "interrupted" : "stopped";
     const start = this.coverage?.phase === "started" ? this.coverage.value : this.coverage?.value.start;
     return { ...flow, statusCode: this.stopConfirmationPending ? "capture_stop_acknowledgement_pending"
-      : this.reopenRequired && flow.state === "error" ? "capture_reopen_required" : flow.statusCode,
+      : this.reopenRequired && flow.state === "error" ? "capture_reopen_required"
+      : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
       desktop: { phase, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
         : this.coverage ? phase === "recording" ? "aligned" : "incomplete" : "not_started",
@@ -234,7 +236,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       // helper's bounded startup. No grant or active indicator is spent waiting
       // for a person to choose. The native source still revalidates the window.
       try {
-        const selected = await chooseWindow(this.options.selectWindow, attempt.signal);
+        this.choosingWindow = true; this.publish();
+        let selected: Awaited<ReturnType<DesktopProviderRecorderOptions["selectWindow"]>>;
+        try { selected = await chooseWindow(this.options.selectWindow, attempt.signal); }
+        finally { this.choosingWindow = false; this.publish(); }
         this.requireOpen();
         if (attempt.signal.aborted || this.attempt !== attempt) throw unavailable();
         this.selectedWindow = Object.freeze({ application: selected.application,

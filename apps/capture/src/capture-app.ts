@@ -268,7 +268,10 @@ export class CaptureApp extends LitElement {
           </section>`}
 
           ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
-            <p role="status">${this.#snapshot.desktop?.phase === "starting" ? "Starting microphone and meeting audio…"
+            <p role="status">${this.#snapshot.desktop?.phase === "starting"
+              ? this.#snapshot.statusCode === "capture_window_selection_pending"
+                ? "Choose a meeting window in the Scribe dialog. Recording has not started."
+                : "Starting microphone and meeting audio…"
               : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
               : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
               : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."

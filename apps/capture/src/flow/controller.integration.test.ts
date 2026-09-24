@@ -22,6 +22,7 @@ import { CaptureFlowController } from "./controller";
 import { EncryptedIndexedDbFlowStore } from "./encrypted-store";
 import { FakeIosNativePcmBridge } from "../native/fake-ios-native-pcm-bridge";
 import { IosNativeMicrophoneCaptureSource } from "../native/ios-native-microphone-source";
+import { CaptureDeviceCustodyError } from "../capture/device-custody";
 
 const TEST_CRYPTO = webcrypto as unknown as Crypto;
 const TEST_ENCOUNTER = Object.freeze({
@@ -32,6 +33,43 @@ const TEST_ENCOUNTER = Object.freeze({
 });
 
 describe("CaptureFlowController", () => {
+  it("retains another device's bound key and this device's exact pending intent on a configured conflict", async () => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory(), bff = new HttpCaptureBff(createSameOriginFetch(origin));
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const phoneStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const phoneQueue = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const source = new InspectableCaptureSource("microphone");
+    const original = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    const phone = createControllerWithSource({ bff, flowStore: phoneStore, queueStorage: phoneQueue, origin, source });
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "custody-consent" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "custody-session" });
+      await original.prepareConfigured(session.id);
+      const originalKey = await flowStore.getSessionKeyState(session.id), originalState = await flowStore.getActiveCaptureState();
+      // The preview BFF permits rebinding; model the real immutable-key refusal
+      // after the original device has successfully established its preparation.
+      const bind = vi.spyOn(bff, "bindSessionAudioKey").mockRejectedValue(new BffResponseError(409, "core_capture_unconfirmed", null));
+      const published = vi.spyOn(bff, "getAudioEncryptionKey"), lease = vi.spyOn(bff, "issueLease");
+      await expect(phone.prepareConfigured(session.id)).rejects.toBeInstanceOf(CaptureDeviceCustodyError);
+      const pendingKey = await phoneStore.getSessionKeyState(session.id), pending = await phoneStore.getPreparationState();
+      expect(pendingKey?.state).toBe("pending"); expect(bind).toHaveBeenCalledTimes(1);
+      await phone.deactivate();
+      const reopened = createControllerWithSource({ bff, flowStore: phoneStore, queueStorage: phoneQueue, origin, source });
+      await expect(reopened.restore()).rejects.toBeInstanceOf(CaptureDeviceCustodyError);
+      expect(bind).toHaveBeenCalledTimes(2); expect(bind.mock.calls[1]).toEqual(bind.mock.calls[0]);
+      expect(published).toHaveBeenCalledTimes(1); expect(lease).not.toHaveBeenCalled();
+      expect(await phoneStore.getSessionKeyState(session.id)).toEqual(pendingKey);
+      expect(await phoneStore.getPreparationState()).toEqual(pending);
+      expect(await flowStore.getSessionKeyState(session.id)).toEqual(originalKey);
+      expect(await flowStore.getActiveCaptureState()).toEqual(originalState);
+      expect(await phoneQueue.list()).toEqual([]); expect(source.startCalls).toBe(0);
+    } finally {
+      await phone.deactivate(); await original.deactivate(); flowStore.close(); phoneStore.close(); queueStorage.close(); phoneQueue.close(); await closeServer(server);
+    }
+  });
   it.each(["microphone", "mixed"] as const)("retains configured empty %s capture for explicit continuation only after confirmed stop", async channel => {
     const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
     const indexedDB = new IDBFactory();

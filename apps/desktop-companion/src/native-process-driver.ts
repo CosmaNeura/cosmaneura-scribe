@@ -134,7 +134,12 @@ class ProcessSession implements DesktopPCMDriverSession {
       try { this.decoder.finish(); } catch { this.fail("failed"); }
       if (!this.confirmed) this.fail("failed");
       this.readiness.reject(failure());
-      for (const stop of this.stops.values()) stop.response.reject(failure());
+      // An owned child's observed exit proves cessation for discard, even if
+      // its last reply was lost. It cannot prove a drained audio completion.
+      for (const stop of this.stops.values()) {
+        if (stop.mode === "discard") stop.response.resolve(null);
+        else stop.response.reject(failure());
+      }
       this.stops.clear(); this.exited.resolve();
     });
     this.send({ type: "start", application: selection.application, processID: selection.processID,
@@ -255,8 +260,9 @@ class ProcessSession implements DesktopPCMDriverSession {
     // A corrupted pipe cannot carry a trustworthy stop receipt. EOF makes the
     // dedicated helper stop or exit at its bounded parent-loss deadline.
     this.closingInput = true; clearInterval(this.heartbeat); clearTimeout(this.startupTimer); clearTimeout(this.captureTimer);
-    for (const stop of this.stops.values()) stop.response.reject(failure());
-    this.stops.clear(); this.child?.stdin.end();
+    // Retain pending discards until close observes actual child exit. Callers
+    // still have their bounded deadline if the helper has not exited.
+    this.child?.stdin.end();
   }
 }
 
