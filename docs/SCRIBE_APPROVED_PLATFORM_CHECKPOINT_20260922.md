@@ -1,5 +1,10 @@
 # Approved iOS identity and Electron preparation — 2026-09-22
 
+Later update: the owner approved and applied the separate local staging identity
+and receiver amendment. See [the staging application checkpoint](SCRIBE_STAGING_PATCH_APPLIED_20260922.md).
+That record supersedes the pending issuer/profile discussion below; runtime
+activation and installed acceptance remain outside the applied scope.
+
 The owner explicitly approved the iOS identity/build proposal and Electron
 dependency/install proposal. This checkpoint supersedes their pending status in
 earlier handoffs and the prior blocked audit. Do not request those approvals again.
