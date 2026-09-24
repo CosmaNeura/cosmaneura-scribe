@@ -93,7 +93,6 @@ public actor MacMeetingAudio {
             session.tapInstalled = true
             session.observeInterruptions(workspaceCenter: workspaceCenter)
             session.engine.prepare()
-            try session.engine.start()
             let starting = Task { try await stream.startCapture() }
             session.starting = starting
             try await withTaskCancellationHandler {
@@ -104,6 +103,10 @@ public actor MacMeetingAudio {
                 Task { await self.terminate() }
             }
             guard active === session, phase == .starting, !Task.isCancelled else { throw DesktopAudioFailure.cancelled }
+            // Avoid filling the microphone preroll while ScreenCaptureKit is
+            // still starting. Recheck ownership after its suspension so a
+            // cancelled/stopped start cannot restart the microphone.
+            try session.engine.start()
             phase = .recording
         } catch {
             do { try await stop() }
