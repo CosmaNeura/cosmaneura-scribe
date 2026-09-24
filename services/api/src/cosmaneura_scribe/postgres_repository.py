@@ -26,16 +26,29 @@ from .capture_protocol_v1 import (
     PROTOCOL_VERSION,
     RESERVATION_PLAINTEXT_BUDGET_BYTES,
 )
-from .external_transcript_v1 import TranscriptLanguageMode
+from .external_transcript_v1 import (
+    NormalizedSourceTranscriptReceiptV1,
+    NormalizedSourceTranscriptRequestV1,
+    SourceLocale,
+    TranscriptLanguageMode,
+)
 from .normalized_source_persistence import (
     VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID,
     VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
     VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID,
     VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID,
     ConfiguredExternalSessionStatus,
+    NormalizedSourceAcceptance,
+    NormalizedSourceAcceptanceDisposition,
+    NormalizedSourcePersistenceCode,
+    NormalizedSourcePersistenceError,
+    NormalizedSourceSegmentRecord,
+    NormalizedSourceTranscriptRecord,
     VersionedExternalSessionCreate,
     VersionedExternalSessionRecord,
     consent_authorizes_versioned_session,
+    normalized_source_request_fingerprint,
+    validate_normalized_source_request_for_session,
 )
 from .repository import (
     AudioAssemblyManifest,
@@ -80,12 +93,14 @@ from .schemas import (
     DeliveryTranscriptSource,
     SessionAudioKey,
     SessionStatus,
+    SpeakerRole,
     Transcript,
     TranscriptDelivery,
     TranscriptionJob,
 )
 from .session_state_v1 import SessionIngestMode
 from .settings import Settings
+from .transcript_constraints import NORMALIZED_SOURCE_RETENTION_LIMIT
 
 AZURE_POSTGRES_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
 MAXIMUM_CAPTURE_AUTHORIZATION_SECONDS = CAPTURE_LEASE_TTL_SECONDS
@@ -154,6 +169,59 @@ def _versioned_external_session_record(
         normalization_profile_id=row["normalization_profile_id"],
         status=ConfiguredExternalSessionStatus(row["status"]),
         created_at=row["created_at"],
+        source_received_at=row["source_received_at"],
+        transcript_content_expires_at=row["transcript_content_expires_at"],
+        content_purged_at=row["content_purged_at"],
+        current_source_transcript_version=row["current_source_transcript_version"],
+    )
+
+
+def _normalized_source_transcript_record(
+    header: dict[str, Any],
+    segment_rows: list[dict[str, Any]],
+) -> NormalizedSourceTranscriptRecord:
+    return NormalizedSourceTranscriptRecord(
+        session_id=header["session_id"],
+        source_transcript_version=header["source_transcript_version"],
+        source_receipt_id=header["source_receipt_id"],
+        schema_version=header["schema_version"],
+        language_mode=TranscriptLanguageMode(header["language_mode"]),
+        transcription_adapter_id=header["transcription_adapter_id"],
+        transcription_model_profile_id=header["transcription_model_profile_id"],
+        normalization_profile_id=header["normalization_profile_id"],
+        duration_ms=header["duration_ms"],
+        request_fingerprint=header["request_fingerprint"],
+        received_at=header["received_at"],
+        transcript_content_expires_at=header["transcript_content_expires_at"],
+        segments=tuple(
+            NormalizedSourceSegmentRecord(
+                source_segment_id=row["source_segment_id"],
+                source_segment_version=row["source_segment_version"],
+                ordinal=row["ordinal"],
+                source_locale=SourceLocale(row["source_locale"]),
+                speaker_id=row["speaker_id"],
+                speaker_role=SpeakerRole(row["speaker_role"]),
+                content=row["content"],
+                start_ms=row["start_ms"],
+                end_ms=row["end_ms"],
+                locale_confidence=row["locale_confidence"],
+            )
+            for row in segment_rows
+        ),
+    )
+
+
+def _normalized_source_receipt(
+    header: dict[str, Any],
+) -> NormalizedSourceTranscriptReceiptV1:
+    return NormalizedSourceTranscriptReceiptV1(
+        schema_version="1.0",
+        session_id=header["session_id"],
+        source_receipt_id=header["source_receipt_id"],
+        source_transcript_version=header["source_transcript_version"],
+        receipt_state="source_received",
+        received_at=header["received_at"],
+        transcript_content_expires_at=header["transcript_content_expires_at"],
     )
 
 
@@ -528,7 +596,11 @@ class PostgresRepository:
                                   consent_record_id, modality, transcript_contract_version,
                                   creator_actor_id, language_mode, transcription_adapter_id,
                                   transcription_model_profile_id, normalization_profile_id,
-                                  status, created_at
+                                  status, created_at,
+                                  NULL::timestamptz AS source_received_at,
+                                  NULL::timestamptz AS transcript_content_expires_at,
+                                  NULL::timestamptz AS content_purged_at,
+                                  NULL::integer AS current_source_transcript_version
                         """
                     ),
                     {
@@ -569,7 +641,9 @@ class PostgresRepository:
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
                    modality, transcript_contract_version, creator_actor_id, language_mode,
                    transcription_adapter_id, transcription_model_profile_id,
-                   normalization_profile_id, status, created_at
+                   normalization_profile_id, status, created_at, source_received_at,
+                   transcript_content_expires_at, content_purged_at,
+                   current_source_transcript_version
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
               AND ingest_mode = 'external_async_transcript'
@@ -605,7 +679,9 @@ class PostgresRepository:
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
                    modality, transcript_contract_version, creator_actor_id, language_mode,
                    transcription_adapter_id, transcription_model_profile_id,
-                   normalization_profile_id, status, created_at
+                   normalization_profile_id, status, created_at, source_received_at,
+                   transcript_content_expires_at, content_purged_at,
+                   current_source_transcript_version
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
               AND consent_record_id = :consent_id
@@ -619,6 +695,531 @@ class PostgresRepository:
             transcript_contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
         )
         return _versioned_external_session_record(row) if row is not None else None
+
+    async def accept_normalized_source_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        idempotency_key: str,
+        request: NormalizedSourceTranscriptRequestV1,
+    ) -> NormalizedSourceAcceptance | None:
+        if not 8 <= len(idempotency_key) <= 255:
+            raise ValueError("normalized source idempotency key length is invalid")
+        locked = await self._lock_normalized_source_session(tenant_id, session_id)
+        if locked is None:
+            return None
+        session, database_now = locked
+        self._require_live_normalized_source_session(session, database_now)
+        validate_normalized_source_request_for_session(session, request)
+        fingerprint = normalized_source_request_fingerprint(session, request)
+
+        binding = await self._one_or_none(
+            """
+            SELECT source_transcript_version, request_fingerprint
+            FROM normalized_source_receipt_keys
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+              AND idempotency_key = :idempotency_key
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        )
+        if binding is not None:
+            if binding["request_fingerprint"] != fingerprint:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.IDEMPOTENCY_CONFLICT
+                )
+            source = await self._get_normalized_source_header_by_version(
+                tenant_id,
+                session_id,
+                binding["source_transcript_version"],
+            )
+            if source is None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            disposition = NormalizedSourceAcceptanceDisposition.REPLAYED
+            await self._final_normalized_source_gate(tenant_id, session_id)
+            return NormalizedSourceAcceptance(
+                receipt=_normalized_source_receipt(source),
+                disposition=disposition,
+            )
+
+        current = None
+        if session.current_source_transcript_version is not None:
+            current = await self._get_normalized_source_header_by_version(
+                tenant_id,
+                session_id,
+                session.current_source_transcript_version,
+            )
+            if current is None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+        if current is not None and current["request_fingerprint"] == fingerprint:
+            await self._insert_normalized_source_receipt_key(
+                tenant_id,
+                session_id,
+                idempotency_key=idempotency_key,
+                source_transcript_version=current["source_transcript_version"],
+                request_fingerprint=fingerprint,
+            )
+            disposition = NormalizedSourceAcceptanceDisposition.CONVERGED
+            await self._audit_normalized_source(
+                tenant_id, current["source_receipt_id"], disposition
+            )
+            await self._force_normalized_source_constraints()
+            await self._final_normalized_source_gate(tenant_id, session_id)
+            return NormalizedSourceAcceptance(
+                receipt=_normalized_source_receipt(current),
+                disposition=disposition,
+            )
+
+        first_receipt = current is None
+        if first_receipt:
+            if (
+                session.status != ConfiguredExternalSessionStatus.CREATED
+                or session.current_source_transcript_version is not None
+                or session.source_received_at is not None
+                or session.transcript_content_expires_at is not None
+            ):
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            updated = await self._one_or_none(
+                """
+                UPDATE scribe_sessions
+                SET source_received_at = clock_timestamp(),
+                    transcript_content_expires_at = clock_timestamp()
+                        + (:retention_seconds * INTERVAL '1 second'),
+                    current_source_transcript_version = 1,
+                    status = 'source_received'
+                WHERE tenant_id = :tenant_id AND id = :session_id
+                  AND transcript_contract_version = :contract_version
+                  AND status = 'created'
+                  AND source_received_at IS NULL
+                  AND transcript_content_expires_at IS NULL
+                  AND content_purged_at IS NULL
+                  AND current_source_transcript_version IS NULL
+                RETURNING source_received_at, transcript_content_expires_at,
+                          current_source_transcript_version
+                """,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+                retention_seconds=int(NORMALIZED_SOURCE_RETENTION_LIMIT.total_seconds()),
+            )
+            disposition = NormalizedSourceAcceptanceDisposition.ACCEPTED
+        else:
+            if session.status in {
+                ConfiguredExternalSessionStatus.HANDED_OFF,
+                ConfiguredExternalSessionStatus.FAILED,
+            }:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            updated = await self._one_or_none(
+                """
+                UPDATE scribe_sessions
+                SET current_source_transcript_version = current_source_transcript_version + 1,
+                    status = 'source_received'
+                WHERE tenant_id = :tenant_id AND id = :session_id
+                  AND transcript_contract_version = :contract_version
+                  AND current_source_transcript_version = :current_version
+                  AND content_purged_at IS NULL
+                  AND clock_timestamp() < transcript_content_expires_at
+                  AND status NOT IN ('handed_off', 'failed')
+                RETURNING source_received_at, transcript_content_expires_at,
+                          current_source_transcript_version
+                """,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+                current_version=current["source_transcript_version"],
+            )
+            disposition = NormalizedSourceAcceptanceDisposition.CORRECTED
+        if updated is None:
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.STATE_CONFLICT
+            )
+
+        version = updated["current_source_transcript_version"]
+        source_receipt_id = uuid4()
+        header = (
+            (
+                await self._session.execute(
+                    text(
+                        """
+                        INSERT INTO normalized_source_transcripts (
+                            tenant_id, session_id, source_transcript_version,
+                            source_receipt_id, schema_version, language_mode,
+                            transcription_adapter_id, transcription_model_profile_id,
+                            normalization_profile_id, duration_ms, segment_count,
+                            total_content_chars, request_fingerprint, received_at,
+                            transcript_content_expires_at
+                        ) VALUES (
+                            :tenant_id, :session_id, :source_transcript_version,
+                            :source_receipt_id, :schema_version, :language_mode,
+                            :transcription_adapter_id, :transcription_model_profile_id,
+                            :normalization_profile_id, :duration_ms, :segment_count,
+                            :total_content_chars, :request_fingerprint, clock_timestamp(),
+                            :transcript_content_expires_at
+                        )
+                        RETURNING session_id, source_transcript_version, source_receipt_id,
+                                  schema_version, language_mode, transcription_adapter_id,
+                                  transcription_model_profile_id, normalization_profile_id,
+                                  duration_ms, request_fingerprint, received_at,
+                                  transcript_content_expires_at
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "source_transcript_version": version,
+                        "source_receipt_id": source_receipt_id,
+                        "schema_version": request.schema_version,
+                        "language_mode": session.language_mode.value,
+                        "transcription_adapter_id": session.transcription_adapter_id,
+                        "transcription_model_profile_id": session.transcription_model_profile_id,
+                        "normalization_profile_id": session.normalization_profile_id,
+                        "duration_ms": request.duration_ms,
+                        "segment_count": len(request.segments),
+                        "total_content_chars": sum(
+                            len(segment.content) for segment in request.segments
+                        ),
+                        "request_fingerprint": fingerprint,
+                        "transcript_content_expires_at": updated[
+                            "transcript_content_expires_at"
+                        ],
+                    },
+                )
+            )
+            .mappings()
+            .one()
+        )
+        speaker_ids = {segment.speaker_slot: uuid4() for segment in request.segments}
+        allocated = sorted(
+            ((uuid4(), segment) for segment in request.segments),
+            key=lambda item: (item[1].start_ms, item[1].end_ms, item[0].int),
+        )
+        segment_parameters = [
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "source_transcript_version": version,
+                "ordinal": ordinal,
+                "source_segment_id": source_segment_id,
+                "source_segment_version": 1,
+                "source_locale": segment.source_locale.value,
+                "speaker_id": speaker_ids[segment.speaker_slot],
+                "speaker_role": segment.speaker_role.value,
+                "content": segment.content,
+                "start_ms": segment.start_ms,
+                "end_ms": segment.end_ms,
+                "locale_confidence": segment.locale_confidence,
+            }
+            for ordinal, (source_segment_id, segment) in enumerate(allocated)
+        ]
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO normalized_source_segments (
+                    tenant_id, session_id, source_transcript_version, ordinal,
+                    source_segment_id, source_segment_version, source_locale,
+                    speaker_id, speaker_role, content, start_ms, end_ms,
+                    locale_confidence
+                ) VALUES (
+                    :tenant_id, :session_id, :source_transcript_version, :ordinal,
+                    :source_segment_id, :source_segment_version, :source_locale,
+                    :speaker_id, :speaker_role, :content, :start_ms, :end_ms,
+                    :locale_confidence
+                )
+                """
+            ),
+            segment_parameters,
+        )
+        await self._insert_normalized_source_receipt_key(
+            tenant_id,
+            session_id,
+            idempotency_key=idempotency_key,
+            source_transcript_version=version,
+            request_fingerprint=fingerprint,
+        )
+        await self._audit_normalized_source(tenant_id, source_receipt_id, disposition)
+        await self._force_normalized_source_constraints()
+        await self._final_normalized_source_gate(tenant_id, session_id)
+        return NormalizedSourceAcceptance(
+            receipt=_normalized_source_receipt(dict(header)),
+            disposition=disposition,
+        )
+
+    async def get_current_normalized_source_transcript(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> NormalizedSourceTranscriptRecord | None:
+        locked = await self._lock_normalized_source_session(tenant_id, session_id)
+        if locked is None:
+            return None
+        session, database_now = locked
+        self._require_live_normalized_source_session(session, database_now)
+        if session.current_source_transcript_version is None:
+            return None
+        source = await self._get_normalized_source_by_version(
+            tenant_id,
+            session_id,
+            session.current_source_transcript_version,
+        )
+        if source is None:
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.STATE_CONFLICT
+            )
+        await self.audit(
+            tenant_id=tenant_id,
+            action="normalized_source.read",
+            entity_type="normalized_source_receipt",
+            entity_id=source.source_receipt_id,
+        )
+        await self._final_normalized_source_gate(tenant_id, session_id)
+        return source
+
+    async def _lock_normalized_source_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> tuple[VersionedExternalSessionRecord, datetime] | None:
+        reference = await self._one_or_none(
+            """
+            SELECT consent_record_id
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND ingest_mode = 'external_async_transcript'
+              AND transcript_contract_version = :contract_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if reference is None:
+            return None
+        consent_id = reference["consent_record_id"]
+        await self._lock_consent_scope(tenant_id, consent_id)
+        row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                   modality, transcript_contract_version, creator_actor_id, language_mode,
+                   transcription_adapter_id, transcription_model_profile_id,
+                   normalization_profile_id, status, created_at, source_received_at,
+                   transcript_content_expires_at, content_purged_at,
+                   current_source_transcript_version
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND consent_record_id = :consent_id
+              AND ingest_mode = 'external_async_transcript'
+              AND transcript_contract_version = :contract_version
+            FOR UPDATE
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            consent_id=consent_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if row is None:
+            return None
+        session = _versioned_external_session_record(row)
+        consent = await self.get_consent(tenant_id, consent_id)
+        if not consent_authorizes_versioned_session(consent, session):
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.CONSENT_INVALID
+            )
+        database_now = await self._session.scalar(text("SELECT clock_timestamp()"))
+        if not isinstance(database_now, datetime):
+            raise RuntimeError("database clock is unavailable")
+        return session, database_now
+
+    @staticmethod
+    def _require_live_normalized_source_session(
+        session: VersionedExternalSessionRecord,
+        database_now: datetime,
+    ) -> None:
+        if session.content_purged_at is not None or (
+            session.transcript_content_expires_at is not None
+            and database_now >= session.transcript_content_expires_at
+        ):
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.RETENTION_EXPIRED
+            )
+        if session.status == ConfiguredExternalSessionStatus.FAILED:
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.STATE_CONFLICT
+            )
+
+    async def _get_normalized_source_by_version(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        source_transcript_version: int,
+    ) -> NormalizedSourceTranscriptRecord | None:
+        header = await self._get_normalized_source_header_by_version(
+            tenant_id,
+            session_id,
+            source_transcript_version,
+        )
+        if header is None:
+            return None
+        rows = await self._session.execute(
+            text(
+                """
+                SELECT source_segment_id, source_segment_version, ordinal,
+                       source_locale, speaker_id, speaker_role, content,
+                       start_ms, end_ms, locale_confidence
+                FROM normalized_source_segments
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                  AND source_transcript_version = :source_transcript_version
+                ORDER BY ordinal
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "source_transcript_version": source_transcript_version,
+            },
+        )
+        return _normalized_source_transcript_record(
+            header,
+            [dict(row) for row in rows.mappings()],
+        )
+
+    async def _get_normalized_source_header_by_version(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        source_transcript_version: int,
+    ) -> dict[str, Any] | None:
+        return await self._one_or_none(
+            """
+            SELECT session_id, source_transcript_version, source_receipt_id,
+                   schema_version, language_mode, transcription_adapter_id,
+                   transcription_model_profile_id, normalization_profile_id,
+                   duration_ms, request_fingerprint, received_at,
+                   transcript_content_expires_at
+            FROM normalized_source_transcripts
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+              AND source_transcript_version = :source_transcript_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_transcript_version=source_transcript_version,
+        )
+
+    async def _insert_normalized_source_receipt_key(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        idempotency_key: str,
+        source_transcript_version: int,
+        request_fingerprint: str,
+    ) -> None:
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO normalized_source_receipt_keys (
+                    tenant_id, session_id, idempotency_key,
+                    source_transcript_version, request_fingerprint
+                ) VALUES (
+                    :tenant_id, :session_id, :idempotency_key,
+                    :source_transcript_version, :request_fingerprint
+                )
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "idempotency_key": idempotency_key,
+                "source_transcript_version": source_transcript_version,
+                "request_fingerprint": request_fingerprint,
+            },
+        )
+
+    async def _audit_normalized_source(
+        self,
+        tenant_id: UUID,
+        source_receipt_id: UUID,
+        disposition: NormalizedSourceAcceptanceDisposition,
+    ) -> None:
+        await self.audit(
+            tenant_id=tenant_id,
+            action=f"normalized_source.{disposition.value}",
+            entity_type="normalized_source_receipt",
+            entity_id=source_receipt_id,
+        )
+
+    async def _force_normalized_source_constraints(self) -> None:
+        await self._session.execute(
+            text(
+                """
+                SET CONSTRAINTS
+                    scribe_sessions_current_source_transcript_fkey,
+                    scribe_sessions_external_precommit,
+                    normalized_source_transcripts_complete,
+                    normalized_source_transcripts_precommit_fence,
+                    normalized_source_receipt_keys_precommit_fence
+                IMMEDIATE
+                """
+            )
+        )
+        # These receiver-owned constraints are initially deferred. Restore that
+        # mode for any later work in the caller's transaction after proving this
+        # aggregate is complete; the fresh locked DB-clock gate remains last.
+        await self._session.execute(
+            text(
+                """
+                SET CONSTRAINTS
+                    scribe_sessions_current_source_transcript_fkey,
+                    scribe_sessions_external_precommit,
+                    normalized_source_transcripts_complete,
+                    normalized_source_transcripts_precommit_fence,
+                    normalized_source_receipt_keys_precommit_fence
+                DEFERRED
+                """
+            )
+        )
+
+    async def _final_normalized_source_gate(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        row = await self._one_or_none(
+            """
+            SELECT status, content_purged_at, transcript_content_expires_at,
+                   clock_timestamp() AS database_now
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND transcript_contract_version = :contract_version
+            FOR UPDATE
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if row is None:
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.STATE_CONFLICT
+            )
+        if row["content_purged_at"] is not None or (
+            row["transcript_content_expires_at"] is not None
+            and row["database_now"] >= row["transcript_content_expires_at"]
+        ):
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.RETENTION_EXPIRED
+            )
+        if row["status"] == ConfiguredExternalSessionStatus.FAILED.value:
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.STATE_CONFLICT
+            )
 
     async def get_session_audio_key(
         self,
@@ -2683,6 +3284,7 @@ def build_postgres_provider(settings: Settings) -> PostgresRepositoryProvider:
     engine = create_async_engine(
         url,
         connect_args=connect_args,
+        hide_parameters=True,
         pool_pre_ping=True,
         pool_size=settings.database_pool_size,
         max_overflow=settings.database_max_overflow,

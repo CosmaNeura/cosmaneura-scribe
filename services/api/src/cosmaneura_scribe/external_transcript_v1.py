@@ -16,12 +16,13 @@ from pydantic import (
     model_validator,
 )
 
-from .canonical_json import canonical_sha256
+from .canonical_json import canonical_json_bytes, canonical_sha256
 from .schemas import SpeakerRole
 from .transcript_constraints import (
     MAX_TRANSCRIPT_CONTENT_CHARS,
     MAX_TRANSCRIPT_DURATION_MS,
     MAX_TRANSCRIPT_SEGMENTS,
+    NORMALIZED_SOURCE_RETENTION_LIMIT,
 )
 
 EXTERNAL_TRANSCRIPT_SCHEMA_VERSION = "1.0"
@@ -61,6 +62,100 @@ class SourceLocale(StrEnum):
     ENGLISH_US = "en-US"
     SPANISH_US = "es-US"
     UNKNOWN = "unknown"
+
+
+class NormalizedSourceTranscriptSegmentV1(_StrictFrozenModel):
+    """Provider-neutral receiver input; content is protected clinical text."""
+
+    speaker_slot: int = Field(ge=0, le=9_999)
+    speaker_role: SpeakerRole
+    source_locale: SourceLocale
+    content: ClinicalText
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    locale_confidence: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("content")
+    @classmethod
+    def normalized_content_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("normalized_source_content_empty")
+        return value
+
+    @field_validator("locale_confidence")
+    @classmethod
+    def normalize_locale_confidence_signed_zero(cls, value: float | None) -> float | None:
+        return 0.0 if value == 0.0 else value
+
+    @model_validator(mode="after")
+    def timestamps_are_ordered(self) -> NormalizedSourceTranscriptSegmentV1:
+        if self.end_ms <= self.start_ms:
+            raise ValueError("normalized_source_timestamps_invalid")
+        return self
+
+
+class NormalizedSourceTranscriptRequestV1(_StrictFrozenModel):
+    """Strict normalized input accepted only after server-side session authorization."""
+
+    schema_version: ProtocolVersion
+    duration_ms: int = Field(gt=0, le=MAX_TRANSCRIPT_DURATION_MS)
+    segments: tuple[NormalizedSourceTranscriptSegmentV1, ...] = Field(
+        min_length=1,
+        max_length=MAX_TRANSCRIPT_SEGMENTS,
+        repr=False,
+    )
+
+    @model_validator(mode="after")
+    def validate_normalized_source(self) -> NormalizedSourceTranscriptRequestV1:
+        if any(segment.end_ms > self.duration_ms for segment in self.segments):
+            raise ValueError("normalized_source_segment_exceeds_duration")
+        if sum(len(segment.content) for segment in self.segments) > MAX_TRANSCRIPT_CONTENT_CHARS:
+            raise ValueError("normalized_source_content_too_large")
+        ordered = sorted(
+            self.segments,
+            key=lambda segment: (segment.start_ms, segment.end_ms),
+        )
+        if list(self.segments) != ordered:
+            raise ValueError("normalized_source_segments_out_of_order")
+        return self
+
+
+class NormalizedSourceTranscriptReceiptV1(_StrictFrozenModel):
+    """Protected, linkable receipt whose canonical bytes remain stable on replay."""
+
+    schema_version: ProtocolVersion
+    session_id: UUID = Field(repr=False)
+    source_receipt_id: UUID = Field(repr=False)
+    source_transcript_version: int = Field(ge=1, repr=False)
+    receipt_state: Literal["source_received"]
+    received_at: datetime = Field(repr=False)
+    transcript_content_expires_at: datetime = Field(repr=False)
+
+    @field_validator("received_at", "transcript_content_expires_at")
+    @classmethod
+    def receipt_times_have_utc_offsets(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("normalized_source_receipt_offset_required")
+        return value
+
+    @model_validator(mode="after")
+    def expiry_follows_receipt(self) -> NormalizedSourceTranscriptReceiptV1:
+        if not (
+            self.received_at
+            < self.transcript_content_expires_at
+            <= self.received_at + NORMALIZED_SOURCE_RETENTION_LIMIT
+        ):
+            raise ValueError("normalized_source_receipt_expiry_invalid")
+        return self
+
+    def canonical_body(self) -> bytes:
+        return canonical_json_bytes(self)
+
+    def __repr__(self) -> str:
+        return "NormalizedSourceTranscriptReceiptV1(<protected>)"
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 class TranslationOutcome(StrEnum):

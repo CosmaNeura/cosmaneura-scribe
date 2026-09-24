@@ -29,3 +29,7 @@ No environment is changed by this packet. Deployed-dev drift must be reconciled 
 - One Alembic head and disposable migration cycle; PostgreSQL tests cover the legacy matrix, representative configured transitions, immutable configuration/profile/source, bounds, terminal evidence, purge, RLS, and no grants; Ruff, Pyright, diff and budget checks pass.
 - Independent exact-SHA review before PR. No merge, migration apply, deploy, or activation.
 - Packet 1 verifies exact legacy response/OpenAPI shape, memory/PostgreSQL create-read-lock parity, consent and tenant rejection, transaction rollback, legacy firewalls, exact column grants, and a configured insert committed as the least-privilege runtime role. No shared database apply is authorized.
+- Packet 2 implements repository-only normalized-source acceptance and current reads. Memory and
+  disposable-PostgreSQL evidence covers exact replay/convergence, monotonic corrections, rollback,
+  current consent, retention, and concurrent fence ordering. It deliberately adds no runtime
+  grants, route, sender, purge authority, migration, deployment, or activation.
