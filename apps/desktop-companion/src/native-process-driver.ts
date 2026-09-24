@@ -137,7 +137,7 @@ class ProcessSession implements DesktopPCMDriverSession {
       // An owned child's observed exit proves cessation for discard, even if
       // its last reply was lost. It cannot prove a drained audio completion.
       for (const stop of this.stops.values()) {
-        if (this.cancelled) stop.response.resolve(null);
+        if (stop.mode === "discard") stop.response.resolve(null);
         else stop.response.reject(failure());
       }
       this.stops.clear(); this.exited.resolve();

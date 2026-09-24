@@ -149,6 +149,19 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
       expect(await session.stop({ mode: "discard" })).toBeNull();
     } finally { await session.stop({ mode: "discard" }); }
   });
+  it("rejects a pending drain when the owned child exits without confirming completion", async () => {
+    const packets = vi.fn(async () => undefined), failures: DesktopPCMFailure[] = [];
+    const session = (await driver(8)).start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+      onPcmPacket: packets, onFailure: code => { failures.push(code); },
+    });
+    try {
+      await session.ready; session.activate();
+      await vi.waitFor(() => expect(packets).toHaveBeenCalled());
+      await expect(session.stop({ mode: "drain" })).rejects.toThrow("desktop_native_process_failed");
+      expect(failures).toEqual(["failed"]);
+      expect(await session.stop({ mode: "discard" })).toBeNull();
+    } finally { await session.stop({ mode: "discard" }); }
+  });
   it("retains the same child for failed-stop retry and handles drain-to-discard upgrade", async () => {
     for (const failedFirst of [true, false]) {
       const native = await driver(failedFirst ? 2 : 1), gate = deferred<void>();
