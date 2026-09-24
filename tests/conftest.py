@@ -244,6 +244,35 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     # evidence that capture/source history can be discarded in a real release.
 
 
+@pytest.fixture
+def historical_postgres_url(postgres_urls: tuple[str, str]) -> str:
+    """Rehearse pre-0020 recovery in a new owner-only database, never current history."""
+    admin_url, _ = postgres_urls
+    database_name = f"scribe_historical_{uuid4().hex}_test"
+
+    async def create_database() -> None:
+        engine = create_async_engine(
+            admin_url, connect_args={"ssl": False}, isolation_level="AUTOCOMMIT"
+        )
+        try:
+            async with engine.connect() as connection:
+                # The name is generated locally from a fixed prefix and UUID hex.
+                await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(create_database())
+    historical_url = make_url(admin_url).set(database=database_name).render_as_string(
+        hide_password=False
+    )
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", historical_url.replace("%", "%%"))
+    command.upgrade(config, "0019")
+    # Retain the database with its caller-owned disposable cluster. This fixture
+    # exercises migration-owner guards; normal repository tests still use APP_ROLE.
+    return historical_url
+
+
 @pytest.fixture(
     params=[
         pytest.param("memory", id="memory"),

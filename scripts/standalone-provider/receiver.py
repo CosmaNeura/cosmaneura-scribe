@@ -26,15 +26,15 @@ from cosmaneura_scribe.provider_core_transport import (
     ProviderCoreUnavailable,
 )
 from cosmas_os.api.auth import (
+    CORE_STAGING_PERSONAL,
     AccessDenied,
     AuthenticationFailed,
     ClerkTokenVerifier,
-    CORE_STAGING_PERSONAL,
     CoreProviderIdentity,
     RequestIdentity,
     TokenVerifier,
-    authenticate_request,
     authenticate_core_provider,
+    authenticate_request,
     core_provider_configuration_valid,
 )
 from cosmas_os.application import workspace as ws
@@ -322,7 +322,9 @@ class ProviderReceiver:
 
         return app
 
-    def identity(self, session: Session, authorization: str) -> RequestIdentity | CoreProviderIdentity:
+    def identity(
+        self, session: Session, authorization: str
+    ) -> RequestIdentity | CoreProviderIdentity:
         if self.profile.identity_profile == CORE_STAGING_PERSONAL:
             if not isinstance(self.verifier, ClerkTokenVerifier):
                 raise AuthenticationFailed("authentication configuration is unavailable")
@@ -339,7 +341,9 @@ class ProviderReceiver:
         )
 
     @staticmethod
-    def account(session: Session, identity: RequestIdentity | CoreProviderIdentity) -> CoreCaptureAccount | CoreProviderAccount:
+    def account(
+        session: Session, identity: RequestIdentity | CoreProviderIdentity
+    ) -> CoreCaptureAccount | CoreProviderAccount:
         if isinstance(identity, CoreProviderIdentity):
             account = session.scalar(select(CoreProviderAccount).where(
                 CoreProviderAccount.id == identity.core_account_id,

@@ -536,9 +536,9 @@ def test_fresh_process_reads_committed_ciphertext(postgres_urls, tmp_path: Path)
 
 
 @pytest.mark.postgres
-def test_used_expand_refuses_downgrade(postgres_urls) -> None:
+def test_used_expand_refuses_downgrade(historical_postgres_url) -> None:
     async def prepare() -> None:
-        provider, tenant, draft, reservation, _, store = await _setup(postgres_urls[1])
+        provider, tenant, draft, reservation, _, store = await _setup(historical_postgres_url)
         try:
             await store.reserve_translation_job(tenant, draft.id, reservation)
         finally:
@@ -546,7 +546,7 @@ def test_used_expand_refuses_downgrade(postgres_urls) -> None:
 
     asyncio.run(prepare())
     config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", postgres_urls[0])
+    config.set_main_option("sqlalchemy.url", historical_postgres_url.replace("%", "%%"))
     with pytest.raises(DBAPIError, match="translation job downgrade after it has been used"):
         command.downgrade(config, "0014")
 
