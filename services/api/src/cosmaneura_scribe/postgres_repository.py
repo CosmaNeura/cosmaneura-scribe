@@ -112,6 +112,7 @@ from .schemas import (
     Transcript,
     TranscriptDelivery,
     TranscriptionJob,
+    TranscriptionJobStatus,
 )
 from .session_state_v1 import SessionIngestMode
 from .settings import Settings
@@ -360,19 +361,46 @@ class PostgresRepository:
         session: AsyncSession,
         *,
         normalized_ingest_mode: SessionIngestMode = SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT,
+        configured_capture: bool = False,
     ) -> None:
         if not isinstance(cast(object, normalized_ingest_mode), SessionIngestMode):
             raise ValueError("normalized repository ingest mode is invalid")
         self._session = session
         self._normalized_ingest_mode = normalized_ingest_mode
+        if type(configured_capture) is not bool or (
+            configured_capture and normalized_ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise ValueError("capture repository mode is invalid")
+        self._configured_capture = configured_capture
+
+    def _capture_scope(self, alias: str = "") -> str:
+        # Only fixed SQL identifiers/literals, never request data or query rewriting.
+        if alias not in {"", "session", "scribe_session", "scribe_sessions"}:
+            raise ValueError("capture scope alias is invalid")
+        prefix = f"{alias}." if alias else ""
+        if self._configured_capture:
+            return (
+                f"({prefix}transcript_contract_version = '1.0' "
+                f"AND {prefix}ingest_mode = 'chunk_upload')"
+            )
+        return f"{prefix}transcript_contract_version IS NULL"
+
+    def _capture_session(self, row: dict[str, Any] | None) -> CaptureSession | None:
+        if row is None:
+            return None
+        if self._configured_capture and row["status"] in {
+            "source_received", "translation_pending", "review_required", "quality_blocked"
+        }:
+            # Recorder phase only. The creator review service exposes actual source state.
+            row = {**row, "status": SessionStatus.PROCESSING.value}
+        return CaptureSession.model_validate(row)
 
     async def _require_chunk_upload_session(
         self,
         tenant_id: UUID,
         session_id: UUID,
     ) -> None:
-        # Legacy writers intentionally see the discriminator to reject configured
-        # sessions. Captured-source admission does not activate legacy audio APIs.
+        # Explicit paired capture mode only; legacy/default writers stay fenced.
         row = await self._one_or_none(
             """
             SELECT ingest_mode, transcript_contract_version
@@ -386,9 +414,11 @@ class PostgresRepository:
             row is not None
             and (
                 SessionIngestMode(row["ingest_mode"]) != SessionIngestMode.CHUNK_UPLOAD
-                or row["transcript_contract_version"] is not None
+                or row["transcript_contract_version"] != (
+                    "1.0" if self._configured_capture else None
+                )
             )
-        ):
+        ) or (row is None and self._configured_capture):
             raise CaptureIngestModeError("session does not accept audio chunk capture")
 
     async def get_idempotency(
@@ -586,25 +616,25 @@ class PostgresRepository:
 
     async def get_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
                    modality, ingest_mode, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
-              AND transcript_contract_version IS NULL
+              AND {self._capture_scope()}
             """,
             tenant_id=tenant_id,
             id=session_id,
         )
-        return CaptureSession.model_validate(row) if row is not None else None
+        return self._capture_session(row)
 
     async def lock_session(self, tenant_id: UUID, session_id: UUID) -> CaptureSession | None:
         reference = await self._one_or_none(
-            """
+            f"""
             SELECT consent_record_id
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
-              AND transcript_contract_version IS NULL
+              AND {self._capture_scope()}
             """,
             tenant_id=tenant_id,
             id=session_id,
@@ -613,20 +643,22 @@ class PostgresRepository:
             return None
         await self._lock_consent_scope(tenant_id, reference["consent_record_id"])
         row = await self._one_or_none(
-            """
+            f"""
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
                    modality, ingest_mode, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
-              AND transcript_contract_version IS NULL
+              AND {self._capture_scope()}
             FOR UPDATE
             """,
             tenant_id=tenant_id,
             id=session_id,
         )
-        return CaptureSession.model_validate(row) if row is not None else None
+        return self._capture_session(row)
 
     async def add_session(self, tenant_id: UUID, session: CaptureSession) -> None:
+        if self._configured_capture:
+            raise CaptureIngestModeError("configured capture requires trusted admission")
         await self.lock_consent(tenant_id, session.consent_record_id)
         await self._session.execute(
             text(
@@ -650,15 +682,21 @@ class PostgresRepository:
         )
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
+        if self._configured_capture and session.status not in {
+            SessionStatus.CAPTURING, SessionStatus.UPLOADED, SessionStatus.PROCESSING
+        }:
+            raise CaptureIngestModeError("configured capture requires its source writer")
         await self.lock_consent(tenant_id, session.consent_record_id)
         updated = await self._session.execute(
             text(
-                """
+                f"""
                 UPDATE scribe_sessions
                 SET status = :status
                 WHERE tenant_id = :tenant_id AND id = :id
                   AND ingest_mode = :ingest_mode
-                  AND transcript_contract_version IS NULL
+                  AND {self._capture_scope()}
+                  AND (:capture_only = false OR status IN ('created', 'capturing', 'uploaded',
+                                                          'processing'))
                 RETURNING id
                 """
             ),
@@ -667,10 +705,13 @@ class PostgresRepository:
                 "id": session.id,
                 "ingest_mode": session.ingest_mode.value,
                 "status": session.status.value,
+                "capture_only": self._configured_capture,
             },
         )
         if updated.scalar_one_or_none() is not None:
             return
+        if self._configured_capture:
+            raise CaptureIngestModeError("configured capture phase is unavailable")
         current = await self.get_session(tenant_id, session.id)
         if current is not None and current.ingest_mode != session.ingest_mode:
             raise ValueError("scribe session ingest mode is immutable")
@@ -1133,6 +1174,24 @@ class PostgresRepository:
         session, database_now = locked
         if session.creator_actor_id != creator_actor_id:
             return None
+        return await self._read_locked_working_transcript(
+            tenant_id, session, database_now, creator_read=True
+        )
+
+    async def get_processing_working_transcript(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> WorkingTranscriptDerivation | None:
+        """Trusted internal worker read; never a creator authorization substitute."""
+        locked = await self._lock_working_transcript_session(tenant_id, session_id)
+        if locked is None:
+            return None
+        return await self._read_locked_working_transcript(tenant_id, *locked, creator_read=False)
+
+    async def _read_locked_working_transcript(
+        self, tenant_id: UUID, session: VersionedExternalSessionRecord, database_now: datetime,
+        *, creator_read: bool,
+    ) -> WorkingTranscriptDerivation | None:
+        session_id = session.id
         self._require_live_working_session(session, database_now)
         source_version = session.current_source_transcript_version
         working_version = session.current_working_transcript_version
@@ -1163,7 +1222,8 @@ class PostgresRepository:
             raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         await self.audit(
             tenant_id=tenant_id,
-            action="normalized_working_transcript.creator_read",
+            action="normalized_working_transcript.creator_read" if creator_read
+            else "normalized_working_transcript.worker_read",
             entity_type="normalized_working_transcript",
             entity_id=working_id,
         )
@@ -3087,7 +3147,7 @@ class PostgresRepository:
         session_id: UUID,
     ) -> SessionAudioKey | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT session_id, key_version, wrapped_dek, created_at
             FROM session_audio_keys
             WHERE tenant_id = :tenant_id AND session_id = :session_id
@@ -3095,7 +3155,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = :session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -3131,11 +3191,11 @@ class PostgresRepository:
         session_id: UUID,
     ) -> CaptureContext | None:
         reference = await self._one_or_none(
-            """
+            f"""
             SELECT consent_record_id
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :session_id
-              AND transcript_contract_version IS NULL
+              AND {self._capture_scope()}
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -3144,7 +3204,7 @@ class PostgresRepository:
             return None
         await self._lock_consent_scope(tenant_id, reference["consent_record_id"])
         row = await self._one_or_none(
-            """
+            f"""
             SELECT
                 scribe_session.id AS session_id,
                 scribe_session.appointment_id AS session_appointment_id,
@@ -3190,7 +3250,7 @@ class PostgresRepository:
              AND lease.session_id = scribe_session.id
             WHERE scribe_session.tenant_id = :tenant_id
               AND scribe_session.id = :session_id
-              AND scribe_session.transcript_contract_version IS NULL
+              AND {self._capture_scope("scribe_session")}
             FOR UPDATE OF scribe_session
             """,
             tenant_id=tenant_id,
@@ -3198,7 +3258,7 @@ class PostgresRepository:
         )
         if row is None:
             return None
-        session = CaptureSession.model_validate(
+        session = self._capture_session(
             {
                 "id": row["session_id"],
                 "appointment_id": row["session_appointment_id"],
@@ -3211,6 +3271,7 @@ class PostgresRepository:
                 "created_at": row["session_created_at"],
             }
         )
+        assert session is not None
         consent = ConsentRecord.model_validate(
             {
                 "id": row["consent_id"],
@@ -3263,7 +3324,7 @@ class PostgresRepository:
         session_id: UUID,
     ) -> CaptureLeaseRecord | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT lease_id, session_id, generation, issued_at, renewed_at,
                    expires_at, closed_at, close_reason
             FROM capture_leases
@@ -3272,7 +3333,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = :session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -3286,7 +3347,7 @@ class PostgresRepository:
         receipt_id: UUID,
     ) -> CaptureLeaseReceipt | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT id, lease_id, session_id, generation, issued_at, expires_at
             FROM capture_lease_receipts
             WHERE tenant_id = :tenant_id AND id = :receipt_id
@@ -3294,7 +3355,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = capture_lease_receipts.session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -3328,7 +3389,7 @@ class PostgresRepository:
             (
                 await self._session.execute(
                     text(
-                        """
+                        f"""
                         WITH inserted_lease AS (
                             INSERT INTO capture_leases (
                                 tenant_id, session_id, lease_id, generation,
@@ -3347,7 +3408,7 @@ class PostgresRepository:
                              AND audio_key.session_id = scribe_session.id
                             WHERE scribe_session.tenant_id = :tenant_id
                               AND scribe_session.id = :session_id
-                              AND scribe_session.transcript_contract_version IS NULL
+                              AND {self._capture_scope("scribe_session")}
                               AND scribe_session.status IN ('created', 'capturing')
                               AND consent.all_parties_consented
                               AND consent.revoked_at IS NULL
@@ -3413,7 +3474,7 @@ class PostgresRepository:
             (
                 await self._session.execute(
                     text(
-                        """
+                        f"""
                         WITH renewed_lease AS (
                             UPDATE capture_leases AS lease
                             SET generation = lease.generation + 1,
@@ -3434,7 +3495,7 @@ class PostgresRepository:
                               AND lease.closed_at IS NULL
                               AND scribe_session.tenant_id = lease.tenant_id
                               AND scribe_session.id = lease.session_id
-                              AND scribe_session.transcript_contract_version IS NULL
+                              AND {self._capture_scope("scribe_session")}
                               AND scribe_session.status IN ('created', 'capturing')
                               AND consent.all_parties_consented
                               AND consent.revoked_at IS NULL
@@ -3481,7 +3542,7 @@ class PostgresRepository:
     ) -> bool:
         closed = await self._session.execute(
             text(
-                """
+                f"""
                 UPDATE capture_leases
                 SET closed_at = statement_timestamp(), close_reason = :reason
                 WHERE tenant_id = :tenant_id
@@ -3493,7 +3554,7 @@ class PostgresRepository:
                       SELECT 1 FROM scribe_sessions AS session
                       WHERE session.tenant_id = :tenant_id
                         AND session.id = :session_id
-                        AND session.transcript_contract_version IS NULL
+                        AND {self._capture_scope("session")}
                   )
                 RETURNING session_id
                 """
@@ -3514,7 +3575,7 @@ class PostgresRepository:
         batch_id: UUID,
     ) -> ChunkReservationBatch | None:
         batch = await self._one_or_none(
-            """
+            f"""
             SELECT id, session_id, lease_id, lease_generation,
                    requested_protocol_version, created_at, capture_authorized_until
             FROM audio_chunk_reservation_batches
@@ -3523,7 +3584,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = audio_chunk_reservation_batches.session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -3812,7 +3873,7 @@ class PostgresRepository:
         object_id: UUID,
     ) -> ChunkReservationRecord | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT object_id, session_id, sequence_number, channel,
                    protocol_version, additional_data, plaintext_budget_bytes, created_at
             FROM audio_chunk_reservations
@@ -3823,7 +3884,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = :session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -3841,7 +3902,7 @@ class PostgresRepository:
             (
                 await self._session.execute(
                     text(
-                        """
+                        f"""
                         SELECT channel, max(sequence_number) AS maximum_sequence,
                                count(*) AS reservation_count,
                                sum(plaintext_budget_bytes) AS plaintext_budget_bytes
@@ -3851,7 +3912,7 @@ class PostgresRepository:
                               SELECT 1 FROM scribe_sessions AS session
                               WHERE session.tenant_id = :tenant_id
                                 AND session.id = :session_id
-                                AND session.transcript_contract_version IS NULL
+                                AND {self._capture_scope("session")}
                           )
                         GROUP BY channel
                         """
@@ -3880,7 +3941,7 @@ class PostgresRepository:
         receipt_id: UUID,
     ) -> UploadAuthorizationReceipt | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT id, session_id, reservation_object_id, issued_at, expires_at
             FROM audio_upload_authorization_receipts
             WHERE tenant_id = :tenant_id AND id = :receipt_id
@@ -3888,7 +3949,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = audio_upload_authorization_receipts.session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -3904,7 +3965,7 @@ class PostgresRepository:
         return bool(
             await self._session.scalar(
                 text(
-                    """
+                    f"""
                     SELECT EXISTS (
                         SELECT 1
                         FROM audio_upload_authorization_receipts
@@ -3916,7 +3977,7 @@ class PostgresRepository:
                               WHERE session.tenant_id = :tenant_id
                                 AND session.id =
                                     audio_upload_authorization_receipts.session_id
-                                AND session.transcript_contract_version IS NULL
+                                AND {self._capture_scope("session")}
                           )
                     )
                     """
@@ -3952,7 +4013,7 @@ class PostgresRepository:
             (
                 await self._session.execute(
                     text(
-                        """
+                        f"""
                         INSERT INTO audio_upload_authorization_receipts (
                             id, tenant_id, session_id, reservation_object_id,
                             issued_at, expires_at
@@ -3977,7 +4038,7 @@ class PostgresRepository:
                         WHERE reservation.tenant_id = :tenant_id
                           AND reservation.session_id = :session_id
                           AND reservation.object_id = :object_id
-                          AND scribe_session.transcript_contract_version IS NULL
+                          AND {self._capture_scope("scribe_session")}
                           AND scribe_session.status IN ('created', 'capturing')
                           AND consent.all_parties_consented
                           AND consent.revoked_at IS NULL
@@ -4020,7 +4081,7 @@ class PostgresRepository:
         object_id: UUID,
     ) -> ChunkReceipt | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT reservation.object_id, reservation.session_id,
                    reservation.sequence_number, reservation.channel,
                    reservation.protocol_version, reservation.additional_data,
@@ -4038,7 +4099,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = :session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -4086,7 +4147,7 @@ class PostgresRepository:
             return False
         inserted = await self._session.execute(
             text(
-                """
+                f"""
                 INSERT INTO audio_chunks (
                     id, tenant_id, session_id, sequence_number, channel, object_id,
                     sha256, ciphertext_size_bytes, registered_at,
@@ -4112,7 +4173,7 @@ class PostgresRepository:
                   AND reservation.sequence_number = :sequence_number
                   AND reservation.channel = :channel
                   AND reservation.protocol_version = :protocol_version
-                  AND scribe_session.transcript_contract_version IS NULL
+                  AND {self._capture_scope("scribe_session")}
                   AND scribe_session.status IN ('created', 'capturing')
                   AND consent.all_parties_consented
                   AND consent.revoked_at IS NULL
@@ -4229,7 +4290,7 @@ class PostgresRepository:
             (
                 await self._session.execute(
                     text(
-                        """
+                        f"""
                         SELECT session_id, channel, last_sequence_number, finalized_at
                         FROM capture_channel_finalizations
                         WHERE tenant_id = :tenant_id AND session_id = :session_id
@@ -4237,7 +4298,7 @@ class PostgresRepository:
                               SELECT 1 FROM scribe_sessions AS session
                               WHERE session.tenant_id = :tenant_id
                                 AND session.id = :session_id
-                                AND session.transcript_contract_version IS NULL
+                                AND {self._capture_scope("session")}
                           )
                         ORDER BY CASE channel
                             WHEN 'microphone' THEN 0
@@ -4271,8 +4332,13 @@ class PostgresRepository:
         lease_token: UUID,
         now: datetime,
     ) -> AudioAssemblyManifest | None:
+        if self._configured_capture:
+            locked = await self._lock_normalized_source_session(tenant_id, session_id)
+            if locked is None:
+                return None
+            self._require_live_normalized_source_session(*locked)
         row = await self._one_or_none(
-            """
+            f"""
             SELECT audio_key.session_id, audio_key.key_version,
                    audio_key.wrapped_dek, audio_key.created_at
             FROM session_audio_keys AS audio_key
@@ -4284,7 +4350,7 @@ class PostgresRepository:
              AND job.session_id = session.id
             WHERE audio_key.tenant_id = :tenant_id
               AND audio_key.session_id = :session_id
-              AND session.transcript_contract_version IS NULL
+              AND {self._capture_scope("session")}
               AND session.status = 'processing'
               AND job.id = :job_id
               AND job.status = 'processing'
@@ -4306,7 +4372,7 @@ class PostgresRepository:
 
     async def get_chunk(self, tenant_id: UUID, chunk_id: UUID) -> AudioChunk | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT id, session_id, sequence_number, channel, object_id, sha256,
                    ciphertext_size_bytes, registered_at
             FROM audio_chunks
@@ -4315,7 +4381,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = audio_chunks.session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -4349,7 +4415,7 @@ class PostgresRepository:
             (
                 await self._session.execute(
                     text(
-                        """
+                        f"""
                     SELECT id, session_id, sequence_number, channel, object_id, sha256,
                            ciphertext_size_bytes, registered_at
                     FROM audio_chunks
@@ -4358,7 +4424,7 @@ class PostgresRepository:
                           SELECT 1 FROM scribe_sessions AS session
                           WHERE session.tenant_id = :tenant_id
                             AND session.id = :session_id
-                            AND session.transcript_contract_version IS NULL
+                            AND {self._capture_scope("session")}
                       )
                     ORDER BY sequence_number, channel
                     """
@@ -4373,7 +4439,7 @@ class PostgresRepository:
 
     async def get_upload_grant(self, tenant_id: UUID, object_id: UUID) -> UploadGrantRecord | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT object_id, session_id, sequence_number, channel, expires_at
             FROM audio_upload_grants
             WHERE tenant_id = :tenant_id AND object_id = :id
@@ -4381,7 +4447,7 @@ class PostgresRepository:
                   SELECT 1 FROM scribe_sessions AS session
                   WHERE session.tenant_id = :tenant_id
                     AND session.id = audio_upload_grants.session_id
-                    AND session.transcript_contract_version IS NULL
+                    AND {self._capture_scope("session")}
               )
             """,
             tenant_id=tenant_id,
@@ -4479,7 +4545,7 @@ class PostgresRepository:
         self, tenant_id: UUID, session_id: UUID
     ) -> TranscriptionJob | None:
         row = await self._one_or_none(
-            """
+            f"""
             SELECT job.id, job.session_id, job.status, job.attempt_count,
                    job.lease_token, job.lease_until, job.last_error_code,
                    job.created_at, job.updated_at
@@ -4489,7 +4555,7 @@ class PostgresRepository:
              AND session.id = job.session_id
             WHERE job.tenant_id = :tenant_id
               AND job.session_id = :session_id
-              AND session.transcript_contract_version IS NULL
+              AND {self._capture_scope("session")}
             """,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -4512,7 +4578,7 @@ class PostgresRepository:
             (
                 await self._session.execute(
                     text(
-                        """
+                        f"""
                         INSERT INTO transcription_jobs (
                             id, tenant_id, session_id, status, attempt_count,
                             lease_token, lease_until, created_at, updated_at
@@ -4547,7 +4613,7 @@ class PostgresRepository:
                                 FROM scribe_sessions
                                 WHERE scribe_sessions.tenant_id = :tenant_id
                                   AND scribe_sessions.id = :session_id
-                                  AND scribe_sessions.transcript_contract_version IS NULL
+                                  AND {self._capture_scope("scribe_sessions")}
                                   AND scribe_sessions.status = 'uploaded'
                             )
                           )
@@ -4578,9 +4644,13 @@ class PostgresRepository:
         *,
         expected_lease_token: UUID,
     ) -> bool:
+        if self._configured_capture and job.status not in {
+            TranscriptionJobStatus.RETRYABLE, TranscriptionJobStatus.TERMINAL
+        }:
+            raise CaptureIngestModeError("configured capture completion requires its source writer")
         updated = await self._session.execute(
             text(
-                """
+                f"""
                 UPDATE transcription_jobs AS job
                 SET status = :status,
                     attempt_count = :attempt_count,
@@ -4593,9 +4663,13 @@ class PostgresRepository:
                   AND job.id = :id
                   AND job.status = 'processing'
                   AND job.lease_token = :expected_lease_token
+                  AND (:configured_capture = false OR (
+                      job.session_id = :session_id AND job.attempt_count = :attempt_count
+                      AND job.lease_until > clock_timestamp()
+                  ))
                   AND session.tenant_id = job.tenant_id
                   AND session.id = job.session_id
-                  AND session.transcript_contract_version IS NULL
+                  AND {self._capture_scope("session")}
                 RETURNING job.id
                 """
             ),
@@ -4604,6 +4678,7 @@ class PostgresRepository:
                 "tenant_id": tenant_id,
                 "status": job.status.value,
                 "expected_lease_token": expected_lease_token,
+                "configured_capture": self._configured_capture,
             },
         )
         return updated.scalar_one_or_none() is not None
@@ -4619,7 +4694,7 @@ class PostgresRepository:
     ) -> bool:
         renewed = await self._session.execute(
             text(
-                """
+                f"""
                 UPDATE transcription_jobs AS job
                 SET lease_until = :lease_until,
                     updated_at = :now
@@ -4631,7 +4706,19 @@ class PostgresRepository:
                   AND job.lease_until > :now
                   AND session.tenant_id = job.tenant_id
                   AND session.id = job.session_id
-                  AND session.transcript_contract_version IS NULL
+                  AND {self._capture_scope("session")}
+                  AND (:configured_capture = false OR (
+                      session.status = 'processing'
+                      AND session.content_purged_at IS NULL
+                      AND (session.transcript_content_expires_at IS NULL
+                           OR session.transcript_content_expires_at > clock_timestamp())
+                      AND EXISTS (
+                          SELECT 1 FROM consent_records AS consent
+                          WHERE consent.tenant_id = session.tenant_id
+                            AND consent.id = session.consent_record_id
+                            AND consent.all_parties_consented AND consent.revoked_at IS NULL
+                      )
+                  ))
                 RETURNING job.id
                 """
             ),
@@ -4641,6 +4728,7 @@ class PostgresRepository:
                 "lease_token": lease_token,
                 "now": now,
                 "lease_until": lease_until,
+                "configured_capture": self._configured_capture,
             },
         )
         return renewed.scalar_one_or_none() is not None

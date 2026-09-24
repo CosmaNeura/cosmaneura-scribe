@@ -54,7 +54,8 @@ export class NativePluginQueueStorage implements CaptureQueueStorage {
   async list(): Promise<readonly CaptureChunkRecord[]> {
     const result = await this.#plugin.list();
     return Promise.all(
-      result.keys.map(async (objectId) => {
+      // Review recovery shares native encryption, but is never an audio record.
+      result.keys.filter((key) => !key.startsWith("creator-review-v1:")).map(async (objectId) => {
         const value = await this.#plugin.get({ key: objectId });
         return fromNativeRecord(objectId, value.key, value.data, value.revision);
       }),

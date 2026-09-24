@@ -151,6 +151,32 @@ Implementation and live evidence are recorded in
 
 ### Captured bilingual source — owner-approved 2026-09-21
 
+Next local runtime increment: bounded automatic capture/transcription/translation
+dispatch, using trusted tenant scope and existing encrypted reservation/execution
+and source/review writers. Atomically reserve only missing initial translations;
+failed/rejected attempts require an explicit later retry decision. Never repeat an
+uncertain started model call. Resume stored results, keep creator approval manual,
+and report exhausted Speech and translation failures explicitly. Worker evidence
+reads must not impersonate the creator or write creator-read audit events. Test
+concurrent dispatch, crashes/lost replies, bounded batches, stale/revoked/expired
+source and actual local capture-to-review composition in a new disposable
+synthetic database. No model/prompt/API change, new migration, cloud setting,
+auth parser, route registration, live provider call, push, PR or deployment.
+
+Next local runtime increment: pair the configured-capture repository explicitly
+with the existing encrypted capture protocol and leased audio assembler. Default
+legacy/imported access stays unchanged; configured capture cannot create legacy
+transcripts or use the legacy worker. Capture status is only a recorder-phase
+projection: bilingual source/translation/review/quality-pending states remain
+`processing`, never `transcript_ready`. Only capture-phase transitions may use
+the recorder writer; source publication/review retain their immutable writers.
+Reuse the leased audio execution/heartbeat mechanism, derive language from the
+immutable admission, and recover completed publication without another Speech
+call. Test actual encrypted synthetic WAV assembly through the capture protocol,
+lease/consent/cancellation negatives, creator review and legacy isolation in a
+new disposable local database. No public route registration, live provider call,
+cloud migration, new permission, client activation or deployment is included.
+
 Follow-on runtime increment: add explicit captured-mode PostgreSQL admission and
 atomic leased Speech-result publication, default off and without public routes.
 Reuse the normalized writer, encrypted execution store and creator-review service;
@@ -307,3 +333,37 @@ resource records and outputs match the protected snapshot; state lineage is
 unchanged, serial 62 → 63 → 64. The API image/revision and private Speech network
 boundary are unchanged. No trial retry or clinical activation is authorized by
 this result. See the checkpoint for exact plan hashes, timestamps and limitations.
+
+## Provider review surface — local runtime continuation
+
+Tier 2: expose the persisted captured transcript and explicit creator decisions
+through the existing app-only trusted-platform authentication dependency. Core
+must supply freshly authorized creator context; the browser never chooses an
+actor or receives a workload token. Reuse the existing idempotency table and
+immutable review writer in one transaction. No auth parser, shared Core/IAM/Zoom,
+environment setting, migration, live service, deployment or release changes.
+The receiver remains unavailable without explicit server-side runtime binding
+and a tenant allowlist. Build the reusable provider review screen against this
+contract, not the old process-local synthetic ingest contract. Verify the
+record-to-review feature and essential authorization/retry boundaries using a
+new disposable local PostgreSQL cluster; one full regression at packet end.
+Local runtime completion is not existing-user/native sign-in acceptance.
+
+### Retained provider recorder and recovery continuation
+
+Mount the existing review panel after upload in the retained capture component,
+through an explicit host-supplied admitted session/controller and authorized
+transport. Preserve default preview startup. Require encrypted scoped recovery
+before sending decisions, using the existing native plugin and exact metadata
+only; no new native key authority, database migration or auth parser. Clear the
+view on binding loss and retain honest stop-failure state. Continue to note invokes
+only a supplied existing Core entrypoint after a fresh readiness read.
+
+Qualify actual rendered desktop/phone controls against the existing review API and
+a newly owned disposable PostgreSQL database. Reuse generated encrypted capture
+and offline Speech/model fixtures. Check acceptance, rejection, exact replay after
+document loss, revoked-access clearing and failed host deactivation. This remains
+local integration evidence, with host identity/native storage/Core entry explicit
+fixtures. Run the affected capture/review workspace regression and static checks;
+the prior 1,065-test Python checkpoint remains applicable to unchanged backend
+source. No repeat live-service trial or native installation is included.

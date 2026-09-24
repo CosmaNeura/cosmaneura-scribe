@@ -288,7 +288,7 @@ def plan_spanish_translation_work(
     return SpanishTranslationPlan(status=SpanishTranslationPlanStatus.COMPLETE)
 
 
-def _adapter_profile(
+def translation_adapter_profile(
     adapter: SpanishToEnglishTranslationAdapter,
 ) -> tuple[str, str]:
     failed = False
@@ -345,7 +345,7 @@ async def prepare_spanish_to_english_attempt(
     never call the provider again to reconcile an ambiguous commit.
     """
 
-    adapter_id, model_profile_id = _adapter_profile(adapter)
+    adapter_id, model_profile_id = translation_adapter_profile(adapter)
     request = SpanishToEnglishTranslationRequest(content=reservation.source_content)
     failure_code: TranslationAdapterFailureCode | None = None
     result: SpanishToEnglishTranslationResult | None = None

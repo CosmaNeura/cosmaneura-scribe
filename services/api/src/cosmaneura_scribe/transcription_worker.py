@@ -92,7 +92,9 @@ class TranscriptionWorkerError(RuntimeError):
         self.code = code
 
 
-class TranscriptionWorker:
+class LeasedAudioTranscription:
+    """Shared consent/lease/assembly execution; no transcript persistence policy."""
+
     def __init__(
         self,
         *,
@@ -100,8 +102,6 @@ class TranscriptionWorker:
         assembler: AudioTrackAssembler,
         transcriber: SpeechToTextProvider,
         consent_policy: ConsentPolicy | None = None,
-        role_labeler: SpeakerRoleLabeler | None = None,
-        quality_gate: TranscriptQualityGate | None = None,
         lease_duration: timedelta = timedelta(minutes=15),
         heartbeat_interval: timedelta | None = None,
         max_attempts: int = 3,
@@ -117,127 +117,9 @@ class TranscriptionWorker:
         self._assembler = assembler
         self._transcriber = transcriber
         self._consent_policy = consent_policy or ConsentPolicy()
-        self._role_labeler = role_labeler or ChannelPriorRoleLabeler()
-        self._quality_gate = quality_gate or BasicTranscriptQualityGate()
         self._lease_duration = lease_duration
         self._heartbeat_interval = heartbeat_interval
         self._max_attempts = max_attempts
-
-    async def process(
-        self,
-        *,
-        tenant_id: UUID,
-        session_id: UUID,
-        language_code: str = "en-US",
-    ) -> Transcript:
-        try:
-            return await self._process(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                language_code=language_code,
-            )
-        except TranscriptionWorkerError:
-            raise
-        except Exception:
-            raise TranscriptionWorkerError("transcription_worker_unavailable") from None
-
-    async def _process(
-        self,
-        *,
-        tenant_id: UUID,
-        session_id: UUID,
-        language_code: str,
-    ) -> Transcript:
-        now = datetime.now(UTC)
-        lease_token = uuid4()
-        async with self._repositories.transaction(tenant_id) as store:
-            session = await self._session_for_processing(store, tenant_id, session_id)
-            existing = await store.transcript_for(tenant_id, session_id)
-            if existing is not None:
-                return existing
-            if session.status not in {SessionStatus.UPLOADED, SessionStatus.PROCESSING}:
-                raise TranscriptionWorkerError("transcript_state_inconsistent")
-            try:
-                await self._validate_consent(store, tenant_id, session)
-            except ConsentError:
-                raise TranscriptionWorkerError("consent_invalid") from None
-            chunks = tuple(await store.chunks_for(tenant_id, session_id))
-            if not chunks:
-                raise TranscriptionWorkerError("audio_chunks_missing")
-            # Committing this leased claim is the durable in-flight boundary.
-            job = await store.claim_transcription_job(
-                tenant_id,
-                session_id,
-                job_id=uuid4(),
-                lease_token=lease_token,
-                now=now,
-                lease_until=now + self._lease_duration,
-                max_attempts=self._max_attempts,
-            )
-            if job is None:
-                raise TranscriptionWorkerError("transcription_job_unavailable")
-            if session.status == SessionStatus.UPLOADED:
-                await store.update_session(
-                    tenant_id,
-                    session.model_copy(update={"status": SessionStatus.PROCESSING}),
-                )
-            await store.audit(
-                tenant_id=tenant_id,
-                action="transcription_job.claimed",
-                entity_type="transcription_job",
-                entity_id=job.id,
-            )
-
-        try:
-            result = await self._transcribe_with_heartbeat(
-                tenant_id=tenant_id,
-                session=session,
-                chunks=chunks,
-                language_code=language_code,
-                job_id=job.id,
-                lease_token=lease_token,
-            )
-            transcript = self._to_transcript(session, result)
-            self._quality_gate.validate(result, transcript.segments)
-            return await self._persist_success(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                job=job,
-                lease_token=lease_token,
-                transcript=transcript,
-            )
-        except ConsentError:
-            await self._record_failure(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                job=job,
-                lease_token=lease_token,
-                code="consent_invalid",
-                terminal=True,
-            )
-            raise TranscriptionWorkerError("consent_invalid") from None
-        except (TranscriptionQualityError, ValidationError):
-            await self._record_failure(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                job=job,
-                lease_token=lease_token,
-                code="quality_gate_failed",
-                terminal=True,
-            )
-            raise TranscriptionWorkerError("quality_gate_failed") from None
-        except TranscriptionWorkerError:
-            raise
-        except Exception:
-            await self._record_failure(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                job=job,
-                lease_token=lease_token,
-                code="transcription_attempt_failed",
-                terminal=False,
-            )
-            raise TranscriptionWorkerError("transcription_attempt_failed") from None
 
     async def _transcribe_with_heartbeat(
         self,
@@ -379,6 +261,187 @@ class TranscriptionWorker:
             if not renewed:
                 raise TranscriptionWorkerError("transcription_lease_lost")
 
+    async def _session_for_processing(
+        self,
+        store: Repository,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> CaptureSession:
+        session = await store.lock_session(tenant_id, session_id)
+        if session is None:
+            raise TranscriptionWorkerError("session_unavailable")
+        if session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD or session.status not in {
+            SessionStatus.UPLOADED,
+            SessionStatus.PROCESSING,
+            SessionStatus.TRANSCRIPT_READY,
+            SessionStatus.HANDED_OFF,
+        }:
+            raise TranscriptionWorkerError("session_not_ready")
+        return session
+
+    async def _validate_consent(
+        self,
+        store: Repository,
+        tenant_id: UUID,
+        session: CaptureSession,
+    ) -> None:
+        consent = await store.lock_consent(tenant_id, session.consent_record_id)
+        if consent is None:
+            raise ConsentError
+        self._consent_policy.validate_session(
+            consent,
+            SessionCreate(
+                appointment_id=session.appointment_id,
+                practitioner_id=session.practitioner_id,
+                patient_id=session.patient_id,
+                consent_record_id=session.consent_record_id,
+                modality=session.modality,
+            ),
+        )
+
+
+class TranscriptionWorker(LeasedAudioTranscription):
+    def __init__(
+        self,
+        *,
+        repositories: RepositoryProvider,
+        assembler: AudioTrackAssembler,
+        transcriber: SpeechToTextProvider,
+        consent_policy: ConsentPolicy | None = None,
+        role_labeler: SpeakerRoleLabeler | None = None,
+        quality_gate: TranscriptQualityGate | None = None,
+        lease_duration: timedelta = timedelta(minutes=15),
+        heartbeat_interval: timedelta | None = None,
+        max_attempts: int = 3,
+    ) -> None:
+        super().__init__(
+            repositories=repositories,
+            assembler=assembler,
+            transcriber=transcriber,
+            consent_policy=consent_policy,
+            lease_duration=lease_duration,
+            heartbeat_interval=heartbeat_interval,
+            max_attempts=max_attempts,
+        )
+        self._role_labeler = role_labeler or ChannelPriorRoleLabeler()
+        self._quality_gate = quality_gate or BasicTranscriptQualityGate()
+
+    async def process(
+        self,
+        *,
+        tenant_id: UUID,
+        session_id: UUID,
+        language_code: str = "en-US",
+    ) -> Transcript:
+        try:
+            return await self._process(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                language_code=language_code,
+            )
+        except TranscriptionWorkerError:
+            raise
+        except Exception:
+            raise TranscriptionWorkerError("transcription_worker_unavailable") from None
+
+    async def _process(
+        self,
+        *,
+        tenant_id: UUID,
+        session_id: UUID,
+        language_code: str,
+    ) -> Transcript:
+        now = datetime.now(UTC)
+        lease_token = uuid4()
+        async with self._repositories.transaction(tenant_id) as store:
+            session = await self._session_for_processing(store, tenant_id, session_id)
+            existing = await store.transcript_for(tenant_id, session_id)
+            if existing is not None:
+                return existing
+            if session.status not in {SessionStatus.UPLOADED, SessionStatus.PROCESSING}:
+                raise TranscriptionWorkerError("transcript_state_inconsistent")
+            try:
+                await self._validate_consent(store, tenant_id, session)
+            except ConsentError:
+                raise TranscriptionWorkerError("consent_invalid") from None
+            chunks = tuple(await store.chunks_for(tenant_id, session_id))
+            if not chunks:
+                raise TranscriptionWorkerError("audio_chunks_missing")
+            # Committing this leased claim is the durable in-flight boundary.
+            job = await store.claim_transcription_job(
+                tenant_id,
+                session_id,
+                job_id=uuid4(),
+                lease_token=lease_token,
+                now=now,
+                lease_until=now + self._lease_duration,
+                max_attempts=self._max_attempts,
+            )
+            if job is None:
+                raise TranscriptionWorkerError("transcription_job_unavailable")
+            if session.status == SessionStatus.UPLOADED:
+                await store.update_session(
+                    tenant_id,
+                    session.model_copy(update={"status": SessionStatus.PROCESSING}),
+                )
+            await store.audit(
+                tenant_id=tenant_id,
+                action="transcription_job.claimed",
+                entity_type="transcription_job",
+                entity_id=job.id,
+            )
+
+        try:
+            result = await self._transcribe_with_heartbeat(
+                tenant_id=tenant_id,
+                session=session,
+                chunks=chunks,
+                language_code=language_code,
+                job_id=job.id,
+                lease_token=lease_token,
+            )
+            transcript = self._to_transcript(session, result)
+            self._quality_gate.validate(result, transcript.segments)
+            return await self._persist_success(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                job=job,
+                lease_token=lease_token,
+                transcript=transcript,
+            )
+        except ConsentError:
+            await self._record_failure(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                job=job,
+                lease_token=lease_token,
+                code="consent_invalid",
+                terminal=True,
+            )
+            raise TranscriptionWorkerError("consent_invalid") from None
+        except (TranscriptionQualityError, ValidationError):
+            await self._record_failure(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                job=job,
+                lease_token=lease_token,
+                code="quality_gate_failed",
+                terminal=True,
+            )
+            raise TranscriptionWorkerError("quality_gate_failed") from None
+        except TranscriptionWorkerError:
+            raise
+        except Exception:
+            await self._record_failure(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                job=job,
+                lease_token=lease_token,
+                code="transcription_attempt_failed",
+                terminal=False,
+            )
+            raise TranscriptionWorkerError("transcription_attempt_failed") from None
+
     async def _persist_success(
         self,
         *,
@@ -471,44 +534,6 @@ class TranscriptionWorker:
                 entity_type="transcription_job",
                 entity_id=job.id,
             )
-
-    async def _session_for_processing(
-        self,
-        store: Repository,
-        tenant_id: UUID,
-        session_id: UUID,
-    ) -> CaptureSession:
-        session = await store.lock_session(tenant_id, session_id)
-        if session is None:
-            raise TranscriptionWorkerError("session_unavailable")
-        if session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD or session.status not in {
-            SessionStatus.UPLOADED,
-            SessionStatus.PROCESSING,
-            SessionStatus.TRANSCRIPT_READY,
-            SessionStatus.HANDED_OFF,
-        }:
-            raise TranscriptionWorkerError("session_not_ready")
-        return session
-
-    async def _validate_consent(
-        self,
-        store: Repository,
-        tenant_id: UUID,
-        session: CaptureSession,
-    ) -> None:
-        consent = await store.lock_consent(tenant_id, session.consent_record_id)
-        if consent is None:
-            raise ConsentError
-        self._consent_policy.validate_session(
-            consent,
-            SessionCreate(
-                appointment_id=session.appointment_id,
-                practitioner_id=session.practitioner_id,
-                patient_id=session.patient_id,
-                consent_record_id=session.consent_record_id,
-                modality=session.modality,
-            ),
-        )
 
     def _to_transcript(self, session: CaptureSession, result: SttResult) -> Transcript:
         segments = [

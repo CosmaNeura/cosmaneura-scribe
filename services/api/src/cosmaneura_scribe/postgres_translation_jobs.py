@@ -3,11 +3,12 @@ from __future__ import annotations
 import hmac
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import wraps
-from typing import cast
-from uuid import UUID
+from types import CoroutineType
+from typing import Any, cast
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -15,12 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .external_transcript_v1 import TranslationOutcome, TranslationRecordV1
 from .normalized_source_persistence import (
+    ConfiguredExternalSessionStatus,
     NormalizedSourcePersistenceError,
     NormalizedSourceTranscriptRecord,
 )
 from .postgres_repository import PostgresRepository
 from .session_state_v1 import SessionIngestMode
-from .translation_adapter import ReservedSpanishTranslation
+from .translation_adapter import ReservedSpanishTranslation, plan_spanish_translation_work
 from .translation_attempt_persistence import translation_matches_command
 from .translation_execution_v1 import DurableTranslationJobRecordV1, DurableTranslationJobStatus
 from .translation_job_encryption import (
@@ -51,7 +53,21 @@ _METADATA = (
 _SEALED = ("key_version", "wrapped_dek", "nonce", "ciphertext")
 
 
-def _safe_job_operation[**P, T](operation: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+@dataclass(frozen=True, repr=False)
+class TranslationDispatchBatch:
+    source_version: int
+    status: ConfiguredExternalSessionStatus
+    executable_job_ids: tuple[UUID, ...]
+    unconfirmed_count: int
+    retry_required_count: int
+
+    def __repr__(self) -> str:
+        return f"TranslationDispatchBatch(status={self.status.value!r})"
+
+
+def _safe_job_operation[**P, T](
+    operation: Callable[P, Awaitable[T]],
+) -> Callable[P, CoroutineType[Any, Any, T]]:
     @wraps(operation)
     async def bounded(*args: P.args, **kwargs: P.kwargs) -> T:
         try:
@@ -101,8 +117,9 @@ class PostgresTranslationJobStore:
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(tenant_id)},
             )
-            yield database, PostgresRepository(
-                database, normalized_ingest_mode=self._normalized_ingest_mode
+            yield (
+                database,
+                PostgresRepository(database, normalized_ingest_mode=self._normalized_ingest_mode),
             )
 
     @staticmethod
@@ -277,6 +294,138 @@ class PostgresTranslationJobStore:
     ) -> None:
         if await cls._now(database) >= source.transcript_content_expires_at:
             raise TranslationJobStoreError("translation_job_retention_expired")
+
+    @_safe_job_operation
+    async def prepare_dispatch(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        limit: int = 8,
+        reserve_initial: bool = True,
+    ) -> TranslationDispatchBatch:
+        """Bound initial work atomically; never mint a retry or repeat an uncertain call.
+
+        With reserve_initial=False this is a current, consent-checked read only.
+        Existing explicitly reserved retries may be executed, but the dispatcher
+        never creates them. Source/session locking also serializes competing planners.
+        """
+        if type(limit) is not int or not 1 <= limit <= 32 or type(reserve_initial) is not bool:
+            raise TranslationJobStoreError("translation_dispatch_limit_invalid")
+        async with self._transaction(tenant_id) as (database, repository):
+            source = await repository.get_current_normalized_source_transcript(
+                tenant_id, session_id
+            )
+            current = await repository.get_processing_working_transcript(tenant_id, session_id)
+            if (
+                source is None
+                or current is None
+                or (
+                    current.bundle.source_transcript.source_transcript_version
+                    != source.source_transcript_version
+                )
+            ):
+                raise TranslationJobStoreError("translation_job_target_not_found")
+            plan = plan_spanish_translation_work(current.bundle)
+            scope = {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "source_version": source.source_transcript_version,
+            }
+            pending = await database.scalar(
+                text("""
+                SELECT count(*) FROM encrypted_translation_jobs
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                  AND source_transcript_version = :source_version
+                  AND status IN ('reserved', 'provider_result_stored')
+            """),
+                scope,
+            )
+            capacity = max(0, limit - int(pending or 0))
+            if reserve_initial and capacity:
+                occupied = set(
+                    (
+                        await database.execute(
+                            text("""
+                    SELECT source_segment_id FROM encrypted_translation_jobs
+                    WHERE tenant_id = :tenant_id AND session_id = :session_id
+                      AND source_transcript_version = :source_version
+                      AND previous_translation_version = 0
+                """),
+                            scope,
+                        )
+                    ).scalars()
+                )
+                for candidate in plan.candidates:
+                    if not capacity:
+                        break
+                    if (
+                        candidate.expected_previous_translation_version != 0
+                        or candidate.source_segment_id in occupied
+                    ):
+                        continue
+                    reservation = candidate.reserve(uuid4())
+                    self._check_source(source, reservation)
+                    await self._eligible(
+                        database,
+                        job_scope(tenant_id, session_id, reservation.translation_id),
+                        reservation,
+                    )
+                    await self._save(
+                        database,
+                        repository,
+                        source,
+                        DurableTranslationJobRecordV1(
+                            tenant_id=tenant_id,
+                            session_id=session_id,
+                            reservation=reservation,
+                            status=DurableTranslationJobStatus.RESERVED,
+                            reserved_at=await self._now(database),
+                        ),
+                        insert=True,
+                    )
+                    capacity -= 1
+            # Stored-result recovery has priority. Uncertain calls cannot block
+            # unrelated unstarted Spanish segments at the head of a bounded batch.
+            executable = tuple(
+                (
+                    await database.execute(
+                        text("""
+                SELECT translation_id FROM encrypted_translation_jobs
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                  AND source_transcript_version = :source_version
+                  AND status IN ('reserved', 'provider_result_stored')
+                ORDER BY CASE status WHEN 'provider_result_stored' THEN 0 ELSE 1 END,
+                         reserved_at, translation_id
+                LIMIT :limit
+            """),
+                        {**scope, "limit": limit},
+                    )
+                ).scalars()
+            )
+            unconfirmed = int(
+                await database.scalar(
+                    text("""
+                SELECT count(*) FROM encrypted_translation_jobs
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                  AND source_transcript_version = :source_version
+                  AND status = 'provider_call_started'
+            """),
+                    scope,
+                )
+                or 0
+            )
+            await self._unexpired(database, source)
+            return TranslationDispatchBatch(
+                source_version=source.source_transcript_version,
+                status=current.status,
+                executable_job_ids=executable,
+                unconfirmed_count=unconfirmed,
+                retry_required_count=sum(
+                    candidate.expected_previous_translation_version > 0
+                    for candidate in plan.candidates
+                ),
+            )
 
     @_safe_job_operation
     async def reserve_translation_job(

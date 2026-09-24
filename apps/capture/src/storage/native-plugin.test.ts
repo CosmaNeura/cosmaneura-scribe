@@ -20,6 +20,14 @@ const SESSION_ID = "90000000-0000-4000-8000-000000000009";
 const TENANT_ID = "a0000000-0000-4000-8000-00000000000a";
 
 describe("NativePluginQueueStorage", () => {
+  it("keeps review recovery metadata out of audio queue decoding and draining", async () => {
+    const plugin = new FakeSecureQueuePlugin();
+    const storage = new NativePluginQueueStorage(plugin);
+    await storage.create(reservedRecord());
+    await plugin.create({ key: `creator-review-v1:${TENANT_ID}:${SESSION_ID}`, data: btoa("review metadata") });
+    expect(await storage.list()).toEqual([reservedRecord()]);
+    expect((await plugin.list()).keys).toHaveLength(2);
+  });
   it("maps logical revisions onto atomic opaque native revisions", async () => {
     const plugin = new FakeSecureQueuePlugin();
     const storage = new NativePluginQueueStorage(plugin);

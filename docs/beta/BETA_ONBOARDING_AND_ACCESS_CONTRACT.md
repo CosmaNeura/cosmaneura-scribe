@@ -72,12 +72,14 @@ The machine-checkable UI mapping is
 external-session status, exposes translation review only for `review_required`, exposes note
 request only for `transcript_ready`, and requires creator authorization for every state.
 
-The dormant review transport in
-`services/api/src/cosmaneura_scribe/creator_review_contract_v1.py` fixes the review surface without
-adding a route: it returns Spanish source beside the proposed English translation only in
-`review_required`. The client can return exact lineage plus accept/reject, but cannot assert the
-reviewer identity, review ID, or review time. Core must supply those values only after a fresh
-creator-only authorization check.
+The review contract in
+`services/api/src/cosmaneura_scribe/creator_review_contract_v1.py` returns Spanish source beside
+the proposed English translation only in `review_required`. The owner-approved local continuation
+adds a paired, normally unavailable GET/POST receiver and reusable panel; see ADR 0046. The
+client returns exact lineage plus accept/reject but cannot assert reviewer identity, review ID or
+review time. Core must freshly reauthorize the creator and supply trusted actor context; Scribe
+binds the decision to a durable idempotency receipt and supplies the persisted ID/time. Actual
+Core/BFF/native hookup, real sign-in and activation remain unqualified.
 
 ## Encounter binding before capture
 

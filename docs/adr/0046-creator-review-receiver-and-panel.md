@@ -1,0 +1,111 @@
+# ADR 0046 — Paired creator review receiver and reusable provider panel
+
+Status: accepted for owner-approved local runtime integration; activation unapproved.
+
+## Decision
+
+Expose GET/POST `/v1/captured-sessions/{session_id}/review` in the existing Scribe
+API behind its existing Entra app-only trusted-platform authentication. Normal
+startup does not bind the required `CreatorReviewRuntime`; an explicit binding,
+enabled runtime and tenant allowlist are necessary. No Settings, identity provider,
+shared platform or deployed environment is changed.
+
+The trusted platform reauthorizes the actual end user and asserts
+`X-Scribe-Creator-Actor-ID`. The browser may not assert this authority. Scribe
+compares that actor with the immutable recording creator and rechecks consent,
+retention and source evidence. This adds a resource API, not another login path.
+It does not establish that the current Core/BFF already implements this contract.
+
+Status/source/working/review data are read from the existing captured store.
+Before a source exists, return recording/Speech progress without transcript data.
+After handoff, return metadata only. Response caching is prohibited. No Speech,
+translation, SOAP call, automatic review or note handoff is triggered by reading.
+
+An explicit accept/reject uses the existing tenant-scoped idempotency table and
+immutable review writer within one transaction. The receipt binds actor, session
+and the exact request. Recovery uses the persisted review ID and timestamp rather
+than new values. Replays are reauthorized; changed content conflicts. This is
+pre-handoff current-source recovery, not an indefinite historical receipt API.
+No new migration or transcript storage structure is introduced.
+
+The request edge decodes JSON UUIDs/enums but retains strict integer version
+checks and forbids extra authority fields. Domain commands retain their existing
+strict validation. Errors are bounded and raised outside protected driver handlers.
+
+## Provider surface
+
+The existing review workspace now also builds a reusable ES module and stylesheet.
+The standalone or OS authenticated host supplies its existing authorized request
+transport; the component owns no login, token or tenant/creator selection. It
+shows Spanish original versus English proposal, unchanged English speech,
+explicit accept/reject, current status, quality blockers and note readiness.
+Speaker roles remain unassigned unless actual evidence labels them.
+
+Unavailable responses clear protected display. An uncertain decision retains
+its exact metadata request and key in memory for explicit retry. Disposal clears
+state and ignores late responses. The host must dispose on logout/encounter change.
+No automatic translation retry, note creation, signing or dashboard save is added.
+
+## Limits and next integration
+
+The original process-local ingest demo remains unchanged. This module is built
+but not mounted in the real desktop/iPhone/CosmasOS shell. Actual shell transport,
+browser/native interaction, durable pending-decision journal and real identity
+are follow-on acceptance. Do not label markup/unit/API tests as device acceptance.
+
+Recovery is to leave the runtime unbound/disabled and the existing storage intact.
+There is no deployment, cloud migration, external provider call, cohort enrollment
+or release approval in this packet. Later PRs require independent review and
+must respect the change budget; generated contracts belong with their receiver.
+
+## Local continuation: retained recorder and decision recovery — 2026-09-21
+
+The retained `CaptureApp` now accepts a one-time provider binding before mount.
+Its existing controller supplies the admitted session, capture state and Start/
+Stop actions. After upload the same component mounts the review panel and shows
+the recording summary, with completed controls removed. The default preview
+startup remains synthetic. A separate provider library build is available for
+the authenticated host; it is not an installed native app or a login system.
+
+The binding requires the host's authorized transport, per-environment/creator/
+session recovery journal and an abort signal. Abort/teardown clears protected
+content and suppresses late replies. The host still owns source termination and
+the native recording indicator until stop confirms. A failed deactivation must
+be shown as unconfirmed, never silently labeled stopped. Continue to note is
+offered only when the host supplies its existing Core entrypoint; the panel
+freshly reads readiness and passes no source content to that callback.
+
+The panel writes a strict metadata-only decision/key before sending it. Its
+native adapter reuses the secure-queue plugin's device-only encryption and
+create/compare-and-swap operations. Reserved `creator-review-v1:` keys are
+excluded from audio queue enumeration. No native key, encryption codec, plugin,
+database schema or authentication parser is changed. A stable opaque recovery
+scope must come from the authenticated host. Reauthorization precedes recovery;
+reload requires explicit exact retry. A confirmed receipt/conflict permits only
+revision-checked clearing of that operation. There is no plaintext fallback.
+
+Actual browser controls at desktop and phone widths exercise the built recorder
+component, persisted review receiver and PostgreSQL with generated encrypted
+capture already uploaded. Speech/model, host identity, disk-backed encrypted
+native bridge and Core entry are explicit fixtures. This qualifies component/API
+interaction and document-loss recovery, not actual native Keychain, recorder
+hardware, Core SOAP or hosted sign-in. Those bindings remain open; the exact next
+Core consumer packet is `docs/beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md`.
+
+## Read-only translation progress
+
+The review view additionally returns optional `translation_progress` metadata
+for current-source Spanish segments: `queued`, `unconfirmed` or `result_saved`.
+These are storage observations, not proof of a running worker, a failed call,
+translation fidelity or retry authority. Reading never obtains a job key,
+decrypts a job, reserves work, calls a provider or dispatches a worker.
+
+The repository rechecks live creator/source scope in the same transaction as
+the transcript view. Tenant/session/source predicates exclude prior sources;
+published attempts suppress a lagging job marker. Only segment ID/version and
+the fixed state leave the service. The client rejects mismatched, duplicate or
+already-published segment progress. Existing quality/review/English readiness
+remain authoritative. Rejected or failed work is labeled as requiring a new
+attempt; it is never silently replayed. No database migration, new route or
+runtime activation is introduced. Older views without this optional field keep
+their existing generic pending state.

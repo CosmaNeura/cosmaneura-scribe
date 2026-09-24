@@ -55,6 +55,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/captured-sessions/{session_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Creator Review */
+        get: operations["read_creator_review_v1_captured_sessions__session_id__review_get"];
+        put?: never;
+        /** Decide Creator Review */
+        post: operations["decide_creator_review_v1_captured_sessions__session_id__review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/consents": {
         parameters: {
             query?: never;
@@ -829,11 +847,232 @@ export interface components {
             /** Revoked At */
             revoked_at?: string | null;
         };
+        /** CreatorDecisionReceiptV1 */
+        CreatorDecisionReceiptV1: {
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * Saved
+             * @default true
+             * @constant
+             */
+            saved: true;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+        };
+        /**
+         * CreatorReviewQueueStatus
+         * @enum {string}
+         */
+        CreatorReviewQueueStatus: "not_ready" | "review_required" | "complete" | "quality_blocked";
+        /** CreatorReviewViewV1 */
+        CreatorReviewViewV1: {
+            review_queue?: components["schemas"]["CreatorTranslationReviewQueueV1"] | null;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            source?: components["schemas"]["SourceTranscriptV1"] | null;
+            /** Status */
+            status: string;
+            /**
+             * Translation Progress
+             * @default []
+             */
+            translation_progress: components["schemas"]["CreatorTranslationProgressV1"][];
+            working?: components["schemas"]["EnglishWorkingTranscriptV1"] | null;
+        };
+        /**
+         * CreatorTranslationDecisionBodyV1
+         * @description JSON UUID/enum decoding at the transport edge; version numbers stay strict.
+         */
+        CreatorTranslationDecisionBodyV1: {
+            decision: components["schemas"]["TranslationReviewDecision"];
+            /** Expected Source Segment Version */
+            expected_source_segment_version: number;
+            /** Expected Source Transcript Version */
+            expected_source_transcript_version: number;
+            /** Expected Translation Version */
+            expected_translation_version: number;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "1.0";
+            /**
+             * Source Segment Id
+             * Format: uuid
+             */
+            source_segment_id: string;
+            /**
+             * Translation Id
+             * Format: uuid
+             */
+            translation_id: string;
+        };
+        /**
+         * CreatorTranslationProgressV1
+         * @description Current-source metadata only; never authority to execute or retry a call.
+         */
+        CreatorTranslationProgressV1: {
+            /**
+             * Source Segment Id
+             * Format: uuid
+             */
+            source_segment_id: string;
+            /** Source Segment Version */
+            source_segment_version: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "unconfirmed" | "result_saved";
+        };
+        /** CreatorTranslationReviewItemV1 */
+        CreatorTranslationReviewItemV1: {
+            /** End Ms */
+            end_ms: number;
+            /** Source Content */
+            source_content: string;
+            /**
+             * Source Locale
+             * @constant
+             */
+            source_locale: "es-US";
+            /**
+             * Source Segment Id
+             * Format: uuid
+             */
+            source_segment_id: string;
+            /** Source Segment Version */
+            source_segment_version: number;
+            speaker_role: components["schemas"]["SpeakerRole"];
+            /** Start Ms */
+            start_ms: number;
+            /**
+             * Target Locale
+             * @constant
+             */
+            target_locale: "en-US";
+            /** Translated Content */
+            translated_content: string;
+            /**
+             * Translation Id
+             * Format: uuid
+             */
+            translation_id: string;
+            /** Translation Version */
+            translation_version: number;
+        };
+        /** CreatorTranslationReviewQueueV1 */
+        CreatorTranslationReviewQueueV1: {
+            /**
+             * Items
+             * @default []
+             */
+            items: components["schemas"]["CreatorTranslationReviewItemV1"][];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "1.0";
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /** Source Transcript Version */
+            source_transcript_version: number;
+            status: components["schemas"]["CreatorReviewQueueStatus"];
+            /**
+             * Working Transcript Id
+             * Format: uuid
+             */
+            working_transcript_id: string;
+            /** Working Transcript Version */
+            working_transcript_version: number;
+        };
         /**
          * DeliveryStatus
          * @enum {string}
          */
         DeliveryStatus: "pending" | "retryable" | "delivered" | "terminal";
+        /** EnglishWorkingTranscriptSegmentV1 */
+        EnglishWorkingTranscriptSegmentV1: {
+            /** Content */
+            content?: string | null;
+            /** End Ms */
+            end_ms: number;
+            resolution: components["schemas"]["WorkingSegmentResolution"];
+            source_locale: components["schemas"]["SourceLocale"];
+            /**
+             * Source Segment Id
+             * Format: uuid
+             */
+            source_segment_id: string;
+            /** Source Segment Version */
+            source_segment_version: number;
+            /**
+             * Speaker Id
+             * Format: uuid
+             */
+            speaker_id: string;
+            speaker_role: components["schemas"]["SpeakerRole"];
+            /** Start Ms */
+            start_ms: number;
+            /** Translation Id */
+            translation_id?: string | null;
+            /** Translation Review Id */
+            translation_review_id?: string | null;
+            /** Translation Version */
+            translation_version?: number | null;
+        };
+        /** EnglishWorkingTranscriptV1 */
+        EnglishWorkingTranscriptV1: {
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: components["schemas"]["WorkingTranscriptBlockerV1"][];
+            /** Note Ready */
+            readonly note_ready: boolean;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /** Segments */
+            segments: components["schemas"]["EnglishWorkingTranscriptSegmentV1"][];
+            /** Source Transcript Version */
+            source_transcript_version: number;
+            /**
+             * Working Transcript Id
+             * Format: uuid
+             */
+            working_transcript_id: string;
+            /** Working Transcript Version */
+            working_transcript_version: number;
+        };
         /** ExternalTranscriptSessionCreate */
         ExternalTranscriptSessionCreate: {
             /** Appointment Id */
@@ -958,6 +1197,58 @@ export interface components {
          */
         SessionStatus: "created" | "capturing" | "uploaded" | "processing" | "transcript_ready" | "handed_off" | "failed";
         /**
+         * SourceLocale
+         * @enum {string}
+         */
+        SourceLocale: "en-US" | "es-US" | "unknown";
+        /** SourceTranscriptSegmentV1 */
+        SourceTranscriptSegmentV1: {
+            /** Content */
+            content: string;
+            /** End Ms */
+            end_ms: number;
+            /** Locale Confidence */
+            locale_confidence?: number | null;
+            source_locale: components["schemas"]["SourceLocale"];
+            /**
+             * Source Segment Id
+             * Format: uuid
+             */
+            source_segment_id: string;
+            /** Source Segment Version */
+            source_segment_version: number;
+            /**
+             * Speaker Id
+             * Format: uuid
+             */
+            speaker_id: string;
+            speaker_role: components["schemas"]["SpeakerRole"];
+            /** Start Ms */
+            start_ms: number;
+        };
+        /** SourceTranscriptV1 */
+        SourceTranscriptV1: {
+            /** Duration Ms */
+            duration_ms: number;
+            language_mode: components["schemas"]["TranscriptLanguageMode"];
+            /** Normalization Profile Id */
+            normalization_profile_id: string;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /** Segments */
+            segments: components["schemas"]["SourceTranscriptSegmentV1"][];
+            /** Source Transcript Version */
+            source_transcript_version: number;
+            /** Transcription Adapter Id */
+            transcription_adapter_id: string;
+            /** Transcription Model Profile Id */
+            transcription_model_profile_id: string;
+        };
+        /**
          * SpeakerRole
          * @enum {string}
          */
@@ -1056,6 +1347,11 @@ export interface components {
              */
             updated_at: string;
         };
+        /**
+         * TranscriptLanguageMode
+         * @enum {string}
+         */
+        TranscriptLanguageMode: "en-US" | "en-US+es-US";
         /** TranscriptSegment */
         TranscriptSegment: {
             /** Confidence */
@@ -1070,6 +1366,11 @@ export interface components {
             /** Start Ms */
             start_ms: number;
         };
+        /**
+         * TranslationReviewDecision
+         * @enum {string}
+         */
+        TranslationReviewDecision: "accepted" | "rejected";
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -1082,6 +1383,25 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * WorkingSegmentResolution
+         * @enum {string}
+         */
+        WorkingSegmentResolution: "english_source" | "spanish_translation" | "unresolved";
+        /**
+         * WorkingTranscriptBlockerCode
+         * @enum {string}
+         */
+        WorkingTranscriptBlockerCode: "source_locale_unknown" | "source_overlap" | "translation_missing" | "translation_review_required" | "translation_retry_required" | "translation_failed";
+        /** WorkingTranscriptBlockerV1 */
+        WorkingTranscriptBlockerV1: {
+            code: components["schemas"]["WorkingTranscriptBlockerCode"];
+            /**
+             * Source Segment Id
+             * Format: uuid
+             */
+            source_segment_id: string;
         };
     };
     responses: never;
@@ -1154,6 +1474,81 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AudioEncryptionPublicKey"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_creator_review_v1_captured_sessions__session_id__review_get: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatorReviewViewV1"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_creator_review_v1_captured_sessions__session_id__review_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatorTranslationDecisionBodyV1"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatorDecisionReceiptV1"];
                 };
             };
             /** @description Validation Error */

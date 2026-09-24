@@ -9,7 +9,8 @@
   },
   "packageManager": "npm@11.5.2",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && vite build --config creator-review.vite.config.ts",
+    "build:creator-review": "vite build --config creator-review.vite.config.ts",
     "dev": "vite",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",

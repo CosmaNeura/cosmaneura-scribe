@@ -1,17 +1,375 @@
 # Scribe real-service qualification — 2026-09-21
 
 Status: meaningful implementation and real-service/build evidence; **not a beta
-release or closure of the five owner goals**. All repository edits remain on
+release or closure of the five owner goals**. Scribe edits remain on
 `codex/beta-preintegration-20260904`, based on `1e48c124f355f486d8106c7f7441fd13895c3c97`.
-No push, PR, migration of an existing/shared database or shared Core/Auth/IAM/Zoom/
-staging edit occurred. Newer integration checkouts were read-only. Later migration
+The latest increment also includes explicitly approved local Core consumer edits
+in its existing integration checkout. No push, PR, existing/shared database
+migration, Auth/IAM/Zoom/staging edit or deployment occurred. Earlier migration
 tests used a new disposable local cluster. Following explicit owner approval,
 the existing private Speech job passed both disabled-state and enabled synthetic
 acceptance. The enabled trial temporarily changed only its environment settings
 and added one account-scoped Speech User assignment; both were reversed and the
 original resource/output state verified. No clinical runtime was activated.
 
-## Latest: atomic captured Speech-result runtime — 18:01 UTC
+## Latest: approved local Core creator-review integration
+
+The owner approved the exact Core review-consumer packet ("I approve core
+integration"). Before editing, Scribe was clean at `fea25741eb133eb85779316e650212c5a3669ced`
+and Core's existing detached checkout remained at
+`e21ba4c1fb1027de8123aca9b8aee25b8a11b612`. All 70 existing dirty/untracked Core
+files were snapshotted. Sixty-six remain byte-identical; only the four approved
+existing service modules were extended. No other task was contacted.
+
+Core now accepts `creator_review` and `decide_translation` through its existing
+disabled capture facade. Fresh encounter/admission authorization supplies the
+binding's internal actor, never a doctor-ID inference or browser assertion.
+Scribe's review receiver matches it to the configured session's immutable
+creator and checks processing consent. Core reauthorizes before returning
+protected results. Legacy transcript-status checks remain separate because they
+reject configured bilingual sessions.
+
+The closed consumer validates current source/working/queue/progress lineage,
+English-source preservation and review readiness. The existing server Entra
+transport sends bounded no-store requests, preserving the exact decision and
+retry key, with no automatic retries or provider calls. No new runtime, host,
+schema, authentication policy or note generator was activated.
+
+The final focused run collected 146 Core checks: 145 passed and one collided with
+a fixed synthetic support-user identity in an older reused test helper. The new
+test now creates its own unique identity; all five authority checks then passed.
+Matched test identities establish passing evidence for all 146 distinct Core
+checks, with zero skips. The original failed run is retained. Ruff, Pyright for
+the five changed Core services and whitespace checks pass.
+
+Two separate Scribe receiver processes passed actual local Core-route → HTTP →
+Scribe-receiver accept/reject scenarios. They covered mismatched expected-source
+version, wrong tenant/unmapped creator, ignored browser actor assertion, lost
+committed reply, fresh receiver recovery, one immutable decision, unchanged
+source and consent revocation. Core used real local binding/admission authority;
+its workload authentication and Scribe workload authentication were explicit test
+fixtures. Encrypted WAV, Speech and translation were synthetic fixtures. No live
+service, hosted identity, native device, TLS deployment or SOAP completion is proved.
+
+Evidence is retained in `/private/tmp/scribe-core-review.gsg9ll_6/`:
+
+- `core-increment.patch` separates these nine Core files from prior dirty work;
+  SHA-256 `7d74f9565242d3d143136367711f78f75839f6bdf0f2444d5885e658e93e0594`.
+- `final.xml`: `01d99e003dc350ce1f7ff97f3b0400e43ce446b3bc956caac4b1403360c1ed6a`.
+- `authority-final.xml`: `a183a65099230e53a9c64ffedaa7320a85d7d6582843720e4bfb1b107171ebdb`.
+- `final/test_core_to_scribe_review_and0/` and `...and1/` contain receiver logs/XML.
+  The earlier receiver run used pytest's global temporary root and reported
+  cleanup warnings for pre-existing pytest garbage; the final harness explicitly
+  confines both Core and child receiver temporary directories to owned evidence.
+- Fresh databases `scribe_core_creator_review_test` and `scribe_review_receiver_test`
+  used Unix socket port 55457 with no TCP listener. Core's synthetic model tables
+  remain retained; Scribe teardown left only `alembic_version`. Owned PID 21147
+  was verified, stopped and confirmed absent; `shutdown.json` records the check.
+
+Core remains uncommitted on its existing detached checkout so this task does not
+claim or combine the other work. The before/final manifests and incremental patch
+are retained. No independent review, PR or release is claimed.
+
+Configured ordinary admission still uses the older contract, and Core SOAP still
+consumes the older raw/working-source envelope. The next concrete local proposal
+is [configured admission and Core SOAP](beta/SCRIBE_CONFIGURED_CORE_WORKFLOW_PACKET_20260921.md).
+That packet, native identity/device acceptance, actual runtime credentials and
+signed releases remain open. The historical ~55% operational judgment is not
+raised based on these local tests.
+
+## Earlier: clear translation progress and blocked-work guidance
+
+Continued from clean `b894baf` while the exact Core consumer approval remains
+pending. Providers can now distinguish a queued translation, a request without
+a confirmed result, and a saved result awaiting review publication. Rejected or
+failed translations say they need a new attempt instead of generic pending.
+Refresh never starts/repeats work. Source/quality blockers and explicit creator
+review still control note readiness; no retry command or activation was added.
+
+The existing review response has optional current-source `translation_progress`.
+Its read is scoped to the same live creator, tenant/session and source version,
+without decrypting jobs or using keys/providers. Published attempts override
+lagging job markers. The panel rejects contradictory/foreign progress. OpenAPI
+and capture TypeScript were regenerated. No database migration, new route,
+Core/Auth/IAM/environment change or live trial occurred.
+
+Final rendered desktop/phone scenarios passed with real local API/PostgreSQL and
+the documented synthetic host/Speech/model/native-storage/Core fixtures. They
+now include an in-flight translation before the existing accept/reject/reload/
+revocation checks. Five receiver checks and 18 review-UI checks pass, along with
+TypeScript, ESLint, affected Ruff, strict Pyright, build and ADR/whitespace checks.
+The full regression ran **1,068 tests**: **1,067 passed**, and one protocol check
+failed because it selected system Node 22. All four protocol checks then passed
+with the pinned Node 24; matched test identities confirm passing evidence for
+all 1,068 distinct tests, with zero skips. The initial failed run is retained;
+there was no application-code change to resolve that toolchain failure.
+
+Evidence: `/private/tmp/scribe-review-progress.CGKoxr/verified.xml`, SHA-256
+`8e756b18f663fb5bd6505142dbfed24a971dbf79cd7c4169365beee6d43e0c39`;
+corrected toolchain evidence `node24-protocol.xml`, SHA-256
+`dcd705029b66e5d2a968e8a21b3d4f270b02357e701307e53f787c2cdc302c54`.
+Final screenshots are under `full/`. The new `scribe_review_progress_test`
+database used private Unix socket port 55456 and no TCP listener. Final public
+schema contained only `alembic_version`; owned PID 4301 was verified, stopped and
+confirmed absent. Data/logs remain retained. Prior completed clusters stayed stopped.
+
+Current unsigned provider JS SHA-256:
+`1ac9f72ca302b07671c11442521ce303f12e9e0559e4953fc92cdbebc621f9f7`;
+CSS SHA-256 remains `62c506ac9ad676d4449db2a501c159f8c0d59092dca0bbbb03d59b9f3a8b4987`.
+For future Python regressions, set `CAPTURE_PROTOCOL_NODE` to the recorded Node 24
+binary (or prepend its shim to PATH); Python subtests otherwise select system Node.
+
+The full operational Scribe goal remains open. Current hosted/native binding,
+Core admission/notes/dashboard, actual credential/worker lifecycle, physical
+devices, fidelity and signed releases are not qualified by this progress display.
+The existing [Core review-consumer packet](beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md)
+was pending at that checkpoint; the latest section records its subsequent
+approval and implementation.
+
+## Earlier: recorder-mounted review and durable decisions — continuation
+
+The replacement task read the complete handoff and verified a clean existing
+`codex/beta-preintegration-20260904` checkout at
+`99324d87628ec22f038f5ee9a4918de8cb46abb8`. The full Scribe goal is active again;
+the historical pause applied only to the old task. No other task was contacted.
+
+The retained capture component now accepts a one-time authorized host binding
+and mounts the existing provider review panel after upload. The provider sees
+the recording summary, original Spanish, proposed/accepted English, preserved
+English speech, explicit accept/reject and current blockers. Completed capture
+controls no longer push the review below a large technical status panel. A
+host-supplied Continue to note action requires a fresh ready transcript and opens
+the existing Core entrypoint without passing source text. Default preview startup
+is unchanged; no hosted/native authentication or clinical endpoint was activated.
+
+Decisions now journal exact metadata/key before transmission. The native adapter
+reuses the existing encrypted secure-queue plugin with atomic create/CAS and
+revision-checked clearing; its reserved keys do not enter audio queue enumeration.
+Fresh authorization precedes journal recovery and reload requires explicit exact
+retry. Abort/disconnect clears protected display and ignores late replies. The
+host owns source termination/native recording indication; an unconfirmed stop
+is not reported as closed. No native key/codec, server schema or auth parser changed.
+
+Verification: full capture workspace **125 passed** and full review workspace
+**16 passed**. The local actual API/PostgreSQL browser packet passed six focused
+checks (two rendered scenarios plus four receiver regressions). After the final
+stop-state correction, both rendered scenarios passed again: desktop acceptance,
+phone rejection, committed-but-lost reply, document reload with a new journal/API
+instance, identical retry, one persisted review, revoked-access clearing, and
+confirmed/unconfirmed host deactivation. TypeScript, both workspace ESLint,
+affected Ruff, strict API Pyright, provider build, ADR numbering and whitespace
+checks passed. The prior complete 1,065-test Python result remains the checkpoint
+for unchanged backend code; it was not rerun merely on resumption.
+
+The actual encrypted capture protocol ran on generated WAV before the UI mounted.
+The already-uploaded recorder host, identity, Speech/model, encrypted disk-backed
+native bridge and Core entry are explicit fixtures. This is rendered component/API
+and reload-recovery evidence, **not physical capture, actual Keychain, hosted login,
+actual Core SOAP, a signed native package or operational MCD acceptance**.
+
+Evidence root: `/private/tmp/scribe-provider-workflow.6am8cH/`. The final two-scenario
+JUnit is `final-browser.xml`, SHA-256
+`8b441e1b76f6a7f349c89cfc1c05bc6380ccf1a00b93c6a1c10effadced7299c`.
+The preceding six-check result is `verified.xml`, SHA-256
+`8ee92e0b790de9adfadbd19eb0ca3da76a91416b947d1df47d9c0c2196cd0dd9`.
+Final desktop/phone PNGs are under `pytest-stop/`; they contain invented data.
+The disposable UTF-8 database `scribe_provider_workflow_test` used private Unix
+socket port 55455 with no TCP listener. Final public schema contained only
+`alembic_version`. Exact owned PID 95541 was verified, stopped and confirmed
+absent. Its database/logs and earlier trial artifacts remain retained.
+
+Local unsigned provider bundle: `apps/capture/dist/provider/provider-capture.js`,
+SHA-256 `76160d24570985039779a36995f764acd7bd01eb984aa39d5945e5b93ba1f878`;
+CSS SHA-256 `62c506ac9ad676d4449db2a501c159f8c0d59092dca0bbbb03d59b9f3a8b4987`.
+This library is ready for host integration; it is not mounted in an authenticated
+standalone native release. No previous W13 package was replaced or relabeled.
+
+Read-only Core inspection found the missing review operations/creator header,
+legacy-only capture admission and incompatible source contract. The next exact
+local Core review-consumer request is
+[`SCRIBE_PROVIDER_CORE_PACKET_20260921.md`](beta/SCRIBE_PROVIDER_CORE_PACKET_20260921.md).
+Its owner approval was requested and is pending. Do not treat Scribe local-runtime
+approval as Core-write authority. Configured admission, combined migration base,
+real identity/services, physical iPhone/iOS 17+, Core notes/dashboard, fidelity,
+signed releases and founder activation remain open. The full goal and prior
+approximately 55% readiness judgment are unchanged.
+
+## Earlier: provider review receiver and reusable screen — 18:53 UTC
+
+The owner requested a detailed handoff and explicitly approved pausing this goal
+after that handoff. Resume from `docs/SCRIBE_HANDOFF_20260921.md`, not the entire
+historical conversation. Current implementation commits are `3514639` (receiver)
+and `67d58a4` (provider panel), both local and unpushed on the existing branch.
+
+The existing API now registers GET/POST
+`/v1/captured-sessions/{session_id}/review`. It remains unavailable without an
+explicit server-side `CreatorReviewRuntime` binding, enabled gate and tenant
+allowlist. It reuses existing Entra trusted-platform authentication; Core must
+reauthorize the end user and supply the creator header. It does not add a user
+login path or prove Core currently forwards that context. Reads expose captured
+status, preserved source, English working projection and explicit translation
+review. Decisions use the existing idempotency table and immutable writer in one
+transaction, recover the persisted review ID/time and reject changed retries.
+No schema migration or automatic provider/review/note call is introduced.
+
+The review workspace now builds a reusable ES module/CSS panel. It shows Spanish
+beside proposed English, unchanged English speech, unassigned speaker roles,
+accept/reject buttons, blockers, current status and English readiness. Its host
+supplies the existing authenticated transport and must dispose on logout/session
+change. Uncertain saves retain exact metadata/key in memory for explicit retry;
+unavailable responses clear protected display. Native durable recovery and
+actual shell/BFF mounting remain unfinished. No physical/browser interaction or
+visual acceptance was performed for this new panel. The old synthetic ingest
+page is preserved and is not silently replaced by an operational app.
+
+Final full Python regression: **1,065 passed, zero failures/errors/skips**, 119.557
+seconds. Four new API cases cover generated capture → bilingual source → actual
+HTTP-interface review, concurrent exact retry, fresh receiver recovery, source
+preservation, creator/cohort/auth rejection, consent revocation, missing keys and
+forbidden authority fields. Identity acquisition, Speech/model and blob/key
+services are fixtures. All **13 review-UI checks** pass, including four new
+contract/render/transport checks. Strict API Pyright, affected Ruff, review-UI
+TypeScript/ESLint, generated OpenAPI/TypeScript, both UI builds, ADR numbering and
+whitespace checks pass. These tests are not real end-user/device acceptance.
+
+JUnit: `/private/tmp/scribe-review-surface.0xben8/verified.xml`, SHA-256
+`13e1ec050b5b5ffc70fac318a5e70642ef11d08b67759f677017bbfeb5cc1ef4`.
+The new UTF-8 `scribe_review_surface_test` database used a private Unix socket,
+port 55454 and no TCP listener. Final public schema contained only
+`alembic_version`; owned PID 82950 was verified, stopped and confirmed absent.
+Its files/logs remain retained. Existing databases/apps/devices were untouched.
+
+Built panel assets under `apps/review-ui/dist/creator-review/`:
+JS SHA-256 `a4879be15a8d839b84f424e933cbd58e28b6ee019d57e9e9503a7c98ab1bde46`;
+CSS SHA-256 `564d42c3991cab1b0a665d13b4fa52e2a20419d6bb45686620b946e22bb0510c`.
+These are unsigned local web assets, not distributed native releases.
+
+Next checkpoint target: mount this existing panel in the actual authenticated
+client workflow and qualify its real transport, recording-to-review behavior and
+Core handoff. Obtain narrowly scoped missing Core/deployment authority rather
+than inventing another identity path or demo. Real identity/token custody,
+physical-device/older-iOS qualification, full mixed-language fidelity, signed
+distribution and MCD PHI activation remain open. Overall MCD readiness is still
+the prior approximate 55% judgment, not increased on test count alone.
+
+## Earlier: bounded automatic capture-to-review dispatch — 18:35 UTC
+
+Added default-off `CapturedProcessingRuntime`: one trusted-tenant dispatch call
+discovers actionable captured sessions, runs the encrypted Speech worker, plans
+Spanish-only translation, reserves bounded initial work and executes or recovers
+the existing encrypted jobs. Callers can carry a UUID cursor through a bounded
+sweep. No API, scheduler or environment automatically registers this runtime.
+Translation verifies the original completed captured-Speech receipt before using
+source rows. Expired final-attempt Speech leases and retryable work at the attempt
+ceiling become terminal metadata without another provider call or invented source.
+
+Initial translation reservation is serialized with current source/consent under
+the existing unique slot constraint. Failed or creator-rejected attempts are not
+automatically retried. An explicitly created retry reservation can be dispatched.
+Started calls are in flight or uncertain and are never automatically repeated;
+they do not starve unrelated unstarted Spanish segments. Stored results recover
+before new calls. Current source, consent, retention and immutable evidence are
+revalidated by the existing store/writers. Worker evidence reads share the creator
+reader's validation but have distinct worker audit events and never impersonate
+the creator. Creator-only acceptance and English handoff remain explicit.
+
+Final complete Python regression: **1,061 passed, zero failures/errors/skips**,
+68.449 seconds, including 30 new cases. Tests discover actual local capture-protocol
+rows and process real encrypted generated WAV through the existing assembler,
+fixed offline Speech/model responses, encrypted jobs, human-decision fixtures and
+Core handoff serialization. They cover competing dispatch, bounded pages/batches,
+uncertain-call non-replay, retry boundaries, changed-source/revocation/retention
+fences, English/quality-blocked source, completion lineage, exhausted Speech,
+lost reservation/result/commit-marker replies and acceptance before marker recovery.
+A fresh actual Python process discovers and commits a stored encrypted result
+with audio/Speech/model methods forbidden. Its generated test RSA key travels via
+stdin, not source, command-line arguments or logs. Source and English speech are
+preserved and no automatic review is written.
+
+The first 25 new tests passed, followed by 136 focused regressions and a complete
+1,060-test run. Final review added the explicit captured-completion-lineage guard
+and its negative test; the final count is 1,061. Strict Pyright exposed the existing
+safe-job decorator's overly broad awaitable annotation when the concrete store
+was composed with its protocol; its annotation now correctly describes the
+returned native coroutine, without weakening the protocol or changing execution.
+
+Ruff on changed code/tests, strict Pyright across the complete API, unchanged
+OpenAPI regeneration, ADR numbering and whitespace checks pass. ADR 0045 records
+the decision. JUnit: `/private/tmp/scribe-auto-processing.GKPGLv/verified.xml`, SHA-256
+`833f859b4369688b00fd69418c5b34824efa0d77855cef4a511c80994e346b88`.
+The fresh UTF-8 `scribe_auto_processing_test` database used only its private Unix
+socket, no TCP listener. Test teardown left only `alembic_version`; verified owned
+PID 67166 is stopped and its data/logs retained. No shared database, other app,
+owner preview, package, cloud setting, provider model/prompt/HTTP contract, grant, auth parser,
+Core/IAM/Zoom/staging, migration, push, PR or deployment changed.
+
+Next: paired authenticated review/status/idempotency receivers and qualified
+provider/credential lifecycle bootstrap, followed by actual client/Core/service
+acceptance. Internal status now distinguishes capture/Speech/translation progress,
+unconfirmed calls, explicit retry need, quality blocks and review readiness; that
+is not yet a public status/failure UX. Real identity/token custody, physical-device
+and older-iOS qualification, mixed-language fidelity and signed release remain
+open. This is local automatic-dispatch capability, not MCD operational activation.
+
+## Earlier: encrypted capture protocol to bilingual worker — 18:18 UTC
+
+Connected the configured captured format to the existing encrypted recorder
+protocol and audio assembly through an explicitly paired PostgreSQL provider.
+`CapturedTranscriptionWorker` is default off; it reuses extracted lease/heartbeat,
+last-moment consent checks and child-task cancellation from the existing worker.
+Language comes from immutable admission, not a second processing-time choice.
+The admitted adapter, finalized contiguous channels and returned source profile
+must match before the atomic publisher accepts the actual Speech result.
+
+The existing recorder status shape is a capture-phase view only: source,
+translation, review and quality-pending states remain `processing`. They do not
+become ready until the existing source/translation/review writers permit it.
+The capture writer cannot overwrite the actual later source state with that
+projection. Default legacy/imported scopes stay isolated, and an accidentally
+paired legacy worker is rejected before audio/provider access. Completed jobs
+recover an acknowledgment through their original receipt without rereading audio,
+calling Speech or resetting working/review history. ADR 0044 records the boundary.
+
+Final complete Python regression: **1,031 passed, zero failures/errors/skips**,
+61.578 seconds, including 22 new cases. Tests exercise actual FastAPI capture
+routes, restricted PostgreSQL, real AES-GCM encrypted generated WAV chunks and
+the existing audio assembler. Fixed offline Speech evidence then reaches durable
+encrypted translation, explicit creator review and the Core handoff serializer.
+English-only capture requires no translation; bilingual source/English speech and
+speaker identity remain preserved. Captured Speech/model/key/identity/blob-service
+inputs are synthetic/offline fixtures, not actual microphone or live service
+qualification, clinical fidelity, hosted authentication or actual Core SOAP.
+
+New checks cover disabled/wrong tenant/session/unstarted/revoked/legacy/unadmitted
+adapter rejection, invalid source provider/language/channel, provider retry and
+exhaustion, concurrent workers, cancellation, revoked consent at manifest and
+heartbeat, tampered audio, stolen lease, lost publication reply and completed-job
+recovery in a fresh actual Python process with audio/Speech access forbidden.
+The initial test run exposed a missing timestamp in the generated chunk fixture;
+that fixture was corrected. The intermediate complete run passed 1,030 tests;
+the final adapter-admission check brings the final count to 1,031. No runtime or
+database guard was weakened for a test.
+
+Ruff on changed application/tests, strict Pyright across the complete API,
+unchanged OpenAPI regeneration, ADR numbering and whitespace checks pass. JUnit:
+`/private/tmp/scribe-capture-worker.VrujhM/verified.xml`, SHA-256
+`7b27b6fe84102ea254a12f1af05b6c0a35466e11b4322d638f90528c00f57403`.
+The new UTF-8 `scribe_capture_worker_test` database used its private Unix socket
+only, no TCP listener. Fixture cleanup left only `alembic_version`. Verified owned
+PID 57913 is stopped; its data/logs are retained. Other apps, databases, packages
+and owner previews were not changed. No new migration, public API registration,
+auth parser, grant, live provider call, shared-platform change, push or deployment.
+
+Next: automatic transcription/translation dispatch and the paired authenticated
+review/idempotency/status receiver. Terminal exhausted jobs must have explicit
+failure/recovery UX rather than relying on the recorder's `processing` projection.
+Then qualify the actual clients/services/Core SOAP path. The new provider/worker
+is not registered in a running API; existing clients do not automatically use it.
+Real identity/device/fidelity, migration-graph reconciliation and signed release
+remain open. This is concrete integration progress, not MCD activation or closure
+of the full operational goal.
+
+## Earlier: atomic captured Speech-result runtime — 18:01 UTC
 
 Added default-off `CapturedSourceRuntime` and an explicit captured-mode PostgreSQL
 provider. Trusted Core admission creates or exactly reuses an immutable captured

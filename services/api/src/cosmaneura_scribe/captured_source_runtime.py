@@ -17,18 +17,23 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .azure_speech_source import normalize_azure_source
+from .creator_review_contract_v1 import CreatorTranslationProgressV1
 from .normalized_source_persistence import (
     CAPTURED_NORMALIZATION_PROFILE_ID,
     CAPTURED_TRANSCRIPTION_ADAPTER_ID,
     CAPTURED_TRANSCRIPTION_MODEL_PROFILE_ID,
     CapturedPreSourceStatus,
     CapturedSessionCreate,
+    ConfiguredExternalSessionStatus,
     ConfiguredSourceSessionRecord,
     NormalizedSourceAcceptance,
     consent_authorizes_versioned_session,
 )
 from .postgres_repository import PostgresRepository
+from .repository import CaptureIngestModeError
+from .schemas import Transcript, TranscriptionJob, TranscriptionJobStatus
 from .session_state_v1 import SessionIngestMode
+from .transcript_constraints import MAX_TRANSCRIPT_SEGMENTS
 from .transcription import SttResult
 from .working_transcript_persistence import WorkingTranscriptPublication
 
@@ -70,7 +75,214 @@ class CapturedSourcePublication:
 
 class CapturedSourceRepository(PostgresRepository):
     def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session, normalized_ingest_mode=SessionIngestMode.CHUNK_UPLOAD)
+        super().__init__(
+            session,
+            normalized_ingest_mode=SessionIngestMode.CHUNK_UPLOAD,
+            configured_capture=True,
+        )
+
+    async def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None:
+        # The legacy worker probes here before assembling audio. Fail before any
+        # provider call when it is accidentally paired with configured capture.
+        raise CaptureIngestModeError("configured capture requires its source reader")
+
+    async def get_transcript(self, tenant_id: UUID, transcript_id: UUID) -> Transcript | None:
+        raise CaptureIngestModeError("configured capture requires its source reader")
+
+    async def lock_live_capture(
+        self, tenant_id: UUID, session_id: UUID
+    ) -> ConfiguredSourceSessionRecord:
+        locked = await self._lock_normalized_source_session(tenant_id, session_id)
+        if locked is None:
+            raise CapturedSourceUnavailable()
+        session, now = locked
+        self._require_live_normalized_source_session(session, now)
+        return session
+
+    async def creator_translation_progress(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        creator_actor_id: str,
+        source_version: int,
+    ) -> tuple[CreatorTranslationProgressV1, ...]:
+        """Read outstanding metadata under the same live creator/source lock.
+
+        No ciphertext, key service, reservation, worker or model is accessed.
+        A published attempt wins over a lagging job commit marker.
+        """
+        session = await self.lock_live_capture(tenant_id, session_id)
+        if (
+            type(source_version) is not int
+            or session.creator_actor_id != creator_actor_id
+            or session.current_source_transcript_version != source_version
+            or session.status == ConfiguredExternalSessionStatus.HANDED_OFF
+        ):
+            raise CapturedSourceUnavailable()
+        rows = (
+            await self._session.execute(
+                text("""
+                SELECT job.source_segment_id, job.source_segment_version,
+                       CASE job.status
+                         WHEN 'reserved' THEN 'queued'
+                         WHEN 'provider_call_started' THEN 'unconfirmed'
+                         WHEN 'provider_result_stored' THEN 'result_saved'
+                       END AS state
+                FROM encrypted_translation_jobs AS job
+                WHERE job.tenant_id = :tenant AND job.session_id = :session
+                  AND job.source_transcript_version = :version
+                  AND job.status IN ('reserved', 'provider_call_started', 'provider_result_stored')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM normalized_translation_attempts AS attempt
+                    WHERE attempt.tenant_id = job.tenant_id
+                      AND attempt.session_id = job.session_id
+                      AND attempt.translation_id = job.translation_id
+                  )
+                ORDER BY job.source_segment_id
+                LIMIT :limit
+            """),
+                {"tenant": tenant_id, "session": session_id, "version": source_version,
+                 "limit": MAX_TRANSCRIPT_SEGMENTS + 1},
+            )
+        ).mappings().all()
+        if (
+            len(rows) > MAX_TRANSCRIPT_SEGMENTS
+            or len({row["source_segment_id"] for row in rows}) != len(rows)
+        ):
+            raise CapturedSourceUnavailable()
+        return tuple(CreatorTranslationProgressV1.model_validate(dict(row)) for row in rows)
+
+    async def reconcile_exhausted_speech(
+        self, tenant_id: UUID, session_id: UUID, *, max_attempts: int
+    ) -> None:
+        if type(max_attempts) is not int or max_attempts < 1:
+            raise CapturedSourceUnavailable()
+        session = await self.lock_live_capture(tenant_id, session_id)
+        if session.status != CapturedPreSourceStatus.PROCESSING:
+            return
+        job_id = await self._session.scalar(
+            text("""
+            UPDATE transcription_jobs SET status = 'terminal', lease_token = NULL,
+                lease_until = NULL, last_error_code = 'captured_speech_attempts_exhausted',
+                updated_at = clock_timestamp()
+            WHERE tenant_id = :tenant AND session_id = :session AND attempt_count >= :maximum
+              AND (status = 'retryable' OR (
+                  status = 'processing' AND lease_until <= clock_timestamp()
+              ))
+            RETURNING id
+        """),
+            {"tenant": tenant_id, "session": session_id, "maximum": max_attempts},
+        )
+        if job_id is not None:
+            await self.audit(
+                tenant_id=tenant_id,
+                action="captured_speech.exhausted",
+                entity_type="transcription_job",
+                entity_id=job_id,
+            )
+
+    async def discover_pending_captures(
+        self, tenant_id: UUID, *, limit: int = 8, after: UUID | None = None
+    ) -> tuple[UUID, ...]:
+        """Metadata discovery only; each target is authorized again before any work."""
+        if type(limit) is not int or not 1 <= limit <= 32:
+            raise CapturedSourceUnavailable()
+        rows = await self._session.execute(
+            text("""
+            SELECT session.id FROM scribe_sessions AS session
+            JOIN consent_records AS consent ON consent.tenant_id = session.tenant_id
+              AND consent.id = session.consent_record_id
+            LEFT JOIN transcription_jobs AS speech ON speech.tenant_id = session.tenant_id
+              AND speech.session_id = session.id
+            WHERE session.tenant_id = :tenant
+              AND session.transcript_contract_version = '1.0'
+              AND session.ingest_mode = 'chunk_upload'
+              AND (CAST(:after AS uuid) IS NULL OR session.id > :after)
+              AND consent.all_parties_consented AND consent.revoked_at IS NULL
+              AND session.content_purged_at IS NULL
+              AND (session.transcript_content_expires_at IS NULL
+                   OR session.transcript_content_expires_at > clock_timestamp())
+              AND (
+                (session.status IN ('uploaded', 'processing') AND (
+                    speech.id IS NULL OR speech.status = 'retryable'
+                    OR (speech.status = 'processing' AND speech.lease_until <= clock_timestamp())
+                ))
+                OR (session.status IN ('translation_pending', 'review_required', 'transcript_ready')
+                    AND speech.status = 'completed' AND (
+                    EXISTS (
+                        SELECT 1 FROM encrypted_translation_jobs AS job
+                        WHERE job.tenant_id = session.tenant_id AND job.session_id = session.id
+                          AND job.source_transcript_version =
+                              session.current_source_transcript_version
+                          AND job.status IN ('reserved', 'provider_result_stored')
+                    ) OR (session.status = 'translation_pending' AND EXISTS (
+                        SELECT 1 FROM normalized_source_segments AS segment
+                        WHERE segment.tenant_id = session.tenant_id
+                          AND segment.session_id = session.id
+                          AND segment.source_transcript_version =
+                              session.current_source_transcript_version
+                          AND segment.source_locale = 'es-US'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM normalized_translation_attempts AS attempt
+                              WHERE attempt.tenant_id = segment.tenant_id
+                                AND attempt.session_id = segment.session_id
+                                AND attempt.source_transcript_version =
+                                    segment.source_transcript_version
+                                AND attempt.source_segment_id = segment.source_segment_id
+                                AND attempt.source_segment_version = segment.source_segment_version
+                          ) AND NOT EXISTS (
+                              SELECT 1 FROM encrypted_translation_jobs AS job
+                              WHERE job.tenant_id = segment.tenant_id
+                                AND job.session_id = segment.session_id
+                                AND job.source_transcript_version =
+                                    segment.source_transcript_version
+                                AND job.source_segment_id = segment.source_segment_id
+                                AND job.source_segment_version = segment.source_segment_version
+                                AND job.previous_translation_version = 0
+                          )
+                    ))
+                ))
+              )
+            ORDER BY session.id LIMIT :limit
+        """),
+            {"tenant": tenant_id, "after": after, "limit": limit},
+        )
+        return tuple(rows.scalars())
+
+    async def recover_completed_speech(
+        self, tenant_id: UUID, session_id: UUID, job: TranscriptionJob
+    ) -> bool:
+        session = await self.lock_live_capture(tenant_id, session_id)
+        if (
+            job.session_id != session_id
+            or job.status != TranscriptionJobStatus.COMPLETED
+            or session.current_source_transcript_version is None
+        ):
+            return False
+        # Metadata-only acknowledgment of the original completed Speech attempt.
+        # Current corrections/reviews are not republished or replaced by this read.
+        receipt = await self._one_or_none(
+            """
+            SELECT receipt.source_transcript_version
+            FROM normalized_source_receipt_keys AS receipt
+            JOIN normalized_source_transcripts AS source
+              ON source.tenant_id = receipt.tenant_id AND source.session_id = receipt.session_id
+             AND source.source_transcript_version = receipt.source_transcript_version
+            JOIN transcription_jobs AS job
+              ON job.tenant_id = receipt.tenant_id AND job.session_id = receipt.session_id
+            WHERE receipt.tenant_id = :tenant AND receipt.session_id = :session
+              AND receipt.source_transcript_version = 1
+              AND receipt.idempotency_key LIKE :prefix
+              AND job.id = :job AND job.attempt_count = :attempt AND job.status = 'completed'
+            """,
+            tenant=tenant_id,
+            session=session_id,
+            job=job.id,
+            attempt=job.attempt_count,
+            prefix=f"captured-speech:{job.id}:{job.attempt_count}:%",
+        )
+        return receipt is not None
 
     async def admit_capture(
         self, tenant_id: UUID, draft: CapturedSessionCreate

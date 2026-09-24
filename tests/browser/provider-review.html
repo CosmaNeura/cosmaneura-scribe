@@ -1,0 +1,27 @@
+<!doctype html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/assets/provider-capture.css">
+</head><body><main id="app"></main><output></output>
+<script type="module">
+import { mountProviderCapture, NativeCreatorReviewJournal } from '/assets/provider-capture.js';
+const session = SESSION, scope = SCOPE, abort = new AbortController();
+const snapshot = { state:'processing', sessionId:session, statusCode:'fixture_uploaded',
+  recordedChunks:2, queuedChunks:0, elapsedSeconds:3, remainingBudgetSeconds:null,
+  remainingAuthoritySeconds:null, transcriptionStatus:null, transcript:null };
+const plugin = Object.fromEntries(['get','create','compareAndSwap'].map(method => [method, async value => {
+  const response = await fetch('/trial/journal', { method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({method,value}) });
+  const result = await response.json(); if (!response.ok) throw result; return result;
+}]));
+mountProviderCapture(document.querySelector('#app'), { sessionId:session,
+  controller:{snapshot, subscribe(listener){ listener(snapshot); return () => {}; }},
+  sourceKind:'synthetic', languageMode:'english_spanish', signal:abort.signal,
+  deactivate:async () => { if (window.failFixtureDeactivation) throw new Error('stop unconfirmed'); },
+  journal:new NativeCreatorReviewJournal(plugin,scope,session),
+  authorizedRequest:(path,request) => fetch(path,{method:request.method, cache:'no-store', redirect:'error',
+    headers:{'Content-Type':'application/json', ...(request.key ? {'Idempotency-Key':request.key} : {})},
+    ...(request.body ? {body:JSON.stringify(request.body)} : {})}),
+  continueToNote:async () => { document.querySelector('output').textContent='Core entry requested (fixture)'; }
+});
+window.endFixtureBinding = () => abort.abort();
+</script></body></html>
