@@ -1,7 +1,7 @@
 import { webcrypto } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
-import { CoreCaptureClient, CoreCaptureBff, type CoreCaptureScope, type AuthorizedCoreRequest } from "./core-client";
+import { CoreCaptureClient, CoreCaptureBff, type AdmissionIntent, type CoreCaptureScope, type AuthorizedCoreRequest } from "./core-client";
 import { canonical, parseDraft, pendingSave, resolveNote, saveNote, sha256, type CoreDraft } from "./core-notes";
 import { NativeProviderWorkspaceJournal, type ProviderProgress } from "./workspace-journal";
 
@@ -28,6 +28,39 @@ async function base(): Promise<CoreDraft> {
 }
 
 describe("configured Core provider boundary", () => {
+  it("recovers without replaying stale consent and preserves the retained intent on explicit renewal", async () => {
+    const intent: AdmissionIntent = { key: crypto.randomUUID(), languageMode: "en-US", attestation: {
+      modality: "in_person", participant_regions: ["US"], method: "verbal_attestation", all_parties_consented: true,
+      granted_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+    } };
+    const original = structuredClone(intent), calls: Record<string, unknown>[] = [];
+    let committed = false;
+    const client = new CoreCaptureClient(scope, async (_path, body, key) => {
+      expect(key).toBe(intent.key); calls.push(body);
+      if (!committed && body.attestation === null) return Response.json({ detail: "provider_consent_required" }, { status: 409 });
+      committed = true;
+      return Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+        operation_ref: "scribe_admission_01j00000000000000000000000", appointment_ref: scope.appointmentRef,
+        consent_record_id: uuid, session_id: uuid });
+    }, new AbortController().signal);
+    expect(await client.recoverAdmission(intent)).toBeNull();
+    expect(await client.renewAdmission(intent)).toBe(uuid);
+    expect(Date.parse((calls[1]!.attestation as AdmissionIntent["attestation"]).granted_at)).toBeGreaterThan(Date.parse(intent.attestation.granted_at));
+    expect(await client.recoverAdmission(intent)).toBe(uuid);
+    expect(calls[0]!.attestation).toBeNull(); expect(calls[2]!.attestation).toBeNull();
+    expect(intent).toEqual(original);
+  });
+  it.each([
+    { detail: "provider_request_unconfirmed" },
+    { detail: "provider_consent_required", extra: "untrusted" },
+  ])("does not treat other conflicts as permission to renew consent", async failure => {
+    const client = new CoreCaptureClient(scope, async () => Response.json(failure, { status: 409 }), new AbortController().signal);
+    const intent: AdmissionIntent = { key: crypto.randomUUID(), languageMode: "en-US", attestation: {
+      modality: "in_person", participant_regions: ["US"], method: "verbal_attestation", all_parties_consented: true,
+      granted_at: new Date().toISOString(),
+    } };
+    await expect(client.recoverAdmission(intent)).rejects.toMatchObject({ code: "core_capture_unconfirmed" });
+  });
   it.each(["workspace_id", "binding_ref", "request_nonce", "operation"])("rejects changed %s before returning a receipt", async field => {
     const client = new CoreCaptureClient(scope, wire({ session_id: uuid }, { [field]: "changed" }), new AbortController().signal);
     await expect(client.operation(uuid, { kind: "creator_review" })).rejects.toThrow("capture BFF request failed");

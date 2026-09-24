@@ -196,6 +196,19 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
           current(signal); current(recorderSignal);
           if (!record(receipt) || receipt.revision !== revision || receipt.session_id !== sessionId) throw unavailable();
         },
+        prepareNativeSource: async (prepared, sourceSignal) => {
+          current(signal); current(sourceSignal);
+          if (!revision || !isUuid(prepared.sessionId) || !isUuid(prepared.leaseId)
+            || !isUuid(prepared.leaseReceiptId) || !Number.isSafeInteger(prepared.leaseGeneration)
+            || prepared.leaseGeneration < 1 || prepared.firstSequenceNumber !== undefined
+              && (!Number.isSafeInteger(prepared.firstSequenceNumber) || prepared.firstSequenceNumber < 1
+                || prepared.firstSequenceNumber > 999)) throw unavailable();
+          const reply = await plugin.prepareProviderSource({ revision, workspaceId: scope.workspaceId,
+            bindingRef: scope.bindingRef, ...prepared });
+          current(signal); current(sourceSignal);
+          if (!record(reply) || reply.revision !== revision || reply.sessionId !== prepared.sessionId) throw unavailable();
+        },
+        releaseNativeSource: sessionId => plugin.closeProviderSource({ sessionId }),
         openInCore: async noteRef => {
           current(signal);
           if (noteRef !== null && !reference(noteRef, "visit_note")) throw unavailable();

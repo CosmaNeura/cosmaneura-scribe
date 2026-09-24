@@ -1,10 +1,18 @@
 import { webcrypto } from "node:crypto";
+import type { AddressInfo } from "node:net";
 import { Capacitor } from "@capacitor/core";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeChunkAdditionalDataBase64Url, PROTOCOL_VERSION } from "@cosmaneura-scribe/capture-protocol";
 import type { SecureQueueCompareAndSwapOptions, SecureQueueRecord } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { createReservedRecord } from "../queue/records";
+import { CaptureQueue } from "../queue/capture-queue";
+import { CaptureFlowController } from "../flow/controller";
+import { HttpCaptureBff } from "../bff/http-client";
+import { BffCaptureQueueTransport } from "../bff/queue-transport";
+import { HttpCiphertextUploadTarget } from "../bff/upload-target";
+import { createMockBffServer } from "../mock-bff/server";
+import { encodePcm16MonoWav, pcm16WavProfile, type CaptureSourceStartOptions } from "../capture";
 import { EncryptedIndexedDbFlowStore } from "../flow/encrypted-store";
 import type { CaptureFlowLockManager } from "../flow/capture-lock";
 import * as sourceFactory from "./ios-capture-source";
@@ -25,12 +33,12 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("indexedDB", new IDBFactory());
-  let locked = false;
+  const locked = new Set<string>();
   const locks: CaptureFlowLockManager = { request: async (name, _options, callback) => {
-    if (locked) return callback(null);
-    locked = true;
+    if (locked.has(name)) return callback(null);
+    locked.add(name);
     try { return await callback({ name, mode: "exclusive" }); }
-    finally { locked = false; }
+    finally { locked.delete(name); }
   } };
   vi.stubGlobal("navigator", { locks });
   vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
@@ -66,6 +74,7 @@ function connection(overrides: Partial<AuthorizedProviderIOSMount> = {}) {
     recoveryScope: recovery, signal: abort.signal,
     request: async () => { throw new Error("No Core operation should run during acquisition"); },
     uploadTarget: { putCompleteEnvelope: async () => undefined },
+    prepareNativeSource: vi.fn(async () => undefined), releaseNativeSource: vi.fn(async () => undefined),
     reauthorizeRecorder: vi.fn(async () => undefined), openInCore: vi.fn(async () => undefined), ...overrides,
   };
   const backend: ProviderIOSBackend = { signal: abort.signal,
@@ -176,4 +185,86 @@ describe("native provider host composition", () => {
     const next = connection(), resources = await (await next.open()).recorder(session, next.abort.signal);
     await resources.release(); expect(source.start).not.toHaveBeenCalled();
   });
+});
+
+it("retries server stop acknowledgement on the same iOS resources after native closure", async () => {
+  const releaseNativeSource = vi.fn(async () => undefined);
+  const service = connection({ releaseNativeSource }), encounter = await service.open();
+  const resources = await encounter.recorder(session, service.abort.signal);
+  source.stop.mockRejectedValueOnce(new Error("unconfirmed native stop"));
+  await expect(resources.source.stop()).rejects.toThrow("unconfirmed native stop");
+  expect(releaseNativeSource).not.toHaveBeenCalled();
+  releaseNativeSource.mockRejectedValueOnce(new Error("lost server reply"));
+  await expect(resources.source.stop()).rejects.toMatchObject({ code: "capture_stop_acknowledgement_pending" });
+  await expect(encounter.recorder(session, service.abort.signal)).rejects.toThrow("capture_flow_already_active");
+  await resources.source.stop();
+  expect(releaseNativeSource.mock.calls).toEqual([[session], [session]]);
+  await resources.release();
+});
+
+it.each(["recording", "interrupted", "expired"] as const)("holds mobile upload until server stop is confirmed (state=%s)", async state => {
+  const server = createMockBffServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+  });
+  const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  const bff = new HttpCaptureBff((input, init) => fetch(new URL(String(input), origin), init));
+  const releaseNativeSource = vi.fn(async () => undefined);
+  const uploadTarget = new HttpCiphertextUploadTarget([origin]);
+  const upload = vi.spyOn(uploadTarget, "putCompleteEnvelope");
+  const complete = vi.spyOn(bff, "completeCapture");
+  const service = connection({ releaseNativeSource, uploadTarget });
+  let controller: CaptureFlowController | undefined;
+  let resources: Awaited<ReturnType<Awaited<ReturnType<typeof service.open>>["recorder"]>> | undefined;
+  let capture: CaptureSourceStartOptions | undefined;
+  let now = Date.now(), expire = (): void => undefined;
+  try {
+    const ids = { appointment_id: "synthetic-stop-appointment", practitioner_id: "synthetic-stop-provider",
+      patient_id: "synthetic-stop-patient", modality: "in_person" as const };
+    const consent = await bff.createConsent({ ...ids, method: "verbal_attestation", all_parties_consented: true,
+      participant_regions: ["US-NY"], granted_at: new Date().toISOString() }, { idempotencyKey: "stop-consent-fixture-0001" });
+    const admitted = await bff.createSession({ ...ids, consent_record_id: consent.id }, { idempotencyKey: "stop-session-fixture-0001" });
+    resources = await (await service.open()).recorder(admitted.id, service.abort.signal);
+    controller = new CaptureFlowController({ bff, flowStore: resources.flowStore,
+      queue: new CaptureQueue(resources.queueStorage), source: resources.source,
+      queueTransport: new BffCaptureQueueTransport(bff, resources.uploadTarget), now: () => new Date(now),
+      scheduleTimeout: callback => { expire = callback; return callback; },
+      cancelTimeout: handle => { if (handle === expire) expire = () => undefined; } });
+    source.start.mockImplementationOnce(async (options: CaptureSourceStartOptions) => { capture = options; });
+    await controller.prepareConfigured(admitted.id);
+    await controller.startRecording();
+    expect(service.mount.prepareNativeSource).toHaveBeenCalledTimes(1);
+    const started = capture!;
+    const profile = pcm16WavProfile(started.capabilities);
+    await started.onChunk({ sequenceNumber: 0, durationMs: 20,
+      wavBytes: encodePcm16MonoWav(new Int16Array(profile.sampleRateHz / 50), profile) });
+    if (state === "interrupted") started.onInterruption?.("audio_session_interrupted");
+    const retained = await resources.queueStorage.list();
+    expect(retained.filter(row => row.state === "encrypted")).toHaveLength(1);
+    releaseNativeSource.mockRejectedValueOnce(new Error("invented lost server stop reply"));
+    if (state === "expired") {
+      now = Date.parse((await resources.flowStore.getActiveCaptureState())!.captureAuthorizedUntil!) + 1;
+      expire();
+      await vi.waitFor(() => expect(controller!.snapshot.statusCode).toBe("capture_stop_acknowledgement_pending"));
+    } else {
+      await expect(controller.stopRecording()).rejects.toMatchObject({ code: "capture_stop_acknowledgement_pending" });
+    }
+    expect(controller.snapshot).toMatchObject({ state: "paused", recordedChunks: 1,
+      statusCode: "capture_stop_acknowledgement_pending" });
+    expect(await resources.flowStore.getActiveCaptureState()).toMatchObject({ phase: "paused", recordedChunks: 1 });
+    expect(await resources.queueStorage.list()).toEqual(retained);
+    expect(upload).not.toHaveBeenCalled(); expect(complete).not.toHaveBeenCalled();
+    await expect((await service.open()).recorder(admitted.id, service.abort.signal)).rejects.toThrow("capture_flow_already_active");
+    await controller.stopRecording();
+    expect(controller.snapshot).toMatchObject({ state: "processing", recordedChunks: 1 });
+    expect(source.start).toHaveBeenCalledTimes(1);
+    expect(releaseNativeSource.mock.calls).toEqual([[admitted.id], [admitted.id]]);
+    expect(upload).toHaveBeenCalledTimes(1); expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0]?.[1].channels).toEqual([{ channel: "microphone", final_sequence_number: 0 }]);
+  } finally {
+    releaseNativeSource.mockResolvedValue(undefined);
+    await controller?.deactivate(); await resources?.release();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
 });

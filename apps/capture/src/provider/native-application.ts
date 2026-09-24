@@ -15,6 +15,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
   }
   return mountProviderApplication(root, {
     session: native,
+    supportsRecorderStopReauthentication: true,
     connect: async signal => {
       const backend = await connectNativeProviderIOSBackend({ ...options, signal }, native);
       try { return { workspace: createProviderIOSHost(backend), dispose: () => backend.dispose() }; }

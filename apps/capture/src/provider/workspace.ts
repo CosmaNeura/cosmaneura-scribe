@@ -27,6 +27,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let disposeContent: (() => void) | null = null;
   let templates: CoreNoteTemplate[] = [], source: ReviewedSource | null = null, draft: CoreDraft | null = null;
   let currentSchema = "";
+  let consentRenewalOffered = false;
   root.classList.add("provider-workspace");
   root.innerHTML = `<header class="provider-header"><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
     <p data-workspace-notice role="status"></p><div data-workspace-content></div>`;
@@ -52,6 +53,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     disposeContent?.(); disposeContent = null;
     content.replaceChildren(); draft = null; source = null; templates = [];
     encounterLabel.textContent = "";
+    consentRenewalOffered = false;
     context = null; client = null; journal = { revision: null, progress: null };
     // A host acquisition can finish after revocation. Await its ownership handoff
     // so disposal cannot report success before those late handles are closed.
@@ -101,6 +103,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       <label>Participant regions<input name="regions" placeholder="For example: US-NY" autocomplete="off"><small>Enter every participant’s country or region code, separated by commas.</small></label>
       <label class="provider-consent"><input name="consent" type="checkbox">All parties have agreed to recording and transcription.</label>
       <button data-workspace-action="prepare">Prepare secure recording</button>`);
+  };
+  const renewConsent = (): void => {
+    const saved = progress();
+    requireValue(saved.sessionId === null && !saved.uploaded && saved.pendingSave === null);
+    consentRenewalOffered = true;
+    const attestation = saved.admission.attestation;
+    const visit = { in_person: "In person", virtual: "Video visit", phone: "Phone call" }[attestation.modality];
+    show(`<h1>Confirm recording consent</h1><p>Your previous request did not prepare a recording. Confirm that everyone still agrees before continuing.</p>
+      <p>${saved.admission.languageMode === "en-US" ? "English" : "English and Spanish"} · ${visit} · ${escape(attestation.participant_regions.join(", "))}</p>
+      <label class="provider-consent"><input name="consent" type="checkbox">All parties still agree to recording and transcription.</label>
+      <button data-workspace-action="renew-consent">Prepare secure recording</button>`);
   };
   const showReview = (): void => {
     requireValue(client && context);
@@ -158,7 +171,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ...(native ? { captureMode: native.captureMode } : {}),
       languageMode: progress().admission.languageMode === "en-US" ? "english" : "english_spanish",
       authorizedRequest: activeClient.reviewRequest(id), journal: activeContext.reviewJournal(id),
-      signal: activeClient.signal, deactivate: close, continueToNote: async () => {
+      signal: activeClient.signal, deactivate: close, resumePendingUpload: () => lifecycle.resumePendingWork(),
+      continueToNote: async () => {
         await persist({ ...progress(), uploaded: true });
         await lifecycle.releaseUploadedCapture();
         await openNotes();
@@ -167,12 +181,15 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     disposeContent = () => app.remove();
     if (controller.snapshot.state === "uploading") await lifecycle.resumePendingWork();
   };
-  const admit = async (): Promise<void> => {
+  const admit = async (mode: "initial" | "recover" | "renew" = "initial"): Promise<void> => {
     requireValue(client);
     const n = generation;
     show("<h2>Preparing your recording…</h2>");
-    const id = await client.admit(progress().admission);
+    const intent = progress().admission;
+    const id = await (mode === "recover" ? client.recoverAdmission(intent)
+      : mode === "renew" ? client.renewAdmission(intent) : client.admit(intent));
     if (!authorized(n)) return;
+    if (id === null) { renewConsent(); return; }
     requireValue(progress().sessionId === null || progress().sessionId === id);
     if (progress().sessionId === null) await persist({ ...progress(), sessionId: id });
     if (authorized(n)) await recordOrReview();
@@ -237,6 +254,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const renderNote = (): void => {
     requireValue(draft);
     show(`<h1>${escape(draft.note_type)}</h1><p class="provider-draft-status">${draft.status === "draft" ? "Unreviewed Core draft · Review and edit before clinical use." : "No note has been prepared for this reviewed transcript."}</p>
+      ${draft.reviewed_source.capture_continuity ? '<p role="status">Recording continuity is unconfirmed. Review this note for missing speech; gap lengths are unknown.</p>' : ""}
       ${draft.status === "draft" ? draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")
         + '<button data-workspace-action="save">Save edits to Core</button>' : '<button data-workspace-action="generate">Prepare Core note</button>'}
       <button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>`);
@@ -265,7 +283,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           sessionId: null, uploaded: false, pendingSave: null };
           assertProgress(next); await persist(next); await admit(); break;
         }
-        case "admit": await admit(); break;
+        case "admit": await admit("recover"); break;
+        case "renew-consent": {
+          requireValue(consentRenewalOffered && progress().sessionId === null);
+          if (!content.querySelector<HTMLInputElement>('[name="consent"]')?.checked) {
+            notice.textContent = "Confirm that all parties still agree before preparing."; return;
+          }
+          consentRenewalOffered = false;
+          // Preserve the original journal/key. Core retains the fresh attestation;
+          // a lost reply is recovered without resubmitting any attestation.
+          await admit("renew"); break;
+        }
         case "read": currentSchema = input("schema"); requireValue(templates.some(t => t.schema_ref === currentSchema)); await readNote(false); break;
         case "generate": await readNote(true); break;
         case "review": showReview(); break;

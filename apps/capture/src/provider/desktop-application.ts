@@ -86,6 +86,8 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
     return before === observations ? emitState(value) : state!;
   };
   const host: ProviderApplicationHost = {
+    supportsRecorderStopReauthentication: true,
+    supportsWorkspaceCloseReauthentication: true,
     session: {
       getState: () => sessionRequest("session_read"),
       signIn: () => sessionRequest("sign_in"),
@@ -156,7 +158,20 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
             }),
             recorder: async (sessionId, extra) => {
               await call("recorder", { sessionId }, extra);
-              return connectDesktopRecorderView(recorderPort, sessionId, AbortSignal.any([linked, extra]));
+              // Main revokes recorder IPC immediately when a connection closes.
+              // Its retained disconnect path still waits for physical and server
+              // cessation, including after same-account reauthentication.
+              const cleanupPort: DesktopRecorderPort = {
+                subscribe: listener => recorderPort.subscribe(listener),
+                request: async command => {
+                  if (command.kind === "deactivate" && (abort.signal.aborted || signal.aborted)) {
+                    await dispose();
+                    return { requestId: command.requestId, ok: true, state: null };
+                  }
+                  return recorderPort.request(command);
+                },
+              };
+              return connectDesktopRecorderView(cleanupPort, sessionId, AbortSignal.any([linked, extra]));
             },
             openInCore: async noteRef => { await call("open_core", { noteRef }); },
           };

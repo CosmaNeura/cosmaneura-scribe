@@ -11,6 +11,10 @@ export interface NativeProviderSession {
 }
 export interface NativeProviderState { readonly phase: string; readonly revision: string; readonly providerReady?: boolean }
 export interface ProviderNativePlugin {
+  prepareProviderSource(request: { revision: string; workspaceId: string; bindingRef: string;
+    sessionId: string; leaseId: string; leaseReceiptId: string; leaseGeneration: number;
+    captureAuthorizedUntil: string; firstSequenceNumber?: number }): Promise<{ revision: string; sessionId: string }>;
+  closeProviderSource(request: { sessionId: string }): Promise<void>;
   getProviderState(): Promise<NativeProviderState>;
   addListener(event: "authStateChanged", listener: (state: NativeProviderState) => void): Promise<PluginListenerHandle>;
   providerRequest(request: { requestId: string; revision: string; action: ProviderAction; key: string; body: string }): Promise<{
@@ -19,5 +23,10 @@ export interface ProviderNativePlugin {
   cancelProviderRequest(request: { requestId: string }): Promise<void>;
 }
 
+export interface StandaloneProviderNative {
+  getProviderConfiguration(): Promise<{ enabled: boolean; coreOrigin: string; uploadOrigins: string[] }>;
+  openProviderCore(request: { appointmentRef: string | null }): Promise<void>;
+}
+
 // Register once: startup and the encounter backend share the same native owner.
-export const nativeProviderPlugin = registerPlugin<ProviderNativePlugin & NativeProviderSession>("CosmasWorkspaceAuth");
+export const nativeProviderPlugin = registerPlugin<ProviderNativePlugin & NativeProviderSession & StandaloneProviderNative>("CosmasWorkspaceAuth");
