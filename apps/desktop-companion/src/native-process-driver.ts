@@ -51,6 +51,16 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
       return await probe(this.options.helperPath) && this.options.isSessionActive();
     } catch { return false; }
   }
+  /** Explicit provider setup only. This helper mode cannot start an audio source. */
+  async requestPermissions(signal: AbortSignal): Promise<boolean> {
+    requireMain();
+    try {
+      if (!this.options.enabled || signal.aborted || !this.options.isSessionActive()) return false;
+      await verifyNativeHelper(this.options);
+      if (signal.aborted || !this.options.isSessionActive()) return false;
+      return await probe(this.options.helperPath, signal) && !signal.aborted && this.options.isSessionActive();
+    } catch { return false; }
+  }
   start(configuration: Parameters<DesktopPCMDriver["start"]>[0], sink: Sink): DesktopPCMDriverSession {
     requireMain();
     if (!this.options.enabled || !this.options.isSessionActive() || configuration.sampleRateHz !== 16_000
@@ -261,11 +271,17 @@ export async function verifyNativeHelper(options: Pick<NativeProcessDriverOption
       || after.mtimeMs !== before.mtimeMs || length !== before.size || hash.digest("hex") !== options.helperSha256) throw failure();
   } finally { bytes.fill(0); await file.close(); }
 }
-async function probe(path: string): Promise<boolean> {
+async function probe(path: string, permissionSignal?: AbortSignal): Promise<boolean> {
+  if (permissionSignal?.aborted) return false;
   return await new Promise<boolean>(resolve => {
-    const child = launch(path, "--availability-v1"), decoder = new NativeProcessDecoder();
+    const child = launch(path, permissionSignal ? "--request-permissions-v1" : "--availability-v1");
+    const decoder = new NativeProcessDecoder();
     let available: boolean | undefined;
-    const timer = setTimeout(() => { child.kill("SIGKILL"); }, DEADLINE_MS); // This mode never records.
+    // Neither probe mode records. OS setup may wait for an explicit user choice;
+    // recording and read-only availability keep their existing deadlines.
+    const cancel = (): void => { available = false; child.kill("SIGKILL"); };
+    const timer = setTimeout(cancel, permissionSignal ? 120_000 : DEADLINE_MS);
+    permissionSignal?.addEventListener("abort", cancel, { once: true });
     child.stdout.on("data", (bytes: Buffer) => {
       try {
         decoder.push(bytes, (kind, payload) => {
@@ -280,8 +296,9 @@ async function probe(path: string): Promise<boolean> {
     child.on("error", () => { available = false; });
     child.once("close", code => {
       clearTimeout(timer);
+      permissionSignal?.removeEventListener("abort", cancel);
       try { decoder.finish(); } catch { available = false; }
-      resolve(code === 0 && available === true);
+      resolve(code === 0 && available === true && !permissionSignal?.aborted);
     });
     child.stdin.end();
   });

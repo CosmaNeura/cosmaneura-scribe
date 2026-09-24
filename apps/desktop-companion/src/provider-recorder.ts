@@ -69,6 +69,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private readonly createController: () => DesktopCaptureController;
   private unsubscribeController: () => void;
   private readonly availability: (signal: AbortSignal) => Promise<"ready" | "permission_required">;
+  private readonly requestPermissions: (signal: AbortSignal) => Promise<boolean>;
   private unmountedAvailability: "ready" | "permission_required" | null = null;
   private preparationResetPending = false;
   private readonly listeners = new Set<(value: ProviderRecorderSnapshot) => void>();
@@ -123,6 +124,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       return available ? "ready" : "permission_required";
     };
     this.availability = availability;
+    this.requestPermissions = signal => driver.requestPermissions(signal);
     const adapter: DesktopCaptureAdapter = {
       initialize: availability, refreshPermissions: availability,
       start: async (capability, signal) => {
@@ -319,6 +321,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   refreshPermissions(): Promise<void> {
     return this.run("other", async () => {
       await this.resetUnstartedPreparation();
+      if (this.snapshot.desktop?.phase === "permission_required") {
+        await this.requestPermissions(this.signal); this.requireOpen();
+      }
       if (this.unmountedAvailability !== null) this.unmountedAvailability = await this.availability(this.signal);
       else await this.controller.handleRendererCommand({ schemaVersion: 1, kind: "refresh_permissions", requestId: crypto.randomUUID() });
     });

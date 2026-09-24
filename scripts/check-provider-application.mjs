@@ -127,6 +127,20 @@ try {
     } finally { await dispose(); }
   });
   await check(async () => {
+    const f = fixture(), dispose = mountProviderApplication(root, f.host);
+    try {
+      await until(visible); f.change("ready");
+      await until(() => f.closes === 1); await turn();
+      const reopen = root.querySelector('[data-session-action="open"]');
+      assert.ok(reopen); reopen.focus();
+      await new Promise(resolve => setTimeout(resolve, 5200)); // Actual native-state poll.
+      assert.equal(root.querySelector('[data-session-action="open"]'), reopen,
+        "An unchanged session poll must retain the actionable recovery button");
+      assert.equal(window.document.activeElement, reopen, "Session polling must preserve keyboard focus");
+      reopen.click(); await until(visible); assert.equal(f.connects, 2);
+    } finally { await dispose(); }
+  });
+  await check(async () => {
     const f = fixture(), gate = deferred();
     let pendingSignal;
     f.host.connect = signal => { pendingSignal = signal; return gate.promise; };

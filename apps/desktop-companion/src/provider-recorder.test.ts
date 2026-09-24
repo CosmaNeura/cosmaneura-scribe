@@ -403,6 +403,28 @@ it.skipIf(!helperPath)("retains paused desktop capture and encrypted chunks unti
 });
 
 describe("prepared desktop start", () => {
+  it("requests recording permissions only on explicit setup without starting or replacing the prepared lease", async () => {
+    const f = await fixture(true), issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");
+    f.nativeAvailability!.mockResolvedValue(false);
+    const request = vi.spyOn(NativeProcessPCMDriver.prototype, "requestPermissions").mockImplementation(async signal => {
+      expect(signal.aborted).toBe(false); f.nativeAvailability!.mockResolvedValue(true); return true;
+    });
+    try {
+      const recorder = await f.open();
+      expect(recorder.snapshot.desktop?.phase).toBe("permission_required");
+      expect(request).not.toHaveBeenCalled();
+      const prepared = await f.options.flowStore.getActiveCaptureState();
+      const leaseCalls = issue.mock.calls.length;
+      await recorder.refreshPermissions();
+      expect(recorder.snapshot.desktop?.phase).toBe("ready");
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(issue).toHaveBeenCalledTimes(leaseCalls);
+      expect(await f.options.flowStore.getActiveCaptureState()).toEqual(prepared);
+      expect(f.selectWindow).not.toHaveBeenCalled();
+      expect(f.authority).not.toHaveBeenCalled();
+      expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { request.mockRestore(); await f.close(); }
+  });
   it("checks current Core session before lease work and sends saved receipts only after window choice", async () => {
     const f = await fixture(true), bff = f.options.createBff(f.abort.signal);
     const issue = vi.spyOn(bff, "issueLease");
