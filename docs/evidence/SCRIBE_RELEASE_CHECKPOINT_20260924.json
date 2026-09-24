@@ -1,0 +1,233 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-09-24T11:38:45.113028+00:00",
+  "source_commit": "381bc418790333cb1f5e81d93c1bdb8ef3f3a399",
+  "branch": "codex/beta-preintegration-20260904",
+  "previous_checkpoint": "56cc215b0ececfe12375c78c50efd84f897e2b10",
+  "scribe_main": "d6fcdb2d0a94c9f158b74593e0fb18d810209673",
+  "core_master": "82e8ca268cff7bfd3329c6193808bc129a78912e",
+  "main_merge_commit": "2e27cb60562b2a05d307fd54ad40b6c467b58250",
+  "staging": {
+    "observed_at": "2026-09-24T11:37:13.684771+00:00",
+    "read_only": true,
+    "applications": [
+      {
+        "image": "cosmaneurastagingregistry.azurecr.io/cosmaneura/cosmaneura@sha256:c7cdae9307ba085931544ec77322d41d939604cf864b40e4cc37c70aeab5bf09",
+        "name": "cosmaneura-staging-app",
+        "ready": "cosmaneura-staging-app--r1790210779a1-82e8ca2",
+        "revision": "cosmaneura-staging-app--r1790210779a1-82e8ca2",
+        "status": "Running"
+      },
+      {
+        "image": "cosmaneurastagingregistry.azurecr.io/scribe-beta/api@sha256:b6560a83449d0bc8a98d3b97c99c48776126e0c568b2c27ec969928e58f240cf",
+        "name": "cosmaneura-staging-scribe-api",
+        "ready": "cosmaneura-staging-scribe-api--0000004",
+        "revision": "cosmaneura-staging-scribe-api--0000004",
+        "status": "Running"
+      },
+      {
+        "image": "cosmaneurastagingregistry.azurecr.io/scribe-beta/receiver@sha256:bfd1c23ac58204089d5fcdd7d66e72aece51e0fd9e37aa85f1fd7e5098296fea",
+        "name": "cosmaneura-staging-scribe-native",
+        "ready": "cosmaneura-staging-scribe-native--0000007",
+        "revision": "cosmaneura-staging-scribe-native--0000007",
+        "status": "Running"
+      }
+    ]
+  },
+  "commits": [
+    {
+      "packet": "configured-capture-server",
+      "commit": "26d2c2552759ad5c945e008b4e90cf3772b46560",
+      "files": 15,
+      "changed_lines": 1639
+    },
+    {
+      "packet": "configured-processing-workers",
+      "commit": "d9db56c46acd20f477f8cff68d5904b54b6361cd",
+      "files": 6,
+      "changed_lines": 547
+    },
+    {
+      "packet": "capture-flow",
+      "commit": "4d2012d48aac60d5d6ab00cdc0bcd6ba0d0166bb",
+      "files": 12,
+      "changed_lines": 825
+    },
+    {
+      "packet": "desktop-recorder",
+      "commit": "df30fe9607ca66134dfb51cf202c92dd2554f3ff",
+      "files": 15,
+      "changed_lines": 1494
+    },
+    {
+      "packet": "desktop-native-backend",
+      "commit": "3fe94be95cef6e0dc08411bc06668d06c73118b3",
+      "files": 11,
+      "changed_lines": 1081
+    },
+    {
+      "packet": "provider-workspace",
+      "commit": "e657443c2ab7c015185c67b1097a01ef015eb3c5",
+      "files": 17,
+      "changed_lines": 373
+    },
+    {
+      "packet": "native-build",
+      "commit": "e32309a52c6eb74783a7c1dbc84c8a968ea4880c",
+      "files": 15,
+      "changed_lines": 1744
+    },
+    {
+      "packet": "receiver",
+      "commit": "8ae6adfbc3c536f6f84834ff452a008a35fa5686",
+      "files": 9,
+      "changed_lines": 766
+    },
+    {
+      "packet": "checkpoint-records",
+      "commit": "b7125e667224abb8e000f109f16d9c3dee28022e",
+      "files": 16,
+      "changed_lines": 1067
+    },
+    {
+      "title": "test: preserve expand-only history in disposable database checks",
+      "commit": "1a9215d060ab0a0fece04d01afdb13971cf4ae15",
+      "files": 1,
+      "changed_lines": 27
+    },
+    {
+      "title": "build: retain native identity sources and lock Clerk inputs",
+      "commit": "0f874791f08335c46c1cee56a8316bdb964e68b5",
+      "files": 13,
+      "changed_lines": 1138
+    },
+    {
+      "title": "feat: retain native source ownership and recovery inputs",
+      "commit": "39b8b9edddbaa8f8f80293857c36f454e4bc45b5",
+      "files": 4,
+      "changed_lines": 885
+    },
+    {
+      "title": "feat: retain the iOS native provider bridge",
+      "commit": "580dafa784d559c9c9e92dba5d2323b6b7ddbf9e",
+      "files": 5,
+      "changed_lines": 924
+    },
+    {
+      "title": "feat: retain iOS PCM capture and authority sources",
+      "commit": "74ccec5ab24a24b3d9a279f3b237bd98f01bda8a",
+      "files": 5,
+      "changed_lines": 1430
+    },
+    {
+      "title": "feat: retain iOS PCM driver and bridge sources",
+      "commit": "dae25d922df721bf2d1c4ee496e067f1de649b09",
+      "files": 3,
+      "changed_lines": 1695
+    },
+    {
+      "title": "feat: retain iOS Capacitor recording integration",
+      "commit": "1960bd614af6193a0024a3b623b7c1fddfec6dac",
+      "files": 3,
+      "changed_lines": 675
+    },
+    {
+      "title": "fix: allow shared Core admission to finish without changing retry intent",
+      "commit": "381bc418790333cb1f5e81d93c1bdb8ef3f3a399",
+      "files": 5,
+      "changed_lines": 180
+    }
+  ],
+  "validation": {
+    "capture_tests": {
+      "passed": 215
+    },
+    "desktop_tests": {
+      "passed": 101,
+      "skipped": 28,
+      "final_changed_backend_and_bridge_checks_passed": 16
+    },
+    "review_ui_tests": {
+      "passed": 18
+    },
+    "api_database_tests": {
+      "passed": 92,
+      "database": "new disposable database on private local socket",
+      "instance_stopped": true
+    },
+    "receiver_and_actual_client_wire_tests": {
+      "passed": 24
+    },
+    "main_integration_tests": {
+      "passed": 14
+    },
+    "typecheck": [
+      "capture",
+      "desktop-companion",
+      "review-ui"
+    ],
+    "native_helper": {
+      "tested_source_commit": "381bc418790333cb1f5e81d93c1bdb8ef3f3a399",
+      "build_input_files": 250,
+      "all_final_runtime_inputs_match_compiled_helper": true,
+      "signed": false,
+      "installed": false
+    },
+    "independent_review": "pending; no other task or agent contacted",
+    "native_package_manifests": {
+      "cosmas-native-auth": 3,
+      "ios-pcm-capture": 3,
+      "ios-pcm-capacitor": 2
+    }
+  },
+  "logs": {
+    "capture-tests-unsandboxed.log": {
+      "path": "/Users/jw/Desktop/Cosmas/scribe-source-start-20260922.h91ly9kp/source-stop-followup/repository-checkpoint-20260924/capture-tests-unsandboxed.log",
+      "sha256": "40e6794dd384f1516d9e63d98736ada6a055e1bbe26cf4b3e077c2fafabf9f85"
+    },
+    "desktop-tests-unsandboxed.log": {
+      "path": "/Users/jw/Desktop/Cosmas/scribe-source-start-20260922.h91ly9kp/source-stop-followup/repository-checkpoint-20260924/desktop-tests-unsandboxed.log",
+      "sha256": "b97319ccf41fbb5ec1609d1a290faf0c410954c483e66c21c0cb69bd1f544b63"
+    },
+    "postgres-validation-r3.log": {
+      "path": "/Users/jw/Desktop/Cosmas/scribe-source-start-20260922.h91ly9kp/source-stop-followup/repository-checkpoint-20260924/postgres-validation-r3.log",
+      "sha256": "784cb68a77bdef38ffc04960811241ec651a73cc67d74a7ad603cc485f5e2c38"
+    },
+    "admission-connected-final.log": {
+      "path": "/Users/jw/Desktop/Cosmas/scribe-source-start-20260922.h91ly9kp/source-stop-followup/repository-checkpoint-20260924/admission-connected-final.log",
+      "sha256": "d2cb5e7bf1e091fcf7d87ea01b4b527d5d240af6b3ff972b3dc42aa1979384e0"
+    },
+    "main-integration-tests.log": {
+      "path": "/Users/jw/Desktop/Cosmas/scribe-source-start-20260922.h91ly9kp/source-stop-followup/repository-checkpoint-20260924/main-integration-tests.log",
+      "sha256": "85db67f8fb4c005906ed90e91574263bb6d79f74543b2cb65db57385c2e13641"
+    },
+    "native-helper/build.log": {
+      "path": "/Users/jw/Desktop/Cosmas/scribe-source-start-20260922.h91ly9kp/source-stop-followup/repository-checkpoint-20260924/native-helper/build.log",
+      "sha256": "e0b2b2c4d8c730f4829ec9c867c98fbc2c44901a9e69837aa2e52290c55ce58d"
+    }
+  },
+  "release_state": {
+    "pushed": false,
+    "deployed_this_checkpoint": false,
+    "signed_this_checkpoint": false,
+    "installed_this_checkpoint": false,
+    "installed_end_to_end_acceptance": false
+  },
+  "notes": [
+    "The first fixture run exposed an obsolete downgrade from expand-only source history; the corrected fixture preserves the refusal and uses a fresh database.",
+    "Historical admission root cause is not proven. Longer waits repair an observed cross-layer mismatch without changing authority deadlines or retry intent.",
+    "All inherited first-party native source is now in Git. Offline builds still require the exact retained Clerk dependency pinned by the 233-file lock.",
+    "The full branch exceeds a single PR change budget. Preserve the dependency-ordered review stack; individual new source commits remain below 2000 changed lines and 50 files."
+  ],
+  "commands": {
+    "capture": "node node_modules/vitest/vitest.mjs run (cwd apps/capture; Node 24, workspace-root module path)",
+    "desktop": "node node_modules/vitest/vitest.mjs run (cwd apps/desktop-companion; Node 24, workspace-root module path)",
+    "final_desktop": "vitest run src/native-provider-backend.test.ts src/provider-workspace-main.test.ts; tsc -p tsconfig.json --noEmit (cwd apps/desktop-companion)",
+    "review_ui": "vitest run (cwd apps/review-ui)",
+    "database": ".venv/bin/python3.12 -m pytest -ra tests/test_captured_processing.py tests/test_captured_source_runtime.py tests/test_captured_admission_routes.py tests/test_creator_review_routes.py tests/test_captured_transcription_worker.py tests/test_postgres_repository.py; COSMANEURA_SCRIBE_TEST_DATABASE_URL selected the new disposable local database",
+    "receiver": "SCRIBE_TEST_NODE=<installed Node 24 binary> .venv/bin/python3.12 -m pytest -ra tests/test_provider_core_transport.py",
+    "main_integration": ".venv/bin/python3.12 -m pytest -q tests/test_canonicalization.py tests/test_handoff.py tests/test_ci_cost_controls.py",
+    "native": "python3 scripts/assemble-native-source.py <new-output> --clerk-source <exact-retained-vendor>; python3 scripts/build-desktop-native-provider.py <new-helper-output> --native-auth-source <assembled-auth-package>",
+    "lint": ".venv/bin/ruff check services/api/src/cosmaneura_scribe/provider_core_transport.py tests/test_provider_core_transport.py tests/conftest.py scripts/assemble-native-source.py; eslint apps/desktop-companion/src/native-provider-backend.ts apps/desktop-companion/src/native-provider-backend.test.ts --max-warnings 0"
+  }
+}

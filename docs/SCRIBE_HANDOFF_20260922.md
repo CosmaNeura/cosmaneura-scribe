@@ -1,5 +1,11 @@
 # Scribe continuation checkpoint — 2026-09-22
 
+## Latest checkpoint
+
+See [the September 24 committed checkpoint](SCRIBE_COMMITTED_CHECKPOINT_20260924.md)
+for current source, staging comparison, validation and remaining acceptance work.
+The September 22 handoff below is retained as historical scope and approval evidence.
+
 Read this file completely. It is a bounded handoff at the owner's requested
 stopping point, not a declaration that beta is complete. Verify local Git state
 before editing. Preserve the full goal and boundaries below; do not import the
