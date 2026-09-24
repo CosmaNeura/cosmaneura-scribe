@@ -26,15 +26,15 @@ from cosmaneura_scribe.provider_core_transport import (
     ProviderCoreUnavailable,
 )
 from cosmas_os.api.auth import (
+    CORE_STAGING_PERSONAL,
     AccessDenied,
     AuthenticationFailed,
     ClerkTokenVerifier,
-    CORE_STAGING_PERSONAL,
     CoreProviderIdentity,
     RequestIdentity,
     TokenVerifier,
-    authenticate_request,
     authenticate_core_provider,
+    authenticate_request,
     core_provider_configuration_valid,
 )
 from cosmas_os.application import workspace as ws
