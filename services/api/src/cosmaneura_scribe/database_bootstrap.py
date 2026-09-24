@@ -171,7 +171,25 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                 text(f"GRANT UPDATE (revoked_at) ON consent_records TO {role}")
             )
             await connection.execute(
-                text(f"GRANT SELECT, INSERT, UPDATE ON scribe_sessions TO {role}")
+                text(
+                    "GRANT SELECT (id, tenant_id, appointment_id, practitioner_id, "
+                    "patient_id, consent_record_id, modality, ingest_mode, status, created_at, "
+                    "transcript_contract_version, creator_actor_id, language_mode, "
+                    "transcription_adapter_id, transcription_model_profile_id, "
+                    f"normalization_profile_id) ON scribe_sessions TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT INSERT (id, tenant_id, appointment_id, practitioner_id, "
+                    "patient_id, consent_record_id, modality, ingest_mode, status, created_at, "
+                    "transcript_contract_version, creator_actor_id, language_mode, "
+                    "transcription_adapter_id, transcription_model_profile_id, "
+                    f"normalization_profile_id) ON scribe_sessions TO {role}"
+                )
+            )
+            await connection.execute(
+                text(f"GRANT UPDATE (status) ON scribe_sessions TO {role}")
             )
             await connection.execute(
                 text(f"GRANT SELECT, INSERT, UPDATE ON transcript_deliveries TO {role}")
@@ -216,7 +234,16 @@ async def _grant_transcription_permissions(settings: Settings) -> None:
                 )
             )
             await connection.execute(text(f"GRANT INSERT ON transcripts TO {role}"))
-            await connection.execute(text(f"GRANT SELECT, UPDATE ON scribe_sessions TO {role}"))
+            await connection.execute(
+                text(
+                    "GRANT SELECT (id, tenant_id, appointment_id, practitioner_id, "
+                    "patient_id, consent_record_id, modality, ingest_mode, status, created_at, "
+                    f"transcript_contract_version) ON scribe_sessions TO {role}"
+                )
+            )
+            await connection.execute(
+                text(f"GRANT UPDATE (status) ON scribe_sessions TO {role}")
+            )
             await connection.execute(
                 text(f"GRANT SELECT, INSERT, UPDATE ON transcription_jobs TO {role}")
             )
@@ -260,7 +287,8 @@ async def _grant_delivery_reconciler_permissions(settings: Settings) -> None:
             await connection.execute(
                 text(
                     "GRANT SELECT (id, tenant_id, appointment_id, practitioner_id, patient_id, "
-                    f"consent_record_id, modality, status) ON scribe_sessions TO {role}"
+                    "consent_record_id, modality, status, transcript_contract_version) "
+                    f"ON scribe_sessions TO {role}"
                 )
             )
             await connection.execute(

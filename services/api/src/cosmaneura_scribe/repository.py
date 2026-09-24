@@ -19,6 +19,12 @@ from .capture_protocol_v1 import (
     PROTOCOL_VERSION,
     RESERVATION_PLAINTEXT_BUDGET_BYTES,
 )
+from .normalized_source_persistence import (
+    VersionedExternalSessionCreate,
+    VersionedExternalSessionRecord,
+    build_versioned_external_session_record,
+    consent_authorizes_versioned_session,
+)
 from .schemas import (
     AudioChunk,
     AuditEvent,
@@ -275,6 +281,24 @@ class Repository(Protocol):
     async def add_session(self, tenant_id: UUID, session: CaptureSession) -> None: ...
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None: ...
+
+    async def create_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        draft: VersionedExternalSessionCreate,
+    ) -> VersionedExternalSessionRecord | None: ...
+
+    async def get_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> VersionedExternalSessionRecord | None: ...
+
+    async def lock_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> VersionedExternalSessionRecord | None: ...
 
     async def get_session_audio_key(
         self,
@@ -554,6 +578,9 @@ class RepositoryProvider(Protocol):
 class InMemoryRepository:
     consents: dict[tuple[UUID, UUID], ConsentRecord] = field(default_factory=lambda: {})
     sessions: dict[tuple[UUID, UUID], CaptureSession] = field(default_factory=lambda: {})
+    versioned_external_sessions: dict[
+        tuple[UUID, UUID], VersionedExternalSessionRecord
+    ] = field(default_factory=lambda: {})
     session_audio_keys: dict[tuple[UUID, UUID], SessionAudioKey] = field(default_factory=lambda: {})
     capture_leases: dict[tuple[UUID, UUID], CaptureLeaseRecord] = field(
         default_factory=lambda: {}
@@ -594,6 +621,7 @@ class InMemoryRepository:
             snapshot = (
                 copy.deepcopy(self.consents),
                 copy.deepcopy(self.sessions),
+                copy.deepcopy(self.versioned_external_sessions),
                 copy.deepcopy(self.session_audio_keys),
                 copy.deepcopy(self.capture_leases),
                 copy.deepcopy(self.capture_lease_receipts),
@@ -618,6 +646,7 @@ class InMemoryRepository:
                 (
                     self.consents,
                     self.sessions,
+                    self.versioned_external_sessions,
                     self.session_audio_keys,
                     self.capture_leases,
                     self.capture_lease_receipts,
@@ -724,9 +753,13 @@ class InMemoryRepository:
 
     async def add_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         await self.lock_consent(tenant_id, session.consent_record_id)
+        if (tenant_id, session.id) in self.versioned_external_sessions:
+            raise ValueError("scribe session identifier is already in use")
         self.sessions[(tenant_id, session.id)] = session
 
     def _require_chunk_upload_session(self, tenant_id: UUID, session_id: UUID) -> None:
+        if (tenant_id, session_id) in self.versioned_external_sessions:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         session = self.sessions.get((tenant_id, session_id))
         if (
             session is not None
@@ -738,6 +771,8 @@ class InMemoryRepository:
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         await self.lock_consent(tenant_id, session.consent_record_id)
+        if (tenant_id, session.id) in self.versioned_external_sessions:
+            return
         current = self.sessions.get((tenant_id, session.id))
         if current is not None:
             if current.ingest_mode != session.ingest_mode:
@@ -753,11 +788,53 @@ class InMemoryRepository:
                 )
         self.sessions[(tenant_id, session.id)] = session
 
+    async def create_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        draft: VersionedExternalSessionCreate,
+    ) -> VersionedExternalSessionRecord | None:
+        consent = await self.lock_consent(tenant_id, draft.consent_record_id)
+        if not consent_authorizes_versioned_session(consent, draft):
+            return None
+        row_key = (tenant_id, draft.id)
+        if row_key in self.sessions or row_key in self.versioned_external_sessions:
+            raise ValueError("scribe session identifier is already in use")
+        record = build_versioned_external_session_record(
+            draft,
+            created_at=datetime.now(UTC),
+        )
+        self.versioned_external_sessions[row_key] = record
+        return record
+
+    async def get_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> VersionedExternalSessionRecord | None:
+        return self.versioned_external_sessions.get((tenant_id, session_id))
+
+    async def lock_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> VersionedExternalSessionRecord | None:
+        # The provider transaction lock is the in-memory session fence.
+        record = self.versioned_external_sessions.get((tenant_id, session_id))
+        if record is None:
+            return None
+        await self.lock_consent(tenant_id, record.consent_record_id)
+        locked = self.versioned_external_sessions.get((tenant_id, session_id))
+        if locked is None or locked.consent_record_id != record.consent_record_id:
+            return None
+        return locked
+
     async def get_session_audio_key(
         self,
         tenant_id: UUID,
         session_id: UUID,
     ) -> SessionAudioKey | None:
+        if (tenant_id, session_id) not in self.sessions:
+            return None
         return self.session_audio_keys.get((tenant_id, session_id))
 
     async def add_session_audio_key(
@@ -796,6 +873,8 @@ class InMemoryRepository:
         tenant_id: UUID,
         session_id: UUID,
     ) -> CaptureLeaseRecord | None:
+        if (tenant_id, session_id) not in self.sessions:
+            return None
         return self.capture_leases.get((tenant_id, session_id))
 
     async def get_capture_lease_receipt(
@@ -803,7 +882,10 @@ class InMemoryRepository:
         tenant_id: UUID,
         receipt_id: UUID,
     ) -> CaptureLeaseReceipt | None:
-        return self.capture_lease_receipts.get((tenant_id, receipt_id))
+        receipt = self.capture_lease_receipts.get((tenant_id, receipt_id))
+        if receipt is None or (tenant_id, receipt.session_id) not in self.sessions:
+            return None
+        return receipt
 
     async def issue_capture_lease(
         self,
@@ -918,7 +1000,8 @@ class InMemoryRepository:
     ) -> bool:
         current = self.capture_leases.get((tenant_id, session_id))
         if (
-            current is None
+            (tenant_id, session_id) not in self.sessions
+            or current is None
             or current.lease_id != expected_lease_id
             or current.generation != expected_generation
             or current.closed_at is not None
@@ -941,7 +1024,10 @@ class InMemoryRepository:
         tenant_id: UUID,
         batch_id: UUID,
     ) -> ChunkReservationBatch | None:
-        return self.chunk_reservation_batches.get((tenant_id, batch_id))
+        batch = self.chunk_reservation_batches.get((tenant_id, batch_id))
+        if batch is None or (tenant_id, batch.session_id) not in self.sessions:
+            return None
+        return batch
 
     async def create_chunk_reservation_batch(
         self,
@@ -1099,7 +1185,11 @@ class InMemoryRepository:
         object_id: UUID,
     ) -> ChunkReservationRecord | None:
         reservation = self.chunk_reservations.get((tenant_id, object_id))
-        if reservation is None or reservation.session_id != session_id:
+        if (
+            (tenant_id, session_id) not in self.sessions
+            or reservation is None
+            or reservation.session_id != session_id
+        ):
             return None
         return reservation
 
@@ -1108,6 +1198,14 @@ class InMemoryRepository:
         tenant_id: UUID,
         session_id: UUID,
     ) -> CaptureReservationUsage:
+        if (tenant_id, session_id) not in self.sessions:
+            return CaptureReservationUsage(
+                reservation_count=0,
+                plaintext_budget_bytes=0,
+                next_sequence_numbers=MappingProxyType(
+                    {channel: 0 for channel in CaptureChannel}
+                ),
+            )
         reservations = [
             reservation
             for (row_tenant, _), reservation in self.chunk_reservations.items()
@@ -1141,14 +1239,17 @@ class InMemoryRepository:
         tenant_id: UUID,
         receipt_id: UUID,
     ) -> UploadAuthorizationReceipt | None:
-        return self.upload_authorization_receipts.get((tenant_id, receipt_id))
+        receipt = self.upload_authorization_receipts.get((tenant_id, receipt_id))
+        if receipt is None or (tenant_id, receipt.session_id) not in self.sessions:
+            return None
+        return receipt
 
     async def is_upload_authorization_active(
         self,
         tenant_id: UUID,
         receipt_id: UUID,
     ) -> bool:
-        receipt = self.upload_authorization_receipts.get((tenant_id, receipt_id))
+        receipt = await self.get_upload_authorization_receipt(tenant_id, receipt_id)
         return receipt is not None and receipt.expires_at > datetime.now(UTC)
 
     async def add_upload_authorization_receipt(
@@ -1350,6 +1451,8 @@ class InMemoryRepository:
         tenant_id: UUID,
         session_id: UUID,
     ) -> tuple[CaptureChannelFinalization, ...]:
+        if (tenant_id, session_id) not in self.sessions:
+            return ()
         return tuple(
             self.capture_finalizations[(tenant_id, session_id, channel)]
             for channel in CaptureChannel
@@ -1386,13 +1489,18 @@ class InMemoryRepository:
         )
 
     async def get_chunk(self, tenant_id: UUID, chunk_id: UUID) -> AudioChunk | None:
-        return self.chunks.get((tenant_id, chunk_id))
+        chunk = self.chunks.get((tenant_id, chunk_id))
+        if chunk is None or (tenant_id, chunk.session_id) not in self.sessions:
+            return None
+        return chunk
 
     async def add_chunk(self, tenant_id: UUID, chunk: AudioChunk) -> None:
         self._require_chunk_upload_session(tenant_id, chunk.session_id)
         self.chunks[(tenant_id, chunk.id)] = chunk
 
     async def chunks_for(self, tenant_id: UUID, session_id: UUID) -> list[AudioChunk]:
+        if (tenant_id, session_id) not in self.sessions:
+            return []
         return sorted(
             (
                 chunk
@@ -1403,20 +1511,30 @@ class InMemoryRepository:
         )
 
     async def get_upload_grant(self, tenant_id: UUID, object_id: UUID) -> UploadGrantRecord | None:
-        return self.upload_grants.get((tenant_id, object_id))
+        grant = self.upload_grants.get((tenant_id, object_id))
+        if grant is None or (tenant_id, grant.session_id) not in self.sessions:
+            return None
+        return grant
 
     async def add_upload_grant(self, tenant_id: UUID, grant: UploadGrantRecord) -> None:
         self._require_chunk_upload_session(tenant_id, grant.session_id)
         self.upload_grants[(tenant_id, grant.object_id)] = grant
 
     async def get_transcript(self, tenant_id: UUID, transcript_id: UUID) -> Transcript | None:
-        return self.transcripts.get((tenant_id, transcript_id))
+        transcript = self.transcripts.get((tenant_id, transcript_id))
+        if transcript is None or (tenant_id, transcript.session_id) not in self.sessions:
+            return None
+        return transcript
 
     async def add_transcript(self, tenant_id: UUID, transcript: Transcript) -> None:
+        if (tenant_id, transcript.session_id) not in self.sessions:
+            raise ValueError("legacy session is unavailable for transcript persistence")
         self.transcripts[(tenant_id, transcript.id)] = transcript
         self.transcript_by_session[(tenant_id, transcript.session_id)] = transcript.id
 
     async def transcript_for(self, tenant_id: UUID, session_id: UUID) -> Transcript | None:
+        if (tenant_id, session_id) not in self.sessions:
+            return None
         transcript_id = self.transcript_by_session.get((tenant_id, session_id))
         if transcript_id is None:
             return None
@@ -1425,6 +1543,8 @@ class InMemoryRepository:
     async def transcription_job_for(
         self, tenant_id: UUID, session_id: UUID
     ) -> TranscriptionJob | None:
+        if (tenant_id, session_id) not in self.sessions:
+            return None
         job_id = self.transcription_job_by_session.get((tenant_id, session_id))
         if job_id is None:
             return None
@@ -1491,6 +1611,7 @@ class InMemoryRepository:
         current = self.transcription_jobs.get((tenant_id, job.id))
         if (
             current is None
+            or (tenant_id, current.session_id) not in self.sessions
             or current.status != TranscriptionJobStatus.PROCESSING
             or current.lease_token != expected_lease_token
         ):
@@ -1510,6 +1631,7 @@ class InMemoryRepository:
         current = self.transcription_jobs.get((tenant_id, job_id))
         if (
             current is None
+            or (tenant_id, current.session_id) not in self.sessions
             or current.status != TranscriptionJobStatus.PROCESSING
             or current.lease_token != lease_token
             or current.lease_until is None
@@ -1522,7 +1644,10 @@ class InMemoryRepository:
         return True
 
     async def get_delivery(self, tenant_id: UUID, delivery_id: UUID) -> TranscriptDelivery | None:
-        return self.deliveries.get((tenant_id, delivery_id))
+        delivery = self.deliveries.get((tenant_id, delivery_id))
+        if delivery is None or (tenant_id, delivery.session_id) not in self.sessions:
+            return None
+        return delivery
 
     async def get_delivery_attempt(
         self,
@@ -1537,12 +1662,16 @@ class InMemoryRepository:
         )
 
     async def delivery_for(self, tenant_id: UUID, session_id: UUID) -> TranscriptDelivery | None:
+        if (tenant_id, session_id) not in self.sessions:
+            return None
         delivery_id = self.delivery_by_session.get((tenant_id, session_id))
         if delivery_id is None:
             return None
         return self.deliveries[(tenant_id, delivery_id)]
 
     async def add_delivery(self, tenant_id: UUID, delivery: TranscriptDelivery) -> None:
+        if (tenant_id, delivery.session_id) not in self.sessions:
+            raise ValueError("legacy session is unavailable for delivery persistence")
         self.deliveries[(tenant_id, delivery.id)] = delivery
         self.delivery_by_session[(tenant_id, delivery.session_id)] = delivery.id
 
@@ -1560,6 +1689,7 @@ class InMemoryRepository:
                 delivery
                 for (row_tenant, row_id), delivery in self.deliveries.items()
                 if row_tenant == tenant_id
+                and (tenant_id, delivery.session_id) in self.sessions
                 and (delivery_id is None or row_id == delivery_id)
                 and row_id not in excluded_delivery_ids
                 and (
