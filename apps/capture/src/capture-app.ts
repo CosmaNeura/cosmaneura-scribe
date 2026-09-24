@@ -261,7 +261,7 @@ export class CaptureApp extends LitElement {
                 class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
                 @click=${this.#resume}>Resume recording</button>` : ""}
               ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
-                data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Check recording permissions</button>` : ""}
+                data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Set up recording access</button>` : ""}
               ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
                 ?disabled=${this.#busy || this.#stopping} @click=${this.#retryUpload}>Retry upload</button>` : ""}
             </div>
@@ -271,7 +271,7 @@ export class CaptureApp extends LitElement {
             <p role="status">${this.#snapshot.desktop?.phase === "starting" ? "Starting microphone and meeting audio…"
               : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
               : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
-              : this.#snapshot.desktop?.phase === "permission_required" ? "Allow microphone and screen recording in macOS Settings, then check permissions."
+              : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
               : this.#snapshot.statusCode === "capture_paused" ? "Recording is paused. Resume when ready, or stop and upload. Missing speech during the pause cannot be recovered."
               : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
