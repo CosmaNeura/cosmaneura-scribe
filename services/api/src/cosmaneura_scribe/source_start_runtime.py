@@ -58,7 +58,8 @@ class SourceStartRepository(CapturedSourceRepository):
             raise SourceStartUnavailable()
         await self._lock_attempt(tenant_id, intent.attempt_id)
         if await self._one_or_none(
-            "SELECT id FROM source_start_retirements WHERE tenant_id = :tenant AND attempt_id = :attempt",
+            "SELECT id FROM source_start_retirements "
+            "WHERE tenant_id = :tenant AND attempt_id = :attempt",
             tenant=tenant_id, attempt=intent.attempt_id,
         ) is not None:
             raise SourceStartConflict()
@@ -263,7 +264,9 @@ class SourceStartRepository(CapturedSourceRepository):
             attempt=intent.attempt_id,
         )
         if row is None:
-            return await self._retire_unstarted(tenant_id, session_id, actor, key, intent, session["consent_record_id"])
+            return await self._retire_unstarted(
+                tenant_id, session_id, actor, key, intent, session["consent_record_id"]
+            )
         if row["consent_record_id"] != session["consent_record_id"]:
             raise SourceStartConflict()
         self._match(row, session_id, actor, intent)
@@ -310,14 +313,16 @@ class SourceStartRepository(CapturedSourceRepository):
         intent: SourceStartIntent, consent_record_id: UUID,
     ) -> SourceStartRetirementReceipt:
         row = await self._one_or_none(
-            "SELECT * FROM source_start_retirements WHERE tenant_id = :tenant AND attempt_id = :attempt",
+            "SELECT * FROM source_start_retirements "
+            "WHERE tenant_id = :tenant AND attempt_id = :attempt",
             tenant=tenant_id, attempt=intent.attempt_id,
         )
         if row is None:
             # The database checks immutable historical receipt/reservation scope
             # and the same attempt lock used by every start. No live preparation
             # or backdated timestamps/capability are manufactured.
-            params = dict(tenant=tenant_id, session=session_id, id=uuid4(), attempt=intent.attempt_id,
+            params = dict(
+                tenant=tenant_id, session=session_id, id=uuid4(), attempt=intent.attempt_id,
                 actor=actor, consent=consent_record_id, source=intent.source,
                 proof=intent.proof_digest, lease=intent.lease_id, receipt=intent.lease_receipt_id,
                 generation=intent.lease_generation, deadline=intent.capture_authorized_until,
@@ -341,7 +346,8 @@ class SourceStartRepository(CapturedSourceRepository):
             raise SourceStartConflict()
         return SourceStartRetirementReceipt.model_validate({
             key: row["id" if key == "retirement_id" else key]
-            for key in SourceStartRetirementReceipt.model_fields if key not in {"schema_version", "state"}
+            for key in SourceStartRetirementReceipt.model_fields
+            if key not in {"schema_version", "state"}
         })
 
     async def _transition(
