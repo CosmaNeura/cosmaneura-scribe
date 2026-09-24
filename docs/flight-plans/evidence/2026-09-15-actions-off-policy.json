@@ -1,0 +1,478 @@
+{
+  "actions_disabled_readback": "GitHub omits allowed_actions while disabled. Original optional settings are retained above; no re-enablement was performed.",
+  "after": {
+    "actions": {
+      "enabled": false,
+      "sha_pinning_required": false
+    },
+    "active_ruleset_details": {
+      "21000654": {
+        "bypass_actors": [],
+        "conditions": {
+          "ref_name": {
+            "exclude": [],
+            "include": [
+              "refs/heads/main"
+            ]
+          }
+        },
+        "enforcement": "active",
+        "id": 21000654,
+        "name": "Protect main: pull requests and required CI",
+        "rules": [
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
+          },
+          {
+            "parameters": {
+              "allowed_merge_methods": [
+                "merge",
+                "squash",
+                "rebase"
+              ],
+              "dismiss_stale_reviews_on_push": false,
+              "dismissal_restriction": {
+                "allowed_actors": [],
+                "enabled": false
+              },
+              "require_code_owner_review": false,
+              "require_extra_approval_for_unattributed_changes": true,
+              "require_last_push_approval": false,
+              "required_approving_review_count": 0,
+              "required_review_thread_resolution": false,
+              "required_reviewers": []
+            },
+            "type": "pull_request"
+          },
+          {
+            "parameters": {
+              "do_not_enforce_on_create": true,
+              "required_status_checks": [
+                {
+                  "context": "quality"
+                },
+                {
+                  "context": "infrastructure"
+                },
+                {
+                  "context": "capture-web"
+                },
+                {
+                  "context": "capture-android"
+                },
+                {
+                  "context": "capture-ios"
+                },
+                {
+                  "context": "change-budget"
+                }
+              ],
+              "strict_required_status_checks_policy": true
+            },
+            "type": "required_status_checks"
+          }
+        ],
+        "source": "CosmaNeura/cosmaneura-scribe",
+        "source_type": "Repository",
+        "target": "branch"
+      }
+    },
+    "captured_at": "2026-09-15T16:50:34.914513+00:00",
+    "classic": {
+      "allow_deletions": {
+        "enabled": false
+      },
+      "allow_force_pushes": {
+        "enabled": false
+      },
+      "allow_fork_syncing": {
+        "enabled": false
+      },
+      "block_creations": {
+        "enabled": false
+      },
+      "enforce_admins": {
+        "enabled": true
+      },
+      "lock_branch": {
+        "enabled": false
+      },
+      "required_conversation_resolution": {
+        "enabled": true
+      },
+      "required_linear_history": {
+        "enabled": false
+      },
+      "required_pull_request_reviews": {
+        "dismiss_stale_reviews": true,
+        "require_code_owner_reviews": false,
+        "require_last_push_approval": false,
+        "required_approving_review_count": 0
+      },
+      "required_signatures": {
+        "enabled": false
+      },
+      "required_status_checks": {
+        "checks": [
+          {
+            "app_id": null,
+            "context": "quality"
+          },
+          {
+            "app_id": null,
+            "context": "infrastructure"
+          },
+          {
+            "app_id": null,
+            "context": "capture-web"
+          },
+          {
+            "app_id": null,
+            "context": "capture-android"
+          },
+          {
+            "app_id": null,
+            "context": "capture-ios"
+          },
+          {
+            "app_id": null,
+            "context": "synthetic-recording-flow"
+          },
+          {
+            "app_id": null,
+            "context": "change-budget"
+          }
+        ],
+        "contexts": [
+          "quality",
+          "infrastructure",
+          "capture-web",
+          "capture-android",
+          "capture-ios",
+          "synthetic-recording-flow",
+          "change-budget"
+        ],
+        "strict": true
+      }
+    },
+    "effective_rules": [
+      {
+        "ruleset_id": 21000654,
+        "ruleset_source": "CosmaNeura/cosmaneura-scribe",
+        "ruleset_source_type": "Repository",
+        "type": "deletion"
+      },
+      {
+        "ruleset_id": 21000654,
+        "ruleset_source": "CosmaNeura/cosmaneura-scribe",
+        "ruleset_source_type": "Repository",
+        "type": "non_fast_forward"
+      },
+      {
+        "parameters": {
+          "allowed_merge_methods": [
+            "merge",
+            "squash",
+            "rebase"
+          ],
+          "dismiss_stale_reviews_on_push": false,
+          "dismissal_restriction": {
+            "allowed_actors": [],
+            "enabled": false
+          },
+          "require_code_owner_review": false,
+          "require_extra_approval_for_unattributed_changes": true,
+          "require_last_push_approval": false,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": false,
+          "required_reviewers": []
+        },
+        "ruleset_id": 21000654,
+        "ruleset_source": "CosmaNeura/cosmaneura-scribe",
+        "ruleset_source_type": "Repository",
+        "type": "pull_request"
+      },
+      {
+        "parameters": {
+          "do_not_enforce_on_create": true,
+          "required_status_checks": [
+            {
+              "context": "quality"
+            },
+            {
+              "context": "infrastructure"
+            },
+            {
+              "context": "capture-web"
+            },
+            {
+              "context": "capture-android"
+            },
+            {
+              "context": "capture-ios"
+            },
+            {
+              "context": "change-budget"
+            }
+          ],
+          "strict_required_status_checks_policy": true
+        },
+        "ruleset_id": 21000654,
+        "ruleset_source": "CosmaNeura/cosmaneura-scribe",
+        "ruleset_source_type": "Repository",
+        "type": "required_status_checks"
+      }
+    ]
+  },
+  "after_snapshot_sha256": "b6a84ed1eefa51f8e1a2add926eefb9cba2a5dab0b9ead69781fce19e268b76b",
+  "before": {
+    "actions": {
+      "allowed_actions": "all",
+      "enabled": true,
+      "sha_pinning_required": false
+    },
+    "active_ruleset_details": {
+      "21000654": {
+        "bypass_actors": [],
+        "conditions": {
+          "ref_name": {
+            "exclude": [],
+            "include": [
+              "refs/heads/main"
+            ]
+          }
+        },
+        "enforcement": "active",
+        "id": 21000654,
+        "name": "Protect main: pull requests and required CI",
+        "rules": [
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
+          },
+          {
+            "parameters": {
+              "allowed_merge_methods": [
+                "merge",
+                "squash",
+                "rebase"
+              ],
+              "dismiss_stale_reviews_on_push": false,
+              "dismissal_restriction": {
+                "allowed_actors": [],
+                "enabled": false
+              },
+              "require_code_owner_review": false,
+              "require_extra_approval_for_unattributed_changes": true,
+              "require_last_push_approval": false,
+              "required_approving_review_count": 0,
+              "required_review_thread_resolution": false,
+              "required_reviewers": []
+            },
+            "type": "pull_request"
+          },
+          {
+            "parameters": {
+              "do_not_enforce_on_create": true,
+              "required_status_checks": [
+                {
+                  "context": "quality",
+                  "integration_id": 15368
+                },
+                {
+                  "context": "infrastructure",
+                  "integration_id": 15368
+                },
+                {
+                  "context": "capture-web",
+                  "integration_id": 15368
+                },
+                {
+                  "context": "capture-android",
+                  "integration_id": 15368
+                },
+                {
+                  "context": "capture-ios",
+                  "integration_id": 15368
+                },
+                {
+                  "context": "change-budget",
+                  "integration_id": 15368
+                }
+              ],
+              "strict_required_status_checks_policy": true
+            },
+            "type": "required_status_checks"
+          }
+        ],
+        "source": "CosmaNeura/cosmaneura-scribe",
+        "source_type": "Repository",
+        "target": "branch"
+      }
+    },
+    "captured_at": "2026-09-15T16:45:47.494813+00:00",
+    "classic": {
+      "allow_deletions": {
+        "enabled": false
+      },
+      "allow_force_pushes": {
+        "enabled": false
+      },
+      "allow_fork_syncing": {
+        "enabled": false
+      },
+      "block_creations": {
+        "enabled": false
+      },
+      "enforce_admins": {
+        "enabled": true
+      },
+      "lock_branch": {
+        "enabled": false
+      },
+      "required_conversation_resolution": {
+        "enabled": true
+      },
+      "required_linear_history": {
+        "enabled": false
+      },
+      "required_pull_request_reviews": {
+        "dismiss_stale_reviews": true,
+        "require_code_owner_reviews": false,
+        "require_last_push_approval": false,
+        "required_approving_review_count": 0
+      },
+      "required_signatures": {
+        "enabled": false
+      },
+      "required_status_checks": {
+        "checks": [
+          {
+            "app_id": 15368,
+            "context": "quality"
+          },
+          {
+            "app_id": 15368,
+            "context": "infrastructure"
+          },
+          {
+            "app_id": 15368,
+            "context": "capture-web"
+          },
+          {
+            "app_id": 15368,
+            "context": "capture-android"
+          },
+          {
+            "app_id": 15368,
+            "context": "capture-ios"
+          },
+          {
+            "app_id": 15368,
+            "context": "synthetic-recording-flow"
+          },
+          {
+            "app_id": 15368,
+            "context": "change-budget"
+          }
+        ],
+        "contexts": [
+          "quality",
+          "infrastructure",
+          "capture-web",
+          "capture-android",
+          "capture-ios",
+          "synthetic-recording-flow",
+          "change-budget"
+        ],
+        "strict": true
+      }
+    },
+    "effective_rules": [
+      {
+        "ruleset_id": 21000654,
+        "ruleset_source": "CosmaNeura/cosmaneura-scribe",
+        "ruleset_source_type": "Repository",
+        "type": "deletion"
+      },
+      {
+        "ruleset_id": 21000654,
+        "ruleset_source": "CosmaNeura/cosmaneura-scribe",
+        "ruleset_source_type": "Repository",
+        "type": "non_fast_forward"
+      },
+      {
+        "parameters": {
+          "allowed_merge_methods": [
+            "merge",
+            "squash",
+            "rebase"
+          ],
+          "dismiss_stale_reviews_on_push": false,
+          "dismissal_restriction": {
+            "allowed_actors": [],
+            "enabled": false
+          },
+          "require_code_owner_review": false,
+          "require_extra_approval_for_unattributed_changes": true,
+          "require_last_push_approval": false,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": false,
+          "required_reviewers": []
+        },
+        "ruleset_id": 21000654,
+        "ruleset_source": "CosmaNeura/cosmaneura-scribe",
+        "ruleset_source_type": "Repository",
+        "type": "pull_request"
+      },
+      {
+        "parameters": {
+          "do_not_enforce_on_create": true,
+          "required_status_checks": [
+            {
+              "context": "quality",
+              "integration_id": 15368
+            },
+            {
+              "context": "infrastructure",
+              "integration_id": 15368
+            },
+            {
+              "context": "capture-web",
+              "integration_id": 15368
+            },
+            {
+              "context": "capture-android",
+              "integration_id": 15368
+            },
+            {
+              "context": "capture-ios",
+              "integration_id": 15368
+            },
+            {
+              "context": "change-budget",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true
+        },
+        "ruleset_id": 21000654,
+        "ruleset_source": "CosmaNeura/cosmaneura-scribe",
+        "ruleset_source_type": "Repository",
+        "type": "required_status_checks"
+      }
+    ]
+  },
+  "before_snapshot_sha256": "98a480910ca5f6cc93b556c9d2125071f1e412c8e0bb9c7672aced8d1a104393",
+  "branch_comparison": "Full classic equality after changing app_id 15368 to null; full active ruleset equality after removing only integration_id 15368, excluding read-only updated_at.",
+  "initial_pr_head": "454589e925be81bba86a8ed6ef38b22c7cb89752",
+  "observed_main": "f41910ce5de489688f51bcd2d93808d77b780a74",
+  "repository": "CosmaNeura/cosmaneura-scribe",
+  "scope": "Sanitized GitHub governance readback; no tokens, headers, PHI or application data.",
+  "validation": "Final-head execution, any rigorous evidence reuse, independent review, statuses and merge decision are recorded separately in the PR after this commit."
+}
