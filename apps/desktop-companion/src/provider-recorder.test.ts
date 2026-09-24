@@ -56,7 +56,7 @@ async function fixture(nativeStub = false) {
   const authority = vi.fn(async () => {
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
     return { schemaVersion: 1, decision: "authorized", ...grant, issuedAt: new Date().toISOString(), expiresAt,
-      captureCapability: { capabilityId: crypto.randomUUID(), secret: "invented-start-capability", expiresAt } };
+      captureCapability: { capabilityId: crypto.randomUUID(), secret: "your-invented-start-capability", expiresAt } };
   });
   const selectWindow = vi.fn(async () => {
     expect(indicator.current()?.visible).not.toBe(true);
