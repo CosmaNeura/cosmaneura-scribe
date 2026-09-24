@@ -386,21 +386,21 @@ def _working_transcript_column_acl() -> set[tuple[str, str, str]]:
 async def test_bootstrap_maps_all_dedicated_entra_principals_and_rejects_unsafe_roles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = _Connection(scalar_results=[None, False, None, False, None, False, None, False])
+    connection = _Connection(scalar_results=[None, False, False] * 4)
     provider = _Provider(connection)
     monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
 
     await database_bootstrap._ensure_database_principals(_settings())
 
     assert [item["role_name"] for item in connection.scalar_parameters] == [
-        "scribe-runtime",
-        "scribe-runtime",
-        "scribe-transcription",
-        "scribe-transcription",
-        "scribe-delivery-reconciler",
-        "scribe-delivery-reconciler",
-        "scribe-translation",
-        "scribe-translation",
+        role
+        for role in (
+            "scribe-runtime",
+            "scribe-transcription",
+            "scribe-delivery-reconciler",
+            "scribe-translation",
+        )
+        for _ in range(3)
     ]
     create_parameters = [
         parameters
@@ -421,10 +421,29 @@ async def test_bootstrap_maps_all_dedicated_entra_principals_and_rejects_unsafe_
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_removes_only_new_role_creator_grants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _Connection(scalar_results=[None, True, False] + [None, False, False] * 3)
+    provider = _Provider(connection)
+    monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
+
+    await database_bootstrap._ensure_database_principals(_settings())
+
+    revocations = [statement for statement, _ in connection.executed if "REVOKE" in statement]
+    assert revocations == ['REVOKE "scribe-runtime" FROM CURRENT_USER']
+    creator_queries = [query for query in connection.scalar_statements if "admin_option" in query]
+    assert len(creator_queries) == 4
+    assert all("NOT membership.inherit_option" in query for query in creator_queries)
+    assert all("NOT membership.set_option" in query for query in creator_queries)
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_rejects_an_application_role_that_was_not_created(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = _Connection(scalar_results=[None, None])
+    connection = _Connection(scalar_results=[None, False, None])
     provider = _Provider(connection)
     monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
 
@@ -438,7 +457,7 @@ async def test_bootstrap_rejects_an_application_role_that_was_not_created(
 async def test_bootstrap_rejects_an_rls_bypassing_application_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = _Connection(scalar_results=[None, True])
+    connection = _Connection(scalar_results=[None, False, True])
     provider = _Provider(connection)
     monkeypatch.setattr(database_bootstrap, "build_postgres_provider", lambda _: provider)
 
@@ -871,6 +890,8 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 "normalized_source_transcripts",
                 "normalized_source_segments",
                 "normalized_source_receipt_keys",
+                "source_start_attempts",
+                "source_start_retirements",
             )
             for privilege in ("SELECT", "INSERT")
         }
@@ -907,6 +928,9 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
     }
     runtime_column_expected = {
         ("consent_records", "revoked_at", "UPDATE"),
+        *(("source_start_attempts", column, "UPDATE") for column in (
+            "state", "issued_at", "expires_at", "stopped_at"
+        )),
         *(
             ("capture_leases", column, "UPDATE")
             for column in (
