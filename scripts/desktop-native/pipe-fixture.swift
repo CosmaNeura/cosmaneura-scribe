@@ -44,7 +44,21 @@ private actor InventedSource: DesktopProcessSource {
         if arguments == ["--availability-v1"] {
             await DesktopAudioProcess.writeAvailability(true); _exit(0)
         }
-        guard arguments == ["--capture-v1"] else { _exit(64) }
+        if arguments == ["--fixture-fence-v1"] {
+            do {
+                // The test assembly binds this provider to one fresh private
+                // directory. Retain the real coordinator for the entire run.
+                let coordinator = try NativeCaptureProcessCoordinator(
+                    privateDirectory: nativeDesktopFenceDirectory(), expectedAnchor: nil)
+                try coordinator.allowCaptureAfterConfirmedRecovery()
+                let ticket = try JSONSerialization.data(withJSONObject: coordinator.wireValue)
+                FileHandle.standardOutput.write(ticket + Data([10]))
+                while readLine() != nil {}
+                withExtendedLifetime(coordinator) {}
+                _exit(0)
+            } catch { _exit(70) }
+        }
+        guard arguments == ["--capture-v2"] else { _exit(64) }
         let result = await DesktopAudioProcess.run(source: InventedSource())
         _exit(result)
     }

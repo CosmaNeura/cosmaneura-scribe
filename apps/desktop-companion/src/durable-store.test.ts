@@ -21,6 +21,7 @@ import { BffCaptureQueueTransport } from "../../capture/src/bff/queue-transport"
 import { CaptureFlowController } from "../../capture/src/flow/controller";
 import { CaptureQueue } from "../../capture/src/queue/capture-queue";
 import { createMockBffServer } from "../../capture/src/mock-bff/server";
+import { nativePipeFixtureFence } from "./native-pipe-fixture.js";
 
 const crypto = webcrypto as unknown as Crypto;
 const recoveryScope = "11111111-1111-4111-8111-111111111111", workspaceId = "22222222-2222-4222-8222-222222222222";
@@ -143,6 +144,7 @@ describe("durable desktop capture", () => {
       });
       child.send({ directory: dataPath, rootKey: raw, recoveryScope, workspaceId, sessionId: session.id, attemptId,
         origin, published, consent: "invented-all-parties-agreed", helperPath,
+        processFence: nativePipeFixtureFence(),
         helperSha256: createHash("sha256").update(await readFile(helperPath)).digest("hex") });
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
