@@ -22,6 +22,8 @@ from uuid import UUID, uuid4
 import httpx
 from pydantic import SecretStr
 
+from .source_start_contract import SourceStartIntent
+
 _ROOT = "/service/v1/agent/scribe/"
 _ACTIONS = frozenset({"capture-admissions", "capture-operations", "capture-notes"})
 _OPERATIONS = frozenset(
@@ -193,6 +195,8 @@ class ProviderCoreTransport:
         path: str,
         body: Mapping[str, object],
         key: str,
+        *,
+        native_start: bool = False,
     ) -> dict[str, object]:
         """Accept exactly the current provider client's three facade operations.
 
@@ -212,7 +216,7 @@ class ProviderCoreTransport:
                 "capture-notes": 262_144 + 8192,
             }[action],
         )
-        _validate_intent(mount, action, payload)
+        _validate_intent(mount, action, payload, native_start=native_start)
         current = await self._negotiate(mount.selection)
         _require(current.mount == mount)
         headers = {**await self._workload_headers(), **current.headers()}
@@ -383,6 +387,29 @@ class ProviderCoreTransport:
                 if response.status_code in {401, 403, 404, 410}:
                     raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                 if response.status_code != status:
+                    if (
+                        path == _ROOT + "capture-admissions"
+                        and response.status_code == 409
+                        and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
+                        and response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        == "application/problem+json"
+                        and "no-store" in {
+                            item.strip().lower()
+                            for item in response.headers.get("cache-control", "").split(",")
+                        }
+                    ):
+                        failure_bytes = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            _require(len(failure_bytes) + len(chunk) <= 2048)
+                            failure_bytes.extend(chunk)
+                        failure = _decode(failure_bytes)
+                        if (
+                            failure.get("code") == "CAPTURE_CONSENT_REQUIRED"
+                            and failure.get("status") == 409
+                            and failure.get("retryable") is False
+                        ):
+                            await self._context(selection)
+                            raise ProviderCoreUnavailable("core_provider_consent_required", 409)
                     code, result = {
                         409: ("core_provider_conflict", 409),
                         202: ("core_provider_pending", 503),
@@ -427,13 +454,26 @@ class ProviderCoreTransport:
             raise ProviderCoreUnavailable() from None
 
 
-def _validate_intent(mount: CoreProviderMount, action: str, body: dict[str, object]) -> None:
+def _validate_intent(
+    mount: CoreProviderMount, action: str, body: dict[str, object], *, native_start: bool = False,
+) -> None:
     _require(
         body.get("binding_ref") == mount.binding_ref
         and body.get("workspace_id") == str(mount.selection.workspace_id)
     )
     _uuid(body.get("request_nonce"))
     keys = set(body) - _SCOPE_KEYS
+    if native_start:
+        _require(action == "capture-operations" and keys == {"operation"})
+        operation = _object(body["operation"])
+        _require(set(operation) == {"kind", "action", "payload"}
+                 and operation.get("kind") == "source_start"
+                 and operation.get("action") in {"prepare", "authorize", "cancel", "stop"})
+        try:
+            SourceStartIntent.model_validate(operation["payload"])
+        except ValueError:
+            raise ProviderCoreUnavailable() from None
+        return
     if action == "capture-admissions":
         _require(keys == {"attestation", "configured_capture"})
         configured = _object(body["configured_capture"])

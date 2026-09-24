@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "enabled": false,
+  "desktop_native_session_without_origin": false,
+  "platforms": [
+    "ios",
+    "desktop"
+  ],
+  "environment_id": null,
+  "beta_box_id": null,
+  "managed_identity_client_id": null,
+  "database_host": null,
+  "database_name": null,
+  "database_reader_role": null,
+  "core_scope": null,
+  "ingress_isolation_receipt": null
+}

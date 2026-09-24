@@ -223,6 +223,40 @@ async def test_configured_admission_review_and_existing_note_routes(connection):
     assert USER_TOKEN not in repr(mount) and WORKLOAD_TOKEN not in repr(client)
 
 
+@pytest.mark.parametrize("variant", ["exact", "other_code", "missing_version", "oversize", "revoked"])
+async def test_consent_renewal_requires_exact_current_core_refusal(connection, variant):
+    wire, client = connection
+    mount = await client.open()
+
+    def refusal(path, value):
+        if not path.endswith("capture-admissions"):
+            return value
+        if variant == "revoked":
+            wire.denied = True
+        headers = {"Cache-Control": "no-store", "Content-Type": "application/problem+json",
+                   "X-Cosmaneura-Capture-Version": "1"}
+        if variant == "missing_version":
+            headers.pop("X-Cosmaneura-Capture-Version")
+        return httpx.Response(409, headers=headers, json={
+            "code": "CAPTURE_REQUEST_CONFLICT" if variant == "other_code" else "CAPTURE_CONSENT_REQUIRED",
+            "status": 409, "retryable": False,
+            "detail": "private-sentinel" * (200 if variant == "oversize" else 1),
+        })
+
+    wire.alter = refusal
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(mount, ROOT + "capture-admissions", body(
+            attestation=None,
+            configured_capture={"schema_version": "1.0", "language_mode": "en-US"},
+        ), "retained-preparation-key")
+    if variant == "exact":
+        assert caught.value.code == "core_provider_consent_required"
+        assert caught.value.status == 409
+    else:
+        assert caught.value.code != "core_provider_consent_required"
+    assert "private-sentinel" not in str(caught.value)
+
+
 async def test_default_off_and_invalid_intents_never_acquire_credentials(connection):
     wire, client = connection
     dark = ProviderCoreTransport(
