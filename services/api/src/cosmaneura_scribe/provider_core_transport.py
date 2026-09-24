@@ -43,6 +43,10 @@ _OPERATIONS = frozenset(
     }
 )
 _SCOPE_KEYS = {"binding_ref", "workspace_id", "request_nonce"}
+# Core can complete two 65-second admission phases. These are HTTP wait
+# budgets only; they never extend a consent, capture lease or start decision.
+ADMISSION_CORE_TIMEOUT_SECONDS = 140
+ADMISSION_TOTAL_TIMEOUT_SECONDS = 180
 
 
 class _NoCookies(DefaultCookiePolicy):
@@ -198,6 +202,23 @@ class ProviderCoreTransport:
         *,
         native_start: bool = False,
     ) -> dict[str, object]:
+        try:
+            async with asyncio.timeout(
+                ADMISSION_TOTAL_TIMEOUT_SECONDS if path == _ROOT + "capture-admissions" else None
+            ):
+                return await self._request(mount, path, body, key, native_start=native_start)
+        except TimeoutError:
+            raise ProviderCoreUnavailable("core_provider_request_timeout") from None
+
+    async def _request(
+        self,
+        mount: CoreProviderMount,
+        path: str,
+        body: Mapping[str, object],
+        key: str,
+        *,
+        native_start: bool = False,
+    ) -> dict[str, object]:
         """Accept exactly the current provider client's three facade operations.
 
         The host forwards only the returned body with no-store. On an uncertain
@@ -230,7 +251,9 @@ class ProviderCoreTransport:
             headers,
             version=("X-Cosmaneura-Capture-Version", "1"),
             max_bytes=8 * 1024 * 1024,
-            request_timeout=100
+            request_timeout=ADMISSION_CORE_TIMEOUT_SECONDS
+            if action == "capture-admissions"
+            else 100
             if action == "capture-notes" and payload.get("action") == "prepare"
             else 20,
         )
@@ -391,12 +414,13 @@ class ProviderCoreTransport:
                         path == _ROOT + "capture-admissions"
                         and response.status_code == 409
                         and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
-                        and (
-                            response.headers.get("content-type", "")
-                            .split(";", 1)[0].strip().lower()
-                        )
+                        and response.headers.get("content-type", "")
+                        .split(";", 1)[0]
+                        .strip()
+                        .lower()
                         == "application/problem+json"
-                        and "no-store" in {
+                        and "no-store"
+                        in {
                             item.strip().lower()
                             for item in response.headers.get("cache-control", "").split(",")
                         }
@@ -419,8 +443,7 @@ class ProviderCoreTransport:
                     }.get(response.status_code, ("core_provider_request_unconfirmed", 503))
                     raise ProviderCoreUnavailable(code, result)
                 _require(
-                    response.headers.get("content-type", "")
-                            .split(";", 1)[0].strip().lower()
+                    response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
                     == "application/json"
                 )
                 _require(
@@ -459,7 +482,11 @@ class ProviderCoreTransport:
 
 
 def _validate_intent(
-    mount: CoreProviderMount, action: str, body: dict[str, object], *, native_start: bool = False,
+    mount: CoreProviderMount,
+    action: str,
+    body: dict[str, object],
+    *,
+    native_start: bool = False,
 ) -> None:
     _require(
         body.get("binding_ref") == mount.binding_ref
@@ -470,9 +497,11 @@ def _validate_intent(
     if native_start:
         _require(action == "capture-operations" and keys == {"operation"})
         operation = _object(body["operation"])
-        _require(set(operation) == {"kind", "action", "payload"}
-                 and operation.get("kind") == "source_start"
-                 and operation.get("action") in {"prepare", "authorize", "cancel", "stop"})
+        _require(
+            set(operation) == {"kind", "action", "payload"}
+            and operation.get("kind") == "source_start"
+            and operation.get("action") in {"prepare", "authorize", "cancel", "stop"}
+        )
         try:
             SourceStartIntent.model_validate(operation["payload"])
         except ValueError:

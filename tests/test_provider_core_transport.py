@@ -42,6 +42,7 @@ class Wire:
     def __init__(self):
         self.selection = SELECTION
         self.calls = []
+        self.timeouts = []
         self.effects = []
         self.turns = {}
         self.counter = 0
@@ -68,6 +69,7 @@ class Wire:
         assert "cookie" not in request.headers
         data = json.loads(request.content) if request.content else None
         self.calls.append((path, data))
+        self.timeouts.append((path, request.extensions["timeout"]))
         if self.before:
             await self.before(path)
         headers = {"Cache-Control": "no-store", "Set-Cookie": "foreign_browser_session=x; Path=/"}
@@ -223,6 +225,54 @@ async def test_configured_admission_review_and_existing_note_routes(connection):
     assert USER_TOKEN not in repr(mount) and WORKLOAD_TOKEN not in repr(client)
 
 
+async def test_admission_waits_for_both_core_phases_without_extending_other_requests(connection):
+    wire, client = connection
+    mount = await client.open()
+    await client.request(
+        mount,
+        ROOT + "capture-admissions",
+        body(
+            attestation=None, configured_capture={"schema_version": "1.0", "language_mode": "en-US"}
+        ),
+        "same-admission-key",
+    )
+    for path, timeout in wire.timeouts:
+        assert timeout["connect"] == 5
+        if path.endswith("capture-admissions"):
+            assert timeout["read"] > 2 * 65  # Current shared Core's two phase bounds.
+        else:
+            assert timeout["read"] == 20
+    assert [key for _, _, key in wire.effects] == ["same-admission-key"]
+
+
+async def test_admission_deadline_is_bounded_and_does_not_retry_or_replace_intent(
+    connection, monkeypatch
+):
+    import cosmaneura_scribe.provider_core_transport as module
+
+    wire, client = connection
+    mount = await client.open()
+    monkeypatch.setattr(module, "ADMISSION_TOTAL_TIMEOUT_SECONDS", 0.02)
+
+    async def wait_for_response(path):
+        if path.endswith("capture-admissions"):
+            await asyncio.Event().wait()
+
+    wire.before = wait_for_response
+    payload = body(
+        attestation=None, configured_capture={"schema_version": "1.0", "language_mode": "en-US"}
+    )
+    original = json.dumps(payload, sort_keys=True)
+    with pytest.raises(ProviderCoreUnavailable, match="^core_provider_request_timeout$"):
+        await client.request(mount, ROOT + "capture-admissions", payload, "retained-admission-key")
+    assert len([path for path, _ in wire.calls if path.endswith("capture-admissions")]) == 1
+    assert json.dumps(payload, sort_keys=True) == original
+    wire.before = None
+    monkeypatch.setattr(module, "ADMISSION_TOTAL_TIMEOUT_SECONDS", 180)
+    await client.request(mount, ROOT + "capture-admissions", payload, "retained-admission-key")
+    assert wire.effects[-1] == (ROOT + "capture-admissions", payload, "retained-admission-key")
+
+
 @pytest.mark.parametrize(
     "variant", ["exact", "other_code", "missing_version", "oversize", "revoked"]
 )
@@ -235,25 +285,37 @@ async def test_consent_renewal_requires_exact_current_core_refusal(connection, v
             return value
         if variant == "revoked":
             wire.denied = True
-        headers = {"Cache-Control": "no-store", "Content-Type": "application/problem+json",
-                   "X-Cosmaneura-Capture-Version": "1"}
+        headers = {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/problem+json",
+            "X-Cosmaneura-Capture-Version": "1",
+        }
         if variant == "missing_version":
             headers.pop("X-Cosmaneura-Capture-Version")
-        return httpx.Response(409, headers=headers, json={
-            "code": (
-                "CAPTURE_REQUEST_CONFLICT" if variant == "other_code"
-                else "CAPTURE_CONSENT_REQUIRED"
-            ),
-            "status": 409, "retryable": False,
-            "detail": "private-sentinel" * (200 if variant == "oversize" else 1),
-        })
+        return httpx.Response(
+            409,
+            headers=headers,
+            json={
+                "code": "CAPTURE_REQUEST_CONFLICT"
+                if variant == "other_code"
+                else "CAPTURE_CONSENT_REQUIRED",
+                "status": 409,
+                "retryable": False,
+                "detail": "private-sentinel" * (200 if variant == "oversize" else 1),
+            },
+        )
 
     wire.alter = refusal
     with pytest.raises(ProviderCoreUnavailable) as caught:
-        await client.request(mount, ROOT + "capture-admissions", body(
-            attestation=None,
-            configured_capture={"schema_version": "1.0", "language_mode": "en-US"},
-        ), "retained-preparation-key")
+        await client.request(
+            mount,
+            ROOT + "capture-admissions",
+            body(
+                attestation=None,
+                configured_capture={"schema_version": "1.0", "language_mode": "en-US"},
+            ),
+            "retained-preparation-key",
+        )
     if variant == "exact":
         assert caught.value.code == "core_provider_consent_required"
         assert caught.value.status == 409

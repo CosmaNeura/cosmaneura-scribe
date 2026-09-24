@@ -46,7 +46,8 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
     if (!["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes"].includes(action)) throw unavailable();
     const value = exact(await native.request("providerRequest", {
       revision, action, key, body: JSON.stringify(body),
-    }, AbortSignal.any([lifetime, signal]), action === "capture-notes" ? 125_000 : 35_000), ["status", "body"]);
+    }, AbortSignal.any([lifetime, signal]), action === "capture-admissions" ? 220_000
+      : action === "capture-notes" ? 125_000 : 35_000), ["status", "body"]);
     current(signal);
     if (typeof value.status !== "number" || typeof value.body !== "string"
       || ![200, 401, 403, 409, 422, 503].includes(value.status)) throw unavailable();
