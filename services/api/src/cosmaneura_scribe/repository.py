@@ -78,6 +78,17 @@ from .translation_attempt_persistence import (
     build_translation_record,
     translation_matches_command,
 )
+from .translation_review_persistence import (
+    CreatorTranslationReviewCommand,
+    TranslationReviewPersistenceCode,
+    TranslationReviewPersistenceError,
+    TranslationReviewPublication,
+    TranslationReviewWriteDisposition,
+    build_review_record,
+    review_matches_command,
+    review_projection_matches_decision,
+    validate_review_target,
+)
 from .working_transcript_persistence import (
     NormalizedWorkingTranscriptRecord,
     WorkingTranscriptPersistenceCode,
@@ -369,6 +380,13 @@ class Repository(Protocol):
         session_id: UUID,
         command: TranslationAttemptCommand,
     ) -> TranslationAttemptPublication | None: ...
+
+    async def record_creator_translation_review_and_publish(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        command: CreatorTranslationReviewCommand,
+    ) -> TranslationReviewPublication | None: ...
 
     async def fail_versioned_external_session(
         self,
@@ -1358,6 +1376,129 @@ class InMemoryRepository:
             disposition=TranslationAttemptWriteDisposition.RECORDED,
         )
 
+    async def record_creator_translation_review_and_publish(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        command: CreatorTranslationReviewCommand,
+    ) -> TranslationReviewPublication | None:
+        reference = self.versioned_external_sessions.get((tenant_id, session_id))
+        if reference is None:
+            return None
+        consent = await self.lock_consent(tenant_id, reference.consent_record_id)
+        session = self.versioned_external_sessions.get((tenant_id, session_id))
+        if session is None or session.consent_record_id != reference.consent_record_id:
+            return None
+        if not consent_authorizes_versioned_session(consent, session):
+            raise TranslationReviewPersistenceError(
+                TranslationReviewPersistenceCode.CONSENT_INVALID
+            )
+        try:
+            self._require_live_working_session(session, datetime.now(UTC))
+        except WorkingTranscriptPersistenceError as error:
+            raise self._review_error(error) from None
+        if command.reviewer_actor_id != session.creator_actor_id:
+            raise TranslationReviewPersistenceError(
+                TranslationReviewPersistenceCode.CREATOR_MISMATCH
+            )
+        source_version = session.current_source_transcript_version
+        if (
+            source_version is None
+            or source_version != command.expected_source_transcript_version
+            or session.working_transcript_id is None
+            or session.current_working_transcript_version is None
+        ):
+            raise TranslationReviewPersistenceError(TranslationReviewPersistenceCode.STATE_CONFLICT)
+        source = self.normalized_source_transcripts.get((tenant_id, session_id, source_version))
+        if source is None:
+            raise TranslationReviewPersistenceError(TranslationReviewPersistenceCode.STATE_CONFLICT)
+        translations = tuple(
+            value
+            for key, value in self.normalized_translation_attempts.items()
+            if key[:3] == (tenant_id, session_id, source_version)
+        )
+        reviews = tuple(
+            value
+            for key, value in self.normalized_translation_reviews.items()
+            if key[:3] == (tenant_id, session_id, source_version)
+        )
+        existing_entry = next(
+            (
+                (key, value)
+                for key, value in self.normalized_translation_reviews.items()
+                if key[0] == tenant_id and value.review_id == command.review_id
+            ),
+            None,
+        )
+        if existing_entry is not None:
+            existing_key, existing = existing_entry
+            if existing_key[1] != session_id or not review_matches_command(
+                existing,
+                command,
+                source_transcript_version=existing_key[2],
+            ):
+                raise TranslationReviewPersistenceError(
+                    TranslationReviewPersistenceCode.IDENTITY_CONFLICT
+                )
+            try:
+                working = await self.publish_current_working_transcript(tenant_id, session_id)
+            except WorkingTranscriptPersistenceError as error:
+                raise self._review_error(error) from None
+            if (
+                working is None
+                or working.disposition != WorkingTranscriptPublishDisposition.REPLAYED
+            ):
+                raise TranslationReviewPersistenceError(
+                    TranslationReviewPersistenceCode.STATE_CONFLICT
+                )
+            return self._review_publication(
+                existing,
+                session_id=session_id,
+                source_transcript_version=source_version,
+                working=working,
+                disposition=TranslationReviewWriteDisposition.REPLAYED,
+            )
+        if session.status != ConfiguredExternalSessionStatus.REVIEW_REQUIRED:
+            raise TranslationReviewPersistenceError(TranslationReviewPersistenceCode.STATE_CONFLICT)
+        validate_review_target(source, translations, reviews, command)
+        snapshot_session = session
+        snapshot_working = copy.deepcopy(self.normalized_working_transcripts)
+        snapshot_audit_count = len(self.audit_events)
+        record = build_review_record(command)
+        key = (tenant_id, session_id, source_version, record.review_id)
+        try:
+            self.normalized_translation_reviews[key] = record
+            await self.audit(
+                tenant_id=tenant_id,
+                action="normalized_translation_review.recorded",
+                entity_type="normalized_translation_review",
+                entity_id=record.review_id,
+            )
+            working = await self.publish_current_working_transcript(tenant_id, session_id)
+            if (
+                working is None
+                or working.disposition != WorkingTranscriptPublishDisposition.REPLACED
+                or not review_projection_matches_decision(command.decision, working.status)
+            ):
+                raise TranslationReviewPersistenceError(
+                    TranslationReviewPersistenceCode.STATE_CONFLICT
+                )
+        except BaseException as error:
+            self.normalized_translation_reviews.pop(key, None)
+            self.versioned_external_sessions[(tenant_id, session_id)] = snapshot_session
+            self.normalized_working_transcripts = snapshot_working
+            del self.audit_events[snapshot_audit_count:]
+            if isinstance(error, WorkingTranscriptPersistenceError):
+                raise self._review_error(error) from None
+            raise
+        return self._review_publication(
+            record,
+            session_id=session_id,
+            source_transcript_version=source_version,
+            working=working,
+            disposition=TranslationReviewWriteDisposition.RECORDED,
+        )
+
     async def fail_versioned_external_session(
         self,
         tenant_id: UUID,
@@ -1581,6 +1722,31 @@ class InMemoryRepository:
         )
 
     @staticmethod
+    def _review_publication(
+        record: TranslationReviewEvidenceV1,
+        *,
+        session_id: UUID,
+        source_transcript_version: int,
+        working: WorkingTranscriptPublication,
+        disposition: TranslationReviewWriteDisposition,
+    ) -> TranslationReviewPublication:
+        return TranslationReviewPublication(
+            session_id=session_id,
+            review_id=record.review_id,
+            source_transcript_version=source_transcript_version,
+            source_segment_id=record.source_segment_id,
+            source_segment_version=record.source_segment_version,
+            translation_id=record.translation_id,
+            translation_version=record.translation_version,
+            decision=record.decision,
+            reviewer_actor_id=record.reviewer_actor_id,
+            reviewed_at=record.reviewed_at,
+            status=working.status,
+            current_working_transcript=working,
+            disposition=disposition,
+        )
+
+    @staticmethod
     def _translation_error(
         error: WorkingTranscriptPersistenceError,
     ) -> TranslationAttemptPersistenceError:
@@ -1599,6 +1765,26 @@ class InMemoryRepository:
             ),
         }
         return TranslationAttemptPersistenceError(mapping[error.code])
+
+    @staticmethod
+    def _review_error(
+        error: WorkingTranscriptPersistenceError,
+    ) -> TranslationReviewPersistenceError:
+        mapping = {
+            WorkingTranscriptPersistenceCode.CONSENT_INVALID: (
+                TranslationReviewPersistenceCode.CONSENT_INVALID
+            ),
+            WorkingTranscriptPersistenceCode.EVIDENCE_INVALID: (
+                TranslationReviewPersistenceCode.EVIDENCE_INVALID
+            ),
+            WorkingTranscriptPersistenceCode.RETENTION_EXPIRED: (
+                TranslationReviewPersistenceCode.RETENTION_EXPIRED
+            ),
+            WorkingTranscriptPersistenceCode.STATE_CONFLICT: (
+                TranslationReviewPersistenceCode.STATE_CONFLICT
+            ),
+        }
+        return TranslationReviewPersistenceError(mapping[error.code])
 
     @staticmethod
     def _require_live_working_session(
