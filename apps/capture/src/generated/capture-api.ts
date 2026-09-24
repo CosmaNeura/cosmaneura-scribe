@@ -106,6 +106,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/external-transcript-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create External Transcript Session */
+        post: operations["create_external_transcript_session_v1_external_transcript_sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions": {
         parameters: {
             query?: never;
@@ -817,6 +834,21 @@ export interface components {
          * @enum {string}
          */
         DeliveryStatus: "pending" | "retryable" | "delivered" | "terminal";
+        /** ExternalTranscriptSessionCreate */
+        ExternalTranscriptSessionCreate: {
+            /** Appointment Id */
+            appointment_id: string;
+            /**
+             * Consent Record Id
+             * Format: uuid
+             */
+            consent_record_id: string;
+            modality: components["schemas"]["CaptureModality"];
+            /** Patient Id */
+            patient_id: string;
+            /** Practitioner Id */
+            practitioner_id: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1221,6 +1253,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TokenDiagnostics"];
+                };
+            };
+        };
+    };
+    create_external_transcript_session_v1_external_transcript_sessions_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalTranscriptSessionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureSession"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

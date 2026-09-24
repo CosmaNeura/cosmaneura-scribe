@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from cosmaneura_scribe.settings import Settings
@@ -106,6 +106,61 @@ def test_capture_protocol_is_false_by_default() -> None:
 
     with pytest.raises(ValidationError, match="requires workflow authentication and PostgreSQL"):
         Settings(capture_protocol_enabled=True)
+
+
+def test_external_ingest_admission_is_false_by_default_and_dependency_closed() -> None:
+    tenant_id = uuid4()
+    defaults = Settings()
+    assert defaults.external_ingest_admission_enabled is False
+    assert defaults.external_ingest_beta_tenant_ids == frozenset()
+
+    enabled: dict[str, object] = {
+        "external_ingest_admission_enabled": True,
+        "external_ingest_beta_tenant_ids": frozenset({tenant_id}),
+        "workflow_authentication_enabled": True,
+        "entra_tenant_id": uuid4(),
+        "workflow_api_audience": str(uuid4()),
+        "trusted_platform_client_id": uuid4(),
+        "repository_backend": "postgres",
+        "database_url": "postgresql+asyncpg://test:test@localhost/scribe",
+        "database_ssl": False,
+    }
+    assert Settings(**enabled).external_ingest_beta_tenant_ids == frozenset({tenant_id})
+
+    for overrides in (
+        {"workflow_authentication_enabled": False},
+        {"repository_backend": "memory"},
+        {"external_ingest_beta_tenant_ids": frozenset()},
+    ):
+        with pytest.raises(
+            ValidationError,
+            match="requires workflow authentication, PostgreSQL, and exactly one",
+        ):
+            Settings(**(enabled | overrides))
+
+    with pytest.raises(ValidationError, match="tenant IDs must be nonzero"):
+        Settings(
+            external_ingest_beta_tenant_ids=frozenset({UUID(int=0)}),
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            external_ingest_beta_tenant_ids=frozenset({uuid4(), uuid4()}),
+        )
+
+
+def test_external_ingest_beta_tenant_parses_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = uuid4()
+    monkeypatch.setenv(
+        "COSMANEURA_SCRIBE_EXTERNAL_INGEST_BETA_TENANT_IDS",
+        f'["{tenant_id}"]',
+    )
+
+    settings = Settings(_env_file=None)
+
+    assert settings.external_ingest_admission_enabled is False
+    assert settings.external_ingest_beta_tenant_ids == frozenset({tenant_id})
 
 
 def test_transcription_database_principal_requires_complete_identity() -> None:

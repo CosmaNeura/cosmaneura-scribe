@@ -935,6 +935,46 @@
         "title": "DeliveryStatus",
         "type": "string"
       },
+      "ExternalTranscriptSessionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "appointment_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Appointment Id",
+            "type": "string"
+          },
+          "consent_record_id": {
+            "format": "uuid",
+            "title": "Consent Record Id",
+            "type": "string"
+          },
+          "modality": {
+            "$ref": "#/components/schemas/CaptureModality"
+          },
+          "patient_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Patient Id",
+            "type": "string"
+          },
+          "practitioner_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Practitioner Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "appointment_id",
+          "practitioner_id",
+          "patient_id",
+          "consent_record_id",
+          "modality"
+        ],
+        "title": "ExternalTranscriptSessionCreate",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1761,6 +1801,75 @@
         "summary": "Token Diagnostics",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/v1/external-transcript-sessions": {
+      "post": {
+        "operationId": "create_external_transcript_session_v1_external_transcript_sessions_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternalTranscriptSessionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureSession"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create External Transcript Session",
+        "tags": [
+          "external-ingest"
         ]
       }
     },

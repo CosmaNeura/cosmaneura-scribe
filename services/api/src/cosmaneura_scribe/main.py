@@ -100,6 +100,7 @@ from .schemas import (
     ChunkUploadAuthorizationRequest,
     DeliveryAttempt,
     DeliveryStatus,
+    ExternalTranscriptSessionCreate,
     LegacyTranscriptPayload,
     MasterTranscriptDeliveryRequest,
     SessionAudioKey,
@@ -147,6 +148,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 consent_policy = ConsentPolicy()
+_EXTERNAL_TRANSCRIPT_SESSION_CREATE_OPERATION = "session.external_transcript.create"
+_EXTERNAL_TRANSCRIPT_SESSION_UNAVAILABLE = (
+    "External transcript session creation is unavailable."
+)
 
 
 @app.middleware("http")
@@ -222,9 +227,45 @@ def get_delivery_claim_policy() -> DeliveryClaimPolicy:
 TenantId = Annotated[UUID, Depends(get_verified_tenant_id)]
 IdempotencyKey = Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=255)]
 Provider = Annotated[RepositoryProvider, Depends(get_repository_provider)]
+RuntimeSettings = Annotated[Settings, Depends(get_settings)]
 WorkflowPrincipal = Annotated[
     EntraServicePrincipal,
     Depends(authenticate_workflow_request),
+]
+
+
+def get_verified_external_ingest_tenant_id(
+    tenant_id: TenantId,
+    settings: RuntimeSettings,
+) -> UUID:
+    if (
+        not settings.external_ingest_admission_enabled
+        or tenant_id not in settings.external_ingest_beta_tenant_ids
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_EXTERNAL_TRANSCRIPT_SESSION_UNAVAILABLE,
+        )
+    return tenant_id
+
+
+ExternalIngestTenantId = Annotated[
+    UUID,
+    Depends(get_verified_external_ingest_tenant_id),
+]
+
+
+async def get_external_ingest_repository(
+    tenant_id: ExternalIngestTenantId,
+    provider: Provider,
+) -> AsyncIterator[RepositoryContract]:
+    async with provider.transaction(tenant_id) as transaction:
+        yield transaction
+
+
+ExternalIngestRepository = Annotated[
+    RepositoryContract,
+    Depends(get_external_ingest_repository),
 ]
 
 
@@ -245,7 +286,6 @@ EncryptionKeys = Annotated[
     Depends(get_audio_encryption_key_provider),
 ]
 DeliveryPolicy = Annotated[DeliveryClaimPolicy, Depends(get_delivery_claim_policy)]
-RuntimeSettings = Annotated[Settings, Depends(get_settings)]
 
 
 def _fingerprint(payload: object) -> str:
@@ -459,6 +499,71 @@ async def create_session(
     await store.audit(
         tenant_id=tenant_id,
         action="scribe_session.created",
+        entity_type="scribe_session",
+        entity_id=session.id,
+    )
+    return session
+
+
+@app.post(
+    "/v1/external-transcript-sessions",
+    response_model=CaptureSession,
+    status_code=201,
+    tags=["external-ingest"],
+)
+async def create_external_transcript_session(
+    payload: ExternalTranscriptSessionCreate,
+    tenant_id: ExternalIngestTenantId,
+    idempotency_key: IdempotencyKey,
+    store: ExternalIngestRepository,
+    policy: Policy,
+) -> CaptureSession:
+    consent = await store.lock_consent(tenant_id, payload.consent_record_id)
+    if consent is None:
+        raise HTTPException(status_code=409, detail="A valid consent record is required.")
+    try:
+        policy.validate_session(consent, payload)
+    except ConsentError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    fingerprint = _fingerprint(
+        {
+            "contract": "external-transcript-session-create-v1",
+            "ingest_mode": SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT,
+            "payload": payload,
+        }
+    )
+    session = CaptureSession(
+        id=uuid4(),
+        ingest_mode=SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT,
+        status=SessionStatus.CREATED,
+        created_at=datetime.now(UTC),
+        **payload.model_dump(),
+    )
+    previous_id = await _idempotent_entity(
+        store,
+        tenant_id,
+        _EXTERNAL_TRANSCRIPT_SESSION_CREATE_OPERATION,
+        idempotency_key,
+        fingerprint,
+        session.id,
+    )
+    if previous_id is not None:
+        previous = await store.get_session(tenant_id, previous_id)
+        if (
+            previous is None
+            or previous.ingest_mode != SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="Idempotent external transcript session is unavailable.",
+            )
+        return previous
+
+    await store.add_session(tenant_id, session)
+    await store.audit(
+        tenant_id=tenant_id,
+        action="scribe_session.external_transcript_created",
         entity_type="scribe_session",
         entity_id=session.id,
     )

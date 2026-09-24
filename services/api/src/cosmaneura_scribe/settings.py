@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     capture_protocol_enabled: bool = False
     # Owner: Scribe; cohort: none (dark); review by 2026-09-30.
     beta_preview_host_enabled: bool = False
+    # Owner: founder; cohort: one synthetic practice; review by 2026-09-30.
+    external_ingest_admission_enabled: bool = False
+    external_ingest_beta_tenant_ids: frozenset[UUID] = frozenset[UUID]()
 
     workflow_authentication_enabled: bool = False
     entra_tenant_id: UUID | None = None
@@ -199,6 +202,19 @@ class Settings(BaseSettings):
         ):
             raise ValueError(
                 "capture_protocol_enabled requires workflow authentication and PostgreSQL"
+            )
+        if any(tenant_id.int == 0 for tenant_id in self.external_ingest_beta_tenant_ids):
+            raise ValueError("external ingest beta tenant IDs must be nonzero")
+        if len(self.external_ingest_beta_tenant_ids) > 1:
+            raise ValueError("external ingest beta tenant IDs support at most one tenant")
+        if self.external_ingest_admission_enabled and (
+            not self.workflow_authentication_enabled
+            or self.repository_backend != "postgres"
+            or len(self.external_ingest_beta_tenant_ids) != 1
+        ):
+            raise ValueError(
+                "external_ingest_admission_enabled requires workflow authentication, "
+                "PostgreSQL, and exactly one synthetic beta tenant"
             )
         if (
             self.private_api_acceptance_invocation_enabled
