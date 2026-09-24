@@ -7,6 +7,7 @@ import { createDesktopProviderConnection, type DesktopProviderBackend, type Desk
 import { DesktopProviderRecorder, type DesktopProviderRecorderOptions } from "./provider-recorder.js";
 import type { ProviderProgress } from "../../capture/src/provider/workspace-journal";
 import { InMemoryRecordingIndicator } from "./recording-indicator.js";
+import type { NativePresentationEvent } from "./native-provider-presentation.js";
 
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
 const sessionId = "30000000-0000-4000-8000-000000000003";
@@ -28,12 +29,15 @@ async function fixture() {
   const request = vi.fn(async (_path: string, body: Readonly<Record<string, unknown>>) => Response.json({
     contract_version: "1", binding_ref: body.binding_ref, workspace_id: body.workspace_id,
     request_nonce: body.request_nonce, checked_at: "2026-09-22T12:00:00Z",
-    operation: (body.operation as { kind: string }).kind, receipt: { session_id: sessionId },
+    operation: (body.operation as { kind: string }).kind,
+    receipt: (body.operation as { kind: string }).kind === "creator_review"
+      ? { schema_version: "1.0", session_id: sessionId, status: "created", source: null,
+        working: null, review_queue: null, translation_progress: [] } : { session_id: sessionId },
   }));
   const selected = { recoveryScope, scope: { ...scope }, signal: authorized.signal,
     encounter: { appointmentRef: scope.appointmentRef, title: "Invented visit", detail: "Invented all-party consent" },
     uploadTarget: { putCompleteEnvelope: vi.fn(async () => undefined) }, request,
-    openInCore: vi.fn(async () => undefined), authorizeRecorder, authority: { authorizeStart } };
+    openInCore: vi.fn(async () => undefined), retireSource: vi.fn(async () => undefined), authorizeRecorder, authority: { authorizeStart } };
   const backend: DesktopProviderBackend = { signal: abort.signal, listEncounters: vi.fn(async () => [selected.encounter]),
     createEncounter: vi.fn(async () => undefined), openEncounter: vi.fn(async () => selected), dispose: disposeBackend };
   const resources: DesktopProviderResources = { enabled: true, directory,
@@ -95,8 +99,14 @@ describe("desktop provider resource factory", () => {
     await opened.journal.save(await opened.journal.load(), progress);
     f.selected.scope.workspaceId = crypto.randomUUID(); // A late backend mutation cannot select another store or request scope.
     await opened.recorder(sessionId, new AbortController().signal);
-    await options.authorizeMount(options.signal);
-    expect(f.authorizeRecorder).toHaveBeenCalledWith(sessionId, options.signal);
+    expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
+    expect(f.request).toHaveBeenCalledWith("/service/v1/agent/scribe/capture-operations",
+      expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "creator_review" } }),
+      expect.any(String), expect.any(AbortSignal));
+    const prepared = { sessionId, captureLeaseId: crypto.randomUUID(), leaseReceiptId: crypto.randomUUID(),
+      captureLeaseGeneration: 1, captureAuthorizedUntil: new Date(Date.now() + 60_000).toISOString() };
+    await options.authorizeMount(prepared, options.signal);
+    expect(f.authorizeRecorder).toHaveBeenCalledWith(prepared, options.signal);
     await options.createBff(options.signal).getCapabilities(sessionId);
     expect(f.request).toHaveBeenCalledWith("/service/v1/agent/scribe/capture-operations",
       expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "capabilities" } }),
@@ -121,5 +131,45 @@ describe("desktop provider resource factory", () => {
     await expect(connection.dispose()).rejects.toThrow(); expect(f.disposeBackend).not.toHaveBeenCalled();
     refuse = false; await connection.dispose();
     expect(f.release).toHaveBeenCalledTimes(1); expect(f.disposeBackend).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes native Stop only to the current recorder and closes presentation with its connection", async () => {
+    const f = await fixture();
+    let listener!: (event: NativePresentationEvent) => void;
+    const dispose = vi.fn(async () => undefined), unsubscribe = vi.fn();
+    const connection = f.connect({ presentation: { isHealthy: () => true, dispose,
+      onEvent: next => { listener = next; return unsubscribe; } } });
+    const opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+    await opened.journal.save(await opened.journal.load(), progress);
+    const stopRecording = vi.fn(async () => undefined), deactivate = vi.fn(async () => undefined);
+    vi.spyOn(DesktopProviderRecorder, "open").mockResolvedValue({ availableForView: true,
+      snapshot: { sessionId }, stopRecording, deactivate } as unknown as DesktopProviderRecorder);
+    await opened.recorder(sessionId, new AbortController().signal);
+    listener({ kind: "stop_requested", sessionId: crypto.randomUUID() }); expect(stopRecording).not.toHaveBeenCalled();
+    listener({ kind: "stop_requested", sessionId }); expect(stopRecording).toHaveBeenCalledTimes(1);
+    expect(dispose).not.toHaveBeenCalled();
+    await connection.dispose(); expect(dispose).toHaveBeenCalledAfter(deactivate); expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("revokes capture on presentation failure but retains custody/presentation until source-stop retry succeeds", async () => {
+    const f = await fixture();
+    let listener!: (event: NativePresentationEvent) => void, healthy = true, refuse = true;
+    const dispose = vi.fn(async () => undefined);
+    const connection = f.connect({ presentation: { isHealthy: () => healthy, dispose,
+      onEvent: next => { listener = next; return () => undefined; } } });
+    const opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+    await opened.journal.save(await opened.journal.load(), progress);
+    let options!: DesktopProviderRecorderOptions;
+    const deactivate = vi.fn(async () => { if (refuse) throw new Error("invented unconfirmed stop"); });
+    vi.spyOn(DesktopProviderRecorder, "open").mockImplementation(async value => {
+      options = value; return { availableForView: true, snapshot: { sessionId }, deactivate } as unknown as DesktopProviderRecorder;
+    });
+    await opened.recorder(sessionId, new AbortController().signal);
+    healthy = false; listener({ kind: "failed", sessionId });
+    expect(opened.signal.aborted).toBe(true); expect(options.native.isSessionActive()).toBe(false);
+    await expect(connection.dispose()).rejects.toThrow();
+    expect(f.release).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();
+    refuse = false; await connection.dispose();
+    expect(f.release).toHaveBeenCalledTimes(1); expect(dispose).toHaveBeenCalledTimes(1);
   });
 });

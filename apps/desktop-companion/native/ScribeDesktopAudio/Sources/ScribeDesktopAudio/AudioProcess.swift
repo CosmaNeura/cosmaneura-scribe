@@ -91,12 +91,13 @@ private actor AudioProcessHost {
         lastInput = .now
         switch command {
         case .heartbeat: break
-        case .start(let selection, let duration, let frames):
+        case .start(let selection, let duration, let frames, let fence):
             guard !started, !stopped else { fail(.invalidAudio); return }
             started = true
             let nextSink = ProcessPCMSink(output: output) { [weak self] error in Task { await self?.fail(error) } }
             sink = nextSink
             do {
+                try AudioProcessFence.shared.acquire(fence)
                 let nextMixer = try AlignedMeetingPCM(maximumOutputFrames: frames, sink: nextSink)
                 mixer = nextMixer
                 startTask = Task {
@@ -207,6 +208,23 @@ private actor AudioProcessHost {
         Task {
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
             done.finish(1) // Dedicated executable exits even if OS stop is stuck.
+        }
+    }
+}
+
+// Retain the lock until executable exit, including an uncooperative OS stop.
+// Releasing a host/task object is not physical-cessation evidence.
+private enum AudioProcessFence {
+    static let shared = Storage()
+    final class Storage: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lease: NativeCaptureProcessLease?
+        func acquire(_ ticket: NativeFenceTicket) throws {
+            try lock.withLock {
+                guard lease == nil else { throw NativeFenceError.unavailable }
+                lease = try NativeCaptureProcessLease(privateDirectory: nativeDesktopFenceDirectory(),
+                    expectedAnchor: ticket.anchor, expectedEpoch: ticket.epoch)
+            }
         }
     }
 }

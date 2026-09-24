@@ -47,6 +47,8 @@ export class DesktopProviderRecorderIpc {
         switch (request.kind) {
           case "start": await this.recorder.startRecording(); break;
           case "stop": await this.recorder.stopRecording(); break;
+          case "pause": await this.recorder.pauseRecording(); break;
+          case "continue": await this.recorder.resumeRecording(); break;
           case "permissions": await this.recorder.refreshPermissions(); break;
           case "resume": await this.recorder.resumePendingWork(); break;
           case "release": await this.recorder.releaseUploadedCapture(); break;

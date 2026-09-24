@@ -9,14 +9,20 @@ import { DurableDesktopRecordStore, uuid } from "./durable-record-store.js";
 import { DurableDesktopFlowStore } from "./durable-flow-store.js";
 import { DurableDesktopQueueStorage } from "./durable-queue-store.js";
 import { DurableDesktopCoverage, desktopJournalRecords } from "./durable-provider-records.js";
+import type { NativePresentationOwner } from "./native-provider-presentation.js";
+import { parseCreatorReview } from "../../review-ui/src/creator-review-api";
+import type { PreparedDesktopCapture } from "./provider-recorder.js";
 
 export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderEncounter,
   "journal" | "reviewJournal" | "recorder"> {
   readonly recoveryScope: string;
+  readonly release?: () => Promise<void>;
   readonly uploadTarget: CiphertextUploadTarget;
   /** Backend-issued authority. A session/capabilities receipt is insufficient. */
-  readonly authorizeRecorder: (sessionId: string, signal: AbortSignal) => ReturnType<DesktopProviderRecorderOptions["authorizeMount"]>;
+  readonly retireSource: () => Promise<void>;
+  readonly authorizeRecorder: (prepared: PreparedDesktopCapture, signal: AbortSignal) => ReturnType<DesktopProviderRecorderOptions["authorizeMount"]>;
   readonly authority: DesktopProviderRecorderOptions["authority"];
+  readonly processFence?: DesktopProviderRecorderOptions["native"]["getProcessFence"];
 }
 export interface DesktopProviderBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedDesktopProviderMount>;
@@ -35,6 +41,9 @@ export interface DesktopProviderResources {
   readonly indicator: DesktopProviderRecorderOptions["indicator"];
   readonly native: DesktopProviderRecorderOptions["native"];
   readonly selectWindow: DesktopProviderRecorderOptions["selectWindow"];
+  /** When using the native presentation transport, retain its lifecycle/events
+   * with the connection. Existing injected fixture resources may omit it. */
+  readonly presentation?: NativePresentationOwner;
 }
 type Connection = Awaited<ReturnType<DesktopProviderMainHost["connect"]>>;
 type Custody = Awaited<ReturnType<DesktopProviderResources["openCustody"]>>;
@@ -44,6 +53,7 @@ interface Mount {
   opening?: Promise<AuthorizedProviderEncounter<DesktopProviderRecorder>>;
   store?: DurableDesktopRecordStore;
   custody?: Custody;
+  releaseBackend?: () => Promise<void>;
   recorder?: DesktopProviderRecorder;
   recorderOpening: boolean;
   closing?: Promise<void>;
@@ -66,7 +76,8 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
   const work = new Set<Promise<unknown>>();
   let mount: Mount | undefined, transitioning = false, closing: Promise<void> | undefined, closed = false;
   const current = (operation?: AbortSignal): void => {
-    if (closed || lifetime.aborted || operation?.aborted) throw unavailable();
+    if (closed || lifetime.aborted || operation?.aborted
+      || resources.presentation && !resources.presentation.isHealthy()) throw unavailable();
   };
   const closeMount = (owned = mount): Promise<void> => {
     if (!owned) return Promise.resolve();
@@ -76,6 +87,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
       await Promise.allSettled([...owned.work]);
       // Failed native stop retains store/key ownership and blocks replacement.
       await owned.recorder?.deactivate();
+      await owned.releaseBackend?.();
       owned.store?.close();
       await owned.custody?.release();
       owned.removeAbort?.();
@@ -89,11 +101,23 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
     return closing ??= (async () => {
       await Promise.allSettled([...work]);
       await closeMount();
+      await resources.presentation?.dispose();
       await backend.dispose();
+      removePresentation?.();
       lifetime.removeEventListener("abort", onAbort); closed = true;
     })().catch(error => { closing = undefined; throw error; });
   };
   const onAbort = (): void => { void dispose().catch(() => undefined); };
+  const removePresentation = resources.presentation?.onEvent(event => {
+    if (closed || !mount) return;
+    if (event.kind === "failed") {
+      // Revocation interrupts startup immediately; closeMount retains keys and
+      // the recorder after an unconfirmed source stop, allowing owner retry.
+      void closeMount().catch(() => undefined);
+    } else if (event.sessionId === mount.recorder?.snapshot.sessionId) {
+      void mount.recorder.stopRecording().catch(() => undefined);
+    }
+  });
   lifetime.addEventListener("abort", onAbort, { once: true });
   const transition = async <T>(operation: AbortSignal, run: () => Promise<T>): Promise<T> => {
     current(operation); if (transitioning) throw unavailable();
@@ -119,7 +143,8 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
       owned.removeAbort = () => mountSignal.removeEventListener("abort", cancel);
       const check = (): void => { current(mountSignal); if (mount !== owned) throw unavailable(); };
       owned.opening = Promise.resolve().then(async () => {
-        const opened = await backend.openEncounter(appointmentRef, mountSignal); check();
+        const opened = await backend.openEncounter(appointmentRef, mountSignal);
+        if (opened.release) owned.releaseBackend = opened.release; check();
         if (opened.signal.aborted || opened.scope.appointmentRef !== appointmentRef || opened.encounter.appointmentRef !== appointmentRef
           || !reference(opened.scope.bindingRef, "scribe_capture_binding")) throw unavailable();
         const selected = { ...opened, recoveryScope: uuid(opened.recoveryScope),
@@ -167,13 +192,23 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
               const flow = new DurableDesktopFlowStore(owned.store!.namespace("flow"));
               owned.recorder = await DesktopProviderRecorder.open({ enabled: true, sessionId, signal: linked,
                 createBff: captureSignal => new CoreCaptureBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId),
-                authorizeMount: captureSignal => selected.authorizeRecorder(sessionId, captureSignal),
+                authorizePreparation: async captureSignal => {
+                  const client = new CoreCaptureClient(selected.scope, request, captureSignal);
+                  const view = parseCreatorReview(await client.operation(sessionId, { kind: "creator_review" }), sessionId);
+                  return { sessionId: view.session_id, status: view.status };
+                },
+                authorizeMount: (prepared, captureSignal) => selected.authorizeRecorder(prepared, captureSignal),
                 authority: selected.authority, indicator: resources.indicator,
+                retireSource: selected.retireSource,
                 flowStore: flow, createSessionKey: flow.createSessionKey,
                 queueStorage: new DurableDesktopQueueStorage(owned.store!.namespace(`queue:${sessionId}`), sessionId),
                 uploadTarget: selected.uploadTarget,
                 coverage: new DurableDesktopCoverage(owned.store!.namespace("coverage"), sessionId),
-                native: { ...resources.native, isSessionActive: () => !linked.aborted && resources.native.isSessionActive() },
+                native: { ...resources.native, getProcessFence: () => {
+                  if (!selected.processFence) throw unavailable();
+                  return selected.processFence();
+                }, isSessionActive: () => !linked.aborted && resources.native.isSessionActive()
+                  && (!resources.presentation || resources.presentation.isHealthy()) },
                 selectWindow: resources.selectWindow,
                 // Journals still use the encounter store after recorder release.
                 // closeMount owns its closure after every native stop is confirmed.
