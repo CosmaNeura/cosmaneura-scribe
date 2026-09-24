@@ -117,13 +117,16 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       invalidate(); closeInBackground(); render(); return;
     }
     const changed = state?.revision !== value.revision || state.phase !== value.phase;
+    // Native polling still observes revocation, but an identical observation
+    // must not replace focused controls or retry a previously failed close.
+    if (!changed) return;
     state = { phase: value.phase, revision: value.revision };
     if (value.phase === "signedOut") logoutPending = false;
     if (value.phase === "signOutPending") logoutPending = true;
     if (scope && (value.phase !== "ready" || value.revision !== scope.revision)) {
       accessClosed = true; invalidate(); closeInBackground();
     }
-    if (changed) notice = "";
+    notice = "";
     render();
   };
   const read = (): Promise<void> => {
