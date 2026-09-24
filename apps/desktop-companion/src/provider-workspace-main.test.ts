@@ -74,6 +74,22 @@ const core = (kind: string) => ({ path: "/service/v1/agent/scribe/capture-operat
   body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID(), operation: { kind } } });
 
 describe("trusted desktop provider workspace", () => {
+  it.each([
+    ["capture-admissions", 409, { detail: "provider_consent_required" }, { detail: "provider_consent_required" }],
+    ["capture-notes", 409, { detail: "provider_consent_required" }, null],
+    ["capture-admissions", 503, { detail: "provider_consent_required" }, null],
+    ["capture-admissions", 409, { detail: "provider_consent_required", extra: "untrusted" }, null],
+    ["capture-admissions", 409, { detail: "provider_request_unconfirmed" }, null],
+  ] as const)("forwards only the bounded admission renewal outcome across the desktop bridge (%s %s)", async (action, status, body, expected) => {
+    const f = await fixture();
+    try {
+      await f.connect(); await f.open();
+      f.backend.mockResolvedValueOnce(Response.json(body, { status }));
+      const reply = await f.invoke("core", { path: "/service/v1/agent/scribe/" + action, key: crypto.randomUUID(),
+        body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID() } });
+      expect(reply.ok).toBe(true); expect(reply.result).toEqual({ status, body: expected });
+    } finally { await f.main.dispose(); }
+  });
   it("connects encounter/review/note actions while denying recorder credentials and changed scopes", async () => {
     const f = await fixture();
     try {
