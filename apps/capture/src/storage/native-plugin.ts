@@ -16,6 +16,7 @@ import { decodeCaptureRecord, encodeCaptureRecord } from "./record-codec";
 const ALREADY_EXISTS = "SECURE_QUEUE_ALREADY_EXISTS";
 const REVISION_CONFLICT = "SECURE_QUEUE_REVISION_CONFLICT";
 const NOT_FOUND = "SECURE_QUEUE_NOT_FOUND";
+export type NativeQueueRecordPlugin = Pick<SecureQueuePlugin, "create" | "get" | "list" | "compareAndSwap">;
 
 /**
  * Maps the durable queue contract onto the custom Capacitor secure-queue
@@ -23,9 +24,9 @@ const NOT_FOUND = "SECURE_QUEUE_NOT_FOUND";
  * separately verified before the plugin's atomic compare-and-swap.
  */
 export class NativePluginQueueStorage implements CaptureQueueStorage {
-  readonly #plugin: SecureQueuePlugin;
+  readonly #plugin: NativeQueueRecordPlugin;
 
-  constructor(plugin: SecureQueuePlugin) {
+  constructor(plugin: NativeQueueRecordPlugin) {
     this.#plugin = plugin;
   }
 
@@ -54,9 +55,11 @@ export class NativePluginQueueStorage implements CaptureQueueStorage {
   async list(): Promise<readonly CaptureChunkRecord[]> {
     const result = await this.#plugin.list();
     return Promise.all(
-      // Review recovery shares native encryption, but is never an audio record.
+      // Shared native storage also holds journals and independently scoped provider
+      // queues. Only a provider's scoped adapter may enumerate its queue records.
       result.keys.filter((key) => !key.startsWith("creator-review-v1:")
-        && !key.startsWith("provider-workspace-v1:")).map(async (objectId) => {
+        && !key.startsWith("provider-workspace-v1:")
+        && !key.startsWith("scribe-provider-queue:v1:")).map(async (objectId) => {
         const value = await this.#plugin.get({ key: objectId });
         return fromNativeRecord(objectId, value.key, value.data, value.revision);
       }),

@@ -16,8 +16,10 @@ import type {
   Transcript,
 } from "../bff/contracts";
 import { BffResponseError } from "../bff/http-client";
+import { AudioCaptureError } from "../audio/errors";
 import type {
   CapturedWavChunk,
+  CaptureAudioChannel,
   CaptureSource,
   CaptureSourceErrorCode,
   CaptureSourceInterruptionCode,
@@ -28,6 +30,7 @@ import type { CaptureQueueTransport, ChunkReservation } from "../queue/types";
 import { createWrappedSessionKey } from "./session-key";
 import {
   FLOW_RECORD_SCHEMA_VERSION,
+  CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
   type ActiveCapturePhase,
   type ActiveCaptureState,
   type CaptureFlowState,
@@ -80,6 +83,7 @@ export class CaptureFlowController {
   readonly #queue: CaptureQueue;
   readonly #queueTransport: CaptureQueueTransport;
   readonly #source: CaptureSource;
+  readonly #channel: CaptureAudioChannel;
   readonly #crypto: Crypto;
   readonly #now: () => Date;
   readonly #idFactory: () => string;
@@ -121,6 +125,10 @@ export class CaptureFlowController {
     this.#queue = options.queue;
     this.#queueTransport = options.queueTransport;
     this.#source = options.source;
+    this.#channel = options.source.channel ?? "microphone";
+    if (!["microphone", "mixed", "system_audio"].includes(this.#channel)) {
+      throw new QueueInvariantError("capture_channel_invalid");
+    }
     this.#crypto = options.crypto ?? globalThis.crypto;
     this.#now = options.now ?? (() => new Date());
     this.#idFactory = options.idFactory ?? (() => this.#crypto.randomUUID());
@@ -160,6 +168,7 @@ export class CaptureFlowController {
     }
     this.#setSnapshot({ state: "preparing", statusCode: "synthetic_preview_restoring" });
     try {
+      if (!(active.reviewAfterUpload && active.phase === "processing")) this.#requireChannel(active.channel);
       this.#activeState = active;
       this.#reviewAfterUpload = active.reviewAfterUpload === true;
       this.#sessionId = active.sessionId;
@@ -188,6 +197,7 @@ export class CaptureFlowController {
         );
       }
       for (const record of records) {
+        this.#requireChannel(record.reservation.channel);
         this.#reservations.set(record.reservation.sequenceNumber, record.reservation);
       }
       const recorded = records.filter((record) => record.state !== "reserved");
@@ -233,6 +243,7 @@ export class CaptureFlowController {
 
   public async prepare(encounter: SyntheticEncounter): Promise<void> {
     this.#requireState("idle");
+    if (this.#channel !== "microphone") throw new QueueInvariantError("configured_capture_required");
     this.#setSnapshot({ state: "preparing", statusCode: "synthetic_preview_preparing" });
     try {
       const startedAt = this.#now();
@@ -267,7 +278,7 @@ export class CaptureFlowController {
       }
       const preparation: ConfiguredCapturePreparationState = {
         mode: "configured_core",
-        schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
+        ...this.#channelState(),
         sessionId,
         startedAt: this.#now().toISOString(),
         completeIdempotencyKey: this.#operationKey("complete"),
@@ -329,6 +340,7 @@ export class CaptureFlowController {
   }
 
   async #continuePreparation(initial: CapturePreparationState): Promise<void> {
+    this.#requireChannel(initial.mode === "configured_core" ? initial.channel : undefined);
     let preparation = initial.mode === "configured_core" ? initial : await this.#prepareDirectAdmission(initial);
     const sessionId = preparation.sessionId;
     if (sessionId === null) throw new QueueInvariantError("preparation_state_incomplete");
@@ -360,7 +372,7 @@ export class CaptureFlowController {
       throw new QueueInvariantError("capture_lease_expired");
     }
     this.#activeState = {
-      schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
+      ...this.#channelState(),
       sessionId,
       lease: this.#lease,
       captureAuthorizedUntil: null,
@@ -443,6 +455,14 @@ export class CaptureFlowController {
       try {
         await this.#source.stop();
       } catch (error) {
+        if (isUnconfirmedNativeStop(error)) {
+          // An interruption is not proof that the native audio session closed.
+          // Keep the same source, encrypted queue and stop action available.
+          await this.#sourcePausePersistence;
+          await this.#saveActivePhase("paused");
+          this.#setSnapshot({ state: "paused", statusCode: error.code });
+          throw error;
+        }
         if (!this.#sourcePausedBySignal) throw error;
       }
       this.#sourceStarted = false;
@@ -455,7 +475,7 @@ export class CaptureFlowController {
       this.#setSnapshot({ state: "uploading", statusCode: "synthetic_preview_uploading" });
       await this.#drainAndComplete();
     } catch (error) {
-      this.#fail();
+      if (!isUnconfirmedNativeStop(error) || this.#snapshot.state !== "paused") this.#fail();
       throw error;
     }
   }
@@ -552,7 +572,7 @@ export class CaptureFlowController {
       capture_lease_id: lease.lease_id,
       capture_lease_generation: lease.generation,
       channels: [{
-        channel: "microphone",
+        channel: this.#channel,
         final_sequence_number: active.recordedChunks - 1,
       }],
     }, { idempotencyKey: active.completeIdempotencyKey });
@@ -625,7 +645,7 @@ export class CaptureFlowController {
     }
     const intent: ReservationIntent = {
       schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
-      intentId: `${sessionId}:microphone:0:${String(count)}`,
+      intentId: `${sessionId}:${this.#channel}:0:${String(count)}`,
       sessionId,
       idempotencyKey: this.#operationKey("reserve"),
       createdAt: this.#now().toISOString(),
@@ -633,7 +653,7 @@ export class CaptureFlowController {
         protocol_version: PROTOCOL_VERSION,
         capture_lease_id: lease.lease_id,
         capture_lease_generation: lease.generation,
-        channel: "microphone",
+        channel: this.#channel,
         first_sequence_number: 0,
         count,
       },
@@ -650,6 +670,7 @@ export class CaptureFlowController {
   }
 
   async #replayReservationIntent(intent: ReservationIntent): Promise<void> {
+    this.#requireChannel(intent.request.channel);
     const batch = await this.#bff.reserveChunks(
       intent.sessionId,
       intent.request,
@@ -666,6 +687,7 @@ export class CaptureFlowController {
     if (
       batch.protocol_version !== PROTOCOL_VERSION ||
       batch.session_id !== this.#requireSessionId() ||
+      batch.reservations.some(row => row.channel !== this.#channel || row.session_id !== batch.session_id) ||
       Number.isNaN(Date.parse(batch.capture_authorized_until))
     ) {
       throw new QueueInvariantError("invalid_capture_authority");
@@ -787,6 +809,15 @@ export class CaptureFlowController {
   #setCapabilities(capabilities: CaptureCapabilities): void {
     this.#queue.configureUploadConcurrency(capabilities.upload_concurrency);
     this.#capabilities = capabilities;
+  }
+
+  #requireChannel(channel: CaptureAudioChannel | undefined): void {
+    if ((channel ?? "microphone") !== this.#channel) throw new QueueInvariantError("capture_channel_conflict");
+  }
+
+  #channelState(): Pick<ActiveCaptureState, "schemaVersion" | "channel"> {
+    return this.#channel === "microphone" ? { schemaVersion: FLOW_RECORD_SCHEMA_VERSION }
+      : { schemaVersion: CHANNEL_FLOW_RECORD_SCHEMA_VERSION, channel: this.#channel };
   }
 
   #canCreateOrRecoverReservations(): boolean {
@@ -980,6 +1011,10 @@ export class CaptureFlowController {
     this.#snapshot = { ...this.#snapshot, ...patch };
     for (const listener of this.#listeners) listener(this.snapshot);
   }
+}
+
+function isUnconfirmedNativeStop(error: unknown): error is AudioCaptureError {
+  return error instanceof AudioCaptureError && error.code === "audio_capture_native_stop_failed";
 }
 
 function restoredSnapshotState(phase: ActiveCapturePhase): CaptureFlowState {

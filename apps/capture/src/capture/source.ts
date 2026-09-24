@@ -1,4 +1,6 @@
-import type { CaptureCapabilities } from "../bff/contracts";
+import type { CaptureCapabilities, ChunkReservationBatchRequest } from "../bff/contracts";
+
+export type CaptureAudioChannel = ChunkReservationBatchRequest["channel"];
 
 export interface CapturedWavChunk {
   readonly sequenceNumber: number;
@@ -18,6 +20,7 @@ export type CaptureSourceInterruptionCode =
   | "audio_context_suspended"
   | "audio_device_disconnected"
   | "audio_route_changed"
+  | "audio_session_interrupted"
   | "capture_backgrounded";
 
 export type CaptureSourceErrorCode =
@@ -30,6 +33,8 @@ export type CaptureSourceErrorCode =
  */
 export interface CaptureSource {
   readonly kind: "synthetic" | "microphone";
+  /** Fixed by the authorized source; omission preserves existing microphone capture. */
+  readonly channel?: CaptureAudioChannel;
   start(options: CaptureSourceStartOptions): Promise<void>;
   stop(): Promise<void>;
 }

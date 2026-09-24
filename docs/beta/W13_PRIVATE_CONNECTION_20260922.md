@@ -81,7 +81,8 @@ UTC on September 22**. No local TLS check was running. The owner then reported
 **“Secure session is unavailable.”** This establishes phone-to-private-backend
 TLS reachability, but token acquisition/validation fails before the authenticated
 catalog call. No `authenticated_catalog_returned` or other catalog result has
-been observed. The exact native failure remains unproven.
+been observed. The build 3 result below now identifies the native
+application-origin check.
 
 Do not report authenticated encounter loading as passed until the fixed
 `authenticated_catalog_returned` stage and visible invented encounter establish
@@ -93,7 +94,7 @@ pre-install package; `iphone-update-result.json` and
 composed sources by SHA-256. At that readback, receiver PID **97451** and private
 PostgreSQL PID **94522** matched their expected executables; recheck before use.
 
-## Session failure candidate — build 3
+## Installed session diagnostic — build 3
 
 Prepared in a separate owned artifact directory (same checkout and branch):
 
@@ -125,20 +126,38 @@ check's fixture-timing failure is preserved separately; the corrected fixture
 waits for the native result before asserting. No live Speech/translation trial
 was repeated.
 
-**Build 3 is not installed.** The installation attempt failed before completion
-with CoreDevice error 4016. A fresh read-only device inventory reports the same
-paired iPhone with an unavailable tunnel (last connection **12:09 UTC**).
-Build 2 remains the last confirmed installation. The owner has been asked to
-reconnect and unlock the phone/Mac. Preserve `iphone-update-result.json` and use
-a new receipt filename when retrying the exact candidate.
+**Build 3 is installed and was launched.** After the owner reconnected and
+unlocked the iPhone, the exact previously signed package installed in place.
+`iphone-update-owner-ready.json` records success and
+`iphone-app-owner-ready.json` confirms version 1.0/build 3. The earlier failed
+4016 receipt remains preserved separately. The native app showed the existing
+signed-in welcome and Sign out action.
+
+After the owner's physical tap, both their report and the Device Hub phone view
+showed **“Private connection succeeded, but session verification failed
+(app_binding_missing). Your workspace remains closed.”** The receiver recorded
+new TLS stages at **12:52:10, 12:52:20 and 12:53:05 UTC** on September 22; no
+local TLS test was running. No authenticated catalog result was recorded.
+`installed-session-failure-checkpoint.json` binds this observation to the
+installation evidence. The code means an absent or JSON-null `azp` during an
+already-rejected token check; it does not establish the validity of other claims.
 
 Read-only contract review: [Clerk session-token documentation](https://clerk.com/docs/guides/sessions/session-tokens)
 states that `azp` comes from the original Frontend API `Origin` and can be absent.
 The retained native SDK middleware deliberately omits `Origin`, while the
-retained client and receiver require the configured `azp`. This makes a contract
-mismatch a concrete hypothesis, **not a confirmed diagnosis**. No Clerk setting,
-template, native policy or receiver authentication policy was changed. Do not
-add the browser header or weaken validation speculatively.
+retained client and receiver require the configured `azp`. The observed code
+confirms this check blocks the current native request. It does not yet establish
+successful authentication under a corrected policy. No Clerk setting, template
+or running receiver authentication policy changed.
+
+The owner explicitly approved the **build 4 native-session correction**. It is
+installed and launched; the corrected private iPhone receiver is active at the
+same endpoint, with the original database and TLS files preserved. See
+[the exact review and activation checkpoint](W13_NATIVE_SESSION_CORRECTION_20260922.md).
+The corrected receiver returned an authenticated catalog at **13:16:35 UTC**,
+and the owner confirmed **Invented connection visit** on the iPhone. No local
+request was running. The first phone/backend/authenticated-catalog gate has
+passed; full provider-workspace and native lifecycle acceptance remain open.
 
 ## Resume safely
 
@@ -146,7 +165,8 @@ add the browser header or weaken validation speculatively.
    `private_tls_request_received` establishes the phone's connection only when
    no local test is running. `authenticated_catalog_returned` plus the visible
    invented encounter establishes the first end-to-end gate. Diagnose failures
-   through fixed codes; never print tokens or weaken the unchanged auth policy.
+   through fixed codes; never print tokens. The exact build 4 native-session
+   rule and private receiver activation are approved and active.
 2. Preserve the running receiver and private database. Verify their executable,
    listener and owned directory before restarting or stopping anything. Do not
    rerun seeding, replace the certificate, rebuild Mac R2 or replay completed
@@ -162,6 +182,6 @@ add the browser header or weaken validation speculatively.
 
 No other tasks were contacted. Core and CosmasOS checkouts were read-only;
 foreign changes, demos 8125/8195, other apps and simulators remain protected.
-No shared database, auth policy, credential namespace, ACL or system Keychain
-setting was changed. No push, PR, merge, cloud action or completed live-service
-trial was performed.
+The approved private receiver's native-session rule changed as documented above.
+No shared database, credential namespace, ACL or system Keychain setting changed.
+No push, PR, merge, cloud action or completed live-service trial was performed.

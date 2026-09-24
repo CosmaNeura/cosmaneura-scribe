@@ -3,6 +3,7 @@ import { NONCE_BYTES } from "@cosmaneura-scribe/capture-protocol";
 import { QueueInvariantError } from "../queue/errors";
 import {
   FLOW_RECORD_SCHEMA_VERSION,
+  CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
   type ActiveCaptureState,
   type CaptureFlowStore,
   type CapturePreparationState,
@@ -404,11 +405,17 @@ function assertReservationIntent(value: unknown): asserts value is ReservationIn
   }
 }
 
+function validCaptureChannelVersion(value: Record<string, unknown>): boolean {
+  return value.schemaVersion === FLOW_RECORD_SCHEMA_VERSION && value.channel === undefined
+    || value.schemaVersion === CHANNEL_FLOW_RECORD_SCHEMA_VERSION
+      && (value.channel === "mixed" || value.channel === "system_audio");
+}
+
 function assertPreparationState(value: unknown): asserts value is CapturePreparationState {
   if (isRecord(value) && value.mode === "configured_core") {
-    if (Object.keys(value).sort().join(",") !==
+    if (Object.keys(value).filter(key => key !== "channel").sort().join(",") !==
         "completeIdempotencyKey,leaseIdempotencyKey,leaseRequest,mode,schemaVersion,sessionId,startedAt"
-      || value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION
+      || !validCaptureChannelVersion(value)
       || typeof value.startedAt !== "string" || !Number.isFinite(Date.parse(value.startedAt))
       || typeof value.sessionId !== "string" || typeof value.completeIdempotencyKey !== "string"
       || (value.leaseIdempotencyKey !== null && typeof value.leaseIdempotencyKey !== "string")
@@ -426,6 +433,7 @@ function assertPreparationState(value: unknown): asserts value is CapturePrepara
   if (
     !isRecord(value) ||
     (value.mode !== undefined && value.mode !== "direct") ||
+    value.channel !== undefined ||
     value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION ||
     typeof value.startedAt !== "string" ||
     typeof value.consentIdempotencyKey !== "string" ||
@@ -465,6 +473,7 @@ function assertPreparationProgression(
     if (existing.mode !== "configured_core" || replacement.mode !== "configured_core"
       || existing.sessionId !== replacement.sessionId || existing.startedAt !== replacement.startedAt
       || existing.completeIdempotencyKey !== replacement.completeIdempotencyKey
+      || existing.schemaVersion !== replacement.schemaVersion || existing.channel !== replacement.channel
       || !nullableStable(existing.leaseIdempotencyKey, replacement.leaseIdempotencyKey)
       || !nullableStableJson(existing.leaseRequest, replacement.leaseRequest)) {
       throw new QueueInvariantError("preparation_state_conflict");
@@ -502,7 +511,8 @@ function assertActiveCaptureState(value: unknown): asserts value is ActiveCaptur
   if (
     !isRecord(value) ||
     (value.reviewAfterUpload !== undefined && value.reviewAfterUpload !== true) ||
-    value.schemaVersion !== FLOW_RECORD_SCHEMA_VERSION ||
+    !validCaptureChannelVersion(value) ||
+    (value.schemaVersion === CHANNEL_FLOW_RECORD_SCHEMA_VERSION && value.reviewAfterUpload !== true) ||
     typeof value.sessionId !== "string" ||
     !isRecord(value.lease) ||
     (value.captureAuthorizedUntil !== null &&
@@ -539,6 +549,7 @@ function assertActiveCaptureProgression(
 ): void {
   if (
     JSON.stringify(existing.lease) !== JSON.stringify(replacement.lease) ||
+    existing.schemaVersion !== replacement.schemaVersion || existing.channel !== replacement.channel ||
     existing.reviewAfterUpload !== replacement.reviewAfterUpload ||
     existing.completeIdempotencyKey !== replacement.completeIdempotencyKey ||
     existing.startedAt !== replacement.startedAt ||

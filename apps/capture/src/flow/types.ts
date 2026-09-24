@@ -7,6 +7,8 @@ import type {
 } from "../bff/contracts";
 
 export const FLOW_RECORD_SCHEMA_VERSION = 2 as const;
+/** Non-microphone records fail closed in older microphone-only clients. */
+export const CHANNEL_FLOW_RECORD_SCHEMA_VERSION = 3 as const;
 
 export type ActiveCapturePhase =
   | "ready"
@@ -51,7 +53,8 @@ export interface PreparedCaptureSession {
 }
 
 export interface ActiveCaptureState {
-  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION;
+  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION;
+  readonly channel?: ChunkReservationBatchRequest["channel"];
   readonly sessionId: string;
   readonly lease: CaptureLeaseReceipt;
   /** Exact server receipt value. Null only while the first reservation mutation is pending. */
@@ -84,7 +87,8 @@ export interface DirectCapturePreparationState {
 
 export interface ConfiguredCapturePreparationState {
   readonly mode: "configured_core";
-  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION;
+  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION;
+  readonly channel?: ChunkReservationBatchRequest["channel"];
   readonly startedAt: string;
   readonly completeIdempotencyKey: string;
   readonly sessionId: string;

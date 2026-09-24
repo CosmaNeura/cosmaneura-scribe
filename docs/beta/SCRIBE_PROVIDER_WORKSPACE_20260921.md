@@ -1,5 +1,191 @@
 # Local provider workspace — 2026-09-21
 
+## Standalone provider receiver preparation — 2026-09-22
+
+The server transport's fresh-authority callback is now bound to the existing
+verified identity, active human, creator workspace, confirmed Core encounter and
+reviewed Core account records in a separate FastAPI receiver. Its six fixed native
+routes cover catalog, mount, recorder reauthorization and configured capture,
+review and Core note requests. Workload credentials stay server-side; Core still
+decides each clinical operation. W13's working receiver/app are unchanged.
+
+Fourteen local checks pass against an isolated socket-only PostgreSQL fixture
+with the actual retained schema/verifier, offline signing keys and Core wire
+responses. The current TypeScript provider client completes its admission,
+review and note sequence through the receiver. Revocation and changed creator
+correspondence during Core I/O suppress the result. This is source preparation;
+no standalone endpoint or real Core configuration has been activated.
+
+See [ADR 0051](../adr/0051-standalone-provider-receiver.md) and
+`/Users/jw/Desktop/Cosmas/scribe-provider-receiver-20260922.pnahj9UO/`.
+The actual native request/upload binding, existing Core creation/navigation,
+reviewed runtime configuration and physical end-to-end acceptance remain open.
+
+## Desktop audio-channel preparation — 2026-09-22
+
+The recorder now preserves an authorized source's mixed/system-audio channel
+through reservation, encrypted retention, interruption, reopening and capture
+completion. It previously labeled every recording as microphone audio. Retained
+work rejects a different source channel and cannot be rewritten as microphone
+work. Existing microphone records and the default preview keep their version-2
+shape; new non-microphone flow records use version 3, which older clients reject.
+
+Both channel recovery checks and all 192 capture checks pass locally, with
+invented consent/audio and the existing loopback protocol fixture. See
+[ADR 0050](../adr/0050-capture-channel-bound-recovery.md) and evidence at
+`/Users/jw/Desktop/Cosmas/scribe-provider-channels-20260922.ulHYxlkX/`.
+The actual desktop audio producer, app hosting and physical Meet/Zoom acceptance
+remain open. No native app, service, consent policy or shared schema changed.
+
+## Server-side Core provider transport — 2026-09-22
+
+`ProviderCoreTransport` now connects the current provider request contracts to
+Core's existing user-context exchange, server workload/mount resolution and
+creator/encounter capture binding. It supports configured admission, creator
+review decisions and existing Core SOAP read/prepare/save/recovery. Each operation
+reauthorizes the current identity and encounter before and after I/O; workload
+and mount credentials remain on the server. There is no automatic mutation retry.
+
+The actual TypeScript `CoreCaptureClient` executes its admission, review and
+note request sequence through this Python transport in the focused local check.
+All seventeen checks pass with Node 24, including changed identity, revocation,
+concurrency, lost replies and cancellation. Core and identity responses are
+explicit offline fixtures: this is client/transport interoperability, not a new
+Core/database/model trial or live authentication acceptance. See
+[ADR 0049](../adr/0049-standalone-provider-core-transport.md) and evidence at
+`/Users/jw/Desktop/Cosmas/scribe-provider-core-20260922.bRpB0BTG/`.
+
+The component is unregistered and disabled by default. The actual standalone
+native/server host must still bind its fresh identity/grant/creator authorizer,
+reviewed Core origin/workload credential source, encounter list/creation and
+native request lifetime. W13's catalog receiver and installed build remain
+unchanged. No protected Core/OS source or authentication policy was modified.
+
+## iOS provider host composition — 2026-09-22
+
+`createProviderIOSHost(existingConnection)` now assembles the real iOS recorder,
+provider/review journals, scoped audio queue, encrypted flow store, exclusive
+recording lock and configured upload target for `mountProviderWorkspace`.
+The existing authenticated Core/native connection still owns encounter listing,
+creation, mount authorization, recorder reauthorization and Core navigation.
+It supplies the stable server-bound environment/creator recovery UUID and
+`AuthorizedCoreRequest`; the new host never acquires a workload credential or
+turns a Clerk token into Core workload authority.
+
+Recorder acquisition requires native iOS, IOSPCM and SecureQueue, then locks and
+freshly reauthorizes before opening retained stores. Construction never requests
+microphone permission or starts audio. The current controller retains explicit
+consent/admission and Start. Queue keys bind recovery scope, workspace and
+session; foreign/legacy records are never fetched. A mismatched saved session
+fails without clearing it. Failed native stop retains the same source and lock
+until explicit retry succeeds. Cancellation during asynchronous store opening
+closes only the failed acquisition's handles.
+
+Audio queue and provider/review journals use the existing device-encrypted
+SecureQueue. Flow records and session keys retain the existing encrypted
+IndexedDB/WebCrypto profile; this increment does not claim native Keychain
+custody for those keys. It introduces no native storage implementation or
+credential namespace change. The unscoped queue reader excludes the new reserved
+provider namespace, preserving separation from its previous records.
+
+Local evidence:
+`/Users/jw/Desktop/Cosmas/scribe-provider-ios-host-20260922.ocw3v6ik/`.
+Six new host checks cover reopening retained state, creator/workspace/session
+separation, pending-session preservation, unconfirmed-stop ownership,
+reauthorization/native-store failure and cancellation during storage open.
+All **190 capture checks** are accounted for: 177 passed in the initial run;
+13 HTTP fixture checks initially failed with sandbox `listen EPERM`, then all
+13 passed with loopback socket access in `capture-http-tests.log`. The original
+failure log remains. Typecheck, affected lint and provider build pass.
+
+`rendered-host.log` verifies the actual built entry with `AbortSignal.any`
+absent: native-host composition reaches the provider recording preparation
+view, uses the scoped journal, reauthorizes recorder acquisition, excludes
+foreign records, releases its lock and clears on revocation. Native/Core calls
+are explicit offline fixtures; no audio or live provider operation runs.
+
+The default preview was rebuilt separately at `9bbf7d1`; its preview guard passed.
+The provider host and its flow-store namespace remain absent from that preview,
+whose microphone mode remains disabled. `preview-build.log` and
+`preview-guard.log` retain these local checks; no preview was deployed.
+
+This closes the native resource-composition gap in source and the provider
+bundle. The standalone native identity/authorized Core connection still must be
+bound to it, then packaged and qualified on devices. This code is not installed
+in W13 build 4. W13 remains the separately approved OS native-session snapshot,
+not a relabeled standalone Scribe release. Complete desktop hosting, native
+lifecycle, physical capture, real-service fidelity and distribution remain open.
+
+### Next connection boundary
+
+Read-only reconciliation found the protected Core checkout still at
+`e21ba4c1fb1027de8123aca9b8aee25b8a11b612`; all 82 dirty file paths, statuses and
+hashes match the retained recovery manifest. The shorter default Git status
+count groups untracked directories. `provider-ios-host-final-checkpoint.json`
+preserves this comparison and verifies the source/artifact hashes above.
+
+Core already provides the required identity path: a native user session reaches
+`/embed/v1/context-tokens/exchange`, then server-held workload authority resolves
+`/service/v1/agent/mount-context/resolve` and
+`/service/v1/agent/scribe/capture-bindings/resolve`. Reuse that separation for
+the standalone connection. The read-only OS client
+`src/cosmas_os/adapters/core_capture_admission.py` demonstrates this exchange,
+but its admission payload lacks `configured_capture` and its operation contract
+lacks `creator_review`/`decide_translation`. It cannot be selected unchanged as
+the configured provider backend. The current Scribe `CoreCaptureClient` and
+approved Core receiver already carry those contracts.
+
+The next implementation must bind that current client to freshly authorized
+Core encounter context through the actual standalone native/server host.
+W13's two-route catalog receiver supplies neither Core mount authority nor
+workload credentials. This inspection changed no Core/OS source, identity
+configuration or running receiver and grants no new activation authority.
+
+## Native iOS provider source — 2026-09-22
+
+The provider bundle now exports `createProviderIOSCaptureSource()` for the real
+host's recorder acquisition. It reuses the existing Scribe native PCM source and
+Capacitor bridge, requires native iOS plus `IOSPCM`, and never falls back to a
+synthetic source. Construction does not start audio. The existing configured
+consent/admission and explicit Record action still gate capture. No native
+Swift/auth source, external package or default preview source changed.
+
+Integration exposed and fixed a real stop-handling gap: after interruption, the
+controller previously ignored the native source's unconfirmed-stop failure and
+could continue uploading. It now retains the encrypted recording and same native
+handle, stays paused, and retries stop before upload/completion. The provider
+screen no longer claims an interrupted recorder is stopped; it shows explicit
+stop/retry guidance. The existing web source's terminal-error behavior remains.
+
+Evidence is retained at
+`/Users/jw/Desktop/Cosmas/scribe-provider-native-20260922.zi6kceir/`:
+
+- `baseline.log`: the new configured-native integration check reproduces the
+  incorrect completion after failed stop.
+- `corrected-tests.log`: 69 focused native/provider/flow checks pass.
+- `capture-tests.log`: all 184 capture checks pass after the shared stop change.
+- `provider/`: actual compiled provider entry, including the native source.
+  `rendered-native.log` verifies the actual bundle's unconfirmed-stop guidance,
+  retry, disabled Record, clearing on revocation and absent-plugin rejection.
+  `rendered-ios17.log` repeats the necessary compatibility check against this
+  changed bundle with `AbortSignal.any` absent.
+- Lint, typecheck and provider build pass. The integration fixture uses invented
+  PCM only after an explicit synthetic consent/session and exercises the real
+  encrypted queue and loopback upload path. No device microphone or live
+  Speech/translation call runs in these checks.
+
+This completes the provider source connection at the code/bundle level. It does
+**not** complete the native provider host: real encounter/mount authorization,
+Core transport, native storage composition and device acceptance remain. W13
+build 3 is now installed and launched; the reconnected phone reaches private
+TLS but reports `app_binding_missing` before catalog loading. The signed
+[build 4 native-session correction](W13_NATIVE_SESSION_CORRECTION_20260922.md)
+was explicitly approved and is now installed and launched, with the corrected
+private receiver active. The physical catalog gate passed: the receiver returned
+the authenticated catalog at **13:16:35 UTC**, and the owner confirmed the
+invented encounter visible. Neither W13 package mounts this complete provider
+bundle yet; native lifecycle and full provider workflow acceptance remain open.
+
 ## iOS 17 host compatibility correction — 2026-09-22
 
 The provider entry previously called `AbortSignal.any` when opening an encounter.
