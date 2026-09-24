@@ -21,16 +21,23 @@ from .capture_protocol_v1 import (
 )
 from .external_transcript_v1 import NormalizedSourceTranscriptRequestV1
 from .normalized_source_persistence import (
+    NORMALIZED_SOURCE_RETENTION_PRINCIPAL_ID,
     ConfiguredExternalSessionStatus,
+    ExternalSessionFailureCode,
+    ExternalSessionTerminalEventRecord,
+    ExternalSessionTerminalFailure,
+    ExternalSessionTerminalPrincipalType,
     NormalizedSourceAcceptance,
     NormalizedSourceAcceptanceDisposition,
     NormalizedSourcePersistenceCode,
     NormalizedSourcePersistenceError,
+    NormalizedSourcePurgeResult,
     NormalizedSourceReceiptKeyRecord,
     NormalizedSourceSegmentRecord,
     NormalizedSourceTranscriptRecord,
     VersionedExternalSessionCreate,
     VersionedExternalSessionRecord,
+    VersionedExternalTerminalResult,
     build_versioned_external_session_record,
     consent_authorizes_versioned_session,
     normalized_source_request_fingerprint,
@@ -327,6 +334,19 @@ class Repository(Protocol):
         session_id: UUID,
     ) -> NormalizedSourceTranscriptRecord | None: ...
 
+    async def fail_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        failure: ExternalSessionTerminalFailure,
+    ) -> VersionedExternalTerminalResult | None: ...
+
+    async def purge_normalized_source_content(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> NormalizedSourcePurgeResult | None: ...
+
     async def get_session_audio_key(
         self,
         tenant_id: UUID,
@@ -605,19 +625,20 @@ class RepositoryProvider(Protocol):
 class InMemoryRepository:
     consents: dict[tuple[UUID, UUID], ConsentRecord] = field(default_factory=lambda: {})
     sessions: dict[tuple[UUID, UUID], CaptureSession] = field(default_factory=lambda: {})
-    versioned_external_sessions: dict[
-        tuple[UUID, UUID], VersionedExternalSessionRecord
-    ] = field(default_factory=lambda: {})
+    versioned_external_sessions: dict[tuple[UUID, UUID], VersionedExternalSessionRecord] = field(
+        default_factory=lambda: {}
+    )
     normalized_source_transcripts: dict[
         tuple[UUID, UUID, int], NormalizedSourceTranscriptRecord
     ] = field(default_factory=lambda: {})
     normalized_source_receipt_keys: dict[
         tuple[UUID, UUID, str], NormalizedSourceReceiptKeyRecord
     ] = field(default_factory=lambda: {})
+    external_session_terminal_events: dict[
+        tuple[UUID, UUID], ExternalSessionTerminalEventRecord
+    ] = field(default_factory=lambda: {})
     session_audio_keys: dict[tuple[UUID, UUID], SessionAudioKey] = field(default_factory=lambda: {})
-    capture_leases: dict[tuple[UUID, UUID], CaptureLeaseRecord] = field(
-        default_factory=lambda: {}
-    )
+    capture_leases: dict[tuple[UUID, UUID], CaptureLeaseRecord] = field(default_factory=lambda: {})
     capture_lease_receipts: dict[tuple[UUID, UUID], CaptureLeaseReceipt] = field(
         default_factory=lambda: {}
     )
@@ -630,9 +651,9 @@ class InMemoryRepository:
     upload_authorization_receipts: dict[tuple[UUID, UUID], UploadAuthorizationReceipt] = field(
         default_factory=lambda: {}
     )
-    capture_finalizations: dict[
-        tuple[UUID, UUID, CaptureChannel], CaptureChannelFinalization
-    ] = field(default_factory=lambda: {})
+    capture_finalizations: dict[tuple[UUID, UUID, CaptureChannel], CaptureChannelFinalization] = (
+        field(default_factory=lambda: {})
+    )
     chunks: dict[tuple[UUID, UUID], AudioChunk] = field(default_factory=lambda: {})
     upload_grants: dict[tuple[UUID, UUID], UploadGrantRecord] = field(default_factory=lambda: {})
     transcripts: dict[tuple[UUID, UUID], Transcript] = field(default_factory=lambda: {})
@@ -657,6 +678,7 @@ class InMemoryRepository:
                 copy.deepcopy(self.versioned_external_sessions),
                 copy.deepcopy(self.normalized_source_transcripts),
                 copy.deepcopy(self.normalized_source_receipt_keys),
+                copy.deepcopy(self.external_session_terminal_events),
                 copy.deepcopy(self.session_audio_keys),
                 copy.deepcopy(self.capture_leases),
                 copy.deepcopy(self.capture_lease_receipts),
@@ -684,6 +706,7 @@ class InMemoryRepository:
                     self.versioned_external_sessions,
                     self.normalized_source_transcripts,
                     self.normalized_source_receipt_keys,
+                    self.external_session_terminal_events,
                     self.session_audio_keys,
                     self.capture_leases,
                     self.capture_lease_receipts,
@@ -798,13 +821,8 @@ class InMemoryRepository:
         if (tenant_id, session_id) in self.versioned_external_sessions:
             raise CaptureIngestModeError("session does not accept audio chunk capture")
         session = self.sessions.get((tenant_id, session_id))
-        if (
-            session is not None
-            and session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if session is not None and session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         await self.lock_consent(tenant_id, session.consent_record_id)
@@ -883,17 +901,13 @@ class InMemoryRepository:
         if session is None or session.consent_record_id != reference.consent_record_id:
             return None
         if not consent_authorizes_versioned_session(consent, session):
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.CONSENT_INVALID
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.CONSENT_INVALID)
         now = datetime.now(UTC)
         self._require_live_normalized_source_session(session, now)
         validate_normalized_source_request_for_session(session, request)
         fingerprint = normalized_source_request_fingerprint(session, request)
 
-        binding = self.normalized_source_receipt_keys.get(
-            (tenant_id, session_id, idempotency_key)
-        )
+        binding = self.normalized_source_receipt_keys.get((tenant_id, session_id, idempotency_key))
         if binding is not None:
             if binding.request_fingerprint != fingerprint:
                 raise NormalizedSourcePersistenceError(
@@ -1013,9 +1027,7 @@ class InMemoryRepository:
         if session is None or session.consent_record_id != reference.consent_record_id:
             return None
         if not consent_authorizes_versioned_session(consent, session):
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.CONSENT_INVALID
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.CONSENT_INVALID)
         self._require_live_normalized_source_session(session, datetime.now(UTC))
         source = self._current_normalized_source(tenant_id, session)
         if source is None:
@@ -1029,6 +1041,160 @@ class InMemoryRepository:
         self._require_live_normalized_source_session(session, datetime.now(UTC))
         return source
 
+    async def fail_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        failure: ExternalSessionTerminalFailure,
+    ) -> VersionedExternalTerminalResult | None:
+        reference = self.versioned_external_sessions.get((tenant_id, session_id))
+        if reference is None:
+            return None
+        consent = await self.lock_consent(tenant_id, reference.consent_record_id)
+        session = self.versioned_external_sessions.get((tenant_id, session_id))
+        if (
+            consent is None
+            or session is None
+            or session.consent_record_id != reference.consent_record_id
+        ):
+            return None
+
+        existing = self.external_session_terminal_events.get((tenant_id, session_id))
+        if (
+            session.status == ConfiguredExternalSessionStatus.FAILED
+            and existing is not None
+            and self._terminal_failure_matches(existing, failure)
+        ):
+            return VersionedExternalTerminalResult(event=existing, changed=False)
+        now = datetime.now(UTC)
+        self._require_unexpired_unpurged_session(session, now)
+        if session.status == ConfiguredExternalSessionStatus.FAILED:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        if session.status == ConfiguredExternalSessionStatus.HANDED_OFF or existing is not None:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        if any(
+            event_tenant_id == tenant_id and event.event_id == failure.event_id
+            for (event_tenant_id, _event_session_id), event in (
+                self.external_session_terminal_events.items()
+            )
+        ):
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+
+        event = ExternalSessionTerminalEventRecord(
+            session_id=session_id,
+            event_id=failure.event_id,
+            prior_status=session.status,
+            failure_code=failure.failure_code,
+            occurred_at=now,
+            principal_type=failure.principal_type,
+            principal_id=failure.principal_id,
+        )
+        self.external_session_terminal_events[(tenant_id, session_id)] = event
+        self.versioned_external_sessions[(tenant_id, session_id)] = replace(
+            session,
+            status=ConfiguredExternalSessionStatus.FAILED,
+        )
+        await self.audit(
+            tenant_id=tenant_id,
+            action="versioned_external_session.failed",
+            entity_type="external_session_terminal_event",
+            entity_id=event.event_id,
+        )
+        self._require_unexpired_unpurged_session(
+            self.versioned_external_sessions[(tenant_id, session_id)],
+            datetime.now(UTC),
+        )
+        return VersionedExternalTerminalResult(event=event, changed=True)
+
+    async def purge_normalized_source_content(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> NormalizedSourcePurgeResult | None:
+        reference = self.versioned_external_sessions.get((tenant_id, session_id))
+        if reference is None:
+            return None
+        consent = await self.lock_consent(tenant_id, reference.consent_record_id)
+        session = self.versioned_external_sessions.get((tenant_id, session_id))
+        if (
+            consent is None
+            or session is None
+            or session.consent_record_id != reference.consent_record_id
+        ):
+            return None
+        existing_event = self.external_session_terminal_events.get((tenant_id, session_id))
+        if session.content_purged_at is not None:
+            self._delete_normalized_source_content(tenant_id, session_id)
+            return self._normalized_source_purge_result(session, existing_event, changed=False)
+        if (
+            session.source_received_at is None
+            or session.transcript_content_expires_at is None
+            or session.current_source_transcript_version is None
+        ):
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+
+        now = datetime.now(UTC)
+        if now < session.transcript_content_expires_at:
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.RETENTION_NOT_DUE
+            )
+        if session.status == ConfiguredExternalSessionStatus.FAILED:
+            if existing_event is None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            terminal_event = existing_event
+        elif session.status == ConfiguredExternalSessionStatus.HANDED_OFF:
+            if existing_event is not None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+            terminal_event = None
+        else:
+            terminal_event = ExternalSessionTerminalEventRecord(
+                session_id=session_id,
+                event_id=uuid4(),
+                prior_status=session.status,
+                failure_code=ExternalSessionFailureCode.RETENTION_EXPIRED_BEFORE_HANDOFF,
+                occurred_at=now,
+                principal_type=ExternalSessionTerminalPrincipalType.SYSTEM,
+                principal_id=NORMALIZED_SOURCE_RETENTION_PRINCIPAL_ID,
+            )
+            self.external_session_terminal_events[(tenant_id, session_id)] = terminal_event
+
+        status = (
+            ConfiguredExternalSessionStatus.HANDED_OFF
+            if session.status == ConfiguredExternalSessionStatus.HANDED_OFF
+            else ConfiguredExternalSessionStatus.FAILED
+        )
+        purged = replace(
+            session,
+            status=status,
+            content_purged_at=now,
+            current_source_transcript_version=None,
+        )
+        self.versioned_external_sessions[(tenant_id, session_id)] = purged
+        self._delete_normalized_source_content(tenant_id, session_id)
+        await self.audit(
+            tenant_id=tenant_id,
+            action="normalized_source.purged",
+            entity_type="scribe_session",
+            entity_id=session_id,
+        )
+        return self._normalized_source_purge_result(purged, terminal_event, changed=True)
+
+    def _delete_normalized_source_content(self, tenant_id: UUID, session_id: UUID) -> None:
+        self.normalized_source_transcripts = {
+            key: value
+            for key, value in self.normalized_source_transcripts.items()
+            if key[:2] != (tenant_id, session_id)
+        }
+        self.normalized_source_receipt_keys = {
+            key: value
+            for key, value in self.normalized_source_receipt_keys.items()
+            if key[:2] != (tenant_id, session_id)
+        }
+
     def _current_normalized_source(
         self,
         tenant_id: UUID,
@@ -1040,7 +1206,36 @@ class InMemoryRepository:
         return self.normalized_source_transcripts.get((tenant_id, session.id, version))
 
     @staticmethod
-    def _require_live_normalized_source_session(
+    def _terminal_failure_matches(
+        event: ExternalSessionTerminalEventRecord,
+        failure: ExternalSessionTerminalFailure,
+    ) -> bool:
+        return (
+            event.event_id == failure.event_id
+            and event.failure_code == failure.failure_code
+            and event.principal_type == failure.principal_type
+            and event.principal_id == failure.principal_id
+        )
+
+    @staticmethod
+    def _normalized_source_purge_result(
+        session: VersionedExternalSessionRecord,
+        terminal_event: ExternalSessionTerminalEventRecord | None,
+        *,
+        changed: bool,
+    ) -> NormalizedSourcePurgeResult:
+        if session.content_purged_at is None:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        return NormalizedSourcePurgeResult(
+            session_id=session.id,
+            status=session.status,
+            content_purged_at=session.content_purged_at,
+            terminal_event=terminal_event,
+            changed=changed,
+        )
+
+    @staticmethod
+    def _require_unexpired_unpurged_session(
         session: VersionedExternalSessionRecord,
         now: datetime,
     ) -> None:
@@ -1051,10 +1246,15 @@ class InMemoryRepository:
             raise NormalizedSourcePersistenceError(
                 NormalizedSourcePersistenceCode.RETENTION_EXPIRED
             )
+
+    @staticmethod
+    def _require_live_normalized_source_session(
+        session: VersionedExternalSessionRecord,
+        now: datetime,
+    ) -> None:
+        InMemoryRepository._require_unexpired_unpurged_session(session, now)
         if session.status == ConfiguredExternalSessionStatus.FAILED:
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.STATE_CONFLICT
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
 
     @staticmethod
     def _build_normalized_source(
@@ -1185,13 +1385,8 @@ class InMemoryRepository:
     ) -> CaptureLeaseReceipt | None:
         row_key = (tenant_id, session_id)
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         if (
             context is None
             or context.audio_key is None
@@ -1234,13 +1429,8 @@ class InMemoryRepository:
         duration: timedelta,
     ) -> CaptureLeaseReceipt | None:
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         current = context.lease if context is not None else None
         if (
             context is None
@@ -1355,13 +1545,8 @@ class InMemoryRepository:
             raise CaptureReservationLimitError
 
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         lease = context.lease if context is not None else None
         now = datetime.now(UTC)
         if (
@@ -1445,8 +1630,7 @@ class InMemoryRepository:
 
         usage = await self.capture_reservation_usage(tenant_id, session_id)
         if usage.reservation_count + len(new_drafts) > maximum_chunks or (
-            usage.plaintext_budget_bytes
-            + sum(draft.plaintext_budget_bytes for draft in new_drafts)
+            usage.plaintext_budget_bytes + sum(draft.plaintext_budget_bytes for draft in new_drafts)
             > maximum_plaintext_bytes
         ):
             raise CaptureReservationLimitError
@@ -1489,9 +1673,7 @@ class InMemoryRepository:
             return CaptureReservationUsage(
                 reservation_count=0,
                 plaintext_budget_bytes=0,
-                next_sequence_numbers=MappingProxyType(
-                    {channel: 0 for channel in CaptureChannel}
-                ),
+                next_sequence_numbers=MappingProxyType({channel: 0 for channel in CaptureChannel}),
             )
         reservations = [
             reservation
@@ -1549,13 +1731,8 @@ class InMemoryRepository:
         duration: timedelta,
     ) -> UploadAuthorizationReceipt | None:
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         reservation = await self.get_chunk_reservation(tenant_id, session_id, object_id)
         if (
             context is None
@@ -1617,16 +1794,9 @@ class InMemoryRepository:
         protocol_version: str,
     ) -> bool:
         context = await self.lock_capture_context(tenant_id, chunk.session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
-        reservation = await self.get_chunk_reservation(
-            tenant_id, chunk.session_id, chunk.object_id
-        )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
+        reservation = await self.get_chunk_reservation(tenant_id, chunk.session_id, chunk.object_id)
         if (
             context is None
             or context.audio_key is None
@@ -1640,8 +1810,7 @@ class InMemoryRepository:
             or reservation.channel != chunk.channel
             or reservation.protocol_version != protocol_version
             or not any(
-                row_tenant == tenant_id
-                and receipt.reservation_object_id == chunk.object_id
+                row_tenant == tenant_id and receipt.reservation_object_id == chunk.object_id
                 for (row_tenant, _), receipt in self.upload_authorization_receipts.items()
             )
         ):
@@ -1674,18 +1843,11 @@ class InMemoryRepository:
         if any(last < 0 or last >= MAX_CHUNKS for last in declared.values()):
             raise CaptureFinalizationError
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         existing = await self.capture_finalizations_for(tenant_id, session_id)
         if existing:
-            if {
-                item.channel: item.last_sequence_number for item in existing
-            } != declared:
+            if {item.channel: item.last_sequence_number for item in existing} != declared:
                 raise CaptureFinalizationError
             return existing
 
@@ -1702,9 +1864,7 @@ class InMemoryRepository:
         chunks = await self.chunks_for(tenant_id, session_id)
         grouped: dict[CaptureChannel, list[int]] = {}
         for chunk in chunks:
-            reservation = await self.get_chunk_reservation(
-                tenant_id, session_id, chunk.object_id
-            )
+            reservation = await self.get_chunk_reservation(tenant_id, session_id, chunk.object_id)
             if (
                 reservation is None
                 or reservation.sequence_number != chunk.sequence_number
@@ -1943,9 +2103,7 @@ class InMemoryRepository:
     ) -> DeliveryAttempt | None:
         delivery = await self.get_delivery(tenant_id, delivery_id)
         return (
-            DeliveryAttempt.model_validate(delivery.model_dump())
-            if delivery is not None
-            else None
+            DeliveryAttempt.model_validate(delivery.model_dump()) if delivery is not None else None
         )
 
     async def delivery_for(self, tenant_id: UUID, session_id: UUID) -> TranscriptDelivery | None:

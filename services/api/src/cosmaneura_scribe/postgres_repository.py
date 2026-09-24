@@ -33,19 +33,26 @@ from .external_transcript_v1 import (
     TranscriptLanguageMode,
 )
 from .normalized_source_persistence import (
+    NORMALIZED_SOURCE_RETENTION_PRINCIPAL_ID,
     VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID,
     VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
     VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID,
     VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID,
     ConfiguredExternalSessionStatus,
+    ExternalSessionFailureCode,
+    ExternalSessionTerminalEventRecord,
+    ExternalSessionTerminalFailure,
+    ExternalSessionTerminalPrincipalType,
     NormalizedSourceAcceptance,
     NormalizedSourceAcceptanceDisposition,
     NormalizedSourcePersistenceCode,
     NormalizedSourcePersistenceError,
+    NormalizedSourcePurgeResult,
     NormalizedSourceSegmentRecord,
     NormalizedSourceTranscriptRecord,
     VersionedExternalSessionCreate,
     VersionedExternalSessionRecord,
+    VersionedExternalTerminalResult,
     consent_authorizes_versioned_session,
     normalized_source_request_fingerprint,
     validate_normalized_source_request_for_session,
@@ -211,6 +218,20 @@ def _normalized_source_transcript_record(
     )
 
 
+def _external_session_terminal_event_record(
+    row: dict[str, Any],
+) -> ExternalSessionTerminalEventRecord:
+    return ExternalSessionTerminalEventRecord(
+        session_id=row["session_id"],
+        event_id=row["event_id"],
+        prior_status=ConfiguredExternalSessionStatus(row["prior_status"]),
+        failure_code=ExternalSessionFailureCode(row["failure_code"]),
+        occurred_at=row["occurred_at"],
+        principal_type=ExternalSessionTerminalPrincipalType(row["principal_type"]),
+        principal_id=row["principal_id"],
+    )
+
+
 def _normalized_source_receipt(
     header: dict[str, Any],
 ) -> NormalizedSourceTranscriptReceiptV1:
@@ -282,9 +303,7 @@ class PostgresRepository:
             row is not None
             and SessionIngestMode(row["ingest_mode"]) != SessionIngestMode.CHUNK_UPLOAD
         ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
 
     async def get_idempotency(
         self,
@@ -614,15 +633,11 @@ class PostgresRepository:
                         "transcript_contract_version": VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
                         "creator_actor_id": draft.creator_actor_id,
                         "language_mode": draft.language_mode.value,
-                        "transcription_adapter_id": (
-                            VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID
-                        ),
+                        "transcription_adapter_id": (VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID),
                         "transcription_model_profile_id": (
                             VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID
                         ),
-                        "normalization_profile_id": (
-                            VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID
-                        ),
+                        "normalization_profile_id": (VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID),
                     },
                 )
             )
@@ -840,9 +855,7 @@ class PostgresRepository:
             )
             disposition = NormalizedSourceAcceptanceDisposition.CORRECTED
         if updated is None:
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.STATE_CONFLICT
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
 
         version = updated["current_source_transcript_version"]
         source_receipt_id = uuid4()
@@ -889,9 +902,7 @@ class PostgresRepository:
                             len(segment.content) for segment in request.segments
                         ),
                         "request_fingerprint": fingerprint,
-                        "transcript_content_expires_at": updated[
-                            "transcript_content_expires_at"
-                        ],
+                        "transcript_content_expires_at": updated["transcript_content_expires_at"],
                     },
                 )
             )
@@ -972,9 +983,7 @@ class PostgresRepository:
             session.current_source_transcript_version,
         )
         if source is None:
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.STATE_CONFLICT
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
         await self.audit(
             tenant_id=tenant_id,
             action="normalized_source.read",
@@ -983,6 +992,428 @@ class PostgresRepository:
         )
         await self._final_normalized_source_gate(tenant_id, session_id)
         return source
+
+    async def fail_versioned_external_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        failure: ExternalSessionTerminalFailure,
+    ) -> VersionedExternalTerminalResult | None:
+        locked = await self._lock_versioned_external_lifecycle_session(
+            tenant_id,
+            session_id,
+        )
+        if locked is None:
+            return None
+        session, database_now = locked
+        existing = await self._get_external_session_terminal_event(tenant_id, session_id)
+        if (
+            session.status == ConfiguredExternalSessionStatus.FAILED
+            and existing is not None
+            and self._terminal_failure_matches(existing, failure)
+        ):
+            return VersionedExternalTerminalResult(event=existing, changed=False)
+        self._require_unexpired_unpurged_session(session, database_now)
+        if session.status == ConfiguredExternalSessionStatus.FAILED:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        if session.status == ConfiguredExternalSessionStatus.HANDED_OFF or existing is not None:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+
+        event = await self._insert_external_session_terminal_event(
+            tenant_id,
+            session_id,
+            event_id=failure.event_id,
+            prior_status=session.status,
+            failure_code=failure.failure_code,
+            principal_type=failure.principal_type,
+            principal_id=failure.principal_id,
+        )
+        updated = await self._session.execute(
+            text(
+                """
+                UPDATE scribe_sessions
+                SET status = 'failed'
+                WHERE tenant_id = :tenant_id AND id = :session_id
+                  AND transcript_contract_version = :contract_version
+                  AND status = :prior_status
+                  AND content_purged_at IS NULL
+                  AND (
+                      transcript_content_expires_at IS NULL
+                      OR clock_timestamp() < transcript_content_expires_at
+                  )
+                RETURNING id
+                """
+            ),
+            {
+                "tenant_id": tenant_id,
+                "session_id": session_id,
+                "contract_version": VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+                "prior_status": session.status.value,
+            },
+        )
+        if updated.scalar_one_or_none() is None:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        await self.audit(
+            tenant_id=tenant_id,
+            action="versioned_external_session.failed",
+            entity_type="external_session_terminal_event",
+            entity_id=event.event_id,
+        )
+        await self._force_versioned_external_lifecycle_constraints()
+        await self._final_explicit_terminal_gate(tenant_id, session_id)
+        return VersionedExternalTerminalResult(event=event, changed=True)
+
+    async def purge_normalized_source_content(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> NormalizedSourcePurgeResult | None:
+        locked = await self._lock_versioned_external_lifecycle_session(
+            tenant_id,
+            session_id,
+        )
+        if locked is None:
+            return None
+        session, database_now = locked
+        terminal_event = await self._get_external_session_terminal_event(
+            tenant_id,
+            session_id,
+        )
+        if session.content_purged_at is not None:
+            await self._delete_normalized_source_content(tenant_id, session_id)
+            await self._assert_normalized_source_content_absent(tenant_id, session_id)
+            return self._normalized_source_purge_result(
+                session,
+                terminal_event,
+                changed=False,
+            )
+        if (
+            session.source_received_at is None
+            or session.transcript_content_expires_at is None
+            or session.current_source_transcript_version is None
+        ):
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        if database_now < session.transcript_content_expires_at:
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.RETENTION_NOT_DUE
+            )
+
+        if session.status == ConfiguredExternalSessionStatus.FAILED:
+            if terminal_event is None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+        elif session.status == ConfiguredExternalSessionStatus.HANDED_OFF:
+            if terminal_event is not None:
+                raise NormalizedSourcePersistenceError(
+                    NormalizedSourcePersistenceCode.STATE_CONFLICT
+                )
+        else:
+            terminal_event = await self._insert_external_session_terminal_event(
+                tenant_id,
+                session_id,
+                event_id=uuid4(),
+                prior_status=session.status,
+                failure_code=ExternalSessionFailureCode.RETENTION_EXPIRED_BEFORE_HANDOFF,
+                principal_type=ExternalSessionTerminalPrincipalType.SYSTEM,
+                principal_id=NORMALIZED_SOURCE_RETENTION_PRINCIPAL_ID,
+            )
+
+        target_status = (
+            ConfiguredExternalSessionStatus.HANDED_OFF
+            if session.status == ConfiguredExternalSessionStatus.HANDED_OFF
+            else ConfiguredExternalSessionStatus.FAILED
+        )
+        purged_row = await self._one_or_none(
+            """
+            UPDATE scribe_sessions
+            SET status = :target_status,
+                content_purged_at = clock_timestamp(),
+                current_source_transcript_version = NULL
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND transcript_contract_version = :contract_version
+              AND status = :prior_status
+              AND content_purged_at IS NULL
+              AND current_source_transcript_version IS NOT NULL
+              AND clock_timestamp() >= transcript_content_expires_at
+            RETURNING id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                      modality, transcript_contract_version, creator_actor_id, language_mode,
+                      transcription_adapter_id, transcription_model_profile_id,
+                      normalization_profile_id, status, created_at, source_received_at,
+                      transcript_content_expires_at, content_purged_at,
+                      current_source_transcript_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+            prior_status=session.status.value,
+            target_status=target_status.value,
+        )
+        if purged_row is None:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        await self._delete_normalized_source_content(tenant_id, session_id)
+        await self.audit(
+            tenant_id=tenant_id,
+            action="normalized_source.purged",
+            entity_type="scribe_session",
+            entity_id=session_id,
+        )
+        await self._force_versioned_external_lifecycle_constraints()
+        purged = _versioned_external_session_record(purged_row)
+        await self._assert_normalized_source_content_absent(tenant_id, session_id)
+        return self._normalized_source_purge_result(
+            purged,
+            terminal_event,
+            changed=True,
+        )
+
+    async def _delete_normalized_source_content(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        await self._session.execute(
+            text(
+                """
+                DELETE FROM normalized_source_transcripts
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                """
+            ),
+            {"tenant_id": tenant_id, "session_id": session_id},
+        )
+
+    async def _lock_versioned_external_lifecycle_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> tuple[VersionedExternalSessionRecord, datetime] | None:
+        reference = await self._one_or_none(
+            """
+            SELECT consent_record_id
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND ingest_mode = 'external_async_transcript'
+              AND transcript_contract_version = :contract_version
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if reference is None:
+            return None
+        await self._lock_consent_scope(tenant_id, reference["consent_record_id"])
+        row = await self._one_or_none(
+            """
+            SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
+                   modality, transcript_contract_version, creator_actor_id, language_mode,
+                   transcription_adapter_id, transcription_model_profile_id,
+                   normalization_profile_id, status, created_at, source_received_at,
+                   transcript_content_expires_at, content_purged_at,
+                   current_source_transcript_version
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND consent_record_id = :consent_id
+              AND ingest_mode = 'external_async_transcript'
+              AND transcript_contract_version = :contract_version
+            FOR UPDATE
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            consent_id=reference["consent_record_id"],
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if row is None:
+            return None
+        session = _versioned_external_session_record(row)
+        database_now = await self._session.scalar(text("SELECT clock_timestamp()"))
+        if not isinstance(database_now, datetime):
+            raise RuntimeError("database clock is unavailable")
+        return session, database_now
+
+    async def _get_external_session_terminal_event(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> ExternalSessionTerminalEventRecord | None:
+        row = await self._one_or_none(
+            """
+            SELECT session_id, event_id, prior_status, failure_code, occurred_at,
+                   principal_type, principal_id
+            FROM external_session_terminal_events
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        return _external_session_terminal_event_record(row) if row is not None else None
+
+    async def _insert_external_session_terminal_event(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        event_id: UUID,
+        prior_status: ConfiguredExternalSessionStatus,
+        failure_code: ExternalSessionFailureCode,
+        principal_type: ExternalSessionTerminalPrincipalType,
+        principal_id: str,
+    ) -> ExternalSessionTerminalEventRecord:
+        row = (
+            (
+                await self._session.execute(
+                    text(
+                        """
+                        INSERT INTO external_session_terminal_events (
+                            tenant_id, session_id, event_id, prior_status,
+                            failure_code, principal_type, principal_id
+                        ) VALUES (
+                            :tenant_id, :session_id, :event_id, :prior_status,
+                            :failure_code, :principal_type, :principal_id
+                        )
+                        ON CONFLICT (tenant_id, event_id) DO NOTHING
+                        RETURNING session_id, event_id, prior_status, failure_code,
+                                  occurred_at, principal_type, principal_id
+                        """
+                    ),
+                    {
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "event_id": event_id,
+                        "prior_status": prior_status.value,
+                        "failure_code": failure_code.value,
+                        "principal_type": principal_type.value,
+                        "principal_id": principal_id,
+                    },
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        return _external_session_terminal_event_record(dict(row))
+
+    async def _force_versioned_external_lifecycle_constraints(self) -> None:
+        await self._session.execute(
+            text(
+                """
+                SET CONSTRAINTS
+                    scribe_sessions_current_source_transcript_fkey,
+                    scribe_sessions_external_precommit,
+                    external_session_terminal_events_committed_failure
+                IMMEDIATE
+                """
+            )
+        )
+        await self._session.execute(
+            text(
+                """
+                SET CONSTRAINTS
+                    scribe_sessions_current_source_transcript_fkey,
+                    scribe_sessions_external_precommit,
+                    external_session_terminal_events_committed_failure
+                DEFERRED
+                """
+            )
+        )
+
+    async def _final_explicit_terminal_gate(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        row = await self._one_or_none(
+            """
+            SELECT status, content_purged_at, transcript_content_expires_at,
+                   clock_timestamp() AS database_now
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+              AND transcript_contract_version = :contract_version
+            FOR UPDATE
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
+        )
+        if (
+            row is None
+            or row["status"] != ConfiguredExternalSessionStatus.FAILED.value
+            or row["content_purged_at"] is not None
+        ):
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        if row["transcript_content_expires_at"] is not None and (
+            row["database_now"] >= row["transcript_content_expires_at"]
+        ):
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.RETENTION_EXPIRED
+            )
+
+    async def _assert_normalized_source_content_absent(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        remaining = await self._session.scalar(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM normalized_source_transcripts
+                    WHERE tenant_id = :tenant_id AND session_id = :session_id
+                ) OR EXISTS (
+                    SELECT 1 FROM normalized_source_segments
+                    WHERE tenant_id = :tenant_id AND session_id = :session_id
+                ) OR EXISTS (
+                    SELECT 1 FROM normalized_source_receipt_keys
+                    WHERE tenant_id = :tenant_id AND session_id = :session_id
+                )
+                """
+            ),
+            {"tenant_id": tenant_id, "session_id": session_id},
+        )
+        if remaining:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+
+    @staticmethod
+    def _terminal_failure_matches(
+        event: ExternalSessionTerminalEventRecord,
+        failure: ExternalSessionTerminalFailure,
+    ) -> bool:
+        return (
+            event.event_id == failure.event_id
+            and event.failure_code == failure.failure_code
+            and event.principal_type == failure.principal_type
+            and event.principal_id == failure.principal_id
+        )
+
+    @staticmethod
+    def _normalized_source_purge_result(
+        session: VersionedExternalSessionRecord,
+        terminal_event: ExternalSessionTerminalEventRecord | None,
+        *,
+        changed: bool,
+    ) -> NormalizedSourcePurgeResult:
+        if session.content_purged_at is None:
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
+        return NormalizedSourcePurgeResult(
+            session_id=session.id,
+            status=session.status,
+            content_purged_at=session.content_purged_at,
+            terminal_event=terminal_event,
+            changed=changed,
+        )
+
+    @staticmethod
+    def _require_unexpired_unpurged_session(
+        session: VersionedExternalSessionRecord,
+        database_now: datetime,
+    ) -> None:
+        if session.content_purged_at is not None or (
+            session.transcript_content_expires_at is not None
+            and database_now >= session.transcript_content_expires_at
+        ):
+            raise NormalizedSourcePersistenceError(
+                NormalizedSourcePersistenceCode.RETENTION_EXPIRED
+            )
 
     async def _lock_normalized_source_session(
         self,
@@ -1030,9 +1461,7 @@ class PostgresRepository:
         session = _versioned_external_session_record(row)
         consent = await self.get_consent(tenant_id, consent_id)
         if not consent_authorizes_versioned_session(consent, session):
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.CONSENT_INVALID
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.CONSENT_INVALID)
         database_now = await self._session.scalar(text("SELECT clock_timestamp()"))
         if not isinstance(database_now, datetime):
             raise RuntimeError("database clock is unavailable")
@@ -1051,9 +1480,7 @@ class PostgresRepository:
                 NormalizedSourcePersistenceCode.RETENTION_EXPIRED
             )
         if session.status == ConfiguredExternalSessionStatus.FAILED:
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.STATE_CONFLICT
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
 
     async def _get_normalized_source_by_version(
         self,
@@ -1206,9 +1633,7 @@ class PostgresRepository:
             contract_version=VERSIONED_EXTERNAL_TRANSCRIPT_CONTRACT,
         )
         if row is None:
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.STATE_CONFLICT
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
         if row["content_purged_at"] is not None or (
             row["transcript_content_expires_at"] is not None
             and row["database_now"] >= row["transcript_content_expires_at"]
@@ -1217,9 +1642,7 @@ class PostgresRepository:
                 NormalizedSourcePersistenceCode.RETENTION_EXPIRED
             )
         if row["status"] == ConfiguredExternalSessionStatus.FAILED.value:
-            raise NormalizedSourcePersistenceError(
-                NormalizedSourcePersistenceCode.STATE_CONFLICT
-            )
+            raise NormalizedSourcePersistenceError(NormalizedSourcePersistenceCode.STATE_CONFLICT)
 
     async def get_session_audio_key(
         self,
@@ -1453,13 +1876,8 @@ class PostgresRepository:
     ) -> CaptureLeaseReceipt | None:
         duration_seconds = _capture_duration_seconds(duration)
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         if (
             context is None
             or context.audio_key is None
@@ -1540,13 +1958,8 @@ class PostgresRepository:
     ) -> CaptureLeaseReceipt | None:
         duration_seconds = _capture_duration_seconds(duration)
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         if (
             context is None
             or context.audio_key is None
@@ -1756,13 +2169,8 @@ class PostgresRepository:
             raise CaptureReservationLimitError
 
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         if (
             context is None
             or context.audio_key is None
@@ -1847,9 +2255,7 @@ class PostgresRepository:
                 raise CaptureReservationLimitError
 
         new_drafts = [
-            draft
-            for draft in drafts
-            if (draft.channel, draft.sequence_number) not in existing
+            draft for draft in drafts if (draft.channel, draft.sequence_number) not in existing
         ]
         current_budget = sum(row.plaintext_budget_bytes for row in existing.values())
         if len(existing) + len(new_drafts) > maximum_chunks or (
@@ -2022,9 +2428,7 @@ class PostgresRepository:
         by_channel = {CaptureChannel(row["channel"]): row for row in rows}
         return CaptureReservationUsage(
             reservation_count=sum(int(row["reservation_count"]) for row in rows),
-            plaintext_budget_bytes=sum(
-                int(row["plaintext_budget_bytes"] or 0) for row in rows
-            ),
+            plaintext_budget_bytes=sum(int(row["plaintext_budget_bytes"] or 0) for row in rows),
             next_sequence_numbers={
                 channel: int(by_channel[channel]["maximum_sequence"]) + 1
                 if channel in by_channel
@@ -2095,13 +2499,8 @@ class PostgresRepository:
     ) -> UploadAuthorizationReceipt | None:
         duration_seconds = _capture_duration_seconds(duration)
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         if (
             context is None
             or context.audio_key is None
@@ -2236,13 +2635,8 @@ class PostgresRepository:
         protocol_version: str,
     ) -> bool:
         context = await self.lock_capture_context(tenant_id, chunk.session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         if (
             context is None
             or context.audio_key is None
@@ -2323,18 +2717,11 @@ class PostgresRepository:
         if any(last < 0 or last >= MAX_CHUNKS for last in declared.values()):
             raise CaptureFinalizationError
         context = await self.lock_capture_context(tenant_id, session_id)
-        if (
-            context is not None
-            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
-        ):
-            raise CaptureIngestModeError(
-                "session does not accept audio chunk capture"
-            )
+        if context is not None and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+            raise CaptureIngestModeError("session does not accept audio chunk capture")
         existing = await self.capture_finalizations_for(tenant_id, session_id)
         if existing:
-            if {
-                item.channel: item.last_sequence_number for item in existing
-            } != declared:
+            if {item.channel: item.last_sequence_number for item in existing} != declared:
                 raise CaptureFinalizationError
             return existing
 

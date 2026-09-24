@@ -33,3 +33,13 @@ No environment is changed by this packet. Deployed-dev drift must be reconciled 
   disposable-PostgreSQL evidence covers exact replay/convergence, monotonic corrections, rollback,
   current consent, retention, and concurrent fence ordering. It deliberately adds no runtime
   grants, route, sender, purge authority, migration, deployment, or activation.
+- Packet 3 implements repository-only explicit terminal failure and due normalized-source purge on
+  exact parent `11bbc540e004dbf23357e6e25b78e1ddf58604df`. Memory/PostgreSQL parity covers stable
+  terminal evidence, rollback, due-only DB-clock gates, marker/event retry identity, revoked-consent
+  erasure, handed-off preservation, prior-failure preservation, cascade absence, and source-writer
+  fence ordering for first accept, replay, convergence, and correction. It adds no schema,
+  migration, role/grant, route/OpenAPI, worker/scheduler, deployment, apply, or activation.
+- Packet 3 intentionally applies ADR 0028's unconditional source purge semantics only in dormant
+  synthetic tests. ADR 0013 says legal holds win every scheduled purge, while no normalized-source
+  hold model exists. That policy conflict is a real-PHI activation blocker, not a default silently
+  chosen by this packet.

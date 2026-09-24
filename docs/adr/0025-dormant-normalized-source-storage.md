@@ -25,6 +25,31 @@ binding, and metadata-only audit. Same-key retries allocate nothing; new keys ma
 canonical fingerprint alias its byte-identical receipt; changed input receives the next version
 without moving the first-receipt expiry anchor. Current-content reads use the same gates.
 
+Persistence Packet 3 also adds no route, schema, grant, or scheduled authority. Explicit terminal
+failure accepts a caller-stable opaque event ID plus a bounded failure code and system/operator
+principal, stores the existing `0009` terminal evidence, and moves any nonterminal configured state
+to terminal `failed`. Event IDs are unique within one tenant but may recur in another tenant. An
+exact full-tuple retry, including after expiry or a purge that preserved the explicit failure,
+returns the original event without another state, content, or audit write; conflicting evidence and
+cross-session event-ID reuse fail closed. The operation
+locks the consent serialization point and then the configured session row, uses the database clock,
+and leaves normalized source content in place until its existing expiry anchor.
+
+The Packet 3 due-purge operation takes that same lock order but does not require active consent:
+revocation cannot block erasure. At or after the immutable source expiry it sets the monotonic purge
+marker, clears the current pointer, deletes the normalized-source root so segments, raw receipt keys,
+and unkeyed content fingerprints cascade, and writes only bounded audit/terminal evidence. A
+non-handed-off session becomes `failed` with `retention_expired_before_handoff`; a handed-off session
+remains `handed_off`; a prior explicit failure keeps its original evidence. Retries preserve the
+original marker and event while re-running deletion and absence checks, and every source writer that
+loses the common fence observes expiry or purge before it can write.
+
+This dormant repository behavior follows ADR 0028's unconditional source deletion at the fourteen-
+day anchor for synthetic verification only. It does not resolve ADR 0013's broader requirement that
+legal holds win every scheduled purge. The current normalized-source schema has no hold relation or
+reviewed precedence rule. Real-PHI activation therefore remains blocked until architecture/legal
+owners reconcile that conflict and a separately reviewed retention authority enforces the result.
+
 ## Consequences
 
 - Applying `0009` alone is dormant: current code writes none of the new fields or tables.
@@ -32,8 +57,14 @@ without moving the first-receipt expiry anchor. Current-content reads use the sa
 - Packet 2 remains dormant because there is no route and the runtime principal has no
   normalized-source table or lifecycle-column privileges. Its post-accept lifecycle reads are
   therefore intentionally blocked until those grants receive later review.
+- Packet 3 remains dormant for the same reason and adds no worker, scheduler, API, OpenAPI,
+  deployment, migration apply, or activation path. Only synthetic repository tests invoke it.
 - A later API/retention packet must translate near-expiry commit-trigger failures into bounded
   errors and serialize a receipt's canonical body only after its transaction commits.
 - The trusted runtime keeps legacy child-table access, and those foreign keys enforce tenant—not contract—identity. Repository filters hide malformed configured children, but activation is blocked until discriminator triggers, an isolated configured writer, or an explicitly accepted equivalent trust boundary prevents raw-SQL bypass.
-- Purge and every writer remain implementation work; this DDL supplies their common fence and fail-closed constraints but is not evidence that a deletion worker exists.
+- Translation, review, working-transcript, and handoff writers remain implementation work. Packet 3
+  proves source purge only; it is not evidence that a deletion worker or complete covered-content
+  purge exists.
+- Real-PHI retention activation is blocked on an explicit legal-hold decision and its corresponding
+  schema, least-privilege routine/grants, report/enforce gates, and restore evidence.
 - Operational recovery is to hold later callers and retain the additive schema. Downgrade is destructive, test-only, and refuses after any versioned configuration, source, state, purge, or terminal evidence exists.
