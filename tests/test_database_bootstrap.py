@@ -290,6 +290,8 @@ async def test_runtime_permissions_revoke_stale_access_before_exact_grants(
     assert "working_transcript_id" not in grants
     assert "current_working_transcript_version" not in grants
     assert "normalized_working_" not in grants
+    assert "normalized_translation_attempts" not in grants
+    assert "normalized_translation_reviews" not in grants
     assert "external_session_terminal_events" not in grants
     assert "GRANT INSERT ON audit_events" in grants
     assert "DELETE" not in grants
@@ -341,6 +343,9 @@ async def test_transcription_principal_receives_only_worker_table_permissions(
     for forbidden in (
         "audio_upload_grants",
         "idempotency_records",
+        "normalized_translation_attempts",
+        "normalized_translation_reviews",
+        "normalized_working_",
         "transcript_deliveries",
         "DELETE",
         "CREATE",
