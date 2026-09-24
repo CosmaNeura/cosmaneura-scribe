@@ -126,7 +126,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     if (scope && (value.phase !== "ready" || value.revision !== scope.revision)) {
       accessClosed = true; invalidate(); closeInBackground();
     }
-    notice = "";
+    notice = accessClosed && value.phase === "ready"
+      ? "Your session changed and the workspace was closed. Open workspace to check access again. Recording will not restart automatically."
+      : "";
     render();
   };
   const read = (): Promise<void> => {

@@ -19,6 +19,7 @@ import type {
 import { BffResponseError } from "../bff/http-client";
 import { AudioCaptureError } from "../audio/errors";
 import { CaptureStopAcknowledgementPending } from "../capture/stop-confirmation";
+import { CaptureDeviceCustodyError } from "../capture/device-custody";
 import type {
   CapturedWavChunk,
   CaptureAudioChannel,
@@ -192,7 +193,10 @@ export class CaptureFlowController {
         return true;
       }
       const keyState = await this.#flowStore.getSessionKeyState(active.sessionId);
-      if (keyState === null) throw new QueueInvariantError("session_key_missing");
+      if (keyState === null) {
+        if (this.#reviewAfterUpload) throw new CaptureDeviceCustodyError();
+        throw new QueueInvariantError("session_key_missing");
+      }
       await this.#bindStoredSessionKey(keyState);
       this.#setCapabilities(await this.#bff.getCapabilities(active.sessionId));
       if (this.#canCreateOrRecoverReservations()) {
@@ -744,10 +748,20 @@ export class CaptureFlowController {
 
   async #bindStoredSessionKey(state: SessionKeyBindingState): Promise<void> {
     if (state.state === "bound") return;
-    await this.#bff.bindSessionAudioKey(state.sessionId, {
-      key_version: state.keyVersion,
-      wrapped_dek: state.wrappedDek,
-    }, { idempotencyKey: state.idempotencyKey });
+    try {
+      await this.#bff.bindSessionAudioKey(state.sessionId, {
+        key_version: state.keyVersion,
+        wrapped_dek: state.wrappedDek,
+      }, { idempotencyKey: state.idempotencyKey });
+    } catch (error) {
+      // Core deliberately sanitizes conflicts. We cannot infer key rotation or
+      // another device's ownership from 409. Retain the exact local candidate
+      // and request key; a configured encounter never guesses replacement keys.
+      if (this.#reviewAfterUpload && error instanceof BffResponseError && error.status === 409) {
+        throw new CaptureDeviceCustodyError();
+      }
+      throw error;
+    }
     await this.#flowStore.markSessionKeyBound(state.sessionId);
   }
 

@@ -136,6 +136,19 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
       expect(failures).toEqual(["failed"]);
     } finally { await session.stop({ mode: "discard" }); }
   });
+  it("confirms a pending discard when the owned child exits without replying", async () => {
+    const packets = vi.fn(async () => undefined);
+    const session = (await driver(8)).start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+      onPcmPacket: packets, onFailure: () => undefined,
+    });
+    try {
+      await session.ready; // Source exists, but activation has never been granted.
+      expect(await session.stop({ mode: "discard" })).toBeNull();
+      expect(packets).not.toHaveBeenCalled();
+      expect(() => session.activate()).toThrow();
+      expect(await session.stop({ mode: "discard" })).toBeNull();
+    } finally { await session.stop({ mode: "discard" }); }
+  });
   it("retains the same child for failed-stop retry and handles drain-to-discard upgrade", async () => {
     for (const failedFirst of [true, false]) {
       const native = await driver(failedFirst ? 2 : 1), gate = deferred<void>();
