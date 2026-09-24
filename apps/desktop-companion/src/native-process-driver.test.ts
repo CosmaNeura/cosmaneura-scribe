@@ -7,6 +7,8 @@ import { DesktopPcmCaptureSource } from "./pcm-capture-source.js";
 import type { DesktopPCMCoverage, DesktopPCMFailure } from "./native-pcm-driver.js";
 import { NativeProcessPCMDriver } from "./native-process-driver.js";
 import { NativeProcessDecoder, nativeCommand, nativeMetadata } from "./native-process-wire.js";
+import { nativePipeFixtureFence } from "./native-pipe-fixture.js";
+import type { NativeProcessFence } from "./native-process-fence.js";
 
 const fixturePath = process.env.SCRIBE_DESKTOP_PIPE_FIXTURE;
 const consent = Object.freeze({ id: "desktop-pipe-invented-all-parties-consent", allPartiesAgreed: true });
@@ -67,11 +69,13 @@ describe("private native pipe framing", () => {
 });
 
 describe.skipIf(!fixturePath)("actual Swift process with explicit invented source", () => {
-  async function driver(pid = 1, authorize?: () => Promise<void>, hash?: string): Promise<NativeProcessPCMDriver> {
+  async function driver(pid = 1, authorize?: () => Promise<void>, hash?: string,
+    fence: () => NativeProcessFence = nativePipeFixtureFence): Promise<NativeProcessPCMDriver> {
     expect(consent.allPartiesAgreed).toBe(true);
     if (!fixturePath) throw new Error("compiled fixture required");
     return new NativeProcessPCMDriver({ enabled: true, helperPath: fixturePath,
       helperSha256: hash ?? createHash("sha256").update(await readFile(fixturePath)).digest("hex"),
+      getProcessFence: fence,
       isSessionActive: () => true, authorizeSelectedWindow: async () => {
         await authorize?.();
         return { application: "com.google.Chrome", processID: pid, windowID: 1, captureAuthorizedUntil: Date.now() + 60_000 };
@@ -103,6 +107,18 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
       expect(references.every(bytes => bytes.every(value => value === 0))).toBe(true);
       expect(await session.stop({ mode: "discard" })).toBeNull();
     } finally { gate.resolve(); await session.stop({ mode: "discard" }); }
+  });
+  it("rejects an incorrect real coordinator epoch before delivering invented audio", async () => {
+    const ticket = nativePipeFixtureFence();
+    const native = await driver(1, undefined, undefined, () => ({ ...ticket, epoch: crypto.randomUUID() }));
+    const packets = vi.fn(async () => undefined);
+    const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+      onPcmPacket: packets, onFailure: () => undefined,
+    });
+    try {
+      await expect(session.ready).rejects.toThrow("desktop_native_process_failed");
+      expect(packets).not.toHaveBeenCalled();
+    } finally { await session.stop({ mode: "discard" }).catch(() => undefined); }
   });
   it("retains the same child for failed-stop retry and handles drain-to-discard upgrade", async () => {
     for (const failedFirst of [true, false]) {
@@ -163,7 +179,7 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
   it("exits its dedicated process after parent loss even when the source never confirms stop", async () => {
     expect(consent.allPartiesAgreed).toBe(true);
     if (!fixturePath) throw new Error("compiled fixture required");
-    const child = spawn(fixturePath, ["--capture-v1"], { stdio: ["pipe", "pipe", "ignore"], env: {} });
+    const child = spawn(fixturePath, ["--capture-v2"], { stdio: ["pipe", "pipe", "ignore"], env: {} });
     const decoder = new NativeProcessDecoder(), ready = deferred<void>();
     let exited = false;
     const closed = new Promise<number | null>((resolve, reject) => {
@@ -177,7 +193,8 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
     });
     try {
       child.stdin.write(nativeCommand({ type: "start", application: "com.google.Chrome", processID: 6,
-        windowID: 1, maximumDurationSeconds: 60, maximumOutputFrames: 16_000 }));
+        windowID: 1, maximumDurationSeconds: 60, maximumOutputFrames: 16_000,
+        processFence: nativePipeFixtureFence() }));
       await ready.promise;
       const started = Date.now(); child.stdin.end();
       expect(await closed).toBe(1);

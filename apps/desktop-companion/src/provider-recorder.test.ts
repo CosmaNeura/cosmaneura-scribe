@@ -19,6 +19,7 @@ import { DurableDesktopQueueStorage } from "./durable-queue-store.js";
 import { DurableDesktopCoverage } from "./durable-provider-records.js";
 import { InMemoryRecordingIndicator } from "./recording-indicator.js";
 import { NativeProcessPCMDriver } from "./native-process-driver.js";
+import { nativePipeFixtureFence } from "./native-pipe-fixture.js";
 
 const helperPath = process.env.SCRIBE_DESKTOP_PIPE_FIXTURE;
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
@@ -55,7 +56,7 @@ async function fixture(nativeStub = false) {
   const authority = vi.fn(async () => {
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
     return { schemaVersion: 1, decision: "authorized", ...grant, issuedAt: new Date().toISOString(), expiresAt,
-      captureCapability: { capabilityId: crypto.randomUUID(), secret: "invented-start-capability", expiresAt } };
+      captureCapability: { capabilityId: crypto.randomUUID(), secret: "your-invented-start-capability", expiresAt } };
   });
   const selectWindow = vi.fn(async () => {
     expect(indicator.current()?.visible).not.toBe(true);
@@ -77,6 +78,7 @@ async function fixture(nativeStub = false) {
     indicator, ...resources(), uploadTarget: new HttpCiphertextUploadTarget([origin]),
     native: { helperPath: helperPath ?? "/unused-native-ordering-fixture",
       helperSha256: nativeStub ? "0".repeat(64) : createHash("sha256").update(await readFile(helperPath!)).digest("hex"),
+      getProcessFence: nativePipeFixtureFence,
       isSessionActive: () => !abort.signal.aborted },
     selectWindow, release, retireSource: vi.fn(async () => undefined) };
   return { options, indicator, abort, authority, selectWindow, release, complete, session, nativeStart, nativeAvailability,

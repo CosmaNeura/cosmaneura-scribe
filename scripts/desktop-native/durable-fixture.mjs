@@ -30,6 +30,7 @@ process.on("message", async input => {
     const coverage = new DurableDesktopCoverage(store.namespace(`coverage:${input.sessionId}`), input.attemptId);
     source = new DesktopPcmCaptureSource(new NativeProcessPCMDriver({ enabled: true,
       helperPath: input.helperPath, helperSha256: input.helperSha256, isSessionActive: () => true,
+      getProcessFence: () => input.processFence,
       authorizeSelectedWindow: async () => ({ application: "com.google.Chrome", processID: 1, windowID: 1,
         captureAuthorizedUntil: Date.now() + 60_000 }) }), coverage.persist);
     const bff = new HttpCaptureBff((url, init) => fetch(typeof url === "string" ? new URL(url, input.origin) : url, init));
