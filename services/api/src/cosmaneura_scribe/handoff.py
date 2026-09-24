@@ -119,8 +119,8 @@ class HttpMasterPlatformHandoff:
         if response.status_code in {200, 201}:
             try:
                 return MasterTranscriptDeliveryResponse.model_validate(response.json())
-            except (ValueError, ValidationError) as exc:
-                raise HandoffRetryableError("invalid_platform_response") from exc
+            except (ValueError, ValidationError):
+                raise HandoffRetryableError("invalid_platform_response") from None
         if response.status_code == 409:
             raise HandoffConflictError("platform_conflict")
         if response.status_code in {408, 425, 429} or response.status_code >= 500:
