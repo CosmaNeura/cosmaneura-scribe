@@ -11,6 +11,9 @@ private actor InventedSource: DesktopProcessSource {
     func start(selection: MeetingAudioSelection, maximumDurationSeconds: Int, sink: any DesktopAudioSink) async throws {
         precondition(!consentID.isEmpty && maximumDurationSeconds > 0)
         guard !stopped else { throw DesktopAudioFailure.cancelled }
+        // Model a native child dying before readiness, without generating a
+        // real OS crash report or ever constructing a physical audio source.
+        if selection.processID == 7 { _exit(70) }
         failFirstDrain = selection.processID == 2
         uncooperativeStop = selection.processID == 6
         if selection.processID == 4 { try await Task.sleep(for: .seconds(10)) }

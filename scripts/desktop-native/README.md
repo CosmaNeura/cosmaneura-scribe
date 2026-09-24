@@ -21,3 +21,18 @@ retained test files are separate from installed application custody.
 
 Existing opt-ins now exercise `--capture-v2`. Supplying only the historical
 `SCRIBE_DESKTOP_PIPE_FIXTURE` binary without its coordinator ticket is insufficient.
+
+## Audio-helper AppKit startup
+
+```sh
+python3 scripts/desktop-native/check-appkit-bootstrap.py /private/tmp/scribe-appkit-check-unique
+```
+
+This compiles the unchanged product audio-helper entry point against a test-only
+library stand-in, then starts fresh processes for its availability and capture
+dispatch modes. It verifies AppKit initialization, prohibited activation policy,
+main-thread execution and MainActor resumption through the application runloop.
+It never queries permissions, requests setup, selects a window or creates audio.
+The native screen filter itself still requires installed, owner-operated testing;
+this check does not claim that physical recording has passed. The pipe suite also
+checks discard after a child exits before readiness without a normal stop receipt.

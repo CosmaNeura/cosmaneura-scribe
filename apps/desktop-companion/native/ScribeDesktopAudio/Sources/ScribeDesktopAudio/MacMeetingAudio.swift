@@ -61,15 +61,22 @@ public actor MacMeetingAudio {
                 Task { await self?.terminate() }
             }
             let output = AudioOutput(delivery: delivery)
-            let configuration = SCStreamConfiguration()
-            configuration.capturesAudio = true
-            configuration.excludesCurrentProcessAudio = true
-            configuration.sampleRate = 48_000; configuration.channelCount = 2
-            configuration.width = 2; configuration.height = 2
-            configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
-            configuration.queueDepth = 3; configuration.showsCursor = false
-            let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
-                                  configuration: configuration, delegate: output)
+            // SCContentFilter consults WindowServer during construction. Keep
+            // that AppKit boundary on the initialized application main thread.
+            let stream = await MainActor.run {
+                let configuration = SCStreamConfiguration()
+                configuration.capturesAudio = true
+                configuration.excludesCurrentProcessAudio = true
+                configuration.sampleRate = 48_000; configuration.channelCount = 2
+                configuration.width = 2; configuration.height = 2
+                configuration.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+                configuration.queueDepth = 3; configuration.showsCursor = false
+                return SCStream(filter: SCContentFilter(desktopIndependentWindow: window),
+                                configuration: configuration, delegate: output)
+            }
+            // Stop can run while this actor is suspended above. No stream has
+            // started yet; do not install fresh sources after ownership ends.
+            guard phase == .starting, !Task.isCancelled else { throw DesktopAudioFailure.cancelled }
             let session = CaptureSession(stream: stream, output: output, delivery: delivery)
             active = session // Own every partial setup before a fallible operation.
             session.deadline = Task {
