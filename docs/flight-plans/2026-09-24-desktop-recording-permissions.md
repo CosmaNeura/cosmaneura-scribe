@@ -54,6 +54,34 @@ Capture and desktop types, final changed-file lint and the real Swift audio-help
 release build passed. The provider renderer and nine-artifact desktop host also
 built. One test-only unsafe JSON return was fixed with an explicit unknown type;
 the retained initial lint failure is superseded by `changed-lint-final.log`.
-Installation and actual prompt/capture outcomes remain pending. Independent
+Build 3 was installed and reopened the retained synthetic encounter. Explicit
+Resume renewed the unstarted preparation without replacement of the admission
+or session. The setup attempt was followed by a normal application exit
+(`0,0,0` in RunningBoard), with no observed OS prompt; the owner did not see the
+attempt. A subsequent launch stayed alive but displayed Connecting your workspace
+for several minutes. A process sample showed an idle main event loop rather than
+a crashing or CPU-bound process. Prompt and physical capture acceptance remain
+pending.
+
+The follow-up adds a local, best-effort diagnostic trail with only a fixed list
+of lifecycle event names, UTC timestamps and process IDs. It identifies native
+connection stages and app/window/renderer shutdown reasons. It accepts no error
+text, identities, endpoint/request values, credentials or capture content. Writes
+use the existing app-owned data directory, private permissions and no-follow file
+opening; limits are 128 events per launch and 64 KiB per file, with no truncation.
+Diagnostics cannot block shutdown or alter capture authority. Rebuild the same
+signed identity, preserve build 3, and recheck the installed workflow. A local
+diagnostic fixture does not establish installed acceptance.
+The two focused diagnostic/lifecycle test files pass all eight cases. Desktop
+typechecking, changed-file lint and the nine-artifact host build pass. Renderer
+and native helper inputs are unchanged, so their prior build evidence is reused.
+
+Core staging changed during this observation to revision
+`cosmaneura-staging-app--r1790259131a1-abe7631`, image digest
+`sha256:66fb4aad8e2a554674a6d12416be81c664a9e1aaf1c45eed6028d0724b2308a2`.
+Do not reuse an observer pinned to the older revision or infer that the deployment
+caused the connection delay. No staging deployment was performed by this task.
+
+Independent
 PR review remains distinct from the implementer's checks; no other task or agent
 is contacted.

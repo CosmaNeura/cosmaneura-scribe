@@ -1,0 +1,28 @@
+import { constants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
+import { join } from "node:path";
+
+const EVENTS = ["host_open", "window_ready", "connect_begin", "backend_ready", "presentation_ready", "connect_ready", "connect_failed",
+  "before_quit", "window_close", "renderer_gone", "renderer_navigation", "close_begin", "boundary_closed", "owner_closed", "close_failed", "quit_ready"] as const;
+export type RuntimeDiagnostic = (event: typeof EVENTS[number]) => void;
+export const NO_DIAGNOSTICS: RuntimeDiagnostic = () => undefined;
+
+/** Local bounded lifecycle metadata only. Never accepts error messages, URLs,
+ * identities, request bodies or capture content. Failure cannot block cleanup. */
+export function runtimeDiagnostics(directory: string): RuntimeDiagnostic {
+  let remaining = 128, writing = Promise.resolve();
+  return event => {
+    if (!EVENTS.includes(event) || remaining-- <= 0) return;
+    const line = JSON.stringify({ utc: new Date().toISOString(), pid: process.pid, event }) + "\n";
+    writing = writing.then(async () => {
+      if (await realpath(directory) !== directory) return;
+      const file = await open(join(directory, "runtime-diagnostics-v1.jsonl"),
+        constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+      try {
+        const info = await file.stat();
+        if (!info.isFile() || info.nlink !== 1 || (info.mode & 0o077) !== 0 || info.size + Buffer.byteLength(line) > 65_536) return;
+        await file.writeFile(line);
+      } finally { await file.close(); }
+    }).catch(() => undefined);
+  };
+}
