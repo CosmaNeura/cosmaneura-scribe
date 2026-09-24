@@ -10,6 +10,7 @@ import type { DesktopPCMDriver, DesktopPCMDriverSession, DesktopPCMFailure,
   DesktopPCMStart, DesktopPCMCompletion } from "./native-pcm-driver.js";
 import { parseDesktopPCMStart, parseDesktopPCMCompletion } from "./pcm-capture-source.js";
 import { NativeProcessDecoder, nativeCommand, nativeMetadata, exactKeys } from "./native-process-wire.js";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 export interface AuthorizedDesktopSelection {
   readonly application: "com.google.Chrome" | "us.zoom.xos";
@@ -29,6 +30,8 @@ export interface NativeProcessDriverOptions {
   readonly authorizeSelectedWindow: () => Promise<AuthorizedDesktopSelection>;
   /** Required for actual capture-v2 starts; supplied only by the native backend. */
   readonly getProcessFence?: () => NativeProcessFence;
+  /** Fixed local event metadata only; diagnostics cannot affect capture cleanup. */
+  readonly diagnostics?: RuntimeDiagnostic;
 }
 type Child = ChildProcessByStdio<Writable, Readable, null>;
 type Sink = Parameters<DesktopPCMDriver["start"]>[1];
@@ -86,6 +89,7 @@ class ProcessSession implements DesktopPCMDriverSession {
   private exitObserved = false;
   private closingInput = false;
   private confirmed = false;
+  private stopReported = false;
   private request = 0;
   private heartbeat?: ReturnType<typeof setInterval>;
   private startupTimer?: ReturnType<typeof setTimeout>;
@@ -96,7 +100,11 @@ class ProcessSession implements DesktopPCMDriverSession {
   constructor(private readonly options: NativeProcessDriverOptions, private maximumFrames: number, private readonly sink: Sink) {
     // The handle exists before the first asynchronous authorization/file read.
     void this.ready.catch(() => undefined);
-    this.startupTimer = setTimeout(() => { this.fail("failed"); }, DEADLINE_MS);
+    this.diagnose("audio_start_pending");
+    this.startupTimer = setTimeout(() => {
+      if (!this.failed && !this.cancelled) this.diagnose("audio_start_timeout");
+      this.fail("failed");
+    }, DEADLINE_MS);
     void this.prepare().catch(() => { this.fail("failed"); });
   }
   private async prepare(): Promise<void> {
@@ -114,6 +122,7 @@ class ProcessSession implements DesktopPCMDriverSession {
     const processFence = parseNativeProcessFence(this.options.getProcessFence?.());
     const child = launch(this.options.helperPath, "--capture-v2");
     this.child = child;
+    child.once("spawn", () => { this.diagnose("audio_helper_spawned"); });
     child.stdout.on("data", (bytes: Buffer) => {
       try { this.decoder.push(bytes, (kind, payload) => { this.receive(kind, payload); }); }
       catch { this.breakTransport(); }
@@ -165,6 +174,7 @@ class ProcessSession implements DesktopPCMDriverSession {
     await this.exited.promise;
     await this.packetWork;
     if (!this.cancelled && !this.confirmed) throw failure();
+    if (this.confirmed && !this.stopReported) { this.stopReported = true; this.diagnose("audio_stop_confirmed"); }
     return this.cancelled ? null : value;
   }
   private receive(kind: number, payload: Buffer): void {
@@ -190,6 +200,7 @@ class ProcessSession implements DesktopPCMDriverSession {
         if (!exactKeys(value, ["type", "start"]) || this.startValue || this.confirmed) throw failure();
         if (this.cancelled) return;
         this.startValue = parseDesktopPCMStart(value.start); clearTimeout(this.startupTimer);
+        this.diagnose("audio_ready");
         this.readiness.resolve(this.startValue); return;
       case "failure":
         if (!exactKeys(value, ["type", "code"]) || !CODES.includes(value.code as DesktopPCMFailure)) throw failure();
@@ -233,7 +244,11 @@ class ProcessSession implements DesktopPCMDriverSession {
     this.failed = true; this.readiness.reject(failure());
     // Begin cleanup before notifying the existing capture controller.
     void this.stop({ mode: "discard" }).catch(() => undefined);
+    this.diagnose(`audio_${code}`);
     try { this.sink.onFailure(code); } catch { /* Cleanup remains owned here. */ }
+  }
+  private diagnose(event: Parameters<RuntimeDiagnostic>[0]): void {
+    try { this.options.diagnostics?.(event); } catch { /* Observation cannot affect source ownership. */ }
   }
   private breakTransport(): void {
     this.fail("failed"); this.decoder.clear();

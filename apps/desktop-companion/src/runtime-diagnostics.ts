@@ -3,7 +3,9 @@ import { open, realpath } from "node:fs/promises";
 import { join } from "node:path";
 
 const EVENTS = ["host_open", "window_ready", "connect_begin", "backend_ready", "presentation_ready", "connect_ready", "connect_failed",
-  "before_quit", "window_close", "renderer_gone", "renderer_navigation", "close_begin", "boundary_closed", "owner_closed", "close_failed", "quit_ready"] as const;
+  "before_quit", "window_close", "renderer_gone", "renderer_navigation", "close_begin", "boundary_closed", "owner_closed", "close_failed", "quit_ready",
+  "audio_start_pending", "audio_helper_spawned", "audio_ready", "audio_start_timeout", "audio_stop_confirmed",
+  "audio_permission_required", "audio_device_changed", "audio_session_locked", "audio_clock_discontinuity", "audio_overflow", "audio_failed"] as const;
 export type RuntimeDiagnostic = (event: typeof EVENTS[number]) => void;
 export const NO_DIAGNOSTICS: RuntimeDiagnostic = () => undefined;
 
