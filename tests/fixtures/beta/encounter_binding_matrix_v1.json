@@ -1,0 +1,315 @@
+{
+  "schema_version": "1.0",
+  "ownership": {
+    "human_identity": "core_existing_clerk",
+    "demographics_and_matching": "core",
+    "canonical_encounter": "core",
+    "recording_and_transcript": "scribe",
+    "recording_visibility": "immutable_creator_only"
+  },
+  "scribe_boundary": {
+    "tenant_source": "verified_entra_context",
+    "creator_source": "core_authenticated_actor",
+    "allowed_request_fields": [
+      "appointment_id",
+      "practitioner_id",
+      "patient_id",
+      "consent_record_id",
+      "modality"
+    ],
+    "forbidden_request_fields": [
+      "tenant_id",
+      "creator_actor_id",
+      "patient_name",
+      "patient_date_of_birth",
+      "possible_matches"
+    ]
+  },
+  "rules": {
+    "binding_precedes_capture": true,
+    "consent_precedes_audio_processing": true,
+    "manual_demographics_are_synthetic_only_in_closed_beta": true,
+    "possible_matches_never_auto_merge": true,
+    "explicit_resolution_required_when_matches_exist": true,
+    "mutation_idempotency_required": true,
+    "successful_binding_appears_in_creator_dashboard": true
+  },
+  "cases": [
+    {
+      "case_id": "existing_appointment_authorized",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "existing_appointment",
+      "appointment_authorized": true,
+      "manual_name_present": null,
+      "manual_dob_present": null,
+      "possible_match_count": null,
+      "explicit_resolution": "use_existing_appointment",
+      "selected_match_authorized": true,
+      "idempotency": "first",
+      "expected": {
+        "action": "bind_existing_appointment",
+        "create_scribe_session": true,
+        "capture_start_allowed": true,
+        "dashboard_visible_to_creator": true,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "existing_appointment_unauthorized",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "existing_appointment",
+      "appointment_authorized": false,
+      "manual_name_present": null,
+      "manual_dob_present": null,
+      "possible_match_count": null,
+      "explicit_resolution": "use_existing_appointment",
+      "selected_match_authorized": false,
+      "idempotency": "first",
+      "expected": {
+        "action": "deny",
+        "create_scribe_session": false,
+        "capture_start_allowed": false,
+        "dashboard_visible_to_creator": false,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "manual_no_match_create_new",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "manual_demographics",
+      "appointment_authorized": null,
+      "manual_name_present": true,
+      "manual_dob_present": true,
+      "possible_match_count": 0,
+      "explicit_resolution": "create_unscheduled_new_patient",
+      "selected_match_authorized": null,
+      "idempotency": "first",
+      "expected": {
+        "action": "create_unscheduled_new_patient",
+        "create_scribe_session": true,
+        "capture_start_allowed": true,
+        "dashboard_visible_to_creator": true,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "manual_match_existing_patient",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "manual_demographics",
+      "appointment_authorized": null,
+      "manual_name_present": true,
+      "manual_dob_present": true,
+      "possible_match_count": 1,
+      "explicit_resolution": "create_unscheduled_for_existing_patient",
+      "selected_match_authorized": true,
+      "idempotency": "first",
+      "expected": {
+        "action": "create_unscheduled_for_existing_patient",
+        "create_scribe_session": true,
+        "capture_start_allowed": true,
+        "dashboard_visible_to_creator": true,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "manual_possible_match_unresolved",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "manual_demographics",
+      "appointment_authorized": null,
+      "manual_name_present": true,
+      "manual_dob_present": true,
+      "possible_match_count": 2,
+      "explicit_resolution": "none",
+      "selected_match_authorized": null,
+      "idempotency": "first",
+      "expected": {
+        "action": "wait_for_explicit_resolution",
+        "create_scribe_session": false,
+        "capture_start_allowed": false,
+        "dashboard_visible_to_creator": false,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "manual_possible_match_explicit_new",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "manual_demographics",
+      "appointment_authorized": null,
+      "manual_name_present": true,
+      "manual_dob_present": true,
+      "possible_match_count": 2,
+      "explicit_resolution": "create_unscheduled_new_patient",
+      "selected_match_authorized": null,
+      "idempotency": "first",
+      "expected": {
+        "action": "create_unscheduled_new_patient",
+        "create_scribe_session": true,
+        "capture_start_allowed": true,
+        "dashboard_visible_to_creator": true,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "manual_selected_match_unauthorized",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "manual_demographics",
+      "appointment_authorized": null,
+      "manual_name_present": true,
+      "manual_dob_present": true,
+      "possible_match_count": 1,
+      "explicit_resolution": "create_unscheduled_for_existing_patient",
+      "selected_match_authorized": false,
+      "idempotency": "first",
+      "expected": {
+        "action": "deny",
+        "create_scribe_session": false,
+        "capture_start_allowed": false,
+        "dashboard_visible_to_creator": false,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "manual_incomplete_demographics",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "manual_demographics",
+      "appointment_authorized": null,
+      "manual_name_present": true,
+      "manual_dob_present": false,
+      "possible_match_count": null,
+      "explicit_resolution": "none",
+      "selected_match_authorized": null,
+      "idempotency": "first",
+      "expected": {
+        "action": "deny",
+        "create_scribe_session": false,
+        "capture_start_allowed": false,
+        "dashboard_visible_to_creator": false,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "revoked_grant_denied",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "revoked",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "existing_appointment",
+      "appointment_authorized": true,
+      "manual_name_present": null,
+      "manual_dob_present": null,
+      "possible_match_count": null,
+      "explicit_resolution": "use_existing_appointment",
+      "selected_match_authorized": true,
+      "idempotency": "first",
+      "expected": {
+        "action": "deny",
+        "create_scribe_session": false,
+        "capture_start_allowed": false,
+        "dashboard_visible_to_creator": false,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "view_as_denied",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": true,
+      "mode": "existing_appointment",
+      "appointment_authorized": true,
+      "manual_name_present": null,
+      "manual_dob_present": null,
+      "possible_match_count": null,
+      "explicit_resolution": "use_existing_appointment",
+      "selected_match_authorized": true,
+      "idempotency": "first",
+      "expected": {
+        "action": "deny",
+        "create_scribe_session": false,
+        "capture_start_allowed": false,
+        "dashboard_visible_to_creator": false,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "exact_idempotent_replay",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "manual_demographics",
+      "appointment_authorized": null,
+      "manual_name_present": true,
+      "manual_dob_present": true,
+      "possible_match_count": 0,
+      "explicit_resolution": "create_unscheduled_new_patient",
+      "selected_match_authorized": null,
+      "idempotency": "exact_replay",
+      "expected": {
+        "action": "replay_existing_binding",
+        "create_scribe_session": true,
+        "capture_start_allowed": true,
+        "dashboard_visible_to_creator": true,
+        "duplicate_encounter_created": false
+      }
+    },
+    {
+      "case_id": "idempotency_payload_conflict",
+      "authenticated": true,
+      "session_revoked": false,
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "view_as": false,
+      "mode": "manual_demographics",
+      "appointment_authorized": null,
+      "manual_name_present": true,
+      "manual_dob_present": true,
+      "possible_match_count": 0,
+      "explicit_resolution": "create_unscheduled_new_patient",
+      "selected_match_authorized": null,
+      "idempotency": "payload_conflict",
+      "expected": {
+        "action": "deny",
+        "create_scribe_session": false,
+        "capture_start_allowed": false,
+        "dashboard_visible_to_creator": false,
+        "duplicate_encounter_created": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0",
+  "artifact_type": "planning_only_not_deployable",
+  "target_environment": "dedicated_non_phi_beta",
+  "activation_authorized": false,
+  "phi_allowed": false,
+  "cohort": {
+    "kind": "internal_product_micro_beta",
+    "maximum_testers": 3,
+    "practice_count": 1,
+    "practice_data": "synthetic_only",
+    "sole_inviter": "founder"
+  },
+  "activation_defaults": {
+    "beta_invitation_issuance": false,
+    "external_transcript_ingest": false,
+    "translation_execution": false,
+    "derived_writer_database_permissions": false,
+    "note_handoff": false,
+    "desktop_distribution": false,
+    "ios_testflight_distribution": false
+  },
+  "required_before_activation": [
+    "stable_existing_clerk_authentication",
+    "stable_existing_entra_workload_authentication",
+    "creator_only_authorization_evidence",
+    "single_use_exact_email_invitation_evidence",
+    "core_owned_encounter_binding_evidence",
+    "dedicated_environment_isolation_evidence",
+    "approved_translation_provider_profile",
+    "encrypted_translation_job_store_and_ambiguity_runbook",
+    "signed_notarized_desktop_artifact",
+    "signed_testflight_ios_artifact",
+    "exact_artifact_synthetic_end_to_end_evidence",
+    "rollback_rehearsal",
+    "founder_activation_decision"
+  ],
+  "kill_switch_order": [
+    "stop_new_invitations",
+    "stop_new_capture_sessions",
+    "stop_translation_execution",
+    "stop_note_handoff",
+    "revoke_beta_grants",
+    "preserve_metadata_only_evidence",
+    "purge_content_under_approved_retention_process"
+  ],
+  "forbidden_until_controlled_mcd_launch": [
+    "phi",
+    "mcd_clinical_practice_data",
+    "production_activation",
+    "automatic_language_detection_as_authority",
+    "english_to_spanish_translation"
+  ]
+}

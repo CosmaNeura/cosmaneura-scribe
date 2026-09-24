@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "states": [
+    {
+      "source_status": "created",
+      "display_state": "waiting_for_transcript",
+      "creator_authorization_required": true,
+      "show_to_non_creator": false,
+      "can_open_source": false,
+      "can_open_english_working_transcript": false,
+      "can_review_translation": false,
+      "can_request_note": false
+    },
+    {
+      "source_status": "source_received",
+      "display_state": "preparing_english_transcript",
+      "creator_authorization_required": true,
+      "show_to_non_creator": false,
+      "can_open_source": true,
+      "can_open_english_working_transcript": false,
+      "can_review_translation": false,
+      "can_request_note": false
+    },
+    {
+      "source_status": "translation_pending",
+      "display_state": "preparing_english_transcript",
+      "creator_authorization_required": true,
+      "show_to_non_creator": false,
+      "can_open_source": true,
+      "can_open_english_working_transcript": false,
+      "can_review_translation": false,
+      "can_request_note": false
+    },
+    {
+      "source_status": "review_required",
+      "display_state": "translation_review_required",
+      "creator_authorization_required": true,
+      "show_to_non_creator": false,
+      "can_open_source": true,
+      "can_open_english_working_transcript": true,
+      "can_review_translation": true,
+      "can_request_note": false
+    },
+    {
+      "source_status": "quality_blocked",
+      "display_state": "source_quality_attention",
+      "creator_authorization_required": true,
+      "show_to_non_creator": false,
+      "can_open_source": true,
+      "can_open_english_working_transcript": false,
+      "can_review_translation": false,
+      "can_request_note": false
+    },
+    {
+      "source_status": "transcript_ready",
+      "display_state": "english_transcript_ready",
+      "creator_authorization_required": true,
+      "show_to_non_creator": false,
+      "can_open_source": true,
+      "can_open_english_working_transcript": true,
+      "can_review_translation": false,
+      "can_request_note": true
+    },
+    {
+      "source_status": "handed_off",
+      "display_state": "note_requested",
+      "creator_authorization_required": true,
+      "show_to_non_creator": false,
+      "can_open_source": true,
+      "can_open_english_working_transcript": true,
+      "can_review_translation": false,
+      "can_request_note": false
+    },
+    {
+      "source_status": "failed",
+      "display_state": "processing_failed",
+      "creator_authorization_required": true,
+      "show_to_non_creator": false,
+      "can_open_source": false,
+      "can_open_english_working_transcript": false,
+      "can_review_translation": false,
+      "can_request_note": false
+    }
+  ]
+}

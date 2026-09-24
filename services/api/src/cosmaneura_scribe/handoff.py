@@ -9,6 +9,7 @@ from azure.core.exceptions import AzureError
 from azure.identity.aio import DefaultAzureCredential
 from pydantic import ValidationError
 
+from .external_transcript_v1 import EnglishWorkingTranscriptV1
 from .schemas import (
     CaptureSession,
     LegacyTranscriptEntry,
@@ -183,6 +184,36 @@ def to_master_platform_payload_parts(
             )
             for segment in segments
         ],
+    )
+
+
+def to_master_platform_payload_from_working_transcript(
+    *,
+    encounter_id: str,
+    session_id: UUID,
+    working_transcript: EnglishWorkingTranscriptV1,
+) -> MasterTranscriptDeliveryRequest:
+    """Map a reviewed, note-ready English projection to the existing note-engine contract."""
+
+    if not working_transcript.note_ready:
+        raise ValueError("working_transcript_not_note_ready")
+    segments: list[MasterTranscriptSegment] = []
+    for segment in working_transcript.segments:
+        if segment.content is None:  # Defended by note_ready and the working model.
+            raise ValueError("working_transcript_content_unavailable")
+        segments.append(
+            MasterTranscriptSegment(
+                speaker=ROLE_LABELS[segment.speaker_role],
+                content=segment.content,
+                start_ms=segment.start_ms,
+                end_ms=segment.end_ms,
+            )
+        )
+    return MasterTranscriptDeliveryRequest(
+        encounter_id=encounter_id,
+        scribe_session_id=session_id,
+        duration_seconds=(max(segment.end_ms for segment in segments) + 999) // 1000,
+        segments=segments,
     )
 
 

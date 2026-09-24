@@ -1,0 +1,156 @@
+{
+  "schema_version": "1.0",
+  "auth_contract": {
+    "human_identity_system": "existing_clerk",
+    "workload_identity_system": "existing_entra",
+    "new_auth_path": false,
+    "sole_inviter": "founder",
+    "outside_mcd_invite": {
+      "exact_email": true,
+      "expiring": true,
+      "single_use": true
+    },
+    "beta_grant": {
+      "server_enforced": true,
+      "revocable": true,
+      "practice_scoped": true
+    },
+    "resource_rule": "creator_only"
+  },
+  "onboarding_flows": {
+    "mcd_existing": [
+      "authenticate_existing_clerk_identity",
+      "founder_assigns_beta_grant",
+      "enter_isolated_synthetic_practice"
+    ],
+    "outside_mcd": [
+      "founder_issues_exact_email_invite",
+      "authenticate_or_register_through_existing_clerk",
+      "redeem_invite_once_before_expiry",
+      "server_assigns_revocable_beta_grant",
+      "enter_isolated_synthetic_practice"
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "mcd_creator_active",
+      "identity_origin": "mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": false, "exact_email_match": null, "unexpired": null, "redemption_count": null},
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "resource_creator": "self",
+      "view_as": false,
+      "expected": {"enter_beta": "allow", "create_own_capture": "allow", "list_target_artifact": "allow", "read_target_artifact": "allow", "review_target_translation": "allow"}
+    },
+    {
+      "case_id": "outside_mcd_creator_active",
+      "identity_origin": "outside_mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": true, "exact_email_match": true, "unexpired": true, "redemption_count": 1},
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "resource_creator": "self",
+      "view_as": false,
+      "expected": {"enter_beta": "allow", "create_own_capture": "allow", "list_target_artifact": "allow", "read_target_artifact": "allow", "review_target_translation": "allow"}
+    },
+    {
+      "case_id": "same_practice_non_creator",
+      "identity_origin": "outside_mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": true, "exact_email_match": true, "unexpired": true, "redemption_count": 1},
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "resource_creator": "other",
+      "view_as": false,
+      "expected": {"enter_beta": "allow", "create_own_capture": "allow", "list_target_artifact": "deny", "read_target_artifact": "deny", "review_target_translation": "deny"}
+    },
+    {
+      "case_id": "cross_practice_non_creator",
+      "identity_origin": "outside_mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": true, "exact_email_match": true, "unexpired": true, "redemption_count": 1},
+      "beta_grant": "active",
+      "practice_relation": "cross",
+      "resource_creator": "other",
+      "view_as": false,
+      "expected": {"enter_beta": "allow", "create_own_capture": "allow", "list_target_artifact": "deny", "read_target_artifact": "deny", "review_target_translation": "deny"}
+    },
+    {
+      "case_id": "outside_mcd_email_mismatch",
+      "identity_origin": "outside_mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": true, "exact_email_match": false, "unexpired": true, "redemption_count": 0},
+      "beta_grant": "none",
+      "practice_relation": "none",
+      "resource_creator": "self",
+      "view_as": false,
+      "expected": {"enter_beta": "deny", "create_own_capture": "deny", "list_target_artifact": "deny", "read_target_artifact": "deny", "review_target_translation": "deny"}
+    },
+    {
+      "case_id": "outside_mcd_invite_expired",
+      "identity_origin": "outside_mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": true, "exact_email_match": true, "unexpired": false, "redemption_count": 0},
+      "beta_grant": "none",
+      "practice_relation": "none",
+      "resource_creator": "self",
+      "view_as": false,
+      "expected": {"enter_beta": "deny", "create_own_capture": "deny", "list_target_artifact": "deny", "read_target_artifact": "deny", "review_target_translation": "deny"}
+    },
+    {
+      "case_id": "outside_mcd_invite_replay",
+      "identity_origin": "outside_mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": true, "exact_email_match": true, "unexpired": true, "redemption_count": 2},
+      "beta_grant": "none",
+      "practice_relation": "none",
+      "resource_creator": "self",
+      "view_as": false,
+      "expected": {"enter_beta": "deny", "create_own_capture": "deny", "list_target_artifact": "deny", "read_target_artifact": "deny", "review_target_translation": "deny"}
+    },
+    {
+      "case_id": "beta_grant_revoked",
+      "identity_origin": "mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": false, "exact_email_match": null, "unexpired": null, "redemption_count": null},
+      "beta_grant": "revoked",
+      "practice_relation": "same",
+      "resource_creator": "self",
+      "view_as": false,
+      "expected": {"enter_beta": "deny", "create_own_capture": "deny", "list_target_artifact": "deny", "read_target_artifact": "deny", "review_target_translation": "deny"}
+    },
+    {
+      "case_id": "view_as_forbidden",
+      "identity_origin": "mcd",
+      "authenticated": true,
+      "session_revoked": false,
+      "invite": {"required": false, "exact_email_match": null, "unexpired": null, "redemption_count": null},
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "resource_creator": "self",
+      "view_as": true,
+      "expected": {"enter_beta": "deny", "create_own_capture": "deny", "list_target_artifact": "deny", "read_target_artifact": "deny", "review_target_translation": "deny"}
+    },
+    {
+      "case_id": "session_revoked",
+      "identity_origin": "outside_mcd",
+      "authenticated": true,
+      "session_revoked": true,
+      "invite": {"required": true, "exact_email_match": true, "unexpired": true, "redemption_count": 1},
+      "beta_grant": "active",
+      "practice_relation": "same",
+      "resource_creator": "self",
+      "view_as": false,
+      "expected": {"enter_beta": "deny", "create_own_capture": "deny", "list_target_artifact": "deny", "read_target_artifact": "deny", "review_target_translation": "deny"}
+    }
+  ]
+}

@@ -24,6 +24,7 @@ from azure.core.exceptions import (
 )
 from azure.identity.aio import DefaultAzureCredential
 
+from .external_transcript_v1 import SourceLocale, TranscriptLanguageMode
 from .schemas import CaptureChannel
 from .settings import Settings
 from .speech_private_network import PrivateSpeechEndpointGuard
@@ -68,6 +69,9 @@ class SttSegment:
     end_ms: int
     confidence: float | None
     content: str = field(repr=False)
+    # Phrase-language evidence, not recognition confidence or a speaker prior.
+    # Old providers remain unknown until they supply actual locale evidence.
+    source_locale: SourceLocale = SourceLocale.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -192,7 +196,11 @@ class AzureSpeechTranscriber:
             if self._endpoint_guard is not None:
                 await self._endpoint_guard.verify()
             options = TranscriptionOptions(
-                locales=[request.language_code],
+                locales=(
+                    [SourceLocale.ENGLISH_US.value, SourceLocale.SPANISH_US.value]
+                    if request.language_code == TranscriptLanguageMode.ENGLISH_SPANISH
+                    else [request.language_code]
+                ),
                 profanity_filter_mode=ProfanityFilterMode.NONE,
                 diarization_options=TranscriptionDiarizationOptions(
                     max_speakers=self._max_speakers,
@@ -234,6 +242,11 @@ class AzureSpeechTranscriber:
                         end_ms=phrase.offset_milliseconds + phrase.duration_milliseconds,
                         confidence=confidence,
                         content=content,
+                        source_locale=(
+                            SourceLocale(phrase.locale)
+                            if phrase.locale in {"en-US", "es-US"}
+                            else SourceLocale.UNKNOWN
+                        ),
                     )
                 )
 

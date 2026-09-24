@@ -4,6 +4,13 @@ This runbook provisions and proves the dedicated Scribe Speech path without acti
 transcription. Every flag is false by default. Run plans and applies only from the approved private
 infrastructure runner, and keep all state and plan files out of Git.
 
+The owner approved one dated operator-location exception on 2026-09-21: use the
+Mac for a saved, refreshed, Speech-only management-plane plan, with audio still
+executing in the existing private job. That trial passed and its temporary grant
+was revoked. See [the scoped approval](flight-plans/scribe-real-services-qualification.md)
+and [execution/reversal evidence](SCRIBE_REAL_SERVICES_CHECKPOINT_20260921.md).
+This is not a general public-network exception or permission to repeat the trial.
+
 ## 1. Review the private foundation
 
 Set only:
