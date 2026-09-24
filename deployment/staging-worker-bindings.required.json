@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "environment_id": null,
+  "environment_name": "cosmaneura-staging-app-environment",
+  "location": "northcentralus",
+  "image": null,
+  "tenant_id": null,
+  "database_host": null,
+  "database_name": null,
+  "speech": {
+    "client_id": null,
+    "object_id": null,
+    "principal_name": null,
+    "identity_resource_id": null,
+    "key_id": null,
+    "endpoint": null,
+    "private_host_cidr": null,
+    "storage_url": null,
+    "container": null
+  },
+  "translation": {
+    "client_id": null,
+    "object_id": null,
+    "principal_name": null,
+    "identity_resource_id": null,
+    "key_id": null,
+    "endpoint": null,
+    "private_host_cidr": null,
+    "deployment": null
+  }
+}
