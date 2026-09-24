@@ -32,6 +32,43 @@ const TEST_ENCOUNTER = Object.freeze({
 });
 
 describe("CaptureFlowController", () => {
+  it.each(["microphone", "mixed"] as const)("retains configured empty %s capture for explicit continuation only after confirmed stop", async channel => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin)), source = new InspectableCaptureSource(channel);
+    const controller = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId,
+        patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person",
+        method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() },
+      { idempotencyKey: "empty-capture-consent" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" },
+        { idempotencyKey: "empty-capture-session" });
+      const complete = vi.spyOn(bff, "completeCapture"), renew = vi.spyOn(bff, "renewLease");
+      await controller.prepareConfigured(session.id);
+      const prepared = (await flowStore.getActiveCaptureState())!;
+      const key = await flowStore.getSessionKeyState(session.id), queue = await queueStorage.list();
+      await controller.startRecording();
+      const stopping = deferred();
+      const nativeStop = vi.spyOn(source, "stop").mockImplementationOnce(async () => stopping.promise);
+      const stopped = controller.stopRecording();
+      await vi.waitFor(() => expect(nativeStop).toHaveBeenCalledTimes(1));
+      expect(controller.snapshot.statusCode).not.toBe("capture_no_saved_audio");
+      stopping.resolve(); await stopped;
+      expect(controller.snapshot).toMatchObject({ state: "paused", statusCode: "capture_no_saved_audio", recordedChunks: 0 });
+      expect(await flowStore.getActiveCaptureState()).toMatchObject({ phase: "paused", sessionId: session.id, lease: prepared.lease });
+      expect(await flowStore.getSessionKeyState(session.id)).toEqual(key);
+      expect(await queueStorage.list()).toEqual(queue);
+      expect(complete).not.toHaveBeenCalled(); expect(renew).not.toHaveBeenCalled();
+      await controller.resumeRecording();
+      expect(renew).toHaveBeenCalledTimes(1); expect(source.startCalls).toBe(2);
+      expect(await flowStore.getSessionKeyState(session.id)).toEqual(key);
+    } finally { await controller.deactivate().catch(() => undefined); flowStore.close(); queueStorage.close(); await closeServer(server); }
+  });
+
   it.each(["microphone", "mixed"] as const)("continues %s with retained ciphertext and exact renewal/reservation recovery", async channel => {
     const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
     const indexedDB = new IDBFactory(), flowName = TEST_CRYPTO.randomUUID(), queueName = TEST_CRYPTO.randomUUID();

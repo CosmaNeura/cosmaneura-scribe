@@ -114,6 +114,139 @@ function wire(recorder: DesktopProviderRecorder) {
   return { port, boundary, invoke, event, messages, exits };
 }
 
+/** Invented PCM only: bypass the native executable and all OS audio/window I/O. */
+function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
+  let sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
+  const stop = vi.fn(async () => null);
+  f.nativeStart!.mockImplementation((_configuration, value) => {
+    sink = value;
+    return { ready: Promise.resolve({ hostTimeNanoseconds: "1000000000",
+      microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" }), activate: () => undefined, stop };
+  });
+  return { stop, interrupt: async (savedChunk = false) => {
+    if (savedChunk) await sink.onPcmPacket({ firstFrame: 0, pcmBytes: new Uint8Array(3200) });
+    // 25ms of invented silence, shorter than the fixture's 100ms saved chunk.
+    await sink.onPcmPacket({ firstFrame: savedChunk ? 1600 : 0, pcmBytes: new Uint8Array(800) });
+    sink.onFailure("overflow");
+  } };
+}
+
+describe("confirmed stop recovery", () => {
+  it("retains zero saved chunks as paused without upload, completion, or fresh authority", async () => {
+    const f = await fixture(true), driver = interruptedDriver(f);
+    const issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");
+    const upload = vi.spyOn(f.options.uploadTarget, "putCompleteEnvelope");
+    const recorder = await f.open(), w = wire(recorder);
+    const view = await connectDesktopRecorderView(w.port, f.session.id, f.abort.signal);
+    try {
+      const key = await f.options.flowStore.getSessionKeyState(f.session.id);
+      const prepared = (await f.options.flowStore.getActiveCaptureState())!;
+      const reserved = await f.options.queueStorage.list();
+      await view.controller.startRecording(); await driver.interrupt();
+      await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
+      await view.controller.stopRecording();
+      expect(view.controller.snapshot).toMatchObject({ state: "paused", statusCode: "capture_no_saved_audio",
+        recordedChunks: 0, elapsedSeconds: 0, desktop: { phase: "interrupted", coverage: "incomplete" } });
+      expect(await f.options.flowStore.getActiveCaptureState()).toMatchObject({ phase: "paused", lease: prepared.lease });
+      expect(await f.options.flowStore.getSessionKeyState(f.session.id)).toEqual(key);
+      expect(await f.options.queueStorage.list()).toEqual(reserved);
+      expect(upload).not.toHaveBeenCalled(); expect(f.complete).not.toHaveBeenCalled();
+      expect(issue).toHaveBeenCalledTimes(1); expect(f.authority).toHaveBeenCalledTimes(1);
+      expect(f.nativeStart).toHaveBeenCalledTimes(1);
+      expect(driver.stop).toHaveBeenCalledWith({ mode: "discard" });
+      expect(f.options.retireSource).toHaveBeenCalledTimes(1);
+    } finally { await w.boundary.dispose(); await f.close(); }
+  });
+
+  it("uploads retained complete chunks while keeping discarded-tail coverage incomplete", async () => {
+    const f = await fixture(true), driver = interruptedDriver(f);
+    const upload = vi.spyOn(f.options.uploadTarget, "putCompleteEnvelope");
+    const recorder = await f.open();
+    try {
+      await recorder.startRecording(); await driver.interrupt(true);
+      await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
+      const retained = (await f.options.queueStorage.list()).filter(row => row.state === "encrypted");
+      expect(retained).toHaveLength(1);
+      const key = await f.options.flowStore.getSessionKeyState(f.session.id);
+      await recorder.stopRecording();
+      expect(recorder.snapshot).toMatchObject({ state: "processing", recordedChunks: 1,
+        desktop: { phase: "stopped", coverage: "incomplete" } });
+      expect(upload).toHaveBeenCalledTimes(1); expect(f.complete).toHaveBeenCalledTimes(1);
+      expect(await f.options.flowStore.getSessionKeyState(f.session.id)).toEqual(key);
+      expect(f.nativeStart).toHaveBeenCalledTimes(1); expect(f.authority).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
+
+  it.each(["native", "retirement"] as const)("does not report zero-audio recovery before %s stop confirmation", async barrier => {
+    const f = await fixture(true), driver = interruptedDriver(f);
+    const retireSource = vi.fn(async () => undefined);
+    const recorder = await f.open({ retireSource });
+    try {
+      await recorder.startRecording();
+      if (barrier === "native") driver.stop.mockRejectedValue(new Error("invented unconfirmed native closure"));
+      else retireSource.mockRejectedValueOnce(new Error("invented lost server stop reply"));
+      await driver.interrupt();
+      await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
+      await expect(recorder.stopRecording()).rejects.toThrow();
+      expect(recorder.snapshot.statusCode).not.toBe("capture_no_saved_audio");
+      expect(recorder.snapshot.statusCode).not.toBe("capture_reopen_required");
+      if (barrier === "native") {
+        expect(recorder.snapshot.desktop?.phase).toBe("stop_unconfirmed");
+        expect(retireSource).not.toHaveBeenCalled();
+      } else expect(recorder.snapshot.statusCode).toBe("capture_stop_acknowledgement_pending");
+      expect(f.complete).not.toHaveBeenCalled();
+      driver.stop.mockResolvedValue(null);
+      await recorder.stopRecording();
+      expect(recorder.snapshot).toMatchObject({ state: "paused", statusCode: "capture_no_saved_audio" });
+      expect(f.complete).not.toHaveBeenCalled(); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+    } finally { driver.stop.mockResolvedValue(null); await f.close(); }
+  });
+
+  it.each([false, true])("requires same-encounter reopen for an existing error without resetting it (mismatched session: %s)", async mismatch => {
+    const f = await fixture(true), driver = interruptedDriver(f);
+    const recorder = await f.open(), w = wire(recorder);
+    const view = await connectDesktopRecorderView(w.port, f.session.id, f.abort.signal);
+    try {
+      await view.controller.startRecording(); await driver.interrupt();
+      await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
+      await vi.waitFor(async () => expect((await f.options.flowStore.getActiveCaptureState())?.phase).toBe("paused"));
+      const before = (await f.options.flowStore.getActiveCaptureState())!;
+      const key = await f.options.flowStore.getSessionKeyState(f.session.id);
+      const queue = await f.options.queueStorage.list();
+      // Simulate a failed persistence acknowledgement after the existing pause
+      // was durable. The unknown error must not be reset into recording-ready.
+      vi.spyOn(f.options.flowStore, "putActiveCaptureState").mockRejectedValueOnce(new Error("invented persistence reply failure"));
+      await expect(view.controller.stopRecording()).rejects.toThrow();
+      expect(recorder.snapshot).toMatchObject({ state: "error", statusCode: "synthetic_preview_failed" });
+      expect(await f.options.flowStore.getActiveCaptureState()).toEqual(before);
+      if (mismatch) {
+        vi.spyOn(f.options.flowStore, "getActiveCaptureState").mockResolvedValueOnce({ ...before, sessionId: crypto.randomUUID() });
+        await expect(view.controller.stopRecording()).rejects.toThrow();
+        expect(recorder.snapshot.statusCode).not.toBe("capture_reopen_required");
+        return;
+      }
+      await view.controller.stopRecording();
+      expect(view.controller.snapshot).toMatchObject({ state: "error", statusCode: "capture_reopen_required",
+        recordedChunks: 0, desktop: { phase: "stopped", coverage: "incomplete" } });
+      await expect(view.controller.startRecording()).rejects.toThrow();
+      await expect(view.controller.resumeRecording!()).rejects.toThrow();
+      expect(await f.options.flowStore.getActiveCaptureState()).toEqual(before);
+      expect(await f.options.flowStore.getSessionKeyState(f.session.id)).toEqual(key);
+      expect(await f.options.queueStorage.list()).toEqual(queue);
+      expect(f.complete).not.toHaveBeenCalled();
+      await view.deactivate(); await w.boundary.dispose();
+      const resources = await f.reopen();
+      const reopened = await f.open({ ...resources,
+        authorizePreparation: async () => ({ sessionId: f.session.id, status: "capturing" }) });
+      expect(reopened.snapshot).toMatchObject({ state: "paused", statusCode: "capture_recovered_paused", sessionId: f.session.id });
+      expect(await resources.flowStore.getSessionKeyState(f.session.id)).toEqual(key);
+      expect((await resources.flowStore.getActiveCaptureState())?.lease).toEqual(before.lease);
+      expect(await resources.queueStorage.list()).toEqual(queue);
+      expect(f.nativeStart).toHaveBeenCalledTimes(1); expect(f.authority).toHaveBeenCalledTimes(1);
+    } finally { await w.boundary.dispose(); await f.close(); }
+  });
+});
+
 describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () => {
   it("continues through renderer commands with fresh ownership and durable interval coverage", async () => {
     const f = await fixture(); let boundary: DesktopProviderRecorderIpc | undefined;
