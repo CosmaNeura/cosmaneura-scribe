@@ -85,6 +85,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private stopping: Promise<void> | null = null;
   private stoppingNative = false;
   private stopConfirmationPending = false;
+  private reopenRequired = false;
   private halting: Promise<void> | null = null;
   private closing: Promise<void> | null = null;
   private deactivated = false;
@@ -204,12 +205,14 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     const phase = this.captureMayBeActive && control.state === "failed" ? "stop_unconfirmed"
       : this.stoppingNative || this.closing && !this.closed ? "stopping"
       : this.stopping && !this.captureMayBeActive ? "stopped"
+      : this.reopenRequired && flow.state === "error" ? "stopped"
       : this.action === "start" ? "starting" : control.state === "recording" && flow.state === "recording" ? "recording"
       : control.state === "permission_required" || this.unmountedAvailability === "permission_required" ? "permission_required"
       : flow.state === "ready" && (control.state === "ready" || this.unmountedAvailability === "ready") ? "ready"
       : ["paused", "error", "ready", "recording"].includes(flow.state) && !this.closed ? "interrupted" : "stopped";
     const start = this.coverage?.phase === "started" ? this.coverage.value : this.coverage?.value.start;
-    return { ...flow, statusCode: this.stopConfirmationPending ? "capture_stop_acknowledgement_pending" : flow.statusCode,
+    return { ...flow, statusCode: this.stopConfirmationPending ? "capture_stop_acknowledgement_pending"
+      : this.reopenRequired && flow.state === "error" ? "capture_reopen_required" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
       desktop: { phase, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
         : this.coverage ? phase === "recording" ? "aligned" : "incomplete" : "not_started",
@@ -291,6 +294,14 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       if (this.flow.snapshot.state === "ready") await this.recoverUnstartedCapture();
       else if (["recording", "paused"].includes(this.flow.snapshot.state)) {
         if (upload) await this.flow.stopRecording(); else await this.flow.pauseRecording();
+      } else if (this.flow.snapshot.state === "error") {
+        const saved = await this.options.flowStore.getActiveCaptureState(); this.requireOpen();
+        if (!saved || saved.sessionId !== this.options.sessionId || saved.phase !== "paused"
+          || saved.channel !== "mixed" || saved.reviewAfterUpload !== true) throw unavailable();
+        // Physical closure and original-owner retirement are confirmed above.
+        // Keep the unknown error; normal same-encounter reopen revalidates the
+        // durable state. This changes presentation only, never capture authority.
+        this.reopenRequired = true;
       }
     })().finally(() => { this.stopping = null; this.stoppingNative = false; this.publish(); });
     this.publish(); return this.stopping;

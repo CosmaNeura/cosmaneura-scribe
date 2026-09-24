@@ -106,6 +106,73 @@ function fixture(phase = "ready") {
 let checks = 0;
 async function check(run) { root.replaceChildren(); await run(); checks++; }
 try {
+  for (const recovery of ["empty", "reopen"]) await check(async () => {
+    const f = fixture(), connect = f.host.connect;
+    const sessionId = "10000000-0000-4000-8000-000000000001";
+    const scope = { workspaceId: "20000000-0000-4000-8000-000000000002",
+      bindingRef: "scribe_capture_binding_01j00000000000000000000000",
+      appointmentRef: "appointment_01j00000000000000000000000" };
+    const progress = { sessionId, uploaded: false, pendingSave: null,
+      admission: { key: webcrypto.randomUUID(), languageMode: "en-US", attestation: {
+        modality: "in_person", participant_regions: ["US-NY"], method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString(),
+      } } };
+    const forbidden = () => { throw new Error("No capture, upload, preparation or journal write in recovery DOM check"); };
+    let opened = 0, deactivated = 0, resumed = 0;
+    f.host.connect = async signal => {
+      const connected = await connect(signal), workspace = connected.workspace;
+      workspace.openEncounter = async appointmentRef => {
+        assert.equal(appointmentRef, scope.appointmentRef); opened++;
+        return { encounter: (await workspace.listEncounters())[0], scope, signal,
+          request: async (_path, body) => {
+            assert.equal(body.operation.kind, "creator_review");
+            return Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+              operation: "creator_review", receipt: { schema_version: "1.0", session_id: sessionId,
+                status: "capturing", source: null, working: null, review_queue: null } });
+          },
+          journal: { load: async () => ({ revision: "1", progress }), save: forbidden },
+          reviewJournal: () => ({ load: forbidden, save: forbidden }), openInCore: forbidden,
+          recorder: async id => {
+            assert.equal(id, sessionId);
+            const snapshot = { sessionId, state: recovery === "empty" ? "paused" : "error",
+              statusCode: recovery === "empty" ? "capture_no_saved_audio" : "capture_reopen_required",
+              recordedChunks: 0, queuedChunks: 1, elapsedSeconds: 0, remainingBudgetSeconds: 60,
+              remainingAuthoritySeconds: 60, transcriptionStatus: null, transcript: null,
+              desktop: { phase: recovery === "empty" ? "interrupted" : "stopped", coverage: "incomplete",
+                trimmedStartMs: 0, trimmedEndMs: null } };
+            return { sourceKind: "microphone", captureMode: "desktop_meeting", controller: {
+              snapshot, subscribe(listener) { listener(snapshot); return () => {}; },
+              startRecording: forbidden, stopRecording: forbidden,
+              resumeRecording: async () => { resumed++; },
+            }, deactivate: async () => { deactivated++; }, resumePendingWork: forbidden, releaseUploadedCapture: forbidden };
+          },
+        };
+      };
+      return connected;
+    };
+    const dispose = mountProviderApplication(root, f.host);
+    try {
+      await until(visible); root.querySelector('[data-workspace-action="open"]').click();
+      await until(() => root.querySelector('[data-testid="record-button"]'));
+      assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
+      assert.equal(root.querySelector('[data-testid="stop-button"]').disabled, recovery === "reopen");
+      assert.equal(resumed, 0);
+      if (recovery === "empty") {
+        assert.ok(root.textContent.includes("No audio was saved from this recording."));
+        const resume = root.querySelector('[data-testid="resume-recording"]');
+        assert.equal(resume.disabled, false); resume.click(); await until(() => resumed === 1);
+      } else {
+        assert.ok(root.textContent.includes("Return to Your encounters and reopen this encounter"));
+        assert.equal(root.querySelector('[data-testid="resume-recording"]'), null);
+      }
+      root.querySelector('[data-workspace-action="encounters"]').click();
+      await until(() => root.querySelector('[data-workspace-action="open"]'));
+      assert.ok(deactivated > 0); assert.equal(opened, 1);
+      root.querySelector('[data-workspace-action="open"]').click();
+      await until(() => root.querySelector('[data-testid="record-button"]'));
+      assert.equal(opened, 2);
+    } finally { await dispose(); }
+  });
   await check(async () => {
     const f = fixture("signedOut"), dispose = mountProviderApplication(root, f.host);
     try {

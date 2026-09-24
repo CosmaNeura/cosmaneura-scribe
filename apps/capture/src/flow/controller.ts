@@ -571,9 +571,16 @@ export class CaptureFlowController {
       }
       this.#sourceStarted = false;
       this.#recordingAbortController = null;
+      await this.#chunkPersistence;
       await this.#sourcePausePersistence;
       if (this.#snapshot.recordedChunks < 1) {
-        throw new QueueInvariantError("capture_has_no_chunks");
+        if (!this.#reviewAfterUpload) throw new QueueInvariantError("capture_has_no_chunks");
+        // A confirmed stop can leave no saved audio after an interrupted partial
+        // chunk. Retain the same preparation for deliberate continuation; empty
+        // audio is neither a completed upload nor an unclassified flow failure.
+        await this.#saveActivePhase("paused");
+        this.#setSnapshot({ state: "paused", statusCode: "capture_no_saved_audio" });
+        return;
       }
       if (this.#activeState?.continuation?.prepared === false) {
         // Resolve a committed-but-lost renewal before completing with its current generation.

@@ -4,6 +4,7 @@ import { createSecureBrowserWindowOptions, installElectronRendererSecurity, requ
 import { DesktopProviderWorkspaceIpc } from "./provider-workspace-ipc.js";
 import type { DesktopProviderMainHost } from "./provider-workspace-main.js";
 import { loadPackagedProvider, PROVIDER_ENTRY, type PackagedProvider } from "./packaged-provider.js";
+import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 interface Event { preventDefault(): void }
 type Renderer = ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[1] & ElectronWebContentsSecurityPort;
@@ -49,7 +50,7 @@ export interface DesktopProviderOwner {
 export interface DesktopProviderFactory {
   /** Construct the reviewed native/backend host, without starting a source.
    * There is no default credential, key, environment or fixture implementation. */
-  open(options: { readonly userDataDirectory: string }): Promise<DesktopProviderOwner>;
+  open(options: { readonly userDataDirectory: string; readonly diagnostics?: RuntimeDiagnostic }): Promise<DesktopProviderOwner>;
 }
 
 /** Executable shell composition. Call once from the packaged Electron main entry,
@@ -72,26 +73,29 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
     runtime.app.removeListener("before-quit", stopStartup); throw unavailable();
   }
   const session = runtime.session.fromPartition(`scribe-provider-${crypto.randomUUID()}`, { cache: false });
+  const diagnostics = runtimeDiagnostics(runtime.app.getPath("userData")); diagnostics("host_open");
   session.protocol.handle("app", request => assets.respond(request));
   session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !assets.allows(details.url) }));
   let owner: DesktopProviderOwner | null = null, boundary: DesktopProviderWorkspaceIpc | null = null, appWindow: Window | null = null;
   let opening: Promise<void> | null = null;
   let ended = false, closing: Promise<void> | null = null, askingToRetry = false;
   const focus = (): void => { if (appWindow && !appWindow.isDestroyed()) { appWindow.show(); appWindow.focus(); } };
-  const beforeQuit = (event: Event): void => { if (!ended) { event.preventDefault(); requestClose(); } };
-  const windowClose = (event: Event): void => { event.preventDefault(); requestClose(); };
+  const beforeQuit = (event: Event): void => { if (!ended) { diagnostics("before_quit"); event.preventDefault(); requestClose(); } };
+  const windowClose = (event: Event): void => { diagnostics("window_close"); event.preventDefault(); requestClose(); };
   const close = (): Promise<void> => {
     if (ended) return Promise.resolve();
     return closing ??= (async () => {
+      diagnostics("close_begin");
       await opening?.catch(() => undefined);
-      await boundary?.dispose(); await owner?.dispose();
+      await boundary?.dispose(); diagnostics("boundary_closed");
+      await owner?.dispose(); diagnostics("owner_closed");
       ended = true;
       runtime.app.removeListener("before-quit", beforeQuit); runtime.app.removeListener("second-instance", focus);
       appWindow?.removeListener("close", windowClose);
       if (appWindow && !appWindow.isDestroyed()) appWindow.destroy();
       session.protocol.unhandle("app"); session.webRequest.onBeforeRequest(null);
-      runtime.app.quit();
-    })().catch(() => { closing = null; throw unavailable(); });
+      diagnostics("quit_ready"); runtime.app.quit();
+    })().catch(() => { diagnostics("close_failed"); closing = null; throw unavailable(); });
   };
   function requestClose(): void {
     if (askingToRetry) return;
@@ -112,7 +116,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
   runtime.app.on("before-quit", beforeQuit); runtime.app.on("second-instance", focus);
   runtime.app.removeListener("before-quit", stopStartup);
   try {
-    opening = Promise.resolve().then(async () => { owner = await factory.open({ userDataDirectory: runtime.app.getPath("userData") }); });
+    opening = Promise.resolve().then(async () => { owner = await factory.open({ userDataDirectory: runtime.app.getPath("userData"), diagnostics }); });
     await opening;
     if (closing || ended) throw unavailable();
     const secure = createSecureBrowserWindowOptions(join(root, "preload.cjs"));
@@ -122,11 +126,11 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
     if (!owner) throw unavailable();
     boundary = new DesktopProviderWorkspaceIpc(runtime.ipcMain, appWindow.webContents, (owner as DesktopProviderOwner).host); boundary.install();
     appWindow.on("close", windowClose);
-    appWindow.webContents.on("render-process-gone", requestClose);
-    appWindow.webContents.on("will-navigate", requestClose);
+    appWindow.webContents.on("render-process-gone", () => { diagnostics("renderer_gone"); requestClose(); });
+    appWindow.webContents.on("will-navigate", () => { diagnostics("renderer_navigation"); requestClose(); });
     await appWindow.loadURL(PROVIDER_ENTRY);
     if (closing || ended) throw unavailable();
-    appWindow.show(); return { close };
+    appWindow.show(); diagnostics("window_ready"); return { close };
   } catch {
     // The factory's contract requires cleanup of a rejected acquisition. A
     // returned owner is always retained here, including a late startup result.

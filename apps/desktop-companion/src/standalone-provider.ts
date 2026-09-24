@@ -8,17 +8,20 @@ import { NativeProviderPresentation } from "./native-provider-presentation.js";
 import { connectDesktopNativeBackend } from "./native-provider-backend.js";
 import { createDesktopProviderConnection } from "./provider-workspace-factory.js";
 import { openDeviceCustody, type DeviceProtection } from "./device-custody.js";
+import { NO_DIAGNOSTICS, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 interface PackagedRuntime {
   readonly packageDirectory: string;
   readonly userDataDirectory: string;
   readonly protection: DeviceProtection;
+  readonly diagnostics?: RuntimeDiagnostic;
   openExternal(url: string): Promise<void>;
 }
 
 /** The shipped main-process factory. Every executable and origin comes from the
  * reviewed package profile; argv, environment and renderer cannot select them. */
 export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<DesktopProviderOwner> {
+  const diagnostics = runtime.diagnostics ?? NO_DIAGNOSTICS;
   if (process.platform !== "darwin" || typeof window !== "undefined"
     || "type" in process && process.type === "renderer") throw unavailable();
   const root = await realpath(runtime.packageDirectory);
@@ -55,6 +58,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   return { dispose, host: {
     session: native,
     connect: signal => {
+      diagnostics("connect_begin");
       const run = (async () => {
         const linked = AbortSignal.any([signal, abort.signal, native.signal]);
         if (profile.enabled !== true || linked.aborted || !native.isReady()) throw unavailable();
@@ -65,10 +69,12 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
             const path = appointment === null ? "/notes" : "/notes/" + encodeURIComponent(appointment);
             await runtime.openExternal("https://staging-app.cosmaneura.com" + path);
           } });
+        diagnostics("backend_ready");
         let presentation: NativeProviderPresentation | undefined;
         try {
           presentation = await NativeProviderPresentation.open({ enabled: true, ...presentationOptions,
             isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady() });
+          diagnostics("presentation_ready");
           const connection = createDesktopProviderConnection(backend, { enabled: true,
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
             openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
@@ -77,10 +83,10 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
           }, linked);
           const owned = { workspace: connection.workspace,
             dispose: async () => { await connection.dispose(); connections.delete(owned); } };
-          connections.add(owned); return owned;
+          connections.add(owned); diagnostics("connect_ready"); return owned;
         } catch { await presentation?.dispose(); await backend.dispose(); throw unavailable(); }
       })();
-      opening.add(run); void run.finally(() => opening.delete(run)).catch(() => undefined); return run;
+      opening.add(run); void run.finally(() => opening.delete(run)).catch(() => diagnostics("connect_failed")); return run;
     },
   } };
 }
