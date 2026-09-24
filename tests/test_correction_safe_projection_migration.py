@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 from alembic.config import Config
-from conftest import APP_ROLE
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -93,22 +92,6 @@ async def _current_revision(database_url: str) -> str:
         await engine.dispose()
 
 
-async def _restore_recreated_test_table_permissions(database_url: str) -> None:
-    # This historical downgrade also removes/recreates the later empty job table.
-    # Restore only its disposable test-role grant, never runtime/bootstrap grants.
-    engine = create_async_engine(database_url, connect_args={"ssl": False})
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(
-                text(
-                    "GRANT SELECT, INSERT, UPDATE, DELETE "
-                    f"ON encrypted_translation_jobs TO {APP_ROLE}"
-                )
-            )
-    finally:
-        await engine.dispose()
-
-
 def _assert_hardened(definitions: dict[str, tuple[str, bool, list[str] | None]]) -> None:
     assert set(definitions) == set(HARDENED_FUNCTIONS)
     for definition, security_definer, configuration in definitions.values():
@@ -135,18 +118,18 @@ def test_current_head_uses_only_explicit_trigger_reads(
 
 
 def test_forward_retained_recovery_is_safe_and_reapplicable(
-    postgres_urls: tuple[str, str],
+    historical_postgres_url: str,
 ) -> None:
-    admin_url, _ = postgres_urls
+    admin_url = historical_postgres_url
     config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", admin_url)
+    config.set_main_option("sqlalchemy.url", admin_url.replace("%", "%%"))
 
     before = asyncio.run(_function_metadata(admin_url))
     _assert_hardened(before)
     try:
         # Later expansions intentionally change the allowed ingest modes. Verify
         # 0014's retained recovery against 0014 itself, then require an exact
-        # restoration of the complete current head after reapplication below.
+        # restoration of the historical 0019 head after reapplication below.
         command.downgrade(config, "0014")
         prior_expansion = asyncio.run(_function_metadata(admin_url))
         _assert_hardened(prior_expansion)
@@ -157,8 +140,7 @@ def test_forward_retained_recovery_is_safe_and_reapplicable(
         assert retained == prior_expansion
         assert asyncio.run(_public_execute_functions(admin_url)) == set()
     finally:
-        command.upgrade(config, "head")
-        asyncio.run(_restore_recreated_test_table_permissions(admin_url))
+        command.upgrade(config, "0019")
 
     assert asyncio.run(_current_revision(admin_url)) == "0019_captured_bilingual"
     reapplied = asyncio.run(_function_metadata(admin_url))

@@ -158,7 +158,10 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
 
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", admin_url)
-    command.downgrade(config, "base")
+    # Native source history is expand-only from 0020 onward. The test owner must
+    # supply a fresh disposable database instead of downgrading retained history.
+    if asyncio.run(_table_exists(admin_url, "alembic_version")):
+        pytest.fail("PostgreSQL integration tests require a fresh disposable _test database")
     command.upgrade(config, "0007")
     probe_tenant_id, probe_consent_id, probe_session_id = asyncio.run(
         _seed_pre_ingest_mode_session(admin_url)
@@ -172,7 +175,7 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
         _seed_versioned_legacy_child(admin_url, probe_tenant_id, probe_consent_id)
     )
     with pytest.raises(DBAPIError, match="refusing legacy child guard"):
-        command.upgrade(config, "head")
+        command.upgrade(config, "0019")
     asyncio.run(
         _delete_versioned_legacy_child(
             admin_url,
@@ -180,7 +183,7 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
             guard_probe_session_id,
         )
     )
-    command.upgrade(config, "head")
+    command.upgrade(config, "0019")
     bilingual_probe_session_id = asyncio.run(
         _seed_versioned_external_session(admin_url, probe_tenant_id, probe_consent_id)
     )
@@ -190,7 +193,7 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     command.downgrade(config, "0008")
     assert asyncio.run(_table_exists(admin_url, "normalized_source_transcripts")) is False
     assert asyncio.run(_column_exists(admin_url, "scribe_sessions", "language_mode")) is False
-    command.upgrade(config, "head")
+    command.upgrade(config, "0019")
     external_probe_session_id = asyncio.run(
         _seed_external_ingest_session(admin_url, probe_tenant_id, probe_consent_id)
     )
@@ -199,7 +202,7 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     asyncio.run(_delete_session(admin_url, probe_tenant_id, external_probe_session_id))
     command.downgrade(config, "0007")
     assert asyncio.run(_column_exists(admin_url, "scribe_sessions", "ingest_mode")) is False
-    command.upgrade(config, "head")
+    command.upgrade(config, "0019")
     command.downgrade(config, "0006")
     for table_name in (
         "capture_leases",
@@ -213,18 +216,22 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
         assert asyncio.run(_table_exists(admin_url, table_name)) is False
     assert asyncio.run(_column_exists(admin_url, "audio_chunks", "reservation_object_id")) is False
     assert asyncio.run(_column_exists(admin_url, "audio_chunks", "protocol_version")) is False
-    command.upgrade(config, "head")
+    command.upgrade(config, "0019")
     command.downgrade(config, "0005")
     assert asyncio.run(_table_exists(admin_url, "session_audio_keys")) is False
-    command.upgrade(config, "head")
+    command.upgrade(config, "0019")
     command.downgrade(config, "0003")
     assert asyncio.run(_table_exists(admin_url, "transcription_jobs")) is False
-    command.upgrade(config, "head")
+    command.upgrade(config, "0019")
     command.downgrade(config, "0001")
     assert asyncio.run(_table_exists(admin_url, "audio_upload_grants")) is False
     assert asyncio.run(_table_exists(admin_url, "idempotency_records")) is False
     assert asyncio.run(_table_exists(admin_url, "transcript_deliveries")) is False
     command.upgrade(config, "head")
+    with pytest.raises(
+        RuntimeError, match="expand recovery retains immutable source retirement history"
+    ):
+        command.downgrade(config, "0019")
 
     asyncio.run(_create_app_role(admin_url))
     app_url = parsed.set(username=APP_ROLE, password=APP_PASSWORD).render_as_string(
@@ -233,8 +240,37 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     yield admin_url, app_url
 
     asyncio.run(_drop_app_role(admin_url))
-    asyncio.run(_clear_sessions_for_disposable_downgrade(admin_url))
-    command.downgrade(config, "base")
+    # The caller retires this disposable database; no migration downgrade is
+    # evidence that capture/source history can be discarded in a real release.
+
+
+@pytest.fixture
+def historical_postgres_url(postgres_urls: tuple[str, str]) -> str:
+    """Rehearse pre-0020 recovery in a new owner-only database, never current history."""
+    admin_url, _ = postgres_urls
+    database_name = f"scribe_historical_{uuid4().hex}_test"
+
+    async def create_database() -> None:
+        engine = create_async_engine(
+            admin_url, connect_args={"ssl": False}, isolation_level="AUTOCOMMIT"
+        )
+        try:
+            async with engine.connect() as connection:
+                # The name is generated locally from a fixed prefix and UUID hex.
+                await connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(create_database())
+    historical_url = make_url(admin_url).set(database=database_name).render_as_string(
+        hide_password=False
+    )
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", historical_url.replace("%", "%%"))
+    command.upgrade(config, "0019")
+    # Retain the database with its caller-owned disposable cluster. This fixture
+    # exercises migration-owner guards; normal repository tests still use APP_ROLE.
+    return historical_url
 
 
 @pytest.fixture(

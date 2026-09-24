@@ -193,6 +193,26 @@ class TrackingRepository(InMemoryRepository):
         return result
 
 
+async def _wait_for_event_or_worker_failure(
+    event: asyncio.Event,
+    processing: asyncio.Task[object],
+) -> None:
+    event_wait = asyncio.create_task(event.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {event_wait, processing},
+            timeout=5,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if processing in done:
+            await processing
+            pytest.fail("worker completed before the expected event")
+        assert event_wait in done, "worker event timed out"
+    finally:
+        event_wait.cancel()
+        await asyncio.gather(event_wait, return_exceptions=True)
+
+
 async def _seed_uploaded_session(
     repository: InMemoryRepository,
     *,
@@ -470,8 +490,8 @@ def test_worker_renews_lease_during_slow_transcription() -> None:
             heartbeat_interval=timedelta(milliseconds=20),
         )
         processing = asyncio.create_task(worker.process(tenant_id=tenant_id, session_id=session.id))
-        await asyncio.wait_for(transcriber.started.wait(), timeout=1)
-        await asyncio.wait_for(repository.renewed.wait(), timeout=1)
+        await _wait_for_event_or_worker_failure(transcriber.started, processing)
+        await _wait_for_event_or_worker_failure(repository.renewed, processing)
 
         async with repository.transaction(tenant_id) as store:
             competing_claim = await store.claim_transcription_job(
