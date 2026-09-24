@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -231,5 +232,41 @@ async def test_http_handoff_sanitizes_protocol_errors() -> None:
     assert caught.value.code == "transport_unavailable"
     assert str(caught.value) == "transport_unavailable"
     assert sensitive not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize("status_code", [200, 201])
+@pytest.mark.asyncio
+async def test_http_handoff_sanitizes_invalid_success_responses(
+    status_code: int,
+) -> None:
+    credential = StaticCredential()
+    sensitive = "synthetic-leak-marker"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(status_code, json={"unexpected_detail": sensitive})
+
+    async with httpx.AsyncClient(
+        base_url="https://platform.internal.example",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        handoff = HttpMasterPlatformHandoff(
+            base_url="https://platform.internal.example",
+            scope="api://platform/.default",
+            timeout_seconds=5,
+            credential=credential,  # type: ignore[arg-type]
+            client=client,
+        )
+        with pytest.raises(HandoffRetryableError) as caught:
+            await handoff.deliver(_payload(), idempotency_key="stable-key-4000")
+
+    rendered_traceback = "".join(
+        traceback.format_exception(type(caught.value), caught.value, caught.value.__traceback__)
+    )
+    assert caught.value.code == "invalid_platform_response"
+    assert str(caught.value) == "invalid_platform_response"
+    assert sensitive not in rendered_traceback
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__

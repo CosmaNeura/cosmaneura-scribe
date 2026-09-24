@@ -34,6 +34,16 @@ unknown path, unavailable accepted baseline/history/API, or classifier failure
 selects deployment. Manual capture-preview acceptance is not a deployment or
 a production authorization.
 
+The owner requires repository GitHub Actions to be disabled until explicitly
+authorizing re-enablement. A billing failure or reached spending limit is not
+equivalent to repository-level disablement. Required CI and browser-E2E
+workflows are PR-only and cancel superseded runs; merging a PR must not replay
+those checks on `main`. After disablement is verified, an already-authorized
+status writer may report exact-head local evidence only under
+`docs/flight-plans/2026-09-15-actions-off-local-checks.md`. Never describe local
+evidence as hosted CI, fabricate success, replace a genuine failure, or trigger
+a workflow rerun to obtain a status.
+
 The independently reviewed, path-filtered `Core API image provenance`
 workflow runs automatically for relevant pull requests and `main` pushes. It
 builds the exact source only in the CI runner, binds source/tree and
@@ -136,8 +146,38 @@ deployed independently.
   checking out PR code and blocks PRs over 2,000 changed lines or 50 files.
   Change its thresholds only in a separate reviewed policy PR; an oversized
   change cannot waive its own limit.
+- **Owner-approved checkpoint exception — September 24, 2026:** local change
+  budgets are 8,000 changed lines / 100 files solely for dependency-ordered
+  integration of committed Scribe checkpoint
+  `006080bb3b2005c2b19dd2df666f2bcaf0774c76`. Only branches prefixed
+  `codex/scribe-checkpoint-006080bb-` containing checkpoint content and necessary
+  integration fixes qualify. Each PR records the original source endpoint,
+  actual diff, exact tested/reviewed head, and recovery. Preserve original
+  checkpoint ancestry with merge commits, never squash or rebase this stack.
+  The exception automatically expires when that checkpoint is an ancestor of
+  `main`; after fetching, exit status 0 from `git merge-base --is-ancestor
+  006080bb3b2005c2b19dd2df666f2bcaf0774c76 origin/main` means it has expired.
+  Abandoning or superseding the checkpoint also ends the exception. Unrelated
+  work and the policy/closure PRs retain 2,000 lines / 50 files. Remove this
+  paragraph in the closure PR. All other controls remain in force.
+- **Owner local-validation decision — September 23, 2026:** relevant local tests
+  and independent review, with commands/results and exact SHA in PR evidence,
+  substitute for required GitHub statuses and approving-review counts. The
+  owner authorized admin merges despite unavailable Actions/statuses/approvals.
+  This supersedes the older status-writer-only requirement in
+  `docs/flight-plans/2026-09-15-actions-off-local-checks.md`; no status fabrication
+  or hosted workflow success is permitted. For qualifying checkpoint PRs,
+  record the actual 8,000/100 local evaluation and merge using this authority;
+  do not publish a passing 2,000/50 status. PRs, resolved conversations, admin
+  enforcement, independent review after substantive pushes, applicable local
+  budgets, force-push/deletion protections, and existing production, deployment,
+  data and security boundaries remain required. Actions stays disabled.
 - Every PR records tier, tests, exact recovery, agent-review evidence, and only
   the conditional controls that apply.
+- Agents do not dispatch or rerun GitHub Actions to refresh required statuses.
+  They consolidate substantive changes before the final push, inspect existing
+  exact-head results first, and reuse prior execution only when relevant inputs
+  are proven byte-identical.
 - The capture-preview scope gate must remain fail-safe: unknown paths, missing
   history, API/classifier errors, and mixed preview changes deploy. Maintain
   its exact non-preview list whenever build inputs or workflows change.
