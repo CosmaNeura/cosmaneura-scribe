@@ -1,3 +1,4 @@
+/* global document: readonly, innerWidth: readonly, window: readonly */
 // Optional local interaction rehearsal. Identity/native storage/Core are explicit fixtures.
 import { pathToFileURL } from "node:url";
 const { chromium } = await import(pathToFileURL(process.env.SCRIBE_PLAYWRIGHT_MODULE).href);
