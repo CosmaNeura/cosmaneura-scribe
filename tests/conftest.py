@@ -163,11 +163,24 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     probe_tenant_id, probe_consent_id, probe_session_id = asyncio.run(
         _seed_pre_ingest_mode_session(admin_url)
     )
-    command.upgrade(config, "head")
+    command.upgrade(config, "0010")
     assert (
         asyncio.run(_session_ingest_mode(admin_url, probe_tenant_id, probe_session_id))
         == "chunk_upload"
     )
+    guard_probe_session_id = asyncio.run(
+        _seed_versioned_legacy_child(admin_url, probe_tenant_id, probe_consent_id)
+    )
+    with pytest.raises(DBAPIError, match="refusing legacy child guard"):
+        command.upgrade(config, "head")
+    asyncio.run(
+        _delete_versioned_legacy_child(
+            admin_url,
+            probe_tenant_id,
+            guard_probe_session_id,
+        )
+    )
+    command.upgrade(config, "head")
     bilingual_probe_session_id = asyncio.run(
         _seed_versioned_external_session(admin_url, probe_tenant_id, probe_consent_id)
     )
@@ -433,6 +446,70 @@ async def _seed_versioned_external_session(
     finally:
         await engine.dispose()
     return session_id
+
+
+async def _seed_versioned_legacy_child(
+    database_url: str,
+    tenant_id: UUID,
+    consent_id: UUID,
+) -> UUID:
+    session_id = await _seed_versioned_external_session(
+        database_url,
+        tenant_id,
+        consent_id,
+    )
+    engine = create_async_engine(database_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(tenant_id)},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO audio_upload_grants (
+                        object_id, tenant_id, session_id, sequence_number, channel, expires_at
+                    ) VALUES (
+                        :object_id, :tenant_id, :session_id, 0, 'microphone',
+                        statement_timestamp() + INTERVAL '5 minutes'
+                    )
+                    """
+                ),
+                {"object_id": uuid4(), "tenant_id": tenant_id, "session_id": session_id},
+            )
+    finally:
+        await engine.dispose()
+    return session_id
+
+
+async def _delete_versioned_legacy_child(
+    database_url: str,
+    tenant_id: UUID,
+    session_id: UUID,
+) -> None:
+    engine = create_async_engine(database_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": str(tenant_id)},
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM audio_upload_grants "
+                    "WHERE tenant_id = :tenant_id AND session_id = :session_id"
+                ),
+                {"tenant_id": tenant_id, "session_id": session_id},
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM scribe_sessions WHERE tenant_id = :tenant_id AND id = :session_id"
+                ),
+                {"tenant_id": tenant_id, "session_id": session_id},
+            )
+    finally:
+        await engine.dispose()
 
 
 async def _delete_session(

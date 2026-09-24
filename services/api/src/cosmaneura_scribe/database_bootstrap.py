@@ -163,6 +163,13 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
             )
             await connection.execute(
                 text(
+                    "GRANT SELECT, INSERT ON normalized_source_transcripts, "
+                    "normalized_source_segments, normalized_source_receipt_keys "
+                    f"TO {role}"
+                )
+            )
+            await connection.execute(
+                text(
                     "GRANT UPDATE (generation, renewed_at, expires_at, closed_at, close_reason) "
                     f"ON capture_leases TO {role}"
                 )
@@ -176,7 +183,9 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                     "patient_id, consent_record_id, modality, ingest_mode, status, created_at, "
                     "transcript_contract_version, creator_actor_id, language_mode, "
                     "transcription_adapter_id, transcription_model_profile_id, "
-                    f"normalization_profile_id) ON scribe_sessions TO {role}"
+                    "normalization_profile_id, source_received_at, "
+                    "transcript_content_expires_at, content_purged_at, "
+                    f"current_source_transcript_version) ON scribe_sessions TO {role}"
                 )
             )
             await connection.execute(
@@ -189,7 +198,11 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                 )
             )
             await connection.execute(
-                text(f"GRANT UPDATE (status) ON scribe_sessions TO {role}")
+                text(
+                    "GRANT UPDATE (status, source_received_at, "
+                    "transcript_content_expires_at, current_source_transcript_version) "
+                    f"ON scribe_sessions TO {role}"
+                )
             )
             await connection.execute(
                 text(f"GRANT SELECT, INSERT, UPDATE ON transcript_deliveries TO {role}")

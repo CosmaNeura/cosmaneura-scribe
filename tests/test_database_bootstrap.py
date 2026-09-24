@@ -14,6 +14,7 @@ from cosmaneura_scribe.normalized_source_persistence import (
 from cosmaneura_scribe.settings import Settings
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 RUNTIME_ROLE = "cosmaneura_scribe_bootstrap_runtime"
@@ -264,19 +265,29 @@ async def test_runtime_permissions_revoke_stale_access_before_exact_grants(
     assert "capture_leases" in grants
     assert "audio_chunk_reservations" in grants
     assert "audio_upload_authorization_receipts" in grants
+    assert (
+        "GRANT SELECT, INSERT ON normalized_source_transcripts, "
+        "normalized_source_segments, normalized_source_receipt_keys"
+    ) in grants
     assert "GRANT UPDATE (generation, renewed_at, expires_at, closed_at, close_reason)" in grants
     assert "GRANT UPDATE (revoked_at) ON consent_records" in grants
     assert "GRANT SELECT (id, tenant_id, appointment_id" in grants
     assert "GRANT INSERT (id, tenant_id, appointment_id" in grants
-    assert "GRANT UPDATE (status) ON scribe_sessions" in grants
+    assert (
+        "GRANT UPDATE (status, source_received_at, transcript_content_expires_at, "
+        "current_source_transcript_version) ON scribe_sessions"
+    ) in grants
     assert "GRANT SELECT, INSERT, UPDATE ON scribe_sessions" not in grants
-    for protected_column in (
+    for readable_lifecycle_column in (
         "source_received_at",
         "transcript_content_expires_at",
         "content_purged_at",
         "current_source_transcript_version",
     ):
-        assert protected_column not in grants
+        assert readable_lifecycle_column in grants
+    assert "UPDATE (content_purged_at" not in grants
+    assert "content_purged_at, current_source_transcript_version) ON scribe_sessions" in grants
+    assert "external_session_terminal_events" not in grants
     assert "GRANT INSERT ON audit_events" in grants
     assert "DELETE" not in grants
     assert provider.closed is True
@@ -412,6 +423,9 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 "audio_chunk_reservation_batch_items",
                 "audio_upload_authorization_receipts",
                 "capture_channel_finalizations",
+                "normalized_source_transcripts",
+                "normalized_source_segments",
+                "normalized_source_receipt_keys",
             )
             for privilege in ("SELECT", "INSERT")
         }
@@ -422,7 +436,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
         }
         | {("audit_events", "INSERT")}
     )
-    runtime_session_columns = {
+    runtime_session_insert_columns = {
         "id",
         "tenant_id",
         "appointment_id",
@@ -440,6 +454,12 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
         "transcription_model_profile_id",
         "normalization_profile_id",
     }
+    runtime_session_select_columns = runtime_session_insert_columns | {
+        "source_received_at",
+        "transcript_content_expires_at",
+        "content_purged_at",
+        "current_source_transcript_version",
+    }
     runtime_column_expected = {
         ("consent_records", "revoked_at", "UPDATE"),
         *(("capture_leases", column, "UPDATE") for column in (
@@ -449,10 +469,17 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 "closed_at",
                 "close_reason",
             )),
-        *(("scribe_sessions", column, privilege)
-          for column in runtime_session_columns
-          for privilege in ("SELECT", "INSERT")),
-        ("scribe_sessions", "status", "UPDATE"),
+        *(("scribe_sessions", column, "SELECT") for column in runtime_session_select_columns),
+        *(("scribe_sessions", column, "INSERT") for column in runtime_session_insert_columns),
+        *(
+            ("scribe_sessions", column, "UPDATE")
+            for column in (
+                "status",
+                "source_received_at",
+                "transcript_content_expires_at",
+                "current_source_transcript_version",
+            )
+        ),
     }
     worker_session_columns = {
         "id",
@@ -632,6 +659,201 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 },
             )
 
+        # The runtime retains legacy-table INSERT for existing capture routes,
+        # but direct SQL cannot attach those rows to a configured session.
+        with pytest.raises(DBAPIError, match="legacy child root requires an unconfigured session"):
+            async with engine.begin() as connection:
+                await connection.execute(text(f"SET LOCAL ROLE {RUNTIME_ROLE}"))
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(configured_tenant_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audio_upload_grants (
+                            object_id, tenant_id, session_id,
+                            sequence_number, channel, expires_at
+                        ) VALUES (
+                            :object_id, :tenant_id, :session_id, 0, 'microphone',
+                            statement_timestamp() + INTERVAL '5 minutes'
+                        )
+                        """
+                    ),
+                    {
+                        "object_id": uuid4(),
+                        "tenant_id": configured_tenant_id,
+                        "session_id": configured_session_id,
+                    },
+                )
+
+        # Exercise the complete future receiver write/read shape as the existing
+        # runtime role, then roll it back so this privilege proof remains dormant.
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            try:
+                await connection.execute(text(f"SET LOCAL ROLE {RUNTIME_ROLE}"))
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(configured_tenant_id)},
+                )
+                anchors = (
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE scribe_sessions
+                            SET status = 'source_received',
+                                source_received_at = clock_timestamp(),
+                                transcript_content_expires_at =
+                                    clock_timestamp() + INTERVAL '1 day',
+                                current_source_transcript_version = 1
+                            WHERE tenant_id = :tenant_id AND id = :session_id
+                            RETURNING source_received_at, transcript_content_expires_at
+                            """
+                        ),
+                        {
+                            "tenant_id": configured_tenant_id,
+                            "session_id": configured_session_id,
+                        },
+                    )
+                ).one()
+                receipt_id = uuid4()
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO normalized_source_transcripts (
+                            tenant_id, session_id, source_transcript_version,
+                            source_receipt_id, schema_version, language_mode,
+                            transcription_adapter_id, transcription_model_profile_id,
+                            normalization_profile_id, duration_ms, segment_count,
+                            total_content_chars, request_fingerprint, received_at,
+                            transcript_content_expires_at
+                        ) VALUES (
+                            :tenant_id, :session_id, 1, :receipt_id, '1.0',
+                            'en-US+es-US', :adapter_id, :model_profile_id,
+                            :normalization_profile_id, 1000, 1, 16, :fingerprint,
+                            :received_at, :expires_at
+                        )
+                        """
+                    ),
+                    {
+                        "tenant_id": configured_tenant_id,
+                        "session_id": configured_session_id,
+                        "receipt_id": receipt_id,
+                        "adapter_id": VERSIONED_EXTERNAL_TRANSCRIPTION_ADAPTER_ID,
+                        "model_profile_id": VERSIONED_EXTERNAL_TRANSCRIPTION_MODEL_PROFILE_ID,
+                        "normalization_profile_id": VERSIONED_EXTERNAL_NORMALIZATION_PROFILE_ID,
+                        "fingerprint": "a" * 64,
+                        "received_at": anchors.source_received_at,
+                        "expires_at": anchors.transcript_content_expires_at,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO normalized_source_segments (
+                            tenant_id, session_id, source_transcript_version, ordinal,
+                            source_segment_id, source_segment_version, source_locale,
+                            speaker_id, speaker_role, content, start_ms, end_ms,
+                            locale_confidence
+                        ) VALUES (
+                            :tenant_id, :session_id, 1, 0, :segment_id, 1, 'es-US',
+                            :speaker_id, 'patient', 'Texto sintetico.',
+                            0, 1000, 0.99
+                        )
+                        """
+                    ),
+                    {
+                        "tenant_id": configured_tenant_id,
+                        "session_id": configured_session_id,
+                        "segment_id": uuid4(),
+                        "speaker_id": uuid4(),
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO normalized_source_receipt_keys (
+                            tenant_id, session_id, idempotency_key,
+                            source_transcript_version, request_fingerprint
+                        ) VALUES (
+                            :tenant_id, :session_id, 'bootstrap-source-key', 1, :fingerprint
+                        )
+                        """
+                    ),
+                    {
+                        "tenant_id": configured_tenant_id,
+                        "session_id": configured_session_id,
+                        "fingerprint": "a" * 64,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_events (id, tenant_id, action, entity_type, entity_id)
+                        VALUES (
+                            :id, :tenant_id, 'normalized_source.accepted',
+                            'normalized_source_receipt', :receipt_id
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "tenant_id": configured_tenant_id,
+                        "receipt_id": receipt_id,
+                    },
+                )
+                await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+                assert (
+                    await connection.scalar(
+                        text(
+                            "SELECT count(*) FROM normalized_source_segments "
+                            "WHERE tenant_id = :tenant_id AND session_id = :session_id"
+                        ),
+                        {
+                            "tenant_id": configured_tenant_id,
+                            "session_id": configured_session_id,
+                        },
+                    )
+                    == 1
+                )
+            finally:
+                await transaction.rollback()
+
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            try:
+                await connection.execute(text(f"SET LOCAL ROLE {RUNTIME_ROLE}"))
+                await connection.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(configured_tenant_id)},
+                )
+                forbidden = (
+                    "UPDATE scribe_sessions SET content_purged_at = clock_timestamp() "
+                    "WHERE tenant_id = :tenant_id AND id = :session_id",
+                    "DELETE FROM normalized_source_transcripts "
+                    "WHERE tenant_id = :tenant_id AND session_id = :session_id",
+                    "INSERT INTO external_session_terminal_events ("
+                    "tenant_id, session_id, event_id, prior_status, failure_code, "
+                    "principal_type, principal_id) VALUES ("
+                    ":tenant_id, :session_id, :event_id, 'created', "
+                    "'irrecoverable_integrity_failure', 'system', 'bootstrap_probe')",
+                )
+                for statement in forbidden:
+                    savepoint = await connection.begin_nested()
+                    with pytest.raises(DBAPIError, match="permission denied"):
+                        await connection.execute(
+                            text(statement),
+                            {
+                                "tenant_id": configured_tenant_id,
+                                "session_id": configured_session_id,
+                                "event_id": uuid4(),
+                            },
+                        )
+                    await savepoint.rollback()
+            finally:
+                await transaction.rollback()
+
         async with engine.begin() as connection:
             await connection.execute(
                 text(
@@ -675,19 +897,38 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 == reconciler_expected
             )
             for role_name in (RUNTIME_ROLE, WORKER_ROLE, RECONCILER_ROLE):
-                for table_name in (
-                    "external_session_terminal_events",
-                    "normalized_source_transcripts",
-                    "normalized_source_segments",
-                    "normalized_source_receipt_keys",
-                ):
+                for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
                     assert not await connection.scalar(
                         text(
                             "SELECT has_table_privilege("
-                            ":role_name, :table_name, 'SELECT,INSERT,UPDATE,DELETE')"
+                            ":role_name, 'public.external_session_terminal_events', :privilege)"
                         ),
-                        {"role_name": role_name, "table_name": f"public.{table_name}"},
+                        {"role_name": role_name, "privilege": privilege},
                     )
+            for table_name in (
+                "normalized_source_transcripts",
+                "normalized_source_segments",
+                "normalized_source_receipt_keys",
+            ):
+                for privilege in ("UPDATE", "DELETE"):
+                    assert not await connection.scalar(
+                        text("SELECT has_table_privilege(:role_name, :table_name, :privilege)"),
+                        {
+                            "role_name": RUNTIME_ROLE,
+                            "table_name": f"public.{table_name}",
+                            "privilege": privilege,
+                        },
+                    )
+                for role_name in (WORKER_ROLE, RECONCILER_ROLE):
+                    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                        assert not await connection.scalar(
+                            text("SELECT has_table_privilege(:role_name, :table_name, :privilege)"),
+                            {
+                                "role_name": role_name,
+                                "table_name": f"public.{table_name}",
+                                "privilege": privilege,
+                            },
+                        )
 
             sequence_name = await connection.scalar(
                 text(
