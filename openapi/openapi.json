@@ -458,6 +458,10 @@
             "title": "Id",
             "type": "string"
           },
+          "ingest_mode": {
+            "$ref": "#/components/schemas/SessionIngestMode",
+            "default": "chunk_upload"
+          },
           "modality": {
             "$ref": "#/components/schemas/CaptureModality"
           },
@@ -1154,6 +1158,14 @@
         ],
         "title": "SessionCreate",
         "type": "object"
+      },
+      "SessionIngestMode": {
+        "enum": [
+          "chunk_upload",
+          "external_async_transcript"
+        ],
+        "title": "SessionIngestMode",
+        "type": "string"
       },
       "SessionStatus": {
         "enum": [

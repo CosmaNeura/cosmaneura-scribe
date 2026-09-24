@@ -117,7 +117,7 @@ from .service_auth import (
     authenticate_workflow_request,
     get_verified_tenant_id,
 )
-from .session_state_v1 import can_transition_session
+from .session_state_v1 import SessionIngestMode, can_transition_session
 from .settings import Settings, get_settings
 from .storage import AudioStorage, build_audio_storage
 
@@ -352,6 +352,7 @@ def _assert_capture_context(
         )
     except ConsentError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _require_chunk_upload_session(context.session)
     if require_audio_key and context.audio_key is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -372,6 +373,14 @@ async def _capture_context_or_404(
         raise HTTPException(status_code=404, detail="Capture session not found.")
     _assert_capture_context(context, policy, require_audio_key=require_audio_key)
     return context
+
+
+def _require_chunk_upload_session(session: CaptureSession) -> None:
+    if session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Session does not accept audio chunk capture.",
+        )
 
 
 app.include_router(
@@ -493,10 +502,12 @@ async def bind_session_audio_key(
             raise HTTPException(status_code=500, detail="Idempotent audio key is unavailable.")
         replay_session = await _locked_session_or_404(store, tenant_id, previous.session_id)
         await _assert_session_consent(store, tenant_id, replay_session, policy)
+        _require_chunk_upload_session(replay_session)
         return _audio_key_receipt(previous)
 
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    _require_chunk_upload_session(session)
     existing = await store.get_session_audio_key(tenant_id, session_id)
     if existing is not None:
         if (
@@ -929,6 +940,7 @@ async def issue_chunk_upload_grant(
         )
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    _require_chunk_upload_session(session)
     if await store.get_session_audio_key(tenant_id, session_id) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1092,10 +1104,12 @@ async def register_chunk(
             raise HTTPException(status_code=500, detail="Idempotent audio chunk is unavailable.")
         replay_session = await _locked_session_or_404(store, tenant_id, previous.session_id)
         await _assert_session_consent(store, tenant_id, replay_session, policy)
+        _require_chunk_upload_session(replay_session)
         return previous
 
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    _require_chunk_upload_session(session)
     if await store.get_session_audio_key(tenant_id, session_id) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1152,6 +1166,7 @@ async def _complete_capture_protocol_session(
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent session is unavailable.")
         await _assert_session_consent(store, tenant_id, previous, policy)
+        _require_chunk_upload_session(previous)
         return previous
 
     context = await _capture_context_or_404(store, tenant_id, session_id, policy)
@@ -1257,10 +1272,12 @@ async def complete_session(
         if previous is None:
             raise HTTPException(status_code=500, detail="Idempotent session is unavailable.")
         await _assert_session_consent(store, tenant_id, previous, policy)
+        _require_chunk_upload_session(previous)
         return previous
 
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
+    _require_chunk_upload_session(session)
     if await store.get_session_audio_key(tenant_id, session_id) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1316,7 +1333,9 @@ async def save_transcript(
     session = await _locked_session_or_404(store, tenant_id, session_id)
     await _assert_session_consent(store, tenant_id, session, policy)
     if session.status == SessionStatus.TRANSCRIPT_READY or not can_transition_session(
-        session.status, SessionStatus.TRANSCRIPT_READY
+        session.status,
+        SessionStatus.TRANSCRIPT_READY,
+        ingest_mode=session.ingest_mode,
     ):
         raise HTTPException(status_code=409, detail="Session audio is not ready for transcription.")
 

@@ -32,6 +32,7 @@ describe("MockCaptureService", () => {
       modality: consent.modality,
     }, "session-key-000001");
     const published = service.audioEncryptionKey();
+    expect(session.ingest_mode).toBe("chunk_upload");
     service.bindSessionAudioKey(session.id, {
       key_version: published.key_version,
       wrapped_dek: "a".repeat(512),
@@ -159,17 +160,17 @@ describe("MockCaptureService", () => {
     const receipt = service.chunkReceipt(objectId);
     expect(receipt.state).toBe("registered");
     expect(receipt.registration?.chunk_id).toBe(registered.id);
-    expect(
-      service.completeCapture(
-        {
-          protocol_version: "1.0",
-          capture_lease_id: lease.lease_id,
-          capture_lease_generation: lease.generation,
-          channels: [{ channel: "microphone", final_sequence_number: 0 }],
-        },
-        "complete-key-00001",
-      ).status,
-    ).toBe("uploaded");
+    const completed = service.completeCapture(
+      {
+        protocol_version: "1.0",
+        capture_lease_id: lease.lease_id,
+        capture_lease_generation: lease.generation,
+        channels: [{ channel: "microphone", final_sequence_number: 0 }],
+      },
+      "complete-key-00001",
+    );
+    expect(completed.status).toBe("uploaded");
+    expect(completed.ingest_mode).toBe("chunk_upload");
   });
 });
 

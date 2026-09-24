@@ -32,6 +32,7 @@ from .repository import (
     CaptureChannelFinalizationDraft,
     CaptureContext,
     CaptureFinalizationError,
+    CaptureIngestModeError,
     CaptureLeaseCloseReason,
     CaptureLeaseConflictError,
     CaptureLeaseReceipt,
@@ -71,6 +72,7 @@ from .schemas import (
     TranscriptDelivery,
     TranscriptionJob,
 )
+from .session_state_v1 import SessionIngestMode
 from .settings import Settings
 
 AZURE_POSTGRES_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
@@ -158,6 +160,28 @@ class PostgresRepositoryProvider:
 class PostgresRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def _require_chunk_upload_session(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+    ) -> None:
+        row = await self._one_or_none(
+            """
+            SELECT ingest_mode
+            FROM scribe_sessions
+            WHERE tenant_id = :tenant_id AND id = :session_id
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        if (
+            row is not None
+            and SessionIngestMode(row["ingest_mode"]) != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
 
     async def get_idempotency(
         self,
@@ -351,7 +375,7 @@ class PostgresRepository:
         row = await self._one_or_none(
             """
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
-                   modality, status, created_at
+                   modality, ingest_mode, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
             """,
@@ -376,7 +400,7 @@ class PostgresRepository:
         row = await self._one_or_none(
             """
             SELECT id, appointment_id, practitioner_id, patient_id, consent_record_id,
-                   modality, status, created_at
+                   modality, ingest_mode, status, created_at
             FROM scribe_sessions
             WHERE tenant_id = :tenant_id AND id = :id
             FOR UPDATE
@@ -393,10 +417,10 @@ class PostgresRepository:
                 """
                 INSERT INTO scribe_sessions (
                     id, tenant_id, appointment_id, practitioner_id, patient_id,
-                    consent_record_id, modality, status, created_at
+                    consent_record_id, modality, ingest_mode, status, created_at
                 ) VALUES (
                     :id, :tenant_id, :appointment_id, :practitioner_id, :patient_id,
-                    :consent_record_id, :modality, :status, :created_at
+                    :consent_record_id, :modality, :ingest_mode, :status, :created_at
                 )
                 """
             ),
@@ -404,22 +428,35 @@ class PostgresRepository:
                 **session.model_dump(mode="python"),
                 "tenant_id": tenant_id,
                 "modality": session.modality.value,
+                "ingest_mode": session.ingest_mode.value,
                 "status": session.status.value,
             },
         )
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         await self.lock_consent(tenant_id, session.consent_record_id)
-        await self._session.execute(
+        updated = await self._session.execute(
             text(
                 """
                 UPDATE scribe_sessions
                 SET status = :status
                 WHERE tenant_id = :tenant_id AND id = :id
+                  AND ingest_mode = :ingest_mode
+                RETURNING id
                 """
             ),
-            {"tenant_id": tenant_id, "id": session.id, "status": session.status.value},
+            {
+                "tenant_id": tenant_id,
+                "id": session.id,
+                "ingest_mode": session.ingest_mode.value,
+                "status": session.status.value,
+            },
         )
+        if updated.scalar_one_or_none() is not None:
+            return
+        current = await self.get_session(tenant_id, session.id)
+        if current is not None and current.ingest_mode != session.ingest_mode:
+            raise ValueError("scribe session ingest mode is immutable")
 
     async def get_session_audio_key(
         self,
@@ -442,6 +479,7 @@ class PostgresRepository:
         tenant_id: UUID,
         audio_key: SessionAudioKey,
     ) -> bool:
+        await self._require_chunk_upload_session(tenant_id, audio_key.session_id)
         inserted = await self._session.execute(
             text(
                 """
@@ -484,6 +522,7 @@ class PostgresRepository:
                 scribe_session.patient_id AS session_patient_id,
                 scribe_session.consent_record_id,
                 scribe_session.modality AS session_modality,
+                scribe_session.ingest_mode AS session_ingest_mode,
                 scribe_session.status AS session_status,
                 scribe_session.created_at AS session_created_at,
                 consent.id AS consent_id,
@@ -536,6 +575,7 @@ class PostgresRepository:
                 "patient_id": row["session_patient_id"],
                 "consent_record_id": row["consent_record_id"],
                 "modality": row["session_modality"],
+                "ingest_mode": row["session_ingest_mode"],
                 "status": row["session_status"],
                 "created_at": row["session_created_at"],
             }
@@ -631,6 +671,13 @@ class PostgresRepository:
         duration_seconds = _capture_duration_seconds(duration)
         context = await self.lock_capture_context(tenant_id, session_id)
         if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
+        if (
             context is None
             or context.audio_key is None
             or not context.consent.all_parties_consented
@@ -709,6 +756,13 @@ class PostgresRepository:
     ) -> CaptureLeaseReceipt | None:
         duration_seconds = _capture_duration_seconds(duration)
         context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
         if (
             context is None
             or context.audio_key is None
@@ -905,6 +959,13 @@ class PostgresRepository:
             raise CaptureReservationLimitError
 
         context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
         if (
             context is None
             or context.audio_key is None
@@ -1213,6 +1274,13 @@ class PostgresRepository:
         duration_seconds = _capture_duration_seconds(duration)
         context = await self.lock_capture_context(tenant_id, session_id)
         if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
+        if (
             context is None
             or context.audio_key is None
             or not context.consent.all_parties_consented
@@ -1340,6 +1408,13 @@ class PostgresRepository:
     ) -> bool:
         context = await self.lock_capture_context(tenant_id, chunk.session_id)
         if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
+        if (
             context is None
             or context.audio_key is None
             or not context.consent.all_parties_consented
@@ -1417,6 +1492,14 @@ class PostgresRepository:
         declared = {item.channel: item.last_sequence_number for item in declarations}
         if any(last < 0 or last >= MAX_CHUNKS for last in declared.values()):
             raise CaptureFinalizationError
+        context = await self.lock_capture_context(tenant_id, session_id)
+        if (
+            context is not None
+            and context.session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD
+        ):
+            raise CaptureIngestModeError(
+                "session does not accept audio chunk capture"
+            )
         existing = await self.capture_finalizations_for(tenant_id, session_id)
         if existing:
             if {
@@ -1425,7 +1508,6 @@ class PostgresRepository:
                 raise CaptureFinalizationError
             return existing
 
-        context = await self.lock_capture_context(tenant_id, session_id)
         if (
             context is None
             or context.audio_key is None
@@ -1575,6 +1657,7 @@ class PostgresRepository:
         return AudioChunk.model_validate(row) if row is not None else None
 
     async def add_chunk(self, tenant_id: UUID, chunk: AudioChunk) -> None:
+        await self._require_chunk_upload_session(tenant_id, chunk.session_id)
         await self._session.execute(
             text(
                 """
@@ -1628,6 +1711,7 @@ class PostgresRepository:
         return UploadGrantRecord(**row) if row is not None else None
 
     async def add_upload_grant(self, tenant_id: UUID, grant: UploadGrantRecord) -> None:
+        await self._require_chunk_upload_session(tenant_id, grant.session_id)
         await self._session.execute(
             text(
                 """
@@ -1720,6 +1804,7 @@ class PostgresRepository:
         lease_until: datetime,
         max_attempts: int,
     ) -> TranscriptionJob | None:
+        await self._require_chunk_upload_session(tenant_id, session_id)
         row = (
             (
                 await self._session.execute(
