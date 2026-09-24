@@ -149,17 +149,29 @@ deployed independently.
 - **Owner-approved checkpoint exception — September 24, 2026:** local change
   budgets are 8,000 changed lines / 100 files solely for dependency-ordered
   integration of committed Scribe checkpoint
-  `006080bb3b2005c2b19dd2df666f2bcaf0774c76`. Branches use
-  `codex/scribe-checkpoint-006080bb-` and each PR records its original source
-  endpoint, actual diff, exact tested/reviewed head, and recovery. This exception
-  automatically expires when that exact checkpoint is an ancestor of `main`;
-  verify with `git merge-base --is-ancestor 006080bb3b2005c2b19dd2df666f2bcaf0774c76
-  origin/main` after fetching `main`. Unrelated work and the policy/closure PRs
-  retain 2,000 lines / 50 files. Remove this paragraph in the closure PR.
-  GitHub Actions remains disabled; the September 23 owner policy permits local
-  checks and independent review to supply the evidence. The disabled hosted
-  workflow is not changed or represented as passing. All other safety,
-  independent-review, source, deployment and data boundaries remain in force.
+  `006080bb3b2005c2b19dd2df666f2bcaf0774c76`. Only branches prefixed
+  `codex/scribe-checkpoint-006080bb-` containing checkpoint content and necessary
+  integration fixes qualify. Each PR records the original source endpoint,
+  actual diff, exact tested/reviewed head, and recovery. Preserve original
+  checkpoint ancestry with merge commits, never squash or rebase this stack.
+  The exception automatically expires when that checkpoint is an ancestor of
+  `main`; after fetching, exit status 0 from `git merge-base --is-ancestor
+  006080bb3b2005c2b19dd2df666f2bcaf0774c76 origin/main` means it has expired.
+  Abandoning or superseding the checkpoint also ends the exception. Unrelated
+  work and the policy/closure PRs retain 2,000 lines / 50 files. Remove this
+  paragraph in the closure PR. All other controls remain in force.
+- **Owner local-validation decision — September 23, 2026:** relevant local tests
+  and independent review, with commands/results and exact SHA in PR evidence,
+  substitute for required GitHub statuses and approving-review counts. The
+  owner authorized admin merges despite unavailable Actions/statuses/approvals.
+  This supersedes the older status-writer-only requirement in
+  `docs/flight-plans/2026-09-15-actions-off-local-checks.md`; no status fabrication
+  or hosted workflow success is permitted. For qualifying checkpoint PRs,
+  record the actual 8,000/100 local evaluation and merge using this authority;
+  do not publish a passing 2,000/50 status. PRs, resolved conversations, admin
+  enforcement, independent review after substantive pushes, applicable local
+  budgets, force-push/deletion protections, and existing production, deployment,
+  data and security boundaries remain required. Actions stays disabled.
 - Every PR records tier, tests, exact recovery, agent-review evidence, and only
   the conditional controls that apply.
 - Agents do not dispatch or rerun GitHub Actions to refresh required statuses.
