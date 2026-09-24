@@ -146,6 +146,20 @@ deployed independently.
   checking out PR code and blocks PRs over 2,000 changed lines or 50 files.
   Change its thresholds only in a separate reviewed policy PR; an oversized
   change cannot waive its own limit.
+- **Owner-approved checkpoint exception — September 24, 2026:** local change
+  budgets are 8,000 changed lines / 100 files solely for dependency-ordered
+  integration of committed Scribe checkpoint
+  `006080bb3b2005c2b19dd2df666f2bcaf0774c76`. Branches use
+  `codex/scribe-checkpoint-006080bb-` and each PR records its original source
+  endpoint, actual diff, exact tested/reviewed head, and recovery. This exception
+  automatically expires when that exact checkpoint is an ancestor of `main`;
+  verify with `git merge-base --is-ancestor 006080bb3b2005c2b19dd2df666f2bcaf0774c76
+  origin/main` after fetching `main`. Unrelated work and the policy/closure PRs
+  retain 2,000 lines / 50 files. Remove this paragraph in the closure PR.
+  GitHub Actions remains disabled; the September 23 owner policy permits local
+  checks and independent review to supply the evidence. The disabled hosted
+  workflow is not changed or represented as passing. All other safety,
+  independent-review, source, deployment and data boundaries remain in force.
 - Every PR records tier, tests, exact recovery, agent-review evidence, and only
   the conditional controls that apply.
 - Agents do not dispatch or rerun GitHub Actions to refresh required statuses.
