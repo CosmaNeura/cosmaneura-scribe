@@ -39,6 +39,14 @@ expiry, monotonic purge marker, and a fresh database clock at commit. Translatio
 only in `translation_pending`; accepted review may end in `review_required` or `transcript_ready`,
 while rejection must return to `translation_pending`.
 
+Before activation, the domain projection was clarified to preserve that rejection rule. For each
+unresolved Spanish segment it evaluates only the highest translation version after first honoring
+any accepted review. A rejected current success produces `translation_retry_required`, distinct
+from an unreviewed current success (`translation_review_required`) and from a failed current attempt
+(`translation_failed`). The retry blocker plus `translation_missing` and `translation_failed` map
+to `translation_pending`; only the unreviewed-success blocker maps to `review_required`.
+Historical unselected attempts and reviews remain complete working-fingerprint inputs.
+
 Updates are rejected. Source-root deletion cascades through attempts and reviews only after the
 purge marker is set; direct derived deletion uses the same marker gate. As inherited from the source
 schema, a privileged deletion of the session parent can cascade after the parent disappears. No
@@ -57,7 +65,8 @@ handoff, migration apply, deployment, or activation path.
   lock, map concurrent unique violations through readback, and prove both purge race orders.
 - A later Core review writer must preserve exact Core review identity and distinguish identical
   replay from conflicting reuse without granting review authority to a provider or worker.
-- Working-transcript storage/state projection is the next dependency; versioned handoff follows it.
+- Working-transcript storage must mirror these exact blocker and status rules before its dormant
+  schema is published; versioned handoff follows it.
 - Real-PHI activation remains blocked by the unresolved legal-hold versus unconditional fourteen-day
   purge policy and by acceptance of the exact translation adapter/model evaluation profile.
 - Recovery stops future callers and retains the additive schema dormant. Destructive downgrade is

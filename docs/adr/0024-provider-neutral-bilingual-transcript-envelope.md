@@ -79,7 +79,8 @@ A later service operation, not this model, must reauthorize the authenticated se
 creating review evidence. Capture clients and provider workers cannot self-approve. That operation
 must make an identical replay converge on the existing review while treating a different terminal
 decision as a conflict. Once accepted, a translation cannot be replaced in the micro-beta without a
-new source-segment and source-transcript version.
+new source-segment and source-transcript version. A rejected translation is no longer a current
+candidate and requires a higher-version attempt before it can return to creator review.
 
 ### English working transcript
 
@@ -96,6 +97,28 @@ changes alone converge. No input schema accepts `note_ready` or stores a digest 
   review produces an unresolved segment and a bounded blocker.
 - A source overlap is a blocker. A dangling or stale reference, conflicting review, or competing
   accepted review invalidates the bundle and produces no working transcript.
+
+For an unresolved Spanish segment, the highest Scribe-issued translation version is the current
+candidate. No attempt yields `translation_missing`; a failed current attempt yields
+`translation_failed`; an unreviewed successful current attempt yields
+`translation_review_required`; and a rejected successful current attempt yields
+`translation_retry_required`. Older unaccepted attempts and reviews remain fingerprint inputs but
+do not select the blocker. The one accepted review for the current source-segment version, if any,
+wins regardless of unselected attempt history and selects its exact successful translation.
+
+The working projection derives the nonterminal session state with one fail-closed precedence:
+`source_overlap` or `source_locale_unknown` yields `quality_blocked`; otherwise any
+`translation_missing`, `translation_failed`, or `translation_retry_required` yields
+`translation_pending`; otherwise any `translation_review_required` yields `review_required`; and
+only an empty blocker set yields `transcript_ready`. `source_received` remains the committed bridge
+before the first projection of a source version. Source quality cannot newly emerge within an
+immutable source version, so a projector never weakens the state graph by moving directly from
+`translation_pending` or `review_required` to `quality_blocked`. A corrected source first commits
+the next version in `source_received` and clears the prior working pointer; a later fenced projector
+then chooses the reachable exact state.
+
+This is a pre-activation clarification of dormant version `1.0`, not a new wire version: no route,
+writer, working-transcript row, or consumer can yet have observed the superseded rejection mapping.
 
 Working segments preserve source UUID/version, opaque speaker UUID, advisory role, timing, locale,
 and any selected translation UUID/version and review UUID. The serialized `note_ready` value is
@@ -122,8 +145,9 @@ keyed-commitment design. Neither fingerprint can satisfy that requirement.
 
 ## Consequences
 
-- No API route, database shape, repository behavior, Alembic migration, OpenAPI contract,
-  environment setting, provider call, client, or feature flag changes.
+- The blocker/status refinement is dormant: no API route, database shape, repository behavior,
+  Alembic migration, OpenAPI contract, environment setting, provider call, client, or feature flag
+  changes.
 - The current `Transcript`, transcript receiver, and platform handoff remain unchanged. Nothing can
   construct this domain through an application request in this packet.
 - A later receiver/persistence packet must allocate identities and versions server-side, authenticate

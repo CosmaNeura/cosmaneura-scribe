@@ -179,6 +179,7 @@ class WorkingTranscriptBlockerCode(StrEnum):
     SOURCE_OVERLAP = "source_overlap"
     TRANSLATION_MISSING = "translation_missing"
     TRANSLATION_REVIEW_REQUIRED = "translation_review_required"
+    TRANSLATION_RETRY_REQUIRED = "translation_retry_required"
     TRANSLATION_FAILED = "translation_failed"
 
 
@@ -590,7 +591,9 @@ def build_english_working_transcript(
     for translation in bundle.translations:
         translations_by_source.setdefault(translation.source_segment_id, []).append(translation)
     accepted_reviews_by_source: dict[UUID, TranslationReviewEvidenceV1] = {}
+    reviews_by_translation: dict[tuple[UUID, int], TranslationReviewEvidenceV1] = {}
     for review in bundle.translation_reviews:
+        reviews_by_translation[(review.translation_id, review.translation_version)] = review
         if review.decision == TranslationReviewDecision.ACCEPTED:
             accepted_reviews_by_source[review.source_segment_id] = review
 
@@ -627,11 +630,15 @@ def build_english_working_transcript(
             )
         else:
             candidates = translations_by_source.get(source.source_segment_id, [])
-            current = [
-                candidate
-                for candidate in candidates
-                if candidate.source_segment_version == source.source_segment_version
-            ]
+            current = max(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.source_segment_version == source.source_segment_version
+                ),
+                key=lambda candidate: candidate.translation_version,
+                default=None,
+            )
             accepted_review = accepted_reviews_by_source.get(source.source_segment_id)
             if accepted_review is not None:
                 translation_review = accepted_review
@@ -645,13 +652,20 @@ def build_english_working_transcript(
             else:
                 resolution = WorkingSegmentResolution.UNRESOLVED
                 content = None
-                outcomes = {candidate.outcome for candidate in current}
-                if TranslationOutcome.SUCCEEDED in outcomes:
-                    code = WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED
-                elif TranslationOutcome.FAILED in outcomes:
-                    code = WorkingTranscriptBlockerCode.TRANSLATION_FAILED
-                else:
+                if current is None:
                     code = WorkingTranscriptBlockerCode.TRANSLATION_MISSING
+                elif current.outcome == TranslationOutcome.FAILED:
+                    code = WorkingTranscriptBlockerCode.TRANSLATION_FAILED
+                elif (
+                    review := reviews_by_translation.get(
+                        (current.translation_id, current.translation_version)
+                    )
+                ) is not None:
+                    if review.decision != TranslationReviewDecision.REJECTED:
+                        raise ValueError("accepted_translation_resolution_missing")
+                    code = WorkingTranscriptBlockerCode.TRANSLATION_RETRY_REQUIRED
+                else:
+                    code = WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED
                 blockers.append(
                     WorkingTranscriptBlockerV1(
                         source_segment_id=source.source_segment_id,
