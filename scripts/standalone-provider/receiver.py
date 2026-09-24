@@ -322,7 +322,9 @@ class ProviderReceiver:
 
         return app
 
-    def identity(self, session: Session, authorization: str) -> RequestIdentity | CoreProviderIdentity:
+    def identity(
+        self, session: Session, authorization: str
+    ) -> RequestIdentity | CoreProviderIdentity:
         if self.profile.identity_profile == CORE_STAGING_PERSONAL:
             if not isinstance(self.verifier, ClerkTokenVerifier):
                 raise AuthenticationFailed("authentication configuration is unavailable")
@@ -339,7 +341,9 @@ class ProviderReceiver:
         )
 
     @staticmethod
-    def account(session: Session, identity: RequestIdentity | CoreProviderIdentity) -> CoreCaptureAccount | CoreProviderAccount:
+    def account(
+        session: Session, identity: RequestIdentity | CoreProviderIdentity
+    ) -> CoreCaptureAccount | CoreProviderAccount:
         if isinstance(identity, CoreProviderIdentity):
             account = session.scalar(select(CoreProviderAccount).where(
                 CoreProviderAccount.id == identity.core_account_id,

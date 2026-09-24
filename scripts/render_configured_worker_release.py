@@ -26,7 +26,12 @@ def checked_bindings(path: Path) -> dict:
     data = json.loads(path.read_text())
     require(data["schema"] == 1)
     require(
-        data["environment_id"] == "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13/resourceGroups/cosmaneura-staging/providers/Microsoft.App/managedEnvironments/cosmaneura-staging-scribe-workers-environment"
+        data["environment_id"] == (
+            "/subscriptions/bab2a709-1fcb-4c87-a9fc-802f7477ec13"
+            "/resourceGroups/cosmaneura-staging"
+            "/providers/Microsoft.App/managedEnvironments"
+            "/cosmaneura-staging-scribe-workers-environment"
+        )
         and data["environment_name"] == "cosmaneura-staging-scribe-workers-environment"
         and data["location"] == "northcentralus"
     )

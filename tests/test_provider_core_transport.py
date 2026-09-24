@@ -223,7 +223,9 @@ async def test_configured_admission_review_and_existing_note_routes(connection):
     assert USER_TOKEN not in repr(mount) and WORKLOAD_TOKEN not in repr(client)
 
 
-@pytest.mark.parametrize("variant", ["exact", "other_code", "missing_version", "oversize", "revoked"])
+@pytest.mark.parametrize(
+    "variant", ["exact", "other_code", "missing_version", "oversize", "revoked"]
+)
 async def test_consent_renewal_requires_exact_current_core_refusal(connection, variant):
     wire, client = connection
     mount = await client.open()
@@ -238,7 +240,10 @@ async def test_consent_renewal_requires_exact_current_core_refusal(connection, v
         if variant == "missing_version":
             headers.pop("X-Cosmaneura-Capture-Version")
         return httpx.Response(409, headers=headers, json={
-            "code": "CAPTURE_REQUEST_CONFLICT" if variant == "other_code" else "CAPTURE_CONSENT_REQUIRED",
+            "code": (
+                "CAPTURE_REQUEST_CONFLICT" if variant == "other_code"
+                else "CAPTURE_CONSENT_REQUIRED"
+            ),
             "status": 409, "retryable": False,
             "detail": "private-sentinel" * (200 if variant == "oversize" else 1),
         })

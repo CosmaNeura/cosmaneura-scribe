@@ -391,7 +391,10 @@ class ProviderCoreTransport:
                         path == _ROOT + "capture-admissions"
                         and response.status_code == 409
                         and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
-                        and response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        and (
+                            response.headers.get("content-type", "")
+                            .split(";", 1)[0].strip().lower()
+                        )
                         == "application/problem+json"
                         and "no-store" in {
                             item.strip().lower()
@@ -416,7 +419,8 @@ class ProviderCoreTransport:
                     }.get(response.status_code, ("core_provider_request_unconfirmed", 503))
                     raise ProviderCoreUnavailable(code, result)
                 _require(
-                    response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                    response.headers.get("content-type", "")
+                            .split(";", 1)[0].strip().lower()
                     == "application/json"
                 )
                 _require(

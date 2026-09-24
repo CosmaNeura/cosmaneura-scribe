@@ -11,6 +11,7 @@
     "src/**/*.ts",
     "vite.config.ts",
     "provider.vite.config.ts",
+    "standalone.vite.config.ts",
     "vitest.config.ts",
     "standalone/**/*.ts"
   ]
