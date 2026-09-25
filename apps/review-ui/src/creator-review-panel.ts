@@ -19,8 +19,8 @@ export interface CreatorReviewState {
 
 export interface CreatorReviewOptions {
   readonly journal?: CreatorReviewJournal;
-  /** The host reauthorizes and opens its existing Core note flow. No source text is sent. */
-  readonly continueToNote?: () => Promise<void>;
+  /** Open the host's existing Core note flow with this action's fresh authorized read. */
+  readonly continueToNote?: (view: CreatorReviewView) => Promise<void>;
 }
 
 /** Mount in the authenticated standalone or OS shell; dispose on logout/session change. */
@@ -119,18 +119,20 @@ export function mountCreatorReview(
 
   const continueToNote = async (): Promise<void> => {
     if (continuing || disposed || pending !== null || state.phase !== "ready" || !options.continueToNote) return;
+    const request = ++generation;
     continuing = true;
     render();
     try {
       const view = await api.read();
-      if (disposed) return;
+      if (disposed || request !== generation) return;
       state = { ...state, view };
       if (view.working?.note_ready !== true) {
         state = { ...state, notice: "The transcript changed. Complete its current review before preparing a note." };
       } else {
-        await options.continueToNote();
+        await options.continueToNote(view);
       }
     } catch {
+      if (disposed || request !== generation) return;
       state = { phase: "unavailable", view: null, notice: "The note could not be opened. Check access and refresh before trying again." };
     } finally {
       continuing = false;
