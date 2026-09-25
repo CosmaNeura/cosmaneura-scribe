@@ -156,10 +156,12 @@
       }
       lock.withLock { activationAttempted = true }
       do {
+        // This adapter records an in-person conversation and has no playback
+        // graph. Use recording input without the VoIP route/processing policy.
         try audioSession.setCategory(
-          .playAndRecord,
-          mode: .voiceChat,
-          options: [.defaultToSpeaker, .allowBluetoothHFP]
+          .record,
+          mode: .measurement,
+          options: [.allowBluetoothHFP]
         )
         try audioSession.setActive(true)
         signalMonitor?.setRoute(Self.inputRoute(audioSession.currentRoute))

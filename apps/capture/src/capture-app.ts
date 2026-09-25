@@ -273,6 +273,9 @@ export class CaptureApp extends LitElement {
               ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
                 ?disabled=${this.#busy || this.#stopping} @click=${this.#retryUpload}>Retry upload</button>` : ""}
             </div>
+            ${this.#snapshot.state === "recording" && !this.#stopping && !this.#snapshot.desktop
+              && this.#sourceKind === "microphone" && Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios"
+              ? html`<scribe-ios-input-meter></scribe-ios-input-meter>` : ""}
           </section>`}
 
           ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
@@ -301,9 +304,6 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : "Ready to record"}</p>
             <p>Recording window used ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
-            ${this.#snapshot.state === "recording" && !this.#stopping && !this.#snapshot.desktop
-              && this.#sourceKind === "microphone" && Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios"
-              ? html`<scribe-ios-input-meter></scribe-ios-input-meter>` : ""}
             ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`) : html`<section class="flow-card" aria-labelledby="status-title">

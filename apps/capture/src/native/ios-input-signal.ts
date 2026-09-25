@@ -8,6 +8,7 @@ export interface IosInputSignal {
   readonly inputAgeMs: number | null;
   readonly convertedAgeMs: number | null;
   readonly zeroInputMs: number;
+  readonly inputMuted: boolean;
   readonly route: "built_in" | "bluetooth" | "wired" | "usb" | "other" | "none";
 }
 
@@ -16,13 +17,13 @@ const ROUTES: Record<IosInputSignal["route"], string> = {
   usb: "USB microphone", other: "External microphone", none: "No microphone selected",
 };
 const KEYS = ["inputBuffers", "convertedBuffers", "inputEverNonzero", "convertedEverNonzero",
-  "inputLevel", "convertedLevel", "inputAgeMs", "convertedAgeMs", "zeroInputMs", "route"].sort().join(",");
+  "inputLevel", "convertedLevel", "inputAgeMs", "convertedAgeMs", "zeroInputMs", "route", "inputMuted"].sort().join(",");
 
 /** Reject native error/detail payloads. Only fixed numeric/route metadata enters the view. */
 export function parseInputSignal(value: unknown): IosInputSignal | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid input meter");
   const envelope = value as Record<string, unknown>;
-  if (Object.keys(envelope).sort().join(",") !== "signal,version" || envelope.version !== 1) throw new Error("Invalid input meter");
+  if (Object.keys(envelope).sort().join(",") !== "signal,version" || envelope.version !== 2) throw new Error("Invalid input meter");
   if (envelope.signal === null) return null;
   if (!envelope.signal || typeof envelope.signal !== "object" || Array.isArray(envelope.signal)) throw new Error("Invalid input meter");
   const data = envelope.signal as Record<string, unknown>;
@@ -34,7 +35,7 @@ export function parseInputSignal(value: unknown): IosInputSignal | null {
   for (const key of ["inputLevel", "convertedLevel"] as const) {
     if (typeof data[key] !== "number" || !Number.isFinite(data[key]) || data[key] < 0 || data[key] > 1) throw new Error("Invalid input meter");
   }
-  if (typeof data.inputEverNonzero !== "boolean" || typeof data.convertedEverNonzero !== "boolean"
+  if (typeof data.inputEverNonzero !== "boolean" || typeof data.convertedEverNonzero !== "boolean" || typeof data.inputMuted !== "boolean"
     || typeof data.route !== "string" || !Object.hasOwn(ROUTES, data.route)) throw new Error("Invalid input meter");
   return { ...data } as unknown as IosInputSignal;
 }
@@ -45,6 +46,8 @@ export function presentInputSignal(signal: IosInputSignal | null, responseAgeMs:
   if (!signal || responseAgeMs > 1_500) return { level: 0, route: "Microphone",
     message: "Waiting for microphone signal…" };
   const route = ROUTES[signal.route];
+  if (signal.inputMuted) return { level: 0, route,
+    message: "Microphone is muted by iOS. Pause and unmute the microphone before resuming." };
   if (signal.inputAgeMs === null || signal.inputAgeMs + responseAgeMs > 1_500
     || signal.convertedAgeMs === null || signal.convertedAgeMs + responseAgeMs > 1_500) {
     return { level: 0, route, message: "Microphone signal is unavailable. If you’re speaking, pause and check the input." };
