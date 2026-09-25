@@ -29,8 +29,9 @@ let package = Package(
       name: "CosmaneuraIOSPCMBridgeCore",
       dependencies: ["CosmaneuraIOSPCMCore", "CosmaneuraIOSAVFoundationDriver"]
     ),
-
-
-
+    .testTarget(
+      name: "CosmaneuraIOSPCMBridgeCoreTests",
+      dependencies: ["CosmaneuraIOSPCMCore", "CosmaneuraIOSPCMBridgeCore", "CosmaneuraIOSAVFoundationDriver"]
+    ),
   ]
 )
