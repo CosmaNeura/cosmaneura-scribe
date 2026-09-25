@@ -44,16 +44,18 @@
 
     @objc public func getCaptureSignal(_ call: CAPPluginCall) {
       guard let signal = signalBridge?.captureSignal() else {
-        call.resolve(["version": 1, "signal": NSNull()])
+        call.resolve(["version": 2, "signal": NSNull()])
         return
       }
-      call.resolve(["version": 1, "signal": [
+      call.resolve(["version": 2, "signal": [
         "inputBuffers": signal.inputBuffers, "convertedBuffers": signal.convertedBuffers,
         "inputEverNonzero": signal.inputEverNonzero, "convertedEverNonzero": signal.convertedEverNonzero,
         "inputLevel": signal.inputLevel, "convertedLevel": signal.convertedLevel,
         "inputAgeMs": signal.inputAgeMs.map { $0 as Any } ?? NSNull(),
         "convertedAgeMs": signal.convertedAgeMs.map { $0 as Any } ?? NSNull(),
         "zeroInputMs": signal.zeroInputMs, "route": signal.route.rawValue,
+        // Observe iOS's per-app mute; never override the user's mute choice.
+        "inputMuted": AVAudioApplication.shared.isInputMuted,
       ]])
     }
 

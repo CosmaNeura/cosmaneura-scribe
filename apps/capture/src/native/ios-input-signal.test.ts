@@ -4,7 +4,7 @@ import { parseInputSignal, presentInputSignal, type IosInputSignal } from "./ios
 const signal: IosInputSignal = {
   inputBuffers: 20, convertedBuffers: 20, inputEverNonzero: true, convertedEverNonzero: true,
   inputLevel: 0.125, convertedLevel: 0.125, inputAgeMs: 20, convertedAgeMs: 10,
-  zeroInputMs: 0, route: "built_in",
+  zeroInputMs: 0, route: "built_in", inputMuted: false,
 };
 
 describe("iPhone microphone feedback", () => {
@@ -27,14 +27,20 @@ describe("iPhone microphone feedback", () => {
       .toBe("No input detected. If you’re speaking, pause and check the microphone.");
     expect(presentInputSignal({ ...signal, inputLevel: 0.00001, convertedLevel: 0.00001 }, 0).message).toBe("Quiet input");
   });
+  it("shows OS mute even before callbacks, clears bars, and never trusts stale mute state", () => {
+    const muted = { ...signal, inputMuted: true, inputAgeMs: null };
+    expect(presentInputSignal(muted, 0)).toMatchObject({ level: 0, message: expect.stringContaining("muted by iOS") });
+    expect(presentInputSignal(muted, 1_600).message).toContain("Waiting");
+    expect(presentInputSignal(signal, 0).level).toBeGreaterThan(0);
+  });
   it("accepts only bounded content-free metadata and fixed route labels", () => {
-    expect(parseInputSignal({ version: 1, signal })).toEqual(signal);
-    expect(parseInputSignal({ version: 1, signal: null })).toBeNull();
+    expect(parseInputSignal({ version: 2, signal })).toEqual(signal);
+    expect(parseInputSignal({ version: 2, signal: null })).toBeNull();
     for (const change of [{ inputLevel: NaN }, { convertedLevel: 1.1 }, { inputBuffers: -1 },
       { inputAgeMs: "recent" }, { route: "private device name" }, { route: "constructor" },
-      { transcript: "unexpected" }, { inputEverNonzero: 1 }]) {
-      expect(() => parseInputSignal({ version: 1, signal: { ...signal, ...change } })).toThrow();
+      { transcript: "unexpected" }, { inputEverNonzero: 1 }, { inputMuted: "false" }, { inputMuted: undefined }]) {
+      expect(() => parseInputSignal({ version: 2, signal: { ...signal, ...change } })).toThrow();
     }
-    expect(() => parseInputSignal({ version: 2, signal })).toThrow();
+    expect(() => parseInputSignal({ version: 1, signal })).toThrow();
   });
 });

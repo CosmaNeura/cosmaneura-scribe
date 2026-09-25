@@ -20,8 +20,8 @@ window.setInterval = callback => { timers.set(++timerId, callback); return timer
 window.clearInterval = id => timers.delete(id);
 const signal = { inputBuffers: 20, convertedBuffers: 20, inputEverNonzero: true,
   convertedEverNonzero: true, inputLevel: 0.125, convertedLevel: 0.125,
-  inputAgeMs: 10, convertedAgeMs: 10, zeroInputMs: 0, route: "built_in" };
-let response = { version: 1, signal }, hold = false;
+  inputAgeMs: 10, convertedAgeMs: 10, zeroInputMs: 0, route: "built_in", inputMuted: false };
+let response = { version: 2, signal }, hold = false;
 window.Capacitor = {
   PluginHeaders: [{ name: "IOSPCM", methods: [{ name: "getCaptureSignal", rtype: "promise" }] }],
   nativePromise: async (plugin, method) => {
@@ -53,20 +53,23 @@ try {
   await flush(); assert.equal(reads, 0); assert.equal(timers.size, 0);
   await change("recording");
   let meter = root.querySelector("scribe-ios-input-meter");
-  assert.ok(meter); assert.equal(timers.size, 1);
+  assert.ok(meter); assert.ok(meter.closest(".recorder")); assert.equal(timers.size, 1);
   assert.ok(meter.shadowRoot.textContent.includes("iPhone microphone"));
   assert.ok(meter.shadowRoot.querySelectorAll(".on").length > 0);
-  response = { version: 1, signal: { ...signal, inputLevel: 0, convertedLevel: 0, zeroInputMs: 3_500 } };
+  response = { version: 2, signal: { ...signal, inputLevel: 0, convertedLevel: 0, zeroInputMs: 3_500 } };
   await tick(); assert.equal(meter.shadowRoot.querySelectorAll(".on").length, 0);
   assert.ok(meter.shadowRoot.textContent.includes("No input detected"));
-  response = { version: 1, signal: { ...signal, inputAgeMs: 2_000 } };
+  response = { version: 2, signal: { ...signal, inputAgeMs: 2_000 } };
   await tick(); assert.equal(meter.shadowRoot.querySelectorAll(".on").length, 0);
+  response = { version: 2, signal: { ...signal, inputMuted: true } };
+  await tick(); assert.equal(meter.shadowRoot.querySelectorAll(".on").length, 0);
+  assert.ok(meter.shadowRoot.textContent.includes("muted by iOS"));
   hold = true; await tick(); const late = pending, beforePause = reads;
   await change("paused"); assert.equal(timers.size, 0); assert.equal(reads, beforePause);
   assert.equal(root.querySelector("scribe-ios-input-meter"), null);
-  hold = false; response = { version: 1, signal: null };
+  hold = false; response = { version: 2, signal: null };
   await change("recording"); meter = root.querySelector("scribe-ios-input-meter");
-  late({ version: 1, signal }); await flush();
+  late({ version: 2, signal }); await flush();
   assert.equal(meter.shadowRoot.querySelectorAll(".on").length, 0);
   await change("uploading"); assert.equal(timers.size, 0);
   assert.equal(root.querySelector("scribe-ios-input-meter"), null);
