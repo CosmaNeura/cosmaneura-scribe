@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { HttpCreatorReviewApi, parseCreatorReview } from "./creator-review-api";
-import { renderCreatorReview } from "./creator-review-panel";
+import { renderCreatorReview, renderNoteTranscript } from "./creator-review-panel";
 
 const session = "00000000-0000-4000-8000-000000000001";
 const segment = "00000000-0000-4000-8000-000000000002";
@@ -28,6 +28,25 @@ const view = {
 };
 
 describe("creator review surface", () => {
+  it("compares an accepted source without decision controls or interpreting source markup", () => {
+    const ready = parseCreatorReview({ ...view, status: "transcript_ready",
+      working: { ...view.working, note_ready: true, blockers: [], segments: [{
+        ...view.working.segments[0], resolution: "spanish_translation", content: "I do not have a fever.",
+      }] },
+      review_queue: { ...view.review_queue, status: "complete", items: [] },
+    }, session);
+    const html = renderNoteTranscript(ready);
+    expect(html).toContain("Compare with recording transcript");
+    expect(html).toContain("Spanish · original");
+    expect(html).toContain("English · accepted translation");
+    expect(html).toContain("I do not have a fever.");
+    expect(html).toContain("Speaker not assigned");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("data-review-action");
+    expect(renderNoteTranscript(parseCreatorReview(view, session))).toBe("");
+  });
+
   it("distinguishes queued, uncertain and saved translation progress without offering a new call", () => {
     for (const [state, copy] of [
       ["queued", "Waiting for this translation to start"],

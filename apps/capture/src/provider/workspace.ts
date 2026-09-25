@@ -5,8 +5,8 @@ import { CaptureFlowController } from "../flow";
 import { CaptureDeviceCustodyError } from "../capture/device-custody";
 import { CaptureQueue } from "../queue/capture-queue";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
-import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
-import { mountCreatorReview } from "../../../review-ui/src/creator-review-panel";
+import { HttpCreatorReviewApi, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
+import { mountCreatorReview, renderNoteTranscript } from "../../../review-ui/src/creator-review-panel";
 import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
   type LanguageMode } from "./core-client";
 import { noteTemplates, parseDraft, pendingSave, resolveNote, reviewedSource, saveNote,
@@ -27,6 +27,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let acquiringRecorder: Promise<ProviderRecorderResources | PreparedProviderRecorder> | null = null;
   let disposeContent: (() => void) | null = null;
   let templates: CoreNoteTemplate[] = [], source: ReviewedSource | null = null, draft: CoreDraft | null = null;
+  let noteTranscript: CreatorReviewView | null = null;
   let currentSchema = "";
   let consentRenewalOffered = false;
   let openingRef: string | null = null;
@@ -58,7 +59,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     clearNavigation();
     encounterAbort?.abort(); encounterAbort = null;
     disposeContent?.(); disposeContent = null;
-    content.replaceChildren(); draft = null; source = null; templates = [];
+    content.replaceChildren(); draft = null; source = null; templates = []; noteTranscript = null;
     encounterLabel.textContent = "";
     consentRenewalOffered = false;
     openingRef = null;
@@ -275,13 +276,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const value = await activeClient.note(session(), prepare ? "prepare" : "read", currentSchema);
     const result = await parseDraft(value, session(), currentSchema, fresh);
     if (!authorized(n)) return;
-    source = fresh; draft = result;
+    source = fresh; draft = result; noteTranscript = view;
     renderNote();
   };
   const renderNote = (): void => {
     requireValue(draft);
     show(`<h1>${escape(draft.note_type)}</h1><p class="provider-draft-status">${draft.status === "draft" ? "Unreviewed Core draft · Review and edit before clinical use." : "No note has been prepared for this reviewed transcript."}</p>
       ${draft.reviewed_source.capture_continuity ? '<p role="status">Recording continuity is unconfirmed. Review this note for missing speech; gap lengths are unknown.</p>' : ""}
+      ${draft.status === "draft" && noteTranscript ? renderNoteTranscript(noteTranscript) : ""}
       ${draft.status === "draft" ? draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")
         + '<button data-workspace-action="save">Save edits to Core</button>' : '<button data-workspace-action="generate">Prepare Core note</button>'}
       <button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>`);
