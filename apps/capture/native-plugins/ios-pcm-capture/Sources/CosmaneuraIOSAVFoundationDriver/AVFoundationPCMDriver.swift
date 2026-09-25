@@ -75,6 +75,7 @@ public enum AppleAudioSessionProfile: Sendable {
 public enum AppleMicrophoneInput: String, Sendable {
   case builtIn = "built_in"
   case bluetooth
+  case external
 }
 
 /// Next-start preference only. Changing it never activates or reroutes audio.

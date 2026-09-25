@@ -45,7 +45,7 @@
 
     @objc public func selectMicrophoneInput(_ call: CAPPluginCall) {
       guard let signalBridge, let input = call.getString("input"),
-        Set(call.options.keys) == Set(["input"]), ["built_in", "bluetooth"].contains(input)
+        Set(call.options.keys) == Set(["input"]), ["built_in", "bluetooth", "external"].contains(input)
       else {
         reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments)
         return

@@ -174,9 +174,16 @@
           options: selected == .bluetooth ? [.allowBluetoothHFP] : []
         )
         try audioSession.setActive(true)
-        let portType: AVAudioSession.Port = selected == .builtIn ? .builtInMic : .bluetoothHFP
-        let available = audioSession.availableInputs ?? []
-        guard let port = available.first(where: { $0.portType == portType }) else {
+        let portTypes: [AVAudioSession.Port]
+        switch selected {
+        case .builtIn: portTypes = [.builtInMic]
+        case .bluetooth: portTypes = [.bluetoothHFP]
+        case .external: portTypes = [.usbAudio, .headsetMic]
+        }
+        let available = (audioSession.availableInputs ?? []).filter { portTypes.contains($0.portType) }
+        // Keep the current eligible accessory if several are connected.
+        let currentUID = audioSession.currentRoute.inputs.first?.uid
+        guard let port = available.first(where: { $0.uid == currentUID }) ?? available.first else {
           throw AVFoundationDriverError.operationFailed
         }
         lock.withLock { selectedInputUID = port.uid }

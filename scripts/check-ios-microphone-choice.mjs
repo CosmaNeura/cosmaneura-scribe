@@ -65,17 +65,20 @@ try {
   select = async input => ({ version: 1, input });
   button("resume-recording").click(); await flush();
   assert.equal(resumes, 1); assert.equal(calls.at(-1), "bluetooth");
+  await choose("external"); button("resume-recording").click(); await flush();
+  assert.equal(resumes, 2); assert.equal(calls.at(-1), "external");
+  await choose("bluetooth");
   for (const response of [undefined, { version: 2, input: "bluetooth" }, { version: 1, input: "built_in" }]) {
     select = async () => response;
-    button("resume-recording").click(); await flush(); assert.equal(resumes, 1);
+    button("resume-recording").click(); await flush(); assert.equal(resumes, 2);
     assert.ok(root.querySelector('[role="alert"]').textContent.includes("could not be confirmed"));
   }
   select = async () => { throw new Error("invented private native detail"); };
-  button("resume-recording").click(); await flush(); assert.equal(resumes, 1);
+  button("resume-recording").click(); await flush(); assert.equal(resumes, 2);
   assert.equal(root.textContent.includes("private native detail"), false);
   select = () => new Promise(resolve => { resolveSelection = resolve; });
   button("resume-recording").click(); await flush(); abort.abort();
   resolveSelection({ version: 1, input: "bluetooth" }); await flush();
-  assert.equal(resumes, 1); assert.equal(button("microphone-input"), null);
+  assert.equal(resumes, 2); assert.equal(button("microphone-input"), null);
   console.log("iPhone microphone UI: explicit default/choice, confirmed start/resume, busy fencing, failed confirmation and revocation passed.");
 } finally { dispose(); dom.window.close(); }

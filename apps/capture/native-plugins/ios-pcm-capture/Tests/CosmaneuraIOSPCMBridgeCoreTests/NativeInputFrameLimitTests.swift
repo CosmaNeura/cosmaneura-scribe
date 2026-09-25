@@ -192,6 +192,8 @@ struct NativeInputFrameLimitTests {
     try bridge.selectMicrophoneInput("built_in")
     try otherBridge.selectMicrophoneInput("bluetooth")
     #expect(input.selected == .builtIn && otherInput.selected == .bluetooth)
+    try bridge.selectMicrophoneInput("external")
+    #expect(input.selected == .external && bridge.confirmCaptureIdle())
     #expect(events.terminalFailures.isEmpty && events.fullPacketCount == 0)
   }
 }

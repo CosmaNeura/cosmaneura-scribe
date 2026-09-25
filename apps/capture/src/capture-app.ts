@@ -39,7 +39,7 @@ export class CaptureApp extends LitElement {
   #disposeReview: (() => void) | undefined;
   #busy = false;
   #stopping = false;
-  #microphoneInput: "built_in" | "bluetooth" = "built_in";
+  #microphoneInput: "built_in" | "bluetooth" | "external" = "built_in";
   #microphoneError = false;
   #consented = false;
   #controller: CaptureFlowController | undefined;
@@ -246,10 +246,13 @@ export class CaptureApp extends LitElement {
                 @change=${this.#changeMicrophone}>
                 <option value="built_in">iPhone microphone</option>
                 <option value="bluetooth">Bluetooth microphone (AirPods or headset)</option>
+                <option value="external">USB or wired microphone</option>
               </select>
               <small>${this.#microphoneInput === "built_in"
                 ? "Use the iPhone microphone for a conversation in the room."
-                : "Connect your AirPods or headset before recording. Check that both voices are audible."}</small>
+                : this.#microphoneInput === "bluetooth"
+                  ? "Connect your AirPods or headset before recording. Check that both voices are audible."
+                  : "Connect your USB or wired microphone before recording. Check that both voices are audible."}</small>
             </label>` : ""}
             ${this.#microphoneError ? html`<p role="alert">Microphone choice could not be confirmed. Stop any other recording, then retry.</p>` : ""}
             <div class="record-actions">
@@ -460,7 +463,7 @@ export class CaptureApp extends LitElement {
   readonly #changeMicrophone = (event: Event): void => {
     if (this.#busy || this.#stopping || !["ready", "paused"].includes(this.#snapshot.state)) return;
     const value = (event.currentTarget as HTMLSelectElement).value;
-    if (value !== "built_in" && value !== "bluetooth") return;
+    if (value !== "built_in" && value !== "bluetooth" && value !== "external") return;
     this.#microphoneInput = value; this.#microphoneError = false; this.requestUpdate();
   };
 
