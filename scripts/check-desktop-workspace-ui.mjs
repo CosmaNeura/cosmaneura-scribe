@@ -20,7 +20,10 @@ window.fetch = () => { throw new Error("Unexpected renderer network"); };
 const module = new SourceTextModule(await readFile(bundle, "utf8"), { context: dom.getInternalVMContext() });
 await module.link(() => { throw new Error("Unexpected external module"); }); await module.evaluate();
 const until = async predicate => {
-  for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
+  for (let i = 0; i < 100; i++) {
+    if (predicate() && root.querySelector(".provider-workspace")?.getAttribute("aria-busy") !== "true") return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
   throw new Error("Expected desktop workspace view did not arrive");
 };
 const click = selector => {
@@ -156,17 +159,57 @@ try {
   click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
   root.querySelector('[name="schema"]').value = schema; click(action("read")); await until(() => root.querySelector(action("generate")));
   click(action("generate")); await until(() => root.querySelector('[name="note-0"]'));
-  root.querySelector('[name="note-0"]').value = "Invented clinician edit."; click(action("save"));
+  const editor = root.querySelector('[name="note-0"]');
+  editor.value = "Invented clinician edit.";
+  for (const destination of ["review", "encounters"]) {
+    const callsBefore = methods.length, savesBefore = journalSaves.length;
+    click(action(destination));
+    await until(() => root.getAttribute("aria-busy") === "false");
+    assert.equal(root.querySelector('[name="note-0"]'), editor, "Navigation must retain the unsaved editor");
+    assert.equal(editor.value, "Invented clinician edit.");
+    assert.ok(root.textContent.includes("Your note has unsaved edits."));
+    assert.equal(methods.length, callsBefore, "Guarding navigation must not call Core or close the encounter");
+    assert.equal(journalSaves.length, savesBefore, "Navigation must not save edits implicitly");
+    click(action("keep-editing"));
+    await until(() => !root.querySelector(action("discard-edits")));
+    assert.equal(root.querySelector('[name="note-0"]'), editor);
+    assert.equal(editor.value, "Invented clinician edit.");
+  }
+  // Explicit discard takes only the requested route and leaves the saved note unchanged.
+  click(action("review")); await until(() => root.querySelector(action("discard-edits")));
+  click(action("discard-edits")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  assert.equal(fields.Subjective, english);
+  assert.equal(root.querySelector(action("discard-edits")), null);
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
+  root.querySelector('[name="schema"]').value = schema; click(action("read"));
+  await until(() => root.querySelector('[name="note-0"]'));
+  // Reverting an edit to the displayed baseline does not require a discard.
+  root.querySelector('[name="note-0"]').value = "Temporary invented edit.";
+  root.querySelector('[name="note-0"]').value = english;
+  click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  assert.equal(root.querySelector(action("discard-edits")), null);
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
+  root.querySelector('[name="schema"]').value = schema; click(action("read"));
+  await until(() => root.querySelector('[name="note-0"]'));
+  root.querySelector('[name="note-0"]').value = "Invented clinician edit.";
+  click(action("encounters")); await until(() => root.querySelector(action("discard-edits")));
+  click(action("save"));
   await until(() => /Edits saved to Core/u.test(root.textContent)); assert.equal(journal.progress.pendingSave, null);
+  assert.equal(root.querySelector(action("discard-edits")), null, "Saving must cancel the old navigation request");
   assert.ok(journalSaves.some(progress => progress.pendingSave)); assert.equal(fields.Subjective, "Invented clinician edit.");
   click(action("core")); await until(() => navigation.length === 1); assert.equal(navigation[0], savedNote);
+  root.querySelector('[name="note-0"]').value = "Unsaved edit before revocation.";
+  click(action("review")); await until(() => root.querySelector(action("discard-edits")));
   change("signedOut"); assert.equal(root.textContent.includes("Invented clinician edit."), false);
+  assert.equal(root.querySelector('[name="note-0"]'), null, "Unsaved edits must never delay access revocation");
+  assert.equal(root.querySelector(action("discard-edits")), null);
   await until(() => root.querySelector('[data-session-action="sign-in"]') && closes === 1);
   assert.equal(JSON.stringify(wire).includes("invented-native-private-value"), false);
   for (const method of ["create", "open", "review_load", "review_save", "review_clear", "core", "journal_save", "open_core", "disconnect"]) assert.ok(methods.includes(method), method);
   await dispose(); dispose = null; await boundary.dispose();
   assert.equal(authObservers.size, 0); assert.equal(handlers.size, 0); assert.equal(rendererEvents.eventNames().length, 0);
   process.stdout.write(JSON.stringify({ checks: 3, compiled_provider_ui: true, actual_main_preload_mapping: true, compiled_preload: Boolean(preloadBundle), sender_rejection_before_native_access: true,
-    explicit_review_before_note: true, journaled_note_edit_and_core_navigation: true, revocation_clears_content: true,
+    explicit_review_before_note: true, journaled_note_edit_and_core_navigation: true, unsaved_note_navigation_guard: true,
+    explicit_discard_and_keep_editing: true, revocation_clears_content: true,
     actual_electron: false, real_backend: false, physical_recording: false }) + "\n");
 } finally { await dispose?.(); await boundary.dispose(); dom.window.close(); }
