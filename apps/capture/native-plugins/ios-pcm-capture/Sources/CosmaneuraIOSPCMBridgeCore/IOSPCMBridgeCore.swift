@@ -380,7 +380,7 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
         targetFramesPerChunk: configuration.targetFramesPerChunk,
         maximumChunks: configuration.maximumChunks,
         maximumInputFramesPerBuffer: min(
-          4_096,
+          PCMConfiguration.maximumFramesPerInputBuffer,
           configuration.targetFramesPerChunk
         ),
         authority: configuration.authority
