@@ -161,6 +161,19 @@ try {
   click(action("generate")); await until(() => root.querySelector('[name="note-0"]'));
   const editor = root.querySelector('[name="note-0"]');
   editor.value = "Invented clinician edit.";
+  const comparison = root.querySelector("[data-note-transcript]");
+  assert.ok(comparison, "Draft editing must offer its recording transcript in place");
+  assert.ok(comparison.textContent.includes(spanish));
+  assert.ok(comparison.textContent.includes(english));
+  assert.ok(comparison.textContent.includes("accepted translation"));
+  assert.equal(comparison.querySelector("[data-review-action]"), null, "Comparison must not issue translation decisions");
+  const comparisonCalls = methods.length, comparisonSaves = journalSaves.length;
+  comparison.querySelector("summary").click();
+  assert.equal(comparison.open, true);
+  assert.equal(root.querySelector('[name="note-0"]'), editor);
+  assert.equal(editor.value, "Invented clinician edit.");
+  assert.equal(methods.length, comparisonCalls, "Comparing an already-loaded source must not call Core");
+  assert.equal(journalSaves.length, comparisonSaves, "Source comparison must not save edits");
   for (const destination of ["review", "encounters"]) {
     const callsBefore = methods.length, savesBefore = journalSaves.length;
     click(action(destination));
@@ -202,6 +215,7 @@ try {
   click(action("review")); await until(() => root.querySelector(action("discard-edits")));
   change("signedOut"); assert.equal(root.textContent.includes("Invented clinician edit."), false);
   assert.equal(root.querySelector('[name="note-0"]'), null, "Unsaved edits must never delay access revocation");
+  assert.equal(root.querySelector("[data-note-transcript]"), null, "Revocation must also clear the source comparison");
   assert.equal(root.querySelector(action("discard-edits")), null);
   await until(() => root.querySelector('[data-session-action="sign-in"]') && closes === 1);
   assert.equal(JSON.stringify(wire).includes("invented-native-private-value"), false);
@@ -210,6 +224,6 @@ try {
   assert.equal(authObservers.size, 0); assert.equal(handlers.size, 0); assert.equal(rendererEvents.eventNames().length, 0);
   process.stdout.write(JSON.stringify({ checks: 3, compiled_provider_ui: true, actual_main_preload_mapping: true, compiled_preload: Boolean(preloadBundle), sender_rejection_before_native_access: true,
     explicit_review_before_note: true, journaled_note_edit_and_core_navigation: true, unsaved_note_navigation_guard: true,
-    explicit_discard_and_keep_editing: true, revocation_clears_content: true,
+    explicit_discard_and_keep_editing: true, in_place_transcript_comparison: true, revocation_clears_content: true,
     actual_electron: false, real_backend: false, physical_recording: false }) + "\n");
 } finally { await dispose?.(); await boundary.dispose(); dom.window.close(); }

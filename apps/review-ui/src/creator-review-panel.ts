@@ -209,7 +209,14 @@ export function renderCreatorReview(state: CreatorReviewState): string {
   </section>`;
 }
 
-function renderTranscript(view: CreatorReviewView, phase: Phase): string {
+/** Reuse the already-authorized transcript without mounting decision controls. */
+export function renderNoteTranscript(view: CreatorReviewView): string {
+  if (!view.working?.note_ready || !view.source) return "";
+  return `<details data-note-transcript><summary>Compare with recording transcript</summary>
+    ${renderTranscript(view, "ready", true)}</details>`;
+}
+
+function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = false): string {
   const working = view.working;
   const source = view.source;
   if (working == null || source == null) return "";
@@ -220,7 +227,8 @@ function renderTranscript(view: CreatorReviewView, phase: Phase): string {
   return `<div class="creator-transcript-heading"><h2>Transcript</h2>
     <span>Version ${working.working_transcript_version}</span></div>
     <p class="creator-help">English speech stays in English. Spanish is shown beside its translation.
-    Accept only a faithful translation; reject one that changes the meaning.</p>
+    ${readOnly ? "Compare the wording with your draft. Expanding this transcript keeps your unsaved edits in place."
+    : "Accept only a faithful translation; reject one that changes the meaning."}</p>
     <ol class="creator-segments">${source.segments.map((segment) => {
       const review = reviews.get(segment.source_segment_id);
       const english = resolved.get(segment.source_segment_id);
@@ -237,7 +245,7 @@ function renderTranscript(view: CreatorReviewView, phase: Phase): string {
           ${spanish ? `<div><h3>English · ${review ? "proposed translation" : english?.resolution === "spanish_translation" ? "accepted translation" : "not ready"}</h3>
             <p lang="en">${englishText == null ? "Translation is not ready for use." : escape(englishText)}</p></div>` : ""}
         </div>
-        ${review === undefined ? (pending === undefined
+        ${readOnly ? "" : review === undefined ? (pending === undefined
           ? issues.map((issue) => `<p class="creator-blocker">${escape(blockerCopy(issue.code))}</p>`).join("")
           : `<p class="creator-blocker">${escape(progressCopy(pending))}</p>`) : `
           <div class="creator-review-actions">
