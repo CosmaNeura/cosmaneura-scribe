@@ -184,13 +184,18 @@ export function mountCreatorReview(
 export function renderCreatorReview(state: CreatorReviewState): string {
   const view = state.view;
   const ready = view?.working?.note_ready === true;
+  const sourceSegments = view?.source?.segments ?? [];
+  const languageLabel = sourceSegments.some(segment => segment.source_locale === "es-US")
+    ? "Spanish → English · "
+    : sourceSegments.length > 0 && sourceSegments.every(segment => segment.source_locale === "en-US")
+      ? "English · " : "";
   const subtitle = ready
     ? "English transcript ready"
     : view === null ? "Your recording" : reviewStatusCopy(view);
   return `<section class="creator-review" aria-label="Your recording and transcript">
     <header class="creator-review-header">
       <div><p class="creator-eyebrow">Cosmaneura Scribe</p><h1>Review your recording</h1>
-      <p>Spanish → English · Original speech preserved</p></div>
+      <p>${languageLabel}Original speech preserved</p></div>
       <button type="button" data-review-action="refresh"
         ${["loading", "saving", "retry"].includes(state.phase) ? "disabled" : ""}>Refresh</button>
     </header>
@@ -223,12 +228,14 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
   const reviews = new Map((view.review_queue?.items ?? []).map((item) => [item.source_segment_id, item]));
   const resolved = new Map(working.segments.map((item) => [item.source_segment_id, item]));
   const blockers = working.blockers ?? [];
+  const hasSpanish = source.segments.some(segment => segment.source_locale === "es-US");
   const progress = new Map((view.translation_progress ?? []).map((item) => [item.source_segment_id, item.state]));
   return `<div class="creator-transcript-heading"><h2>Transcript</h2>
     <span>Version ${working.working_transcript_version}</span></div>
-    <p class="creator-help">English speech stays in English. Spanish is shown beside its translation.
+    <p class="creator-help">${hasSpanish ? "English speech stays in English. Spanish is shown beside its translation." : "Original speech is shown below."}
     ${readOnly ? "Compare the wording with your draft. Expanding this transcript keeps your unsaved edits in place."
-    : "Accept only a faithful translation; reject one that changes the meaning."}</p>
+    : hasSpanish ? "Accept only a faithful translation; reject one that changes the meaning."
+      : "Review the transcript for accuracy before preparing your note."}</p>
     <ol class="creator-segments">${source.segments.map((segment) => {
       const review = reviews.get(segment.source_segment_id);
       const english = resolved.get(segment.source_segment_id);
