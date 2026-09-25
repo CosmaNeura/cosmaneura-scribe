@@ -94,6 +94,40 @@ const preparation = { mode: "configured_core" as const, schemaVersion: 2 as cons
   leaseIdempotencyKey: null, leaseRequest: null };
 
 describe("native provider host composition", () => {
+  it("reuses only the custody read for restore, then rereads native storage", async () => {
+    const service = connection(), first = await (await service.open()).recorder(session, service.abort.signal);
+    await first.queueStorage.create(record()); await first.release();
+    native.list.mockClear(); native.get.mockClear();
+    const restored = await (await service.open()).recorder(session, service.abort.signal);
+    expect(native.list).toHaveBeenCalledTimes(1); expect(native.get).toHaveBeenCalledTimes(1);
+    expect(await restored.queueStorage.list()).toEqual([record()]);
+    expect(native.list).toHaveBeenCalledTimes(1); expect(native.get).toHaveBeenCalledTimes(1);
+    native.list.mockRejectedValueOnce(new Error("native custody became unavailable"));
+    await expect(restored.queueStorage.list()).rejects.toThrow("native custody became unavailable");
+    await restored.release();
+  });
+
+  it.each(["create", "get", "compareAndSwap"] as const)("invalidates the opening read before %s, including a failed operation", async operation => {
+    const service = connection(), resources = await (await service.open()).recorder(session, service.abort.signal);
+    if (operation === "create") {
+      await resources.queueStorage.create(record());
+    } else if (operation === "get") {
+      expect(await resources.queueStorage.get(objectId)).toBeNull();
+    } else {
+      expect(await resources.queueStorage.compareAndSwap(objectId, 0, record())).toBe(false);
+    }
+    native.list.mockRejectedValueOnce(new Error("fresh native read required"));
+    await expect(resources.queueStorage.list()).rejects.toThrow("fresh native read required");
+    await resources.release();
+  });
+
+  it("cannot use the opening read after encounter revocation", async () => {
+    const service = connection(), resources = await (await service.open()).recorder(session, service.abort.signal);
+    service.abort.abort();
+    await expect(resources.queueStorage.list()).rejects.toThrow("provider_native_scope_unavailable");
+    await resources.release();
+  });
+
   it("uses the authorized binding and recovers the same encrypted flow and scoped queue without starting audio", async () => {
     const service = connection(), encounter = await service.open();
     expect(await encounter.journal.load()).toEqual({ revision: null, progress: null });

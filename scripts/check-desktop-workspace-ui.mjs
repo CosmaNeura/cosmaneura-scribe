@@ -39,7 +39,7 @@ const schema = "doctor_note_schema_01j00000000000000000000000", transcriptRef = 
 const firstNote = "visit_note_01j00000000000000000000000", savedNote = "visit_note_01j00000000000000000000001";
 const english = "Invented test visit.", spanish = "Consulta de prueba inventada.";
 const now = new Date().toISOString(), methods = [], wire = [], authObservers = new Set();
-let accepted = false, prepared = false, pendingReview = null, creates = 0, closes = 0, authReads = 0, failListener = true;
+let accepted = false, prepared = false, pendingReview = null, creates = 0, closes = 0, authReads = 0, failListener = true, reviewReads = 0;
 let fields = { Subjective: english, Assessment: "Invented fixture only." }, noteRef = firstNote;
 let state = { phase: "ready", revision: webcrypto.randomUUID() };
 let journal = { revision: "1", progress: { sessionId, uploaded: true, pendingSave: null,
@@ -94,7 +94,7 @@ const host = {
             const envelope = { contract_version: "1", binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: body.request_nonce, checked_at: now };
             if (path.endsWith("/capture-operations")) {
               const kind = body.operation.kind;
-              if (kind === "creator_review") return Response.json({ ...envelope, operation: kind, receipt: review() });
+              if (kind === "creator_review") { reviewReads++; return Response.json({ ...envelope, operation: kind, receipt: review() }); }
               assert.equal(kind, "decide_translation"); assert.equal(key, pendingReview.key);
               assert.deepEqual(body.operation.payload, pendingReview.request); assert.equal(body.operation.payload.decision, "accepted");
               decisions.push(key); accepted = true;
@@ -153,8 +153,12 @@ try {
   dispose = module.namespace.mountDesktopProviderApplication(root, exposed.scribeProvider, exposed.scribeRecorder);
   await until(() => root.querySelector(action("open"))); click(action("create")); await until(() => creates === 1 && root.querySelector(action("open")));
   click(action("open")); await until(() => root.querySelector('[data-review-action="accepted"]'));
+  assert.equal(reviewReads, 1, "Opening review must reuse its already-authorized status response");
+  click('[data-review-action="refresh"]'); await until(() => root.querySelector('[data-review-action="accepted"]'));
+  assert.equal(reviewReads, 2, "Explicit refresh must reauthorize and read again");
   assert.equal(root.querySelector('[data-review-action="continue"]'), null);
   click('[data-review-action="accepted"]'); await until(() => root.querySelector('[data-review-action="continue"]'));
+  assert.equal(reviewReads, 3, "Saving a decision must read the current review");
   assert.equal(decisions.length, 1); assert.equal(pendingReview, null);
   click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
   root.querySelector('[name="schema"]').value = schema; click(action("read")); await until(() => root.querySelector(action("generate")));

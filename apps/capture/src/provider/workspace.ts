@@ -135,12 +135,20 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       <label class="provider-consent"><input name="consent" type="checkbox">All parties still agree to recording and transcription.</label>
       <button data-workspace-action="renew-consent">Prepare secure recording</button>`);
   };
-  const showReview = (): void => {
+  const showReview = (openingView?: CreatorReviewView): void => {
     requireValue(client && context);
     show("");
-    disposeContent = mountCreatorReview(content, new HttpCreatorReviewApi(session(), client.reviewRequest(session())), {
+    const api = new HttpCreatorReviewApi(session(), client.reviewRequest(session()));
+    // recordOrReview just performed this authorized read for the same encounter.
+    // Consume it once on mount; refresh/decisions/note handoff still read afresh.
+    let first = openingView;
+    const dispose = mountCreatorReview(content, {
+      read: async () => { const view = first; first = undefined; return view ?? api.read(); },
+      decide: (request, key) => api.decide(request, key),
+    }, {
       journal: context.reviewJournal(session()), continueToNote: openNotes,
     });
+    disposeContent = () => { first = undefined; dispose(); };
   };
   const recordOrReview = async (): Promise<void> => {
     requireValue(client && context);
@@ -150,7 +158,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (!authorized(n)) return;
     if (!["created", "capturing"].includes(view.status)) {
       if (!progress().uploaded) await persist({ ...progress(), uploaded: true });
-      if (authorized(n)) showReview();
+      if (authorized(n)) showReview(view);
       return;
     }
     requireValue(!progress().uploaded);
