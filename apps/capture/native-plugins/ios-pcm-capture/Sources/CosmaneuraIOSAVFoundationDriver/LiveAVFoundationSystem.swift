@@ -56,6 +56,7 @@
     private let lock = NSLock()
     private let notificationCenter: NotificationCenter
     private let audioSession: AVAudioSession
+    private let signalMonitor: PCMSignalMonitor?
     private var engine = AVAudioEngine()
     private var tapInstalled = false
     private var activationAttempted = false
@@ -64,10 +65,12 @@
 
     public init(
       notificationCenter: NotificationCenter = .default,
-      audioSession: AVAudioSession = .sharedInstance()
+      audioSession: AVAudioSession = .sharedInstance(),
+      signalMonitor: PCMSignalMonitor? = nil
     ) {
       self.notificationCenter = notificationCenter
       self.audioSession = audioSession
+      self.signalMonitor = signalMonitor
     }
 
     deinit { clearEventHandler() }
@@ -159,6 +162,7 @@
           options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
         try audioSession.setActive(true)
+        signalMonitor?.setRoute(Self.inputRoute(audioSession.currentRoute))
       } catch {
         throw AVFoundationDriverError.operationFailed
       }
@@ -191,7 +195,7 @@
         bufferSize: AVAudioFrameCount(frameCapacity),
         format: source
       ) { [weak self] buffer, _ in
-        guard let frames = Self.copyFrames(buffer) else {
+        guard let frames = Self.copyFrames(buffer, signalMonitor: self?.signalMonitor) else {
           self?.emit(.captureFailed)
           return
         }
@@ -241,7 +245,18 @@
       emit(.permissionRevoked)
     }
 
-    private static func copyFrames(_ buffer: AVAudioPCMBuffer) -> OwnedAudioFrames? {
+    private static func inputRoute(_ route: AVAudioSessionRouteDescription) -> PCMSignalMonitor.InputRoute {
+      guard let input = route.inputs.first else { return .none }
+      switch input.portType {
+      case .builtInMic: return .builtIn
+      case .bluetoothHFP, .bluetoothLE: return .bluetooth
+      case .headsetMic, .lineIn: return .wired
+      case .usbAudio: return .usb
+      default: return .other
+      }
+    }
+
+    private static func copyFrames(_ buffer: AVAudioPCMBuffer, signalMonitor: PCMSignalMonitor?) -> OwnedAudioFrames? {
       let count = Int(buffer.frameLength)
       let channelCount = Int(buffer.format.channelCount)
       let roundedRate = buffer.format.sampleRate.rounded()
@@ -270,6 +285,7 @@
       for channel in 0..<channelCount {
         channels.append(Array(UnsafeBufferPointer(start: data[channel], count: count)))
       }
+      signalMonitor?.recordInput(channels, sampleRateHz: Int(roundedRate))
       let frames = OwnedAudioFrames(sampleRateHz: Int(roundedRate), channels: channels)
       transferred = true
       return frames

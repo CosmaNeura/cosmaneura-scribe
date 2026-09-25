@@ -1,4 +1,6 @@
 import { LitElement, html, type TemplateResult } from "lit";
+import { Capacitor } from "@capacitor/core";
+import "./native/ios-input-meter";
 
 import { HttpCaptureBff } from "./bff/http-client";
 import { BffCaptureQueueTransport } from "./bff/queue-transport";
@@ -299,6 +301,9 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : "Ready to record"}</p>
             <p>Recording window used ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
+            ${this.#snapshot.state === "recording" && !this.#stopping && !this.#snapshot.desktop
+              && this.#sourceKind === "microphone" && Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios"
+              ? html`<scribe-ios-input-meter></scribe-ios-input-meter>` : ""}
             ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`) : html`<section class="flow-card" aria-labelledby="status-title">
