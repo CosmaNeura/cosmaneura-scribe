@@ -371,8 +371,38 @@ async def test_retryable_provider_error_then_success(capture: CaptureHarness):
         await capture.process()
     assert error.value.__context__ is None
     assert capture.speech.calls == 1
+    async with capture.trial.provider.transaction(capture.trial.tenant) as store:
+        failed = await store.transcription_job_for(capture.trial.tenant, capture.trial.draft.id)
+    assert failed is not None
+    assert failed.status.value == "retryable"
+    assert failed.last_error_code == "captured_speech_processing_failed"
     capture.speech.fail = False
     await capture.process()
+    assert capture.speech.calls == 2 and await capture.trial.counts() == (1, 1, 1)
+
+
+async def test_publication_failure_is_distinct_and_retryable(
+    capture: CaptureHarness, monkeypatch: pytest.MonkeyPatch,
+):
+    await capture.record()
+    worker = capture.worker()
+
+    async def fail_publication(**kwargs: object) -> None:
+        raise RuntimeError("synthetic-protected-publication-detail")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(worker._runtime, "publish_speech_result", fail_publication)
+        with pytest.raises(TranscriptionWorkerError) as error:
+            await capture.process(worker)
+    assert error.value.__context__ is None
+    assert "synthetic-protected" not in repr(error.value)
+    async with capture.trial.provider.transaction(capture.trial.tenant) as store:
+        failed = await store.transcription_job_for(capture.trial.tenant, capture.trial.draft.id)
+    assert failed is not None
+    assert failed.status.value == "retryable" and failed.attempt_count == 1
+    assert failed.last_error_code == "captured_speech_publication_failed"
+    assert capture.speech.calls == 1 and await capture.trial.counts() == (0, 0, 0)
+    await capture.process(worker)
     assert capture.speech.calls == 2 and await capture.trial.counts() == (1, 1, 1)
 
 

@@ -119,7 +119,9 @@ class CapturedTranscriptionWorker(LeasedAudioTranscription):
                 entity_id=job.id,
             )
 
-        failure = "captured_speech_attempt_failed"
+        # Keep the failing boundary actionable without persisting provider errors
+        # or protected source data. These labels do not change retry policy.
+        failure = "captured_speech_processing_failed"
         terminal = False
         try:
             result = await self._transcribe_with_heartbeat(
@@ -135,6 +137,7 @@ class CapturedTranscriptionWorker(LeasedAudioTranscription):
             if any(segment.channel not in declared for segment in result.segments):
                 raise TranscriptionInputError("speech_source_channel_conflict")
             normalize_azure_source(result)
+            failure = "captured_speech_publication_failed"
             await self._runtime.publish_speech_result(
                 tenant_id=tenant_id,
                 session_id=session_id,
