@@ -64,9 +64,10 @@ export class CoreCaptureClient {
     return value.session_id;
   }
 
-  async operation(sessionId: string, operation: CoreOperation, key: string = crypto.randomUUID()): Promise<unknown> {
+  async operation(sessionId: string, operation: CoreOperation, key: string = crypto.randomUUID(),
+    signal: AbortSignal = this.signal): Promise<unknown> {
     requireValue(isUuid(sessionId));
-    const value = await this.send("capture-operations", { operation }, key);
+    const value = await this.send("capture-operations", { operation }, key, signal);
     requireValue(value.operation === operation.kind && record(value.receipt));
     // All session-bearing receipts must match the admitted session. Core also
     // validates operation-specific contracts before returning this envelope.
@@ -103,18 +104,35 @@ export class CoreCaptureClient {
     };
   }
 
-  private async send(action: string, payload: Record<string, unknown>, key: string): Promise<Record<string, unknown>> {
-    requireValue(!this.signal.aborted && /^[A-Za-z0-9._:-]{8,255}$/u.test(key));
+  private async send(action: string, payload: Record<string, unknown>, key: string,
+    operationSignal: AbortSignal = this.signal): Promise<Record<string, unknown>> {
+    if (operationSignal === this.signal) return this.sendRequest(action, payload, key, this.signal);
+    requireValue(!this.signal.aborted && !operationSignal.aborted);
+    // Queue deadlines must cancel native I/O while encounter closure still
+    // cancels every request. Explicit linking also supports early iOS 17.
+    const controller = new AbortController(), abort = (): void => controller.abort();
+    this.signal.addEventListener("abort", abort, { once: true });
+    operationSignal.addEventListener("abort", abort, { once: true });
+    try { return await this.sendRequest(action, payload, key, controller.signal); }
+    finally {
+      this.signal.removeEventListener("abort", abort);
+      operationSignal.removeEventListener("abort", abort);
+    }
+  }
+
+  private async sendRequest(action: string, payload: Record<string, unknown>, key: string,
+    signal: AbortSignal): Promise<Record<string, unknown>> {
+    requireValue(!signal.aborted && /^[A-Za-z0-9._:-]{8,255}$/u.test(key));
     const nonce = crypto.randomUUID();
     const response = await this.request(`/service/v1/agent/scribe/${action}`, {
       ...payload, binding_ref: this.scope.bindingRef, workspace_id: this.scope.workspaceId, request_nonce: nonce,
-    }, key, this.signal);
-    requireValue(!this.signal.aborted);
+    }, key, signal);
+    requireValue(!signal.aborted);
     if (response.status !== 200) {
       if (action === "capture-admissions" && response.status === 409
         && response.headers.get("content-type")?.split(";", 1)[0] === "application/json") {
         const failure: unknown = await readBoundedJson(response, 1024);
-        requireValue(!this.signal.aborted);
+        requireValue(!signal.aborted);
         if (record(failure) && Object.keys(failure).length === 1 && failure.detail === "provider_consent_required") {
           throw new BffResponseError(409, "core_capture_consent_required", null);
         }
@@ -123,7 +141,7 @@ export class CoreCaptureClient {
     }
     requireValue(response.headers.get("content-type")?.split(";", 1)[0] === "application/json");
     const value: unknown = await readBoundedJson(response, 8 * 1024 * 1024);
-    requireValue(!this.signal.aborted && record(value) && value.contract_version === "1"
+    requireValue(!signal.aborted && record(value) && value.contract_version === "1"
       && value.binding_ref === this.scope.bindingRef && value.workspace_id === this.scope.workspaceId
       && value.request_nonce === nonce && typeof value.checked_at === "string"
       && Number.isFinite(Date.parse(value.checked_at)));
@@ -137,7 +155,7 @@ export class CoreCaptureBff implements Bff.CaptureBff {
   private async send<T>(operation: CoreOperation, id = this.sessionId, options?: Bff.MutationOptions | Bff.RequestOptions): Promise<T> {
     requireValue(id === this.sessionId && !options?.signal?.aborted);
     const result = await this.client.operation(id, operation,
-      options && "idempotencyKey" in options ? options.idempotencyKey : undefined);
+      options && "idempotencyKey" in options ? options.idempotencyKey : undefined, options?.signal);
     requireValue(!options?.signal?.aborted);
     return result as T;
   }
