@@ -12,6 +12,7 @@ import {
 export class IosNativeMicrophoneCaptureSource extends NativePcmCaptureSource {
   public constructor(bridge: IosNativeMicrophoneBridge) {
     const adapted: NativePcmBridge = {
+      deliversDuringDrain: true,
       getAvailability: async () => {
         try { return await bridge.getAppState() === "foreground"; }
         catch (error) { throw startFailure(error); }
