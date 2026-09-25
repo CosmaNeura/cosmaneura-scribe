@@ -83,13 +83,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           ? "Recording stop could not be confirmed. Stop it in the native app before continuing."
           : error instanceof CaptureDeviceCustodyError
             ? "This device could not confirm access to the recording key or saved recording state. Your saved work is retained."
-            : `The ${step} could not be confirmed. Your saved work is retained. Return to Your encounters and reopen this encounter to recover.`;
+            : step === "encounter list"
+              ? "Your encounters could not be loaded. Check your connection, then retry."
+              : `The ${step} could not be confirmed. Your saved work is retained. Return to Your encounters and reopen this encounter to recover.`;
         if (error instanceof CaptureDeviceCustodyError) {
           show('<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p><button data-workspace-action="encounters">Your encounters</button>');
         } else if (context && journal.progress?.pendingSave) {
           show('<h1>Confirm your previous save</h1><p>Your exact edits are retained for recovery.</p><button data-workspace-action="resolve">Recover note save</button>');
         } else if (openingRef) {
           show(`<h1>Encounter could not open</h1><p>Check your connection, then retry. Recording has not started.</p><button data-workspace-action="open" data-appointment="${escape(openingRef)}">Retry opening encounter</button>`);
+        } else if (step === "encounter list") {
+          show('<h1>Your encounters</h1><button data-workspace-action="encounters">Retry loading encounters</button>');
         }
       }
     } finally { busy = false; root.removeAttribute("aria-busy"); }

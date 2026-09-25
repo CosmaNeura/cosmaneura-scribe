@@ -113,6 +113,38 @@ function fixture(phase = "ready") {
 let checks = 0;
 async function check(run) { root.replaceChildren(); await run(); checks++; }
 try {
+  for (const failureAt of ["initial", "refresh"]) await check(async () => {
+    const f = fixture(), connect = f.host.connect, revision = f.state.revision;
+    let failList = failureAt === "initial", listCalls = 0;
+    f.host.connect = async signal => {
+      const connected = await connect(signal), listEncounters = connected.workspace.listEncounters;
+      connected.workspace.listEncounters = async () => {
+        listCalls++;
+        if (failList) throw new Error("Private catalog failure must not be displayed");
+        return listEncounters();
+      };
+      return connected;
+    };
+    const dispose = mountProviderApplication(root, f.host);
+    try {
+      if (failureAt === "refresh") {
+        await until(visible); failList = true;
+        root.querySelector('[data-workspace-action="encounters"]').click();
+      }
+      await until(() => root.querySelector('[data-workspace-content] [data-workspace-action="encounters"]'));
+      assert.ok(root.textContent.includes("Your encounters could not be loaded"));
+      assert.equal(root.textContent.includes("Loading your authorized encounters"), false);
+      assert.equal(root.textContent.includes("Private catalog failure"), false);
+      assert.equal(visible(), false);
+      const retry = root.querySelector('[data-workspace-content] [data-workspace-action="encounters"]');
+      assert.equal(retry.textContent, "Retry loading encounters");
+      failList = false; retry.click(); await until(visible);
+      assert.equal(root.querySelector('[data-workspace-notice]').textContent, "");
+      assert.equal(listCalls, failureAt === "initial" ? 2 : 3);
+      assert.equal(f.connects, 1); assert.equal(f.closes, 0);
+      assert.equal(f.signIns, 0); assert.equal(f.signOuts, 0); assert.equal(f.state.revision, revision);
+    } finally { await dispose(); }
+  });
   await check(async () => {
     nativeState = { phase: "ready", revision: webcrypto.randomUUID() };
     let coreOpens = 0;
