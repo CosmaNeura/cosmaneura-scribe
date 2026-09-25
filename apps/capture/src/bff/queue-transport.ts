@@ -190,8 +190,24 @@ function sameRemoteReservation(
     remote.channel === local.channel &&
     remote.sequence_number === local.sequenceNumber &&
     remote.additional_authenticated_data === local.additionalAuthenticatedData &&
-    remote.created_at === local.createdAt
+    sameReservationTimestamp(remote.created_at, local.createdAt)
   );
+}
+
+function sameReservationTimestamp(remote: string, local: string): boolean {
+  const expected = reservationTimestamp(local);
+  return expected !== null && expected === reservationTimestamp(remote);
+}
+
+/** Compare receipt instants at the service's microsecond precision. Date.parse
+ * handles only the whole second/offset; it must not truncate the fractional part. */
+function reservationTimestamp(value: string): string | null {
+  const match = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,6}))?(Z|[+-]\d\d:\d\d)$/u.exec(value);
+  if (!match) return null;
+  const wallSecond = Date.parse(`${match[1]}Z`), utcSecond = Date.parse(`${match[1]}${match[3]}`);
+  if (!Number.isFinite(wallSecond) || !Number.isFinite(utcSecond)
+    || new Date(wallSecond).toISOString().slice(0, 19) !== match[1]) return null;
+  return `${utcSecond}:${(match[2] ?? "").padEnd(6, "0")}`;
 }
 
 function mapBffFailure(error: unknown, mutation: boolean): QueueTransportError {

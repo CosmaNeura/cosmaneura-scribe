@@ -6,6 +6,26 @@ import { BffCaptureQueueTransport } from "./queue-transport";
 import { HttpCiphertextUploadTarget, UploadResponseError } from "./upload-target";
 
 describe("BffCaptureQueueTransport", () => {
+  it.each([
+    ["2026-08-17T12:00:00Z", "2026-08-17T12:00:00.000000Z", true],
+    ["2026-08-17T08:00:00.123-04:00", "2026-08-17T12:00:00.123000Z", true],
+    ["2026-08-18T00:00:00.000001+02:00", "2026-08-17T22:00:00.000001Z", true],
+    ["2026-08-17T12:00:00.123001Z", "2026-08-17T12:00:00.123000Z", false],
+    ["invalid", "invalid", false],
+    ["2026-02-30T12:00:00Z", "2026-02-30T12:00:00Z", false],
+    ["2026-08-17T24:00:00Z", "2026-08-17T24:00:00Z", false],
+    ["2026-08-17T12:00:00.1230001Z", "2026-08-17T12:00:00.1230001Z", false],
+  ])("compares reservation timestamps without losing microsecond identity: %s", async (remote, local, matches) => {
+    const reservation = { ...testReservation(), createdAt: local };
+    const getChunkReceipt = vi.fn<CaptureBff["getChunkReceipt"]>().mockResolvedValue({ state: "reserved", registration: null,
+      reservation: { protocol_version: "1.0", object_id: reservation.objectId, session_id: reservation.sessionId,
+        channel: reservation.channel, sequence_number: reservation.sequenceNumber,
+        additional_authenticated_data: reservation.additionalAuthenticatedData, created_at: remote } });
+    const transport = new BffCaptureQueueTransport(bffStub({ getChunkReceipt }), { putCompleteEnvelope: vi.fn() });
+    if (matches) await expect(transport.getReceipt(reservation)).resolves.toEqual({ state: "reserved" });
+    else await expect(transport.getReceipt(reservation)).rejects.toMatchObject({ code: "chunk_receipt_reservation_mismatch" });
+  });
+
   it("normalizes receipts without exposing BFF transport details", async () => {
     const getChunkReceipt = vi.fn<CaptureBff["getChunkReceipt"]>().mockResolvedValue({
       state: "registered",
