@@ -187,8 +187,9 @@ try {
       nativeCalls.length = 0;
     }
   });
-  for (const recovery of ["empty", "reopen", "custody"]) await check(async () => {
+  for (const recovery of ["empty", "reopen", "custody", "upload", "upload-revoked", "upload-navigation"]) await check(async () => {
     const f = fixture(), connect = f.host.connect;
+    const uploading = recovery.startsWith("upload"), uploadGate = deferred(), retryGate = deferred();
     const sessionId = "10000000-0000-4000-8000-000000000001";
     const scope = { workspaceId: "20000000-0000-4000-8000-000000000002",
       bindingRef: "scribe_capture_binding_01j00000000000000000000000",
@@ -199,7 +200,7 @@ try {
         all_parties_consented: true, granted_at: new Date().toISOString(),
       } } };
     const forbidden = () => { throw new Error("No capture, upload, preparation or journal write in recovery DOM check"); };
-    let opened = 0, deactivated = 0, resumed = 0;
+    let opened = 0, deactivated = 0, resumed = 0, uploads = 0, reviewStatus = "capturing";
     f.host.connect = async signal => {
       const connected = await connect(signal), workspace = connected.workspace;
       workspace.openEncounter = async appointmentRef => {
@@ -209,10 +210,10 @@ try {
             assert.equal(body.operation.kind, "creator_review");
             return Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
               operation: "creator_review", receipt: { schema_version: "1.0", session_id: sessionId,
-                status: "capturing", source: null, working: null, review_queue: null } });
+                status: reviewStatus, source: null, working: null, review_queue: null } });
           },
           journal: { load: async () => ({ revision: "1", progress }), save: forbidden },
-          reviewJournal: () => ({ load: forbidden, save: forbidden }), openInCore: forbidden,
+          reviewJournal: () => ({ load: uploading ? async () => null : forbidden, save: forbidden }), openInCore: forbidden,
           recorder: async id => {
             assert.equal(id, sessionId);
             if (recovery === "custody") return {
@@ -221,17 +222,29 @@ try {
               queueStorage: {}, uploadTarget: { putCompleteEnvelope: forbidden },
               release: async () => { deactivated++; },
             };
-            const snapshot = { sessionId, state: recovery === "empty" ? "paused" : "error",
-              statusCode: recovery === "empty" ? "capture_no_saved_audio" : "capture_reopen_required",
-              recordedChunks: 0, queuedChunks: 1, elapsedSeconds: 0, remainingBudgetSeconds: 60,
-              remainingAuthoritySeconds: 60, transcriptionStatus: null, transcript: null,
+            let observe;
+            let snapshot = { sessionId, state: uploading ? "uploading" : recovery === "empty" ? "paused" : "error",
+              statusCode: uploading ? "capture_upload_pending" : recovery === "empty" ? "capture_no_saved_audio" : "capture_reopen_required",
+              recordedChunks: uploading ? 1 : 0, queuedChunks: 1, elapsedSeconds: uploading ? 5 : 0, remainingBudgetSeconds: 60,
+              remainingAuthoritySeconds: uploading ? 0 : 60, transcriptionStatus: null, transcript: null,
               desktop: { phase: recovery === "empty" ? "interrupted" : "stopped", coverage: "incomplete",
                 trimmedStartMs: 0, trimmedEndMs: null } };
             return { sourceKind: "microphone", captureMode: "desktop_meeting", controller: {
-              snapshot, subscribe(listener) { listener(snapshot); return () => {}; },
+              get snapshot() { return snapshot; }, subscribe(listener) { observe = listener; listener(snapshot); return () => { observe = null; }; },
               startRecording: forbidden, stopRecording: forbidden,
               resumeRecording: async () => { resumed++; },
-            }, deactivate: async () => { deactivated++; }, resumePendingWork: forbidden, releaseUploadedCapture: forbidden };
+            }, deactivate: async () => { deactivated++; }, resumePendingWork: uploading ? async () => {
+              uploads++;
+              if (uploads === 1) {
+                await uploadGate.promise;
+                observe?.(snapshot);
+                throw new Error("Private upload failure must not be displayed");
+              }
+              await retryGate.promise;
+              reviewStatus = "processing";
+              snapshot = { ...snapshot, state: "processing", statusCode: "capture_processing" };
+              observe?.(snapshot);
+            } : forbidden, releaseUploadedCapture: forbidden };
           },
         };
       };
@@ -251,6 +264,42 @@ try {
         return;
       }
       await until(() => root.querySelector('[data-testid="record-button"]'));
+      if (uploading) {
+        const capture = root.querySelector("cosmaneura-capture");
+        await until(() => uploads === 1);
+        await turn();
+        assert.equal(root.querySelector('[data-testid="retry-upload"]').disabled, true);
+        if (recovery !== "upload") {
+          if (recovery === "upload-revoked") f.change("signedOut");
+          else {
+            root.querySelector('[data-workspace-action="encounters"]').click();
+            await until(() => root.querySelector('[data-workspace-action="open"]'));
+          }
+          assert.equal(root.querySelector("cosmaneura-capture"), null);
+          uploadGate.resolve(); await until(() => deactivated === 1); await turn();
+          assert.equal(root.querySelector("cosmaneura-capture"), null);
+          assert.equal(uploads, 1); assert.equal(resumed, 0); assert.equal(opened, 1);
+          return;
+        }
+        uploadGate.resolve(); await turn();
+        await until(() => root.textContent.includes("Encounter could not open")
+          || root.querySelector('[data-testid="retry-upload"]')?.disabled === false);
+        assert.equal(root.querySelector("cosmaneura-capture"), capture,
+          "A failed automatic upload must retain the opened encounter and its Retry upload control");
+        assert.equal(root.textContent.includes("Recording has not started"), false);
+        assert.equal(root.textContent.includes("Private upload failure"), false);
+        assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
+        assert.equal(root.querySelector('[data-testid="stop-button"]').disabled, true);
+        const retry = root.querySelector('[data-testid="retry-upload"]');
+        retry.click(); retry.click();
+        await until(() => uploads === 2 && retry.disabled);
+        assert.equal(opened, 1); assert.equal(deactivated, 0); assert.equal(resumed, 0);
+        retryGate.resolve(); await until(() => root.textContent.includes("Recording uploaded."));
+        assert.equal(root.querySelector("cosmaneura-capture"), capture);
+        assert.equal(root.querySelector('[data-testid="retry-upload"]'), null);
+        assert.equal(uploads, 2);
+        return;
+      }
       assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
       assert.equal(root.querySelector('[data-testid="stop-button"]').disabled, recovery === "reopen");
       assert.equal(resumed, 0);
@@ -268,7 +317,7 @@ try {
       root.querySelector('[data-workspace-action="open"]').click();
       await until(() => root.querySelector('[data-testid="record-button"]'));
       assert.equal(opened, 2);
-    } finally { await dispose(); }
+    } finally { uploadGate.resolve(); retryGate.resolve(); await dispose(); }
   });
   await check(async () => {
     const f = fixture("signedOut"), dispose = mountProviderApplication(root, f.host);

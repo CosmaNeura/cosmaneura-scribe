@@ -202,7 +202,6 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       } });
     content.replaceChildren(app);
     disposeContent = () => app.remove();
-    if (controller.snapshot.state === "uploading") await lifecycle.resumePendingWork();
   };
   const admit = async (mode: "initial" | "recover" | "renew" = "initial"): Promise<void> => {
     requireValue(client);
