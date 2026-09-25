@@ -103,6 +103,45 @@ describe("IosNativeMicrophoneCaptureSource", () => {
     expect(finalPcmBytes.every((value) => value === 0)).toBe(true);
   });
 
+  it("drains a native full packet before delivering the final partial packet", async () => {
+    const fullPcmBytes = syntheticPcmBytes();
+    const finalPcmBytes = Uint8Array.from([52, 18, 120, 86]);
+    const delivered: Array<{ sequenceNumber: number; durationMs: number; wavBytes: Uint8Array }> = [];
+    const stopModes: string[] = [];
+    const onError = vi.fn();
+    const source = new IosNativeMicrophoneCaptureSource({
+      getAppState: async () => "foreground",
+      start: (_configuration, sink) => ({
+        ready: Promise.resolve(),
+        stop: async ({ mode }) => {
+          stopModes.push(mode);
+          if (mode === "discard") return { finalPcmPacket: null };
+          // The native accumulator may emit a full packet after Stop begins.
+          await sink.onPcmPacket({ sequenceNumber: 0, pcmBytes: fullPcmBytes });
+          return { finalPcmPacket: { sequenceNumber: 1, pcmBytes: finalPcmBytes } };
+        },
+      }),
+    });
+    await source.start({
+      capabilities,
+      onChunk: async chunk => { delivered.push({ ...chunk, wavBytes: chunk.wavBytes.slice() }); },
+      onError,
+    });
+
+    await source.stop();
+
+    expect(stopModes).toEqual(["drain"]);
+    expect(onError).not.toHaveBeenCalled();
+    expect(delivered.map(({ sequenceNumber, durationMs }) => ({ sequenceNumber, durationMs }))).toEqual([
+      { sequenceNumber: 0, durationMs: 20 },
+      { sequenceNumber: 1, durationMs: 0.125 },
+    ]);
+    expect(delivered[0]?.wavBytes).toEqual(SYNTHETIC_WAV);
+    expect(readPcm16(delivered[1]?.wavBytes)).toEqual([4_660, 22_136]);
+    expect(fullPcmBytes.every(value => value === 0)).toBe(true);
+    expect(finalPcmBytes.every(value => value === 0)).toBe(true);
+  });
+
   it("holds native acknowledgement until downstream persistence releases backpressure", async () => {
     const bridge = new FakeIosNativePcmBridge();
     const source = new IosNativeMicrophoneCaptureSource(bridge);
