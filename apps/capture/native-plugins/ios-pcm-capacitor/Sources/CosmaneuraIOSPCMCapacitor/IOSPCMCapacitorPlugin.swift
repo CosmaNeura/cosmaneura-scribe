@@ -16,6 +16,7 @@
     public let jsName = "IOSPCM"
     public let pluginMethods: [CAPPluginMethod] = [
       CAPPluginMethod(name: "getCaptureSignal", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "selectMicrophoneInput", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getAppState", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "confirmCaptureIdle", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getCaptureCapabilities", returnType: CAPPluginReturnPromise),
@@ -40,6 +41,19 @@
       Task { @MainActor in
         NativeCaptureStartGate.registerIdleProbe { native.confirmCaptureIdle() }
       }
+    }
+
+    @objc public func selectMicrophoneInput(_ call: CAPPluginCall) {
+      guard let signalBridge, let input = call.getString("input"),
+        Set(call.options.keys) == Set(["input"]), ["built_in", "bluetooth", "external"].contains(input)
+      else {
+        reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments)
+        return
+      }
+      do {
+        try signalBridge.selectMicrophoneInput(input)
+        call.resolve(["version": 1, "input": input])
+      } catch { reject(call, error: error) }
     }
 
     @objc public func getCaptureSignal(_ call: CAPPluginCall) {

@@ -310,6 +310,7 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
   private let clock: any PCMClock
   private let sourceClock: any PCMSourceClock
   private let signalMonitor: PCMSignalMonitor?
+  private let microphoneInput: AppleMicrophoneInputPreference
   private var usedRunIDs: Set<String> = []
   private let tokenSource: @Sendable () -> String
   private var nextGeneration: UInt64 = 0
@@ -326,6 +327,7 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
     clock: any PCMClock = ContinuousPCMClock(),
     sourceClock: any PCMSourceClock = ContinuousPCMSourceClock(),
     signalMonitor: PCMSignalMonitor? = nil,
+    microphoneInput: AppleMicrophoneInputPreference = AppleMicrophoneInputPreference(),
     tokenSource: @escaping @Sendable () -> String = {
       UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
@@ -337,25 +339,28 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
     self.clock = clock
     self.sourceClock = sourceClock
     self.signalMonitor = signalMonitor
+    self.microphoneInput = microphoneInput
     self.tokenSource = tokenSource
   }
 
   #if os(iOS)
-    /// Dormant live composition. No app target imports or selects this module.
+    /// Live iPhone composition, dormant until the authorized caller starts it.
     public convenience init(events: any IOSPCMBridgeEventPublishing) {
       let foreground = LiveAppleApplicationForegroundProvider()
       let signalMonitor = PCMSignalMonitor()
+      let microphoneInput = AppleMicrophoneInputPreference()
       self.init(
         permission: AVFoundationMicrophonePermissionAdapter(
           provider: LiveAppleMicrophonePermissionProvider()
         ),
         audio: AVFoundationPCMDriver(
-          system: LiveAppleAudioSystem(signalMonitor: signalMonitor),
+          system: LiveAppleAudioSystem(signalMonitor: signalMonitor, microphoneInput: microphoneInput),
           foreground: foreground
         ),
         foreground: foreground,
         events: events,
-        signalMonitor: signalMonitor
+        signalMonitor: signalMonitor,
+        microphoneInput: microphoneInput
       )
     }
   #endif
@@ -368,6 +373,15 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
   /// permission/startup and failed Stop. A new WebView cannot hide an old owner.
   public func confirmCaptureIdle() -> Bool {
     CaptureProcessOwnership.shared.isIdle
+  }
+
+  /// No permission request, activation, or authority change. An existing or
+  /// pending native owner, including one in another WebView, blocks selection.
+  public func selectMicrophoneInput(_ rawValue: String) throws {
+    guard let input = AppleMicrophoneInput(rawValue: rawValue) else {
+      throw IOSPCMBridgeFailure(.captureFailed)
+    }
+    try CaptureProcessOwnership.shared.whileIdle { microphoneInput.select(input) }
   }
 
   /// Current recording only; no retained history or observer-owned capture action.
@@ -961,6 +975,12 @@ private final class CaptureProcessOwnership: @unchecked Sendable {
   private var owners: Set<UUID> = []
 
   var isIdle: Bool { lock.withLock { owners.isEmpty } }
+  func whileIdle(_ operation: () -> Void) throws {
+    try lock.withLock {
+      guard owners.isEmpty else { throw IOSPCMBridgeFailure(.captureFailed) }
+      operation()
+    }
+  }
   func claim() -> UUID {
     lock.withLock {
       let id = UUID()

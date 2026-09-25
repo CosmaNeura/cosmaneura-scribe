@@ -1,6 +1,7 @@
 import { LitElement, html, type TemplateResult } from "lit";
 import { Capacitor } from "@capacitor/core";
 import "./native/ios-input-meter";
+import { IOSPCM } from "./native/capacitor-pcm";
 
 import { HttpCaptureBff } from "./bff/http-client";
 import { BffCaptureQueueTransport } from "./bff/queue-transport";
@@ -38,6 +39,8 @@ export class CaptureApp extends LitElement {
   #disposeReview: (() => void) | undefined;
   #busy = false;
   #stopping = false;
+  #microphoneInput: "built_in" | "bluetooth" | "external" = "built_in";
+  #microphoneError = false;
   #consented = false;
   #controller: CaptureFlowController | undefined;
   #sourceKind: CaptureSource["kind"] = "synthetic";
@@ -237,6 +240,21 @@ export class CaptureApp extends LitElement {
                 ${provider ? "" : "The initial server-authorized recording window is fixed and is not renewed in this preview."}
               </p>
             </div>
+            ${this.#isNativeIPhone() ? html`<label>Microphone
+              <select data-testid="microphone-input" .value=${this.#microphoneInput}
+                ?disabled=${this.#busy || this.#stopping || !["ready", "paused"].includes(this.#snapshot.state)}
+                @change=${this.#changeMicrophone}>
+                <option value="built_in">iPhone microphone</option>
+                <option value="bluetooth">Bluetooth microphone (AirPods or headset)</option>
+                <option value="external">USB or wired microphone</option>
+              </select>
+              <small>${this.#microphoneInput === "built_in"
+                ? "Use the iPhone microphone for a conversation in the room."
+                : this.#microphoneInput === "bluetooth"
+                  ? "Connect your AirPods or headset before recording. Check that both voices are audible."
+                  : "Connect your USB or wired microphone before recording. Check that both voices are audible."}</small>
+            </label>` : ""}
+            ${this.#microphoneError ? html`<p role="alert">Microphone choice could not be confirmed. Stop any other recording, then retry.</p>` : ""}
             <div class="record-actions">
               <button
                 data-testid="record-button"
@@ -406,7 +424,11 @@ export class CaptureApp extends LitElement {
   };
 
   readonly #record = (): void => {
-    void this.#run(async () => this.#requireController().startRecording());
+    void this.#run(async () => {
+      await this.#selectMicrophone();
+      if (this.#providerClosed) return;
+      await this.#requireController().startRecording();
+    });
   };
 
   readonly #stop = (): void => {
@@ -427,7 +449,36 @@ export class CaptureApp extends LitElement {
   };
 
   readonly #pause = (): void => { void this.#run(async () => this.#requireController().pauseRecording?.()); };
-  readonly #resume = (): void => { void this.#run(async () => this.#requireController().resumeRecording?.()); };
+  readonly #resume = (): void => { void this.#run(async () => {
+    await this.#selectMicrophone();
+    if (this.#providerClosed) return;
+    await this.#requireController().resumeRecording?.();
+  }); };
+
+  #isNativeIPhone(): boolean {
+    return !this.#snapshot.desktop && this.#sourceKind === "microphone"
+      && Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
+  }
+
+  readonly #changeMicrophone = (event: Event): void => {
+    if (this.#busy || this.#stopping || !["ready", "paused"].includes(this.#snapshot.state)) return;
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    if (value !== "built_in" && value !== "bluetooth" && value !== "external") return;
+    this.#microphoneInput = value; this.#microphoneError = false; this.requestUpdate();
+  };
+
+  async #selectMicrophone(): Promise<void> {
+    if (!this.#isNativeIPhone()) return;
+    this.#microphoneError = false;
+    try {
+      const result = await IOSPCM.selectMicrophoneInput?.({ input: this.#microphoneInput });
+      if (!result || typeof result !== "object" || !("version" in result) || result.version !== 1
+        || !("input" in result) || result.input !== this.#microphoneInput) throw new Error("Microphone unavailable");
+    } catch {
+      this.#microphoneError = true;
+      throw new Error("Microphone unavailable");
+    }
+  }
 
   readonly #refreshStatus = (): void => {
     void this.#run(async () => this.#requireController().refreshTranscriptionStatus());

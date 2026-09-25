@@ -166,4 +166,34 @@ struct NativeInputFrameLimitTests {
       channels: PCMConfiguration.channels, sampleRateHz: PCMConfiguration.sampleRateHz,
       targetFramesPerChunk: 160_000, maximumChunks: 1)
   }
+
+  @Test func microphoneChoiceRequiresIdleAcrossBridgeInstances() async throws {
+    let encounter = ConsentedSyntheticEncounter(), input = AppleMicrophoneInputPreference()
+    let audio = InjectedAudioDriver(), events = FixtureEvents()
+    let bridge = IOSPCMBridgeCore(permission: FixturePermission(encounter: encounter),
+      audio: audio, foreground: FixtureForeground(), events: events, microphoneInput: input)
+    let otherInput = AppleMicrophoneInputPreference()
+    let otherBridge = IOSPCMBridgeCore(permission: FixturePermission(encounter: encounter),
+      audio: InjectedAudioDriver(), foreground: FixtureForeground(), events: FixtureEvents(),
+      microphoneInput: otherInput)
+    events.bridge = bridge
+    #expect(input.selected == .builtIn)
+    #expect(throws: IOSPCMBridgeFailure.self) { try bridge.selectMicrophoneInput("automatic") }
+    try bridge.selectMicrophoneInput("bluetooth")
+    #expect(input.selected == .bluetooth && bridge.confirmCaptureIdle())
+    let token = try bridge.begin(configuration: configuration())
+    // begin claims ownership synchronously, before permission/start can finish.
+    #expect(throws: IOSPCMBridgeFailure.self) { try bridge.selectMicrophoneInput("built_in") }
+    #expect(throws: IOSPCMBridgeFailure.self) { try otherBridge.selectMicrophoneInput("bluetooth") }
+    try await bridge.ready(token)
+    #expect(throws: IOSPCMBridgeFailure.self) { try bridge.selectMicrophoneInput("built_in") }
+    #expect(input.selected == .bluetooth && otherInput.selected == .builtIn)
+    _ = try await bridge.stop(token, mode: .discard)
+    try bridge.selectMicrophoneInput("built_in")
+    try otherBridge.selectMicrophoneInput("bluetooth")
+    #expect(input.selected == .builtIn && otherInput.selected == .bluetooth)
+    try bridge.selectMicrophoneInput("external")
+    #expect(input.selected == .external && bridge.confirmCaptureIdle())
+    #expect(events.terminalFailures.isEmpty && events.fullPacketCount == 0)
+  }
 }
