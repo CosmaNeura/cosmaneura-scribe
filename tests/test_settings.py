@@ -370,3 +370,9 @@ def test_private_speech_cidrs_parse_from_container_environment(
     )
 
     assert str(settings.azure_speech_private_endpoint_cidrs[0]) == "10.42.1.7/32"
+
+
+def test_worker_capacity_matches_protocol_ceiling() -> None:
+    assert Settings().audio_assembly_max_plaintext_bytes == 402_653_184
+    with pytest.raises(ValidationError):
+        Settings(audio_assembly_max_plaintext_bytes=402_653_185)

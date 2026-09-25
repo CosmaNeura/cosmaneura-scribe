@@ -284,7 +284,7 @@ def test_capabilities_lease_renewal_and_canonical_reservations(
         f"/v1/sessions/{session['id']}/capture-capabilities",
         headers=_headers(tenant_id),
     ).json()["remaining_aggregate_plaintext_bytes"]
-    assert remaining == 64 * 1_024 * 1_024 - 2 * 327_680
+    assert remaining == 384 * 1_024 * 1_024 - 2 * 327_680
     actions = repository_backend.audit_actions(tenant_id)
     assert actions.count("capture_lease.issued") == 1
     assert actions.count("capture_lease.renewed") == 1
@@ -593,3 +593,64 @@ def test_openapi_declares_the_versioned_capture_surface_and_mutation_headers() -
         "/v1/sessions/{session_id}/chunks/{object_id}",
     ):
         assert document["paths"][path]["get"]["security"] == [{"HTTPBearer": []}]
+
+
+def test_three_hour_capacity_and_partial_chunk_headroom(capture_client: TestClient) -> None:
+    """Exercise real reservation accounting quickly; no three-hour wall-clock wait."""
+    tenant_id = uuid4()
+    session = _create_capture_session(capture_client, tenant_id, "three-hour")
+    lease = _issue_lease(capture_client, tenant_id, session["id"], "three-hour")
+    url = f"/v1/sessions/{session['id']}/capture-capabilities"
+    original = capture_client.get(url, headers=_headers(tenant_id)).json()
+    assert original["max_chunks"] == 2048
+    assert original["remaining_aggregate_plaintext_bytes"] == 402_653_184
+    for first in range(0, 1080, 90):
+        batch = _reserve(capture_client, tenant_id, session["id"], lease,
+                         key=f"long-reserve-{first:04d}", first=first, count=90)
+        assert batch["reservations"][-1]["sequence_number"] == first + 89
+    remaining = capture_client.get(url, headers=_headers(tenant_id)).json()
+    assert remaining["remaining_aggregate_plaintext_bytes"] == 48_758_784
+    # Use the remaining allocation for short pause/route-change chunks, then stop
+    # at the byte budget before the independent sequence ceiling.
+    _reserve(capture_client, tenant_id, session["id"], lease,
+             key="long-reserve-1080", first=1080, count=90)
+    _reserve(capture_client, tenant_id, session["id"], lease,
+             key="long-reserve-1170", first=1170, count=58)
+    response = capture_client.post(
+        f"/v1/sessions/{session['id']}/chunk-reservations",
+        headers=_headers(tenant_id, "long-reserve-exhausted"),
+        json={"protocol_version": "1.0", "capture_lease_id": lease["lease_id"],
+              "capture_lease_generation": lease["generation"], "channel": "microphone",
+              "first_sequence_number": 1228, "count": 1},
+    )
+    assert response.status_code == 409
+    assert capture_client.get(url, headers=_headers(tenant_id)).json()[
+        "remaining_aggregate_plaintext_bytes"
+    ] == 262_144
+
+
+def test_lower_worker_capacity_also_bounds_admission(capture_client: TestClient) -> None:
+    configured = app.dependency_overrides[get_settings]()
+    app.dependency_overrides[get_settings] = lambda: configured.model_copy(
+        update={"audio_assembly_max_plaintext_bytes": 1_000_000}
+    )
+    tenant_id = uuid4()
+    session = _create_capture_session(capture_client, tenant_id, "low-capacity")
+    lease = _issue_lease(capture_client, tenant_id, session["id"], "low-capacity")
+    url = f"/v1/sessions/{session['id']}/capture-capabilities"
+    assert capture_client.get(url, headers=_headers(tenant_id)).json()[
+        "remaining_aggregate_plaintext_bytes"
+    ] == 1_000_000
+    _reserve(capture_client, tenant_id, session["id"], lease,
+             key="low-capacity-reserve", count=3)
+    response = capture_client.post(
+        f"/v1/sessions/{session['id']}/chunk-reservations",
+        headers=_headers(tenant_id, "low-capacity-denied"),
+        json={"protocol_version": "1.0", "capture_lease_id": lease["lease_id"],
+              "capture_lease_generation": lease["generation"], "channel": "microphone",
+              "first_sequence_number": 3, "count": 1},
+    )
+    assert response.status_code == 409
+    assert capture_client.get(url, headers=_headers(tenant_id)).json()[
+        "remaining_aggregate_plaintext_bytes"
+    ] == 16_960

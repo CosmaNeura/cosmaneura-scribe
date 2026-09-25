@@ -74,7 +74,7 @@ def test_capture_protocol_capability_constants_are_pinned() -> None:
         MAX_RESERVATIONS_PER_BATCH,
         UPLOAD_CONCURRENCY,
         RESERVATION_PLAINTEXT_BUDGET_BYTES,
-    ) == (327_680, 1_000, 64 * 1_024 * 1_024, 900, 900, 90, 2, 327_680)
+    ) == (327_680, 2_048, 384 * 1_024 * 1_024, 900, 900, 90, 2, 327_680)
 
 
 def test_python_capture_protocol_matches_golden_vectors() -> None:

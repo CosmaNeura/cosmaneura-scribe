@@ -54,7 +54,7 @@ struct NativeSourceProofRecord: Codable, Equatable, Sendable, CustomStringConver
               organizationID == nil || organizationID?.range(of: idPattern, options: .regularExpression) != nil,
               bindingRef.range(of: "^scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil,
               source == platform.source.rawValue, leaseGeneration > 0, leaseGeneration < 2_147_483_648,
-              (0..<1000).contains(firstSequenceNumber), captureAuthorizedUntil.utf8.count <= 64,
+              (0..<2048).contains(firstSequenceNumber), captureAuthorizedUntil.utf8.count <= 64,
               nativeRecoveryDate(captureAuthorizedUntil) != nil else {
             throw NativeSourceJournalError.unavailable
         }

@@ -742,7 +742,8 @@ async def get_capture_capabilities(
         max_chunks=MAX_CHUNKS,
         remaining_aggregate_plaintext_bytes=max(
             0,
-            MAX_AGGREGATE_PLAINTEXT_BYTES - usage.plaintext_budget_bytes,
+            min(MAX_AGGREGATE_PLAINTEXT_BYTES, settings.audio_assembly_max_plaintext_bytes)
+            - usage.plaintext_budget_bytes,
         ),
         capture_lease_ttl_seconds=CAPTURE_LEASE_TTL_SECONDS,
         reservation_window_seconds=RESERVATION_WINDOW_SECONDS,
@@ -930,7 +931,9 @@ async def reserve_audio_chunks(
                 drafts=drafts,
                 maximum_batch_size=MAX_RESERVATIONS_PER_BATCH,
                 maximum_chunks=MAX_CHUNKS,
-                maximum_plaintext_bytes=MAX_AGGREGATE_PLAINTEXT_BYTES,
+                maximum_plaintext_bytes=min(
+                    MAX_AGGREGATE_PLAINTEXT_BYTES, settings.audio_assembly_max_plaintext_bytes
+                ),
             )
         except CaptureLeaseConflictError:
             raise HTTPException(status_code=409, detail="Capture lease is not active.") from None

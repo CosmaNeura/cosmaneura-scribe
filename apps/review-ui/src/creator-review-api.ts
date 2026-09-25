@@ -1,3 +1,4 @@
+import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import type { components } from "../../capture/src/generated/capture-api";
 import { readBoundedJson } from "./beta-api";
 import { isUuid } from "./contracts";
@@ -23,7 +24,7 @@ export function parseCaptureContinuity(value: unknown): CaptureContinuity {
     requireValue(Object.keys(start).sort().join(",") === "first_sequence_number,source_start_id"
       && isUuid(start.source_start_id) && !ids.has(start.source_start_id)
       && Number.isSafeInteger(start.first_sequence_number) && Number(start.first_sequence_number) >= position
-      && Number(start.first_sequence_number) < 1000 && (index !== 0 || start.first_sequence_number === 0));
+      && Number(start.first_sequence_number) < MAX_CHUNKS && (index !== 0 || start.first_sequence_number === 0));
     ids.add(start.source_start_id); position = Number(start.first_sequence_number);
   }
   return evidence as unknown as CaptureContinuity;

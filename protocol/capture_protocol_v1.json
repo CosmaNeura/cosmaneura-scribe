@@ -30,8 +30,8 @@
   },
   "limits": {
     "capture_lease_seconds": 900,
-    "max_aggregate_plaintext_bytes": 67108864,
-    "max_chunks_per_session": 1000,
+    "max_aggregate_plaintext_bytes": 402653184,
+    "max_chunks_per_session": 2048,
     "max_reservation_batch_size": 90,
     "reservation_plaintext_budget_bytes": 327680,
     "reservation_window_seconds": 900,

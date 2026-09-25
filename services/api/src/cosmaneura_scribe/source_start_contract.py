@@ -19,6 +19,8 @@ from pydantic import (
     model_serializer,
 )
 
+from .capture_protocol_v1 import MAX_CHUNKS
+
 SourceKind = Literal["desktop_companion", "ios_microphone"]
 StartAction = Literal["prepare", "authorize", "cancel", "stop"]
 
@@ -36,7 +38,7 @@ class SourceStartIntent(BaseModel):
     lease_receipt_id: UUID
     lease_generation: int = Field(strict=True, ge=1)
     capture_authorized_until: AwareDatetime
-    first_sequence_number: int = Field(default=0, strict=True, ge=0, le=999)
+    first_sequence_number: int = Field(default=0, strict=True, ge=0, lt=MAX_CHUNKS)
 
     @model_serializer(mode="wrap")
     def compatible_position(self, handler: SerializerFunctionWrapHandler):
@@ -84,7 +86,7 @@ class SourceStartReceipt(BaseModel):
     issued_at: AwareDatetime | None
     expires_at: AwareDatetime | None
     capability_id: UUID
-    first_sequence_number: int = Field(default=0, strict=True, ge=0, le=999)
+    first_sequence_number: int = Field(default=0, strict=True, ge=0, lt=MAX_CHUNKS)
 
     @model_serializer(mode="wrap")
     def compatible_position(self, handler: SerializerFunctionWrapHandler):
@@ -120,7 +122,7 @@ class SourceStartRetirementReceipt(BaseModel):
     lease_receipt_id: UUID
     lease_generation: int = Field(strict=True, ge=1)
     capture_authorized_until: AwareDatetime
-    first_sequence_number: int = Field(default=0, strict=True, ge=0, le=999)
+    first_sequence_number: int = Field(default=0, strict=True, ge=0, lt=MAX_CHUNKS)
     retired_at: AwareDatetime
 
     @model_serializer(mode="wrap")
