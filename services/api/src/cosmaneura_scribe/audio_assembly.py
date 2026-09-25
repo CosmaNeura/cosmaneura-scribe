@@ -5,18 +5,17 @@ import base64
 import hashlib
 import hmac
 import io
-import json
 import os
 import shutil
 import tempfile
 import wave
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import Protocol
 from uuid import UUID
 
 import httpx
@@ -47,11 +46,13 @@ from .capture_protocol_v1 import (
 )
 from .capture_protocol_v1 import EncryptedChunkHeader as EncryptedChunkHeader
 from .capture_protocol_v1 import encode_envelope as encode_envelope
+from .encrypted_wave_stream import EncryptedAudioTrackReader as EncryptedAudioTrackReader
+from .encrypted_wave_stream import EncryptedWaveChunk
 from .repository import AudioAssemblyManifest, RepositoryProvider
 from .schemas import AudioChunk, AudioUploadGrantRequest, CaptureChannel, SessionAudioKey
 from .settings import Settings
 from .storage import blob_name
-from .transcription import AudioTrack, AudioTrackReader
+from .transcription import AudioTrack
 from .transcription_worker import AudioAssemblyRequest
 
 DEFAULT_MAXIMUM_PLAINTEXT_BYTES = MAX_AGGREGATE_PLAINTEXT_BYTES
@@ -205,40 +206,6 @@ class KeyVaultSessionKeyUnwrapper:
         await self._credential.close()
 
 
-@dataclass
-class EncryptedAudioTrackReader(AudioTrackReader):
-    path: Path = field(repr=False)
-    key: bytearray = field(repr=False)
-    nonce: bytes = field(repr=False)
-    additional_data: bytes = field(repr=False)
-
-    @contextmanager
-    def open(self) -> Generator[BinaryIO]:
-        try:
-            ciphertext = self.path.read_bytes()
-            plaintext = AESGCM(bytes(self.key)).decrypt(
-                self.nonce,
-                ciphertext,
-                self.additional_data,
-            )
-        except (OSError, InvalidTag, ValueError):
-            raise OSError("encrypted audio track unavailable") from None
-        stream = io.BytesIO(plaintext)
-        del plaintext
-        try:
-            yield stream
-        finally:
-            try:
-                view = stream.getbuffer()
-                view[:] = b"\x00" * len(view)
-                view.release()
-            finally:
-                stream.close()
-
-    def close(self) -> None:
-        _zero(self.key)
-
-
 @dataclass(frozen=True)
 class _WaveFormat:
     channels: int
@@ -329,71 +296,53 @@ class EncryptedBlobAudioTrackAssembler:
             chunks = grouped.get(channel)
             if chunks is None:
                 continue
-            plaintext_chunks: list[bytearray] = []
+            encrypted_path = directory / f"track-{len(tracks):02d}.enc"
+            index: list[EncryptedWaveChunk] = []
+            descriptor = os.open(encrypted_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
-                for chunk in chunks:
-                    envelope = await self._reader.read(request, chunk)
-                    self._verify_ciphertext(chunk, envelope)
-                    try:
-                        header, ciphertext = decode_envelope(envelope)
-                    except ValueError:
-                        raise AudioAssemblyError("audio_envelope_invalid") from None
-                    try:
-                        nonce = _base64url_decode(header.nonce)
-                    except ValueError:
-                        raise AudioAssemblyError("audio_envelope_invalid") from None
-                    if len(nonce) != 12 or nonce in seen_nonces:
-                        raise AudioAssemblyError("audio_nonce_invalid")
-                    seen_nonces.add(nonce)
-                    try:
-                        plaintext = bytearray(
-                            decryptor.decrypt(
-                                nonce,
-                                ciphertext,
-                                chunk_additional_data(request, chunk),
-                            )
-                        )
-                    except InvalidTag:
-                        raise AudioAssemblyError("audio_decryption_failed") from None
-                    total_plaintext_bytes += len(plaintext)
-                    if total_plaintext_bytes > self._maximum_plaintext_bytes:
-                        _zero(plaintext)
-                        raise AudioAssemblyError("audio_plaintext_limit_exceeded")
-                    plaintext_chunks.append(plaintext)
-
-                encrypted_path = directory / f"track-{len(tracks):02d}.enc"
-                storage_key = bytearray(os.urandom(32))
-                storage_nonce = os.urandom(12)
-                storage_aad = track_additional_data(request, channel)
-                try:
-                    _write_encrypted_wave_track(
-                        plaintext_chunks,
-                        encrypted_path,
-                        storage_key,
-                        storage_nonce,
-                        storage_aad,
-                    )
-                    track_reader = EncryptedAudioTrackReader(
-                        path=encrypted_path,
-                        key=storage_key,
-                        nonce=storage_nonce,
-                        additional_data=storage_aad,
-                    )
-                    track_readers.append(track_reader)
-                except BaseException:
-                    _zero(storage_key)
-                    raise
-                tracks.append(
-                    AudioTrack(
-                        object_id=chunks[0].object_id,
-                        channel=channel,
-                        local_path=encrypted_path,
-                        reader=track_reader,
-                    )
-                )
+                with os.fdopen(descriptor, "wb", closefd=False) as destination:
+                    for chunk in chunks:
+                        envelope = await self._reader.read(request, chunk)
+                        self._verify_ciphertext(chunk, envelope)
+                        try:
+                            header, ciphertext = decode_envelope(envelope)
+                            nonce = _base64url_decode(header.nonce)
+                        except ValueError:
+                            raise AudioAssemblyError("audio_envelope_invalid") from None
+                        if len(nonce) != 12 or nonce in seen_nonces:
+                            raise AudioAssemblyError("audio_nonce_invalid")
+                        seen_nonces.add(nonce)
+                        aad = chunk_additional_data(request, chunk)
+                        try:
+                            plaintext = bytearray(decryptor.decrypt(nonce, ciphertext, aad))
+                        except InvalidTag:
+                            raise AudioAssemblyError("audio_decryption_failed") from None
+                        try:
+                            total_plaintext_bytes += len(plaintext)
+                            if total_plaintext_bytes > self._maximum_plaintext_bytes:
+                                raise AudioAssemblyError("audio_plaintext_limit_exceeded")
+                            pcm_offset, pcm_size = _wave_layout(plaintext)
+                            index.append(EncryptedWaveChunk(
+                                envelope_offset=destination.tell(), envelope_size=len(envelope),
+                                sha256=chunk.sha256, nonce=nonce, additional_data=aad,
+                                pcm_offset=pcm_offset, pcm_size=pcm_size,
+                            ))
+                            # Reuse capture encryption; no new file codec or nonce.
+                            destination.write(envelope)
+                        finally:
+                            _zero(plaintext)
+                    destination.flush()
+                    os.fsync(destination.fileno())
             finally:
-                for plaintext in plaintext_chunks:
-                    _zero(plaintext)
+                os.close(descriptor)
+            track_reader = EncryptedAudioTrackReader(
+                path=encrypted_path, key=bytearray(content_key), chunks=tuple(index),
+            )
+            track_readers.append(track_reader)
+            tracks.append(AudioTrack(
+                object_id=chunks[0].object_id, channel=channel,
+                local_path=encrypted_path, reader=track_reader,
+            ))
         if not tracks:
             raise AudioAssemblyError("audio_chunks_missing")
         return tuple(tracks)
@@ -455,66 +404,23 @@ def chunk_additional_data(request: AudioAssemblyRequest, chunk: AudioChunk) -> b
     )
 
 
-def track_additional_data(request: AudioAssemblyRequest, channel: CaptureChannel) -> bytes:
-    return json.dumps(
-        {
-            "channel": channel.value,
-            "session_id": str(request.session_id),
-            "tenant_id": str(request.tenant_id),
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-
-
-def _write_encrypted_wave_track(
-    chunks: list[bytearray],
-    output: Path,
-    storage_key: bytearray,
-    nonce: bytes,
-    additional_data: bytes,
-) -> None:
-    plaintext = io.BytesIO()
+def _wave_layout(value: bytearray) -> tuple[int, int]:
     try:
-        _write_wave_chunks(chunks, plaintext)
-        view = plaintext.getbuffer()
-        try:
-            encrypted = AESGCM(bytes(storage_key)).encrypt(nonce, view, additional_data)
-        finally:
-            view[:] = b"\x00" * len(view)
-            view.release()
-    finally:
-        plaintext.close()
-    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb", closefd=False) as destination:
-            destination.write(encrypted)
-            destination.flush()
-            os.fsync(destination.fileno())
-    finally:
-        os.close(descriptor)
-
-
-def _write_wave_chunks(chunks: list[bytearray], destination: BinaryIO) -> None:
-    with wave.open(destination, "wb") as output:
-        output.setnchannels(ACCEPTED_WAVE_FORMAT.channels)
-        output.setsampwidth(ACCEPTED_WAVE_FORMAT.sample_width)
-        output.setframerate(ACCEPTED_WAVE_FORMAT.frame_rate)
-        output.setcomptype("NONE", "not compressed")
-        for value in chunks:
-            try:
-                with wave.open(io.BytesIO(value), "rb") as source:
-                    current = _WaveFormat(
-                        channels=source.getnchannels(),
-                        sample_width=source.getsampwidth(),
-                        frame_rate=source.getframerate(),
-                        compression_type=source.getcomptype(),
-                    )
-                    if current != ACCEPTED_WAVE_FORMAT:
-                        raise AudioAssemblyError("audio_wave_media_profile_unsupported")
-                    output.writeframes(source.readframes(source.getnframes()))
-            except (EOFError, wave.Error):
-                raise AudioAssemblyError("audio_wave_invalid") from None
+        with io.BytesIO(value) as buffer, wave.open(buffer, "rb") as source:
+            current = _WaveFormat(
+                channels=source.getnchannels(), sample_width=source.getsampwidth(),
+                frame_rate=source.getframerate(), compression_type=source.getcomptype(),
+            )
+            if current != ACCEPTED_WAVE_FORMAT:
+                raise AudioAssemblyError("audio_wave_media_profile_unsupported")
+            offset = buffer.tell()
+            size = source.getnframes() * AUDIO_CHANNELS * MEDIA_SAMPLE_WIDTH_BYTES
+            # Detect truncated/odd PCM rather than quietly shortening the visit.
+            if size == 0 or len(source.readframes(source.getnframes() + 1)) != size:
+                raise AudioAssemblyError("audio_wave_invalid")
+            return offset, size
+    except (EOFError, wave.Error):
+        raise AudioAssemblyError("audio_wave_invalid") from None
 
 
 async def _cleanup_without_cancellation(directory: Path) -> None:

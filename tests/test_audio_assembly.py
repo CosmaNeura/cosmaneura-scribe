@@ -5,7 +5,9 @@ import base64
 import hashlib
 import io
 import json
+import os
 import struct
+import tracemalloc
 import wave
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,13 +22,14 @@ from cosmaneura_scribe.audio_assembly import (
     EncryptedAudioTrackReader,
     EncryptedBlobAudioTrackAssembler,
     KeyVaultSessionKeyUnwrapper,
-    _write_wave_chunks,
+    _wave_layout,
     chunk_additional_data,
 )
 from cosmaneura_scribe.capture_protocol_v1 import (
     EncryptedChunkHeader,
     encode_envelope,
 )
+from cosmaneura_scribe.encrypted_wave_stream import EncryptedWaveChunk, wave_header
 from cosmaneura_scribe.repository import AudioAssemblyManifest
 from cosmaneura_scribe.schemas import (
     AudioChunk,
@@ -181,6 +184,253 @@ def _encrypt(
     header = EncryptedChunkHeader(nonce=_base64url(nonce))
     ciphertext = AESGCM(key).encrypt(nonce, plaintext, chunk_additional_data(request, chunk))
     return encode_envelope(header, ciphertext)
+
+
+def _streaming_fixture(tmp_path: Path, count: int = 3, frames: int = 40):
+    """Invented authorized manifest and synthetic PCM, using the existing envelope."""
+    key = b"k" * 32
+    session_id = uuid4()
+    initial = tuple(_chunk(session_id, i, CaptureChannel.MICROPHONE, uuid4()) for i in range(count))
+    request = _request(session_id, initial)
+    objects, complete = {}, []
+    for i, chunk in enumerate(initial):
+        pcm = struct.pack("<h", i + 1) * frames
+        envelope = _encrypt(request, chunk, _wave_bytes(pcm), key, i.to_bytes(12, "big"))
+        objects[chunk.object_id] = envelope
+        complete.append(chunk.model_copy(update={
+            "sha256": hashlib.sha256(envelope).hexdigest(), "ciphertext_size_bytes": len(envelope),
+        }))
+    request = AudioAssemblyRequest(request.tenant_id, session_id, tuple(complete),
+                                   request.job_id, request.lease_token)
+    unwrapper = StaticKeyUnwrapper(key)
+    blobs = MemoryBlobReader(objects)
+    assembler = EncryptedBlobAudioTrackAssembler(
+        manifests=StaticManifestProvider(
+            AudioAssemblyManifest(_audio_key(session_id), tuple(complete)),
+        ),
+        reader=blobs, key_unwrapper=unwrapper, temporary_directory=tmp_path,
+    )
+    return assembler, request, blobs
+
+
+@pytest.mark.asyncio
+async def test_streaming_wave_seeks_and_reopens_with_original_ciphertext(tmp_path: Path) -> None:
+    assembler, request, blobs = _streaming_fixture(tmp_path)
+    expected_pcm = b"".join(struct.pack("<h", i) * 40 for i in (1, 2, 3))
+    expected = _wave_bytes(expected_pcm)
+    async with assembler.assemble(request) as (track,):
+        assert track.local_path.stat().st_mode & 0o777 == 0o600
+        assert track.local_path.parent.stat().st_mode & 0o777 == 0o700
+        assert track.local_path.read_bytes() == b"".join(
+            blobs.objects[c.object_id] for c in request.chunks
+        )
+        with track.open() as stream:
+            assert stream.read(47) == expected[:47]
+            stream.seek(44 + 79)
+            assert stream.read(90) == expected[123:213]
+            assert stream.seek(-11, os.SEEK_END) == len(expected) - 11
+            assert stream.read() == expected[-11:]
+            stream.seek(0)
+            assert stream.read() == expected
+        with track.open() as stream:
+            assert stream.read(44) == expected[:44]
+        reader = track.reader
+        assert isinstance(reader, EncryptedAudioTrackReader)
+        with reader.open() as stream:
+            assert stream.read(60) == expected[:60]
+            reader.close()
+            assert stream.closed
+    assert isinstance(reader, EncryptedAudioTrackReader)
+    assert reader.key == bytearray(32)
+    with pytest.raises(OSError, match="encrypted audio track unavailable"):
+        with reader.open():
+            pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["tamper", "truncate", "replace", "wrong_key", "wrong_aad"])
+async def test_streaming_wave_rejects_changed_encrypted_data(tmp_path: Path, damage: str) -> None:
+    assembler, request, _ = _streaming_fixture(tmp_path)
+    async with assembler.assemble(request) as (track,):
+        reader = track.reader
+        assert isinstance(reader, EncryptedAudioTrackReader)
+        if damage in {"tamper", "truncate", "replace"}:
+            data = bytearray(track.local_path.read_bytes())
+            if damage == "tamper":
+                data[reader.chunks[0].envelope_size - 1] ^= 1
+            elif damage == "truncate":
+                del data[-1:]
+            else:
+                # Same-length envelope from another position is not accepted.
+                first, second = reader.chunks[:2]
+                data[:first.envelope_size] = data[second.envelope_offset:
+                                                second.envelope_offset + second.envelope_size]
+            track.local_path.write_bytes(data)
+        elif damage == "wrong_key":
+            reader.key[0] ^= 1
+        else:
+            from dataclasses import replace
+            reader.chunks = (replace(reader.chunks[0], additional_data=b"other-scope"),
+                             *reader.chunks[1:])
+        with pytest.raises(OSError, match="encrypted audio track unavailable"):
+            with track.open() as stream:
+                stream.seek(44)
+                stream.read(1)
+    assert await asyncio.to_thread(lambda: list(tmp_path.iterdir())) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [AudioAssemblyError("audio_blob_unavailable"),
+                                     asyncio.CancelledError()])
+async def test_streaming_assembly_clears_partial_files(
+    tmp_path: Path, failure: BaseException,
+) -> None:
+    assembler, request, blobs = _streaming_fixture(tmp_path)
+    read = blobs.read
+
+    async def fail_second(req, chunk):
+        if chunk.sequence_number == 1:
+            raise failure
+        return await read(req, chunk)
+
+    blobs.read = fail_second
+    with pytest.raises(type(failure)):
+        async with assembler.assemble(request):
+            pytest.fail("A partially validated recording must not reach Speech")
+    assert await asyncio.to_thread(lambda: list(tmp_path.iterdir())) == []
+
+
+@pytest.mark.parametrize("remove", [1, 2, 10])
+def test_wave_layout_rejects_truncated_pcm(remove: int) -> None:
+    with pytest.raises(AudioAssemblyError, match="audio_wave_invalid"):
+        _wave_layout(bytearray(_wave_bytes(b"\x01\x00" * 20)[:-remove]))
+
+
+def test_three_hour_stream_capacity_has_bounded_read_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Component capacity only: admission limits are deliberately unchanged by this PR.
+    # Generate encrypted bytes in seconds; no microphone, real-time wait or Speech call.
+    key = b"s" * 32
+    path = tmp_path / "synthetic-capacity.enc"
+    count, frames_per_chunk = 1080, 160_000
+    # Extend only the fixture's AAD encoder bound to construct future-size input.
+    # The real assembler/admission maximum is still covered by its rejection test.
+    import cosmaneura_scribe.capture_protocol_v1 as protocol
+    monkeypatch.setattr(protocol, "MAX_CHUNKS", count)
+    request = _request(uuid4(), ())
+    index = []
+    with path.open("wb") as destination:
+        for i in range(count):
+            chunk = _chunk(request.session_id, i, CaptureChannel.MICROPHONE, uuid4())
+            nonce = i.to_bytes(12, "big")
+            pcm = struct.pack("<h", i) * frames_per_chunk
+            envelope = _encrypt(request, chunk, _wave_bytes(pcm), key, nonce)
+            index.append(EncryptedWaveChunk(destination.tell(), len(envelope),
+                hashlib.sha256(envelope).hexdigest(), nonce, chunk_additional_data(request, chunk),
+                44, len(pcm)))
+            destination.write(envelope)
+    reader = EncryptedAudioTrackReader(path, bytearray(key), tuple(index))
+    tracemalloc.start()
+    try:
+        total, digest = 0, hashlib.sha256()
+        with reader.open() as stream:
+            assert stream.seek(0, os.SEEK_END) == 44 + count * frames_per_chunk * 2
+            stream.seek(0)
+            while block := stream.read(65536):
+                total += len(block)
+                digest.update(block)
+            stream.seek(-2, os.SEEK_END)
+            assert stream.read(2) == struct.pack("<h", count - 1)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        reader.close()
+    expected = hashlib.sha256(wave_header(count * frames_per_chunk * 2))
+    for i in range(count):
+        expected.update(struct.pack("<h", i) * frames_per_chunk)
+    assert total == 345_600_044
+    assert digest.digest() == expected.digest()
+    assert peak < 8 * 1024 * 1024, f"Bounded stream grew to {peak} bytes"
+    print(f"three_hour_stream_bytes={total} peak_traced_read_bytes={peak}")
+
+
+@pytest.mark.asyncio
+async def test_installed_speech_sdk_streams_encrypted_wave_as_multipart(tmp_path: Path) -> None:
+    from azure.ai.transcription.aio import TranscriptionClient
+    from azure.ai.transcription.models import TranscriptionContent, TranscriptionOptions
+    from azure.core.pipeline.transport import AioHttpTransport, AsyncHttpTransport
+
+    class UploadInspected(Exception):
+        pass
+
+    class Sink:
+        def __init__(self):
+            self.body = bytearray()
+            self.largest = 0
+
+        async def write(self, data):
+            self.largest = max(self.largest, len(data))
+            self.body.extend(data)
+
+    sink = Sink()
+
+    class OfflineTransport(AsyncHttpTransport):
+        async def open(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            await self.close()
+
+        async def send(self, request, **kwargs):
+            from urllib.parse import urlsplit
+            url = urlsplit(request.url)
+            assert url.hostname == "synthetic.invalid"
+            assert url.path.endswith("/transcriptions:transcribe")
+            # Use the installed Azure/aiohttp multipart implementation, not a fake encoder.
+            encoder = AioHttpTransport()
+            try:
+                form = encoder._get_request_data(request)
+                await form().write(sink)
+            finally:
+                await encoder.close()
+            raise UploadInspected
+
+    assembler, request, _ = _streaming_fixture(tmp_path, frames=160_000)
+    async with assembler.assemble(request) as (track,):
+        with track.open() as source:
+            async with TranscriptionClient(
+                "https://synthetic.invalid", StaticCredential(), transport=OfflineTransport(),
+            ) as client:
+                with pytest.raises(UploadInspected):
+                    await client.transcribe(TranscriptionContent(
+                        definition=TranscriptionOptions(locales=["en-US"]), audio=source,
+                    ), logging_enable=False)
+    expected = _wave_bytes(b"".join(struct.pack("<h", i) * 160_000 for i in (1, 2, 3)))
+    assert expected in sink.body
+    assert sink.body.count(b'; name="audio"') == 1
+    assert 0 < sink.largest <= 256 * 1024
+
+
+@pytest.mark.asyncio
+async def test_assembly_memory_does_not_grow_with_track_plaintext(tmp_path: Path) -> None:
+    assembler, request, _ = _streaming_fixture(tmp_path, count=96, frames=160_000)
+    tracemalloc.start()
+    try:
+        async with assembler.assemble(request) as (track,):
+            with track.open() as stream:
+                assert stream.seek(0, os.SEEK_END) == 44 + 96 * 320_000
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 1024 * 1024, f"Assembly grew to {peak} bytes"
+    print(f"assembly_plaintext_bytes={96 * 320_044} peak_traced_assembly_bytes={peak}")
 
 
 @pytest.mark.asyncio
@@ -368,8 +618,7 @@ def test_encrypted_track_reader_repr_omits_path(tmp_path: Path) -> None:
     reader = EncryptedAudioTrackReader(
         path=sensitive_path,
         key=bytearray(b"k" * 32),
-        nonce=b"n" * 12,
-        additional_data=b"metadata",
+        chunks=(),
     )
 
     assert str(sensitive_path) not in repr(reader)
@@ -394,14 +643,14 @@ def test_wave_assembly_rejects_media_outside_the_capture_profile(
     )
 
     with pytest.raises(AudioAssemblyError) as caught:
-        _write_wave_chunks([chunk], io.BytesIO())
+        _wave_layout(chunk)
 
     assert str(caught.value) == "audio_wave_media_profile_unsupported"
 
 
 def test_wave_assembly_rejects_compressed_wav() -> None:
     with pytest.raises(AudioAssemblyError) as caught:
-        _write_wave_chunks([bytearray(_compressed_wave_bytes())], io.BytesIO())
+        _wave_layout(bytearray(_compressed_wave_bytes()))
 
     assert str(caught.value) == "audio_wave_invalid"
 
