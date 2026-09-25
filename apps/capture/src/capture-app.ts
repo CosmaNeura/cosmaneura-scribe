@@ -90,8 +90,14 @@ export class CaptureApp extends LitElement {
         this.#snapshot = snapshot;
         this.requestUpdate();
       });
-      if (this.#providerClosed) this.#unsubscribe();
+      if (this.#providerClosed) { this.#unsubscribe(); return; }
       this.#syncReview();
+      // Keep upload recovery in this view, including its busy guard and fixed
+      // controller status, instead of failing the already-open encounter.
+      if (this.#provider?.resumePendingUpload && this.#snapshot.state === "uploading"
+        && (!this.#snapshot.desktop || this.#snapshot.desktop.phase === "stopped")) {
+        void this.#run(async () => this.#provider!.resumePendingUpload!());
+      }
       return;
     }
     void this.#run(async () => {

@@ -45,7 +45,7 @@ const workspace = "20000000-0000-4000-8000-000000000002";
 const session = "30000000-0000-4000-8000-000000000003";
 const appointment = "appointment_01j00000000000000000000000";
 const encounter = { appointmentRef: appointment, title: "Invented provider visit", detail: "Synthetic fixture" };
-let authorizations = 0;
+let authorizations = 0, releases = 0;
 const unavailable = () => { throw new Error("Unexpected clinical operation"); };
 const host = module.namespace.createProviderIOSHost({ signal: abort.signal, listEncounters: async () => [encounter],
   createEncounter: unavailable, openEncounter: async () => ({ encounter, recoveryScope: recovery,
@@ -53,6 +53,8 @@ const host = module.namespace.createProviderIOSHost({ signal: abort.signal, list
       bindingRef: "scribe_capture_binding_01j00000000000000000000000" },
     signal: abort.signal, request: unavailable, openInCore: unavailable,
     uploadTarget: { putCompleteEnvelope: unavailable }, reauthorizeRecorder: async () => { authorizations++; },
+    prepareNativeSource: unavailable,
+    releaseNativeSource: async id => { assert.equal(id, session); releases++; },
   }) });
 const dispose = module.namespace.mountProviderWorkspace(root, host);
 const settle = () => new Promise(resolve => setTimeout(resolve, 30));
@@ -69,7 +71,7 @@ try {
   assert.equal(resources.source.kind, "microphone"); assert.equal(authorizations, 1);
   assert.equal((await resources.queueStorage.list()).length, 0);
   assert.equal(calls.some(call => call.key?.endsWith(":other")), false);
-  await resources.release(); assert.equal(locked, false);
+  await resources.release(); assert.equal(locked, false); assert.equal(releases, 1);
   abort.abort(); await settle();
   assert.equal(root.childElementCount, 0);
   await assert.rejects(authorized.recorder(session, abort.signal), /provider_native_scope_unavailable/);
