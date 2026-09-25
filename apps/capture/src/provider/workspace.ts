@@ -30,16 +30,19 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let currentSchema = "";
   let consentRenewalOffered = false;
   let openingRef: string | null = null;
+  let pendingNavigation: "encounters" | "review" | null = null;
   let step = "request";
   root.classList.add("provider-workspace");
   root.innerHTML = `<header class="provider-header"><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
-    <p data-workspace-notice role="status"></p><div data-workspace-content></div>`;
+    <p data-workspace-notice role="status"></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
   const content = root.querySelector<HTMLElement>("[data-workspace-content]")!;
   const notice = root.querySelector<HTMLElement>("[data-workspace-notice]")!;
+  const navigation = root.querySelector<HTMLElement>("[data-workspace-navigation]")!;
   const encounterLabel = root.querySelector<HTMLElement>("[data-provider-encounter]")!;
   const current = (n: number): boolean => !disposed && !host.signal.aborted && n === generation;
   const authorized = (n: number): boolean => current(n) && context !== null && !client?.signal.aborted;
-  const show = (markup: string): void => { disposeContent?.(); disposeContent = null; content.innerHTML = markup; };
+  const clearNavigation = (): void => { pendingNavigation = null; navigation.replaceChildren(); };
+  const show = (markup: string): void => { clearNavigation(); disposeContent?.(); disposeContent = null; content.innerHTML = markup; };
   const persist = async (progress: ProviderProgress): Promise<void> => {
     requireValue(context && !client?.signal.aborted);
     const activeContext = context, activeClient = client;
@@ -52,6 +55,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    clearNavigation();
     encounterAbort?.abort(); encounterAbort = null;
     disposeContent?.(); disposeContent = null;
     content.replaceChildren(); draft = null; source = null; templates = [];
@@ -274,16 +278,35 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(draft);
     show(`<h1>${escape(draft.note_type)}</h1><p class="provider-draft-status">${draft.status === "draft" ? "Unreviewed Core draft · Review and edit before clinical use." : "No note has been prepared for this reviewed transcript."}</p>
       ${draft.reviewed_source.capture_continuity ? '<p role="status">Recording continuity is unconfirmed. Review this note for missing speech; gap lengths are unknown.</p>' : ""}
-      ${draft.status === "draft" ? draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")
+      ${draft.status === "draft" ? draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")
         + '<button data-workspace-action="save">Save edits to Core</button>' : '<button data-workspace-action="generate">Prepare Core note</button>'}
       <button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>`);
+  };
+  const navigate = async (destination: "encounters" | "review"): Promise<void> => {
+    if (destination === "encounters") await list(); else showReview();
+  };
+  const guardNavigation = async (destination: "encounters" | "review"): Promise<void> => {
+    // Keep the actual editor mounted. A navigation request never saves or
+    // journals note text, and forced access closure still clears it immediately.
+    const dirty = [...content.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")]
+      .some(field => field.value !== field.defaultValue);
+    if (!dirty) { await navigate(destination); return; }
+    pendingNavigation = destination;
+    navigation.innerHTML = '<p>Your note has unsaved edits. Save them to Core before leaving, or discard them.</p><button data-workspace-action="keep-editing">Keep editing</button><button data-workspace-action="discard-edits">Discard edits and leave</button>';
   };
   const click = (event: MouseEvent): void => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-workspace-action]") : null;
     if (!button || !root.contains(button)) return;
     void run(async () => {
       switch (button.dataset.workspaceAction) {
-        case "encounters": await list(); break;
+        case "encounters": await guardNavigation("encounters"); break;
+        case "keep-editing": clearNavigation(); content.querySelector<HTMLTextAreaElement>("textarea[data-note-field]")?.focus(); break;
+        case "discard-edits": {
+          const destination = pendingNavigation;
+          clearNavigation();
+          if (destination) await navigate(destination);
+          break;
+        }
         case "create": await host.createEncounter(host.signal); await list(); break;
         case "open": await open(button.dataset.appointment!); break;
         case "prepare": {
@@ -315,10 +338,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
         case "read": currentSchema = input("schema"); requireValue(templates.some(t => t.schema_ref === currentSchema)); await readNote(false); break;
         case "generate": await readNote(true); break;
-        case "review": showReview(); break;
+        case "review": await guardNavigation("review"); break;
         case "core": requireValue(context); await context.openInCore(draft?.note_ref ?? null); break;
         case "save": {
           requireValue(client && draft && !progress().pendingSave);
+          clearNavigation();
           const n = generation;
           const fields = Object.fromEntries(draft.field_order!.map((key, i) => [key, input(`note-${i}`)]));
           const pending = pendingSave(draft, fields);
