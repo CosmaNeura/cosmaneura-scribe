@@ -72,6 +72,27 @@ describe("configured Core provider boundary", () => {
     }, abort.signal);
     await expect(client.operation(uuid, { kind: "creator_review" })).rejects.toThrow();
   });
+  it.each(["request", "encounter"])("propagates %s cancellation and rejects an uncooperative late reply", async source => {
+    const encounter = new AbortController(), request = new AbortController();
+    let release!: () => void, sentSignal: AbortSignal | undefined;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const client = new CoreCaptureClient(scope, async (...args) => {
+      sentSignal = args[3]; await waiting; return wire({ session_id: uuid })(...args);
+    }, encounter.signal);
+    const pending = client.operation(uuid, { kind: "capabilities" }, undefined, request.signal);
+    const rejected = expect(pending).rejects.toThrow();
+    (source === "request" ? request : encounter).abort();
+    expect(sentSignal?.aborted).toBe(true);
+    release(); await rejected;
+    expect((source === "request" ? encounter : request).signal.aborted).toBe(false);
+  });
+  it("does not dispatch an already-cancelled operation", async () => {
+    const request = new AbortController(), send = vi.fn(wire({ session_id: uuid }));
+    const client = new CoreCaptureClient(scope, send, new AbortController().signal);
+    request.abort();
+    await expect(client.operation(uuid, { kind: "capabilities" }, undefined, request.signal)).rejects.toThrow();
+    expect(send).not.toHaveBeenCalled();
+  });
   it("preserves review conflicts and forbids legacy creation and source endpoints", async () => {
     const client = new CoreCaptureClient(scope, () => Promise.resolve(new Response(null, { status: 409 })), new AbortController().signal);
     await expect(new HttpCreatorReviewApi(uuid, client.reviewRequest(uuid)).read()).rejects.toMatchObject({ kind: "conflict" });

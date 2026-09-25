@@ -1,7 +1,8 @@
 import { webcrypto } from "node:crypto";
 import { Capacitor } from "@capacitor/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CoreCaptureClient } from "./core-client";
+import { BffCaptureQueueTransport } from "../bff/queue-transport";
+import { CoreCaptureBff, CoreCaptureClient } from "./core-client";
 import { connectNativeProviderIOSBackend, type NativeProviderOptions, type ProviderNativePlugin } from "./native-backend";
 
 const workspace = "10000000-0000-4000-8000-000000000001";
@@ -122,6 +123,52 @@ describe("native provider connection", () => {
     wire.resolve(f.reply(request)); await Promise.resolve();
     expect(f.plugin.cancelProviderRequest).toHaveBeenCalledWith({ requestId: request.requestId });
     await backend.dispose();
+  });
+
+  it("cancels a timed-out queue request and retries its key on the same native connection", async () => {
+    const f = fixture(), backend = await f.connect(), wire = deferred<NativeReply>();
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      const bff = new CoreCaptureBff(new CoreCaptureClient(mount.scope, mount.request, mount.signal), session);
+      const transport = new BffCaptureQueueTransport(bff, f.options.uploadTarget);
+      const object = crypto.randomUUID(), key = "invented-upload-retry-key";
+      f.plugin.providerRequest.mockImplementationOnce(() => wire.promise);
+      const pending = transport.authorizeUpload(session, object, key);
+      const rejected = expect(pending).rejects.toMatchObject({ kind: "unknown_success" });
+      await vi.advanceTimersByTimeAsync(30_000); await rejected;
+      const request = f.plugin.providerRequest.mock.calls.at(-1)![0];
+      expect(f.plugin.cancelProviderRequest).toHaveBeenCalledWith({ requestId: request.requestId });
+      expect(backend.signal.aborted).toBe(false);
+      wire.resolve(f.reply(request)); await Promise.resolve();
+      const receipt = { protocol_version: "1.0", object_id: object, additional_authenticated_data: "c3ludGhldGlj",
+        upload_url: "https://upload.example.test/invented", expires_at: new Date(Date.now() + 60_000).toISOString() };
+      f.plugin.providerRequest.mockImplementationOnce(async retry => {
+        expect(retry.key).toBe(key); expect(retry.requestId).not.toBe(request.requestId);
+        return f.reply(retry, { ...JSON.parse(f.reply(retry).body), receipt });
+      });
+      await expect(transport.authorizeUpload(session, object, key)).resolves.toMatchObject({ objectId: object });
+      expect(f.plugin.cancelProviderRequest).toHaveBeenCalledTimes(1);
+    } finally { await backend.dispose(); }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("still cancels native I/O when the encounter closes during a queue request", async () => {
+    const f = fixture(), backend = await f.connect(), encounter = new AbortController(), requestAbort = new AbortController();
+    const wire = deferred<NativeReply>();
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, encounter.signal);
+      const bff = new CoreCaptureBff(new CoreCaptureClient(mount.scope, mount.request, mount.signal), session);
+      f.plugin.providerRequest.mockImplementationOnce(() => wire.promise);
+      const pending = bff.getCapabilities(session, { signal: requestAbort.signal });
+      const rejected = expect(pending).rejects.toThrow();
+      const request = f.plugin.providerRequest.mock.calls.at(-1)![0];
+      encounter.abort(); await rejected;
+      expect(f.plugin.cancelProviderRequest).toHaveBeenCalledWith({ requestId: request.requestId });
+      expect(requestAbort.signal.aborted).toBe(false); expect(backend.signal.aborted).toBe(false);
+      wire.resolve(f.reply(request)); await Promise.resolve();
+    } finally { await backend.dispose(); }
   });
 
   it("rejects a stale initial state and removes a listener that arrives after cancellation", async () => {
