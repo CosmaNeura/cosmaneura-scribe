@@ -1,5 +1,5 @@
 import type { CaptureFlowSnapshot } from "./flow";
-import type { AuthorizedReviewRequest } from "../../review-ui/src/creator-review-api";
+import type { AuthorizedReviewRequest, CreatorReviewView } from "../../review-ui/src/creator-review-api";
 import type { CreatorReviewJournal } from "../../review-ui/src/creator-review-journal";
 
 /** Plain recorder state/commands shared by native hosts and the provider view.
@@ -53,5 +53,5 @@ export interface ProviderCaptureBinding {
   /** Retries the retained upload/completion after confirmed native stop. Never records. */
   readonly resumePendingUpload?: () => Promise<void>;
   /** Optional until the host has a qualified existing Core note entrypoint. */
-  readonly continueToNote?: () => Promise<void>;
+  readonly continueToNote?: (view: CreatorReviewView) => Promise<void>;
 }

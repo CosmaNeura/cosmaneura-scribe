@@ -203,10 +203,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       languageMode: progress().admission.languageMode === "en-US" ? "english" : "english_spanish",
       authorizedRequest: activeClient.reviewRequest(id), journal: activeContext.reviewJournal(id),
       signal: activeClient.signal, deactivate: close, resumePendingUpload: () => lifecycle.resumePendingWork(),
-      continueToNote: async () => {
+      continueToNote: async (freshView) => {
+        if (!authorized(n)) return;
+        requireValue(freshView.session_id === id);
         await persist({ ...progress(), uploaded: true });
         await lifecycle.releaseUploadedCapture();
-        await openNotes();
+        if (authorized(n)) await openNotes(freshView);
       } });
     content.replaceChildren(app);
     disposeContent = () => app.remove();
@@ -258,14 +260,15 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     } else preparation();
     if (current(n)) openingRef = null;
   };
-  async function openNotes(): Promise<void> {
-    requireValue(client && context);
+  async function openNotes(view: CreatorReviewView): Promise<void> {
+    requireValue(client && context && !client.signal.aborted && view.session_id === session());
     const n = generation;
     const currentClient = client;
-    const view = await new HttpCreatorReviewApi(session(), currentClient.reviewRequest(session())).read();
-    if (!authorized(n)) return;
+    // Continue just read this view through the current review API. Reuse it for
+    // template selection only; opening/preparing/saving the note still reads afresh.
     source = reviewedSource(view);
     if (!progress().uploaded) await persist({ ...progress(), uploaded: true });
+    if (!authorized(n)) return;
     templates = await noteTemplates(currentClient, session());
     if (!authorized(n)) return;
     show(`<h1>Your Core note</h1><p>The English transcript is ready. Choose your note template.</p>

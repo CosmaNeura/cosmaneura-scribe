@@ -161,8 +161,11 @@ try {
   assert.equal(reviewReads, 3, "Saving a decision must read the current review");
   assert.equal(decisions.length, 1); assert.equal(pendingReview, null);
   click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
+  assert.equal(reviewReads, 4, "Continue must use one fresh authorized read, without a duplicate at template selection");
   root.querySelector('[name="schema"]').value = schema; click(action("read")); await until(() => root.querySelector(action("generate")));
+  assert.equal(reviewReads, 5, "Opening the selected note must read the current review again");
   click(action("generate")); await until(() => root.querySelector('[name="note-0"]'));
+  assert.equal(reviewReads, 6, "Preparing a note must read its current source again");
   const editor = root.querySelector('[name="note-0"]');
   editor.value = "Invented clinician edit.";
   const comparison = root.querySelector("[data-note-transcript]");
