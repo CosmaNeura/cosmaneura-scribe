@@ -20,7 +20,7 @@ struct NativeSourcePreparation: Equatable, Sendable {
          source: Source, firstSequenceNumber: Int = 0) throws {
         guard bindingRef.range(of: "^scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}$",
                                options: .regularExpression) != nil,
-              leaseGeneration > 0, (0..<1000).contains(firstSequenceNumber), let deadline = sourceDate(captureAuthorizedUntil),
+              leaseGeneration > 0, (0..<2048).contains(firstSequenceNumber), let deadline = sourceDate(captureAuthorizedUntil),
               deadline > Date() else { throw ProviderNativeError.invalidRequest }
         self.workspaceID = workspaceID; self.bindingRef = bindingRef; self.sessionID = sessionID
         self.leaseID = leaseID; self.leaseReceiptID = leaseReceiptID
@@ -294,7 +294,7 @@ struct NativeSourceDecision: Sendable {
 func nativeSourceFirstSequence(_ value: Any?) throws -> Int {
     guard let value else { return 0 }
     guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-          number.doubleValue == Double(number.intValue), (1..<1000).contains(number.intValue) else {
+          number.doubleValue == Double(number.intValue), (1..<2048).contains(number.intValue) else {
         throw ProviderNativeError.invalidRequest
     }
     return number.intValue

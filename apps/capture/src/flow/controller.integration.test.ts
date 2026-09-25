@@ -622,10 +622,10 @@ describe("CaptureFlowController", () => {
       await controller.prepare(TEST_ENCOUNTER);
       await expect(flowStore.getActiveCaptureState()).resolves.toMatchObject({
         captureAuthorizedUntil: "2026-08-18T12:15:00.000Z",
-        aggregatePlaintextBudgetBytes: 67_108_864,
+        aggregatePlaintextBudgetBytes: 402_653_184,
       });
       expect(configureUploadConcurrency).toHaveBeenCalledWith(2);
-      expect(controller.snapshot.remainingBudgetSeconds).toBe(2_040);
+      expect(controller.snapshot.remainingBudgetSeconds).toBe(12_280);
       expect(controller.snapshot.remainingAuthoritySeconds).toBe(900);
 
       await controller.startRecording();

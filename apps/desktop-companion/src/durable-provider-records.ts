@@ -1,3 +1,4 @@
+import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import type { SecureQueuePlugin } from "@cosmaneura-scribe/capacitor-secure-queue";
 import type { DesktopPCMCoverage, DesktopPCMStart } from "./native-pcm-driver.js";
 import { parseDesktopPCMStart, parseDesktopPCMCompletion } from "./pcm-capture-source.js";
@@ -65,7 +66,7 @@ export class DurableDesktopCoverage {
    * Receipt ID makes retries exact even for a zero-chunk interval. */
   async beginInterval(receiptId: string, firstSequenceNumber: number): Promise<void> {
     uuid(receiptId);
-    if (!Number.isSafeInteger(firstSequenceNumber) || firstSequenceNumber < 0 || firstSequenceNumber > 999) throw failure();
+    if (!Number.isSafeInteger(firstSequenceNumber) || firstSequenceNumber < 0 || firstSequenceNumber >= MAX_CHUNKS) throw failure();
     const prior = await this.read();
     const intervals: CoverageInterval[] = prior?.intervals ?? [
       { receiptId: this.attemptId, firstSequenceNumber: 0, coverage: prior?.value ?? null }];
@@ -92,7 +93,7 @@ export class DurableDesktopCoverage {
         for (const item of value.intervals as CoverageInterval[]) {
           if (!item || Object.keys(item).sort().join(",") !== "coverage,firstSequenceNumber,receiptId"
             || !Number.isSafeInteger(item.firstSequenceNumber) || item.firstSequenceNumber < first
-            || item.firstSequenceNumber > 999 || seen.size === 0 && item.firstSequenceNumber !== 0
+            || item.firstSequenceNumber >= MAX_CHUNKS || seen.size === 0 && item.firstSequenceNumber !== 0
             || seen.has(uuid(item.receiptId))) throw failure();
           if (item.coverage !== null) validateCoverage(item.coverage);
           seen.add(item.receiptId); first = item.firstSequenceNumber;

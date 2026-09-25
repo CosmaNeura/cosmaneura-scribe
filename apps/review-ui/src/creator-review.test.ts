@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { HttpCreatorReviewApi, parseCreatorReview } from "./creator-review-api";
+import { HttpCreatorReviewApi, parseCreatorReview, parseCaptureContinuity } from "./creator-review-api";
 import { renderCreatorReview, renderNoteTranscript } from "./creator-review-panel";
 
 const session = "00000000-0000-4000-8000-000000000001";
@@ -125,4 +125,14 @@ describe("creator review surface", () => {
       method: "POST", body: request, key: "review-stable-key",
     });
   });
+});
+
+
+it("retains late source-start positions in review evidence", () => {
+  const evidence = { schema_version: "1.0", continuity: "interrupted_or_unconfirmed", missing_audio: "unknown",
+    starts: [{ source_start_id: session, first_sequence_number: 0 },
+      { source_start_id: segment, first_sequence_number: 1080 }] };
+  expect(parseCaptureContinuity(evidence).starts[1]!.first_sequence_number).toBe(1080);
+  expect(() => parseCaptureContinuity({ ...evidence, starts: [evidence.starts[0],
+    { ...evidence.starts[1], first_sequence_number: 2048 }] })).toThrow();
 });

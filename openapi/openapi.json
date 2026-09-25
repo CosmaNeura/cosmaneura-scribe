@@ -258,7 +258,7 @@
             "$ref": "#/components/schemas/CaptureChannel"
           },
           "final_sequence_number": {
-            "exclusiveMaximum": 1000.0,
+            "exclusiveMaximum": 2048.0,
             "minimum": 0.0,
             "title": "Final Sequence Number",
             "type": "integer"
@@ -872,7 +872,7 @@
             "type": "integer"
           },
           "first_sequence_number": {
-            "exclusiveMaximum": 1000.0,
+            "exclusiveMaximum": 2048.0,
             "minimum": 0.0,
             "title": "First Sequence Number",
             "type": "integer"
@@ -1744,7 +1744,7 @@
         "additionalProperties": false,
         "properties": {
           "first_sequence_number": {
-            "maximum": 999.0,
+            "exclusiveMaximum": 2048.0,
             "minimum": 0.0,
             "title": "First Sequence Number",
             "type": "integer"
@@ -1948,7 +1948,7 @@
           },
           "first_sequence_number": {
             "default": 0,
-            "maximum": 999.0,
+            "exclusiveMaximum": 2048.0,
             "minimum": 0.0,
             "title": "First Sequence Number",
             "type": "integer"

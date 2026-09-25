@@ -11,6 +11,7 @@ from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .audio_keys import versionless_key_id
+from .capture_protocol_v1 import MAX_AGGREGATE_PLAINTEXT_BYTES
 
 _PRIVATE_API_IPV4_NETWORKS = (
     IPv4Network("10.0.0.0/8"),
@@ -58,9 +59,9 @@ class Settings(BaseSettings):
     audio_encryption_key_id: AnyHttpUrl | None = None
     audio_assembly_encrypted_temp_directory: Path | None = None
     audio_assembly_max_plaintext_bytes: int = Field(
-        default=64 * 1_024 * 1_024,
+        default=MAX_AGGREGATE_PLAINTEXT_BYTES,
         ge=1_000_000,
-        le=128 * 1_024 * 1_024,
+        le=MAX_AGGREGATE_PLAINTEXT_BYTES,
     )
     capture_protocol_enabled: bool = False
     # Owner: Scribe; initial shared-Core cohort: one explicitly approved tenant.

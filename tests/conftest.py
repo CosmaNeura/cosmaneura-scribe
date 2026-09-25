@@ -229,7 +229,7 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     assert asyncio.run(_table_exists(admin_url, "transcript_deliveries")) is False
     command.upgrade(config, "head")
     with pytest.raises(
-        RuntimeError, match="expand recovery retains immutable source retirement history"
+        RuntimeError, match="expand recovery retains larger capture positions"
     ):
         command.downgrade(config, "0019")
 

@@ -1,3 +1,4 @@
+import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import type { CiphertextUploadTarget } from "../bff/contracts";
 import { BffResponseError } from "../bff/http-client";
@@ -202,7 +203,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
             || !isUuid(prepared.leaseReceiptId) || !Number.isSafeInteger(prepared.leaseGeneration)
             || prepared.leaseGeneration < 1 || prepared.firstSequenceNumber !== undefined
               && (!Number.isSafeInteger(prepared.firstSequenceNumber) || prepared.firstSequenceNumber < 1
-                || prepared.firstSequenceNumber > 999)) throw unavailable();
+                || prepared.firstSequenceNumber >= MAX_CHUNKS)) throw unavailable();
           const reply = await plugin.prepareProviderSource({ revision, workspaceId: scope.workspaceId,
             bindingRef: scope.bindingRef, ...prepared });
           current(signal); current(sourceSignal);

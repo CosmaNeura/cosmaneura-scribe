@@ -5,12 +5,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .capture_protocol_v1 import MAX_CHUNKS
+
 
 class NativeIntervalStart(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     source_start_id: UUID
-    first_sequence_number: int = Field(strict=True, ge=0, le=999)
+    first_sequence_number: int = Field(strict=True, ge=0, lt=MAX_CHUNKS)
 
 
 class CaptureContinuity(BaseModel):

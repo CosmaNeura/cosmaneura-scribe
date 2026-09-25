@@ -307,17 +307,13 @@ def test_wave_layout_rejects_truncated_pcm(remove: int) -> None:
 
 
 def test_three_hour_stream_capacity_has_bounded_read_memory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    # Component capacity only: admission limits are deliberately unchanged by this PR.
+    # Bounded stream component at the advertised three-hour capacity.
     # Generate encrypted bytes in seconds; no microphone, real-time wait or Speech call.
     key = b"s" * 32
     path = tmp_path / "synthetic-capacity.enc"
     count, frames_per_chunk = 1080, 160_000
-    # Extend only the fixture's AAD encoder bound to construct future-size input.
-    # The real assembler/admission maximum is still covered by its rejection test.
-    import cosmaneura_scribe.capture_protocol_v1 as protocol
-    monkeypatch.setattr(protocol, "MAX_CHUNKS", count)
     request = _request(uuid4(), ())
     index = []
     with path.open("wb") as destination:

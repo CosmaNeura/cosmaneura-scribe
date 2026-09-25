@@ -1,4 +1,4 @@
-import { NONCE_BYTES } from "@cosmaneura-scribe/capture-protocol";
+import { MAX_CHUNKS, NONCE_BYTES } from "@cosmaneura-scribe/capture-protocol";
 
 import { QueueInvariantError } from "../queue/errors";
 import {
@@ -557,7 +557,7 @@ export function assertActiveCaptureState(value: unknown): asserts value is Activ
       || (next.firstSequenceNumber as number) > (value.recordedChunks as number)
       || !Number.isSafeInteger(next.reservationCount) || (next.reservationCount as number) < 1
       || (next.reservationCount as number) > 90
-      || (next.firstSequenceNumber as number) + (next.reservationCount as number) > 1000
+      || (next.firstSequenceNumber as number) + (next.reservationCount as number) > MAX_CHUNKS
       || typeof next.renewIdempotencyKey !== "string" || !isRecord(next.previousLease)) {
       throw new QueueInvariantError("invalid_active_capture_state");
     }

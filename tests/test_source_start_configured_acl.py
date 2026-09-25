@@ -98,7 +98,9 @@ class Scope:
             provider, runtime, tenant, consent, draft, self.settings.database_url.get_secret_value()
         )
 
-    async def capture(self, tenant: UUID | None = None) -> tuple[Trial, SourceStartIntent]:
+    async def capture(
+        self, tenant: UUID | None = None, *, reservation_count: int = 1,
+    ) -> tuple[Trial, SourceStartIntent]:
         trial = await self.trial(tenant)
         tenant, draft, provider = trial.tenant, trial.draft, trial.provider
         settings = Settings(
@@ -145,20 +147,21 @@ class Scope:
                 )
                 assert lease.status_code == 201
                 current = lease.json()
-                reservation = await client.post(
-                    f"{path}/chunk-reservations",
-                    json={
-                        "protocol_version": "1.0",
-                        "capture_lease_id": current["lease_id"],
-                        "capture_lease_generation": current["generation"],
-                        "channel": "mixed",
-                        "first_sequence_number": 0,
-                        "count": 1,
-                    },
-                    headers={"Idempotency-Key": "source-reserve-0001"},
-                )
-                assert reservation.status_code == 201
-                assert reservation.json()["capture_authorized_until"] == current["expires_at"]
+                for first in range(0, reservation_count, 90):
+                    reservation = await client.post(
+                        f"{path}/chunk-reservations",
+                        json={
+                            "protocol_version": "1.0",
+                            "capture_lease_id": current["lease_id"],
+                            "capture_lease_generation": current["generation"],
+                            "channel": "mixed",
+                            "first_sequence_number": first,
+                            "count": min(90, reservation_count - first),
+                        },
+                        headers={"Idempotency-Key": f"source-reserve-{first:04d}"},
+                    )
+                    assert reservation.status_code == 201
+                    assert reservation.json()["capture_authorized_until"] == current["expires_at"]
         finally:
             app.dependency_overrides.clear()
             app.dependency_overrides.update(overrides)
@@ -539,3 +542,21 @@ async def test_configured_speech_worker_claims_decrypts_publishes_and_replays(
         ).scalar_one() == "completed"
     finally:
         await assembler.close()
+
+
+async def test_native_start_and_retirement_after_thousandth_chunk(scope: Scope):
+    trial, first = await scope.capture(reservation_count=1081)
+    runtime = scope.source()
+    await _act(runtime, trial, first, "prepare")
+    await _act(runtime, trial, first, "authorize")
+    await _act(runtime, trial, first, "stop")
+    late = first.model_copy(update={"attempt_id": uuid4(), "first_sequence_number": 1080})
+    prepared = await _act(runtime, trial, late, "prepare", "late-source-prepare")
+    assert isinstance(prepared, SourceStartReceipt) and prepared.first_sequence_number == 1080
+    await _act(runtime, trial, late, "authorize", "late-source-authorize")
+    stopped = await _act(runtime, trial, late, "stop", "late-source-stop")
+    assert isinstance(stopped, SourceStartReceipt) and stopped.first_sequence_number == 1080
+    unstarted = late.model_copy(update={"attempt_id": uuid4()})
+    retired = await _act(runtime, trial, unstarted, "stop", "late-source-retire")
+    assert isinstance(retired, SourceStartRetirementReceipt)
+    assert retired.first_sequence_number == 1080

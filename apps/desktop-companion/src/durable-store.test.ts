@@ -102,6 +102,19 @@ describe("durable desktop capture", () => {
       await expect(restoredCoverage.persist({ phase: "started", value: { ...start, hostTimeNanoseconds: "2" } })).rejects.toThrow();
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
   });
+  it("reopens native coverage after a late long-visit resume", async () => {
+    const path = await directory(), key = await master(), options = { directory: path, recoveryScope, workspaceId, key };
+    let store = await DurableDesktopRecordStore.open(options);
+    try {
+      await new DurableDesktopCoverage(store.namespace("coverage"), attemptId).beginInterval(workspaceId, 1080);
+      store.close(); store = await DurableDesktopRecordStore.open(options);
+      const coverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
+      expect(await coverage.load()).toBeNull();
+      await coverage.beginInterval(workspaceId, 1080);
+      await expect(coverage.beginInterval(recoveryScope, 2048)).rejects.toThrow();
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+
   it("refuses an unprotected session-key candidate instead of persisting an unrecoverable key", async () => {
     const path = await directory(), key = await master();
     const store = await DurableDesktopRecordStore.open({ directory: path, recoveryScope, workspaceId, key });

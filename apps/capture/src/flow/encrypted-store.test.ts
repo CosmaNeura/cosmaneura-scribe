@@ -106,6 +106,25 @@ describe("EncryptedIndexedDbFlowStore", () => {
     store.close();
   });
 
+  it("reopens an encrypted continuation beyond one thousand chunks", async () => {
+    const options = { indexedDB: new IDBFactory(), databaseName: TEST_CRYPTO.randomUUID(), crypto: TEST_CRYPTO };
+    let store = await EncryptedIndexedDbFlowStore.open(options);
+    const lease = { protocol_version: "1.0" as const, receipt_id: TEST_CRYPTO.randomUUID(),
+      lease_id: TEST_CRYPTO.randomUUID(), session_id: SESSION_ID, generation: 12,
+      issued_at: "2026-09-25T14:45:00.000Z", expires_at: "2026-09-25T15:00:00.000Z" };
+    const active = { schemaVersion: 4 as const, sessionId: SESSION_ID, lease,
+      reviewAfterUpload: true as const, captureAuthorizedUntil: lease.expires_at,
+      aggregatePlaintextBudgetBytes: 402653184, phase: "paused" as const,
+      completeIdempotencyKey: "long-visit-complete", recordedChunks: 1080,
+      recordedPlaintextBytes: 345647520, startedAt: "2026-09-25T12:00:00.000Z",
+      continuation: { prepared: false, firstSequenceNumber: 1080, reservationCount: 90,
+        previousLease: lease, renewIdempotencyKey: "long-visit-renewal" } };
+    await store.putActiveCaptureState(active); store.close();
+    store = await EncryptedIndexedDbFlowStore.open(options);
+    try { expect(await store.getActiveCaptureState()).toEqual(active); }
+    finally { store.close(); }
+  });
+
   it("persists the exact reservation intent before a mutation and reopens it", async () => {
     const indexedDB = new IDBFactory();
     const databaseName = TEST_CRYPTO.randomUUID();
