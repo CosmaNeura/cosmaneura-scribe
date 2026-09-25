@@ -138,9 +138,11 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
       || this.phase === "failed" && snapshot.phase === "recording") throw unavailable();
     this.publishing = true;
     try {
-      if (snapshot.phase === "inactive" && this.broken) {
+      if (snapshot.phase === "inactive" && !this.isHealthy()) {
         // Only the existing capture owner publishes inactive, after source stop.
-        // A broken UI pipe can now be retired without claiming an audio stop.
+        // Revoked admission must not prevent that owner's final cleanup. Retire
+        // the same UI pipe without permitting another recording or picker.
+        this.fail();
         await this.terminateInactive(); this.active = null; this.phase = "inactive"; return;
       }
       if (!this.isHealthy() || this.choice !== null) throw unavailable();
