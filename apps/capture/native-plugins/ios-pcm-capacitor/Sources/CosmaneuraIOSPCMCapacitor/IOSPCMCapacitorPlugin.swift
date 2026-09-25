@@ -15,6 +15,7 @@
     public let identifier = "IOSPCMCapacitorPlugin"
     public let jsName = "IOSPCM"
     public let pluginMethods: [CAPPluginMethod] = [
+      CAPPluginMethod(name: "getCaptureSignal", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getAppState", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "confirmCaptureIdle", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getCaptureCapabilities", returnType: CAPPluginReturnPromise),
@@ -27,15 +28,33 @@
       CAPPluginMethod(name: "replayPendingPacket", returnType: CAPPluginReturnPromise),
     ]
 
+    private var signalBridge: IOSPCMBridgeCore?
     private var transport: IOSPCMCapacitorTransport?
 
     public override func load() {
       let publisher = IOSPCMCapacitorEventPublisher(emitter: self)
-      let native = IOSPCMCapacitorTransport(bridge: IOSPCMBridgeCore(events: publisher))
+      let bridge = IOSPCMBridgeCore(events: publisher)
+      signalBridge = bridge
+      let native = IOSPCMCapacitorTransport(bridge: bridge)
       transport = native
       Task { @MainActor in
         NativeCaptureStartGate.registerIdleProbe { native.confirmCaptureIdle() }
       }
+    }
+
+    @objc public func getCaptureSignal(_ call: CAPPluginCall) {
+      guard let signal = signalBridge?.captureSignal() else {
+        call.resolve(["version": 1, "signal": NSNull()])
+        return
+      }
+      call.resolve(["version": 1, "signal": [
+        "inputBuffers": signal.inputBuffers, "convertedBuffers": signal.convertedBuffers,
+        "inputEverNonzero": signal.inputEverNonzero, "convertedEverNonzero": signal.convertedEverNonzero,
+        "inputLevel": signal.inputLevel, "convertedLevel": signal.convertedLevel,
+        "inputAgeMs": signal.inputAgeMs.map { $0 as Any } ?? NSNull(),
+        "convertedAgeMs": signal.convertedAgeMs.map { $0 as Any } ?? NSNull(),
+        "zeroInputMs": signal.zeroInputMs, "route": signal.route.rawValue,
+      ]])
     }
 
     @objc public func getAppState(_ call: CAPPluginCall) {

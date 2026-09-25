@@ -83,6 +83,8 @@ export interface IosPcmStopResult {
 }
 
 export interface IOSPCMPlugin {
+  /** Optional on older installed builds. Ephemeral fixed metadata only. */
+  getCaptureSignal?(): Promise<unknown>;
   getAppState(): Promise<{ state: IosPcmAppState }>;
   start(options: IosPcmConfiguration): Promise<{ sessionToken: string }>;
   ready(options: IosPcmSessionOptions): Promise<Record<string, never>>;

@@ -93,6 +93,7 @@ struct NativeInputFrameLimitTests {
     #expect(stopped.finalPacket?.sequenceNumber == 0)
     // ceil(8192 * 16000 / 48000) mono PCM16 samples, including the drained tail.
     #expect(stopped.finalPacket?.bytes.count == 2_731 * 2)
+    #expect(stopped.finalPacket?.bytes.withUnsafeBytes { $0.contains { $0 != 0 } } == true)
     stopped.finalPacket?.bytes.zeroize()
     #expect(stopped.finalPacket?.bytes.isZeroized == true)
     #expect(bridge.confirmCaptureIdle())
@@ -115,6 +116,49 @@ struct NativeInputFrameLimitTests {
     #expect(frames.isZeroed)
     #expect(stopped.finalPacket == nil)
     #expect(bridge.confirmCaptureIdle())
+  }
+
+  @Test func signalDistinguishesTapAndConversionAndResetsOnResume() async throws {
+    let encounter = ConsentedSyntheticEncounter(), monitor = PCMSignalMonitor()
+    let audio = InjectedAudioDriver(), events = FixtureEvents()
+    let bridge = IOSPCMBridgeCore(permission: FixturePermission(encounter: encounter),
+      audio: audio, foreground: FixtureForeground(), events: events, signalMonitor: monitor)
+    events.bridge = bridge
+    #expect(bridge.captureSignal() == nil)
+    let token = try bridge.begin(configuration: configuration())
+    try await bridge.ready(token)
+    monitor.setRoute(.builtIn)
+    // More than three seconds of exact silence is observable, never terminal.
+    for _ in 0..<18 {
+      let channels = [Array(repeating: Float.zero, count: 8_192)]
+      monitor.recordInput(channels, sampleRateHz: 48_000)
+      try await audio.offer(OwnedAudioFrames(sampleRateHz: 48_000, channels: channels))
+    }
+    let quiet = try #require(bridge.captureSignal())
+    #expect(quiet.inputBuffers == 18 && quiet.convertedBuffers == 18)
+    #expect(quiet.zeroInputMs >= 3_000)
+    #expect(!quiet.inputEverNonzero && !quiet.convertedEverNonzero)
+    #expect(events.terminalFailures.isEmpty)
+    // Tap observation precedes conversion; it must not make the output meter move.
+    monitor.recordInput([Array(repeating: 0.125, count: 8_192)], sampleRateHz: 48_000)
+    #expect(bridge.captureSignal()?.inputEverNonzero == true)
+    #expect(bridge.captureSignal()?.convertedEverNonzero == false)
+    let frames = encounter.frames(count: 8_192)
+    try await audio.offer(frames)
+    let active = try #require(bridge.captureSignal())
+    #expect(active.inputLevel == 0.125 && active.convertedLevel > 0.12)
+    #expect(active.convertedEverNonzero && active.zeroInputMs == 0 && active.route == .builtIn)
+    #expect(frames.isZeroed)
+    let stopped = try await bridge.stop(token, mode: .drain)
+    #expect(stopped.finalPacket?.bytes.withUnsafeBytes { $0.contains { $0 != 0 } } == true)
+    stopped.finalPacket?.bytes.zeroize()
+    #expect(bridge.captureSignal() == nil)
+    let resumed = try bridge.begin(configuration: configuration())
+    try await bridge.ready(resumed)
+    #expect(bridge.captureSignal()?.inputBuffers == 0)
+    #expect(bridge.captureSignal()?.convertedEverNonzero == false)
+    _ = try await bridge.stop(resumed, mode: .discard)
+    #expect(bridge.captureSignal() == nil)
   }
 
   private func configuration() -> IOSPCMBridgeConfiguration {

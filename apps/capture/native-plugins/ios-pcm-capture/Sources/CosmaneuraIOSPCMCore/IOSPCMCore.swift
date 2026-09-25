@@ -13,6 +13,7 @@ public final class IOSPCMCore: @unchecked Sendable {
   private let sink: any PCMEmissionSink
   private let clock: any PCMClock
   private let sourceClock: any PCMSourceClock
+  private let signalMonitor: PCMSignalMonitor?
   private var usedRunIDs: Set<String> = []
   private var nextSessionID: UInt64 = 0
   private var active: Active?
@@ -22,13 +23,15 @@ public final class IOSPCMCore: @unchecked Sendable {
     audio: any PCMAudioDriving,
     sink: any PCMEmissionSink,
     clock: any PCMClock = ContinuousPCMClock(),
-    sourceClock: any PCMSourceClock = ContinuousPCMSourceClock()
+    sourceClock: any PCMSourceClock = ContinuousPCMSourceClock(),
+    signalMonitor: PCMSignalMonitor? = nil
   ) {
     self.permission = permission
     self.audio = audio
     self.sink = sink
     self.clock = clock
     self.sourceClock = sourceClock
+    self.signalMonitor = signalMonitor
   }
 
   /// Claims ownership synchronously and returns a handle before permission or
@@ -58,6 +61,7 @@ public final class IOSPCMCore: @unchecked Sendable {
       sink: sink,
       clock: clock,
       sourceClock: sourceClock,
+      signalMonitor: signalMonitor,
       window: window,
       markCloseFailed: { [weak self] in self?.markCloseFailed(sessionID) },
       releaseOwnership: { [weak self] in self?.release(sessionID) }
@@ -190,6 +194,7 @@ private actor IOSPCMSessionState {
   private let sink: any PCMEmissionSink
   private let clock: any PCMClock
   private let sourceClock: any PCMSourceClock
+  private let signalMonitor: PCMSignalMonitor?
   private var window: PCMSourceWindow?
   private var sourceInputFrames: Int64 = 0
   private var authorityTask: Task<Void, Never>?
@@ -226,6 +231,7 @@ private actor IOSPCMSessionState {
     sink: any PCMEmissionSink,
     clock: any PCMClock,
     sourceClock: any PCMSourceClock,
+    signalMonitor: PCMSignalMonitor?,
     window: PCMSourceWindow?,
     markCloseFailed: @escaping @Sendable () -> Void,
     releaseOwnership: @escaping @Sendable () -> Void
@@ -237,6 +243,7 @@ private actor IOSPCMSessionState {
     self.sink = sink
     self.clock = clock
     self.sourceClock = sourceClock
+    self.signalMonitor = signalMonitor
     self.window = window
     self.markCloseFailed = markCloseFailed
     self.releaseOwnership = releaseOwnership
@@ -470,6 +477,7 @@ private actor IOSPCMSessionState {
         }
         return try resampler!.push(mono)
       }
+      signalMonitor?.recordConverted(output)
       try append(&output)
       if let windowEnd { beginWindowClose(windowEnd) }
     } catch let failure as PCMFailure {

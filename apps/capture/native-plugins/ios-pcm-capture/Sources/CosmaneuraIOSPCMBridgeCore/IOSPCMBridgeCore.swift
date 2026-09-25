@@ -309,6 +309,7 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
   private let events: any IOSPCMBridgeEventPublishing
   private let clock: any PCMClock
   private let sourceClock: any PCMSourceClock
+  private let signalMonitor: PCMSignalMonitor?
   private var usedRunIDs: Set<String> = []
   private let tokenSource: @Sendable () -> String
   private var nextGeneration: UInt64 = 0
@@ -324,6 +325,7 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
     events: any IOSPCMBridgeEventPublishing,
     clock: any PCMClock = ContinuousPCMClock(),
     sourceClock: any PCMSourceClock = ContinuousPCMSourceClock(),
+    signalMonitor: PCMSignalMonitor? = nil,
     tokenSource: @escaping @Sendable () -> String = {
       UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
@@ -334,6 +336,7 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
     self.events = events
     self.clock = clock
     self.sourceClock = sourceClock
+    self.signalMonitor = signalMonitor
     self.tokenSource = tokenSource
   }
 
@@ -341,16 +344,18 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
     /// Dormant live composition. No app target imports or selects this module.
     public convenience init(events: any IOSPCMBridgeEventPublishing) {
       let foreground = LiveAppleApplicationForegroundProvider()
+      let signalMonitor = PCMSignalMonitor()
       self.init(
         permission: AVFoundationMicrophonePermissionAdapter(
           provider: LiveAppleMicrophonePermissionProvider()
         ),
         audio: AVFoundationPCMDriver(
-          system: LiveAppleAudioSystem(),
+          system: LiveAppleAudioSystem(signalMonitor: signalMonitor),
           foreground: foreground
         ),
         foreground: foreground,
-        events: events
+        events: events,
+        signalMonitor: signalMonitor
       )
     }
   #endif
@@ -363,6 +368,14 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
   /// permission/startup and failed Stop. A new WebView cannot hide an old owner.
   public func confirmCaptureIdle() -> Bool {
     CaptureProcessOwnership.shared.isIdle
+  }
+
+  /// Current recording only; no retained history or observer-owned capture action.
+  public func captureSignal() -> PCMSignalMonitor.Snapshot? {
+    lock.withLock {
+      guard let session, !session.stopWasRequested else { return nil }
+      return signalMonitor?.snapshot()
+    }
   }
 
   /// Claims the single bridge slot and returns its opaque token before native
@@ -414,10 +427,12 @@ public final class IOSPCMBridgeCore: @unchecked Sendable {
       audio: audio,
       sink: sink,
       clock: clock,
-      sourceClock: sourceClock
+      sourceClock: sourceClock,
+      signalMonitor: signalMonitor
     )
     let ownershipID = CaptureProcessOwnership.shared.claim()
     do {
+      signalMonitor?.reset()
       let handle = try core.start(configuration: coreConfiguration)
       if let runID = configuration.authority?.runID { usedRunIDs.insert(runID) }
       session = SessionRecord(
