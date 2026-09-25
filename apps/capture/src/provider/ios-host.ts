@@ -97,8 +97,11 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
       || preparing && (preparing.sessionId !== sessionId || preparing.mode !== "configured_core")) {
       throw new QueueInvariantError("provider_saved_session_changed");
     }
-    const queueStorage = scopedQueue(SecureQueue, mount.recoveryScope, mount.scope.workspaceId, sessionId);
-    await queueStorage.list(); // Verify native custody and retained records before returning a recorder.
+    const nativeQueue = scopedQueue(SecureQueue, mount.recoveryScope, mount.scope.workspaceId, sessionId);
+    // Verify custody now, then hand that exact read to restore under the same
+    // exclusive flow lock. A get/write consumes it; later lists always reread.
+    const openingQueue = reuseOpeningRead(nativeQueue, await nativeQueue.list(), current);
+    const queueStorage = openingQueue.storage;
     current();
     const ownedFlow = flow;
     let closed = false, closing: Promise<void> | null = null;
@@ -109,6 +112,7 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
       catch { throw new CaptureStopAcknowledgementPending(); }
     })().finally(() => { stopping = null; });
     const release = (): Promise<void> => {
+      openingQueue.discard();
       if (closed) return Promise.resolve();
       return closing ??= (async () => {
         try {
@@ -152,6 +156,23 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     // failed acquisition's handles, including after cancellation during open().
     flow?.close(); await unlock(); throw error;
   }
+}
+
+function reuseOpeningRead(storage: CaptureQueueStorage, records: readonly CaptureChunkRecord[],
+  current: () => void): { storage: CaptureQueueStorage; discard: () => void } {
+  let first: readonly CaptureChunkRecord[] | null = records;
+  const discard = (): void => { first = null; };
+  return { discard, storage: {
+    create: record => { discard(); current(); return storage.create(record); },
+    get: objectId => { discard(); current(); return storage.get(objectId); },
+    compareAndSwap: (objectId, revision, replacement) => {
+      discard(); current(); return storage.compareAndSwap(objectId, revision, replacement);
+    },
+    list: async () => {
+      current(); const verified = first; discard();
+      return verified ?? storage.list();
+    },
+  } };
 }
 
 function scopedQueue(plugin: NativeQueueRecordPlugin, recoveryScope: string, workspaceId: string,
