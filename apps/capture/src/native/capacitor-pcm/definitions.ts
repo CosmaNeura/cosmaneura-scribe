@@ -83,6 +83,8 @@ export interface IosPcmStopResult {
 }
 
 export interface IOSPCMPlugin {
+  /** Next start only; rejects while any native capture is pending or active. */
+  selectMicrophoneInput?(options: { input: "built_in" | "bluetooth" }): Promise<unknown>;
   /** Optional on older installed builds. Ephemeral fixed metadata only. */
   getCaptureSignal?(): Promise<unknown>;
   getAppState(): Promise<{ state: IosPcmAppState }>;

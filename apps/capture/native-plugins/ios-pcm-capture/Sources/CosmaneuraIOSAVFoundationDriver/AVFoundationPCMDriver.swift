@@ -67,10 +67,25 @@ public enum AppleAudioSystemEvent: Equatable, Sendable {
 }
 
 public enum AppleAudioSessionProfile: Sendable {
-  /// Foreground-only speakerphone speech: play-and-record, voice-chat mode,
-  /// default speaker, and Bluetooth hands-free input. It grants no background
-  /// execution and does not mix capture with other audio.
+  /// Foreground recording in measurement mode with an explicitly selected input.
+  /// It grants no background execution and does not mix with other audio.
   case foregroundTwoPartySpeech
+}
+
+public enum AppleMicrophoneInput: String, Sendable {
+  case builtIn = "built_in"
+  case bluetooth
+}
+
+/// Next-start preference only. Changing it never activates or reroutes audio.
+/// The bridge serializes selection against process-wide capture ownership.
+public final class AppleMicrophoneInputPreference: @unchecked Sendable {
+  private let lock = NSLock()
+  private var input: AppleMicrophoneInput = .builtIn
+
+  public init() {}
+  public var selected: AppleMicrophoneInput { lock.withLock { input } }
+  public func select(_ value: AppleMicrophoneInput) { lock.withLock { input = value } }
 }
 
 public protocol AppleApplicationForegroundProviding: Sendable {
