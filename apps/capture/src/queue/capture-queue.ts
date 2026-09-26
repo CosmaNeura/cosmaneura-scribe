@@ -20,6 +20,7 @@ import {
 } from "./records";
 import type {
   CaptureChunkRecord,
+  CaptureChunkMetadata,
   CaptureQueueStorage,
   CaptureQueueTransport,
   ChunkIdempotencyKeys,
@@ -156,6 +157,10 @@ export class CaptureQueue {
     return (await this.#storage.list()).map(cloneCaptureRecord);
   }
 
+  async listMetadata(): Promise<readonly CaptureChunkMetadata[]> {
+    return this.#storage.listMetadata();
+  }
+
   /** Removes envelope bytes only after a matching server registration receipt. */
   async purge(objectId: string): Promise<CaptureChunkRecord> {
     const result = await this.#mutate(objectId, (current) => {
@@ -177,7 +182,7 @@ export class CaptureQueue {
       if (this.#draining) throw new QueueInvariantError("queue_drain_in_progress");
       this.#draining = true;
       try {
-        const records = (await this.#storage.list()).filter(isDrainCandidate);
+        const records = (await this.#storage.listMetadata()).filter(isDrainCandidate);
         const results: DrainItemResult[] = records.map((record) =>
           skipped(record.reservation.objectId),
         );
@@ -478,10 +483,7 @@ function registrationRequest(record: UploadedChunkRecord) {
   };
 }
 
-function isDrainCandidate(record: CaptureChunkRecord): record is
-  | EncryptedChunkRecord
-  | UploadingChunkRecord
-  | UploadedChunkRecord {
+function isDrainCandidate(record: CaptureChunkMetadata): boolean {
   return record.state === "encrypted" || record.state === "uploading" || record.state === "uploaded";
 }
 

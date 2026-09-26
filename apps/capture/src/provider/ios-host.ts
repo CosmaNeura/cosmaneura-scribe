@@ -6,7 +6,7 @@ import { EncryptedIndexedDbFlowStore } from "../flow/encrypted-store";
 import type { CiphertextUploadTarget } from "../bff/contracts";
 import { QueueInvariantError } from "../queue/errors";
 import { CaptureStopAcknowledgementPending } from "../capture/stop-confirmation";
-import type { CaptureChunkRecord, CaptureQueueStorage } from "../queue/types";
+import type { CaptureChunkMetadata, CaptureQueueStorage } from "../queue/types";
 import { NativePluginQueueStorage, type NativeQueueRecordPlugin } from "../storage/native-plugin";
 import { createProviderIOSCaptureSource } from "./ios-capture-source";
 import { NativeProviderWorkspaceJournal } from "./workspace-journal";
@@ -100,7 +100,7 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     const nativeQueue = scopedQueue(SecureQueue, mount.recoveryScope, mount.scope.workspaceId, sessionId);
     // Verify custody now, then hand that exact read to restore under the same
     // exclusive flow lock. A get/write consumes it; later lists always reread.
-    const openingQueue = reuseOpeningRead(nativeQueue, await nativeQueue.list(), current);
+    const openingQueue = reuseOpeningRead(nativeQueue, await nativeQueue.listMetadata(), current);
     const queueStorage = openingQueue.storage;
     current();
     const ownedFlow = flow;
@@ -158,9 +158,9 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
   }
 }
 
-function reuseOpeningRead(storage: CaptureQueueStorage, records: readonly CaptureChunkRecord[],
+function reuseOpeningRead(storage: CaptureQueueStorage, records: readonly CaptureChunkMetadata[],
   current: () => void): { storage: CaptureQueueStorage; discard: () => void } {
-  let first: readonly CaptureChunkRecord[] | null = records;
+  let first: readonly CaptureChunkMetadata[] | null = records;
   const discard = (): void => { first = null; };
   return { discard, storage: {
     create: record => { discard(); current(); return storage.create(record); },
@@ -168,9 +168,10 @@ function reuseOpeningRead(storage: CaptureQueueStorage, records: readonly Captur
     compareAndSwap: (objectId, revision, replacement) => {
       discard(); current(); return storage.compareAndSwap(objectId, revision, replacement);
     },
-    list: async () => {
+    list: () => { discard(); current(); return storage.list(); },
+    listMetadata: async () => {
       current(); const verified = first; discard();
-      return verified ?? storage.list();
+      return verified ?? storage.listMetadata();
     },
   } };
 }
@@ -196,7 +197,7 @@ function scopedQueue(plugin: NativeQueueRecordPlugin, recoveryScope: string, wor
       return { keys };
     },
   });
-  const checked = <T extends CaptureChunkRecord>(record: T): T => {
+  const checked = <T extends CaptureChunkMetadata>(record: T): T => {
     if (record.reservation.sessionId !== sessionId) throw unavailable();
     return record;
   };
@@ -204,6 +205,7 @@ function scopedQueue(plugin: NativeQueueRecordPlugin, recoveryScope: string, wor
     create: record => storage.create(checked(record)),
     get: async objectId => { const record = await storage.get(objectId); return record && checked(record); },
     list: async () => (await storage.list()).map(checked),
+    listMetadata: async () => (await storage.listMetadata()).map(checked),
     compareAndSwap: (objectId, revision, replacement) => storage.compareAndSwap(objectId, revision, checked(replacement)),
   };
 }

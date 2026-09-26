@@ -10,9 +10,10 @@ import {
   NONCE_BYTES,
   PROTOCOL_VERSION,
 } from "@cosmaneura-scribe/capture-protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { attachEncryptedEnvelope, createReservedRecord } from "../queue/records";
+import { attachEncryptedEnvelope, captureChunkMetadata, createReservedRecord } from "../queue/records";
+import type { CaptureChunkMetadata } from "../queue/types";
 import { NativePluginQueueStorage } from "./native-plugin";
 
 const OBJECT_ID = "80000000-0000-4000-8000-000000000008";
@@ -20,6 +21,36 @@ const SESSION_ID = "90000000-0000-4000-8000-000000000009";
 const TENANT_ID = "a0000000-0000-4000-8000-00000000000a";
 
 describe("NativePluginQueueStorage", () => {
+  it("enumerates metadata with one native payload read at a time and retains the original envelopes", async () => {
+    const plugin = new FakeSecureQueuePlugin(), storage = new NativePluginQueueStorage(plugin);
+    const expected: CaptureChunkMetadata[] = [];
+    for (let sequence = 0; sequence < 12; sequence += 1) {
+      const reserved = reservedRecord(sequence);
+      expect(await storage.create(reserved)).toBe(true);
+      const encrypted = attachEncryptedEnvelope(reserved, envelopeFixture(320_060), "0".repeat(64));
+      expect(await storage.compareAndSwap(reserved.reservation.objectId, 1, encrypted)).toBe(true);
+      expected.push(captureChunkMetadata(encrypted));
+    }
+    let active = 0, peak = 0;
+    const get = plugin.get.bind(plugin);
+    vi.spyOn(plugin, "get").mockImplementation(async options => {
+      active += 1; peak = Math.max(peak, active);
+      try { await Promise.resolve(); return await get(options); } finally { active -= 1; }
+    });
+    expect(await storage.listMetadata()).toEqual(expected);
+    expect(peak).toBe(1);
+    expect(JSON.stringify(expected)).not.toContain("envelope");
+    const retained = await storage.get(expected[0]!.reservation.objectId);
+    expect(retained?.state).toBe("encrypted");
+    if (retained?.state !== "encrypted") throw new Error("missing fixture envelope");
+    expect(retained.envelope).toEqual(envelopeFixture(320_060));
+    vi.spyOn(plugin, "get").mockImplementation(async options => {
+      const record = await get(options);
+      return options.key === expected.at(-1)!.reservation.objectId ? { ...record, data: "corrupt" } : record;
+    });
+    await expect(storage.listMetadata()).rejects.toMatchObject({ code: "native_queue_integrity_failure" });
+  });
+
   it("keeps review recovery metadata out of audio queue decoding and draining", async () => {
     const plugin = new FakeSecureQueuePlugin();
     const storage = new NativePluginQueueStorage(plugin);
@@ -29,6 +60,7 @@ describe("NativePluginQueueStorage", () => {
     await plugin.create({ key: `scribe-provider-queue:v1:${TENANT_ID}:${SESSION_ID}:${SESSION_ID}:${OBJECT_ID}`,
       data: btoa("separately scoped provider queue") });
     expect(await storage.list()).toEqual([reservedRecord()]);
+    expect(await storage.listMetadata()).toEqual([reservedRecord()]);
     expect((await plugin.list()).keys).toHaveLength(4);
   });
   it("maps logical revisions onto atomic opaque native revisions", async () => {
@@ -113,19 +145,20 @@ class FakeSecureQueuePlugin implements SecureQueuePlugin {
   }
 }
 
-function reservedRecord() {
+function reservedRecord(sequence = 0) {
+  const objectId = sequence === 0 ? OBJECT_ID : `80000001-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
   return createReservedRecord(
     {
       protocolVersion: PROTOCOL_VERSION,
-      objectId: OBJECT_ID,
+      objectId,
       sessionId: SESSION_ID,
       channel: "microphone",
-      sequenceNumber: 0,
+      sequenceNumber: sequence,
       additionalAuthenticatedData: encodeChunkAdditionalDataBase64Url({
         tenantId: TENANT_ID,
         sessionId: SESSION_ID,
-        objectId: OBJECT_ID,
-        sequenceNumber: 0,
+        objectId,
+        sequenceNumber: sequence,
         channel: "microphone",
       }),
       createdAt: "2026-08-17T12:00:00.000Z",
@@ -139,7 +172,7 @@ function reservedRecord() {
   );
 }
 
-function envelopeFixture(): Uint8Array {
+function envelopeFixture(bytes = 48): Uint8Array {
   return encodeEnvelope(
     {
       schema_version: PROTOCOL_VERSION,
@@ -147,7 +180,7 @@ function envelopeFixture(): Uint8Array {
       nonce: base64UrlEncode(new Uint8Array(NONCE_BYTES).fill(11)),
       media_type: "audio/wav",
     },
-    new Uint8Array(48).fill(12),
+    new Uint8Array(bytes).fill(12),
   );
 }
 

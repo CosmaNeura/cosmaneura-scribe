@@ -11,6 +11,7 @@ import {
 import { QueueInvariantError } from "./errors";
 import {
   QUEUE_RECORD_SCHEMA_VERSION,
+  type CaptureChunkMetadata,
   type CaptureChunkRecord,
   type ChunkIdempotencyKeys,
   type ChunkReservation,
@@ -307,6 +308,20 @@ export function cloneCaptureRecord(record: CaptureChunkRecord): CaptureChunkReco
         registrationReceipt: { ...record.registrationReceipt },
         purgedAt: record.purgedAt,
       };
+  }
+}
+
+/** Project only after validating the complete record, including its envelope. */
+export function captureChunkMetadata(record: CaptureChunkRecord): CaptureChunkMetadata {
+  assertSafeCaptureRecord(record);
+  const common = cloneCommon(record);
+  switch (record.state) {
+    case "reserved": return { ...common, state: "reserved" };
+    case "purged": return { ...common, state: "purged", purgedAt: record.purgedAt,
+      registrationReceipt: { ...record.registrationReceipt } };
+    case "registered": return { ...common, state: "registered", sha256: record.sha256,
+      byteLength: record.byteLength, registrationReceipt: { ...record.registrationReceipt } };
+    default: return { ...common, state: record.state, sha256: record.sha256, byteLength: record.byteLength };
   }
 }
 

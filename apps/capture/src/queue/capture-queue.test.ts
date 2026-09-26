@@ -38,6 +38,7 @@ describe("CaptureQueue", () => {
       },
       get: (objectId: string) => harness.storage.get(objectId),
       list: () => harness.storage.list(),
+      listMetadata: () => harness.storage.listMetadata(),
       compareAndSwap: async (
         objectId: string,
         revision: number,
@@ -212,6 +213,7 @@ describe("CaptureQueue", () => {
       },
     });
 
+    vi.spyOn(harness.storage, "list").mockRejectedValue(new Error("bulk payload enumeration forbidden"));
     const draining = harness.queue.drainOnce(transport);
     await twoStarted;
     expect(active).toBe(2);
@@ -219,7 +221,7 @@ describe("CaptureQueue", () => {
     releaseUploads?.();
     await draining;
     expect(maximumActive).toBe(2);
-    expect((await harness.queue.list()).every((record) => record.state === "registered")).toBe(true);
+    expect((await harness.queue.listMetadata()).every((record) => record.state === "registered")).toBe(true);
     harness.storage.close();
   });
 

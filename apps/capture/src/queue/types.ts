@@ -91,6 +91,10 @@ export type CaptureChunkRecord =
   | RegisteredChunkRecord
   | PurgedChunkRecord;
 
+/** Validated queue state without retained audio bytes. Never used for a write. */
+type WithoutEnvelope<Record> = Record extends CaptureChunkRecord ? Omit<Record, "envelope"> : never;
+export type CaptureChunkMetadata = WithoutEnvelope<CaptureChunkRecord>;
+
 /**
  * Atomic record storage shared by the PWA implementation and a future native
  * secure-storage plugin. Implementations must make create/CAS indivisible.
@@ -98,6 +102,9 @@ export type CaptureChunkRecord =
 export interface CaptureQueueStorage {
   create(record: ReservedChunkRecord): Promise<boolean>;
   get(objectId: string): Promise<CaptureChunkRecord | null>;
+  /** Operational enumeration must authenticate each record with bounded audio memory. */
+  listMetadata(): Promise<readonly CaptureChunkMetadata[]>;
+  /** Full payload enumeration for diagnostics; use listMetadata for restore/drain. */
   list(): Promise<readonly CaptureChunkRecord[]>;
   compareAndSwap(
     objectId: string,

@@ -5,9 +5,10 @@ import {
 } from "@cosmaneura-scribe/capture-protocol";
 
 import { QueueInvariantError } from "../queue/errors";
-import { assertSafeCaptureRecord } from "../queue/records";
+import { assertSafeCaptureRecord, captureChunkMetadata } from "../queue/records";
 import type {
   CaptureChunkRecord,
+  CaptureChunkMetadata,
   CaptureQueueStorage,
   ReservedChunkRecord,
 } from "../queue/types";
@@ -53,17 +54,26 @@ export class NativePluginQueueStorage implements CaptureQueueStorage {
   }
 
   async list(): Promise<readonly CaptureChunkRecord[]> {
+    const records: CaptureChunkRecord[] = [];
+    for await (const record of this.#scan()) records.push(record);
+    return records;
+  }
+
+  async listMetadata(): Promise<readonly CaptureChunkMetadata[]> {
+    const records: CaptureChunkMetadata[] = [];
+    for await (const record of this.#scan()) records.push(captureChunkMetadata(record));
+    return records;
+  }
+
+  async *#scan(): AsyncGenerator<CaptureChunkRecord> {
     const result = await this.#plugin.list();
-    return Promise.all(
-      // Shared native storage also holds journals and independently scoped provider
-      // queues. Only a provider's scoped adapter may enumerate its queue records.
-      result.keys.filter((key) => !key.startsWith("creator-review-v1:")
-        && !key.startsWith("provider-workspace-v1:")
-        && !key.startsWith("scribe-provider-queue:v1:")).map(async (objectId) => {
-        const value = await this.#plugin.get({ key: objectId });
-        return fromNativeRecord(objectId, value.key, value.data, value.revision);
-      }),
-    );
+    // Shared native storage also holds journals and independently scoped provider
+    // queues. Only a provider's scoped adapter may enumerate its queue records.
+    for (const objectId of result.keys.filter((key) => !key.startsWith("creator-review-v1:")
+      && !key.startsWith("provider-workspace-v1:") && !key.startsWith("scribe-provider-queue:v1:"))) {
+      const value = await this.#plugin.get({ key: objectId });
+      yield fromNativeRecord(objectId, value.key, value.data, value.revision);
+    }
   }
 
   async compareAndSwap(
