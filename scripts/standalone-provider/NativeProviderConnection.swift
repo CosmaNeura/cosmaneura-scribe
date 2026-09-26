@@ -28,7 +28,8 @@ enum ProviderNativeAction: String, Sendable {
         switch self {
         case .catalog: 65_536
         case .mount, .recorder, .sourceStart: 8192
-        case .admission, .operation, .note: 8 * 1024 * 1024
+        case .operation: 32 * 1024 * 1024 + 8192
+        case .admission, .note: 8 * 1024 * 1024
         }
     }
 }

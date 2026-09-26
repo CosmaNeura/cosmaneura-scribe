@@ -92,6 +92,21 @@ func require(_ value: Bool) throws { if !value { throw CheckFailure.failed } }
             connection.close(); checks += 1
         }
         do {
+            let (auth, _, wire, connection) = try make()
+            let limit = ProviderNativeAction.operation.responseLimit
+            var data = Data("{\"padding\":\"".utf8)
+            data.append(Data(repeating: 120, count: limit - data.count - 2))
+            data.append(Data("\"}".utf8))
+            await wire.setResponse(ProviderNativeReply(status: 200, body: data))
+            let response = try await connection.send(request(auth, action: "capture-operations"))
+            try require(response.body.count == limit && limit == 32 * 1024 * 1024 + 8192)
+            try await rejected(Task { try await connection.send(request(auth, action: "capture-notes")) })
+            data.append(32)
+            await wire.setResponse(ProviderNativeReply(status: 200, body: data))
+            try await rejected(Task { try await connection.send(request(auth, action: "capture-operations")) })
+            connection.close(); checks += 1
+        }
+        do {
             let (auth, driver, wire, connection) = try make()
             let id = UUID().uuidString.lowercased(); connection.cancel(UUID(uuidString: id)!)
             let operation = Task { try await connection.send(request(auth, id: id)) }

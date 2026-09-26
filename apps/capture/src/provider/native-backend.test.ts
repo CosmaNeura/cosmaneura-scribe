@@ -3,6 +3,8 @@ import { Capacitor } from "@capacitor/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import { CoreCaptureBff, CoreCaptureClient } from "./core-client";
+import { longReviewFixture } from "../../../review-ui/src/long-review.fixture";
+import { MAX_CORE_CAPTURE_RESPONSE_BYTES } from "../../../review-ui/src/capture-response-limits";
 import { connectNativeProviderIOSBackend, type NativeProviderOptions, type ProviderNativePlugin } from "./native-backend";
 
 const workspace = "10000000-0000-4000-8000-000000000001";
@@ -69,6 +71,22 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it("passes a full long review through native and Core receivers while retaining the byte guard", async () => {
+    const f = fixture(), backend = await f.connect();
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      const client = new CoreCaptureClient(mount.scope, mount.request, mount.signal);
+      const receipt = longReviewFixture(session);
+      f.plugin.providerRequest.mockImplementationOnce(async request => f.reply(request, {
+        ...JSON.parse(f.reply(request).body), receipt,
+      }));
+      expect(await client.operation(session, { kind: "creator_review" })).toEqual(receipt);
+      f.plugin.providerRequest.mockImplementationOnce(async request => ({ ...f.reply(request),
+        body: " ".repeat(MAX_CORE_CAPTURE_RESPONSE_BYTES + 1) }));
+      await expect(client.operation(session, { kind: "creator_review" })).rejects.toThrow();
+    } finally { await backend.dispose(); }
+  });
   it("connects catalog, scope, actual Core client and recorder reauthorization without a JS token", async () => {
     const f = fixture(), backend = await f.connect();
     try {
