@@ -59,12 +59,12 @@ describe("NativePluginQueueStorage", () => {
     await plugin.create({ key: `provider-workspace-v1:${TENANT_ID}:${SESSION_ID}`, data: btoa("provider recovery") });
     await plugin.create({ key: `scribe-provider-queue:v1:${TENANT_ID}:${SESSION_ID}:${SESSION_ID}:${OBJECT_ID}`,
       data: btoa("separately scoped provider queue") });
-    for (const kind of ["binding", "lease", "reservations"]) {
+    for (const kind of ["binding", "lease", "reservations", "flow"]) {
       await plugin.create({ key: `scribe-native-${kind}:v1:synthetic`, data: btoa("native recovery metadata") });
     }
     expect(await storage.list()).toEqual([reservedRecord()]);
     expect(await storage.listMetadata()).toEqual([reservedRecord()]);
-    expect((await plugin.list()).keys).toHaveLength(7);
+    expect((await plugin.list()).keys).toHaveLength(8);
   });
   it("maps logical revisions onto atomic opaque native revisions", async () => {
     const plugin = new FakeSecureQueuePlugin();

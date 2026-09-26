@@ -211,7 +211,7 @@ final class SecureQueueStore {
         }
     }
 
-    func clear() throws -> Int {
+    func clear(forRenderer: Bool = false) throws -> Int {
         operationLock.lock()
         defer { operationLock.unlock() }
         try ensureDirectory()
@@ -224,6 +224,21 @@ final class SecureQueueStore {
             )
         } catch {
             throw SecureQueueError.io
+        }
+        if forRenderer {
+            // Hold the same lock as native creation and inspect before removing
+            // anything. A list-then-clear in the plugin would race native custody.
+            let committed = urls.filter { $0.pathExtension == "sq" }
+            if !committed.isEmpty {
+                let storageKey = try loadStorageKey(allowCreate: false)
+                for url in committed {
+                    let digest = try SecureQueueRecordCodec.digest(fromFilename: url.lastPathComponent)
+                    let record = try readRecord(at: url, digest: digest, storageKey: storageKey)
+                    guard SecureQueueRecordCodec.isRendererKey(record.key) else {
+                        throw SecureQueueError.invalidArgument
+                    }
+                }
+            }
         }
         var removedRecords = 0
         for url in urls {

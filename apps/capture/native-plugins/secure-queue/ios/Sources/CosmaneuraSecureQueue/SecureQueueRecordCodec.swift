@@ -11,6 +11,10 @@ enum SecureQueueRecordCodec {
     static let maximumKeyBytes = 512
     static let maximumRevision = UInt64(Int64.max)
 
+    /// Native recovery intents/receipts are never a renderer write/read surface.
+    /// Ciphertext upload records keep their existing separately scoped interface.
+    static func isRendererKey(_ key: String) -> Bool { !key.hasPrefix("scribe-native-") }
+
     static func validatedKeyData(_ key: String) throws -> Data {
         guard
             !key.isEmpty,

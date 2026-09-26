@@ -72,7 +72,7 @@ export class NativePluginQueueStorage implements CaptureQueueStorage {
     for (const objectId of result.keys.filter((key) => !key.startsWith("creator-review-v1:")
       && !key.startsWith("provider-workspace-v1:") && !key.startsWith("scribe-provider-queue:v1:")
       && !key.startsWith("scribe-native-binding:v1:") && !key.startsWith("scribe-native-lease:v1:")
-      && !key.startsWith("scribe-native-reservations:v1:"))) {
+      && !key.startsWith("scribe-native-reservations:v1:") && !key.startsWith("scribe-native-flow:v1:"))) {
       const value = await this.#plugin.get({ key: objectId });
       yield fromNativeRecord(objectId, value.key, value.data, value.revision);
     }
