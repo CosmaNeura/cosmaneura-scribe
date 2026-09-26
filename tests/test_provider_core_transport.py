@@ -11,6 +11,7 @@ from uuid import uuid4
 import httpx
 import pytest
 import pytest_asyncio
+from cosmaneura_scribe.provider_core_connections import ProviderCoreConnections
 from cosmaneura_scribe.provider_core_transport import (
     MAX_CORE_CAPTURE_RESPONSE_BYTES,
     AuthorizedCoreProvider,
@@ -251,6 +252,50 @@ async def test_native_recording_context_reuses_fresh_authorized_core_read(connec
     assert tenant != SELECTION.tenant_ref
     assert len(wire.effects) == 1 and wire.counter == 2
     assert wire.context_calls > len(wire.calls)
+
+
+async def test_shared_connections_reauthorize_every_operation_and_keep_clients_separate():
+    wire = Wire()
+    pool = ProviderCoreConnections(
+        "https://core.synthetic.invalid", transport=httpx.MockTransport(wire.handle)
+    )
+
+    def fresh_client():
+        return ProviderCoreTransport(
+            "https://core.synthetic.invalid",
+            wire.context,
+            wire.workload,
+            enabled=True,
+            connections=pool,
+            clock=lambda: NOW,
+        )
+
+    try:
+        for _ in range(2):
+            client = fresh_client()
+            try:
+                mount = await client.open()
+                await client.request(
+                    mount,
+                    ROOT + "capture-operations",
+                    body(operation={"kind": "creator_review"}),
+                    "offline-review-key",
+                )
+            finally:
+                await client.close()
+        assert wire.counter == 4 and len(wire.effects) == 2
+        assert wire.context_calls > len(wire.calls)
+        before = len(wire.calls)
+        wire.denied = True
+        client = fresh_client()
+        try:
+            with pytest.raises(ProviderCoreUnavailable):
+                await client.open()
+            assert len(wire.calls) == before
+        finally:
+            await client.close()
+    finally:
+        await pool.close()
 
 
 @pytest.mark.parametrize("field", ["tenant_id", "session_id", "workspace_id", "payload"])

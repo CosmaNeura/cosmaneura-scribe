@@ -22,6 +22,7 @@ from uuid import UUID, uuid4
 import httpx
 from pydantic import SecretStr
 
+from .provider_core_connections import ProviderCoreConnections
 from .source_start_contract import SourceStartIntent
 
 _ROOT = "/service/v1/agent/scribe/"
@@ -155,6 +156,7 @@ class ProviderCoreTransport:
         *,
         enabled: bool = False,
         transport: httpx.AsyncBaseTransport | None = None,
+        connections: ProviderCoreConnections | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         try:
@@ -179,8 +181,10 @@ class ProviderCoreTransport:
         self._workload_token = workload_token
         self._enabled = enabled is True
         self._clock = clock
+        if connections is not None and transport is not None:
+            raise ProviderCoreUnavailable("core_provider_transport_invalid")
         self._client = httpx.AsyncClient(
-            transport=transport,
+            transport=connections.borrow(self._origin) if connections is not None else transport,
             follow_redirects=False,
             trust_env=False,
             timeout=httpx.Timeout(20, connect=5),
