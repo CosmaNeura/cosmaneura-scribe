@@ -18,12 +18,14 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
   }
 
   func recordingScope() async throws -> NativeRecordingScope {
-    let fresh = try await connection.recordingContext(
-      workspaceID: context.workspaceID, bindingRef: bindingRef, sessionID: context.sessionID,
-      revision: connection.recordingRevision(accountDigest: context.accountDigest))
+    // Construction already required a verified Core context. Every operation
+    // below authenticates again and checks its Core envelope. Journal ownership
+    // checks need the current native account, not another round trip to rediscover
+    // immutable IDs. Cached keys/leases still cannot start a source.
+    _ = try connection.recordingRevision(accountDigest: context.accountDigest)
     return try NativeRecordingScope(
-      tenantID: fresh.tenantID, sessionID: fresh.sessionID,
-      workspaceID: fresh.workspaceID, accountDigest: fresh.accountDigest)
+      tenantID: context.tenantID, sessionID: context.sessionID,
+      workspaceID: context.workspaceID, accountDigest: context.accountDigest)
   }
 
   func publishedKey() async throws -> NativeRecordingPublicKey {
@@ -92,7 +94,7 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       generation.doubleValue == Double((previous?.generation ?? 0) + 1),
       previous == nil || previous?.leaseID == leaseID,
       let issued = value["issued_at"] as? String, let expires = value["expires_at"] as? String
-    else { throw ProviderNativeError.response }
+    else { throw NativeRecordingBindingFailure.receiptMismatch }
     return try NativeRecordingLease(
       receiptID: receiptID, leaseID: leaseID,
       sessionID: context.sessionID, generation: generation.intValue, issuedAt: issued,
@@ -121,7 +123,7 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       receipt["session_id"] as? String == context.sessionID.uuidString.lowercased(),
       receipt["capture_authorized_until"] as? String == lease.expiresAt,
       let rows = receipt["reservations"] as? [[String: Any]], rows.count == count
-    else { throw ProviderNativeError.response }
+    else { throw NativeRecordingBindingFailure.receiptMismatch }
     let scope = try NativeRecordingScope(
       tenantID: context.tenantID, sessionID: context.sessionID,
       workspaceID: context.workspaceID, accountDigest: context.accountDigest)
@@ -140,14 +142,14 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
         sequence.doubleValue == Double(first + offset),
         let aad = row["additional_authenticated_data"] as? String,
         let created = row["created_at"] as? String
-      else { throw ProviderNativeError.response }
+      else { throw NativeRecordingBindingFailure.receiptMismatch }
       reservations.append(
         try NativeRecordingReservation(
           scope: scope, objectID: objectID,
           sequence: first + offset, additionalData: aad, createdAt: created))
     }
     guard Set(reservations.map(\.objectID)).count == count else {
-      throw ProviderNativeError.response
+      throw NativeRecordingBindingFailure.receiptMismatch
     }
     return NativeRecordingReservationBatch(
       batchID: batchID, sessionID: context.sessionID,
@@ -180,7 +182,15 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       id: UUID().uuidString.lowercased(), revision: revision,
       action: "capture-operations", key: intent.uuidString.lowercased(),
       body: String(decoding: body, as: UTF8.self))
-    let reply = try await connection.send(request)
+    let reply: ProviderNativeReply
+    do { reply = try await connection.send(request) } catch ProviderNativeError.response {
+      throw NativeRecordingBindingFailure.receiptMismatch
+    }
+    do {
+      try NativeProviderConnection.requireRecordingResponse(reply.status)
+    } catch ProviderNativeError.authorityChanged {
+      throw NativeRecordingBindingFailure.authorityChanged
+    }
     guard try connection.recordingRevision(accountDigest: context.accountDigest) == revision,
       reply.status == 200, reply.body.count <= maximumResponseBytes,
       let envelope = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
@@ -197,7 +207,7 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       (-5...30).contains(Date().timeIntervalSince(checked)),
       let receipt = envelope["receipt"] as? [String: Any]
     else {
-      throw ProviderNativeError.response
+      throw NativeRecordingBindingFailure.receiptMismatch
     }
     return receipt
   }

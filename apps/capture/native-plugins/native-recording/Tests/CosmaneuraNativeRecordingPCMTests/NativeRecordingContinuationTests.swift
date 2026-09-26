@@ -59,6 +59,21 @@ import XCTest
     try await owner.stop()
   }
 
+  func testExplicitCoreDenialStopsBeforeTheOldDeadline() async throws {
+    let f = try ContinuationFixture()
+    let owner = try await f.open()
+    try await f.driver.offer(800)
+    f.clock.advance(780)  // Two minutes of the old window still remain.
+    await f.service.denyNextLease()
+    await owner.maintain()
+    let state = await owner.state
+    assertEqual(state.phase, .stopped)
+    assertEqual(state.reason, .sourceRetired)
+    assertEqual(state.sourceGeneration, 1)
+    assertEqual(state.capture.committedChunks, 1)
+    assertEqual(await f.driver.releases, 1)
+  }
+
   func testReservationRetryRetainsLeaseAndRangeWhileAudioProgresses() async throws {
     let f = try ContinuationFixture()
     let owner = try await f.open()
@@ -382,6 +397,7 @@ private actor ContinuationService: NativeRecordingLeaseService, NativeRecordingR
   var leaseIntents: [UUID] = []
   var batchCalls: [BatchCall] = []
   private var lostLease = false
+  private var deniedLease = false
   private var lostBatch = false
   private var pause: ContinuationPause?
   init(_ scope: NativeRecordingScope, _ clock: ContinuationClock) {
@@ -391,12 +407,17 @@ private actor ContinuationService: NativeRecordingLeaseService, NativeRecordingR
   var counts: (leases: Int, batches: Int) { (leases.count, batches.count) }
   func recordingScope() async throws -> NativeRecordingScope { scope }
   func loseNextLeaseReply() { lostLease = true }
+  func denyNextLease() { deniedLease = true }
   func loseNextBatchReply() { lostBatch = true }
   func pauseRenewal(_ value: ContinuationPause) { pause = value }
   func requestLease(previous: NativeRecordingLease?, intent: UUID) async throws
     -> NativeRecordingLease
   {
     leaseIntents.append(intent)
+    if deniedLease {
+      deniedLease = false
+      throw NativeRecordingBindingFailure.authorityChanged
+    }
     let value: NativeRecordingLease
     if let retained = leases[intent] {
       value = retained

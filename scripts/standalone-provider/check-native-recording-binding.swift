@@ -183,7 +183,10 @@ private actor BindingWire: ProviderNativeWire {
     let encoded = try JSONSerialization.data(withJSONObject: envelope)
     replyBytes = encoded.count
     return ProviderNativeReply(
-      status: fault == "denied" ? 403 : 200,
+      status: [
+        "denied": 403, "unauthorized": 401, "conflict": 409, "invalid": 422,
+        "unavailable": 503,
+      ][fault] ?? 200,
       body: encoded)
   }
 }
@@ -276,6 +279,52 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
       "none", "nonce", "binding", "workspace", "operation", "contract", "old", "future",
       "date", "extra", "large", "denied", "extra_receipt",
     ]
+    do {
+      let (auth, driver, wire, connection, service) = try await make(modulus)
+      let before = await wire.requests.count
+      let scope = try await service.recordingScope()
+      for _ in 0..<10 { try require(try await service.recordingScope() == scope) }
+      try require(await wire.requests.count == before && driver.tokens == before)
+      _ = try await auth.signOut()
+      try await CheckNativeProvider.rejected(Task { try await service.recordingScope() })
+      try require(await wire.requests.count == before)
+      connection.close()
+      checks += 1
+    }
+    for fault in ["denied", "unauthorized", "conflict", "invalid", "unavailable"] {
+      let (auth, _, wire, connection, service) = try await make(modulus)
+      await wire.setFault(fault)
+      do {
+        _ = try await service.requestLease(previous: nil, intent: UUID())
+        throw CheckFailure.failed
+      } catch NativeRecordingBindingFailure.authorityChanged {
+        try require(fault != "unavailable")
+      } catch ProviderNativeError.unavailable {
+        try require(fault == "unavailable")
+      }
+      do {
+        _ = try await connection.recordingContext(
+          workspaceID: wire.workspace, bindingRef: wire.binding,
+          sessionID: wire.session, revision: auth.state().revision)
+        throw CheckFailure.failed
+      } catch ProviderNativeError.authorityChanged {
+        try require(fault != "unavailable")
+      } catch ProviderNativeError.unavailable {
+        try require(fault == "unavailable")
+      }
+      connection.close()
+      checks += 1
+    }
+    for fault in ["nonce", "binding", "generation", "extra_receipt"] {
+      let (_, _, wire, connection, service) = try await make(modulus)
+      await wire.setFault(fault)
+      do {
+        _ = try await service.requestLease(previous: nil, intent: UUID())
+        throw CheckFailure.failed
+      } catch NativeRecordingBindingFailure.receiptMismatch {}
+      connection.close()
+      checks += 1
+    }
     for action in ["key", "bind"] {
       let faults =
         envelopeFaults
