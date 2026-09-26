@@ -10,6 +10,9 @@ import { CaptureStopAcknowledgementPending } from "../capture/stop-confirmation"
 import type { CaptureChunkMetadata, CaptureQueueStorage } from "../queue/types";
 import { NativePluginQueueStorage, type NativeQueueRecordPlugin } from "../storage/native-plugin";
 import { createProviderIOSCaptureSource } from "./ios-capture-source";
+import type { PreparedProviderRecorder } from "../provider-binding";
+import { connectNativeProviderRecorder, type NativeRecordingPort } from "./native-recorder";
+import { CoreCaptureBff, CoreCaptureClient } from "./core-client";
 import { NativeProviderWorkspaceJournal } from "./workspace-journal";
 import type { AuthorizedProviderEncounter, ProviderRecorderResources, ProviderWorkspaceHost } from "./workspace";
 
@@ -18,6 +21,7 @@ export interface AuthorizedProviderIOSMount extends Omit<AuthorizedProviderEncou
   /** Stable server-bound environment/creator UUID, retained across native restarts. */
   readonly recoveryScope: string;
   readonly uploadTarget: CiphertextUploadTarget;
+  readonly nativeRecording?: NativeRecordingPort;
   /** Rechecks the selected creator, encounter, admission and session on the server. */
   readonly reauthorizeRecorder: (sessionId: string, signal: AbortSignal) => Promise<void>;
   readonly prepareNativeSource: (prepared: PreparedProviderIOSCapture, signal: AbortSignal) => Promise<void>;
@@ -38,7 +42,7 @@ export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal"
 /** Compose the real native recorder and recovery stores with the existing Core host.
  * This neither creates an identity nor substitutes a transport for Core authority.
  */
-export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWorkspaceHost<ProviderRecorderResources> {
+export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWorkspaceHost {
   requireNative();
   return {
     signal: backend.signal,
@@ -73,7 +77,7 @@ export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWork
 }
 
 async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string, signal: AbortSignal,
-  currentEncounter: () => void): Promise<ProviderRecorderResources> {
+  currentEncounter: () => void): Promise<ProviderRecorderResources | PreparedProviderRecorder> {
   uuid(sessionId); requireNative();
   const current = (): void => {
     currentEncounter();
@@ -86,7 +90,6 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     current();
     await mount.reauthorizeRecorder(sessionId, signal);
     current();
-    const source = createProviderIOSCaptureSource(); // No permission request or recording.
     flow = await EncryptedIndexedDbFlowStore.open({
       databaseName: `scribe-provider-flow:v1:${mount.recoveryScope}:${mount.scope.workspaceId}`,
     });
@@ -99,6 +102,28 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
       throw new QueueInvariantError("provider_saved_session_changed");
     }
     const nativeQueue = scopedQueue(SecureQueue, mount.recoveryScope, mount.scope.workspaceId, sessionId);
+    // Native key custody is selected only for new recordings. Existing browser
+    // keys/intents stay with their original flow; never replace or rebind them.
+    const keyState = await flow.getSessionKeyState(sessionId);
+    const legacyKey = await flow.getSessionKey(sessionId);
+    current();
+    if (mount.nativeRecording && !active && !preparing && !keyState && !legacyKey) {
+      const ownedFlow = flow;
+      const native = await connectNativeProviderRecorder({ sessionId, port: mount.nativeRecording,
+        bff: new CoreCaptureBff(new CoreCaptureClient(mount.scope, mount.request, signal), sessionId),
+        queueStorage: nativeQueue, uploadTarget: mount.uploadTarget, signal });
+      let released = false, releasing: Promise<void> | null = null;
+      // Always hand late acquisitions to workspace teardown. Retain this lock
+      // until native source cessation confirms, including explicit retry.
+      return { ...native, deactivate: () => {
+        if (released) return Promise.resolve();
+        return releasing ??= (async () => {
+          try { await native.deactivate(); ownedFlow.close(); await unlock(); released = true; }
+          catch (error) { releasing = null; throw error; }
+        })();
+      } };
+    }
+    const source = createProviderIOSCaptureSource(); // No permission request or recording.
     // Verify custody now, then hand that exact read to restore under the same
     // exclusive flow lock. A get/write consumes it; later lists always reread.
     const openingQueue = reuseOpeningRead(nativeQueue, await nativeQueue.listMetadata(), current);

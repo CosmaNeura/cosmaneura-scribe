@@ -253,6 +253,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   var signal: PCMSignalMonitor.Snapshot? { run?.captureSignal() }
   var captureState: NativeRecordingPCMState? { run?.captureState }
   var busy: Bool { opening != nil || starting != nil || stopping != nil || sealing != nil }
+  var requiresReopen: Bool { retired }
   var microphoneInput: AppleMicrophoneInput { input.selected }
 
   func selectMicrophoneInput(_ value: AppleMicrophoneInput) throws {

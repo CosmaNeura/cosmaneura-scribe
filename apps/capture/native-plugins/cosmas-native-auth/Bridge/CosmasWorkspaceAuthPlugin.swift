@@ -1,6 +1,9 @@
 @preconcurrency import Capacitor
 import CosmasNativeAuth
 import Foundation
+#if os(iOS)
+import AVFAudio
+#endif
 
 @objc(CosmasWorkspaceAuthPlugin)
 @MainActor
@@ -19,6 +22,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "cancelProviderRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "prepareProviderSource", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "closeProviderSource", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "openProviderRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "providerRecordingCommand", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getProviderConfiguration", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openProviderCore", returnType: CAPPluginReturnPromise),
 
@@ -33,6 +38,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     private var providerSourceRevision: String?
     private var providerSourceID: UUID?
     private var observedDriver: W13ObservedAuthDriver?
+    private static let recordingBridge = NativeProviderRecordingBridge()
 
     nonisolated public override func load() {
         Task { @MainActor in self.initializeAuth() }
@@ -75,6 +81,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             }
         }
         auth?.onChange = { [weak self] state in
+            Self.recordingBridge.authChanged(state)
             self?.providerConnection?.authChanged(state)
             if state.phase != .ready || self?.providerSourceRevision != state.revision {
                 self?.invalidateProviderSource()
@@ -185,6 +192,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             guard let auth = self.auth else { return Self.rejectProvider(call) }
             var value = Self.payload(auth.state())
             value["providerReady"] = self.providerRequestsAvailable
+            if self.nativeRecordingAvailable { value["nativeRecordingVersion"] = 1 }
             call.resolve(value)
         }
     }
@@ -217,6 +225,61 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 call.resolve(["requestId": identifier, "revision": revision,
                     "status": reply.status, "body": response])
             } catch { Self.rejectProvider(call) }
+        }
+    }
+
+    private var nativeRecordingAvailable: Bool {
+        #if os(iOS)
+        return providerRequestsAvailable
+            && (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String])?.contains("audio") == true
+        #else
+        return false
+        #endif
+    }
+
+    @objc nonisolated public func openProviderRecording(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            #if os(iOS)
+            do {
+                guard let options = call.options as? [String: Any] else { throw ProviderNativeError.invalidRequest }
+                let selection = try NativeProviderRecordingSelection(options)
+                self.initializeAuth()
+                guard self.nativeRecordingAvailable, let auth = self.auth,
+                      let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
+                try await self.recoverSources(connection: connection)
+                guard let recovery = self.sourceRecovery else { throw ProviderNativeError.unavailable }
+                let current: @MainActor @Sendable () throws -> Void = {
+                    guard self.nativeRecordingAvailable, auth.state().phase == .ready,
+                          auth.state().revision == selection.revision else { throw ProviderNativeError.authorityChanged }
+                }
+                let result = try await Self.recordingBridge.open(selection, current: current, make: {
+                    try await NativeProviderRecordingHost.make(connection: connection, auth: auth,
+                        recovery: recovery, workspaceID: selection.workspaceID, bindingRef: selection.bindingRef,
+                        sessionID: selection.sessionID, revision: selection.revision)
+                }, inputMuted: { AVAudioApplication.shared.isInputMuted })
+                call.resolve(result)
+            } catch { Self.rejectProvider(call) }
+            #else
+            Self.rejectProvider(call)
+            #endif
+        }
+    }
+
+    @objc nonisolated public func providerRecordingCommand(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            #if os(iOS)
+            do {
+                guard let options = call.options as? [String: Any] else { throw ProviderNativeError.invalidRequest }
+                let request = try NativeProviderRecordingCommand(options)
+                let result = try await Self.recordingBridge.command(request, current: {
+                    guard self.nativeRecordingAvailable, let auth = self.auth, auth.state().phase == .ready,
+                          auth.state().revision == request.revision else { throw ProviderNativeError.authorityChanged }
+                }, inputMuted: { AVAudioApplication.shared.isInputMuted })
+                call.resolve(result)
+            } catch { Self.rejectProvider(call) }
+            #else
+            Self.rejectProvider(call)
+            #endif
         }
     }
 

@@ -58,6 +58,7 @@ BRIDGE = [
         "NativeCaptureProcessFence",
         "NativeProviderRecordingRun",
         "NativeProviderRecordingHost",
+        "NativeProviderRecordingBridge",
     ]
 ]
 

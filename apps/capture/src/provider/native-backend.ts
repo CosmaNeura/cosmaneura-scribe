@@ -9,6 +9,7 @@ import { record, reference } from "./core-client";
 import type { ProviderIOSBackend } from "./ios-host";
 import { nativeProviderPlugin, type ProviderAction as Action, type NativeProviderState as NativeState,
   type ProviderNativePlugin } from "./native-plugin";
+import type { NativeRecordingPort } from "./native-recorder";
 import type { ProviderEncounter } from "./workspace";
 
 const limits: Record<Action, number> = { catalog: 2, mount: 256, recorder: 1024,
@@ -35,6 +36,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios"
     || !Capacitor.isPluginAvailable("CosmasWorkspaceAuth")) throw unavailable();
   const abort = new AbortController();
+  let nativeRecording = false;
   let revision: string | null = null, observed: NativeState | null = null;
   let listener: PluginListenerHandle | undefined, timer: ReturnType<typeof setInterval> | undefined;
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
@@ -92,6 +94,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     if (!record(state) || state.phase !== "ready" || state.providerReady !== true || !isUuid(state.revision)
       || duringRead && (duringRead.phase !== state.phase || duringRead.revision !== state.revision)) throw unavailable();
     revision = state.revision;
+    nativeRecording = state.nativeRecordingVersion === 1 && typeof plugin.openProviderRecording === "function"
+      && typeof plugin.providerRecordingCommand === "function";
     document.addEventListener("visibilitychange", resume);
     timer = setInterval(() => { void refresh(); }, 5000); // Existing native state check, no SDK token request.
   } catch (error) { await dispose(); throw error; }
@@ -179,6 +183,20 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
         uploadTarget: options.uploadTarget,
+        ...(nativeRecording ? { nativeRecording: {
+          open: (sessionId: string, requestId: string) => {
+            current(signal);
+            if (!revision || !isUuid(sessionId) || !isUuid(requestId)) throw unavailable();
+            // Deliver late ownership handles so workspace teardown can close them.
+            return plugin.openProviderRecording!({ requestId, revision, workspaceId: scope.workspaceId,
+              bindingRef: scope.bindingRef, sessionId });
+          },
+          command: (command: Parameters<NativeRecordingPort["command"]>[0]) => {
+            if (command.kind !== "close") current(signal);
+            if (!revision) throw unavailable();
+            return plugin.providerRecordingCommand!({ ...command, revision });
+          },
+        } } : {}),
         request: async (path, body, key, operationSignal) => {
           current(signal);
           const action = path.slice("/service/v1/agent/scribe/".length);

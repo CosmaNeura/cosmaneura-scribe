@@ -59,6 +59,8 @@ function fixture() {
     cancelProviderRequest: vi.fn(async () => undefined),
     prepareProviderSource: vi.fn<ProviderNativePlugin["prepareProviderSource"]>(async value => ({ revision: value.revision, sessionId: value.sessionId })),
     closeProviderSource: vi.fn(async () => undefined),
+    openProviderRecording: vi.fn<NonNullable<ProviderNativePlugin["openProviderRecording"]>>(async () => ({})),
+    providerRecordingCommand: vi.fn<NonNullable<ProviderNativePlugin["providerRecordingCommand"]>>(async () => ({})),
     getToken: vi.fn(() => { throw new Error("A native token must not be requested by JavaScript"); }),
   };
   const coreOpen = vi.fn(async () => undefined);
@@ -252,4 +254,31 @@ describe("native provider connection", () => {
     await expect(backend.listEncounters(backend.signal)).rejects.toThrow("provider_native_connection_unavailable");
     await backend.dispose(); expect(f.plugin.cancelProviderRequest).not.toHaveBeenCalled();
   });
+});
+
+
+it("binds native commands to the verified mount and revision, retaining close after revocation", async () => {
+  const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 1 }, false);
+  const backend = await f.connect();
+  try {
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal), id = crypto.randomUUID();
+    expect(mount.nativeRecording).toBeDefined();
+    await mount.nativeRecording!.open(session, id);
+    expect(f.plugin.openProviderRecording).toHaveBeenCalledWith({ requestId: id, sessionId: session,
+      revision: f.state.revision, workspaceId: workspace, bindingRef: binding });
+    f.abort.abort();
+    expect(() => mount.nativeRecording!.command({ requestId: id, recorderId: id, kind: "start" })).toThrow();
+    await mount.nativeRecording!.command({ requestId: id, recorderId: id, kind: "close" });
+    expect(f.plugin.providerRecordingCommand).toHaveBeenCalledWith({ requestId: id, recorderId: id,
+      revision: f.state.revision, kind: "close" });
+  } finally { await backend.dispose(); }
+});
+
+it("keeps older native builds on their existing recorder", async () => {
+  const f = fixture(), backend = await f.connect();
+  try {
+    await backend.listEncounters(backend.signal);
+    expect((await backend.openEncounter(appointment, backend.signal)).nativeRecording).toBeUndefined();
+  } finally { await backend.dispose(); }
 });
