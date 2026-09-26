@@ -9,11 +9,15 @@ final class NativeRecordingEncryptionTests: XCTestCase {
   private final class MemoryStorage: NativeRecordingKeyStorage, @unchecked Sendable {
     var values: [String: Data] = [:]
     var failWrite = false
+    var failAfterWrite = false
+    var insertCount = 0
     func read(account: String) throws -> Data? { values[account] }
     func insert(account: String, value: Data) throws {
+      insertCount += 1
       if failWrite { throw NativeRecordingFailure.keyUnavailable }
       guard values[account] == nil else { throw NativeRecordingFailure.keyConflict }
       values[account] = value
+      if failAfterWrite { throw NativeRecordingFailure.keyUnavailable }
     }
   }
 
@@ -258,6 +262,73 @@ final class NativeRecordingEncryptionTests: XCTestCase {
       try NativeRecordingEncryption.reopen(
         scope: scope, expected: created.receipt, storage: MemoryStorage()))
     XCTAssertEqual(before, storage.values)
+  }
+
+  func testBindingCandidateRecoversLostCreationAndKeepsOneImmutableKey() throws {
+    let scope = try scope()
+    let intent = UUID()
+    let storage = MemoryStorage()
+    let (_, published) = try fixture()
+    storage.failAfterWrite = true
+    let candidate = try NativeRecordingEncryption.prepareBindingCandidate(
+      scope: scope, published: published, intent: intent, storage: storage)
+    let retained = storage.values
+    let resumed = try NativeRecordingEncryption.prepareBindingCandidate(
+      scope: scope, published: published, intent: intent, storage: storage)
+    XCTAssertEqual(candidate.receipt, resumed.receipt)
+    XCTAssertEqual(storage.insertCount, 1)
+    XCTAssertEqual(storage.values, retained)
+    XCTAssertEqual(
+      try NativeRecordingEncryption.reopen(
+        scope: scope, expected: candidate.receipt, storage: storage
+      ).receipt,
+      candidate.receipt)
+    XCTAssertThrowsError(
+      try NativeRecordingEncryption.prepareBindingCandidate(
+        scope: scope, published: published, intent: UUID(), storage: storage))
+    let (_, otherKey) = try fixture()
+    XCTAssertThrowsError(
+      try NativeRecordingEncryption.prepareBindingCandidate(
+        scope: scope, published: otherKey, intent: intent, storage: storage))
+    let otherVersion = try NativeRecordingPublicKey(
+      version: "synthetic-v2", modulusBase64URL: nativeBase64URL(published.modulus))
+    XCTAssertThrowsError(
+      try NativeRecordingEncryption.prepareBindingCandidate(
+        scope: scope, published: otherVersion, intent: intent, storage: storage))
+    XCTAssertEqual(storage.insertCount, 1)
+    XCTAssertEqual(storage.values, retained)
+  }
+
+  func testBindingCandidateCannotAdoptLegacyOrCorruptKeysOrHideMissingBoundCustody() throws {
+    let scope = try scope()
+    let storage = MemoryStorage()
+    let intent = UUID()
+    let (_, published) = try fixture()
+    let legacy = try NativeRecordingEncryption.create(
+      scope: scope, published: published, storage: storage)
+    let retained = storage.values
+    XCTAssertThrowsError(
+      try NativeRecordingEncryption.prepareBindingCandidate(
+        scope: scope, published: published, intent: intent, storage: storage))
+    XCTAssertEqual(storage.values, retained)
+    XCTAssertEqual(storage.insertCount, 1)
+    let unavailable = MemoryStorage()
+    unavailable.failWrite = true
+    XCTAssertThrowsError(
+      try NativeRecordingEncryption.prepareBindingCandidate(
+        scope: scope, published: published, intent: intent, storage: unavailable))
+    XCTAssertTrue(unavailable.values.isEmpty)
+    XCTAssertEqual(unavailable.insertCount, 1)
+    XCTAssertThrowsError(
+      try NativeRecordingEncryption.reopen(
+        scope: scope, expected: legacy.receipt, storage: unavailable))
+    unavailable.values[scope.keyAccount] = Data("corrupt synthetic key record".utf8)
+    let corrupt = unavailable.values
+    XCTAssertThrowsError(
+      try NativeRecordingEncryption.prepareBindingCandidate(
+        scope: scope, published: published, intent: intent, storage: unavailable))
+    XCTAssertEqual(unavailable.values, corrupt)
+    XCTAssertEqual(unavailable.insertCount, 1)
   }
 
   func testScopeAndPacketFailuresConsumePCMAndNeverReturnAnEnvelope() throws {
