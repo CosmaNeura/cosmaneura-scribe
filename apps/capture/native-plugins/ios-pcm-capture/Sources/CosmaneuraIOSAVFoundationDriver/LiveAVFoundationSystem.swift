@@ -130,7 +130,10 @@
           forName: .AVAudioEngineConfigurationChange,
           object: engine,
           queue: nil
-        ) { [weak self] _ in self?.emit(.captureFailed) },
+        ) { [weak self] _ in
+          PCMStartupDiagnostics.shared.record(.engineConfigurationChanged)
+          self?.emit(.captureFailed)
+        },
         notificationCenter.addObserver(
           forName: UIApplication.willResignActiveNotification,
           object: nil,
@@ -272,6 +275,18 @@
     }
 
     private func emit(_ event: AppleAudioSystemEvent) {
+      let diagnostic: PCMStartupEvent
+      switch event {
+      case .configurationChanged: diagnostic = .sessionConfigurationChanged
+      case .interruptionBegan: diagnostic = .interrupted
+      case .routeChanged: diagnostic = .routeChanged
+      case .mediaServicesLost: diagnostic = .mediaServicesLost
+      case .mediaServicesReset: diagnostic = .mediaServicesReset
+      case .backgrounded: diagnostic = .backgrounded
+      case .permissionRevoked: diagnostic = .permissionRevoked
+      case .captureFailed: diagnostic = .captureFailed
+      }
+      PCMStartupDiagnostics.shared.record(diagnostic)
       lock.withLock { eventHandler }?(event)
     }
 

@@ -160,6 +160,7 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     callbacks: PCMAudioCallbacks,
     cancellation: StartupCancellation
   ) async throws {
+    PCMStartupDiagnostics.shared.record(.driverStarting)
     guard session == nil, nextGeneration < UInt64.max else {
       throw AVFoundationDriverError.operationFailed
     }
@@ -180,14 +181,17 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
       }
       try checkStartupEvents(generation)
       try system.configureAndActivate(profile: .foregroundTwoPartySpeech)
+      PCMStartupDiagnostics.shared.record(.sessionActivated)
       try validateStarting(sessionID, generation, cancellation)
       try checkStartupEvents(generation)
       try system.installInputTap(frameCapacity: frameCapacity) { [callbackGate] frames in
         callbackGate.receive(frames: frames, generation: generation)
       }
+      PCMStartupDiagnostics.shared.record(.tapInstalled)
       try validateStarting(sessionID, generation, cancellation)
       try checkStartupEvents(generation)
       try system.startEngine()
+      PCMStartupDiagnostics.shared.record(.engineStarted)
       try validateStarting(sessionID, generation, cancellation)
       let activeBeforeArming = await foreground.isForegroundActive()
       try validateStarting(sessionID, generation, cancellation)
@@ -198,7 +202,9 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
         throw AVFoundationDriverError.operationFailed
       }
       session?.phase = .active
+      PCMStartupDiagnostics.shared.record(.driverArmed)
     } catch {
+      PCMStartupDiagnostics.shared.record(.driverRejected)
       callbackGate.freezeFrames(generation: generation)
       markStartFailed(sessionID: sessionID, generation: generation)
       throw AVFoundationDriverError.operationFailed
@@ -222,6 +228,7 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     callbackGate.freezeFrames(generation: current.generation)
     do {
       try system.freezeInput()
+      PCMStartupDiagnostics.shared.record(.inputFrozen)
       current.phase = .frozen
       session = current
     } catch {
@@ -270,6 +277,7 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
       throw AVFoundationDriverError.operationFailed
     }
     session = nil
+    PCMStartupDiagnostics.shared.record(.driverReleased)
     lastReleasedSessionID = sessionID
     finishReleaseWaiters(succeeded: true)
   }

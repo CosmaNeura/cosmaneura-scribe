@@ -33,6 +33,9 @@
     private var transport: IOSPCMCapacitorTransport?
 
     public override func load() {
+      if let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+        PCMStartupDiagnostics.shared.configure(destination: cache.appendingPathComponent("scribe-capture-startup-v1.json"))
+      }
       let publisher = IOSPCMCapacitorEventPublisher(emitter: self)
       let bridge = IOSPCMBridgeCore(events: publisher)
       signalBridge = bridge
@@ -96,6 +99,7 @@
     }
 
     @objc public func start(_ call: CAPPluginCall) {
+      PCMStartupDiagnostics.shared.record(.startRequested)
       guard let transport,
         let encoding = call.getString("encoding"),
         let channels = call.getInt("channels"),
@@ -112,12 +116,15 @@
           sampleRateHz: sampleRateHz, targetFramesPerChunk: targetFramesPerChunk,
           maximumChunks: maximumChunks, authority: nil)
         let ticket = try NativeCaptureStartGate.startTicket()
+        PCMStartupDiagnostics.shared.record(.ticketAccepted)
         guard Bundle.main.bundleIdentifier == "com.cosmaneura.scribe.beta",
               !call.options.keys.contains("authority"),
               await AVAudioApplication.requestRecordPermission() else {
           throw IOSPCMCapacitorErrorCode.captureFailed
         }
+        PCMStartupDiagnostics.shared.record(.permissionAccepted)
         let token = try await NativeCaptureStartGate.consume(owner: ticket) { permit in
+        PCMStartupDiagnostics.shared.record(.authorityAccepted)
         let authority = try PCMSourceAuthority(runID: permit.runID, generation: 1,
           expiresAtMilliseconds: Int64(permit.captureExpiresAt.timeIntervalSince1970 * 1000),
           hardMaximumChunks: maximumChunks)
@@ -133,8 +140,10 @@
         guard permit.startExpiresAt > Date() else { throw IOSPCMCapacitorErrorCode.captureFailed }
         return try transport.start(configuration: configuration)
         }
+        PCMStartupDiagnostics.shared.record(.handleCreated)
         call.resolve(["sessionToken": token])
       } catch {
+        PCMStartupDiagnostics.shared.record(.startRejected)
         reject(call, error: error)
        }
       }
@@ -180,7 +189,14 @@
         return
       }
       perform(call) { transport in
-        try await transport.ready(sessionToken: sessionToken)
+        PCMStartupDiagnostics.shared.record(.readyRequested)
+        do {
+          try await transport.ready(sessionToken: sessionToken)
+          PCMStartupDiagnostics.shared.record(.readyAccepted)
+        } catch {
+          PCMStartupDiagnostics.shared.record(.readyRejected)
+          throw error
+        }
         return [:]
       }
     }
@@ -212,7 +228,15 @@
         return
       }
       perform(call) { transport in
-        let result = try await transport.stop(sessionToken: sessionToken, mode: mode)
+        PCMStartupDiagnostics.shared.record(.stopRequested)
+        let result: IOSPCMCapacitorStopResult
+        do {
+          result = try await transport.stop(sessionToken: sessionToken, mode: mode)
+          PCMStartupDiagnostics.shared.record(.stopAccepted)
+        } catch {
+          PCMStartupDiagnostics.shared.record(.stopRejected)
+          throw error
+        }
         return [
           "finalPcmPacket": result.finalPcmPacket.map(Self.packetObject) ?? NSNull()
         ]
