@@ -23,7 +23,7 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
     private var store: SecureQueueStore?
 
     public override func load() {
-        store = try? SecureQueueStore()
+        store = try? SecureQueueStore.shared.get()
     }
 
     @objc public func getStorageCapacity(_ call: CAPPluginCall) {

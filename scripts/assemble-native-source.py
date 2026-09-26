@@ -42,7 +42,7 @@ def assemble(output: Path, clerk_source: Path) -> None:
     ).read_bytes():
         raise ValueError("Desktop and mobile transport sources differ")
     output.mkdir(parents=True, exist_ok=False)
-    for name in ("cosmas-native-auth", "ios-pcm-capture", "ios-pcm-capacitor"):
+    for name in ("cosmas-native-auth", "ios-pcm-capture", "ios-pcm-capacitor", "native-recording"):
         source = plugins / name
         inventory(source)  # Reject links before copying first-party sources too.
         shutil.copytree(
