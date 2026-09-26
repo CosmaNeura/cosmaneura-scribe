@@ -570,7 +570,7 @@ async def test_postgres_rejects_aggregate_evidence_before_projection(
         session_id, segment_id = await _seed_source(connection, tenant_id)
     async with engine.begin() as connection:
         await _set_status(connection, tenant_id, session_id, "translation_pending")
-        for version in (1, 2):
+        for version in range(1, 7):
             await connection.execute(
                 text(TRANSLATION_INSERT),
                 _translation_parameters(
@@ -578,7 +578,7 @@ async def test_postgres_rejects_aggregate_evidence_before_projection(
                     session_id,
                     segment_id,
                     version=version,
-                    content="x" * 60_000,
+                    content="x" * 100_000,
                 ),
             )
     provider = build_postgres_provider(postgres_settings(admin_url))

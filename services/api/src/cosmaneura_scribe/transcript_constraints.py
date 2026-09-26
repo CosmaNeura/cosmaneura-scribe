@@ -6,6 +6,8 @@ from typing import Protocol
 
 MAX_TRANSCRIPT_SEGMENTS = 10_000
 MAX_TRANSCRIPT_CONTENT_CHARS = 100_000
+# Separate total source/translation-history capacity from each segment's bound.
+MAX_TRANSCRIPT_TOTAL_CONTENT_CHARS = 500_000
 MAX_TRANSCRIPT_DURATION_MS = 86_400_000
 NORMALIZED_SOURCE_RETENTION_LIMIT = timedelta(days=14)
 

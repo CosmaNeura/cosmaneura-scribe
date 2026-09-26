@@ -227,7 +227,8 @@ def _legacy_root_inserts(
 
 def test_normalized_source_authority_migration_has_one_head() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0023_unstarted_retirement"]
+    assert len(script.get_heads()) == 1
+    assert "0011" in {item.revision for item in script.walk_revisions()}
     migration = (ROOT / "alembic/versions/0011_normalized_source_authority.py").read_text()
     assert "GRANT " not in migration
     assert "CREATE ROLE" not in migration

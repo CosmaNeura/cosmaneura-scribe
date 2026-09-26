@@ -117,8 +117,8 @@ from .schemas import (
 from .session_state_v1 import SessionIngestMode
 from .settings import Settings
 from .transcript_constraints import (
-    MAX_TRANSCRIPT_CONTENT_CHARS,
     MAX_TRANSCRIPT_SEGMENTS,
+    MAX_TRANSCRIPT_TOTAL_CONTENT_CHARS,
     NORMALIZED_SOURCE_RETENTION_LIMIT,
 )
 from .translation_attempt_persistence import (
@@ -2554,7 +2554,7 @@ class PostgresRepository:
             raise RuntimeError("working evidence bounds are invalid")
         if (
             row["translation_count"] > MAX_TRANSCRIPT_SEGMENTS
-            or row["translation_chars"] > MAX_TRANSCRIPT_CONTENT_CHARS
+            or row["translation_chars"] > MAX_TRANSCRIPT_TOTAL_CONTENT_CHARS
             or row["review_count"] > MAX_TRANSCRIPT_SEGMENTS
         ):
             raise WorkingTranscriptPersistenceError(
