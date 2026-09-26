@@ -11,7 +11,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import { EncryptedIndexedDbQueueStorage } from "../storage/encrypted-indexeddb";
-import { CaptureQueue } from "./capture-queue";
+import { CaptureQueue, type DrainProgress } from "./capture-queue";
 import { QueueTransportError } from "./errors";
 import type { QueueInvariantError } from "./errors";
 import type {
@@ -89,8 +89,12 @@ describe("CaptureQueue", () => {
       receiptAlwaysReserved: true,
     });
 
-    const first = await harness.queue.drainOnce(transport);
+    const progress = vi.fn<(value: DrainProgress) => void>();
+    const first = await harness.queue.drainOnce(transport, progress);
     expect(first.items[0]).toMatchObject({ outcome: "deferred", code: "registration_timeout" });
+    expect(progress.mock.calls.map(([value]) => value)).toEqual([
+      { total: 1, registered: 0 }, { total: 1, registered: 0 },
+    ]);
     expect((await harness.queue.get(reservation.objectId))?.state).toBe("uploaded");
 
     harness.now.value = 1_000;
@@ -214,13 +218,19 @@ describe("CaptureQueue", () => {
     });
 
     vi.spyOn(harness.storage, "list").mockRejectedValue(new Error("bulk payload enumeration forbidden"));
-    const draining = harness.queue.drainOnce(transport);
+    const metadata = vi.spyOn(harness.storage, "listMetadata");
+    const progress = vi.fn<(value: DrainProgress) => void>(() => { throw new Error("Observer failure cannot stop an upload"); });
+    const draining = harness.queue.drainOnce(transport, progress);
     await twoStarted;
     expect(active).toBe(2);
     expect(started).toBe(2);
     releaseUploads?.();
     await draining;
     expect(maximumActive).toBe(2);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(progress.mock.calls.map(([value]) => value)).toEqual(
+      Array.from({ length: 6 }, (_, registered) => ({ total: 5, registered })),
+    );
     expect((await harness.queue.listMetadata()).every((record) => record.state === "registered")).toBe(true);
     harness.storage.close();
   });
