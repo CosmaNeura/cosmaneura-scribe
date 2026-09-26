@@ -104,17 +104,25 @@ export class DurableDesktopRecordStore {
     return row ? this.openRecord(namespace, key, row) : null;
   }
   async list(namespace: string): Promise<readonly DesktopStoredRecord[]> {
-    this.current();
-    const rows = this.database.prepare("SELECT digest,revision,nonce,ciphertext FROM records WHERE namespace=? ORDER BY digest LIMIT 2049").all(namespace);
-    if (rows.length > 2048) throw failure();
     const result: DesktopStoredRecord[] = [];
     try {
-      for (const row of rows) {
-        if (typeof row.digest !== "string") throw failure();
-        result.push(await this.openRecord(namespace, null, row, row.digest));
-      }
+      for await (const record of this.scan(namespace)) result.push({ ...record, data: record.data.slice() });
       return result;
     } catch { for (const record of result) record.data.fill(0); throw failure(); }
+  }
+  /** Only digests are enumerated. The yielded data is cleared when advancing/closing. */
+  async *scan(namespace: string): AsyncGenerator<DesktopStoredRecord, void> {
+    this.current();
+    const rows = this.database.prepare("SELECT digest FROM records WHERE namespace=? ORDER BY digest LIMIT 2049").all(namespace);
+    if (rows.length > 2048) throw failure();
+    for (const entry of rows) {
+      this.current();
+      if (typeof entry.digest !== "string") throw failure();
+      const row = this.database.prepare("SELECT revision,nonce,ciphertext FROM records WHERE namespace=? AND digest=?").get(namespace, entry.digest);
+      if (!row) throw failure();
+      const record = await this.openRecord(namespace, null, row, entry.digest);
+      try { yield record; } finally { record.data.fill(0); }
+    }
   }
   async save(namespace: string, key: string, expected: number | null, data: Uint8Array): Promise<number> {
     const encryptionKey = this.current(); identifier(key, 512);
@@ -180,6 +188,7 @@ export class DesktopRecordNamespace {
   constructor(private readonly store: DurableDesktopRecordStore, private readonly namespace: string) {}
   get(key: string): Promise<DesktopStoredRecord | null> { return this.store.get(this.namespace, key); }
   list(): Promise<readonly DesktopStoredRecord[]> { return this.store.list(this.namespace); }
+  scan(): AsyncGenerator<DesktopStoredRecord, void> { return this.store.scan(this.namespace); }
   save(key: string, previous: number | null, bytes: Uint8Array): Promise<number> { return this.store.save(this.namespace, key, previous, bytes); }
   delete(key: string, revision: number): void { this.store.delete(this.namespace, key, revision); }
   removeGroup(key: string, revision: number, others: readonly string[]): void { this.store.removeGroup(this.namespace, key, revision, others); }

@@ -100,10 +100,10 @@ describe("native provider host composition", () => {
     native.list.mockClear(); native.get.mockClear();
     const restored = await (await service.open()).recorder(session, service.abort.signal);
     expect(native.list).toHaveBeenCalledTimes(1); expect(native.get).toHaveBeenCalledTimes(1);
-    expect(await restored.queueStorage.list()).toEqual([record()]);
+    expect(await restored.queueStorage.listMetadata()).toEqual([record()]);
     expect(native.list).toHaveBeenCalledTimes(1); expect(native.get).toHaveBeenCalledTimes(1);
     native.list.mockRejectedValueOnce(new Error("native custody became unavailable"));
-    await expect(restored.queueStorage.list()).rejects.toThrow("native custody became unavailable");
+    await expect(restored.queueStorage.listMetadata()).rejects.toThrow("native custody became unavailable");
     await restored.release();
   });
 
@@ -117,14 +117,14 @@ describe("native provider host composition", () => {
       expect(await resources.queueStorage.compareAndSwap(objectId, 0, record())).toBe(false);
     }
     native.list.mockRejectedValueOnce(new Error("fresh native read required"));
-    await expect(resources.queueStorage.list()).rejects.toThrow("fresh native read required");
+    await expect(resources.queueStorage.listMetadata()).rejects.toThrow("fresh native read required");
     await resources.release();
   });
 
   it("cannot use the opening read after encounter revocation", async () => {
     const service = connection(), resources = await (await service.open()).recorder(session, service.abort.signal);
     service.abort.abort();
-    await expect(resources.queueStorage.list()).rejects.toThrow("provider_native_scope_unavailable");
+    await expect(resources.queueStorage.listMetadata()).rejects.toThrow("provider_native_scope_unavailable");
     await resources.release();
   });
 
@@ -141,7 +141,7 @@ describe("native provider host composition", () => {
     await first.release();
     const restored = await (await service.open()).recorder(session, service.abort.signal);
     expect(await restored.flowStore.getPreparationState()).toEqual(preparation);
-    expect(await restored.queueStorage.list()).toEqual([record()]);
+    expect(await restored.queueStorage.listMetadata()).toEqual([record()]);
     await restored.release();
     await encounter.openInCore(null); expect(service.mount.openInCore).toHaveBeenCalledWith(null);
   });
@@ -158,7 +158,7 @@ describe("native provider host composition", () => {
       [{}, other],
     ] as const) {
       const next = connection(changed), resources = await (await next.open()).recorder(sessionId, next.abort.signal);
-      expect(await resources.queueStorage.list()).toEqual([]);
+      expect(await resources.queueStorage.listMetadata()).toEqual([]);
       expect(await resources.queueStorage.get(objectId)).toBeNull();
       await resources.release();
     }
@@ -274,7 +274,7 @@ it.each(["recording", "interrupted", "expired"] as const)("holds mobile upload u
     await started.onChunk({ sequenceNumber: 0, durationMs: 20,
       wavBytes: encodePcm16MonoWav(new Int16Array(profile.sampleRateHz / 50), profile) });
     if (state === "interrupted") started.onInterruption?.("audio_session_interrupted");
-    const retained = await resources.queueStorage.list();
+    const retained = await resources.queueStorage.listMetadata();
     expect(retained.filter(row => row.state === "encrypted")).toHaveLength(1);
     releaseNativeSource.mockRejectedValueOnce(new Error("invented lost server stop reply"));
     if (state === "expired") {
@@ -287,7 +287,7 @@ it.each(["recording", "interrupted", "expired"] as const)("holds mobile upload u
     expect(controller.snapshot).toMatchObject({ state: "paused", recordedChunks: 1,
       statusCode: "capture_stop_acknowledgement_pending" });
     expect(await resources.flowStore.getActiveCaptureState()).toMatchObject({ phase: "paused", recordedChunks: 1 });
-    expect(await resources.queueStorage.list()).toEqual(retained);
+    expect(await resources.queueStorage.listMetadata()).toEqual(retained);
     expect(upload).not.toHaveBeenCalled(); expect(complete).not.toHaveBeenCalled();
     await expect((await service.open()).recorder(admitted.id, service.abort.signal)).rejects.toThrow("capture_flow_already_active");
     await controller.stopRecording();

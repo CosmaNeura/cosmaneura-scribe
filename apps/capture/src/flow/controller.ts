@@ -202,12 +202,12 @@ export class CaptureFlowController {
       if (this.#canCreateOrRecoverReservations()) {
         await this.#recoverReservationIntents();
       }
-      let records = (await this.#queue.list()).filter(
+      let records = (await this.#queue.listMetadata()).filter(
         (record) => record.reservation.sessionId === active.sessionId,
       );
       if (records.length === 0 && this.#canCreateOrRecoverReservations()) {
         await this.#reserveInitialWindow();
-        records = (await this.#queue.list()).filter(
+        records = (await this.#queue.listMetadata()).filter(
           (record) => record.reservation.sessionId === active.sessionId,
         );
       }
@@ -669,7 +669,7 @@ export class CaptureFlowController {
 
   async #drainAndComplete(): Promise<void> {
     const drained = await this.#queue.drainOnce(this.#queueTransport);
-    const records = await this.#queue.list();
+    const records = await this.#queue.listMetadata();
     if (drained.items.some(item => item.outcome === "terminal") || records.some(record =>
       record.reservation.sessionId === this.#requireSessionId()
       && (record.retry.upload.terminalCode !== null || record.retry.registration.terminalCode !== null))) {

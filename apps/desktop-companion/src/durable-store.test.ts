@@ -8,7 +8,8 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { build } from "esbuild";
 import { describe, expect, it, vi } from "vitest";
-import { base64UrlDecode, decodeEnvelope } from "@cosmaneura-scribe/capture-protocol";
+import { base64UrlDecode, base64UrlEncode, decodeEnvelope, encodeChunkAdditionalDataBase64Url, encodeEnvelope, PROTOCOL_VERSION } from "@cosmaneura-scribe/capture-protocol";
+import { attachEncryptedEnvelope, captureChunkMetadata, createReservedRecord } from "../../capture/src/queue/records";
 import { DurableDesktopRecordStore } from "./durable-record-store.js";
 import { DurableDesktopFlowStore } from "./durable-flow-store.js";
 import { DurableDesktopQueueStorage } from "./durable-queue-store.js";
@@ -33,6 +34,43 @@ async function master(): Promise<CryptoKey> {
 }
 
 describe("durable desktop capture", () => {
+  it("scans encrypted queue metadata without bulk payloads and clears scan buffers on early exit", async () => {
+    const path = await directory(), key = await master();
+    const store = await DurableDesktopRecordStore.open({ directory: path, recoveryScope, workspaceId, key });
+    try {
+      const records = store.namespace("queue"), storage = new DurableDesktopQueueStorage(records, attemptId);
+      const expected = [];
+      const envelope = encodeEnvelope({ schema_version: PROTOCOL_VERSION, content_encryption: "A256GCM",
+        nonce: base64UrlEncode(new Uint8Array(12)), media_type: "audio/wav" }, new Uint8Array(320_060));
+      for (const sequenceNumber of [2, 0, 1]) {
+        const objectId = crypto.randomUUID();
+        const reserved = createReservedRecord({ protocolVersion: PROTOCOL_VERSION, objectId, sessionId: attemptId,
+          channel: "microphone", sequenceNumber, createdAt: "2026-09-25T12:00:00.000Z",
+          additionalAuthenticatedData: encodeChunkAdditionalDataBase64Url({ tenantId: recoveryScope, sessionId: attemptId,
+            objectId, sequenceNumber, channel: "microphone" }) }, { reservation: "synthetic-reserve-0001",
+          uploadAuthorization: "synthetic-upload-0001", uploadAuthorizationGeneration: 1, registration: "synthetic-register-0001" });
+        await storage.create(reserved);
+        const encrypted = attachEncryptedEnvelope(reserved, envelope, "0".repeat(64));
+        await storage.compareAndSwap(objectId, 1, encrypted); expected.push(captureChunkMetadata(encrypted));
+      }
+      vi.spyOn(records, "list").mockRejectedValue(new Error("bulk payload enumeration forbidden"));
+      expect(await storage.listMetadata()).toEqual(expected.sort((a, b) => a.reservation.sequenceNumber - b.reservation.sequenceNumber));
+      const scan = records.scan(), first = await scan.next();
+      expect(first.done).toBe(false);
+      if (first.done) throw new Error("missing fixture record");
+      const buffer = first.value.data;
+      expect(buffer.some(byte => byte !== 0)).toBe(true);
+      await scan.return(undefined);
+      expect(buffer.every(byte => byte === 0)).toBe(true);
+      const retained = await storage.get(expected[0]!.reservation.objectId);
+      expect(retained?.state).toBe("encrypted");
+      if (retained?.state !== "encrypted") throw new Error("missing fixture envelope");
+      expect(retained.envelope).toEqual(envelope);
+      const pending = records.scan(); await pending.next(); store.close();
+      await expect(pending.next()).rejects.toThrow("desktop_storage_unavailable");
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+
   it("persists sealed CAS records across connections and refuses wrong keys and corrupted ciphertext", async () => {
     const path = await directory(), key = await master(), options = { directory: path, recoveryScope, workspaceId, key };
     let a = await DurableDesktopRecordStore.open(options), b = await DurableDesktopRecordStore.open(options);

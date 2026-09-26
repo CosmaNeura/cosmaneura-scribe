@@ -1,9 +1,10 @@
 import { NONCE_BYTES } from "@cosmaneura-scribe/capture-protocol";
 
 import { QueueInvariantError } from "../queue/errors";
-import { assertSafeCaptureRecord, cloneCaptureRecord } from "../queue/records";
+import { assertSafeCaptureRecord, captureChunkMetadata, cloneCaptureRecord } from "../queue/records";
 import type {
   CaptureChunkRecord,
+  CaptureChunkMetadata,
   CaptureQueueStorage,
   ReservedChunkRecord,
 } from "../queue/types";
@@ -90,21 +91,29 @@ export class EncryptedIndexedDbQueueStorage implements CaptureQueueStorage {
   }
 
   async list(): Promise<readonly CaptureChunkRecord[]> {
+    const records: CaptureChunkRecord[] = [];
+    for await (const record of this.#scan()) records.push(record);
+    return records.sort(compareRecords);
+  }
+
+  async listMetadata(): Promise<readonly CaptureChunkMetadata[]> {
+    const records: CaptureChunkMetadata[] = [];
+    for await (const record of this.#scan()) records.push(captureChunkMetadata(record));
+    return records.sort(compareRecords);
+  }
+
+  async *#scan(): AsyncGenerator<CaptureChunkRecord> {
     const transaction = this.#database.transaction(RECORD_STORE, "readonly");
     const done = transactionDone(transaction);
-    const request = transaction.objectStore(RECORD_STORE).getAll() as IDBRequest<unknown>;
-    const rawValues = await requestResult(request);
+    const request = transaction.objectStore(RECORD_STORE).getAllKeys();
+    const keys = await requestResult(request);
     await done;
-    if (!Array.isArray(rawValues)) {
-      throw new QueueInvariantError("invalid_encrypted_queue_record");
+    for (const key of keys) {
+      if (typeof key !== "string") throw new QueueInvariantError("invalid_encrypted_queue_record");
+      const record = await this.get(key);
+      if (record === null) throw new QueueInvariantError("invalid_encrypted_queue_record");
+      yield record;
     }
-    const values = rawValues.map((value) => {
-      assertSealedRecord(value);
-      return value;
-    });
-    const records = await Promise.all(values.map(async (value) => this.#open(value)));
-    records.sort(compareRecords);
-    return records;
   }
 
   async compareAndSwap(
@@ -300,7 +309,7 @@ function localAdditionalData(objectId: string, revision: number): Uint8Array<Arr
   );
 }
 
-function compareRecords(left: CaptureChunkRecord, right: CaptureChunkRecord): number {
+function compareRecords(left: CaptureChunkMetadata, right: CaptureChunkMetadata): number {
   const sessionOrder = left.reservation.sessionId.localeCompare(right.reservation.sessionId);
   if (sessionOrder !== 0) return sessionOrder;
   const channelOrder = left.reservation.channel.localeCompare(right.reservation.channel);

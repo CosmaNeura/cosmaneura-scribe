@@ -7,8 +7,8 @@ import {
   NONCE_BYTES,
   PROTOCOL_VERSION,
 } from "@cosmaneura-scribe/capture-protocol";
-import { IDBFactory } from "fake-indexeddb";
-import { describe, expect, it } from "vitest";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { describe, expect, it, vi } from "vitest";
 
 import { CaptureQueue } from "../queue/capture-queue";
 import { createReservedRecord } from "../queue/records";
@@ -60,6 +60,18 @@ describe("EncryptedIndexedDbQueueStorage", () => {
     expect(recovered?.state).toBe("encrypted");
     if (recovered?.state !== "encrypted") throw new Error("unexpected test state");
     expect(recovered.envelope).toEqual(expectedEnvelope);
+    vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(() => { throw new Error("bulk read forbidden"); });
+    const metadata = await reopened.listMetadata();
+    expect(metadata).toEqual([expect.objectContaining({ state: "encrypted", byteLength: expectedEnvelope.length })]);
+    expect(metadata[0]).not.toHaveProperty("envelope");
+    const database = await openExistingDatabase(indexedDB, DATABASE_NAME);
+    const transaction = database.transaction("encrypted-chunks", "readwrite");
+    const row = raw[0] as { ciphertext: ArrayBuffer };
+    const ciphertext = new Uint8Array(row.ciphertext);
+    ciphertext[0] = ciphertext[0]! ^ 1;
+    transaction.objectStore("encrypted-chunks").put(row);
+    await waitForTransaction(transaction); database.close();
+    await expect(reopened.listMetadata()).rejects.toMatchObject({ code: "encrypted_queue_integrity_failure" });
     reopened.close();
   });
 

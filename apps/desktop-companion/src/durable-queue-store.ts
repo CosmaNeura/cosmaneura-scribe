@@ -1,5 +1,5 @@
-import { assertSafeCaptureRecord, cloneCaptureRecord } from "../../capture/src/queue/records";
-import type { CaptureChunkRecord, CaptureQueueStorage, ReservedChunkRecord } from "../../capture/src/queue/types";
+import { assertSafeCaptureRecord, captureChunkMetadata, cloneCaptureRecord } from "../../capture/src/queue/records";
+import type { CaptureChunkMetadata, CaptureChunkRecord, CaptureQueueStorage, ReservedChunkRecord } from "../../capture/src/queue/types";
 import { decodeCaptureRecord, encodeCaptureRecord } from "../../capture/src/storage/record-codec";
 import { type DesktopRecordNamespace, type DesktopStoredRecord, failure, uuid } from "./durable-record-store.js";
 
@@ -16,9 +16,14 @@ export class DurableDesktopQueueStorage implements CaptureQueueStorage {
     return record ? this.decode(record) : null;
   }
   async list(): Promise<readonly CaptureChunkRecord[]> {
-    const records = await this.records.list();
-    try { return records.map(record => this.decode(record)).sort((a, b) => a.reservation.sequenceNumber - b.reservation.sequenceNumber); }
-    finally { records.forEach(record => record.data.fill(0)); }
+    const records: CaptureChunkRecord[] = [];
+    for await (const record of this.records.scan()) records.push(this.decode(record));
+    return records.sort((a, b) => a.reservation.sequenceNumber - b.reservation.sequenceNumber);
+  }
+  async listMetadata(): Promise<readonly CaptureChunkMetadata[]> {
+    const records: CaptureChunkMetadata[] = [];
+    for await (const record of this.records.scan()) records.push(captureChunkMetadata(this.decode(record)));
+    return records.sort((a, b) => a.reservation.sequenceNumber - b.reservation.sequenceNumber);
   }
   async compareAndSwap(objectId: string, expectedRevision: number, replacement: CaptureChunkRecord): Promise<boolean> {
     replacement = cloneCaptureRecord(replacement);
