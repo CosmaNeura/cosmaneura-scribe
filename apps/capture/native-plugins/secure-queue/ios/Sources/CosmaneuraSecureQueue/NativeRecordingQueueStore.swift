@@ -6,7 +6,7 @@
   /// after-first-unlock file protection. No new JavaScript or plaintext API.
   // SecureQueueStore serializes all file/key operations under its shared lock.
   public final class NativeRecordingQueueStore: NativeRecordingRecordStore,
-    NativeRecordingBindingRecordStore, @unchecked Sendable
+    NativeRecordingBindingRecordStore, NativeRecordingLeaseRecordStore, @unchecked Sendable
   {
     private let store: SecureQueueStore
 
@@ -29,6 +29,18 @@
 
     public func createBinding(key: String, data: Data) throws {
       _ = try store.create(key: key, data: data)
+    }
+
+    public func readLease(key: String) throws -> NativeRecordingStoredRecord? {
+      try readBinding(key: key)
+    }
+
+    public func createLease(key: String, data: Data) throws {
+      try createBinding(key: key, data: data)
+    }
+
+    public func compareAndSwapLease(key: String, expectedRevision: UInt64, data: Data) throws {
+      try compareAndSwap(key: key, expectedRevision: expectedRevision, data: data)
     }
 
     public func compareAndSwapBinding(key: String, expectedRevision: UInt64, data: Data) throws {

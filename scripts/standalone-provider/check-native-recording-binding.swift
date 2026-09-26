@@ -9,6 +9,7 @@ private actor BindingWire: ProviderNativeWire {
   let workspace = UUID(), session = UUID(), tenant = UUID()
   let binding = "scribe_capture_binding_01j00000000000000000000000"
   let modulus: String
+  let lease = UUID()
   var fault = "none"
   var requests: [ProviderNativeRequest] = []
   init(_ modulus: String) { self.modulus = modulus }
@@ -48,6 +49,40 @@ private actor BindingWire: ProviderNativeWire {
         "key_version": fault == "key_version" ? "bad version" : "synthetic-v1",
         "algorithm": fault == "algorithm" ? "RSA1_5" : "RSA-OAEP-256", "public_jwk": jwk,
       ]
+    } else if kind == "issue_lease" || kind == "renew_lease" {
+      let renewing = kind == "renew_lease"
+      try require(
+        Set(operation.keys) == (renewing ? ["kind", "payload", "lease_id"] : ["kind", "payload"]))
+      let payload = operation["payload"] as! [String: Any]
+      try require(
+        Set(payload.keys)
+          == (renewing ? ["protocol_version", "expected_generation"] : ["protocol_version"]))
+      try require(
+        payload["protocol_version"] as? String == "1.0" && UUID(uuidString: request.key) != nil)
+      if renewing {
+        try require(operation["lease_id"] as? String == lease.uuidString.lowercased())
+        try require(payload["expected_generation"] as? Int == 1)
+      }
+      let issued = Date()
+      receipt = [
+        "protocol_version": "1.0", "receipt_id": UUID().uuidString.lowercased(),
+        "lease_id": lease.uuidString.lowercased(), "session_id": session.uuidString.lowercased(),
+        "generation": renewing ? 2 : 1,
+        "issued_at": ISO8601DateFormatter().string(from: issued),
+        "expires_at": ISO8601DateFormatter().string(from: issued.addingTimeInterval(900)),
+      ]
+      switch fault {
+      case "lease_id": receipt["lease_id"] = UUID().uuidString.lowercased()
+      case "receipt_id": receipt["receipt_id"] = "invalid"
+      case "session": receipt["session_id"] = UUID().uuidString.lowercased()
+      case "generation": receipt["generation"] = 3
+      case "boolean_generation": receipt["generation"] = true
+      case "issued_at": receipt["issued_at"] = "invalid"
+      case "expires_at":
+        receipt["expires_at"] = ISO8601DateFormatter().string(from: issued.addingTimeInterval(901))
+      case "protocol": receipt["protocol_version"] = "2.0"
+      default: break
+      }
     } else {
       try require(kind == "bind_key" && Set(operation.keys) == ["kind", "payload"])
       let payload = operation["payload"] as! [String: String]
@@ -190,6 +225,34 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, @unchecke
         }
         let requests = await wire.requests
         try require(driver.tokens == 2 && requests.count == 2)
+        connection.close()
+        checks += 1
+      }
+    }
+    for renewing in [false, true] {
+      for fault in envelopeFaults + [
+        "receipt_id", "session", "generation", "boolean_generation", "issued_at", "expires_at",
+        "protocol",
+      ] + (renewing ? ["lease_id"] : []) {
+        let (_, driver, wire, connection, service) = try await make(modulus)
+        let formatter = ISO8601DateFormatter()
+        let now = Date()
+        let previous = try NativeRecordingLease(
+          receiptID: UUID(), leaseID: wire.lease,
+          sessionID: wire.session, generation: 1,
+          issuedAt: formatter.string(from: now.addingTimeInterval(-600)),
+          expiresAt: formatter.string(from: now.addingTimeInterval(300)))
+        await wire.setFault(fault)
+        let operation = Task {
+          try await service.requestLease(previous: renewing ? previous : nil, intent: UUID())
+        }
+        if fault == "none" {
+          _ = try await operation.value
+        } else {
+          try await CheckNativeProvider.rejected(operation)
+        }
+        let leaseRequests = await wire.requests
+        try require(driver.tokens == 2 && leaseRequests.count == 2)
         connection.close()
         checks += 1
       }
