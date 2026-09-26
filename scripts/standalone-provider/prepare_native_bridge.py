@@ -60,7 +60,11 @@ def prepare(root: Path, native_auth: Path) -> None:
     for name, data in files.items():
         (destination / name).write_bytes(data)
     (destination / "CosmasWorkspaceAuthPlugin.swift").write_text(source)
-    for name in ("NativeProviderConnection.swift", "ProviderNativeTransport.swift"):
+    for name in (
+        "NativeProviderConnection.swift",
+        "ProviderNativeTransport.swift",
+        "NativeProviderRecordingService.swift",
+    ):
         (destination / name).write_bytes(Path(__file__).with_name(name).read_bytes())
     (root / "native-provider-source-manifest.json").write_text(
         json.dumps(
@@ -77,9 +81,9 @@ def prepare(root: Path, native_auth: Path) -> None:
                 "registered_methods": [
                     "getState",
                     "signIn",
-                "signOut",
-                "getProviderState",
-                "providerRequest",
+                    "signOut",
+                    "getProviderState",
+                    "providerRequest",
                     "cancelProviderRequest",
                 ],
                 "app_identity_configured": False,
