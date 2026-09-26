@@ -2,6 +2,7 @@ import type * as Bff from "../bff/contracts";
 import { BffResponseError } from "../bff/http-client";
 import { readBoundedJson } from "../../../review-ui/src/beta-api";
 import { isUuid } from "../../../review-ui/src/contracts";
+import { coreCaptureResponseLimit } from "../../../review-ui/src/capture-response-limits";
 import type { AuthorizedReviewRequest } from "../../../review-ui/src/creator-review-api";
 
 /** The authenticated host adds its existing workload/mount context server-side. */
@@ -140,7 +141,7 @@ export class CoreCaptureClient {
       throw new BffResponseError(response.status, "core_capture_unconfirmed", null);
     }
     requireValue(response.headers.get("content-type")?.split(";", 1)[0] === "application/json");
-    const value: unknown = await readBoundedJson(response, 8 * 1024 * 1024);
+    const value: unknown = await readBoundedJson(response, coreCaptureResponseLimit(action));
     requireValue(!signal.aborted && record(value) && value.contract_version === "1"
       && value.binding_ref === this.scope.bindingRef && value.workspace_id === this.scope.workspaceId
       && value.request_nonce === nonce && typeof value.checked_at === "string"

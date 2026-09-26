@@ -25,6 +25,7 @@ from pydantic import SecretStr
 from .source_start_contract import SourceStartIntent
 
 _ROOT = "/service/v1/agent/scribe/"
+MAX_CORE_CAPTURE_RESPONSE_BYTES = 32 * 1024 * 1024 + 8192
 _ACTIONS = frozenset({"capture-admissions", "capture-operations", "capture-notes"})
 _OPERATIONS = frozenset(
     {
@@ -250,7 +251,9 @@ class ProviderCoreTransport:
             payload,
             headers,
             version=("X-Cosmaneura-Capture-Version", "1"),
-            max_bytes=8 * 1024 * 1024,
+            max_bytes=MAX_CORE_CAPTURE_RESPONSE_BYTES
+            if action == "capture-operations"
+            else 8 * 1024 * 1024,
             request_timeout=ADMISSION_CORE_TIMEOUT_SECONDS
             if action == "capture-admissions"
             else 100

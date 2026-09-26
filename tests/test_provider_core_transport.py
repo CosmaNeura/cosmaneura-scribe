@@ -12,6 +12,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from cosmaneura_scribe.provider_core_transport import (
+    MAX_CORE_CAPTURE_RESPONSE_BYTES,
     AuthorizedCoreProvider,
     CoreProviderSelection,
     ProviderCoreTransport,
@@ -487,6 +488,37 @@ async def test_bad_core_reply_never_opens_a_mount(connection, change):
     with pytest.raises(ProviderCoreUnavailable):
         await client.open()
     assert len(wire.calls) == 3 and not wire.effects
+
+
+@pytest.mark.parametrize(
+    "action,size,accepted",
+    [
+        ("capture-operations", 9 * 1024 * 1024, True),
+        ("capture-operations", MAX_CORE_CAPTURE_RESPONSE_BYTES, False),
+        ("capture-notes", 9 * 1024 * 1024, False),
+    ],
+)
+async def test_long_review_receiver_keeps_operation_specific_bounds(
+    connection, action, size, accepted
+):
+    wire, client = connection
+    mount = await client.open()
+    wire.alter = lambda path, value: (
+        {**value, "receipt": {"session_id": SESSION, "synthetic_padding": "x" * size}}
+        if path == ROOT + action
+        else value
+    )
+    payload = (
+        body(operation={"kind": "creator_review"})
+        if action == "capture-operations"
+        else body(action="read", expected_session_id=SESSION)
+    )
+    if accepted:
+        result = await client.request(mount, ROOT + action, payload, "long-review-offline")
+        assert len(result["receipt"]["synthetic_padding"]) == size
+    else:
+        with pytest.raises(ProviderCoreUnavailable):
+            await client.request(mount, ROOT + action, payload, "long-review-offline")
 
 
 async def test_cancellation_during_binding_does_not_dispatch_mutation(connection):

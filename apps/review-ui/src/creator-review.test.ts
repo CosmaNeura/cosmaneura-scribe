@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { HttpCreatorReviewApi, parseCreatorReview, parseCaptureContinuity } from "./creator-review-api";
 import { renderCreatorReview, renderNoteTranscript } from "./creator-review-panel";
+import { longReviewFixture } from "./long-review.fixture";
+import { MAX_CREATOR_REVIEW_BYTES } from "./capture-response-limits";
 
 const session = "00000000-0000-4000-8000-000000000001";
 const segment = "00000000-0000-4000-8000-000000000002";
@@ -28,6 +30,18 @@ const view = {
 };
 
 describe("creator review surface", () => {
+  it("receives every segment of a bounded maximum-length review", async () => {
+    const source = longReviewFixture(session), json = JSON.stringify(source);
+    expect(new TextEncoder().encode(json).length).toBeGreaterThan(8 * 1024 * 1024);
+    expect(new TextEncoder().encode(json).length).toBeLessThan(MAX_CREATOR_REVIEW_BYTES);
+    const api = new HttpCreatorReviewApi(session, async () => new Response(json, {
+      headers: { "content-type": "application/json" },
+    }));
+    const result = await api.read();
+    expect(result.source?.segments).toEqual(source.source.segments);
+    expect(result.review_queue?.items).toEqual(source.review_queue.items);
+    expect(result.working?.note_ready).toBe(false);
+  });
   it("compares an accepted source without decision controls or interpreting source markup", () => {
     const ready = parseCreatorReview({ ...view, status: "transcript_ready",
       working: { ...view.working, note_ready: true, blockers: [], segments: [{

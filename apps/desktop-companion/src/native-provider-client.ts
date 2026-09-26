@@ -4,8 +4,9 @@ import type { Readable, Writable } from "node:stream";
 import type { NativeProviderSession, ProviderSessionState } from "../../capture/src/provider/native-plugin";
 import { exact, object, sessionState } from "../../capture/src/provider/desktop-host-protocol";
 import { verifyNativeHelper } from "./native-process-driver.js";
+import { NativeProviderFrameDecoder } from "./native-provider-frames.js";
 
-const MAX_FRAME = 16 * 1024 * 1024;
+const MAX_REQUEST_FRAME = 16 * 1024 * 1024;
 type Child = ChildProcessByStdio<Writable, Readable, null>;
 interface Pending {
   resolve(value: unknown): void;
@@ -18,7 +19,7 @@ export class NativeProviderClient implements NativeProviderSession {
   private readonly child: Child;
   private readonly abort = new AbortController();
   readonly signal = this.abort.signal;
-  private buffer = Buffer.alloc(0);
+  private readonly frames = new NativeProviderFrameDecoder();
   private readonly pending = new Map<string, Pending>();
   private readonly retired = new Set<string>();
   private readonly listeners = new Set<(state: ProviderSessionState) => void>();
@@ -41,16 +42,11 @@ export class NativeProviderClient implements NativeProviderSession {
     this.child.stdin.on("error", () => this.fail());
     this.child.stdout.on("data", (bytes: Buffer) => {
       try {
-        if (this.buffer.length + bytes.length > MAX_FRAME) throw unavailable();
-        this.buffer = Buffer.concat([this.buffer, bytes]);
-        let end: number;
-        while ((end = this.buffer.indexOf(10)) !== -1) {
-          const frame = this.buffer.subarray(0, end);
+        this.frames.push(bytes, frame => {
           const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(frame));
-          this.receive(value); frame.fill(0); this.buffer = this.buffer.subarray(end + 1);
-        }
+          this.receive(value);
+        });
       } catch { this.fail(); }
-      finally { bytes.fill(0); }
     });
   }
 
@@ -83,7 +79,7 @@ export class NativeProviderClient implements NativeProviderSession {
     requireMain();
     if (this.signal.aborted || signal?.aborted || this.pending.size >= 8) return Promise.reject(unavailable());
     const id = crypto.randomUUID(), bytes = Buffer.from(JSON.stringify({ id, method, payload }) + "\n");
-    if (bytes.length > MAX_FRAME) { bytes.fill(0); return Promise.reject(unavailable()); }
+    if (bytes.length > MAX_REQUEST_FRAME) { bytes.fill(0); return Promise.reject(unavailable()); }
     return new Promise((resolve, reject) => {
       const cancel = (): void => {
         const pending = this.pending.get(id); if (!pending) return;
@@ -108,7 +104,7 @@ export class NativeProviderClient implements NativeProviderSession {
           timer = setTimeout(() => { if (!this.exited) this.child.kill("SIGKILL"); resolve(); }, 3_000);
         })]);
         await this.exit;
-      } finally { clearTimeout(timer); this.buffer.fill(0); this.listeners.clear(); }
+      } finally { clearTimeout(timer); this.frames.clear(); this.listeners.clear(); }
     })();
   }
 
@@ -140,6 +136,7 @@ export class NativeProviderClient implements NativeProviderSession {
   }
   private fail(): void {
     if (this.signal.aborted) return;
+    this.frames.clear();
     this.abort.abort(); clearInterval(this.poll);
     for (const pending of this.pending.values()) { pending.cleanup(); pending.reject(unavailable()); }
     this.pending.clear();

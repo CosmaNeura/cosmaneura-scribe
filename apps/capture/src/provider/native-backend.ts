@@ -4,6 +4,7 @@ import type { CiphertextUploadTarget } from "../bff/contracts";
 import { BffResponseError } from "../bff/http-client";
 import { QueueInvariantError } from "../queue/errors";
 import { isUuid } from "../../../review-ui/src/contracts";
+import { coreCaptureResponseLimit } from "../../../review-ui/src/capture-response-limits";
 import { record, reference } from "./core-client";
 import type { ProviderIOSBackend } from "./ios-host";
 import { nativeProviderPlugin, type ProviderAction as Action, type NativeProviderState as NativeState,
@@ -123,7 +124,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
           current();
           if (!record(reply) || reply.requestId !== requestId || reply.revision !== expected
             || ![200, 401, 403, 409, 422, 503].includes(reply.status) || typeof reply.body !== "string"
-            || new TextEncoder().encode(reply.body).length > 8 * 1024 * 1024) throw unavailable();
+            || new TextEncoder().encode(reply.body).length > coreCaptureResponseLimit(action)) throw unavailable();
           if (reply.status === 401 || reply.status === 403) {
             abort.abort(); throw new BffResponseError(reply.status, "provider_access_unavailable", null);
           }

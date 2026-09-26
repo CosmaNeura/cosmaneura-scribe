@@ -89,3 +89,14 @@ owners reconcile that conflict and a separately reviewed retention authority enf
 - Real-PHI retention activation is blocked on an explicit legal-hold decision and its corresponding
   schema, least-privilege routine/grants, report/enforce gates, and restore evidence.
 - Operational recovery is to hold later callers and retain the additive schema. Downgrade is destructive, test-only, and refuses after any versioned configuration, source, state, purge, or terminal evidence exists.
+
+## September 2026 long-visit capacity expansion
+
+Revision `611c583b362a` separates the unchanged 100,000-character per-segment
+limit from a 500,000-character source aggregate and an independently bounded
+500,000-character translation history. Working content may total 1,000,000
+characters from these inputs. The existing retention anchors, immutable source
+versions, deferred aggregate validation, tenant and consent fences remain.
+Core PR507 and Scribe PR133 provide compatible receivers first. Deployment
+requires the sequence and retained-schema recovery in
+[the flight plan](../flight-plans/2026-09-25-long-transcript-storage.md).
