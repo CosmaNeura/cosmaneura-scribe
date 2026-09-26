@@ -440,7 +440,7 @@ private actor SourceWire: ProviderNativeWire {
         connection: connection, revision: revision,
         preparation: fixture.preparation, identity: auth.state().identity!, journal: journal)
       let original = journal.pending
-      try await rejects { try source.requireActiveMicrophone(runID: await wire.sourceID) }
+      try await rejects { try source.requireActiveMicrophone(runID: wire.sourceID) }
       let run = try NativeProviderRecordingRun(
         source: source, lease: fixture.lease, batch: fixture.batch,
         requestPermission: { true },
