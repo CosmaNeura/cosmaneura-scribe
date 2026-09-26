@@ -20,10 +20,10 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
         label: "com.cosmaneura.capture.secure-queue.operations",
         qos: .utility
     )
-    private var store: SecureQueueStore?
+    private var store: RendererSecureQueueStore?
 
     public override func load() {
-        store = try? SecureQueueStore.shared.get()
+        store = try? RendererSecureQueueStore(store: SecureQueueStore.shared.get())
     }
 
     @objc public func getStorageCapacity(_ call: CAPPluginCall) {
@@ -129,7 +129,7 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func perform(
         _ call: CAPPluginCall,
-        operation: @escaping (SecureQueueStore) throws -> JSObject?
+        operation: @escaping (RendererSecureQueueStore) throws -> JSObject?
     ) {
         operationQueue.async { [weak self] in
             guard let self, let store = self.store else {

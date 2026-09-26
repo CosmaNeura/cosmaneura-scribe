@@ -304,6 +304,53 @@ public final class NativeRecordingEncryption: Sendable {
     guard envelope.count <= 327_680 else { throw NativeRecordingFailure.invalidPacket }
     return envelope
   }
+
+  /// Recovery authenticates one bounded native packet and returns only its byte
+  /// count. Plaintext is checked and cleared here; it never leaves native custody.
+  func authenticatedPlaintextBytes(
+    envelope: Data, objectID: UUID, sequence: Int, additionalAuthenticatedData: String
+  ) throws -> Int {
+    guard envelope.startIndex == 0, (0..<2048).contains(sequence),
+      (72...327_680).contains(envelope.count),
+      envelope.prefix(8) == Data("CSCRIBE1".utf8)
+    else { throw NativeRecordingFailure.invalidPacket }
+    let length = envelope[8..<12].reduce(0) { ($0 << 8) | Int($1) }
+    guard (1...4096).contains(length), length < envelope.count - 28,
+      let header = try? JSONSerialization.jsonObject(with: envelope.subdata(in: 12..<(12 + length)))
+        as? [String: Any],
+      Set(header.keys) == ["schema_version", "content_encryption", "nonce", "media_type"],
+      header["schema_version"] as? String == "1.0",
+      header["content_encryption"] as? String == "A256GCM",
+      header["media_type"] as? String == "audio/wav",
+      let nonce = header["nonce"] as? String, let nonceBytes = nativeBase64URLDecode(nonce),
+      nonceBytes.count == 12
+    else { throw NativeRecordingFailure.invalidPacket }
+    let aad = try scope.additionalData(objectID: objectID, sequence: sequence)
+    guard nativeBase64URLDecode(additionalAuthenticatedData) == aad else {
+      throw NativeRecordingFailure.invalidBinding
+    }
+    let sealed = try AES.GCM.SealedBox(
+      nonce: AES.GCM.Nonce(data: nonceBytes),
+      ciphertext: envelope.subdata(in: (12 + length)..<(envelope.count - 16)),
+      tag: envelope.suffix(16))
+    var wav = try AES.GCM.open(sealed, using: key, authenticating: aad)
+    defer { wav.resetBytes(in: 0..<wav.count) }
+    guard (46...320_044).contains(wav.count), wav.count.isMultiple(of: 2) else {
+      throw NativeRecordingFailure.invalidPacket
+    }
+    func little(_ offset: Int, _ count: Int = 4) -> Int {
+      wav[offset..<(offset + count)].enumerated().reduce(0) {
+        $0 | (Int($1.element) << ($1.offset * 8))
+      }
+    }
+    guard wav.prefix(4) == Data("RIFF".utf8), little(4) == wav.count - 8,
+      wav[8..<16] == Data("WAVEfmt ".utf8), little(16) == 16,
+      little(20, 2) == 1, little(22, 2) == 1, little(24) == 16_000,
+      little(28) == 32_000, little(32, 2) == 2, little(34, 2) == 16,
+      wav[36..<40] == Data("data".utf8), little(40) == wav.count - 44
+    else { throw NativeRecordingFailure.invalidPacket }
+    return wav.count
+  }
 }
 
 func nativeBase64URL(_ data: Data) -> String {

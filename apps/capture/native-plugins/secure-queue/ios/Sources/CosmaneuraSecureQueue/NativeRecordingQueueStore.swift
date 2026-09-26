@@ -6,7 +6,8 @@
   /// after-first-unlock file protection. No new JavaScript or plaintext API.
   // SecureQueueStore serializes all file/key operations under its shared lock.
   public final class NativeRecordingQueueStore: NativeRecordingRecordStore,
-    NativeRecordingBindingRecordStore, NativeRecordingLeaseRecordStore, @unchecked Sendable
+    NativeRecordingBindingRecordStore, NativeRecordingLeaseRecordStore, NativeRecordingFlowStore,
+    @unchecked Sendable
   {
     private let store: SecureQueueStore
 
@@ -22,6 +23,13 @@
     }
 
     public func availableBytes() throws -> Int { try store.availableBytes() }
+
+    public func listRecordingKeys(prefix: String) throws -> [String] {
+      guard prefix.hasPrefix("scribe-provider-queue:v1:"), prefix.utf8.count <= 256 else {
+        throw NativeRecordingBindingFailure.invalidJournal
+      }
+      return try store.list().filter { $0.hasPrefix(prefix) }
+    }
 
     public func readBinding(key: String) throws -> NativeRecordingStoredRecord? {
       do { return try read(key: key) } catch SecureQueueError.notFound { return nil }
