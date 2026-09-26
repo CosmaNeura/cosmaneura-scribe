@@ -131,6 +131,7 @@ public final class NativeRecordingEncryption: Sendable {
     let publicKeyDigest: String
     var raw: Data
     let wrapped: Data
+    let bindingIntent: UUID?
   }
 
   private init(scope: NativeRecordingScope, stored: StoredKey) throws {
@@ -152,6 +153,61 @@ public final class NativeRecordingEncryption: Sendable {
     scope: NativeRecordingScope, published: NativeRecordingPublicKey,
     storage: any NativeRecordingKeyStorage = KeychainNativeRecordingStorage()
   ) throws -> NativeRecordingEncryption {
+    try create(scope: scope, published: published, storage: storage, bindingIntent: nil)
+  }
+
+  /// The native host must retain this intent before a new session's key bind.
+  /// Replaying that exact intent recovers an interrupted creation; it cannot
+  /// adopt a legacy key, change wrapping keys, or replace missing bound custody.
+  /// This is not the reopen path for an already-bound recording.
+  public static func prepareBindingCandidate(
+    scope: NativeRecordingScope, published: NativeRecordingPublicKey, intent: UUID,
+    storage: any NativeRecordingKeyStorage = KeychainNativeRecordingStorage()
+  ) throws -> NativeRecordingEncryption {
+    if let retained = try retainedCandidate(
+      scope: scope, published: published, intent: intent, storage: storage)
+    {
+      return retained
+    }
+    do {
+      return try create(
+        scope: scope, published: published, storage: storage, bindingIntent: intent)
+    } catch {
+      // An insert may commit before reporting failure. Read back the immutable
+      // candidate under the same intent; never generate again in this call.
+      if let retained = try retainedCandidate(
+        scope: scope, published: published, intent: intent, storage: storage)
+      {
+        return retained
+      }
+      throw error
+    }
+  }
+
+  private static func retainedCandidate(
+    scope: NativeRecordingScope, published: NativeRecordingPublicKey, intent: UUID,
+    storage: any NativeRecordingKeyStorage
+  ) throws -> NativeRecordingEncryption? {
+    guard var encoded = try storage.read(account: scope.keyAccount) else { return nil }
+    defer { encoded.resetBytes(in: 0..<encoded.count) }
+    guard encoded.count <= 4096 else { throw NativeRecordingFailure.keyUnavailable }
+    var stored: StoredKey
+    do { stored = try PropertyListDecoder().decode(StoredKey.self, from: encoded) } catch {
+      throw NativeRecordingFailure.keyUnavailable
+    }
+    defer { stored.raw.resetBytes(in: 0..<stored.raw.count) }
+    guard stored.bindingIntent == intent, stored.keyVersion == published.version,
+      stored.publicKeyDigest
+        == SHA256.hash(data: published.modulus)
+        .map({ String(format: "%02x", $0) }).joined()
+    else { throw NativeRecordingFailure.keyConflict }
+    return try NativeRecordingEncryption(scope: scope, stored: stored)
+  }
+
+  private static func create(
+    scope: NativeRecordingScope, published: NativeRecordingPublicKey,
+    storage: any NativeRecordingKeyStorage, bindingIntent: UUID?
+  ) throws -> NativeRecordingEncryption {
     guard try storage.read(account: scope.keyAccount) == nil else {
       throw NativeRecordingFailure.keyConflict
     }
@@ -169,7 +225,7 @@ public final class NativeRecordingEncryption: Sendable {
       version: 1, account: scope.keyAccount, keyVersion: published.version,
       publicKeyDigest: SHA256.hash(data: published.modulus).map { String(format: "%02x", $0) }
         .joined(),
-      raw: raw, wrapped: encrypted as Data)
+      raw: raw, wrapped: encrypted as Data, bindingIntent: bindingIntent)
     defer { stored.raw.resetBytes(in: 0..<stored.raw.count) }
     let result = try NativeRecordingEncryption(scope: scope, stored: stored)
     var encoded = try PropertyListEncoder().encode(stored)
