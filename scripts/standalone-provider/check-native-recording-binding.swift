@@ -10,6 +10,8 @@ private actor BindingWire: ProviderNativeWire {
   let binding = "scribe_capture_binding_01j00000000000000000000000"
   let modulus: String
   let lease = UUID()
+  let reservationDeadline = ISO8601DateFormatter().string(from: Date().addingTimeInterval(900))
+  var replyBytes = 0
   var fault = "none"
   var requests: [ProviderNativeRequest] = []
   init(_ modulus: String) { self.modulus = modulus }
@@ -83,6 +85,67 @@ private actor BindingWire: ProviderNativeWire {
       case "protocol": receipt["protocol_version"] = "2.0"
       default: break
       }
+    } else if kind == "reserve_chunks" {
+      try require(Set(operation.keys) == ["kind", "payload"])
+      let payload = operation["payload"] as! [String: Any]
+      try require(
+        Set(payload.keys) == [
+          "protocol_version", "capture_lease_id", "capture_lease_generation", "channel",
+          "first_sequence_number", "count",
+        ])
+      try require(payload["protocol_version"] as? String == "1.0")
+      try require(payload["capture_lease_id"] as? String == lease.uuidString.lowercased())
+      try require(payload["capture_lease_generation"] as? Int == 1)
+      try require(payload["channel"] as? String == "microphone")
+      let first = payload["first_sequence_number"] as! Int
+      let count = payload["count"] as! Int
+      try require(first >= 0 && count > 0 && count <= 90 && first <= 2048 - count)
+      try require(UUID(uuidString: request.key) != nil)
+      let duplicateID = UUID()
+      var rows: [[String: Any]] = []
+      for sequence in first..<(first + count) {
+        let objectID = fault == "duplicate_object" ? duplicateID : UUID()
+        let aad = try JSONSerialization.data(
+          withJSONObject: [
+            "tenant_id": tenant.uuidString.lowercased(),
+            "session_id": session.uuidString.lowercased(),
+            "object_id": objectID.uuidString.lowercased(), "channel": "microphone",
+            "sequence_number": sequence,
+          ], options: [.sortedKeys, .withoutEscapingSlashes]
+        ).base64EncodedString()
+          .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+          .replacingOccurrences(of: "=", with: "")
+        var row: [String: Any] = [
+          "protocol_version": "1.0", "object_id": objectID.uuidString.lowercased(),
+          "session_id": session.uuidString.lowercased(), "channel": "microphone",
+          "sequence_number": sequence, "additional_authenticated_data": aad,
+          "created_at": "2026-09-26T00:00:00Z",
+        ]
+        switch fault {
+        case "row_protocol": row["protocol_version"] = "2.0"
+        case "row_session": row["session_id"] = UUID().uuidString.lowercased()
+        case "channel": row["channel"] = "system"
+        case "sequence": row["sequence_number"] = sequence + 1
+        case "boolean_sequence": row["sequence_number"] = true
+        case "fractional_sequence": row["sequence_number"] = Double(sequence) + 0.5
+        case "object": row["object_id"] = "invalid"
+        case "aad": row["additional_authenticated_data"] = "e30"
+        case "created_at": row["created_at"] = "invalid"
+        case "extra_row": row["unexpected"] = true
+        case "oversized": row["created_at"] = String(repeating: "x", count: 131_072)
+        default: break
+        }
+        rows.append(row)
+      }
+      receipt = [
+        "protocol_version": fault == "protocol" ? "2.0" : "1.0",
+        "batch_id": fault == "batch" ? "invalid" : UUID().uuidString.lowercased(),
+        "session_id": fault == "session"
+          ? UUID().uuidString.lowercased() : session.uuidString.lowercased(),
+        "capture_authorized_until": fault == "deadline"
+          ? "2026-09-26T00:00:00Z" : reservationDeadline,
+        "reservations": fault == "count" ? Array(rows.dropLast()) : rows,
+      ]
     } else {
       try require(kind == "bind_key" && Set(operation.keys) == ["kind", "payload"])
       let payload = operation["payload"] as! [String: String]
@@ -117,9 +180,11 @@ private actor BindingWire: ProviderNativeWire {
     case "large": envelope["padding"] = String(repeating: "x", count: 8192)
     default: break
     }
+    let encoded = try JSONSerialization.data(withJSONObject: envelope)
+    replyBytes = encoded.count
     return ProviderNativeReply(
       status: fault == "denied" ? 403 : 200,
-      body: try JSONSerialization.data(withJSONObject: envelope))
+      body: encoded)
   }
 }
 
@@ -135,7 +200,9 @@ private final class BindingKeys: NativeRecordingKeyStorage, @unchecked Sendable 
   }
 }
 
-private final class BindingRecords: NativeRecordingBindingRecordStore, @unchecked Sendable {
+private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRecordingRecordStore,
+  @unchecked Sendable
+{
   private let lock = NSLock()
   private var values: [String: NativeRecordingStoredRecord] = [:]
   func readBinding(key: String) throws -> NativeRecordingStoredRecord? {
@@ -145,6 +212,16 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, @unchecke
   func compareAndSwapBinding(key: String, expectedRevision: UInt64, data: Data) throws {
     try write(key, data, expectedRevision)
   }
+  func read(key: String) throws -> NativeRecordingStoredRecord {
+    guard let value = try readBinding(key: key) else {
+      throw NativeRecordingFailure.storageUnavailable
+    }
+    return value
+  }
+  func compareAndSwap(key: String, expectedRevision: UInt64, data: Data) throws {
+    try write(key, data, expectedRevision)
+  }
+  func availableBytes() -> Int { 1_000_000_000 }
   private func write(_ key: String, _ data: Data, _ revision: UInt64) throws {
     try lock.withLock {
       guard values[key]?.revision ?? 0 == revision else {
@@ -257,6 +334,47 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, @unchecke
         checks += 1
       }
     }
+    for fault in envelopeFaults + [
+      "protocol", "batch", "session", "deadline", "count", "row_protocol", "row_session",
+      "channel", "sequence", "boolean_sequence", "fractional_sequence", "object", "aad",
+      "created_at", "extra_row", "duplicate_object", "oversized",
+    ] {
+      let (_, driver, wire, connection, service) = try await make(modulus)
+      let lease = try NativeRecordingLease(
+        receiptID: UUID(), leaseID: wire.lease, sessionID: wire.session, generation: 1,
+        issuedAt: ISO8601DateFormatter().string(from: Date()), expiresAt: wire.reservationDeadline)
+      await wire.setFault(fault)
+      let operation = Task {
+        try await service.reserve(lease: lease, first: 0, count: 90, intent: UUID())
+      }
+      if fault == "none" {
+        let batch = try await operation.value
+        let bytes = await wire.replyBytes
+        try require(batch.reservations.count == 90 && bytes > 8192 && bytes <= 131_072)
+      } else {
+        try await CheckNativeProvider.rejected(operation)
+      }
+      let requests = await wire.requests
+      try require(driver.tokens == 2 && requests.count == 2)
+      connection.close()
+      checks += 1
+    }
+    do {
+      let (_, _, wire, connection, service) = try await make(modulus)
+      let lease = try NativeRecordingLease(
+        receiptID: UUID(), leaseID: wire.lease, sessionID: wire.session, generation: 1,
+        issuedAt: ISO8601DateFormatter().string(from: Date()), expiresAt: wire.reservationDeadline)
+      let before = await wire.requests.count
+      for (first, count) in [(-1, 1), (2040, 90), (0, 0), (0, 91)] {
+        try await CheckNativeProvider.rejected(
+          Task {
+            try await service.reserve(lease: lease, first: first, count: count, intent: UUID())
+          })
+      }
+      try require(await wire.requests.count == before)
+      connection.close()
+      checks += 1
+    }
     do {
       let (auth, driver, wire, connection, service) = try await make(modulus)
       let scope = try await service.recordingScope()
@@ -312,6 +430,31 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, @unchecke
         JSONSerialization.data(withJSONObject: first["operation"]!, options: [.sortedKeys])
           == JSONSerialization.data(withJSONObject: second["operation"]!, options: [.sortedKeys]))
       try require(driver.tokens == requests.count)
+      let recovery = UUID()
+      let lease = try NativeRecordingLease(
+        receiptID: UUID(), leaseID: wire.lease, sessionID: wire.session, generation: 1,
+        issuedAt: ISO8601DateFormatter().string(from: Date()), expiresAt: wire.reservationDeadline)
+      let reservationOwner = NativeRecordingReservationOwner(
+        scope: scope, recoveryScope: recovery, service: service, records: records)
+      let batch = try await reservationOwner.reserve(lease: lease, first: 0, count: 3)
+      let writer = try NativeRecordingQueueWriter(
+        encryption: cipher, recoveryScope: recovery, store: records, firstSequence: 0,
+        priorPlaintextBytes: 0, maximumPlaintextBytes: 402_653_184)
+      for row in batch.reservations {
+        var pcm = Data([1, 0, 255, 127])
+        let result = try writer.persist(pcm16: &pcm, objectID: row.objectID, sequence: row.sequence)
+        try require(pcm.allSatisfy { $0 == 0 } && result.sequence == row.sequence)
+        let key =
+          "scribe-provider-queue:v1:\(recovery.uuidString.lowercased()):\(scope.workspaceID.uuidString.lowercased()):\(scope.sessionID.uuidString.lowercased()):\(row.objectID.uuidString.lowercased())"
+        let saved = try records.read(key: key)
+        let value = try JSONSerialization.jsonObject(with: saved.data) as! [String: Any]
+        try require(saved.revision == 2 && value["state"] as? String == "encrypted")
+        if row.sequence == 2,
+          let path = ProcessInfo.processInfo.environment["SCRIBE_NATIVE_RESERVED_FIXTURE_PATH"]
+        {
+          try saved.data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+      }
       connection.close()
       checks += 1
     }

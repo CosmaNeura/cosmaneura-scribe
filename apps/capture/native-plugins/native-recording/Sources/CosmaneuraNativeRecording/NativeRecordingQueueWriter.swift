@@ -52,8 +52,7 @@ public final class NativeRecordingQueueWriter {
     nextSequence = firstSequence
     plaintextBytes = priorPlaintextBytes
     self.maximumPlaintextBytes = maximumPlaintextBytes
-    prefix =
-      "scribe-provider-queue:v1:\(recoveryScope.uuidString.lowercased()):\(encryption.scope.workspaceID.uuidString.lowercased()):\(encryption.scope.sessionID.uuidString.lowercased()):"
+    prefix = encryption.scope.queuePrefix(recoveryScope: recoveryScope)
   }
 
   /// Returns only after the complete envelope is durably committed. Failure
@@ -77,29 +76,11 @@ public final class NativeRecordingQueueWriter {
     }
     let key = prefix + objectID.uuidString.lowercased()
     let stored = try store.read(key: key)
-    guard stored.data.count <= 16_384, stored.revision > 0, stored.revision < UInt64(Int64.max),
-      var record = try JSONSerialization.jsonObject(with: stored.data) as? [String: Any],
-      Set(record.keys) == [
-        "schemaVersion", "revision", "state", "reservation", "idempotencyKeys", "retry",
-      ],
-      exactInteger(record["schemaVersion"]) == 1,
-      let revision = exactInteger(record["revision"]),
-      (1..<9_007_199_254_740_991).contains(revision),
-      record["state"] as? String == "reserved",
-      let reservation = record["reservation"] as? [String: Any],
-      Set(reservation.keys) == [
-        "protocolVersion", "objectId", "sessionId", "channel", "sequenceNumber",
-        "additionalAuthenticatedData", "createdAt",
-      ],
-      reservation["protocolVersion"] as? String == "1.0",
-      reservation["objectId"] as? String == objectID.uuidString.lowercased(),
-      reservation["sessionId"] as? String == encryption.scope.sessionID.uuidString.lowercased(),
-      reservation["channel"] as? String == "microphone",
-      exactInteger(reservation["sequenceNumber"]) == sequence,
-      let aad = reservation["additionalAuthenticatedData"] as? String, aad.utf8.count <= 1024,
-      let created = reservation["createdAt"] as? String, validDate(created),
-      validKeys(record["idempotencyKeys"]), validRetry(record["retry"])
-    else { throw NativeRecordingFailure.invalidBinding }
+    let parsed = try nativeRecordingReservedRecord(
+      stored, scope: encryption.scope, objectID: objectID, sequence: sequence)
+    var record = parsed.record
+    let revision = parsed.revision
+    let aad = parsed.aad
     let size = pcm16.count + 44
     let envelope = try encryption.seal(
       pcm16: &pcm16, objectID: objectID, sequence: sequence,
@@ -125,6 +106,37 @@ public final class NativeRecordingQueueWriter {
     return NativeRecordingCommit(
       sequence: sequence, plaintextBytes: size, envelopeBytes: envelope.count)
   }
+}
+
+/// Shared strict reservation decoder for the native allocator and encrypted writer.
+func nativeRecordingReservedRecord(
+  _ stored: NativeRecordingStoredRecord, scope: NativeRecordingScope,
+  objectID: UUID, sequence: Int
+) throws -> (record: [String: Any], revision: Int, aad: String) {
+  guard stored.data.count <= 16_384, stored.revision > 0, stored.revision < UInt64(Int64.max),
+    let record = try JSONSerialization.jsonObject(with: stored.data) as? [String: Any],
+    Set(record.keys) == [
+      "schemaVersion", "revision", "state", "reservation", "idempotencyKeys", "retry",
+    ],
+    exactInteger(record["schemaVersion"]) == 1,
+    let revision = exactInteger(record["revision"]),
+    (1..<9_007_199_254_740_991).contains(revision),
+    record["state"] as? String == "reserved",
+    let reservation = record["reservation"] as? [String: Any],
+    Set(reservation.keys) == [
+      "protocolVersion", "objectId", "sessionId", "channel", "sequenceNumber",
+      "additionalAuthenticatedData", "createdAt",
+    ],
+    reservation["protocolVersion"] as? String == "1.0",
+    reservation["objectId"] as? String == objectID.uuidString.lowercased(),
+    reservation["sessionId"] as? String == scope.sessionID.uuidString.lowercased(),
+    reservation["channel"] as? String == "microphone",
+    exactInteger(reservation["sequenceNumber"]) == sequence,
+    let aad = reservation["additionalAuthenticatedData"] as? String, aad.utf8.count <= 1024,
+    let created = reservation["createdAt"] as? String, validDate(created),
+    validKeys(record["idempotencyKeys"]), validRetry(record["retry"])
+  else { throw NativeRecordingFailure.invalidBinding }
+  return (record, revision, aad)
 }
 
 private func exactInteger(_ value: Any?) -> Int? {

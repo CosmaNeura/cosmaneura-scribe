@@ -6,7 +6,7 @@ import Foundation
 /// app. Construction requires a context minted by a verified Core response.
 @MainActor
 final class NativeProviderRecordingService: NativeRecordingBindingService,
-  NativeRecordingLeaseService
+  NativeRecordingLeaseService, NativeRecordingReservationService
 {
   private let connection: NativeProviderConnection
   private let context: NativeProviderRecordingContext
@@ -99,6 +99,61 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       expiresAt: expires)
   }
 
+  func reserve(lease: NativeRecordingLease, first: Int, count: Int, intent: UUID) async throws
+    -> NativeRecordingReservationBatch
+  {
+    guard lease.sessionID == context.sessionID,
+      (1..<9_007_199_254_740_991).contains(lease.generation),
+      (0..<2048).contains(first), (1...90).contains(count), first <= 2048 - count
+    else { throw ProviderNativeError.invalidRequest }
+    let receipt = try await operation(
+      kind: "reserve_chunks", intent: intent,
+      payload: [
+        "protocol_version": "1.0", "capture_lease_id": lease.leaseID.uuidString.lowercased(),
+        "capture_lease_generation": lease.generation, "channel": "microphone",
+        "first_sequence_number": first, "count": count,
+      ], maximumResponseBytes: 131_072)
+    guard
+      Set(receipt.keys) == [
+        "protocol_version", "batch_id", "session_id", "capture_authorized_until", "reservations",
+      ],
+      receipt["protocol_version"] as? String == "1.0", let batchID = Self.uuid(receipt["batch_id"]),
+      receipt["session_id"] as? String == context.sessionID.uuidString.lowercased(),
+      receipt["capture_authorized_until"] as? String == lease.expiresAt,
+      let rows = receipt["reservations"] as? [[String: Any]], rows.count == count
+    else { throw ProviderNativeError.response }
+    let scope = try NativeRecordingScope(
+      tenantID: context.tenantID, sessionID: context.sessionID,
+      workspaceID: context.workspaceID, accountDigest: context.accountDigest)
+    var reservations: [NativeRecordingReservation] = []
+    for (offset, row) in rows.enumerated() {
+      guard
+        Set(row.keys) == [
+          "protocol_version", "object_id", "session_id", "channel", "sequence_number",
+          "additional_authenticated_data", "created_at",
+        ],
+        row["protocol_version"] as? String == "1.0", let objectID = Self.uuid(row["object_id"]),
+        row["session_id"] as? String == context.sessionID.uuidString.lowercased(),
+        row["channel"] as? String == "microphone",
+        let sequence = row["sequence_number"] as? NSNumber,
+        CFGetTypeID(sequence) != CFBooleanGetTypeID(),
+        sequence.doubleValue == Double(first + offset),
+        let aad = row["additional_authenticated_data"] as? String,
+        let created = row["created_at"] as? String
+      else { throw ProviderNativeError.response }
+      reservations.append(
+        try NativeRecordingReservation(
+          scope: scope, objectID: objectID,
+          sequence: first + offset, additionalData: aad, createdAt: created))
+    }
+    guard Set(reservations.map(\.objectID)).count == count else {
+      throw ProviderNativeError.response
+    }
+    return NativeRecordingReservationBatch(
+      batchID: batchID, sessionID: context.sessionID,
+      authorizedUntil: lease.expiresAt, reservations: reservations)
+  }
+
   private static func uuid(_ value: Any?) -> UUID? {
     guard let value = value as? String, let parsed = UUID(uuidString: value),
       parsed.uuidString.lowercased() == value
@@ -108,7 +163,7 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
 
   private func operation(
     kind: String, intent: UUID, payload: [String: Any]? = nil,
-    leaseID: UUID? = nil
+    leaseID: UUID? = nil, maximumResponseBytes: Int = 8192
   )
     async throws -> [String: Any]
   {
@@ -127,7 +182,7 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       body: String(decoding: body, as: UTF8.self))
     let reply = try await connection.send(request)
     guard try connection.recordingRevision(accountDigest: context.accountDigest) == revision,
-      reply.status == 200, reply.body.count <= 8192,
+      reply.status == 200, reply.body.count <= maximumResponseBytes,
       let envelope = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
       Set(envelope.keys) == [
         "contract_version", "binding_ref", "workspace_id", "request_nonce",

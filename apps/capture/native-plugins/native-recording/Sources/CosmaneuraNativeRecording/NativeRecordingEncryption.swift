@@ -264,12 +264,7 @@ public final class NativeRecordingEncryption: Sendable {
       !pcm16.isEmpty, pcm16.count <= 320_000,
       pcm16.count.isMultiple(of: 2)
     else { throw NativeRecordingFailure.invalidPacket }
-    let aad = try JSONSerialization.data(
-      withJSONObject: [
-        "channel": "microphone", "object_id": objectID.uuidString.lowercased(),
-        "sequence_number": sequence, "session_id": scope.sessionID.uuidString.lowercased(),
-        "tenant_id": scope.tenantID.uuidString.lowercased(),
-      ], options: [.sortedKeys, .withoutEscapingSlashes])
+    let aad = try scope.additionalData(objectID: objectID, sequence: sequence)
     guard nativeBase64URLDecode(additionalAuthenticatedData) == aad else {
       throw NativeRecordingFailure.invalidBinding
     }
