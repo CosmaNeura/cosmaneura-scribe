@@ -1,6 +1,9 @@
 import Foundation
 
 public struct PCMSourceAuthority: Equatable, Sendable {
+  /// Matches the capture protocol's total position budget. Each admitted window
+  /// still requires its own short deadline and cumulative chunk allowance.
+  public static let maximumChunksPerRun = 2_048
   public let runID: String
   public let generation: Int
   public let expiresAtMilliseconds: Int64
@@ -12,7 +15,7 @@ public struct PCMSourceAuthority: Equatable, Sendable {
     guard UUID(uuidString: runID)?.uuidString.lowercased() == runID,
       generation > 0, generation <= 9_007_199_254_740_991,
       expiresAtMilliseconds > 0, expiresAtMilliseconds <= 9_007_199_254_740_991,
-      (1...360).contains(hardMaximumChunks)
+      (1...Self.maximumChunksPerRun).contains(hardMaximumChunks)
     else { throw PCMFailure(.invalidConfiguration) }
     self.runID = runID
     self.generation = generation
