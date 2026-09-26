@@ -1,4 +1,5 @@
 import type { CaptureFlowStore } from "../flow/types";
+import type { CaptureStorageCapacity } from "../flow/storage-capacity";
 import type { CaptureSource } from "../capture";
 import type { CaptureQueueStorage } from "../queue/types";
 import type { CiphertextUploadTarget } from "../bff/contracts";
@@ -12,6 +13,7 @@ export interface ProviderEncounter { readonly appointmentRef: string; readonly t
 export interface ProviderRecorderResources {
   readonly source: CaptureSource;
   readonly flowStore: CaptureFlowStore;
+  readonly storageCapacity: CaptureStorageCapacity;
   readonly queueStorage: CaptureQueueStorage;
   readonly uploadTarget: CiphertextUploadTarget;
   /** Release the host's exclusive flow lock/storage handles after source stop. */

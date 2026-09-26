@@ -305,6 +305,8 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
               : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
+              : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or stop and upload."
+              : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."
               : this.#snapshot.statusCode === "capture_paused" ? "Recording is paused. Resume when ready, or stop and upload. Missing speech during the pause cannot be recovered."
               : this.#snapshot.statusCode === "capture_no_saved_audio" ? "No audio was saved from this recording. Resume recording when ready."
               : this.#snapshot.statusCode === "capture_reopen_required" ? "Recording is stopped. Return to Your encounters and reopen this encounter to recover saved work."

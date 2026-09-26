@@ -1,5 +1,6 @@
 import { CaptureFlowController, type CaptureSessionKeyFactory } from "../../capture/src/flow/controller";
 import type { CaptureFlowStore } from "../../capture/src/flow/types";
+import type { CaptureStorageCapacity } from "../../capture/src/flow/storage-capacity";
 import type { CreatorReviewView } from "../../review-ui/src/creator-review-api";
 import { CaptureQueue } from "../../capture/src/queue/capture-queue";
 import type { CaptureQueueStorage } from "../../capture/src/queue/types";
@@ -42,6 +43,7 @@ export interface DesktopProviderRecorderOptions {
   readonly authority: NonNullable<DesktopCaptureControllerOptions["authority"]>;
   readonly indicator: PersistentRecordingIndicator;
   readonly flowStore: CaptureFlowStore;
+  readonly storageCapacity: CaptureStorageCapacity;
   readonly createSessionKey: CaptureSessionKeyFactory;
   readonly queueStorage: CaptureQueueStorage;
   readonly uploadTarget: CiphertextUploadTarget;
@@ -116,7 +118,8 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     });
     const bff = options.createBff(this.signal);
     this.createFlow = () => new CaptureFlowController({ bff, flowStore: options.flowStore, createSessionKey: options.createSessionKey,
-      source: this.source, queue: new CaptureQueue(options.queueStorage),
+      source: this.source, storageCapacity: options.storageCapacity, queue: new CaptureQueue(options.queueStorage),
+      pauseForStorage: () => this.pauseRecording(),
       queueTransport: new BffCaptureQueueTransport(bff, options.uploadTarget) });
     this.flow = this.createFlow();
     const availability = async (signal: AbortSignal): Promise<"ready" | "permission_required"> => {
@@ -236,6 +239,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       // helper's bounded startup. No grant or active indicator is spent waiting
       // for a person to choose. The native source still revalidates the window.
       try {
+        await this.flow.checkStorageCapacity(); this.requireOpen();
         this.choosingWindow = true; this.publish();
         let selected: Awaited<ReturnType<DesktopProviderRecorderOptions["selectWindow"]>>;
         try { selected = await chooseWindow(this.options.selectWindow, attempt.signal); }

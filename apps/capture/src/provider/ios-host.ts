@@ -2,6 +2,7 @@ import { Capacitor } from "@capacitor/core";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { NativeCreatorReviewJournal } from "../../../review-ui/src/native-review-journal";
 import { acquireCaptureFlowLock } from "../flow/capture-lock";
+import { parseAvailableStorageBytes } from "../flow/storage-capacity";
 import { EncryptedIndexedDbFlowStore } from "../flow/encrypted-store";
 import type { CiphertextUploadTarget } from "../bff/contracts";
 import { QueueInvariantError } from "../queue/errors";
@@ -150,6 +151,10 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
         return source.start(options);
       }, stop: stopSource },
       flowStore: ownedFlow, queueStorage, uploadTarget: mount.uploadTarget, release,
+      storageCapacity: { availableBytes: async () => {
+        current(); const result = await SecureQueue.getStorageCapacity(); current();
+        return parseAvailableStorageBytes(result.availableBytes);
+      } },
     };
   } catch (error) {
     // Setup cannot start the source. Preserve stored work while closing only the

@@ -22,6 +22,7 @@ import { CaptureFlowController } from "./controller";
 import { EncryptedIndexedDbFlowStore } from "./encrypted-store";
 import { FakeIosNativePcmBridge } from "../native/fake-ios-native-pcm-bridge";
 import { IosNativeMicrophoneCaptureSource } from "../native/ios-native-microphone-source";
+import { CAPTURE_STORAGE_RESERVE_BYTES, type CaptureStorageCapacity } from "./storage-capacity";
 import { CaptureDeviceCustodyError } from "../capture/device-custody";
 
 const TEST_CRYPTO = webcrypto as unknown as Crypto;
@@ -33,6 +34,60 @@ const TEST_ENCOUNTER = Object.freeze({
 });
 
 describe("CaptureFlowController", () => {
+  it.each(["low", "unknown", "unconfirmed_stop"] as const)("retains encrypted capture and obeys the stop barrier under %s storage pressure", async mode => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin)), source = new InspectableCaptureSource();
+    const availableBytes = vi.fn(async () => 10_000_000_000);
+    const capacity = { availableBytes };
+    const controller = createControllerWithSource({ bff, flowStore, queueStorage, origin, source, storageCapacity: capacity });
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "space-consent" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "space-session" });
+      await controller.prepareConfigured(session.id);
+      const key = await flowStore.getSessionKeyState(session.id);
+      const originalState = await flowStore.getActiveCaptureState();
+      availableBytes.mockResolvedValue(1);
+      await expect(controller.startRecording()).rejects.toThrow("capture_storage_low");
+      expect(source.startCalls).toBe(0);
+      expect(controller.snapshot).toMatchObject({ state: "ready", statusCode: "capture_storage_low" });
+      expect(await flowStore.getActiveCaptureState()).toEqual(originalState);
+      availableBytes.mockRejectedValue(new Error("invented host error"));
+      await expect(controller.startRecording()).rejects.toThrow("capture_storage_unavailable");
+      expect(source.startCalls).toBe(0);
+      availableBytes.mockResolvedValue(10_000_000_000);
+      await controller.startRecording();
+      const stopped = deferred();
+      const nativeStop = vi.spyOn(source, "stop").mockImplementationOnce(async () => {
+        await stopped.promise;
+        if (mode === "unconfirmed_stop") throw new Error("invented stop failure");
+      });
+      if (mode === "unknown") availableBytes.mockRejectedValue(new Error("invented host error"));
+      else availableBytes.mockResolvedValue(CAPTURE_STORAGE_RESERVE_BYTES - 1);
+      // emit awaits onChunk: storage stop must never deadlock this delivery.
+      await source.emit();
+      await vi.waitFor(() => expect(nativeStop).toHaveBeenCalledTimes(1));
+      expect(controller.snapshot.state).toBe("recording");
+      expect(controller.snapshot.recordedChunks).toBe(1);
+      const saved = await queueStorage.list();
+      expect(saved.filter(record => record.state === "encrypted")).toHaveLength(1);
+      stopped.resolve();
+      await vi.waitFor(() => expect(controller.snapshot).toMatchObject({ state: "paused", statusCode:
+        mode === "unconfirmed_stop" ? "capture_pause_unconfirmed" : mode === "unknown" ? "capture_storage_unavailable" : "capture_storage_low" }));
+      expect(await queueStorage.list()).toEqual(saved);
+      expect(await flowStore.getSessionKeyState(session.id)).toEqual(key);
+      expect(await flowStore.getActiveCaptureState()).toMatchObject({ sessionId: session.id, recordedChunks: 1, phase: "paused" });
+      availableBytes.mockResolvedValue(10_000_000_000);
+      await controller.resumeRecording();
+      expect(source.startCalls).toBe(2);
+      expect(controller.snapshot).toMatchObject({ state: "recording", recordedChunks: 1 });
+      expect(await queueStorage.list()).toEqual(expect.arrayContaining([...saved]));
+    } finally { await controller.deactivate().catch(() => undefined); flowStore.close(); queueStorage.close(); await closeServer(server); }
+  });
+
   it("retains another device's bound key and this device's exact pending intent on a configured conflict", async () => {
     const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
     const indexedDB = new IDBFactory(), bff = new HttpCaptureBff(createSameOriginFetch(origin));
@@ -1062,6 +1117,8 @@ function createController(
 }
 
 interface ControllerWithSourceOptions {
+  readonly storageCapacity?: CaptureStorageCapacity;
+  readonly pauseForStorage?: () => Promise<void>;
   readonly bff: CaptureBff;
   readonly flowStore: EncryptedIndexedDbFlowStore;
   readonly queueStorage: EncryptedIndexedDbQueueStorage;
@@ -1088,6 +1145,8 @@ function createControllerWithSource(
       new HttpCiphertextUploadTarget([options.origin]),
     ),
     source: options.source,
+    ...(options.storageCapacity ? { storageCapacity: options.storageCapacity } : {}),
+    ...(options.pauseForStorage ? { pauseForStorage: options.pauseForStorage } : {}),
     crypto: TEST_CRYPTO,
     ...(now === undefined ? {} : { now }),
     ...(options.scheduleTimeout === undefined

@@ -34,6 +34,20 @@ async function master(): Promise<CryptoKey> {
 }
 
 describe("durable desktop capture", () => {
+  it("measures the queue volume without changing records and refuses reads after closure", async () => {
+    const path = await directory(), key = await master();
+    const store = await DurableDesktopRecordStore.open({ directory: path, recoveryScope, workspaceId, key });
+    try {
+      const records = store.namespace("space-check");
+      await records.save("retained", null, new Uint8Array([1, 2, 3]));
+      expect(await store.availableBytes()).toBeGreaterThan(0);
+      expect(await records.get("retained")).toMatchObject({ revision: 1, data: new Uint8Array([1, 2, 3]) });
+      const pending = store.availableBytes(); store.close();
+      await expect(pending).rejects.toThrow("desktop_storage_unavailable");
+      await expect(store.availableBytes()).rejects.toThrow("desktop_storage_unavailable");
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+
   it("scans encrypted queue metadata without bulk payloads and clears scan buffers on early exit", async () => {
     const path = await directory(), key = await master();
     const store = await DurableDesktopRecordStore.open({ directory: path, recoveryScope, workspaceId, key });

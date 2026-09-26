@@ -76,6 +76,17 @@ final class SecureQueueStore {
         return revision
     }
 
+    /// Checks the existing queue volume without loading or creating a storage key.
+    func availableBytes() throws -> Int {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        let values = try directoryURL.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+        guard let bytes = values.volumeAvailableCapacity, bytes >= 0 else {
+            throw SecureQueueError.io
+        }
+        return bytes
+    }
+
     func create(key: String, data: Data) throws -> UInt64 {
         operationLock.lock()
         defer { operationLock.unlock() }

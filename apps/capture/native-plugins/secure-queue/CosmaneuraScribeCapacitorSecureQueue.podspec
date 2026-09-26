@@ -7,6 +7,7 @@ Pod::Spec.new do |s|
   s.author = { 'CosmaNeura' => 'engineering@cosmaneura.com' }
   s.source = { :git => 'https://github.com/CosmaNeura/cosmaneura-scribe.git', :tag => s.version.to_s }
   s.source_files = 'ios/Sources/CosmaneuraSecureQueue/**/*.{swift}'
+  s.resource_bundles = { 'CosmaneuraSecureQueuePrivacy' => ['ios/Sources/CosmaneuraSecureQueue/PrivacyInfo.xcprivacy'] }
   s.ios.deployment_target = '15.0'
   s.swift_version = '5.9'
   s.static_framework = true

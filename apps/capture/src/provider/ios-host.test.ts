@@ -18,7 +18,7 @@ import type { CaptureFlowLockManager } from "../flow/capture-lock";
 import * as sourceFactory from "./ios-capture-source";
 import { createProviderIOSHost, type AuthorizedProviderIOSMount, type ProviderIOSBackend } from "./ios-host";
 
-const native = vi.hoisted(() => ({ create: vi.fn(), get: vi.fn(), list: vi.fn(), compareAndSwap: vi.fn() }));
+const native = vi.hoisted(() => ({ getStorageCapacity: vi.fn(), create: vi.fn(), get: vi.fn(), list: vi.fn(), compareAndSwap: vi.fn() }));
 vi.mock("@cosmaneura-scribe/capacitor-secure-queue", () => ({ SecureQueue: native }));
 const recovery = "10000000-0000-4000-8000-000000000001";
 const workspace = "20000000-0000-4000-8000-000000000002";
@@ -31,6 +31,7 @@ let rows: Map<string, { data: string; revision: string }>;
 
 beforeEach(() => {
   vi.resetAllMocks();
+  native.getStorageCapacity.mockResolvedValue({ availableBytes: "10000000000" });
   vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("indexedDB", new IDBFactory());
   const locked = new Set<string>();
@@ -94,6 +95,19 @@ const preparation = { mode: "configured_core" as const, schemaVersion: 2 as cons
   leaseIdempotencyKey: null, leaseRequest: null };
 
 describe("native provider host composition", () => {
+  it("gets native volume capacity and rejects a result after encounter revocation", async () => {
+    const service = connection(), resources = await (await service.open()).recorder(session, service.abort.signal);
+    try {
+      expect(await resources.storageCapacity.availableBytes()).toBe(10_000_000_000);
+      native.getStorageCapacity.mockResolvedValueOnce({ availableBytes: "9007199254740992" });
+      await expect(resources.storageCapacity.availableBytes()).rejects.toThrow("capture_storage_unavailable");
+      native.getStorageCapacity.mockImplementationOnce(async () => {
+        service.abort.abort(); return { availableBytes: "10000000000" };
+      });
+      await expect(resources.storageCapacity.availableBytes()).rejects.toThrow("provider_native_scope_unavailable");
+    } finally { await resources.release(); }
+  });
+
   it("reuses only the custody read for restore, then rereads native storage", async () => {
     const service = connection(), first = await (await service.open()).recorder(session, service.abort.signal);
     await first.queueStorage.create(record()); await first.release();
