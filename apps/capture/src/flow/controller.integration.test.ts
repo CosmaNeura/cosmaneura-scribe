@@ -34,6 +34,54 @@ const TEST_ENCOUNTER = Object.freeze({
 });
 
 describe("CaptureFlowController", () => {
+  it.each([false, true])("overlaps preparation reads with key binding and settles custody before failure=%s", async failCapabilities => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory(), bff = new HttpCaptureBff(createSameOriginFetch(origin));
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const source = new InspectableCaptureSource();
+    const controller = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    const keyGate = deferred(), capabilitiesGate = deferred();
+    const originalBind = bff.bindSessionAudioKey.bind(bff), originalCapabilities = bff.getCapabilities.bind(bff);
+    const bind = vi.spyOn(bff, "bindSessionAudioKey").mockImplementation(async (...args) => {
+      await keyGate.promise; return originalBind(...args);
+    });
+    const capabilities = vi.spyOn(bff, "getCapabilities").mockImplementation(async (...args) => {
+      await capabilitiesGate.promise;
+      if (failCapabilities) throw new Error("synthetic capabilities failure");
+      return originalCapabilities(...args);
+    });
+    const lease = vi.spyOn(bff, "issueLease");
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: [], modality: "in_person", method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "parallel-consent" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "parallel-session" });
+      let settled = false;
+      const preparing = controller.prepareConfigured(session.id).then(() => { settled = true; return null; }, (error: unknown) => { settled = true; return error; });
+      await vi.waitFor(() => { expect(bind).toHaveBeenCalledTimes(1); expect(capabilities).toHaveBeenCalledTimes(1); });
+      capabilitiesGate.resolve(); await new Promise(resolve => setTimeout(resolve, 10));
+      expect(settled).toBe(false); expect(lease).not.toHaveBeenCalled(); expect(source.startCalls).toBe(0);
+      keyGate.resolve();
+      const result = await preparing;
+      expect(await flowStore.getSessionKeyState(session.id)).toMatchObject({ state: "bound" });
+      if (failCapabilities) {
+        expect(result).toBeInstanceOf(Error); expect(lease).not.toHaveBeenCalled();
+      } else {
+        expect(result).toBeNull(); expect(lease).toHaveBeenCalledTimes(1);
+        const ready = deferred(), originalStart = source.start.bind(source);
+        vi.spyOn(source, "start").mockImplementation(async options => { await originalStart(options); await ready.promise; });
+        const starting = controller.startRecording();
+        await vi.waitFor(() => expect(source.startCalls).toBe(1));
+        expect(controller.snapshot.statusCode).toBe("capture_starting");
+        ready.resolve(); await starting;
+        expect(controller.snapshot).toMatchObject({ state: "recording", statusCode: "capture_recording" });
+      }
+    } finally {
+      keyGate.resolve(); capabilitiesGate.resolve();
+      await controller.deactivate().catch(() => undefined); flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
+
   it.each(["low", "unknown", "unconfirmed_stop"] as const)("retains encrypted capture and obeys the stop barrier under %s storage pressure", async mode => {
     const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
     const indexedDB = new IDBFactory();

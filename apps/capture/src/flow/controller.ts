@@ -373,8 +373,15 @@ export class CaptureFlowController {
     this.#sessionId = sessionId;
     this.#setSnapshot({ sessionId });
 
-    await this.#bindSessionKey(sessionId);
-    this.#setCapabilities(await this.#bff.getCapabilities(sessionId));
+    // Capabilities are a consent-scoped read that does not require the audio key.
+    // Overlap that round trip with key binding, and settle both before advancing
+    // or returning a failure so no preparation work outlives its owner.
+    const [binding, capabilities] = await Promise.allSettled([
+      this.#bindSessionKey(sessionId), this.#bff.getCapabilities(sessionId),
+    ]);
+    if (binding.status === "rejected") throw binding.reason;
+    if (capabilities.status === "rejected") throw capabilities.reason;
+    this.#setCapabilities(capabilities.value);
     if (preparation.leaseRequest === null || preparation.leaseIdempotencyKey === null) {
       preparation = {
         ...preparation,
@@ -464,7 +471,7 @@ export class CaptureFlowController {
       if (this.#snapshot.state !== "paused") await this.#pauseForExpiredAuthority();
       throw new QueueInvariantError("capture_authority_expired");
     }
-    this.#setSnapshot({ state: "recording", statusCode: "synthetic_preview_recording" });
+    this.#setSnapshot({ state: "recording", statusCode: "capture_starting" });
     this.#armAuthorityDeadline();
     try {
       await this.#source.start({
@@ -478,6 +485,8 @@ export class CaptureFlowController {
       if (this.#recordingAbortController.signal.aborted) {
         await this.#source.stop();
         this.#sourceStarted = false;
+      } else if (this.#snapshot.state === "recording" && !this.#sourcePausedBySignal) {
+        this.#setSnapshot({ statusCode: this.#reviewAfterUpload ? "capture_recording" : "synthetic_preview_recording" });
       }
     } catch (error) {
       this.#clearAuthorityTimeout();

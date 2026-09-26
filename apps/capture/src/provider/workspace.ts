@@ -1,5 +1,7 @@
 import "../capture-app";
+import { Capacitor } from "@capacitor/core";
 import type { CaptureApp } from "../capture-app";
+import { isMicrophoneInput, microphoneInputs, type MicrophoneInput } from "../native/microphone-input";
 import type { PreparedProviderRecorder } from "../provider-binding";
 import { CaptureFlowController } from "../flow";
 import { CaptureDeviceCustodyError } from "../capture/device-custody";
@@ -33,6 +35,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let openingRef: string | null = null;
   let pendingNavigation: "encounters" | "review" | null = null;
   let step = "request";
+  let preferredLanguage: LanguageMode | null = null; // This authorized workspace's lifetime only.
   root.classList.add("provider-workspace");
   root.innerHTML = `<header class="provider-header"><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
     <p data-workspace-notice role="status"></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
@@ -117,11 +120,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const preparation = (): void => {
     requireValue(context);
     show(`<h1>${escape(context.encounter.title)}</h1><p>${escape(context.encounter.detail)}</p>
-      <h2>Prepare recording</h2><p>All parties must agree to recording and transcription. Recording starts only when you press Start recording and can be stopped at any time.</p>
-      <label>Spoken language<select name="language"><option value="">Choose a language</option><option value="en-US">English</option><option value="en-US+es-US">English and Spanish</option></select></label>
+      <h2>Prepare recording</h2><p>Confirm that everyone agrees, then press Start recording. Scribe prepares the visit and opens the recorder. You can stop at any time.</p>
+      <label>Spoken language<select name="language"><option value="">Choose a language</option><option value="en-US"${preferredLanguage === "en-US" ? " selected" : ""}>English</option><option value="en-US+es-US"${preferredLanguage === "en-US+es-US" ? " selected" : ""}>English and Spanish</option></select></label>
       <label>Visit type<select name="modality"><option value="in_person">In person</option><option value="virtual">Video visit</option><option value="phone">Phone call</option></select></label>
+      ${Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
       <label class="provider-consent"><input name="consent" type="checkbox">All parties have agreed to recording and transcription.</label>
-      <button data-workspace-action="prepare">Prepare secure recording</button>`);
+      <button data-workspace-action="prepare">Start recording</button>`);
   };
   const renewConsent = (): void => {
     const saved = progress();
@@ -149,7 +153,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     });
     disposeContent = () => { first = undefined; dispose(); };
   };
-  const recordOrReview = async (): Promise<void> => {
+  const recordOrReview = async (startRequested?: MicrophoneInput): Promise<void> => {
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
     step = "recording status check";
@@ -213,12 +217,18 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       } });
     content.replaceChildren(app);
     disposeContent = () => app.remove();
+    // Only the current explicit Start action carries this in-memory intent.
+    // Reopening/recovering a journal never starts a microphone or meeting.
+    if (startRequested !== undefined) {
+      await app.updateComplete;
+      if (authorized(n) && app.isConnected) await app.startFromProviderAction(startRequested);
+    }
   };
-  const admit = async (mode: "initial" | "recover" | "renew" = "initial"): Promise<void> => {
+  const admit = async (mode: "initial" | "recover" | "renew" = "initial", startRequested?: MicrophoneInput): Promise<void> => {
     requireValue(client);
     const n = generation;
     step = "recording admission";
-    show("<h2>Preparing your recording…</h2>");
+    show(`<h2>Preparing your recording…</h2><p role="status">${startRequested === undefined ? "Restoring your saved visit." : "Checking consent and preparing secure storage. Recording has not started yet."}</p>`);
     const intent = progress().admission;
     requireValue(intent);
     const id = await (mode === "recover" ? client.recoverAdmission(intent)
@@ -227,7 +237,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (id === null) { renewConsent(); return; }
     requireValue(progress().sessionId === null || progress().sessionId === id);
     if (progress().sessionId === null) await persist({ ...progress(), sessionId: id });
-    if (authorized(n)) await recordOrReview();
+    if (authorized(n)) await recordOrReview(startRequested);
   };
   const open = async (ref: string): Promise<void> => {
     await clearEncounter(); const n = generation;
@@ -346,7 +356,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
             attestation: { modality: modality as "in_person" | "virtual" | "phone", participant_regions: [],
               method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } },
           sessionId: null, uploaded: false, pendingSave: null };
-          assertProgress(next); await persist(next); await admit(); break;
+          const microphone = content.querySelector<HTMLSelectElement>('[name="microphone"]')?.value ?? "built_in";
+          requireValue(isMicrophoneInput(microphone));
+          assertProgress(next); await persist(next);
+          preferredLanguage = next.admission.languageMode;
+          await admit("initial", microphone); break;
         }
         case "admit": await admit("recover"); break;
         case "renew-consent": {
