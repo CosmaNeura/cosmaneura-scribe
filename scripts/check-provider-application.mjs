@@ -183,6 +183,7 @@ try {
       journalFailure = false;
       root.querySelector('[data-workspace-action="open"]').click();
       await until(() => root.textContent.includes("Prepare recording"));
+      assert.equal(root.querySelector('[name="regions"]'), null);
       const consent = root.querySelector('[name="consent"]'); consent.focus();
       await new Promise(resolve => setTimeout(resolve, 5200));
       assert.equal(root.querySelector('[name="consent"]'), consent, "Polling must retain the opened encounter and consent control");
@@ -193,6 +194,50 @@ try {
       await dispose(); nativeState = { phase: "signedOut", revision: webcrypto.randomUUID() };
       nativeCalls.length = 0;
     }
+  });
+  await check(async () => {
+    const f = fixture(), connect = f.host.connect;
+    let saved = null, admissions = 0;
+    const forbidden = () => { throw new Error("No recording or clinical note in setup regression"); };
+    const scope = { workspaceId: "20000000-0000-4000-8000-000000000002",
+      bindingRef: "scribe_capture_binding_01j00000000000000000000000",
+      appointmentRef: "appointment_01j00000000000000000000000" };
+    f.host.connect = async signal => {
+      const connected = await connect(signal), workspace = connected.workspace;
+      workspace.openEncounter = async () => ({ encounter: (await workspace.listEncounters())[0], scope, signal,
+        journal: { load: async () => ({ revision: null, progress: null }),
+          save: async (_prior, progress) => { saved = structuredClone(progress); return { revision: "1", progress: saved }; } },
+        reviewJournal: forbidden, recorder: forbidden, openInCore: forbidden,
+        request: async (_action, body) => {
+          if (body.operation?.kind === "provider_encounter") return Response.json({ ...body,
+            contract_version: "1", checked_at: new Date().toISOString(), operation: "provider_encounter",
+            receipt: { schema_version: "1.0", status: "not_prepared", review: null } });
+          admissions++;
+          assert.deepEqual(Array.from(body.attestation.participant_regions), []);
+          assert.equal(body.attestation.all_parties_consented, true);
+          // Retain the exact request for recovery after an unconfirmed reply.
+          return Response.json({ detail: "synthetic_unconfirmed" }, { status: 503 });
+        },
+      });
+      return connected;
+    };
+    const dispose = mountProviderApplication(root, f.host);
+    try {
+      await until(visible); root.querySelector('[data-workspace-action="open"]').click();
+      await until(() => root.querySelector('[data-workspace-action="prepare"]'));
+      assert.equal(root.querySelector('[name="regions"]'), null);
+      assert.equal(root.querySelector('[name="timezone"]'), null);
+      root.querySelector('[name="language"]').value = "en-US";
+      root.querySelector('[data-workspace-action="prepare"]').click(); await turn();
+      assert.equal(admissions, 0); assert.equal(saved, null);
+      assert.ok(root.textContent.includes("confirm all-party consent"));
+      root.querySelector('[name="consent"]').checked = true;
+      root.querySelector('[data-workspace-action="prepare"]').click();
+      await until(() => admissions === 1); await turn();
+      assert.deepEqual(saved.admission.attestation.participant_regions, []);
+      assert.equal(saved.admission.attestation.all_parties_consented, true);
+      assert.equal(saved.sessionId, null);
+    } finally { await dispose(); }
   });
   for (const recovery of ["empty", "reopen", "custody", "upload", "upload-revoked", "upload-navigation"]) await check(async () => {
     const f = fixture(), connect = f.host.connect;

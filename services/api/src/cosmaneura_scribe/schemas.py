@@ -52,9 +52,10 @@ class ConsentCreate(BaseModel):
     practitioner_id: ExternalEntityId
     patient_id: ExternalEntityId
     modality: CaptureModality
+    # Empty means location metadata was not collected. All-party consent still
+    # applies universally; a timezone is not a participant location.
     participant_regions: set[str] = Field(
-        min_length=1,
-        json_schema_extra={"minItems": 1, "uniqueItems": True},
+        json_schema_extra={"uniqueItems": True},
     )
     method: ConsentMethod
     all_parties_consented: bool

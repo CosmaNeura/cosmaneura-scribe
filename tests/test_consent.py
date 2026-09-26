@@ -4,6 +4,7 @@ import base64
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
 from conftest import RepositoryBackend
 from cosmaneura_scribe.main import app, get_master_platform_handoff
 from cosmaneura_scribe.repository import (
@@ -23,24 +24,26 @@ def headers(tenant_id: object, key: str) -> dict[str, str]:
     return {"X-Tenant-ID": str(tenant_id), "Idempotency-Key": key}
 
 
-def consent_body(*, consented: bool = True) -> dict[str, object]:
+def consent_body(*, consented: bool = True, regions: list[str] | None = None) -> dict[str, object]:
     return {
         "appointment_id": "appointment_01kzy09rxaepjt63rb0pv1256p",
         "practitioner_id": "doctor_01kzy09rx9emh9n9q0p0e6neam",
         "patient_id": "patient_01kzy09rxben2txt3pfy34bn6h",
         "modality": "virtual",
-        "participant_regions": ["FL", "OH"],
+        "participant_regions": ["FL", "OH"] if regions is None else regions,
         "method": "pre_visit_form",
         "all_parties_consented": consented,
         "granted_at": datetime.now(UTC).isoformat(),
     }
 
 
-def _create_consent(client: TestClient, tenant_id: UUID, key: str) -> dict[str, object]:
+def _create_consent(
+    client: TestClient, tenant_id: UUID, key: str, regions: list[str] | None = None
+) -> dict[str, object]:
     response = client.post(
         "/v1/consents",
         headers=headers(tenant_id, key),
-        json=consent_body(),
+        json=consent_body(regions=regions),
     )
     assert response.status_code == 201
     return response.json()
@@ -57,18 +60,20 @@ def _session_body(consent_id: object) -> dict[str, object]:
     }
 
 
-def test_refuses_nonconsenting_record(client: TestClient) -> None:
+@pytest.mark.parametrize("regions", [["FL", "OH"], []])
+def test_refuses_nonconsenting_record(client: TestClient, regions: list[str]) -> None:
     response = client.post(
         "/v1/consents",
         headers=headers(uuid4(), "consent-key-0001"),
-        json=consent_body(consented=False),
+        json=consent_body(consented=False, regions=regions),
     )
     assert response.status_code == 409
 
 
-def test_session_requires_matching_consent(client: TestClient) -> None:
+@pytest.mark.parametrize("regions", [["FL", "OH"], []])
+def test_session_requires_matching_consent(client: TestClient, regions: list[str]) -> None:
     tenant_id = uuid4()
-    body = consent_body()
+    body = consent_body(regions=regions)
     consent = client.post(
         "/v1/consents", headers=headers(tenant_id, "consent-key-0002"), json=body
     ).json()
@@ -86,13 +91,16 @@ def test_session_requires_matching_consent(client: TestClient) -> None:
     assert response.status_code == 409
 
 
+@pytest.mark.parametrize("regions", [["FL", "OH"], []])
 def test_consent_revocation_is_tenant_hidden_idempotent_and_closes_capture(
     client: TestClient,
     repository_backend: RepositoryBackend,
+    regions: list[str],
 ) -> None:
     tenant_id = uuid4()
     other_tenant_id = uuid4()
-    consent = _create_consent(client, tenant_id, "consent-revoke-create")
+    consent = _create_consent(client, tenant_id, "consent-revoke-create", regions)
+    assert consent["participant_regions"] == sorted(regions)
     consent_id = UUID(str(consent["id"]))
     session_response = client.post(
         "/v1/sessions",
@@ -146,13 +154,15 @@ def test_consent_revocation_is_tenant_hidden_idempotent_and_closes_capture(
     transcript_body = {
         "language_code": "en-US",
         "stt_provider": "synthetic",
-        "segments": [{
-            "speaker_id": "speaker-1",
-            "speaker_role": "unknown",
-            "content": "Synthetic transcript fixture.",
-            "start_ms": 0,
-            "end_ms": 1000,
-        }],
+        "segments": [
+            {
+                "speaker_id": "speaker-1",
+                "speaker_role": "unknown",
+                "content": "Synthetic transcript fixture.",
+                "start_ms": 0,
+                "end_ms": 1000,
+            }
+        ],
     }
     transcript_before = client.post(
         f"/v1/sessions/{session_id}/transcript",

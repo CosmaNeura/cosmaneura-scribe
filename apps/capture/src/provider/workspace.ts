@@ -120,7 +120,6 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       <h2>Prepare recording</h2><p>All parties must agree to recording and transcription. Recording starts only when you press Start recording and can be stopped at any time.</p>
       <label>Spoken language<select name="language"><option value="">Choose a language</option><option value="en-US">English</option><option value="en-US+es-US">English and Spanish</option></select></label>
       <label>Visit type<select name="modality"><option value="in_person">In person</option><option value="virtual">Video visit</option><option value="phone">Phone call</option></select></label>
-      <label>Participant regions<input name="regions" placeholder="For example: US-NY" autocomplete="off"><small>Enter every participant’s country or region code, separated by commas.</small></label>
       <label class="provider-consent"><input name="consent" type="checkbox">All parties have agreed to recording and transcription.</label>
       <button data-workspace-action="prepare">Prepare secure recording</button>`);
   };
@@ -131,7 +130,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const attestation = saved.admission.attestation;
     const visit = { in_person: "In person", virtual: "Video visit", phone: "Phone call" }[attestation.modality];
     show(`<h1>Confirm recording consent</h1><p>Your previous request did not prepare a recording. Confirm that everyone still agrees before continuing.</p>
-      <p>${saved.admission.languageMode === "en-US" ? "English" : "English and Spanish"} · ${visit} · ${escape(attestation.participant_regions.join(", "))}</p>
+      <p>${saved.admission.languageMode === "en-US" ? "English" : "English and Spanish"} · ${visit}${attestation.participant_regions.length ? ` · ${escape(attestation.participant_regions.join(", "))}` : ""}</p>
       <label class="provider-consent"><input name="consent" type="checkbox">All parties still agree to recording and transcription.</label>
       <button data-workspace-action="renew-consent">Prepare secure recording</button>`);
   };
@@ -343,12 +342,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           if (!consent || !["en-US", "en-US+es-US"].includes(language)) {
             notice.textContent = "Choose the spoken language and confirm all-party consent before preparing."; return;
           }
-          const regions = [...new Set(input("regions").split(",").map(v => v.trim().toUpperCase()).filter(Boolean))].sort();
-          if (!regions.length || regions.length > 16 || regions.some(v => !/^[A-Z]{2}(?:-[A-Z0-9]{1,3})?$/u.test(v))) {
-            notice.textContent = "Enter every participant’s country or region code, for example US-NY."; return;
-          }
           const next: ProviderProgress = { admission: { key: crypto.randomUUID(), languageMode: language as LanguageMode,
-            attestation: { modality: modality as "in_person" | "virtual" | "phone", participant_regions: regions,
+            attestation: { modality: modality as "in_person" | "virtual" | "phone", participant_regions: [],
               method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } },
           sessionId: null, uploaded: false, pendingSave: null };
           assertProgress(next); await persist(next); await admit(); break;

@@ -89,7 +89,7 @@ export function assertProgress(value: unknown): asserts value is ProviderProgres
   const a = value.admission.attestation;
   requireValue(["in_person", "virtual", "phone"].includes(String(a.modality)) && a.method === "verbal_attestation"
     && a.all_parties_consented === true && typeof a.granted_at === "string" && Number.isFinite(Date.parse(a.granted_at))
-    && Array.isArray(a.participant_regions) && a.participant_regions.length > 0 && a.participant_regions.length <= 16
+    && Array.isArray(a.participant_regions) && a.participant_regions.length <= 16
     && new Set(a.participant_regions).size === a.participant_regions.length
     && a.participant_regions.every(v => typeof v === "string" && /^[A-Z]{2}(?:-[A-Z0-9]{1,3})?$/u.test(v))
     && (value.sessionId === null || isUuid(value.sessionId)) && typeof value.uploaded === "boolean"
