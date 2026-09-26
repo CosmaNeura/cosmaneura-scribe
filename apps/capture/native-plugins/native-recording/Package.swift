@@ -16,6 +16,7 @@ let package = Package(
       dependencies: [
         "CosmaneuraNativeRecording",
         .product(name: "CosmaneuraIOSPCMCore", package: "ios-pcm-capture"),
+        .product(name: "CosmaneuraIOSAVFoundationDriver", package: "ios-pcm-capture"),
       ]),
     .testTarget(
       name: "CosmaneuraNativeRecordingTests", dependencies: ["CosmaneuraNativeRecording"]),

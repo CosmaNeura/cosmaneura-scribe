@@ -1,3 +1,4 @@
+import CosmaneuraIOSAVFoundationDriver
 import CosmaneuraIOSPCMCore
 import CosmaneuraNativeRecording
 import Foundation
@@ -185,6 +186,121 @@ import XCTest
     await pause.release()
     assertEqual(f.sink.state.committedChunks, 1)
   }
+
+  func testEncryptedNativeGraphKeepsLargerTapAfterBackground() async throws {
+    let f = try ContinuationFixture()
+    let system = EncryptedAudioSystem()
+    let recorder = try f.recorder(system: system)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 90)
+    try recorder.start(
+      runID: UUID().uuidString.lowercased(),
+      captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+      lease: lease, batch: batch)
+    try await recorder.ready()
+    try await recorder.ready()  // Repeated UI readiness joins the same native start.
+    assertFalse(recorder.isPhysicallyIdle)
+    assertEqual(system.profile, .nativeEncryptedSpeech)
+    system.emit(.backgrounded)
+    let frames = try system.offer(8_192)
+    for _ in 0..<1_000 {
+      if frames.isZeroed { break }
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    assertTrue(frames.isZeroed)
+    assertEqual((await recorder.snapshot())?.phase, .recording)
+    assertEqual(recorder.captureSignal().convertedBuffers, 1)
+    try await recorder.stop()
+    assertTrue(recorder.isPhysicallyIdle)
+    assertEqual(recorder.captureState.committedChunks, 1)
+    assertEqual(recorder.captureState.committedPlaintextBytes, 8_192 * 2 + 44)
+    assertEqual(f.records.encryptedCount, 1)
+    assertEqual(system.deactivations, 1)
+    try await recorder.stop()
+    assertEqual(system.deactivations, 1)
+  }
+
+  func testNativeGraphRejectsLowStorageBeforeClaimAndSupportsThreeHourBudget() async throws {
+    let f = try ContinuationFixture()
+    let system = EncryptedAudioSystem()
+    let required = try NativeEncryptedPCMRecorder.requiredAvailableBytes(priorPlaintextBytes: 0)
+    XCTAssertGreaterThan(
+      NativeEncryptedPCMRecorder.maximumPlaintextBytes,
+      NativeEncryptedPCMRecorder.threeHourPlaintextBytes)
+    f.records.setCapacity(required - 1)
+    XCTAssertThrowsError(try f.recorder(system: system))
+    f.records.setCapacity(required)
+    let recorder = try f.recorder(system: system)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 90)
+    f.records.setCapacity(required - 1)
+    XCTAssertThrowsError(
+      try recorder.start(
+        runID: UUID().uuidString.lowercased(),
+        captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+        lease: lease, batch: batch))
+    assertTrue(recorder.isPhysicallyIdle)
+    assertEqual(system.activations, 0)
+    try await recorder.stop()
+  }
+
+  func testNativeGraphStillRequiresForegroundStart() async throws {
+    let f = try ContinuationFixture()
+    let system = EncryptedAudioSystem()
+    let recorder = try f.recorder(system: system, foreground: false)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 90)
+    try recorder.start(
+      runID: UUID().uuidString.lowercased(),
+      captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+      lease: lease, batch: batch)
+    do {
+      try await recorder.ready()
+      XCTFail("Background start must fail")
+    } catch {}
+    try await recorder.stop()
+    assertTrue(recorder.isPhysicallyIdle)
+    assertEqual(system.activations, 0)
+  }
+
+  func testNativeGraphKeepsHandleAfterPostClaimValidationFailure() async throws {
+    let f = try ContinuationFixture()
+    let system = EncryptedAudioSystem()
+    let recorder = try f.recorder(system: system)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 90)
+    XCTAssertThrowsError(
+      try recorder.start(
+        runID: UUID().uuidString.lowercased(),
+        captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 899_000,
+        lease: lease, batch: batch))
+    assertFalse(recorder.isPhysicallyIdle)
+    try await recorder.stop()
+    assertTrue(recorder.isPhysicallyIdle)
+    assertEqual(recorder.captureState.committedChunks, 0)
+  }
+
+  func testNativeGraphRouteChangeAfterBackgroundStillClosesCapture() async throws {
+    let f = try ContinuationFixture()
+    let system = EncryptedAudioSystem()
+    let recorder = try f.recorder(system: system)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 90)
+    try recorder.start(
+      runID: UUID().uuidString.lowercased(),
+      captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+      lease: lease, batch: batch)
+    try await recorder.ready()
+    system.emit(.backgrounded)
+    system.emit(.routeChanged)
+    for _ in 0..<1_000 {
+      if recorder.captureState.phase == .failed { break }
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    assertEqual(recorder.captureState.phase, .failed)
+    try await recorder.stop()
+    assertTrue(recorder.isPhysicallyIdle)
+  }
 }
 
 // Values are awaited before entering XCTest's non-async autoclosures.
@@ -341,6 +457,8 @@ private final class ContinuationRecords: NativeRecordingBindingRecordStore,
   private let lock = NSLock()
   private var values: [String: NativeRecordingStoredRecord] = [:]
   private var encrypted = 0
+  private var capacity = 2_000_000_000
+  func setCapacity(_ value: Int) { lock.withLock { capacity = value } }
   var encryptedCount: Int { lock.withLock { encrypted } }
   func readBinding(key: String) throws -> NativeRecordingStoredRecord? {
     lock.withLock { values[key] }
@@ -361,7 +479,7 @@ private final class ContinuationRecords: NativeRecordingBindingRecordStore,
     try write(key, expectedRevision, data)
     lock.withLock { encrypted += 1 }
   }
-  func availableBytes() throws -> Int { 2_000_000_000 }
+  func availableBytes() throws -> Int { lock.withLock { capacity } }
   private func write(_ key: String, _ revision: UInt64, _ data: Data) throws {
     try lock.withLock {
       guard values[key]?.revision ?? 0 == revision else {
@@ -423,6 +541,8 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
   let records = ContinuationRecords()
   let driver = ContinuationDriver()
   let fence = ContinuationFence()
+  let recovery = UUID()
+  let cipher: NativeRecordingEncryption
   let sink: NativeRecordingPCMSink
   let service: ContinuationService
   let leases: NativeRecordingLeaseOwner
@@ -434,7 +554,6 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
     let scope = try NativeRecordingScope(
       tenantID: UUID(), sessionID: UUID(), workspaceID: UUID(),
       accountDigest: String(repeating: "a", count: 64))
-    let recovery = UUID()
     let key = try XCTUnwrap(
       SecKeyCreateRandomKey(
         [
@@ -444,7 +563,7 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
     let der =
       try XCTUnwrap(SecKeyCopyExternalRepresentation(XCTUnwrap(SecKeyCopyPublicKey(key)), nil))
       as Data
-    let cipher = try NativeRecordingEncryption.create(
+    cipher = try NativeRecordingEncryption.create(
       scope: scope,
       published: NativeRecordingPublicKey(
         version: "synthetic-v1", modulusBase64URL: continuationEncode(der.subdata(in: 9..<393))),
@@ -456,6 +575,16 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
     leases = NativeRecordingLeaseOwner(scope: scope, service: service, records: records)
     reservations = NativeRecordingReservationOwner(
       scope: scope, recoveryScope: recovery, service: service, records: records)
+  }
+  func recorder(system: EncryptedAudioSystem, foreground: Bool = true) throws
+    -> NativeEncryptedPCMRecorder
+  {
+    try NativeEncryptedPCMRecorder(
+      encryption: cipher, recoveryScope: recovery, records: records,
+      firstSequence: 0, priorPlaintextBytes: 0, leases: leases, reservations: reservations,
+      permission: ContinuationConsent(), system: system,
+      foreground: EncryptedForeground(active: foreground), signal: PCMSignalMonitor(),
+      sourceClock: clock, validateActiveSource: { [fence] in try await fence.validate() })
   }
   func open(start: Bool = true, wrongRun: Bool = false) async throws -> NativeRecordingContinuation
   {
@@ -486,4 +615,47 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
 private func continuationEncode(_ value: Data) -> String {
   value.base64EncodedString().replacingOccurrences(of: "+", with: "-")
     .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+}
+
+private struct EncryptedForeground: AppleApplicationForegroundProviding {
+  let active: Bool
+  func isForegroundActive() async -> Bool { active }
+}
+
+private final class EncryptedAudioSystem: AppleAudioSystem, @unchecked Sendable {
+  private let lock = NSLock()
+  private var events: (@Sendable (AppleAudioSystemEvent) -> Void)?
+  private var frames: (@Sendable (OwnedAudioFrames) -> Void)?
+  private var selectedProfile: AppleAudioSessionProfile?
+  private var activated = 0
+  private var deactivated = 0
+  var profile: AppleAudioSessionProfile? { lock.withLock { selectedProfile } }
+  var activations: Int { lock.withLock { activated } }
+  var deactivations: Int { lock.withLock { deactivated } }
+  func setEventHandler(_ handler: @escaping @Sendable (AppleAudioSystemEvent) -> Void) {
+    lock.withLock { events = handler }
+  }
+  func clearEventHandler() { lock.withLock { events = nil } }
+  func configureAndActivate(profile: AppleAudioSessionProfile) throws {
+    lock.withLock {
+      selectedProfile = profile
+      activated += 1
+    }
+  }
+  func installInputTap(
+    frameCapacity: UInt32,
+    handler: @escaping @Sendable (OwnedAudioFrames) -> Void
+  ) throws {
+    lock.withLock { frames = handler }
+  }
+  func startEngine() throws {}
+  func freezeInput() throws { lock.withLock { frames = nil } }
+  func deactivate() throws { lock.withLock { deactivated += 1 } }
+  func emit(_ event: AppleAudioSystemEvent) { lock.withLock { events }?(event) }
+  func offer(_ count: Int) throws -> OwnedAudioFrames {
+    let value = OwnedAudioFrames(
+      sampleRateHz: 16_000, channels: [Array(repeating: 0.125, count: count)])
+    try XCTUnwrap(lock.withLock { frames })(value)
+    return value
+  }
 }
