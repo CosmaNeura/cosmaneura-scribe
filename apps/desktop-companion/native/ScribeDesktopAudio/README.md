@@ -111,3 +111,24 @@ parent-loss exit behavior.
 
 See [ADR 0054](../../../../docs/adr/0054-native-macos-meeting-audio-source.md) and
 [ADR 0055](../../../../docs/adr/0055-host-clock-aligned-desktop-pcm.md).
+
+## Automated synthetic voice preservation
+
+Run `python3 scripts/check-desktop-synthetic-voices.py <new-evidence-directory>`
+from the repository root on macOS. It reuses the installed Samantha and Daniel
+speech voices to generate fictional provider/patient samples, records explicit
+synthetic consent and hashes, then runs the native audio tests. It never plays
+audio or opens a microphone, camera, screen stream, account or meeting.
+
+The test passes 44.1 kHz microphone buffers and 48 kHz stereo / 32 kHz mono
+application-audio buffers through the actual AVFoundation conversion, bounded
+AudioDelivery and aligned PCM mixer used by the Zoom/Chrome capture path. It
+checks alternating speech, overlap, callback ordering, duration/tail coverage,
+clipping headroom and sample clearing. It detects loss of either voice without
+requiring a person to listen. The output is metadata-only test evidence.
+
+These input-format checks are not proof of live Zoom/Chrome window selection,
+ScreenCaptureKit permission, remote conferencing transport, echo cancellation,
+headphone routing or transcription accuracy. Actual two-party application
+capture remains a separate release qualification. Default native test runs mark
+the speech test disabled unless the operator supplies generated fixtures.
