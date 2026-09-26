@@ -3,6 +3,8 @@ import Foundation
 import Security
 
 final class SecureQueueStore {
+    // All in-process clients share the same lock, including native recording.
+    static let shared = Result { try SecureQueueStore() }
     private static let keyBytes = 32
     private static let envelopeMagic = Data([0x43, 0x53, 0x51, 0x31]) // CSQ1
     private static let keychainService = "com.cosmaneura.capture.secure-queue"
