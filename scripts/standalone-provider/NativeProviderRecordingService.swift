@@ -4,7 +4,10 @@ import Foundation
 
 /// Uses the same native token owner and fixed Core transport as the provider
 /// app. Construction requires a context minted by a verified Core response.
-@MainActor final class NativeProviderRecordingService: NativeRecordingBindingService {
+@MainActor
+final class NativeProviderRecordingService: NativeRecordingBindingService,
+  NativeRecordingLeaseService
+{
   private let connection: NativeProviderConnection
   private let context: NativeProviderRecordingContext
   private var bindingRef: String { context.bindingRef }
@@ -63,13 +66,57 @@ import Foundation
       keyVersion: key.keyVersion)
   }
 
-  private func operation(kind: String, intent: UUID, payload: [String: String]? = nil)
+  func requestLease(previous: NativeRecordingLease?, intent: UUID) async throws
+    -> NativeRecordingLease
+  {
+    var payload: [String: Any] = ["protocol_version": "1.0"]
+    if let previous {
+      guard previous.sessionID == context.sessionID,
+        (1..<9_007_199_254_740_990).contains(previous.generation)
+      else { throw ProviderNativeError.invalidRequest }
+      payload["expected_generation"] = previous.generation
+    }
+    let value = try await operation(
+      kind: previous == nil ? "issue_lease" : "renew_lease",
+      intent: intent, payload: payload, leaseID: previous?.leaseID)
+    guard
+      Set(value.keys) == [
+        "protocol_version", "receipt_id", "lease_id", "session_id",
+        "generation", "issued_at", "expires_at",
+      ],
+      value["protocol_version"] as? String == "1.0",
+      value["session_id"] as? String == context.sessionID.uuidString.lowercased(),
+      let receiptID = Self.uuid(value["receipt_id"]), let leaseID = Self.uuid(value["lease_id"]),
+      let generation = value["generation"] as? NSNumber,
+      CFGetTypeID(generation) != CFBooleanGetTypeID(),
+      generation.doubleValue == Double((previous?.generation ?? 0) + 1),
+      previous == nil || previous?.leaseID == leaseID,
+      let issued = value["issued_at"] as? String, let expires = value["expires_at"] as? String
+    else { throw ProviderNativeError.response }
+    return try NativeRecordingLease(
+      receiptID: receiptID, leaseID: leaseID,
+      sessionID: context.sessionID, generation: generation.intValue, issuedAt: issued,
+      expiresAt: expires)
+  }
+
+  private static func uuid(_ value: Any?) -> UUID? {
+    guard let value = value as? String, let parsed = UUID(uuidString: value),
+      parsed.uuidString.lowercased() == value
+    else { return nil }
+    return parsed
+  }
+
+  private func operation(
+    kind: String, intent: UUID, payload: [String: Any]? = nil,
+    leaseID: UUID? = nil
+  )
     async throws -> [String: Any]
   {
     let revision = try connection.recordingRevision(accountDigest: context.accountDigest)
     let nonce = UUID().uuidString.lowercased()
     var operation: [String: Any] = ["kind": kind]
     if let payload { operation["payload"] = payload }
+    if let leaseID { operation["lease_id"] = leaseID.uuidString.lowercased() }
     let body = try JSONSerialization.data(withJSONObject: [
       "workspace_id": context.workspaceID.uuidString.lowercased(), "binding_ref": bindingRef,
       "request_nonce": nonce, "operation": operation,
