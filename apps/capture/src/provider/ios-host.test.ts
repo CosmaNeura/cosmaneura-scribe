@@ -15,6 +15,7 @@ import { createMockBffServer } from "../mock-bff/server";
 import { encodePcm16MonoWav, pcm16WavProfile, type CaptureSourceStartOptions } from "../capture";
 import { EncryptedIndexedDbFlowStore } from "../flow/encrypted-store";
 import type { CaptureFlowLockManager } from "../flow/capture-lock";
+import { recordingFixture } from "./native-recorder.fixture";
 import * as sourceFactory from "./ios-capture-source";
 import { createProviderIOSHost, type AuthorizedProviderIOSMount, type ProviderIOSBackend } from "./ios-host";
 
@@ -33,6 +34,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   native.getStorageCapacity.mockResolvedValue({ availableBytes: "10000000000" });
   vi.stubGlobal("crypto", webcrypto);
+  vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
   vi.stubGlobal("indexedDB", new IDBFactory());
   const locked = new Set<string>();
   const locks: CaptureFlowLockManager = { request: async (name, _options, callback) => {
@@ -81,7 +83,15 @@ function connection(overrides: Partial<AuthorizedProviderIOSMount> = {}) {
   const backend: ProviderIOSBackend = { signal: abort.signal,
     listEncounters: async () => [mount.encounter], createEncounter: vi.fn(async () => undefined),
     openEncounter: async () => mount };
-  return { backend, mount, abort, open: () => createProviderIOSHost(backend).openEncounter(appointment, abort.signal) };
+  const openAny = () => createProviderIOSHost(backend).openEncounter(appointment, abort.signal);
+  return { backend, mount, abort, openAny, open: async () => {
+    const encounter = await openAny();
+    return { ...encounter, recorder: async (id: string, signal: AbortSignal) => {
+      const resources = await encounter.recorder(id, signal);
+      if (!("flowStore" in resources)) throw new Error("Expected legacy fixture ownership");
+      return resources;
+    } };
+  } };
 }
 function record(sessionId = session) {
   return createReservedRecord({ protocolVersion: PROTOCOL_VERSION, objectId, sessionId, channel: "microphone",
@@ -315,4 +325,52 @@ it.each(["recording", "interrupted", "expired"] as const)("holds mobile upload u
     await controller?.deactivate(); await resources?.release();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
+});
+
+
+describe("native provider selection and ownership", () => {
+  it("selects the native controller for a new visit without creating a legacy source or scanning its audio", async () => {
+    const nativeRecorder = recordingFixture(session), service = connection({ nativeRecording: nativeRecorder.port });
+    const encounter = await service.openAny(), resources = await encounter.recorder(session, service.abort.signal);
+    if (!("controller" in resources)) throw new Error("Expected native recorder");
+    expect(resources.captureMode).toBe("native_microphone");
+    expect(sourceFactory.createProviderIOSCaptureSource).not.toHaveBeenCalled();
+    expect(native.list).not.toHaveBeenCalled();
+    expect(nativeRecorder.commands).toHaveLength(0);
+    await resources.deactivate();
+  });
+
+  it("preserves a legacy preparation when native recording becomes available", async () => {
+    const nativeRecorder = recordingFixture(session), service = connection();
+    const first = await (await service.open()).recorder(session, service.abort.signal);
+    await first.flowStore.putPreparationState(preparation); await first.release();
+    const selected = connection({ nativeRecording: nativeRecorder.port });
+    const resumed = await (await selected.open()).recorder(session, selected.abort.signal);
+    expect(await resumed.flowStore.getPreparationState()).toEqual(preparation);
+    expect(nativeRecorder.commands).toHaveLength(0); await resumed.release();
+  });
+
+  it("retains native ownership and the renderer lock after a failed close", async () => {
+    const nativeRecorder = recordingFixture(session), command = nativeRecorder.port.command;
+    nativeRecorder.port.command = vi.fn().mockRejectedValueOnce(new Error("Stop unconfirmed")).mockImplementation(command);
+    const service = connection({ nativeRecording: nativeRecorder.port }), encounter = await service.openAny();
+    const resources = await encounter.recorder(session, service.abort.signal);
+    if (!("controller" in resources)) throw new Error("Expected native recorder");
+    await expect(resources.deactivate()).rejects.toThrow("Stop unconfirmed");
+    await expect(encounter.recorder(session, service.abort.signal)).rejects.toThrow("capture_flow_already_active");
+    await resources.deactivate();
+    const next = await encounter.recorder(session, service.abort.signal);
+    if (!("controller" in next)) throw new Error("Expected native recorder");
+    await next.deactivate();
+  });
+
+  it("hands a revoked late native acquisition to workspace cleanup without opening a legacy source", async () => {
+    const nativeRecorder = recordingFixture(session), service = connection({ nativeRecording: nativeRecorder.port });
+    nativeRecorder.port.open = async (_session, id) => { service.abort.abort(); return nativeRecorder.response(id); };
+    const resources = await (await service.openAny()).recorder(session, service.abort.signal);
+    if (!("controller" in resources)) throw new Error("Expected retained native recorder");
+    await resources.deactivate();
+    expect(nativeRecorder.commands.map(c => c.kind)).toEqual(["close"]);
+    expect(sourceFactory.createProviderIOSCaptureSource).not.toHaveBeenCalled();
+  });
 });

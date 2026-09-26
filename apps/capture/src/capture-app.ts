@@ -240,6 +240,7 @@ export class CaptureApp extends LitElement {
               <p>
                 ${provider?.captureMode === "desktop_meeting"
                   ? "Choose your Meet window in Chrome or your Zoom window when starting. This records your microphone and the selected application’s audio; other audio from that application may be included."
+                  : provider?.captureMode === "native_microphone" ? "Start and stop deliberately. Your recording is saved on this iPhone until upload is confirmed."
                   : provider ? "Keep this app in the foreground while recording. Start and stop deliberately."
                   : this.#sourceKind === "microphone"
                   ? "The foreground microphone test adapter is explicitly enabled for synthetic test data."
@@ -273,10 +274,10 @@ export class CaptureApp extends LitElement {
               <button
                 data-testid="stop-button"
                 class="secondary"
-                ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && this.#busy}
+                ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && !this.#snapshot.native && this.#busy}
                 @click=${this.#stop}
               >
-                ${this.#snapshot.desktop?.phase === "starting" ? "Cancel start"
+                ${(this.#snapshot.desktop?.phase === "starting" || this.#snapshot.native?.phase === "starting") ? "Cancel start"
                   : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
                   : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
                   ? "Retry stop and upload" : "Stop and upload"}
@@ -284,7 +285,8 @@ export class CaptureApp extends LitElement {
               ${provider?.controller.pauseRecording && this.#snapshot.state === "recording" ? html`<button
                 class="secondary" data-testid="pause-recording" ?disabled=${this.#busy || this.#stopping}
                 @click=${this.#pause}>Pause recording</button>` : ""}
-              ${provider?.controller.resumeRecording && this.#snapshot.state === "paused" ? html`<button
+              ${provider?.controller.resumeRecording && this.#snapshot.state === "paused"
+                && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
                 class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
                 @click=${this.#resume}>Resume recording</button>` : ""}
               ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
@@ -294,7 +296,7 @@ export class CaptureApp extends LitElement {
             </div>
             ${this.#snapshot.state === "recording" && !this.#stopping && !this.#snapshot.desktop
               && this.#sourceKind === "microphone" && Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios"
-              ? html`<scribe-ios-input-meter></scribe-ios-input-meter>` : ""}
+              ? html`<scribe-ios-input-meter .readSignal=${provider?.controller.getCaptureSignal}></scribe-ios-input-meter>` : ""}
           </section>`}
 
           ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
@@ -307,6 +309,10 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
               : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
               : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
+              : this.#snapshot.statusCode === "capture_stopping" ? "Stopping recording…"
+              : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
+              : this.#snapshot.statusCode === "capture_start_failed" ? "Recording could not start. Check your microphone and connection, then retry Resume."
+              : this.#snapshot.statusCode === "capture_preparation_failed" ? "Recording preparation could not finish. Reopen this encounter to retry. Saved work is retained."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
               : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or stop and upload."
               : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."
@@ -437,7 +443,7 @@ export class CaptureApp extends LitElement {
   };
 
   readonly #stop = (): void => {
-    if (this.#snapshot.desktop) {
+    if (this.#snapshot.desktop || this.#snapshot.native) {
       if (this.#stopping) return;
       this.#stopping = true; this.requestUpdate();
       // Startup can be cancelled even while its Start promise is pending.
@@ -476,6 +482,9 @@ export class CaptureApp extends LitElement {
     if (!this.#isNativeIPhone()) return;
     this.#microphoneError = false;
     try {
+      if (this.#provider?.controller.selectMicrophoneInput) {
+        await this.#provider.controller.selectMicrophoneInput(this.#microphoneInput); return;
+      }
       const result = await IOSPCM.selectMicrophoneInput?.({ input: this.#microphoneInput });
       if (!result || typeof result !== "object" || !("version" in result) || result.version !== 1
         || !("input" in result) || result.input !== this.#microphoneInput) throw new Error("Microphone unavailable");
@@ -547,6 +556,7 @@ export class CaptureApp extends LitElement {
   }
 
   #canStop(): boolean {
+    if (this.#snapshot.native) return ["starting", "recording", "paused", "stopPending"].includes(this.#snapshot.native.phase);
     if (this.#snapshot.desktop) return ["starting", "recording", "interrupted", "stop_unconfirmed"].includes(this.#snapshot.desktop.phase);
     return this.#snapshot.state === "recording" || this.#snapshot.state === "paused";
   }

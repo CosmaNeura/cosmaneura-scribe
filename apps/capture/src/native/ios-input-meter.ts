@@ -11,6 +11,7 @@ export class IosInputMeter extends LitElement {
     .on { background: #167052; }
     p { margin: .4rem 0; font-size: .9rem; }
   `;
+  readSignal?: () => Promise<unknown>;
   #signal: IosInputSignal | null = null;
   #receivedAt = -Infinity;
   #generation = 0;
@@ -41,7 +42,7 @@ export class IosInputMeter extends LitElement {
 
   async #read(generation: number): Promise<void> {
     try {
-      const value = await IOSPCM.getCaptureSignal?.();
+      const value = await (this.readSignal ? this.readSignal() : IOSPCM.getCaptureSignal?.());
       if (generation !== this.#generation || !this.isConnected) return;
       this.#signal = parseInputSignal(value);
       this.#receivedAt = performance.now();

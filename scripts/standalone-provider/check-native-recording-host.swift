@@ -385,6 +385,110 @@ import Security
       try await host.close()
       checks += 1
     }
+    do {
+      let f = try Fixture()
+      let bridge = NativeProviderRecordingBridge()
+      let revision = UUID().uuidString.lowercased()
+      let raw: [String: Any] = [
+        "requestId": UUID().uuidString.lowercased(), "revision": revision,
+        "workspaceId": f.scope.workspaceID.uuidString.lowercased(),
+        "sessionId": f.scope.sessionID.uuidString.lowercased(),
+        "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
+      ]
+      let selection = try NativeProviderRecordingSelection(raw)
+      let opened = try await bridge.open(
+        selection, current: {}, make: { f.host() }, inputMuted: { false })
+      let state = opened["recording"] as! [String: Any]
+      let id = state["recorderId"] as! String
+      try check(state["phase"] as? String == "ready" && f.sources.isEmpty)
+      try check(JSONSerialization.isValidJSONObject(opened))
+      func command(_ kind: String, revision override: String? = nil) throws
+        -> NativeProviderRecordingCommand
+      {
+        try NativeProviderRecordingCommand([
+          "requestId": UUID().uuidString.lowercased(), "revision": override ?? revision,
+          "recorderId": id, "kind": kind,
+        ])
+      }
+      try await rejects {
+        _ = try await bridge.command(
+          command("start", revision: UUID().uuidString.lowercased()), current: {},
+          inputMuted: { false })
+      }
+      let changed = try Fixture()
+      try await rejects {
+        _ = try await bridge.open(
+          selection, current: {}, make: { changed.host() }, inputMuted: { false })
+      }
+      _ = try await bridge.command(command("start"), current: {}, inputMuted: { false })
+      f.runs[0].failStop = true
+      let failed = try await bridge.command(
+        command("close"), current: { throw Failed(line: #line) }, inputMuted: { true })
+      try check(failed["ok"] as? Bool == false && failed["recording"] is NSNull)
+      f.runs[0].failStop = false
+      let closed = try await bridge.command(
+        command("close"), current: { throw Failed(line: #line) }, inputMuted: { true })
+      try check(closed["ok"] as? Bool == true && closed["recording"] is NSNull)
+      let duplicate = try await bridge.command(command("close"), current: {}, inputMuted: { false })
+      try check(duplicate["ok"] as? Bool == true && f.sources[0].stops == 1)
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let bridge = NativeProviderRecordingBridge()
+      let revision = UUID().uuidString.lowercased()
+      let raw: [String: Any] = [
+        "requestId": UUID().uuidString.lowercased(), "revision": revision,
+        "workspaceId": f.scope.workspaceID.uuidString.lowercased(),
+        "sessionId": f.scope.sessionID.uuidString.lowercased(),
+        "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
+      ]
+      let selection = try NativeProviderRecordingSelection(raw)
+      await f.service.configure(failAll: true)
+      let opened = try await bridge.open(
+        selection, current: {}, make: { f.host() }, inputMuted: { false })
+      let state = opened["recording"] as! [String: Any]
+      let id = state["recorderId"] as! String
+      try check(opened["ok"] as? Bool == false && state["phase"] as? String == "failed")
+      await f.service.configure()
+      let retried = try await bridge.open(
+        selection, current: {}, make: { f.host() }, inputMuted: { false })
+      let next = retried["recording"] as! [String: Any]
+      try check(next["recorderId"] as? String == id && next["phase"] as? String == "ready")
+      let close = try NativeProviderRecordingCommand([
+        "requestId": UUID().uuidString.lowercased(), "revision": revision,
+        "recorderId": id, "kind": "close",
+      ])
+      _ = try await bridge.command(close, current: {}, inputMuted: { false })
+      checks += 1
+    }
+    do {
+      let raw: [String: Any] = [
+        "requestId": UUID().uuidString.lowercased(), "revision": UUID().uuidString.lowercased(),
+        "workspaceId": UUID().uuidString.lowercased(), "sessionId": UUID().uuidString.lowercased(),
+        "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
+      ]
+      for key in raw.keys {
+        var missing = raw
+        missing.removeValue(forKey: key)
+        try await rejects { _ = try NativeProviderRecordingSelection(missing) }
+      }
+      var extra = raw
+      extra["audio"] = Data()
+      try await rejects { _ = try NativeProviderRecordingSelection(extra) }
+      var invalid = raw
+      invalid["revision"] = UUID().uuidString.uppercased()
+      try await rejects { _ = try NativeProviderRecordingSelection(invalid) }
+      let command: [String: Any] = [
+        "requestId": UUID().uuidString.lowercased(), "revision": UUID().uuidString.lowercased(),
+        "recorderId": UUID().uuidString.lowercased(), "kind": "input", "input": "external",
+      ]
+      _ = try NativeProviderRecordingCommand(command)
+      var injected = command
+      injected["kind"] = "start"
+      try await rejects { _ = try NativeProviderRecordingCommand(injected) }
+      checks += 1
+    }
     return checks
   }
 }

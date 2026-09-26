@@ -32,7 +32,7 @@ def assemble(args: argparse.Namespace) -> None:
         or profile["ScribeProviderReceiver"]["profile"] != "core-staging-https-v1"
     ):
         raise ValueError("Expected the approved, disabled P1 iOS staging profile")
-    helpers = {}
+    helpers: dict[str, dict[str, str]] = {}
     for kind, executable in (
         ("auth", "ScribeDesktopProvider"),
         ("audio", "ScribeDesktopAudioHelper"),
@@ -50,7 +50,7 @@ def assemble(args: argparse.Namespace) -> None:
         target = macos / executable
         shutil.copy2(source, target)
         target.chmod(0o755)
-        info = {
+        info: dict[str, object] = {
             "CFBundleIdentifier": bundle_id,
             "CFBundleExecutable": executable,
             "CFBundleName": executable,
@@ -86,7 +86,7 @@ def assemble(args: argparse.Namespace) -> None:
             )
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info, sort_keys=True))
         helpers[kind] = {"path": target.relative_to(desktop).as_posix(), "sha256": digest(target)}
-    package_profile = {
+    package_profile: dict[str, object] = {
         "schema": 1,
         "enabled": False,
         "coreOrigin": "https://staging-app.cosmaneura.com",
@@ -96,6 +96,7 @@ def assemble(args: argparse.Namespace) -> None:
     (desktop / "provider-profile.json").write_text(json.dumps(package_profile, indent=2) + "\n")
     ios = output / "ios"
     shutil.copytree(args.ios_renderer, ios / "www")
+    profile["UIBackgroundModes"] = sorted(set(profile.get("UIBackgroundModes", []) + ["audio"]))
     profile["ScribeProviderApplication"] = {"enabled": False, "uploadOrigins": []}
     (ios / "StandaloneBuildProfile.plist").write_bytes(plistlib.dumps(profile, sort_keys=True))
     files = {
@@ -103,7 +104,7 @@ def assemble(args: argparse.Namespace) -> None:
         for p in sorted(output.rglob("*"))
         if p.is_file()
     }
-    receipt = {
+    receipt: dict[str, object] = {
         "schema": 1,
         "files_sha256": files,
         "desktop_factory_included": True,

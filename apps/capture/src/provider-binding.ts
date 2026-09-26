@@ -1,3 +1,4 @@
+import type { MicrophoneInput } from "./native/microphone-input";
 import type { CaptureFlowSnapshot } from "./flow";
 import type { AuthorizedReviewRequest, CreatorReviewView } from "../../review-ui/src/creator-review-api";
 import type { CreatorReviewJournal } from "../../review-ui/src/creator-review-journal";
@@ -5,6 +6,7 @@ import type { CreatorReviewJournal } from "../../review-ui/src/creator-review-jo
 /** Plain recorder state/commands shared by native hosts and the provider view.
  * Desktop implementations keep the flow, keys, audio and storage in main. */
 export interface ProviderRecorderSnapshot extends CaptureFlowSnapshot {
+  readonly native?: { readonly phase: string; readonly busy: boolean };
   readonly desktop?: {
     readonly phase: "ready" | "permission_required" | "starting" | "recording" | "stopping"
       | "interrupted" | "stop_unconfirmed" | "stopped";
@@ -22,12 +24,14 @@ export interface ProviderRecorderController {
   resumeRecording?(): Promise<void>;
   refreshTranscriptionStatus(): Promise<void>;
   refreshPermissions?(): Promise<void>;
+  selectMicrophoneInput?(input: MicrophoneInput): Promise<void>;
+  readonly getCaptureSignal?: () => Promise<unknown>;
 }
 /** Already authorized, restored/prepared and exclusively owned by a native host. */
 export interface PreparedProviderRecorder {
   readonly controller: ProviderRecorderController;
   readonly sourceKind: "microphone";
-  readonly captureMode: "desktop_meeting";
+  readonly captureMode: "desktop_meeting" | "native_microphone";
   deactivate(): Promise<void>;
   resumePendingWork(): Promise<void>;
   releaseUploadedCapture(): Promise<void>;
@@ -43,7 +47,7 @@ export interface ProviderCaptureBinding {
   readonly sessionId: string;
   readonly controller: ProviderRecorderController;
   readonly sourceKind: "synthetic" | "microphone";
-  readonly captureMode?: "desktop_meeting";
+  readonly captureMode?: "desktop_meeting" | "native_microphone";
   readonly languageMode: "english" | "english_spanish";
   readonly authorizedRequest: AuthorizedReviewRequest;
   readonly journal: CreatorReviewJournal;
