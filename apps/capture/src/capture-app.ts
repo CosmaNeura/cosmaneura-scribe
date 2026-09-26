@@ -2,6 +2,7 @@ import { LitElement, html, type TemplateResult } from "lit";
 import { Capacitor } from "@capacitor/core";
 import "./native/ios-input-meter";
 import { IOSPCM } from "./native/capacitor-pcm";
+import { isMicrophoneInput, microphoneInputs, type MicrophoneInput } from "./native/microphone-input";
 
 import { HttpCaptureBff } from "./bff/http-client";
 import { BffCaptureQueueTransport } from "./bff/queue-transport";
@@ -39,7 +40,7 @@ export class CaptureApp extends LitElement {
   #disposeReview: (() => void) | undefined;
   #busy = false;
   #stopping = false;
-  #microphoneInput: "built_in" | "bluetooth" | "external" = "built_in";
+  #microphoneInput: MicrophoneInput = "built_in";
   #microphoneError = false;
   #consented = false;
   #controller: CaptureFlowController | undefined;
@@ -71,6 +72,15 @@ export class CaptureApp extends LitElement {
     this.#snapshot = binding.controller.snapshot;
     this.#sourceKind = binding.sourceKind;
     binding.signal.addEventListener("abort", this.#closeProvider, { once: true });
+  }
+
+  /** Continue one explicit consent-screen Start, never a saved/replayed intent. */
+  public async startFromProviderAction(input: MicrophoneInput): Promise<void> {
+    if (!this.isConnected || !this.#provider || this.#providerClosed || this.#provider.signal.aborted
+      || this.#snapshot.state !== "ready" || this.#snapshot.desktop && this.#snapshot.desktop.phase !== "ready"
+      || !isMicrophoneInput(input)) return;
+    this.#microphoneInput = input;
+    await this.#record();
   }
 
   protected override createRenderRoot(): HTMLElement {
@@ -193,10 +203,7 @@ export class CaptureApp extends LitElement {
           </p>
 
           ${captureFinished ? html`<p>${provider.languageMode === "english_spanish" ? "English and Spanish" : "English"}</p>`
-            : provider ? html`<section class="flow-card"><h2>Recording prepared</h2>
-            <p>Encounter and consent confirmed through your workspace.</p>
-            <p>${provider.languageMode === "english_spanish" ? "English and Spanish · Translate Spanish to English" : "English"}</p>
-          </section>` : html`
+            : provider ? html`<p>${provider.languageMode === "english_spanish" ? "English and Spanish · Translate Spanish to English" : "English"}</p>` : html`
           <section class="flow-card" aria-labelledby="consent-title">
             <div>
               <p class="step">Step 1</p>
@@ -228,7 +235,7 @@ export class CaptureApp extends LitElement {
 
           ${captureFinished ? "" : html`<section class="flow-card recorder" aria-labelledby="record-title">
             <div>
-              <p class="step">Step 2</p>
+              ${provider ? "" : html`<p class="step">Step 2</p>`}
               <h2 id="record-title">Record</h2>
               <p>
                 ${provider?.captureMode === "desktop_meeting"
@@ -244,15 +251,9 @@ export class CaptureApp extends LitElement {
               <select data-testid="microphone-input" .value=${this.#microphoneInput}
                 ?disabled=${this.#busy || this.#stopping || !["ready", "paused"].includes(this.#snapshot.state)}
                 @change=${this.#changeMicrophone}>
-                <option value="built_in">iPhone microphone</option>
-                <option value="bluetooth">Bluetooth microphone (AirPods or headset)</option>
-                <option value="external">USB or wired microphone</option>
+                ${microphoneInputs.map(input => html`<option value=${input.value}>${input.label}</option>`)}
               </select>
-              <small>${this.#microphoneInput === "built_in"
-                ? "Use the iPhone microphone for a conversation in the room."
-                : this.#microphoneInput === "bluetooth"
-                  ? "Connect your AirPods or headset before recording. Check that both voices are audible."
-                  : "Connect your USB or wired microphone before recording. Check that both voices are audible."}</small>
+              <small>${microphoneInputs.find(input => input.value === this.#microphoneInput)?.help}</small>
             </label>` : ""}
             ${this.#microphoneError ? html`<p role="alert">Microphone choice could not be confirmed. Stop any other recording, then retry.</p>` : ""}
             <div class="record-actions">
@@ -267,7 +268,7 @@ export class CaptureApp extends LitElement {
                 @click=${this.#record}
               >
                 <span aria-hidden="true"></span>
-                Record
+                ${this.#busy && this.#snapshot.state === "ready" || this.#snapshot.statusCode === "capture_starting" ? "Starting…" : "Record"}
               </button>
               <button
                 data-testid="stop-button"
@@ -297,7 +298,9 @@ export class CaptureApp extends LitElement {
           </section>`}
 
           ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
-            <p role="status">${this.#snapshot.desktop?.phase === "starting"
+            <p role="status">${!this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
+              || this.#busy && this.#snapshot.state === "ready") ? "Starting microphone… Recording is not confirmed yet."
+              : this.#snapshot.desktop?.phase === "starting"
               ? this.#snapshot.statusCode === "capture_window_selection_pending"
                 ? "Choose a meeting window in the Scribe dialog. Recording has not started."
                 : "Starting microphone and meeting audio…"
@@ -425,8 +428,8 @@ export class CaptureApp extends LitElement {
     });
   };
 
-  readonly #record = (): void => {
-    void this.#run(async () => {
+  readonly #record = (): Promise<void> => {
+    return this.#run(async () => {
       await this.#selectMicrophone();
       if (this.#providerClosed) return;
       await this.#requireController().startRecording();
