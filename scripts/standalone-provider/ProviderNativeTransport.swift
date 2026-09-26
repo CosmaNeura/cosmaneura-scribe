@@ -151,6 +151,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
   }
 
   func send(_ operation: ProviderNativeRequest, token: String) async throws -> ProviderNativeReply {
+    guard operation.action != .recorderContext else { throw ProviderNativeError.invalidRequest }
     try Task.checkCancellation()
     guard !token.isEmpty, token.utf8.count <= 8192,
       token.unicodeScalars.allSatisfy({ $0.isASCII && $0.value >= 33 && $0.value < 127 })

@@ -2,7 +2,7 @@ import type { NativeRecordingCommand } from "./native-recorder";
 import type { MicrophoneInput } from "../native/microphone-input";
 import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
-export type ProviderAction = "catalog" | "mount" | "recorder" | "capture-admissions" | "capture-operations" | "capture-notes";
+export type ProviderAction = "catalog" | "mount" | "recorder" | "recorder-context" | "capture-admissions" | "capture-operations" | "capture-notes";
 export type ProviderSessionPhase = "disabled" | "loading" | "signedOut" | "signingIn" | "ready" | "signOutPending" | "unavailable";
 export interface ProviderSessionState { readonly phase: ProviderSessionPhase; readonly revision: string }
 export interface NativeProviderSession {
@@ -13,7 +13,7 @@ export interface NativeProviderSession {
 }
 export interface NativeProviderState { readonly phase: string; readonly revision: string; readonly providerReady?: boolean; readonly nativeRecordingVersion?: number }
 export interface ProviderNativePlugin {
-  openProviderRecording?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string }): Promise<unknown>;
+  openProviderRecording?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; authorizationId?: string }): Promise<unknown>;
   providerRecordingCommand?(request: { requestId: string; revision: string; recorderId: string; kind: NativeRecordingCommand; input?: MicrophoneInput }): Promise<unknown>;
   prepareProviderSource(request: { revision: string; workspaceId: string; bindingRef: string;
     sessionId: string; leaseId: string; leaseReceiptId: string; leaseGeneration: number;

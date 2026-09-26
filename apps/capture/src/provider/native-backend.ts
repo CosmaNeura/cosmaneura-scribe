@@ -12,7 +12,7 @@ import { nativeProviderPlugin, type ProviderAction as Action, type NativeProvide
 import type { NativeRecordingPort } from "./native-recorder";
 import type { ProviderEncounter } from "./workspace";
 
-const limits: Record<Action, number> = { catalog: 2, mount: 256, recorder: 1024,
+const limits: Record<Action, number> = { catalog: 2, mount: 256, recorder: 1024, "recorder-context": 1024,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
 type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
 export type { ProviderNativePlugin } from "./native-plugin";
@@ -37,6 +37,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     || !Capacitor.isPluginAvailable("CosmasWorkspaceAuth")) throw unavailable();
   const abort = new AbortController();
   let nativeRecording = false;
+  let nativeContextReuse = false;
   let revision: string | null = null, observed: NativeState | null = null;
   let listener: PluginListenerHandle | undefined, timer: ReturnType<typeof setInterval> | undefined;
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
@@ -94,8 +95,9 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     if (!record(state) || state.phase !== "ready" || state.providerReady !== true || !isUuid(state.revision)
       || duringRead && (duringRead.phase !== state.phase || duringRead.revision !== state.revision)) throw unavailable();
     revision = state.revision;
-    nativeRecording = state.nativeRecordingVersion === 1 && typeof plugin.openProviderRecording === "function"
+    nativeRecording = [1, 2].includes(state.nativeRecordingVersion ?? 0) && typeof plugin.openProviderRecording === "function"
       && typeof plugin.providerRecordingCommand === "function";
+    nativeContextReuse = nativeRecording && state.nativeRecordingVersion === 2;
     document.addEventListener("visibilitychange", resume);
     timer = setInterval(() => { void refresh(); }, 5000); // Existing native state check, no SDK token request.
   } catch (error) { await dispose(); throw error; }
@@ -180,6 +182,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       const displayed = encounter(value.encounter);
       if (displayed.appointmentRef !== appointmentRef) throw unavailable();
       const scope = Object.freeze({ workspaceId: row.workspaceId, appointmentRef, bindingRef: value.bindingRef });
+      let recordingAuthorization: string | null = null;
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
         uploadTarget: options.uploadTarget,
@@ -187,9 +190,12 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
           open: (sessionId: string, requestId: string) => {
             current(signal);
             if (!revision || !isUuid(sessionId) || !isUuid(requestId)) throw unavailable();
+            const authorizationId = recordingAuthorization;
+            recordingAuthorization = null;
+            if (nativeContextReuse && !authorizationId) throw unavailable();
             // Deliver late ownership handles so workspace teardown can close them.
             return plugin.openProviderRecording!({ requestId, revision, workspaceId: scope.workspaceId,
-              bindingRef: scope.bindingRef, sessionId });
+              bindingRef: scope.bindingRef, sessionId, ...(authorizationId ? { authorizationId } : {}) });
           },
           command: (command: Parameters<NativeRecordingPort["command"]>[0]) => {
             if (command.kind !== "close") current(signal);
@@ -208,13 +214,20 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
         reauthorizeRecorder: async (sessionId, recorderSignal) => {
           current(signal);
           if (!isUuid(sessionId)) throw unavailable();
-          const response = await request("recorder", { workspace_id: scope.workspaceId,
-            binding_ref: scope.bindingRef, session_id: sessionId, request_nonce: crypto.randomUUID() },
+          recordingAuthorization = null;
+          const nonce = crypto.randomUUID();
+          const response = await request(nativeContextReuse ? "recorder-context" : "recorder", { workspace_id: scope.workspaceId,
+            binding_ref: scope.bindingRef, session_id: sessionId, request_nonce: nonce },
           crypto.randomUUID(), [signal, recorderSignal]);
           if (response.status !== 200) throw unavailable();
           const receipt: unknown = await response.json();
           current(signal); current(recorderSignal);
           if (!record(receipt) || receipt.revision !== revision || receipt.session_id !== sessionId) throw unavailable();
+          if (nativeContextReuse) {
+            if (Object.keys(receipt).sort().join(",") !== "authorization_id,revision,session_id"
+              || receipt.authorization_id !== nonce) throw unavailable();
+            recordingAuthorization = nonce;
+          }
         },
         prepareNativeSource: async (prepared, sourceSignal) => {
           current(signal); current(sourceSignal);
