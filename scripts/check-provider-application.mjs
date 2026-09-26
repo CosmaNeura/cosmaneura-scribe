@@ -54,7 +54,14 @@ window.Capacitor = {
         if (mountFailure) return { requestId: options.requestId, revision: options.revision, status: 503,
           body: '{"detail":"provider_request_unconfirmed"}' };
       }
-      assert.ok(["catalog", "mount"].includes(options.action), "No clinical mutation in startup check");
+      assert.ok(["catalog", "mount", "capture-operations"].includes(options.action), "No clinical mutation in startup check");
+      if (options.action === "capture-operations") {
+        const body = JSON.parse(options.body);
+        assert.deepEqual(body.operation, { kind: "provider_encounter" });
+        return { requestId: options.requestId, revision: options.revision, status: 200,
+          body: JSON.stringify({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+            operation: "provider_encounter", receipt: { schema_version: "1.0", status: "not_prepared", review: null } }) };
+      }
       const encounter = { appointmentRef: "appointment_01j00000000000000000000000",
         title: "Invented app visit", detail: "Native connection fixture" };
       const workspaceId = "10000000-0000-4000-8000-000000000001";
@@ -440,7 +447,7 @@ try {
       click("sign-in"); await until(visible);
       root.querySelector('[data-workspace-action="open"]').click();
       await until(() => root.textContent.includes("Prepare recording"));
-      assert.equal(nativeCalls.filter(call => call.endsWith(".providerRequest")).length, 2);
+      assert.equal(nativeCalls.filter(call => call.endsWith(".providerRequest")).length, 3);
       assert.equal(nativeCalls.some(call => call.startsWith("IOSPCM.")), false);
       assert.equal(nativeCalls.some(call => call.endsWith(".getToken")), false);
       click("sign-out"); assert.equal(visible(), false);

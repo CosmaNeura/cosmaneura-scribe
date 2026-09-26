@@ -210,7 +210,7 @@ export class DesktopProviderWorkspaceMain {
     const path = payload.path;
     if (path === "/service/v1/agent/scribe/capture-operations") {
       const operation = object(body.operation);
-      if (typeof operation.kind !== "string" || !["creator_review", "decide_translation"].includes(operation.kind)) throw unavailable();
+      if (typeof operation.kind !== "string" || !["provider_encounter", "creator_review", "decide_translation"].includes(operation.kind)) throw unavailable();
     } else if (path !== "/service/v1/agent/scribe/capture-admissions" && path !== "/service/v1/agent/scribe/capture-notes") throw unavailable();
     const response = await encounter.value.request(path, body, payload.key, signal);
     if (signal.aborted || ![200, 401, 403, 409, 422, 503].includes(response.status)) throw unavailable();

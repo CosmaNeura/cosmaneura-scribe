@@ -14,14 +14,14 @@ const first = "appointment_01j00000000000000000000000";
 const second = "appointment_01j00000000000000000000001";
 const nextTick = () => new Promise(resolve => setTimeout(resolve, 10));
 
-async function fixture() {
+async function fixture(discovery = "new") {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', {
     url: "capacitor://localhost/index.html", runScripts: "outside-only", pretendToBeVisual: true,
   });
   const window = dom.window;
   Object.defineProperty(window.AbortSignal, "any", { value: undefined, configurable: true });
   Object.defineProperty(window, "crypto", { value: webcrypto });
-  Object.assign(window, { Headers, Response, TextEncoder, TextDecoder });
+  Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
   window.fetch = () => { throw new Error("Unexpected network request"); };
   const module = new SourceTextModule(bundle, { context: dom.getInternalVMContext() });
   await module.link(() => { throw new Error("Unexpected external module"); });
@@ -30,7 +30,7 @@ async function fixture() {
   const hostAbort = new window.AbortController();
   const revoked = new Map();
   const openedSignals = [];
-  let finishOpen, deferOpen = false, journalReads = 0;
+  let finishOpen, deferOpen = false, journalReads = 0, saved = null, discoveryReads = 0;
   const list = [first, second].map((ref, i) => ({ appointmentRef: ref,
     title: `Invented visit ${i + 1}`, detail: "Invented provider-owned encounter" }));
   const unavailable = () => { throw new Error("Unrequested recorder or Core operation"); };
@@ -46,9 +46,18 @@ async function fixture() {
         encounter: list.find(item => item.appointmentRef === ref),
         scope: { workspaceId: "10000000-0000-4000-8000-000000000001", appointmentRef: ref,
           bindingRef: "scribe_capture_binding_01j00000000000000000000000" },
-        signal: control.signal, request: unavailable, reviewJournal: unavailable,
+        signal: control.signal, request: async (_path, body) => {
+          assert.equal(body.operation.kind, "provider_encounter"); discoveryReads++;
+          if (discovery === "failed") return new Response(null, { status: 409 });
+          return Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(), operation: "provider_encounter",
+            receipt: { schema_version: "1.0", status: discovery === "new" ? "not_prepared" : "available",
+              review: discovery === "new" ? null : { schema_version: "1.0", session_id: "20000000-0000-4000-8000-000000000002",
+                status: discovery === "uploaded" ? "processing" : "capturing", source: null, working: null, review_queue: null } } });
+        }, reviewJournal: () => ({ load: async () => null, save: unavailable, clear: unavailable }),
         recorder: unavailable, openInCore: unavailable,
-        journal: { load: async () => { journalReads++; return { revision: null, progress: null }; }, save: unavailable },
+        journal: { load: async () => { journalReads++; return saved ?? { revision: null, progress: null }; },
+          save: async (_previous, progress) => { assert.equal(progress.admission, null); assert.equal(progress.uploaded, true);
+            saved = { revision: "1", progress }; return saved; } },
       };
       return deferOpen ? new Promise(resolve => { finishOpen = () => resolve(result); }) : result;
     },
@@ -66,6 +75,7 @@ async function fixture() {
     },
     defer: () => { deferOpen = true; }, finish: async () => { finishOpen(); await settle(); },
     journalReads: () => journalReads, settle,
+    discoveryReads: () => discoveryReads, saved: () => saved,
     async close() { await dispose(); dom.window.close(); },
   };
 }
@@ -116,3 +126,22 @@ try {
   assert.equal(pending.root.childElementCount, 0);
 } finally { await pending.close(); }
 console.log("An encounter opening after logout cannot read the recovery journal or restore the private view.");
+
+for (const state of ["uploaded", "unfinished", "failed"]) {
+  const recovered = await fixture(state);
+  try {
+    await recovered.click("open", first);
+    assert.equal(recovered.discoveryReads(), 1);
+    assert.equal(recovered.text().includes("Prepare recording"), false);
+    if (state === "uploaded") {
+      assert.ok(recovered.root.querySelector('[data-review-action="refresh"]'));
+      assert.ok(recovered.text().includes("Transcribing your recording"));
+      assert.equal(recovered.saved().progress.admission, null);
+      assert.equal(recovered.saved().progress.uploaded, true);
+    } else {
+      assert.equal(recovered.saved(), null);
+      assert.ok(recovered.text().includes(state === "unfinished" ? "Recording access needed" : "Encounter could not open"));
+    }
+  } finally { await recovered.close(); }
+}
+console.log("A device without a journal discovers uploaded work once, preserves unfinished recording custody, and never treats a conflict as a new encounter.");

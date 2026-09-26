@@ -101,11 +101,12 @@ describe("trusted desktop provider workspace", () => {
       expect((await f.invoke("review_clear", { sessionId, key: decision.key })).ok).toBe(true);
       expect((await f.invoke("review_load", { sessionId: crypto.randomUUID() })).ok).toBe(false);
       expect((await f.invoke("core", core("creator_review"))).ok).toBe(true);
+      expect((await f.invoke("core", core("provider_encounter"))).ok).toBe(true);
       for (const kind of ["authorize_upload", "bind_key", "issue_lease", "reserve_chunks", "complete"]) {
         expect((await f.invoke("core", core(kind))).ok).toBe(false);
       }
       const wrong = core("creator_review"); wrong.body.workspace_id = crypto.randomUUID();
-      expect((await f.invoke("core", wrong)).ok).toBe(false); expect(f.backend).toHaveBeenCalledTimes(1);
+      expect((await f.invoke("core", wrong)).ok).toBe(false); expect(f.backend).toHaveBeenCalledTimes(2);
       expect((await f.invoke("recorder", { sessionId })).ok).toBe(true); expect(f.attached).toHaveBeenCalledTimes(1);
       expect((await f.invoke("recorder", { sessionId })).ok).toBe(false);
       expect((await f.invoke("open_core", { noteRef: null })).ok).toBe(true); expect(f.navigation).toHaveBeenCalledWith(null);

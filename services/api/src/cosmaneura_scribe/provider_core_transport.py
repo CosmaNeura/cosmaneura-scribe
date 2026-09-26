@@ -40,6 +40,7 @@ _OPERATIONS = frozenset(
         "register_chunk",
         "complete",
         "creator_review",
+        "provider_encounter",
         "decide_translation",
     }
 )

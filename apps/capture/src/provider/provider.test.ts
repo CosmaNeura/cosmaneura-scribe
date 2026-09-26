@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
 import { CoreCaptureClient, CoreCaptureBff, type AdmissionIntent, type CoreCaptureScope, type AuthorizedCoreRequest } from "./core-client";
 import { canonical, parseDraft, pendingSave, resolveNote, saveNote, sha256, type CoreDraft } from "./core-notes";
-import { NativeProviderWorkspaceJournal, type ProviderProgress } from "./workspace-journal";
+import { NativeProviderWorkspaceJournal, assertProgress, type ProviderProgress } from "./workspace-journal";
 
 const uuid = "10000000-0000-4000-8000-000000000001";
 const scope: CoreCaptureScope = { workspaceId: uuid, appointmentRef: "appointment_01j00000000000000000000000",
@@ -28,6 +28,28 @@ async function base(): Promise<CoreDraft> {
 }
 
 describe("configured Core provider boundary", () => {
+  it("discovers the admitted session without inventing consent or selecting a session", async () => {
+    const view = { schema_version: "1.0", session_id: uuid, status: "processing", source: null, working: null, review_queue: null };
+    const send = vi.fn(wire({ schema_version: "1.0", status: "available", review: view }));
+    const client = new CoreCaptureClient(scope, send, new AbortController().signal);
+    expect(await client.discoverEncounter()).toMatchObject(view);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![1].operation).toEqual({ kind: "provider_encounter" });
+    expect(Object.keys(send.mock.calls[0]![1]).sort()).toEqual(["binding_ref", "operation", "request_nonce", "workspace_id"]);
+    expect(await new CoreCaptureClient(scope, wire({ schema_version: "1.0", status: "not_prepared", review: null }),
+      new AbortController().signal).discoverEncounter()).toBeNull();
+  });
+  it.each([409, 403, 503])("never mistakes failed discovery (%s) for a new encounter", async status => {
+    const client = new CoreCaptureClient(scope, async () => new Response(null, { status }), new AbortController().signal);
+    await expect(client.discoverEncounter()).rejects.toThrow();
+  });
+  it.each([
+    { schema_version: "1.0", status: "available", review: null },
+    { schema_version: "1.0", status: "not_prepared", review: { session_id: uuid } },
+    { schema_version: "1.0", status: "not_prepared", review: null, extra: true },
+  ])("rejects malformed discovery", async receipt => {
+    await expect(new CoreCaptureClient(scope, wire(receipt), new AbortController().signal).discoverEncounter()).rejects.toThrow();
+  });
   it("recovers without replaying stale consent and preserves the retained intent on explicit renewal", async () => {
     const intent: AdmissionIntent = { key: crypto.randomUUID(), languageMode: "en-US", attestation: {
       modality: "in_person", participant_regions: ["US"], method: "verbal_attestation", all_parties_consented: true,
@@ -128,6 +150,28 @@ describe("configured Core provider boundary", () => {
 });
 
 describe("scoped encrypted native journal adapter", () => {
+  it("retains uploaded-session recovery without an invented attestation and cannot convert it to recording", async () => {
+    let stored: { key: string; data: string; revision: string } | null = null;
+    const plugin = {
+      get: async () => { if (!stored) throw Object.assign(new Error("Missing synthetic record"), { code: "SECURE_QUEUE_NOT_FOUND" }); return stored; },
+      create: async ({ key, data }: { key: string; data: string }) => { stored = { key, data, revision: "1" }; return { revision: "1" }; },
+      compareAndSwap: async ({ key, data, expectedRevision }: { key: string; data: string; expectedRevision: string }) => {
+        expect(stored?.revision).toBe(expectedRevision); stored = { key, data, revision: "2" }; return { revision: "2" };
+      },
+    };
+    const journal = new NativeProviderWorkspaceJournal(plugin, uuid, scope);
+    const recovered: ProviderProgress = { admission: null, sessionId: uuid, uploaded: true, pendingSave: null };
+    const saved = await journal.save(await journal.load(), recovered);
+    expect((await new NativeProviderWorkspaceJournal(plugin, uuid, scope).load()).progress).toEqual(recovered);
+    expect(JSON.parse(atob(stored!.data)).version).toBe(2);
+    expect(() => assertProgress({ ...recovered, uploaded: false })).toThrow();
+    expect(() => assertProgress({ ...recovered, sessionId: null })).toThrow();
+    const pending = pendingSave(await base(), { CC: "Synthetic reopened note", Plan: "Discussed follow-up" });
+    await journal.save(saved, { ...recovered, pendingSave: pending });
+    expect((await journal.load()).progress?.pendingSave).toEqual(pending);
+    const invalid = JSON.parse(atob(stored!.data)); invalid.version = 1; stored!.data = btoa(JSON.stringify(invalid));
+    await expect(journal.load()).rejects.toThrow("Encounter recovery is unavailable");
+  });
   it("recovers committed writes after lost replies, rejects races and changed scope", async () => {
     const values = new Map<string, { data: string; revision: string }>();
     let lose = false;

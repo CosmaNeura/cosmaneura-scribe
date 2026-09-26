@@ -47,11 +47,16 @@ const appointment = "appointment_01j00000000000000000000000";
 const encounter = { appointmentRef: appointment, title: "Invented provider visit", detail: "Synthetic fixture" };
 let authorizations = 0, releases = 0;
 const unavailable = () => { throw new Error("Unexpected clinical operation"); };
+const discovery = body => {
+  assert.equal(body.operation.kind, "provider_encounter");
+  return { ...body, contract_version: "1", checked_at: new Date().toISOString(), operation: "provider_encounter",
+    receipt: { schema_version: "1.0", status: "not_prepared", review: null } };
+};
 const host = module.namespace.createProviderIOSHost({ signal: abort.signal, listEncounters: async () => [encounter],
   createEncounter: unavailable, openEncounter: async () => ({ encounter, recoveryScope: recovery,
     scope: { workspaceId: workspace, appointmentRef: appointment,
       bindingRef: "scribe_capture_binding_01j00000000000000000000000" },
-    signal: abort.signal, request: unavailable, openInCore: unavailable,
+    signal: abort.signal, request: async (_path, body) => Response.json(discovery(body)), openInCore: unavailable,
     uploadTarget: { putCompleteEnvelope: unavailable }, reauthorizeRecorder: async () => { authorizations++; },
     prepareNativeSource: unavailable,
     releaseNativeSource: async id => { assert.equal(id, session); releases++; },
@@ -90,8 +95,9 @@ try {
     cancelProviderRequest: async () => undefined,
     providerRequest: async request => {
       nativeCalls.push(request.action);
-      assert.ok(["catalog", "mount"].includes(request.action));
+      assert.ok(["catalog", "mount", "capture-operations"].includes(request.action));
       const body = request.action === "catalog" ? { revision, encounters: [{ ...encounter, workspaceId: workspace }] }
+        : request.action === "capture-operations" ? discovery(JSON.parse(request.body))
         : { revision, encounter, recoveryScope: recovery, workspaceId: workspace,
           appointmentRef: appointment, bindingRef: "scribe_capture_binding_01j00000000000000000000000" };
       return { requestId: request.requestId, revision, status: 200, body: JSON.stringify(body) };
@@ -102,7 +108,7 @@ try {
   try {
     await settle(); connectedRoot.querySelector('[data-workspace-action="open"]').click(); await settle();
     assert.ok(connectedRoot.textContent.includes("Prepare recording"));
-    assert.deepEqual(nativeCalls, ["catalog", "mount"]);
+    assert.deepEqual(nativeCalls, ["catalog", "mount", "capture-operations"]);
     nativeStateChanged({ phase: "signedOut", revision: webcrypto.randomUUID() }); await settle();
     assert.equal(connectedRoot.childElementCount, 0); assert.equal(listenerRemoved, true);
   } finally { await closeConnected(); await backend.dispose(); }
