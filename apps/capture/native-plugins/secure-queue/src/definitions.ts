@@ -40,6 +40,8 @@ export interface SecureQueueCompareAndSwapOptions extends SecureQueueRecord {
  * has no web implementation; the PWA has a separate custody profile.
  */
 export interface SecureQueuePlugin {
+  /** Current free space on the queue volume, as a canonical nonnegative decimal. */
+  getStorageCapacity(): Promise<{ availableBytes: string }>;
   put(options: SecureQueueRecord): Promise<SecureQueueRevisionResult>;
   create(options: SecureQueueRecord): Promise<SecureQueueRevisionResult>;
   get(options: SecureQueueKeyOptions): Promise<VersionedSecureQueueRecord>;

@@ -6,6 +6,7 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "SecureQueuePlugin"
     public let jsName = "SecureQueue"
     public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "getStorageCapacity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "put", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "create", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "get", returnType: CAPPluginReturnPromise),
@@ -23,6 +24,12 @@ public final class SecureQueuePlugin: CAPPlugin, CAPBridgedPlugin {
 
     public override func load() {
         store = try? SecureQueueStore()
+    }
+
+    @objc public func getStorageCapacity(_ call: CAPPluginCall) {
+        perform(call) { store in
+            ["availableBytes": String(try store.availableBytes())]
+        }
     }
 
     @objc public func put(_ call: CAPPluginCall) {

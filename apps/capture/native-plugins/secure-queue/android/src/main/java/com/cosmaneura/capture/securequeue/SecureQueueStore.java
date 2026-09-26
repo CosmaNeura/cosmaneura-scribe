@@ -1,6 +1,7 @@
 package com.cosmaneura.capture.securequeue;
 
 import android.content.Context;
+import android.os.StatFs;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.AtomicFile;
@@ -50,6 +51,13 @@ final class SecureQueueStore {
     SecureQueueStore(File directory, String keyAlias) {
         this.directory = directory;
         this.keyAlias = keyAlias;
+    }
+
+    synchronized long availableBytes() throws SecureQueueException {
+        ensureDirectory();
+        long bytes = new StatFs(directory.getAbsolutePath()).getAvailableBytes();
+        if (bytes < 0) throw new SecureQueueException(SecureQueueException.Kind.IO);
+        return bytes;
     }
 
     synchronized long put(String recordKey, byte[] data) throws SecureQueueException {

@@ -67,6 +67,18 @@ final class SecureQueueStoreTests: XCTestCase {
         XCTAssertEqual(try store.list(), [])
     }
 
+    func testStorageCapacityDoesNotCreateKeysOrChangeRetainedRecords() throws {
+        XCTAssertGreaterThan(try store.availableBytes(), 0)
+        XCTAssertEqual(try store.list(), [])
+        let query = [kSecClass: kSecClassGenericPassword, kSecAttrService: service!,
+                     kSecAttrAccount: account!] as [CFString: Any]
+        XCTAssertEqual(SecItemCopyMatching(query as CFDictionary, nil), errSecItemNotFound)
+        try store.create(key: "retained", data: Data([1, 2, 3]))
+        XCTAssertGreaterThan(try store.availableBytes(), 0)
+        XCTAssertEqual(try store.get(key: "retained").data, Data([1, 2, 3]))
+        XCTAssertEqual(try store.get(key: "retained").revision, 1)
+    }
+
     func testCiphertextDoesNotContainKeyOrRecordBytesAndRejectsTampering() throws {
         let recordBytes = Data("opaque-test-record".utf8)
         try store.put(key: "opaque-test-key", data: recordBytes)

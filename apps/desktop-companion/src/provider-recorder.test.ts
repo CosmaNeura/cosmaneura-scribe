@@ -69,6 +69,7 @@ async function fixture(nativeStub = false) {
   const resources = () => {
     const flowStore = new DurableDesktopFlowStore(store.namespace("flow"));
     return { flowStore, createSessionKey: flowStore.createSessionKey,
+      storageCapacity: { availableBytes: () => store.availableBytes() },
       queueStorage: new DurableDesktopQueueStorage(store.namespace(`queue:${session.id}`), session.id),
       coverage: new DurableDesktopCoverage(store.namespace("coverage"), session.id) };
   };
@@ -132,6 +133,37 @@ function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("confirmed stop recovery", () => {
+  it("checks storage before native choice and retires the source after a low-space pause", async () => {
+    const f = await fixture(true);
+    let sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
+    const nativeStop = vi.fn(async ({ mode }: { mode: "drain" | "discard" }) => mode === "discard" ? null : ({
+      start: { hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" },
+      endHostTimeNanoseconds: "1100000000", outputFrames: 1600,
+      microphoneTailNanoseconds: "0", systemTailNanoseconds: "0",
+    }));
+    f.nativeStart!.mockImplementation((_configuration, value) => {
+      sink = value;
+      return { ready: Promise.resolve({ hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" }), activate: () => undefined, stop: nativeStop };
+    });
+    const availableBytes = vi.fn(async () => 1);
+    const recorder = await f.open({ storageCapacity: { availableBytes } });
+    try {
+      await expect(recorder.startRecording()).rejects.toThrow("capture_storage_low");
+      expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(recorder.snapshot).toMatchObject({ state: "ready", statusCode: "capture_storage_low" });
+      availableBytes.mockResolvedValue(10_000_000_000);
+      await recorder.startRecording();
+      availableBytes.mockResolvedValue(1);
+      await sink.onPcmPacket({ firstFrame: 0, pcmBytes: new Uint8Array(3200) });
+      await vi.waitFor(() => expect(recorder.snapshot).toMatchObject({ state: "paused", statusCode: "capture_storage_low" }));
+      expect(nativeStop).toHaveBeenCalledTimes(1);
+      expect(f.options.retireSource).toHaveBeenCalledTimes(1);
+      expect(f.indicator.current()?.visible).not.toBe(true);
+      expect((await f.options.queueStorage.listMetadata()).filter(record => record.state === "encrypted")).toHaveLength(1);
+      expect(f.complete).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+
   it("retains zero saved chunks as paused without upload, completion, or fresh authority", async () => {
     const f = await fixture(true), driver = interruptedDriver(f);
     const issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");

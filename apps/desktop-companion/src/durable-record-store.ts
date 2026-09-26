@@ -1,5 +1,6 @@
 import { createHash, webcrypto } from "node:crypto";
 import { constants, closeSync, lstatSync, mkdirSync, openSync, realpathSync } from "node:fs";
+import { statfs } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { LocalSessionKeyWrapping, WrappedSessionKey } from "../../capture/src/flow/session-key";
@@ -30,7 +31,7 @@ export class DurableDesktopRecordStore {
   private closed = false;
   private key: CryptoKey | undefined;
   private constructor(private readonly database: DatabaseSync, private readonly scope: string,
-    private readonly crypto: Crypto, key: CryptoKey) { this.key = key; }
+    private readonly crypto: Crypto, key: CryptoKey, private readonly directory: string) { this.key = key; }
 
   static async open(options: DurableDesktopStoreOptions): Promise<DurableDesktopRecordStore> {
     requireMain();
@@ -72,13 +73,21 @@ export class DurableDesktopRecordStore {
       try { if (!opened.every((byte, i) => byte === SENTINEL[i]) || opened.length !== SENTINEL.length) throw failure(); }
       finally { opened.fill(0); }
       database.exec("PRAGMA journal_mode=WAL");
-      return new DurableDesktopRecordStore(database, scope, crypto, options.key);
+      return new DurableDesktopRecordStore(database, scope, crypto, options.key, options.directory);
     } catch { database?.close(); throw failure(); }
   }
 
   namespace(name: string): DesktopRecordNamespace {
     this.current(); identifier(name, 128);
     return new DesktopRecordNamespace(this, digest(name));
+  }
+  async availableBytes(): Promise<number> {
+    this.current();
+    const stats = await statfs(this.directory, { bigint: true });
+    this.current();
+    const bytes = stats.bavail * stats.bsize;
+    if (bytes < 0n || bytes > BigInt(Number.MAX_SAFE_INTEGER)) throw failure();
+    return Number(bytes);
   }
   close(): void {
     if (this.closed) return;

@@ -31,6 +31,8 @@ import { QueueInvariantError } from "../queue/errors";
 import type { CaptureQueue } from "../queue/capture-queue";
 import type { CaptureQueueTransport, ChunkReservation } from "../queue/types";
 import { createWrappedSessionKey, type WrappedSessionKey } from "./session-key";
+import { CAPTURE_STORAGE_RESERVE_BYTES, captureStorageFailure, requiredCaptureStorageBytes,
+  type CaptureStorageCapacity } from "./storage-capacity";
 import {
   FLOW_RECORD_SCHEMA_VERSION,
   CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
@@ -72,6 +74,9 @@ export interface CaptureFlowControllerOptions {
   readonly queue: CaptureQueue;
   readonly queueTransport: CaptureQueueTransport;
   readonly source: CaptureSource;
+  readonly storageCapacity?: CaptureStorageCapacity;
+  /** Host pause includes its physical-stop and server-retirement barriers. */
+  readonly pauseForStorage?: () => Promise<void>;
   readonly crypto?: Crypto;
   /** Trusted host key custody; the default browser/iOS key path is unchanged. */
   readonly createSessionKey?: CaptureSessionKeyFactory;
@@ -92,6 +97,9 @@ export class CaptureFlowController {
   readonly #queue: CaptureQueue;
   readonly #queueTransport: CaptureQueueTransport;
   readonly #source: CaptureSource;
+  readonly #storageCapacity: CaptureStorageCapacity | undefined;
+  readonly #pauseForStorage: () => Promise<void>;
+  #storageCheck: Promise<void> | null = null;
   readonly #channel: CaptureAudioChannel;
   readonly #crypto: Crypto;
   readonly #createSessionKey: CaptureSessionKeyFactory;
@@ -136,6 +144,8 @@ export class CaptureFlowController {
     this.#queue = options.queue;
     this.#queueTransport = options.queueTransport;
     this.#source = options.source;
+    this.#storageCapacity = options.storageCapacity;
+    this.#pauseForStorage = options.pauseForStorage ?? (() => this.pauseRecording());
     this.#channel = options.source.channel ?? "microphone";
     if (!["microphone", "mixed", "system_audio"].includes(this.#channel)) {
       throw new QueueInvariantError("capture_channel_invalid");
@@ -416,8 +426,21 @@ export class CaptureFlowController {
     this.#armAuthorityDeadline();
   }
 
-  public async startRecording(): Promise<void> {
+  public async checkStorageCapacity(): Promise<void> {
     this.#requireState("ready");
+    if (this.#storageCapacity) {
+      const remaining = Math.max(0, this.#requireActiveState().aggregatePlaintextBudgetBytes - this.#recordedPlaintextBytes);
+      const failure = await captureStorageFailure(this.#storageCapacity, requiredCaptureStorageBytes(remaining));
+      this.#requireState("ready");
+      if (failure) {
+        this.#setSnapshot({ statusCode: failure });
+        throw new QueueInvariantError(failure);
+      }
+    }
+  }
+
+  public async startRecording(): Promise<void> {
+    await this.checkStorageCapacity();
     if (!this.#hasActiveCaptureAuthority()) {
       await this.#pauseForExpiredAuthority();
       throw new QueueInvariantError("capture_authority_expired");
@@ -885,7 +908,26 @@ export class CaptureFlowController {
       }
     });
     this.#chunkPersistence = task.catch(() => undefined);
+    // The callback must finish before stop waits for its native delivery barrier.
+    void task.then(() => this.#checkStorageAfterChunk(), () => undefined);
     return task;
+  }
+
+  #checkStorageAfterChunk(): void {
+    if (!this.#storageCapacity || !this.#reviewAfterUpload || this.#storageCheck
+      || this.#snapshot.state !== "recording") return;
+    const capacity = this.#storageCapacity;
+    this.#storageCheck = (async () => {
+      const failure = await captureStorageFailure(capacity, CAPTURE_STORAGE_RESERVE_BYTES);
+      if (!failure || this.#snapshot.state !== "recording") return;
+      try {
+        await this.#pauseForStorage();
+        const stopped = this.snapshot;
+        if (stopped.state === "paused" && stopped.statusCode === "capture_paused") {
+          this.#setSnapshot({ statusCode: failure });
+        }
+      } catch { /* pauseRecording retains the explicit unconfirmed-stop status. */ }
+    })().finally(() => { this.#storageCheck = null; });
   }
 
   async #acceptChunkAndPersist(chunk: CapturedWavChunk): Promise<void> {

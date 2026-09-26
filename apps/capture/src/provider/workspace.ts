@@ -171,7 +171,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const native = "controller" in resources ? resources : null;
     const local = "flowStore" in resources ? resources : null;
     const localController = local ? new CaptureFlowController({ bff: new CoreCaptureBff(activeClient, id),
-      flowStore: local.flowStore, queue: new CaptureQueue(local.queueStorage), source: local.source,
+      flowStore: local.flowStore, storageCapacity: local.storageCapacity,
+      queue: new CaptureQueue(local.queueStorage), source: local.source,
       queueTransport: new BffCaptureQueueTransport(new CoreCaptureBff(activeClient, id), local.uploadTarget) }) : null;
     const controller = native?.controller ?? localController!;
     const lifecycle = native ?? localController!;

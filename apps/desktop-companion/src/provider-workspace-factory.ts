@@ -201,6 +201,9 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                 authority: selected.authority, indicator: resources.indicator,
                 retireSource: selected.retireSource,
                 flowStore: flow, createSessionKey: flow.createSessionKey,
+                storageCapacity: { availableBytes: async () => {
+                  check(); const bytes = await owned.store!.availableBytes(); check(); return bytes;
+                } },
                 queueStorage: new DurableDesktopQueueStorage(owned.store!.namespace(`queue:${sessionId}`), sessionId),
                 uploadTarget: selected.uploadTarget,
                 coverage: new DurableDesktopCoverage(owned.store!.namespace("coverage"), sessionId),

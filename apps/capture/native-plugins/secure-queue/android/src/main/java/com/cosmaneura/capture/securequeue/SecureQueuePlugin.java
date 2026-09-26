@@ -23,6 +23,15 @@ public final class SecureQueuePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void getStorageCapacity(PluginCall call) {
+        perform(call, queue -> {
+            JSObject result = new JSObject();
+            result.put("availableBytes", Long.toString(queue.availableBytes()));
+            return result;
+        });
+    }
+
+    @PluginMethod
     public void put(PluginCall call) {
         String key = call.getString("key");
         String encoded = call.getString("data");

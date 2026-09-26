@@ -94,6 +94,7 @@ describe("NativePluginQueueStorage", () => {
 });
 
 class FakeSecureQueuePlugin implements SecureQueuePlugin {
+  async getStorageCapacity() { return { availableBytes: "10000000000" }; }
   readonly #records = new Map<string, { data: string; revision: bigint }>();
   forceConflict = false;
   lastData = "";
