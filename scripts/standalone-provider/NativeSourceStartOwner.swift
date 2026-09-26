@@ -88,6 +88,9 @@ struct NativeSourceDecision: Sendable {
     private var closed = false
     private var issued = false
     private var retiring = false
+    private var microphoneRunID: String?
+
+    var recordingPreparation: NativeSourcePreparation { preparation }
 #if os(macOS)
     private var desktopAuthorizationRequested = false
 #endif
@@ -170,8 +173,23 @@ struct NativeSourceDecision: Sendable {
         guard let captureExpiry = sourceDate(decision.captureAuthorizedUntil) else {
             throw ProviderNativeError.response
         }
-        return try NativeCapturePermit(runID: decision.grant.sourceLeaseID,
-                                       startExpiresAt: expiry, captureExpiresAt: captureExpiry)
+        let permit = try NativeCapturePermit(runID: decision.grant.sourceLeaseID,
+                                             startExpiresAt: expiry, captureExpiresAt: captureExpiry)
+        microphoneRunID = permit.runID
+        return permit
+    }
+
+    /// Native continuation checks the original issued source and current account.
+    /// Its renewed lease/monotonic PCM window owns the deadline after the first
+    /// interval. Never replace the original proof or use it for a second start.
+    func requireActiveMicrophone(runID: String) throws {
+        try journal.requireUsable()
+        guard preparation.source == .ios, issued, !closed, !retiring,
+              microphoneRunID == runID, grant?.sourceLeaseID == runID,
+              try connection.stopRevision(userID: record.userID,
+                  organizationID: record.organizationID) == revision else {
+            throw ProviderNativeError.authorityChanged
+        }
     }
 
     func cancelPreparation() async throws {
@@ -214,7 +232,7 @@ struct NativeSourceDecision: Sendable {
     /// this owner. Its original proof remains usable only for confirmed stop.
     func retireForAuthenticationChange() { retiring = true }
 
-    func close() { closed = true; proof = ""; grant = nil }
+    func close() { closed = true; proof = ""; grant = nil; microphoneRunID = nil }
 
     private func enter(allowRetiring: Bool = false) throws {
         try journal.requireUsable()
