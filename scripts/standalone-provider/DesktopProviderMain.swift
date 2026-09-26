@@ -183,7 +183,8 @@ import Foundation
     private static func write(_ value: [String: Any]) {
         do {
             var data = try JSONSerialization.data(withJSONObject: value)
-            guard data.count < 16 * 1024 * 1024 else { throw ProviderNativeError.response }
+            // Core JSON is nested in a JSON string, allowing at most twofold escaping.
+            guard data.count <= 2 * (32 * 1024 * 1024 + 8192) + 8192 else { throw ProviderNativeError.response }
             data.append(10); try FileHandle.standardOutput.write(contentsOf: data)
         } catch { NSApplication.shared.terminate(nil) }
     }

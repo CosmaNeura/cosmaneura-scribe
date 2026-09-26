@@ -2,6 +2,7 @@ import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import type { components } from "../../capture/src/generated/capture-api";
 import { readBoundedJson } from "./beta-api";
 import { isUuid } from "./contracts";
+import { MAX_CREATOR_REVIEW_BYTES } from "./capture-response-limits";
 
 export type CreatorReviewView = components["schemas"]["CreatorReviewViewV1"];
 export type ReviewItem = components["schemas"]["CreatorTranslationReviewItemV1"];
@@ -84,7 +85,7 @@ export class HttpCreatorReviewApi implements CreatorReviewApi {
     }
     requireValue(response.headers.get("content-type")?.split(";", 1)[0] === "application/json");
     try {
-      return await readBoundedJson(response, 8 * 1024 * 1024);
+      return await readBoundedJson(response, MAX_CREATOR_REVIEW_BYTES);
     } catch {
       throw new CreatorReviewError("invalid_response");
     }

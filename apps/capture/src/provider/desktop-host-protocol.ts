@@ -1,4 +1,5 @@
 import { isUuid } from "../../../review-ui/src/contracts";
+import { MAX_PROVIDER_RESPONSE_BYTES } from "../../../review-ui/src/capture-response-limits";
 import type { ProviderSessionState } from "./native-plugin";
 
 export const DESKTOP_PROVIDER_CHANNELS = Object.freeze({ request: "scribe:provider:workspace:v1", event: "scribe:provider:workspace-event:v1" });
@@ -51,7 +52,7 @@ export function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable(); return value as Record<string, unknown>;
 }
 export function uuid(value: unknown): string { if (!isUuid(value)) throw unavailable(); return value; }
-export function jsonCopy(value: unknown, limit = 8 * 1024 * 1024): unknown {
+export function jsonCopy(value: unknown, limit = MAX_PROVIDER_RESPONSE_BYTES): unknown {
   const encoded = JSON.stringify(value);
   if (typeof encoded !== "string" || new TextEncoder().encode(encoded).length > limit) throw unavailable();
   return JSON.parse(encoded) as unknown;

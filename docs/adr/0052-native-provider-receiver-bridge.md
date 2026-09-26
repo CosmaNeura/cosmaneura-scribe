@@ -49,6 +49,16 @@ rechecks before dispatch and returning a result. Existing capture packaging uses
 
 ## Risk, activation and recovery
 
+September 25 long-visit receiver amendment: operation responses now allow the
+Core 32 MiB review plus 8 KiB provenance envelope. Admission/note response and all
+request limits remain unchanged. Desktop JSON-string frames allow twice the
+Core envelope plus 8 KiB; geometric Node buffers reuse the audio decoder's
+synchronous byte ownership and clearing pattern. Large buffers are released
+after a reply; overflow, parser failure or closure clears partial content.
+Core PR507 precedes this reader change. Larger Scribe writers and persistent
+aggregate constraints follow only after compatible readers are deployed.
+See `../flight-plans/2026-09-25-long-review-receivers.md` for staged recovery.
+
 Tier 2: new native clinical transport and lifecycle behavior. This is within the
 owner's approved local configured workflow preparation, with invented data only.
 The native authentication source, installed W13 app/receiver, approved Mac R2,

@@ -5,6 +5,7 @@ import { assertProgress, type JournalSnapshot } from "../../capture/src/provider
 import { parsePendingReviewDecision } from "../../review-ui/src/creator-review-journal";
 import { reference } from "../../capture/src/provider/core-client";
 import { readBoundedJson } from "../../review-ui/src/beta-api";
+import { coreCaptureResponseLimit } from "../../review-ui/src/capture-response-limits";
 import { parseDesktopProviderRequest, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderRequest, type DesktopProviderEvent } from "../../capture/src/provider/desktop-host-protocol";
 import type { DesktopProviderRecorder } from "./provider-recorder.js";
@@ -213,7 +214,8 @@ export class DesktopProviderWorkspaceMain {
     } else if (path !== "/service/v1/agent/scribe/capture-admissions" && path !== "/service/v1/agent/scribe/capture-notes") throw unavailable();
     const response = await encounter.value.request(path, body, payload.key, signal);
     if (signal.aborted || ![200, 401, 403, 409, 422, 503].includes(response.status)) throw unavailable();
-    if (response.status === 200) return { status: 200, body: await readBoundedJson(response, 8 * 1024 * 1024) };
+    if (response.status === 200) return { status: 200, body: await readBoundedJson(response,
+      coreCaptureResponseLimit(path.slice(path.lastIndexOf("/") + 1))) };
     // Permit one native-sanitized recovery outcome, never arbitrary error content.
     if (path === "/service/v1/agent/scribe/capture-admissions" && response.status === 409
       && response.headers.get("content-type")?.split(";", 1)[0] === "application/json") {
