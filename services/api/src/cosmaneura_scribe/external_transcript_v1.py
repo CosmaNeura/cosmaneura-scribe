@@ -22,6 +22,7 @@ from .transcript_constraints import (
     MAX_TRANSCRIPT_CONTENT_CHARS,
     MAX_TRANSCRIPT_DURATION_MS,
     MAX_TRANSCRIPT_SEGMENTS,
+    MAX_TRANSCRIPT_TOTAL_CONTENT_CHARS,
     NORMALIZED_SOURCE_RETENTION_LIMIT,
 )
 
@@ -109,7 +110,10 @@ class NormalizedSourceTranscriptRequestV1(_StrictFrozenModel):
     def validate_normalized_source(self) -> NormalizedSourceTranscriptRequestV1:
         if any(segment.end_ms > self.duration_ms for segment in self.segments):
             raise ValueError("normalized_source_segment_exceeds_duration")
-        if sum(len(segment.content) for segment in self.segments) > MAX_TRANSCRIPT_CONTENT_CHARS:
+        if (
+            sum(len(segment.content) for segment in self.segments)
+            > MAX_TRANSCRIPT_TOTAL_CONTENT_CHARS
+        ):
             raise ValueError("normalized_source_content_too_large")
         ordered = sorted(
             self.segments,
@@ -268,7 +272,10 @@ class SourceTranscriptV1(_StrictFrozenModel):
             raise ValueError("source_segments_out_of_order")
         if any(segment.end_ms > self.duration_ms for segment in self.segments):
             raise ValueError("source_segment_exceeds_duration")
-        if sum(len(segment.content) for segment in self.segments) > MAX_TRANSCRIPT_CONTENT_CHARS:
+        if (
+            sum(len(segment.content) for segment in self.segments)
+            > MAX_TRANSCRIPT_TOTAL_CONTENT_CHARS
+        ):
             raise ValueError("source_transcript_content_too_large")
         if self.language_mode == TranscriptLanguageMode.ENGLISH and any(
             segment.source_locale == SourceLocale.SPANISH_US for segment in self.segments
@@ -402,7 +409,7 @@ class ExternalTranscriptBundleV1(_StrictFrozenModel):
                 for translation in self.translations
                 if translation.content is not None
             )
-            > MAX_TRANSCRIPT_CONTENT_CHARS
+            > MAX_TRANSCRIPT_TOTAL_CONTENT_CHARS
         ):
             raise ValueError("translation_content_too_large")
 
