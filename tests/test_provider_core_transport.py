@@ -226,6 +226,67 @@ async def test_configured_admission_review_and_existing_note_routes(connection):
     assert USER_TOKEN not in repr(mount) and WORKLOAD_TOKEN not in repr(client)
 
 
+@pytest.mark.parametrize("status", ["created", "capturing"])
+async def test_native_recording_context_reuses_fresh_authorized_core_read(connection, status):
+    wire, client = connection
+    tenant = str(uuid4())
+    receipt = {
+        "schema_version": "1.0",
+        "workspace_id": str(SELECTION.workspace_id),
+        "tenant_id": tenant,
+        "session_id": SESSION,
+        "status": status,
+    }
+    wire.alter = lambda path, value: (
+        {**value, "receipt": receipt} if path.endswith("capture-operations") else value
+    )
+    mount = await client.open()
+    result = await client.request(
+        mount,
+        ROOT + "capture-operations",
+        body(operation={"kind": "native_recording_context"}),
+        "offline-native-context",
+    )
+    assert result["receipt"] == receipt
+    assert tenant != SELECTION.tenant_ref
+    assert len(wire.effects) == 1 and wire.counter == 2
+    assert wire.context_calls > len(wire.calls)
+
+
+@pytest.mark.parametrize("field", ["tenant_id", "session_id", "workspace_id", "payload"])
+async def test_native_recording_context_cannot_supply_its_own_key_scope(connection, field):
+    wire, client = connection
+    mount = await client.open()
+    calls = len(wire.calls)
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation={"kind": "native_recording_context", field: str(uuid4())}),
+            "offline-native-context",
+        )
+    assert len(wire.calls) == calls and wire.effects == []
+
+
+async def test_native_recording_context_revocation_discards_the_reply(connection):
+    wire, client = connection
+    mount = await client.open()
+
+    def revoke(path):
+        if path.endswith("capture-operations"):
+            wire.denied = True
+
+    wire.after = revoke
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation={"kind": "native_recording_context"}),
+            "offline-native-context",
+        )
+    assert len(wire.effects) == 1
+
+
 async def test_admission_waits_for_both_core_phases_without_extending_other_requests(connection):
     wire, client = connection
     mount = await client.open()

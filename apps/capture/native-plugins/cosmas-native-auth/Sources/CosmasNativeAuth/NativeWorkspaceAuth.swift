@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum NativeAuthError: String, Error, Sendable {
@@ -134,6 +135,27 @@ public struct NativeAuthState: Equatable, Sendable, Codable {
             }
         } catch { change(.unavailable) }
         return snapshot()
+    }
+
+    /// Stable device-custody namespace, never a credential or capture grant.
+    /// A new SDK session for the same account must reopen its existing keys.
+    /// Environment, identity profile and account changes must isolate them.
+    public func recordingAccountDigest(expectedRevision: String) throws -> String {
+        let current = state()
+        guard current.phase == .ready, current.revision == expectedRevision,
+              let identity = current.identity, let policy = tokenPolicy else {
+            throw NativeAuthError.sessionChanged
+        }
+        let data = try JSONSerialization.data(withJSONObject: [
+            "purpose": "scribe-native-recording-account-v1",
+            "issuer": policy.issuer,
+            "audience": policy.audience as Any? ?? NSNull(),
+            "profile": policy.identityProfile.rawValue,
+            "authorizedParty": policy.authorizedParty,
+            "user": identity.userID,
+            "organization": identity.organizationID as Any? ?? NSNull(),
+        ], options: [.sortedKeys, .withoutEscapingSlashes])
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     public func signIn() async throws -> NativeAuthState {

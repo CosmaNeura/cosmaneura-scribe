@@ -41,6 +41,7 @@ _OPERATIONS = frozenset(
         "complete",
         "creator_review",
         "provider_encounter",
+        "native_recording_context",
         "decide_translation",
     }
 )
@@ -523,6 +524,8 @@ def _validate_intent(
         _require(keys == {"operation"})
         operation = _object(body["operation"])
         _require(isinstance(operation.get("kind"), str) and operation.get("kind") in _OPERATIONS)
+        if operation["kind"] == "native_recording_context":
+            _require(set(operation) == {"kind"})
     else:
         _require(keys <= {"expected_session_id", "schema_ref", "action", "edit"})
         _uuid(body.get("expected_session_id"))
