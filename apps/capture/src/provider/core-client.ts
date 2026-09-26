@@ -3,7 +3,7 @@ import { BffResponseError } from "../bff/http-client";
 import { readBoundedJson } from "../../../review-ui/src/beta-api";
 import { isUuid } from "../../../review-ui/src/contracts";
 import { coreCaptureResponseLimit } from "../../../review-ui/src/capture-response-limits";
-import type { AuthorizedReviewRequest } from "../../../review-ui/src/creator-review-api";
+import { parseCreatorReview, type AuthorizedReviewRequest, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
 
 /** The authenticated host adds its existing workload/mount context server-side. */
 export type AuthorizedCoreRequest = (path: string, body: Readonly<Record<string, unknown>>,
@@ -38,6 +38,18 @@ export class CoreCaptureClient {
 
   async admit(intent: AdmissionIntent): Promise<string> {
     return this.admitWithAttestation(intent, intent.attestation);
+  }
+
+  /** Discover server work when this device has no journal; never infer absence from an error. */
+  async discoverEncounter(): Promise<CreatorReviewView | null> {
+    const value = await this.send("capture-operations", { operation: { kind: "provider_encounter" } }, crypto.randomUUID());
+    requireValue(value.operation === "provider_encounter" && record(value.receipt));
+    const receipt = value.receipt;
+    requireValue(Object.keys(receipt).sort().join(",") === "review,schema_version,status"
+      && receipt.schema_version === "1.0");
+    if (receipt.status === "not_prepared") { requireValue(receipt.review === null); return null; }
+    requireValue(receipt.status === "available" && record(receipt.review) && isUuid(receipt.review.session_id));
+    return parseCreatorReview(receipt.review, receipt.review.session_id);
   }
 
   /** Resume server custody before considering another consent submission. */

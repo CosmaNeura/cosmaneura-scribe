@@ -126,7 +126,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const renewConsent = (): void => {
     const saved = progress();
-    requireValue(saved.sessionId === null && !saved.uploaded && saved.pendingSave === null);
+    requireValue(saved.admission && saved.sessionId === null && !saved.uploaded && saved.pendingSave === null);
     consentRenewalOffered = true;
     const attestation = saved.admission.attestation;
     const visit = { in_person: "In person", virtual: "Video visit", phone: "Phone call" }[attestation.modality];
@@ -161,7 +161,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (authorized(n)) showReview(view);
       return;
     }
-    requireValue(!progress().uploaded);
+    const recordingProgress = progress();
+    requireValue(!recordingProgress.uploaded && recordingProgress.admission);
     step = "device recording access";
     const acquisition = activeContext.recorder(id, activeClient.signal);
     acquiringRecorder = acquisition;
@@ -201,7 +202,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const app = document.createElement("cosmaneura-capture") as CaptureApp;
     app.bindProvider({ sessionId: id, controller, sourceKind: native?.sourceKind ?? local!.source.kind,
       ...(native ? { captureMode: native.captureMode } : {}),
-      languageMode: progress().admission.languageMode === "en-US" ? "english" : "english_spanish",
+      languageMode: recordingProgress.admission.languageMode === "en-US" ? "english" : "english_spanish",
       authorizedRequest: activeClient.reviewRequest(id), journal: activeContext.reviewJournal(id),
       signal: activeClient.signal, deactivate: close, resumePendingUpload: () => lifecycle.resumePendingWork(),
       continueToNote: async (freshView) => {
@@ -220,6 +221,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     step = "recording admission";
     show("<h2>Preparing your recording…</h2>");
     const intent = progress().admission;
+    requireValue(intent);
     const id = await (mode === "recover" ? client.recoverAdmission(intent)
       : mode === "renew" ? client.renewAdmission(intent) : client.admit(intent));
     if (!authorized(n)) return;
@@ -258,7 +260,16 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         show(`<h1>Confirm your previous save</h1><p>A note save needs confirmation before you can edit again.</p><button data-workspace-action="resolve">Recover note save</button>`);
       } else if (loaded.progress.sessionId) await recordOrReview();
       else show(`<h1>Recover recording preparation</h1><p>Confirm the original request before starting another recording.</p><button data-workspace-action="admit">Retry preparation</button>`);
-    } else preparation();
+    } else {
+      const recovered = await client.discoverEncounter();
+      if (!authorized(n)) return;
+      if (recovered === null) preparation();
+      else {
+        if (recovered.status === "created" || recovered.status === "capturing") throw new CaptureDeviceCustodyError();
+        await persist({ admission: null, sessionId: recovered.session_id, uploaded: true, pendingSave: null });
+        if (authorized(n)) showReview(recovered);
+      }
+    }
     if (current(n)) openingRef = null;
   };
   async function openNotes(view: CreatorReviewView): Promise<void> {

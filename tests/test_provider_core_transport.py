@@ -205,7 +205,7 @@ async def test_configured_admission_review_and_existing_note_routes(connection):
     assert (
         await client.request(mount, ROOT + "capture-admissions", admission, "offline-admission")
     )["session_id"] == SESSION
-    for kind in ["creator_review", "decide_translation"]:
+    for kind in ["creator_review", "decide_translation", "provider_encounter"]:
         payload = body(
             operation={
                 "kind": kind,
@@ -220,8 +220,8 @@ async def test_configured_admission_review_and_existing_note_routes(connection):
         assert (await client.request(mount, ROOT + "capture-notes", payload, "offline-note"))[
             "action"
         ] == action
-    assert len(wire.effects) == 8
-    assert wire.counter == 9  # Fresh exchange for every action, not a cached mount token.
+    assert len(wire.effects) == 9
+    assert wire.counter == 10  # Fresh exchange for every action, not a cached mount token.
     assert wire.context_calls > len(wire.calls)
     assert USER_TOKEN not in repr(mount) and WORKLOAD_TOKEN not in repr(client)
 

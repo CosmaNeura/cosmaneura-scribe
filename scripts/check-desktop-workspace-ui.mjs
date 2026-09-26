@@ -8,7 +8,8 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { SourceTextModule, runInNewContext } from "node:vm";
 
-const [bundle, mainBundle, jsdomPath, preloadBundle] = process.argv.slice(2);
+const [bundle, mainBundle, jsdomPath, preloadBundle, recoveryMode] = process.argv.slice(2);
+assert.ok(recoveryMode === undefined || recoveryMode === "recover-uploaded");
 if (!bundle || !mainBundle || !jsdomPath) throw new Error("Usage: check-desktop-workspace-ui.mjs provider.js main-ipc.mjs jsdom-module [compiled-preload.cjs]");
 const { JSDOM } = await import(pathToFileURL(jsdomPath));
 const { DesktopProviderWorkspaceIpc, installDesktopProviderPreload } = await import(pathToFileURL(mainBundle));
@@ -39,12 +40,13 @@ const schema = "doctor_note_schema_01j00000000000000000000000", transcriptRef = 
 const firstNote = "visit_note_01j00000000000000000000000", savedNote = "visit_note_01j00000000000000000000001";
 const english = "Invented test visit.", spanish = "Consulta de prueba inventada.";
 const now = new Date().toISOString(), methods = [], wire = [], authObservers = new Set();
-let accepted = false, prepared = false, pendingReview = null, creates = 0, closes = 0, authReads = 0, failListener = true, reviewReads = 0;
+let accepted = false, prepared = false, pendingReview = null, creates = 0, closes = 0, authReads = 0, failListener = true, reviewReads = 0, discoveryReads = 0, notePrepares = 0;
 let fields = { Subjective: english, Assessment: "Invented fixture only." }, noteRef = firstNote;
 let state = { phase: "ready", revision: webcrypto.randomUUID() };
 let journal = { revision: "1", progress: { sessionId, uploaded: true, pendingSave: null,
   admission: { key: webcrypto.randomUUID(), languageMode: "en-US+es-US", attestation: { modality: "virtual", participant_regions: ["US-NY"],
     method: "verbal_attestation", all_parties_consented: true, granted_at: now } } } };
+if (recoveryMode) journal = { revision: null, progress: null };
 const navigation = [], decisions = [], journalSaves = [];
 const change = phase => { state = { phase, revision: webcrypto.randomUUID() }; for (const listener of authObservers) listener(state); };
 const review = () => ({ schema_version: "1.0", session_id: sessionId, status: accepted ? "transcript_ready" : "review_required",
@@ -94,6 +96,12 @@ const host = {
             const envelope = { contract_version: "1", binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: body.request_nonce, checked_at: now };
             if (path.endsWith("/capture-operations")) {
               const kind = body.operation.kind;
+              if (kind === "provider_encounter") {
+                assert.ok(recoveryMode); assert.equal(journal.progress, null);
+                discoveryReads++; reviewReads++;
+                return Response.json({ ...envelope, operation: kind,
+                  receipt: { schema_version: "1.0", status: "available", review: review() } });
+              }
               if (kind === "creator_review") { reviewReads++; return Response.json({ ...envelope, operation: kind, receipt: review() }); }
               assert.equal(kind, "decide_translation"); assert.equal(key, pendingReview.key);
               assert.deepEqual(body.operation.payload, pendingReview.request); assert.equal(body.operation.payload.decision, "accepted");
@@ -104,7 +112,7 @@ const host = {
             if (body.action === "templates") return Response.json({ ...envelope, action: body.action, receipt: {
               session_id: sessionId, templates: [{ schema_ref: schema, note_type: "Invented SOAP", field_names: Object.keys(fields) }] } });
             assert.equal(body.schema_ref, schema);
-            if (body.action === "prepare") prepared = true;
+            if (body.action === "prepare") { prepared = true; notePrepares++; }
             else if (body.action === "save") {
               assert.deepEqual(body.edit, journal.progress.pendingSave.edit); assert.equal(key, body.edit.client_key);
               assert.equal(body.edit.expected_note_ref, noteRef); assert.equal(body.edit.expected_note_sha256, draft().note_sha256);
@@ -153,6 +161,8 @@ try {
   dispose = module.namespace.mountDesktopProviderApplication(root, exposed.scribeProvider, exposed.scribeRecorder);
   await until(() => root.querySelector(action("open"))); click(action("create")); await until(() => creates === 1 && root.querySelector(action("open")));
   click(action("open")); await until(() => root.querySelector('[data-review-action="accepted"]'));
+  assert.equal(discoveryReads, recoveryMode ? 1 : 0);
+  if (recoveryMode) assert.equal(journal.progress.admission, null, "Recovery must not invent consent or recording custody");
   assert.equal(reviewReads, 1, "Opening review must reuse its already-authorized status response");
   click('[data-review-action="refresh"]'); await until(() => root.querySelector('[data-review-action="accepted"]'));
   assert.equal(reviewReads, 2, "Explicit refresh must reauthorize and read again");
@@ -217,6 +227,14 @@ try {
   await until(() => /Edits saved to Core/u.test(root.textContent)); assert.equal(journal.progress.pendingSave, null);
   assert.equal(root.querySelector(action("discard-edits")), null, "Saving must cancel the old navigation request");
   assert.ok(journalSaves.some(progress => progress.pendingSave)); assert.equal(fields.Subjective, "Invented clinician edit.");
+  click(action("encounters")); await until(() => root.querySelector(action("open")));
+  click(action("open")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
+  root.querySelector('[name="schema"]').value = schema; click(action("read"));
+  await until(() => root.querySelector('[name="note-0"]'));
+  assert.equal(root.querySelector('[name="note-0"]').value, "Invented clinician edit.");
+  assert.equal(noteRef, savedNote); assert.equal(notePrepares, 1, "Reopening must not generate a duplicate note");
+  assert.equal(discoveryReads, recoveryMode ? 1 : 0, "Reopening must reuse the durable journal");
   click(action("core")); await until(() => navigation.length === 1); assert.equal(navigation[0], savedNote);
   root.querySelector('[name="note-0"]').value = "Unsaved edit before revocation.";
   click(action("review")); await until(() => root.querySelector(action("discard-edits")));
@@ -231,6 +249,7 @@ try {
   assert.equal(authObservers.size, 0); assert.equal(handlers.size, 0); assert.equal(rendererEvents.eventNames().length, 0);
   process.stdout.write(JSON.stringify({ checks: 3, compiled_provider_ui: true, actual_main_preload_mapping: true, compiled_preload: Boolean(preloadBundle), sender_rejection_before_native_access: true,
     explicit_review_before_note: true, journaled_note_edit_and_core_navigation: true, unsaved_note_navigation_guard: true,
+    cross_device_discovery: Boolean(recoveryMode), saved_note_reopened: true,
     explicit_discard_and_keep_editing: true, in_place_transcript_comparison: true, revocation_clears_content: true,
     actual_electron: false, real_backend: false, physical_recording: false }) + "\n");
 } finally { await dispose?.(); await boundary.dispose(); dom.window.close(); }
