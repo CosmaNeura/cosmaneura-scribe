@@ -14,12 +14,23 @@
     static func make(
       connection: NativeProviderConnection, auth: NativeWorkspaceAuth,
       recovery: NativeSourceRecovery, workspaceID: UUID, bindingRef: String,
-      sessionID: UUID, revision: String
+      sessionID: UUID, revision: String, authorizationID: UUID? = nil
     ) async throws -> NativeProviderRecordingHost {
       let mount = try connection.recordingMount(
         workspaceID: workspaceID, bindingRef: bindingRef, revision: revision)
-      let context = try await connection.recordingContext(
-        workspaceID: workspaceID, bindingRef: bindingRef, sessionID: sessionID, revision: revision)
+      let prepared = try authorizationID.flatMap {
+        try connection.takePreparedRecordingContext(
+          nonce: $0, workspaceID: workspaceID,
+          bindingRef: bindingRef, sessionID: sessionID, revision: revision)
+      }
+      let context: NativeProviderRecordingContext
+      if let prepared {
+        context = prepared
+      } else {
+        context = try await connection.recordingContext(
+          workspaceID: workspaceID, bindingRef: bindingRef, sessionID: sessionID, revision: revision
+        )
+      }
       guard
         try connection.recordingMount(
           workspaceID: workspaceID, bindingRef: bindingRef, revision: revision) == mount

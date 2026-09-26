@@ -42,7 +42,8 @@ function fixture() {
       encounters: [{ workspaceId: workspace, ...encounter }] }
       : request.action === "mount" ? { revision: request.revision, workspaceId: workspace,
         recoveryScope: recovery, appointmentRef: appointment, bindingRef: binding, encounter }
-        : request.action === "recorder" ? { revision: request.revision, session_id: body.session_id }
+        : request.action === "recorder-context" ? { revision: request.revision, session_id: body.session_id, authorization_id: body.request_nonce }
+          : request.action === "recorder" ? { revision: request.revision, session_id: body.session_id }
           : { contract_version: "1", workspace_id: workspace, binding_ref: binding,
             request_nonce: body.request_nonce, checked_at: new Date().toISOString(),
             appointment_ref: appointment, operation_ref: "scribe_admission_01j00000000000000000000000",
@@ -280,5 +281,58 @@ it("keeps older native builds on their existing recorder", async () => {
   try {
     await backend.listEncounters(backend.signal);
     expect((await backend.openEncounter(appointment, backend.signal)).nativeRecording).toBeUndefined();
+  } finally { await backend.dispose(); }
+});
+
+it("reuses one acknowledged native context once after recorder reauthorization", async () => {
+  const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+  const backend = await f.connect();
+  try {
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
+    await mount.reauthorizeRecorder(session, backend.signal);
+    const prepared = f.plugin.providerRequest.mock.calls.at(-1)![0];
+    expect(prepared.action).toBe("recorder-context");
+    const body = JSON.parse(prepared.body) as { request_nonce: string };
+    const requestId = crypto.randomUUID();
+    await mount.nativeRecording!.open(session, requestId);
+    expect(f.plugin.openProviderRecording).toHaveBeenCalledWith({ requestId, revision: f.state.revision,
+      workspaceId: workspace, bindingRef: binding, sessionId: session, authorizationId: body.request_nonce });
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
+    expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual(["catalog", "mount", "recorder-context"]);
+  } finally { await backend.dispose(); }
+});
+
+it.each(["nonce", "session", "extra", "denied"])("rejects invalid prepared context acknowledgement %s", async fault => {
+  const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+  const backend = await f.connect();
+  try {
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    f.plugin.providerRequest.mockImplementationOnce(async request => {
+      const body = JSON.parse(request.body) as { request_nonce: string };
+      return f.reply(request, { revision: request.revision, session_id: fault === "session" ? crypto.randomUUID() : session,
+        authorization_id: fault === "nonce" ? crypto.randomUUID() : body.request_nonce,
+        ...(fault === "extra" ? { tenant_id: workspace } : {}) }, fault === "denied" ? 403 : 200);
+    });
+    await expect(mount.reauthorizeRecorder(session, backend.signal)).rejects.toThrow();
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
+    expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();
+  } finally { await backend.dispose(); }
+});
+
+it("cancels an in-flight native context and cannot adopt its late acknowledgement", async () => {
+  const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+  const backend = await f.connect(), abort = new AbortController(), held = deferred<NativeReply>();
+  try {
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    f.plugin.providerRequest.mockImplementationOnce(() => held.promise);
+    const pending = mount.reauthorizeRecorder(session, abort.signal), rejected = expect(pending).rejects.toThrow();
+    const request = f.plugin.providerRequest.mock.calls.at(-1)![0];
+    abort.abort(); await rejected; held.resolve(f.reply(request)); await Promise.resolve();
+    expect(f.plugin.cancelProviderRequest).toHaveBeenCalledWith({ requestId: request.requestId });
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
   } finally { await backend.dispose(); }
 });

@@ -11,6 +11,7 @@ enum ProviderNativeError: String, Error, Sendable {
 
 enum ProviderNativeAction: String, Sendable {
     case catalog, mount, recorder
+    case recorderContext = "recorder-context"
     case sourceStart = "source-start"
     case admission = "capture-admissions", operation = "capture-operations", note = "capture-notes"
 
@@ -18,7 +19,7 @@ enum ProviderNativeAction: String, Sendable {
         switch self {
         case .catalog: 2
         case .mount: 256
-        case .recorder: 1024
+        case .recorder, .recorderContext: 1024
         case .sourceStart: 4096
         case .admission: 2048
         case .operation: 4_194_304
@@ -28,7 +29,7 @@ enum ProviderNativeAction: String, Sendable {
     var responseLimit: Int {
         switch self {
         case .catalog: 65_536
-        case .mount, .recorder, .sourceStart: 8192
+        case .mount, .recorder, .recorderContext, .sourceStart: 8192
         case .operation: 32 * 1024 * 1024 + 8192
         case .admission, .note: 8 * 1024 * 1024
         }
@@ -80,10 +81,11 @@ struct NativeProviderRecordingContext: Equatable, Sendable {
     let tenantID: UUID
     let sessionID: UUID
     let accountDigest: String
-    fileprivate init(bindingRef: String, workspaceID: UUID, tenantID: UUID, sessionID: UUID, accountDigest: String) {
+    fileprivate let checkedAt: Date
+    fileprivate init(bindingRef: String, workspaceID: UUID, tenantID: UUID, sessionID: UUID, accountDigest: String, checkedAt: Date) {
         self.bindingRef = bindingRef
         self.workspaceID = workspaceID; self.tenantID = tenantID
-        self.sessionID = sessionID; self.accountDigest = accountDigest
+        self.sessionID = sessionID; self.accountDigest = accountDigest; self.checkedAt = checkedAt
     }
 }
 
@@ -113,11 +115,23 @@ protocol ProviderNativeWire: Sendable {
     private var closed = false
     private var recordingMounts: [UUID: (revision: String, mount: NativeProviderRecordingMount)] = [:]
 
-    init(auth: NativeWorkspaceAuth, wire: any ProviderNativeWire) {
-        self.auth = auth; self.wire = wire
+    private struct PreparedRecordingContext {
+        let requestID: UUID, nonce: UUID, revision: String
+        let mount: NativeProviderRecordingMount, context: NativeProviderRecordingContext
+        let expires: ContinuousClock.Instant
+    }
+    private var preparedRecording: PreparedRecordingContext?
+    private var preparingRecording: UUID?
+    private var recordingGeneration = UUID()
+    private let contextNow: @MainActor () -> ContinuousClock.Instant
+
+    init(auth: NativeWorkspaceAuth, wire: any ProviderNativeWire,
+         contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now }) {
+        self.auth = auth; self.wire = wire; self.contextNow = contextNow
     }
 
     func authChanged(_ state: NativeAuthState) {
+        preparedRecording = nil; recordingGeneration = UUID()
         recordingMounts = recordingMounts.filter { state.phase == .ready && $0.value.revision == state.revision }
         for (_, operation) in pending where state.phase != .ready || operation.revision != state.revision {
             operation.task.cancel()
@@ -125,6 +139,9 @@ protocol ProviderNativeWire: Sendable {
     }
 
     func cancel(_ id: UUID) {
+        if preparedRecording?.requestID == id || preparingRecording == id {
+            preparedRecording = nil; recordingGeneration = UUID()
+        }
         if let operation = pending[id] { operation.task.cancel(); return }
         // Capacitor promise calls can be cancelled before their MainActor task
         // enters send(). Keep that cancellation, never dispatch it afterward.
@@ -134,6 +151,7 @@ protocol ProviderNativeWire: Sendable {
 
     func close() {
         closed = true
+        preparedRecording = nil; recordingGeneration = UUID()
         recordingMounts.removeAll()
         for (_, operation) in pending { operation.task.cancel() }
     }
@@ -174,7 +192,7 @@ protocol ProviderNativeWire: Sendable {
     /// Native-only key preparation input. Neither tenant nor account is taken
     /// from a renderer request, Core authority-tenant reference, or saved form.
     func recordingContext(workspaceID: UUID, bindingRef: String, sessionID: UUID,
-                          revision: String) async throws -> NativeProviderRecordingContext {
+                          revision: String, requestID: UUID = UUID()) async throws -> NativeProviderRecordingContext {
         try current(revision)
         guard bindingRef.range(of: "^scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}$",
                                options: .regularExpression) != nil else {
@@ -186,7 +204,7 @@ protocol ProviderNativeWire: Sendable {
             "workspace_id": workspaceID.uuidString.lowercased(), "binding_ref": bindingRef,
             "request_nonce": nonce, "operation": ["kind": "native_recording_context"],
         ])
-        let request = try ProviderNativeRequest(id: UUID().uuidString.lowercased(), revision: revision,
+        let request = try ProviderNativeRequest(id: requestID.uuidString.lowercased(), revision: revision,
             action: "capture-operations", key: UUID().uuidString.lowercased(),
             body: String(decoding: body, as: UTF8.self))
         let reply = try await send(request)
@@ -202,7 +220,7 @@ protocol ProviderNativeWire: Sendable {
               value["binding_ref"] as? String == bindingRef,
               value["request_nonce"] as? String == nonce,
               value["operation"] as? String == "native_recording_context",
-              let checked = value["checked_at"] as? String, Self.recentRecordingCheck(checked),
+              let checked = value["checked_at"] as? String, let checkedAt = Self.recentRecordingCheck(checked),
               let receipt = value["receipt"] as? [String: Any],
               Set(receipt.keys) == ["schema_version", "workspace_id", "tenant_id", "session_id", "status"],
               receipt["schema_version"] as? String == "1.0",
@@ -214,18 +232,75 @@ protocol ProviderNativeWire: Sendable {
             throw ProviderNativeError.response
         }
         return NativeProviderRecordingContext(bindingRef: bindingRef, workspaceID: workspaceID, tenantID: tenantID,
-                                               sessionID: sessionID, accountDigest: account)
+                                               sessionID: sessionID, accountDigest: account, checkedAt: checkedAt)
     }
 
-    private static func recentRecordingCheck(_ value: String) -> Bool {
-        guard value.utf8.count <= 40 else { return false }
+    /// Reuse the same fresh Core check before renderer custody inspection and
+    /// native open. Only an acknowledgement crosses the bridge, never the tenant.
+    /// This single-use metadata does not grant microphone or source permission.
+    func prepareRecordingContext(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
+        preparedRecording = nil
+        let ticket = UUID(); recordingGeneration = ticket
+        preparingRecording = request.id
+        defer { if preparingRecording == request.id { preparingRecording = nil } }
+        try current(request.revision)
+        guard request.action == .recorderContext,
+              let body = try JSONSerialization.jsonObject(with: request.body) as? [String: String],
+              Set(body.keys) == ["workspace_id", "binding_ref", "session_id", "request_nonce"],
+              let workspace = Self.canonicalUUID(body["workspace_id"]),
+              let session = Self.canonicalUUID(body["session_id"]),
+              let nonce = Self.canonicalUUID(body["request_nonce"]), let binding = body["binding_ref"] else {
+            throw ProviderNativeError.invalidRequest
+        }
+        let mount = try recordingMount(workspaceID: workspace, bindingRef: binding, revision: request.revision)
+        let context = try await recordingContext(workspaceID: workspace, bindingRef: binding,
+            sessionID: session, revision: request.revision, requestID: request.id)
+        try current(request.revision)
+        guard ticket == recordingGeneration,
+              try recordingMount(workspaceID: workspace, bindingRef: binding, revision: request.revision) == mount else {
+            throw ProviderNativeError.authorityChanged
+        }
+        // Include the original server freshness bound and use monotonic elapsed
+        // time, so clock changes cannot extend reuse. Expiry causes a fresh read.
+        let remaining = max(0, min(5, 30 - Date().timeIntervalSince(context.checkedAt)))
+        preparedRecording = PreparedRecordingContext(requestID: request.id, nonce: nonce,
+            revision: request.revision, mount: mount, context: context,
+            expires: contextNow().advanced(by: .seconds(remaining)))
+        return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
+            "revision": request.revision, "session_id": session.uuidString.lowercased(),
+            "authorization_id": nonce.uuidString.lowercased(),
+        ]))
+    }
+
+    func takePreparedRecordingContext(nonce: UUID, workspaceID: UUID, bindingRef: String,
+                                      sessionID: UUID, revision: String) throws -> NativeProviderRecordingContext? {
+        let saved = preparedRecording
+        preparedRecording = nil; recordingGeneration = UUID()
+        try current(revision)
+        guard let saved, saved.nonce == nonce, saved.revision == revision,
+              saved.context.workspaceID == workspaceID, saved.context.bindingRef == bindingRef,
+              saved.context.sessionID == sessionID,
+              saved.context.accountDigest == (try auth.recordingAccountDigest(expectedRevision: revision)),
+              try recordingMount(workspaceID: workspaceID, bindingRef: bindingRef, revision: revision) == saved.mount else {
+            throw ProviderNativeError.authorityChanged
+        }
+        return contextNow() < saved.expires ? saved.context : nil
+    }
+
+    private static func canonicalUUID(_ value: String?) -> UUID? {
+        guard let value, let id = UUID(uuidString: value), id.uuidString.lowercased() == value else { return nil }
+        return id
+    }
+
+    private static func recentRecordingCheck(_ value: String) -> Date? {
+        guard value.utf8.count <= 40 else { return nil }
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var checked = parser.date(from: value)
         if checked == nil { parser.formatOptions = [.withInternetDateTime]; checked = parser.date(from: value) }
-        guard let checked else { return false }
+        guard let checked else { return nil }
         let age = Date().timeIntervalSince(checked)
-        return age >= -5 && age <= 30
+        return age >= -5 && age <= 30 ? checked : nil
     }
 
     /// Explicit Core denial retires capture; only an unavailable transport/service
@@ -262,6 +337,7 @@ protocol ProviderNativeWire: Sendable {
     }
 
     func send(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
+        guard request.action != .recorderContext else { throw ProviderNativeError.invalidRequest }
         guard !closed, pending[request.id] == nil, pending.count < 8 else {
             throw ProviderNativeError.unavailable
         }
@@ -273,6 +349,7 @@ protocol ProviderNativeWire: Sendable {
            let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
            let workspace = body["workspace_id"] as? String, let id = UUID(uuidString: workspace) {
             recordingMounts.removeValue(forKey: id)
+            preparedRecording = nil; recordingGeneration = UUID()
         }
         let operation = Task { @MainActor [auth, wire] in
             try Task.checkCancellation()
