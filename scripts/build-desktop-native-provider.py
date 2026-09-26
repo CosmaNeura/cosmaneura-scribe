@@ -41,6 +41,10 @@ def build(output: Path, native_auth: Path) -> None:
     for source_root, target_name in (
         (auth / "vendor/Sources/ClerkKit", "ClerkKit"),
         (auth / "Sources/CosmasNativeAuth", "CosmasNativeAuth"),
+        (
+            repo / "apps/capture/native-plugins/native-recording/Sources/CosmaneuraNativeRecording",
+            "CosmaneuraNativeRecording",
+        ),
     ):
         for source in sorted(source_root.rglob("*")):
             if source.is_file():
@@ -50,6 +54,7 @@ def build(output: Path, native_auth: Path) -> None:
         "DesktopProviderInput.swift",
         "DesktopSourceRegistry.swift",
         "NativeProviderConnection.swift",
+        "NativeProviderRecordingService.swift",
         "NativeSourceStartOwner.swift",
         "NativeSourceProofJournal.swift",
         "NativeSourceRecovery.swift",
@@ -71,7 +76,9 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
  products: [.executable(name: "ScribeDesktopProvider", targets: ["ScribeDesktopProvider"])],
  targets: [.target(name: "ClerkKit", resources: [.process("Resources")]),
  .target(name: "CosmasNativeAuth", dependencies: ["ClerkKit"]),
- .executableTarget(name: "ScribeDesktopProvider", dependencies: ["CosmasNativeAuth"])])
+ .target(name: "CosmaneuraNativeRecording"),
+ .executableTarget(name: "ScribeDesktopProvider",
+                   dependencies: ["CosmasNativeAuth", "CosmaneuraNativeRecording"])])
 """)
     command = [
         "xcrun",

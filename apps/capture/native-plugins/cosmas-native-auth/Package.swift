@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "CosmasWorkspaceAuthPlugin", targets: ["CosmasWorkspaceAuthPlugin"]),
     ],
     dependencies: [
+        .package(path: "../native-recording"),
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.0"),
     ],
     targets: [
@@ -16,6 +17,7 @@ let package = Package(
         .target(name: "CosmasNativeAuth", dependencies: ["ClerkKit"]),
         .target(name: "CosmasWorkspaceAuthPlugin", dependencies: [
             "CosmasNativeAuth", .product(name: "Capacitor", package: "capacitor-swift-pm"),
+            .product(name: "CosmaneuraNativeRecording", package: "native-recording"),
         ], path: "Bridge"),
 
     ]

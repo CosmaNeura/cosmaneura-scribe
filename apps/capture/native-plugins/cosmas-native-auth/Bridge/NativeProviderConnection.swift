@@ -74,11 +74,13 @@ struct ProviderNativeReply: Sendable {
 /// Minted only by a current Core response. This identifies key custody; the
 /// source-start gate still independently decides whether capture may begin.
 struct NativeProviderRecordingContext: Equatable, Sendable {
+    let bindingRef: String
     let workspaceID: UUID
     let tenantID: UUID
     let sessionID: UUID
     let accountDigest: String
-    fileprivate init(workspaceID: UUID, tenantID: UUID, sessionID: UUID, accountDigest: String) {
+    fileprivate init(bindingRef: String, workspaceID: UUID, tenantID: UUID, sessionID: UUID, accountDigest: String) {
+        self.bindingRef = bindingRef
         self.workspaceID = workspaceID; self.tenantID = tenantID
         self.sessionID = sessionID; self.accountDigest = accountDigest
     }
@@ -135,6 +137,17 @@ protocol ProviderNativeWire: Sendable {
         return state.revision
     }
 
+    /// A fresh SDK session for the same native account may recover its keys.
+    /// The account namespace includes issuer, audience, origin and organization.
+    func recordingRevision(accountDigest: String) throws -> String {
+        let state = auth.state()
+        try current(state.revision)
+        guard try auth.recordingAccountDigest(expectedRevision: state.revision) == accountDigest else {
+            throw ProviderNativeError.unavailable
+        }
+        return state.revision
+    }
+
     /// Native-only key preparation input. Neither tenant nor account is taken
     /// from a renderer request, Core authority-tenant reference, or saved form.
     func recordingContext(workspaceID: UUID, bindingRef: String, sessionID: UUID,
@@ -176,7 +189,7 @@ protocol ProviderNativeWire: Sendable {
               let status = receipt["status"] as? String, ["created", "capturing"].contains(status) else {
             throw ProviderNativeError.response
         }
-        return NativeProviderRecordingContext(workspaceID: workspaceID, tenantID: tenantID,
+        return NativeProviderRecordingContext(bindingRef: bindingRef, workspaceID: workspaceID, tenantID: tenantID,
                                                sessionID: sessionID, accountDigest: account)
     }
 

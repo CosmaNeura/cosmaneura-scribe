@@ -57,7 +57,10 @@ actor Wire: ProviderNativeWire {
 enum CheckFailure: Error { case failed }
 func require(_ value: Bool) throws { if !value { throw CheckFailure.failed } }
 
-@main struct CheckNativeProvider {
+#if !NATIVE_BINDING_CHECKS
+@main
+#endif
+struct CheckNativeProvider {
     @MainActor static func make() throws -> (NativeWorkspaceAuth, Driver, Wire, NativeProviderConnection) {
         let driver = Driver(), wire = Wire()
         let policy = try NativeTokenPolicy(issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider")
