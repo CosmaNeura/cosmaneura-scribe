@@ -148,6 +148,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
     # module initialization. These package locations are fixed in the image.
     from azure.identity.aio import ManagedIdentityCredential
     from azure_ingress import ACA_PROFILE, STAGING_ORIGIN, AzureIngress
+    from cosmaneura_scribe.provider_core_connections import ProviderCoreConnections
     from cosmas_os.api.auth import CORE_STAGING_PERSONAL, ClerkTokenVerifier
     from cosmas_os.config import Settings
     from jwt import PyJWKClient
@@ -164,6 +165,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
     )
     verifiers: list[ClerkTokenVerifier] = []
     engine = None
+    core_connections: ProviderCoreConnections | None = None
 
     async def close() -> None:
         # Do not leave credential transports or owned JWKS threads behind after
@@ -174,6 +176,11 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 await run_in_threadpool(verifier.close)
             except Exception:
                 failed = True
+        try:
+            if core_connections is not None:
+                await core_connections.close()
+        except Exception:
+            failed = True
         try:
             if engine is not None:
                 await engine.dispose()
@@ -187,6 +194,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
             raise RuntimeError("receiver_shutdown_unavailable") from None
 
     try:
+        core_connections = ProviderCoreConnections(CORE_ORIGIN)
 
         async def database_password() -> str:
             token = await credential.get_token(
@@ -311,7 +319,8 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 CORE_STAGING_PERSONAL,
             )
             apps[origin] = ProviderReceiver(
-                profile, engine, settings, verifier, workload_token, enabled=True
+                profile, engine, settings, verifier, workload_token, enabled=True,
+                core_connections=core_connections,
             ).app()
         return ReceiverResources(
             AzureIngress(OriginReceivers(apps), profile=ACA_PROFILE), close

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid5
 
 import httpx
+from cosmaneura_scribe.provider_core_connections import ProviderCoreConnections
 from cosmaneura_scribe.provider_core_transport import (
     AuthorizedCoreProvider,
     CoreProviderMount,
@@ -127,6 +128,7 @@ class ProviderReceiver:
         *,
         enabled: bool = False,
         core_http: httpx.AsyncBaseTransport | None = None,
+        core_connections: ProviderCoreConnections | None = None,
     ) -> None:
         authentication_valid = not settings.workspace_authentication_errors()
         if profile.identity_profile == CORE_STAGING_PERSONAL:
@@ -149,6 +151,7 @@ class ProviderReceiver:
         self.profile, self.engine, self.settings = profile, engine, settings
         self.verifier, self.workload_token = verifier, workload_token
         self.enabled, self.core_http = enabled is True, core_http
+        self.core_connections = core_connections
 
     async def registry_read[T](self, operation: Callable[[Engine | Connection], T]) -> T:
         if isinstance(self.engine, AsyncEngine):
@@ -241,6 +244,7 @@ class ProviderReceiver:
                     self.workload_token,
                     enabled=True,
                     transport=self.core_http,
+                    connections=self.core_connections,
                 )
                 try:
                     if action == "mount":
