@@ -10,6 +10,7 @@ let package = Package(
     dependencies: [
         .package(path: "../native-recording"),
         .package(path: "../ios-pcm-capture"),
+        .package(path: "../secure-queue"),
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.0"),
     ],
     targets: [
@@ -22,6 +23,8 @@ let package = Package(
             .product(name: "CosmaneuraNativeRecordingPCM", package: "native-recording"),
             .product(name: "CosmaneuraIOSPCMCore", package: "ios-pcm-capture"),
             .product(name: "CosmaneuraIOSAVFoundationDriver", package: "ios-pcm-capture"),
+            .product(name: "CosmaneuraScribeCapacitorSecureQueue", package: "secure-queue",
+                condition: .when(platforms: [.iOS])),
         ], path: "Bridge"),
 
     ]

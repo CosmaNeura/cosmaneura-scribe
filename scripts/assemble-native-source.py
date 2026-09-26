@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def inventory(root: Path) -> dict[str, str]:
-    result = {}
+    result: dict[str, str] = {}
     if root.is_symlink() or not root.is_dir():
         raise ValueError("Native input must be an ordinary directory")
     for path in sorted(root.rglob("*")):
@@ -42,7 +42,13 @@ def assemble(output: Path, clerk_source: Path) -> None:
     ).read_bytes():
         raise ValueError("Desktop and mobile transport sources differ")
     output.mkdir(parents=True, exist_ok=False)
-    for name in ("cosmas-native-auth", "ios-pcm-capture", "ios-pcm-capacitor", "native-recording"):
+    for name in (
+        "cosmas-native-auth",
+        "ios-pcm-capture",
+        "ios-pcm-capacitor",
+        "native-recording",
+        "secure-queue",
+    ):
         source = plugins / name
         inventory(source)  # Reject links before copying first-party sources too.
         shutil.copytree(
@@ -52,9 +58,10 @@ def assemble(output: Path, clerk_source: Path) -> None:
     shutil.copytree(clerk_source, vendor)
     if inventory(vendor) != expected:
         raise ValueError("Copied Clerk dependency changed during assembly")
-    receipt = {"schema": 1, "files": inventory(output), "signed": False, "installed": False}
+    files = inventory(output)
+    receipt = {"schema": 1, "files": files, "signed": False, "installed": False}
     (output / "source-manifest.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    print(json.dumps({"output": str(output), "files": len(receipt["files"]), "signed": False}))
+    print(json.dumps({"output": str(output), "files": len(files), "signed": False}))
 
 
 if __name__ == "__main__":

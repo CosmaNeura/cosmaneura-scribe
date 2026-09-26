@@ -57,6 +57,7 @@ BRIDGE = [
         "NativeSourceRecovery",
         "NativeCaptureProcessFence",
         "NativeProviderRecordingRun",
+        "NativeProviderRecordingHost",
     ]
 ]
 
@@ -172,6 +173,7 @@ def main() -> None:
                     *map(str, BRIDGE),
                     str(REPO / "scripts/standalone-provider/check-native-provider.swift"),
                     str(REPO / "scripts/standalone-provider/check-native-recording-run.swift"),
+                    str(REPO / "scripts/standalone-provider/check-native-recording-host.swift"),
                 ],
             )
             run("mac-run-checks", [executable])

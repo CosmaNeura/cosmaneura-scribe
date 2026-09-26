@@ -495,6 +495,7 @@ private actor SourceWire: ProviderNativeWire {
       checks += 2
     }
     checks += try await checkActualEncryptedRun()
+    checks += try await CheckNativeRecordingHost.run()
     print("native recording run checks passed: \(checks)")
   }
 }
