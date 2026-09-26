@@ -40,14 +40,18 @@ actor Wire: ProviderNativeWire {
     var pause = false
     var continuation: CheckedContinuation<Void, Never>?
     var response = ProviderNativeReply(status: 200, body: Data("{}".utf8))
+    var responder: (@Sendable (ProviderNativeRequest) throws -> ProviderNativeReply)?
     func hold() { pause = true }
     func setResponse(_ value: ProviderNativeReply) { response = value }
+    func setResponder(_ value: @escaping @Sendable (ProviderNativeRequest) throws -> ProviderNativeReply) {
+        responder = value
+    }
     func resume() { continuation?.resume(); continuation = nil }
     func send(_ request: ProviderNativeRequest, token: String) async throws -> ProviderNativeReply {
         count += 1
         guard token.split(separator: ".").count == 3 else { throw CheckFailure.failed }
         if pause { await withCheckedContinuation { continuation = $0 } } // Deliberately ignores cancellation.
-        return response
+        return try responder?(request) ?? response
     }
 }
 enum CheckFailure: Error { case failed }
@@ -185,6 +189,129 @@ func require(_ value: Bool) throws { if !value { throw CheckFailure.failed } }
             }
             checks += 1
         }
-        print("Passed \(checks) native provider checks with unchanged native session policy, offline driver/wire and in-memory access block. No network, Keychain, app, device or microphone was accessed.")
+        checks += try await recordingContextChecks()
+        print("Passed \(checks) native provider checks with retained native session policy, offline driver/wire and in-memory access block. No network, Keychain, app, device or microphone was accessed.")
+    }
+
+    @MainActor static func recordingContextChecks() async throws -> Int {
+        let workspace = UUID(), session = UUID(), tenant = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let binding = "scribe_capture_binding_01j00000000000000000000000"
+        var checks = 0
+        for fault in ["created", "capturing", "workspace", "binding", "nonce", "operation", "version",
+                      "old", "future", "date", "extra", "receipt_workspace", "session", "tenant",
+                      "uppercase_tenant", "schema", "uploaded", "extra_receipt", "denied", "large"] {
+            let (auth, driver, wire, connection) = try make()
+            await wire.setResponder { request in
+                guard request.action == .operation,
+                      let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                      let operation = body["operation"] as? [String: String],
+                      operation == ["kind": "native_recording_context"],
+                      Set(body.keys) == ["workspace_id", "binding_ref", "request_nonce", "operation"] else {
+                    throw CheckFailure.failed
+                }
+                var receipt: [String: Any] = ["schema_version": "1.0",
+                    "workspace_id": workspace.uuidString.lowercased(), "tenant_id": tenant.uuidString.lowercased(),
+                    "session_id": session.uuidString.lowercased(), "status": fault == "capturing" ? "capturing" : "created"]
+                var envelope: [String: Any] = ["contract_version": "1", "binding_ref": binding,
+                    "workspace_id": workspace.uuidString.lowercased(), "request_nonce": body["request_nonce"]!,
+                    "checked_at": ISO8601DateFormatter().string(from: Date()), "operation": "native_recording_context"]
+                switch fault {
+                case "workspace": envelope["workspace_id"] = UUID().uuidString.lowercased()
+                case "binding": envelope["binding_ref"] = "scribe_capture_binding_01j00000000000000000000001"
+                case "nonce": envelope["request_nonce"] = UUID().uuidString.lowercased()
+                case "operation": envelope["operation"] = "creator_review"
+                case "version": envelope["contract_version"] = "2"
+                case "old", "future": envelope["checked_at"] = ISO8601DateFormatter().string(
+                    from: Date().addingTimeInterval(fault == "old" ? -60 : 60))
+                case "date": envelope["checked_at"] = true
+                case "extra": envelope["tenant_id"] = tenant.uuidString.lowercased()
+                case "receipt_workspace": receipt["workspace_id"] = UUID().uuidString.lowercased()
+                case "session": receipt["session_id"] = UUID().uuidString.lowercased()
+                case "tenant": receipt["tenant_id"] = "authority_tenant_01j00000000000000000000000"
+                case "uppercase_tenant": receipt["tenant_id"] = tenant.uuidString.uppercased()
+                case "schema": receipt["schema_version"] = "2.0"
+                case "uploaded": receipt["status"] = "uploaded"
+                case "extra_receipt": receipt["account_digest"] = String(repeating: "0", count: 64)
+                case "large": receipt["padding"] = String(repeating: "x", count: 8192)
+                default: break
+                }
+                envelope["receipt"] = receipt
+                return ProviderNativeReply(status: fault == "denied" ? 403 : 200,
+                    body: try JSONSerialization.data(withJSONObject: envelope))
+            }
+            let revision = auth.state().revision
+            let result = Task { try await connection.recordingContext(workspaceID: workspace,
+                bindingRef: binding, sessionID: session, revision: revision) }
+            if ["created", "capturing"].contains(fault) {
+                let value = try await result.value
+                try require(value.workspaceID == workspace && value.sessionID == session && value.tenantID == tenant)
+                try require(value.accountDigest == auth.recordingAccountDigest(expectedRevision: revision))
+            } else { try await rejected(result) }
+            let calls = await wire.count
+            try require(driver.tokens == 1 && calls == 1)
+            connection.close(); checks += 1
+        }
+        do {
+            let (auth, driver, wire, connection) = try make()
+            let revision = auth.state().revision
+            await wire.hold()
+            let pending = Task { try await connection.recordingContext(workspaceID: workspace,
+                bindingRef: binding, sessionID: session, revision: revision) }
+            try await wait { await wire.count == 1 }
+            driver.identity = nil; _ = auth.state()
+            await wire.resume(); try await rejected(pending)
+            try await rejected(Task { try await connection.recordingContext(workspaceID: workspace,
+                bindingRef: binding, sessionID: session, revision: revision) })
+            try require(await wire.count == 1); checks += 1
+        }
+        do {
+            let (auth, driver, _, connection) = try make()
+            let old = auth.state().revision
+            let original = try auth.recordingAccountDigest(expectedRevision: old)
+            driver.identity = try .init(userID: "user_offline", sessionID: "sess_restarted", organizationID: "org_offline")
+            let fresh = auth.state().revision
+            try require(fresh != old && original == auth.recordingAccountDigest(expectedRevision: fresh))
+            try await rejected(Task { try auth.recordingAccountDigest(expectedRevision: old) })
+            driver.identity = try .init(userID: "user_other", sessionID: "sess_other", organizationID: "org_offline")
+            try require(original != auth.recordingAccountDigest(expectedRevision: auth.state().revision))
+            connection.close(); checks += 1
+        }
+        var digests = Set<String>()
+        for (issuer, audience, organization, party) in [
+            ("https://identity.clerk.accounts.dev", "offline-provider", "org_offline", NativeClerkConfiguration.nativeOrigin),
+            ("https://other.clerk.accounts.dev", "offline-provider", "org_offline", NativeClerkConfiguration.nativeOrigin),
+            ("https://identity.clerk.accounts.dev", "other-provider", "org_offline", NativeClerkConfiguration.nativeOrigin),
+            ("https://identity.clerk.accounts.dev", "offline-provider", "org_other", NativeClerkConfiguration.nativeOrigin),
+            ("https://identity.clerk.accounts.dev", "offline-provider", "org_offline", NativeWorkspaceOrigin.desktopApp.rawValue),
+        ] {
+            let driver = Driver()
+            driver.identity = try .init(userID: "user_offline", sessionID: "sess_offline", organizationID: organization)
+            let policy = try NativeTokenPolicy(issuer: issuer, audience: audience, authorizedParty: party)
+            let auth = NativeWorkspaceAuth(enabled: true, organizationID: organization, tokenPolicy: policy,
+                driver: { driver }, accessBlock: { Block() })
+            let digest = try auth.recordingAccountDigest(expectedRevision: auth.state().revision)
+            try require(digest.count == 64 && digests.insert(digest).inserted); checks += 1
+        }
+        do {
+            let driver = Driver()
+            driver.identity = try .init(coreUserID: "user_offline", sessionID: "sess_offline")
+            let policy = try NativeTokenPolicy(issuer: "https://resolved-emu-53.clerk.accounts.dev", audience: nil,
+                identityProfile: .coreStagingPersonal)
+            let auth = NativeWorkspaceAuth(enabled: true, organizationID: nil, tokenPolicy: policy,
+                driver: { driver }, accessBlock: { Block() })
+            let digest = try auth.recordingAccountDigest(expectedRevision: auth.state().revision)
+            try require(digest.count == 64 && digests.insert(digest).inserted); checks += 1
+        }
+        do {
+            let (auth, _, wire, connection) = try make()
+            let revision = auth.state().revision
+            try await rejected(Task { try await connection.recordingContext(workspaceID: workspace,
+                bindingRef: "invalid", sessionID: session, revision: revision) })
+            connection.close()
+            try await rejected(Task { try await connection.recordingContext(workspaceID: workspace,
+                bindingRef: binding, sessionID: session, revision: revision) })
+            try require(await wire.count == 0); checks += 1
+        }
+        return checks
     }
 }

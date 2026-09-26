@@ -71,6 +71,19 @@ struct ProviderNativeReply: Sendable {
     let body: Data
 }
 
+/// Minted only by a current Core response. This identifies key custody; the
+/// source-start gate still independently decides whether capture may begin.
+struct NativeProviderRecordingContext: Equatable, Sendable {
+    let workspaceID: UUID
+    let tenantID: UUID
+    let sessionID: UUID
+    let accountDigest: String
+    fileprivate init(workspaceID: UUID, tenantID: UUID, sessionID: UUID, accountDigest: String) {
+        self.workspaceID = workspaceID; self.tenantID = tenantID
+        self.sessionID = sessionID; self.accountDigest = accountDigest
+    }
+}
+
 protocol ProviderNativeWire: Sendable {
     func send(_ request: ProviderNativeRequest, token: String) async throws -> ProviderNativeReply
 }
@@ -120,6 +133,62 @@ protocol ProviderNativeWire: Sendable {
             throw ProviderNativeError.unavailable
         }
         return state.revision
+    }
+
+    /// Native-only key preparation input. Neither tenant nor account is taken
+    /// from a renderer request, Core authority-tenant reference, or saved form.
+    func recordingContext(workspaceID: UUID, bindingRef: String, sessionID: UUID,
+                          revision: String) async throws -> NativeProviderRecordingContext {
+        try current(revision)
+        guard bindingRef.range(of: "^scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}$",
+                               options: .regularExpression) != nil else {
+            throw ProviderNativeError.invalidRequest
+        }
+        let account = try auth.recordingAccountDigest(expectedRevision: revision)
+        let nonce = UUID().uuidString.lowercased()
+        let body = try JSONSerialization.data(withJSONObject: [
+            "workspace_id": workspaceID.uuidString.lowercased(), "binding_ref": bindingRef,
+            "request_nonce": nonce, "operation": ["kind": "native_recording_context"],
+        ])
+        let request = try ProviderNativeRequest(id: UUID().uuidString.lowercased(), revision: revision,
+            action: "capture-operations", key: UUID().uuidString.lowercased(),
+            body: String(decoding: body, as: UTF8.self))
+        let reply = try await send(request)
+        try current(revision)
+        guard try auth.recordingAccountDigest(expectedRevision: revision) == account,
+              reply.status == 200, reply.body.count <= 8192,
+              let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+              Set(value.keys) == ["contract_version", "binding_ref", "workspace_id", "request_nonce",
+                                  "checked_at", "operation", "receipt"],
+              value["contract_version"] as? String == "1",
+              value["workspace_id"] as? String == workspaceID.uuidString.lowercased(),
+              value["binding_ref"] as? String == bindingRef,
+              value["request_nonce"] as? String == nonce,
+              value["operation"] as? String == "native_recording_context",
+              let checked = value["checked_at"] as? String, Self.recentRecordingCheck(checked),
+              let receipt = value["receipt"] as? [String: Any],
+              Set(receipt.keys) == ["schema_version", "workspace_id", "tenant_id", "session_id", "status"],
+              receipt["schema_version"] as? String == "1.0",
+              receipt["workspace_id"] as? String == workspaceID.uuidString.lowercased(),
+              receipt["session_id"] as? String == sessionID.uuidString.lowercased(),
+              let tenant = receipt["tenant_id"] as? String, let tenantID = UUID(uuidString: tenant),
+              tenantID.uuidString.lowercased() == tenant,
+              let status = receipt["status"] as? String, ["created", "capturing"].contains(status) else {
+            throw ProviderNativeError.response
+        }
+        return NativeProviderRecordingContext(workspaceID: workspaceID, tenantID: tenantID,
+                                               sessionID: sessionID, accountDigest: account)
+    }
+
+    private static func recentRecordingCheck(_ value: String) -> Bool {
+        guard value.utf8.count <= 40 else { return false }
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var checked = parser.date(from: value)
+        if checked == nil { parser.formatOptions = [.withInternetDateTime]; checked = parser.date(from: value) }
+        guard let checked else { return false }
+        let age = Date().timeIntervalSince(checked)
+        return age >= -5 && age <= 30
     }
 
     func send(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
