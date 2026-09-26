@@ -321,6 +321,7 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.statusCode === "capture_reopen_required" ? "Recording is stopped. Return to Your encounters and reopen this encounter to recover saved work."
               : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
               : this.#snapshot.statusCode === "capture_upload_pending" ? "Recording has stopped. Your saved recording is waiting for upload confirmation. Check your connection and retry."
+              : this.#snapshot.statusCode === "capture_upload_confirming" ? "Audio uploaded. Confirming receipt before transcription…"
               : this.#snapshot.state === "uploading" ? "Uploading your recording"
               : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace"
               : this.#snapshot.desktop?.phase === "stopped" ? "Recording stopped"
@@ -332,7 +333,12 @@ export class CaptureApp extends LitElement {
                 ? "Recording has stopped. Retry confirmation before uploading."
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : "Ready to record"}</p>
-            <p>Recording window used ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
+            ${this.#snapshot.native?.uploadProgress && this.#snapshot.state === "uploading" ? html`<label>
+              Audio uploaded ${Math.floor(this.#snapshot.native.uploadProgress.registered * 100 / Math.max(1, this.#snapshot.native.uploadProgress.total))}%
+              <progress aria-label="Audio upload" max=${this.#snapshot.native.uploadProgress.total || 1}
+                value=${this.#snapshot.native.uploadProgress.registered}></progress>
+            </label>` : ""}
+            <p>Recorded ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
             ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`) : html`<section class="flow-card" aria-labelledby="status-title">
@@ -574,6 +580,9 @@ function formatDuration(totalSeconds: number): string {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));
   const minutes = Math.floor(safeSeconds / 60);
   const seconds = safeSeconds % 60;
+  if (minutes >= 60) {
+    return `${String(Math.floor(minutes / 60))}:${String(minutes % 60).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
   return `${String(minutes)}:${String(seconds).padStart(2, "0")}`;
 }
 

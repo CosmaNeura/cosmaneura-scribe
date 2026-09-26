@@ -72,6 +72,12 @@ try {
   button("stop-button").click();
   await until(() => button("resume-recording") && !button("resume-recording").disabled);
   assert.deepEqual(calls, ["start", "pause"]);
+  button("resume-recording").click();
+  await until(() => button("stop-button").textContent.includes("Cancel start"));
+  assert.equal(button("stop-button").disabled, false);
+  assert.ok(app.textContent.includes("Starting microphone"));
+  button("stop-button").click();
+  await until(() => button("resume-recording") && !button("resume-recording").disabled);
   const input = button("microphone-input"); input.value = "external"; input.dispatchEvent(new window.Event("change"));
   hold = false; button("resume-recording").click();
   await until(() => app.querySelector("scribe-ios-input-meter")?.shadowRoot?.textContent.includes("USB microphone"));
@@ -88,6 +94,29 @@ try {
   assert.equal(button("resume-recording"), null);
   app.remove(); await resources.deactivate();
   assert.equal(calls.filter(kind => kind === "close").length, 1); assert.equal(locked, false);
-  console.log(JSON.stringify({ checks: 6, compiled_native_provider: true, source_and_core_fixtures: true,
+  // The same compiled screen renders receipt-confirmed progress and keeps
+  // completion confirmation distinct from bytes having reached the server.
+  const upload = window.document.createElement("cosmaneura-capture");
+  const snapshot = { ...resources.controller.snapshot, state: "uploading", statusCode: "capture_uploading",
+    recordedChunks: 1080, queuedChunks: 540, elapsedSeconds: 10800,
+    native: { phase: "sealed", busy: false, uploadProgress: { total: 1080, registered: 540 } } };
+  let notify;
+  upload.bindProvider({ sessionId, controller: { ...resources.controller, snapshot,
+    subscribe: listener => { notify = listener; listener(snapshot); return () => {}; } },
+  captureMode: "native_microphone", sourceKind: "microphone", languageMode: "english", signal: abort.signal,
+  authorizedRequest: forbidden, journal: { load: async () => null, save: forbidden, clear: forbidden },
+  deactivate: async () => {} });
+  root.append(upload);
+  await until(() => upload.querySelector("progress"));
+  assert.equal(upload.querySelector("progress").max, 1080);
+  assert.equal(upload.querySelector("progress").value, 540);
+  assert.ok(upload.textContent.includes("Audio uploaded 50%"));
+  assert.ok(upload.textContent.includes("Recorded 3:00:00"));
+  notify({ ...snapshot, statusCode: "capture_upload_confirming", queuedChunks: 0,
+    native: { ...snapshot.native, uploadProgress: { total: 1080, registered: 1080 } } });
+  await until(() => upload.textContent.includes("Confirming receipt before transcription"));
+  assert.equal(upload.querySelector("progress").value, 1080);
+  upload.remove();
+  console.log(JSON.stringify({ checks: 8, compiled_native_provider: true, source_and_core_fixtures: true,
     cancellable_start: true, native_meter_and_input: true, physical_recording: false }));
 } finally { heldStart?.(); await resources.deactivate(); dom.window.close(); }

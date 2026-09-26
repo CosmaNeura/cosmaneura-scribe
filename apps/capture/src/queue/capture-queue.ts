@@ -50,6 +50,12 @@ export interface CaptureQueueOptions {
   readonly maxRetryMs?: number;
 }
 
+/** Receipt-confirmed counts only; never exposes audio, object IDs or URLs. */
+export interface DrainProgress {
+  readonly total: number;
+  readonly registered: number;
+}
+
 export class CaptureQueue {
   readonly #storage: CaptureQueueStorage;
   readonly #crypto: Crypto;
@@ -177,12 +183,19 @@ export class CaptureQueue {
    * Processes every currently eligible record once, with no more than the
    * generated protocol's two simultaneous upload workers.
    */
-  async drainOnce(transport: CaptureQueueTransport): Promise<DrainResult> {
+  async drainOnce(transport: CaptureQueueTransport, progress?: (value: DrainProgress) => void): Promise<DrainResult> {
     return withOriginDrainLock(async () => {
       if (this.#draining) throw new QueueInvariantError("queue_drain_in_progress");
       this.#draining = true;
       try {
-        const records = (await this.#storage.listMetadata()).filter(isDrainCandidate);
+        const metadata = await this.#storage.listMetadata();
+        const records = metadata.filter(isDrainCandidate);
+        const total = metadata.filter(record => record.state !== "reserved").length;
+        let registered = metadata.filter(record => record.state === "registered" || record.state === "purged").length;
+        const publish = (): void => {
+          try { progress?.({ total, registered }); } catch { /* Observers cannot interrupt custody or uploads. */ }
+        };
+        publish();
         const results: DrainItemResult[] = records.map((record) =>
           skipped(record.reservation.objectId),
         );
@@ -194,6 +207,8 @@ export class CaptureQueue {
             const record = records[index];
             if (record === undefined) return;
             results[index] = await this.#processOne(record.reservation.objectId, transport);
+            if (results[index]?.outcome === "registered") registered += 1;
+            publish();
           }
         };
         const workerCount = Math.min(this.#uploadConcurrency, records.length);

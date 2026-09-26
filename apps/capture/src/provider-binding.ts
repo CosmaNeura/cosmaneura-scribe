@@ -6,7 +6,8 @@ import type { CreatorReviewJournal } from "../../review-ui/src/creator-review-jo
 /** Plain recorder state/commands shared by native hosts and the provider view.
  * Desktop implementations keep the flow, keys, audio and storage in main. */
 export interface ProviderRecorderSnapshot extends CaptureFlowSnapshot {
-  readonly native?: { readonly phase: string; readonly busy: boolean };
+  readonly native?: { readonly phase: string; readonly busy: boolean;
+    readonly uploadProgress?: { readonly total: number; readonly registered: number } };
   readonly desktop?: {
     readonly phase: "ready" | "permission_required" | "starting" | "recording" | "stopping"
       | "interrupted" | "stop_unconfirmed" | "stopped";

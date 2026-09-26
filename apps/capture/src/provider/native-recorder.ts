@@ -1,7 +1,7 @@
 import type { CaptureBff, CiphertextUploadTarget } from "../bff/contracts";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import type { PreparedProviderRecorder, ProviderRecorderSnapshot } from "../provider-binding";
-import { CaptureQueue, QueueInvariantError, type CaptureQueueStorage } from "../queue";
+import { CaptureQueue, QueueInvariantError, type CaptureQueueStorage, type DrainProgress } from "../queue";
 import { parseInputSignal } from "../native/ios-input-signal";
 import { isMicrophoneInput, type MicrophoneInput } from "../native/microphone-input";
 
@@ -32,13 +32,15 @@ export async function connectNativeProviderRecorder(options: {
   let state: NativeRecordingState | null = null, closed = false, accepted = false, starting = false;
   let status: string | null = null, reading: Promise<void> | null = null, closing: Promise<void> | null = null;
   let uploading: Promise<void> | null = null;
+  let uploadProgress: DrainProgress | undefined;
+  let lastReadAt = -Infinity;
   const listeners = new Set<(value: ProviderRecorderSnapshot) => void>();
   const queue = new CaptureQueue(options.queueStorage);
   const transport = new BffCaptureQueueTransport(options.bff, options.uploadTarget);
   const current = (): void => { if (closed || signal.aborted) throw failure(); };
   const snapshot = (): ProviderRecorderSnapshot => {
     if (!state) throw failure();
-    const phase = state.phase, awaitingStart = starting && phase === "ready" || phase === "starting", paused = phase === "paused" || phase === "stopPending" || phase === "pausing";
+    const phase = state.phase, awaitingStart = starting && ["ready", "paused"].includes(phase) || phase === "starting", paused = phase === "paused" || phase === "stopPending" || phase === "pausing";
     return { sessionId, state: accepted ? "processing" : phase === "sealed" || phase === "sealing" ? "uploading"
       : paused ? "paused" : phase === "recording" ? "recording" : phase === "ready" || phase === "starting" ? "ready"
       : phase === "opening" || phase === "unopened" ? "preparing" : "error",
@@ -48,11 +50,13 @@ export async function connectNativeProviderRecorder(options: {
       : phase === "recording" ? "capture_recording"
       : state.failure === "startFailed" ? "capture_start_failed" : phase === "paused" ? "capture_paused"
       : phase === "failed" ? "capture_preparation_failed" : phase === "closed" ? "capture_reopen_required" : "capture_ready"),
-    recordedChunks: state.recordedChunks, queuedChunks: accepted ? 0 : state.recordedChunks,
+    recordedChunks: state.recordedChunks, queuedChunks: accepted ? 0 : uploadProgress
+      ? uploadProgress.total - uploadProgress.registered : state.recordedChunks,
     elapsedSeconds: Math.floor(Math.max(0, state.recordedPlaintextBytes - state.recordedChunks * 44) / 32_000),
     remainingBudgetSeconds: Math.floor((state.maximumPlaintextBytes - state.recordedPlaintextBytes) / 32_000),
     remainingAuthoritySeconds: null, transcriptionStatus: null, transcript: null,
-    native: { phase: awaitingStart ? "starting" : phase, busy: state.busy } };
+    native: { phase: awaitingStart ? "starting" : phase, busy: state.busy,
+      ...(uploadProgress ? { uploadProgress: { ...uploadProgress } } : {}) } };
   };
   const publish = (): void => {
     if (!state || closed || signal.aborted) return;
@@ -78,17 +82,23 @@ export async function connectNativeProviderRecorder(options: {
     if (kind !== "close") current();
     if (!ok) throw failure();
   };
-  const read = (): Promise<void> => reading ??= invoke("read").finally(() => { reading = null; });
+  const read = (): Promise<void> => reading ??= invoke("read").finally(() => { lastReadAt = performance.now(); reading = null; });
   const upload = (): Promise<void> => uploading ??= (async () => {
     current();
-    status = "capture_uploading"; publish();
+    uploadProgress = undefined; status = "capture_uploading"; publish();
     try {
       if (state?.phase !== "sealed") await invoke("seal");
       current();
       const sealed = state;
       if (sealed?.phase !== "sealed" || !sealed.completion) throw failure();
       const completion = sealed.completion;
-      const drained = await queue.drainOnce(transport); current();
+      const drained = await queue.drainOnce(transport, progress => {
+        // Counts are feedback, never completion authority. Suppress them when
+        // stored positions do not match the sealed native recording length.
+        if (closed || signal.aborted) return;
+        uploadProgress = progress.total === sealed.recordedChunks ? progress : undefined;
+        publish();
+      }); current();
       const records = await queue.listMetadata(); current();
       if (drained.items.some(item => item.outcome !== "registered")) throw failure();
       const positions = new Set<number>();
@@ -107,6 +117,7 @@ export async function connectNativeProviderRecorder(options: {
         current();
       }
       for (let index = 0; index <= completion.finalSequence; index += 1) if (!positions.has(index)) throw failure();
+      status = "capture_upload_confirming"; publish();
       await options.bff.completeCapture(sessionId, { protocol_version: "1.0", capture_lease_id: completion.leaseId,
         capture_lease_generation: completion.leaseGeneration,
         channels: [{ channel: "microphone", final_sequence_number: completion.finalSequence }] },
@@ -119,7 +130,7 @@ export async function connectNativeProviderRecorder(options: {
     }
   })().finally(() => { uploading = null; });
   const start = async (): Promise<void> => {
-    current(); starting = true; status = null; publish();
+    current(); starting = true; uploadProgress = undefined; status = null; publish();
     try { await invoke("start"); }
     catch (error) { await read().catch(() => { status = "capture_start_unconfirmed"; }); throw error; }
     finally { starting = false; publish(); }
@@ -140,7 +151,15 @@ export async function connectNativeProviderRecorder(options: {
   signal.addEventListener("abort", aborted, { once: true });
   if (!signal.aborted) {
     document.addEventListener("visibilitychange", visible);
-    timer = setInterval(() => { void read().catch(() => undefined); }, 1000);
+    timer = setInterval(() => {
+      // Confirm Start/Resume promptly. Otherwise the meter's existing reads
+      // keep state current without a second polling stream or hidden UI work.
+      if (document.visibilityState !== "visible") return;
+      if (state?.phase === "starting" || starting && ["ready", "paused"].includes(state?.phase ?? "")
+        || performance.now() - lastReadAt >= 1000) {
+        void read().catch(() => undefined);
+      }
+    }, 250);
   }
   return { sourceKind: "microphone", captureMode: "native_microphone", deactivate,
     resumePendingWork: upload, releaseUploadedCapture: () => accepted ? Promise.resolve() : Promise.reject(failure()),
@@ -149,7 +168,7 @@ export async function connectNativeProviderRecorder(options: {
     }, startRecording: start, resumeRecording: start, pauseRecording: async () => {
       status = null; await invoke("pause"); publish();
     }, stopRecording: async () => {
-      if (starting && state?.phase === "ready" || state?.phase === "starting") { status = null; await invoke("pause"); return; }
+      if (starting && ["ready", "paused"].includes(state?.phase ?? "") || state?.phase === "starting") { status = null; await invoke("pause"); return; }
       await upload();
     }, selectMicrophoneInput: async input => { current(); if (state?.input !== input) await invoke("input", input); }, getCaptureSignal: async () => {
       await read(); return state!.signal;
