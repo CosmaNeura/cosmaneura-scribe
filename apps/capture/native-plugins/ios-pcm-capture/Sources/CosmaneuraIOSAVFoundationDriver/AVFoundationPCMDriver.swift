@@ -66,10 +66,19 @@ public enum AppleAudioSystemEvent: Equatable, Sendable {
   case captureFailed
 }
 
-public enum AppleAudioSessionProfile: Sendable {
+public enum AppleAudioSessionProfile: Equatable, Sendable {
   /// Foreground recording in measurement mode with an explicitly selected input.
   /// It grants no background execution and does not mix with other audio.
   case foregroundTwoPartySpeech
+  /// Same speech input profile, owned by a native encrypted recorder. The host
+  /// must provide audio background mode and native authority/watchdog renewal.
+  case nativeEncryptedSpeech
+}
+
+public enum AppleRecordingLifecycle: Equatable, Sendable {
+  case foregroundOnly
+  /// Native code only. Never expose this choice through the PCM JavaScript API.
+  case nativeEncrypted
 }
 
 public enum AppleMicrophoneInput: String, Sendable {
@@ -135,7 +144,8 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
 
   private let system: any AppleAudioSystem
   private let foreground: any AppleApplicationForegroundProviding
-  private let callbackGate = DriverCallbackGate()
+  private let callbackGate: DriverCallbackGate
+  private let profile: AppleAudioSessionProfile
   private let frameCapacity: UInt32
   private var session: Session?
   private var releaseWaiters: [CheckedContinuation<Bool, Never>] = []
@@ -145,10 +155,13 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
   public init(
     system: any AppleAudioSystem,
     foreground: any AppleApplicationForegroundProviding,
-    frameCapacity: UInt32 = 4_096
+    frameCapacity: UInt32 = 4_096,
+    lifecycle: AppleRecordingLifecycle = .foregroundOnly
   ) {
     self.system = system
     self.foreground = foreground
+    callbackGate = DriverCallbackGate(continueInBackground: lifecycle == .nativeEncrypted)
+    profile = lifecycle == .nativeEncrypted ? .nativeEncryptedSpeech : .foregroundTwoPartySpeech
     self.frameCapacity = min(
       max(frameCapacity, 1),
       UInt32(PCMConfiguration.maximumFramesPerInputBuffer)
@@ -180,7 +193,7 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
         throw AVFoundationDriverError.operationFailed
       }
       try checkStartupEvents(generation)
-      try system.configureAndActivate(profile: .foregroundTwoPartySpeech)
+      try system.configureAndActivate(profile: profile)
       PCMStartupDiagnostics.shared.record(.sessionActivated)
       try validateStarting(sessionID, generation, cancellation)
       try checkStartupEvents(generation)
@@ -357,6 +370,7 @@ private final class DriverCallbackGate: @unchecked Sendable {
   }
 
   private let lock = NSLock()
+  private let continueInBackground: Bool
   private var generation: UInt64?
   private var callbacks: PCMAudioCallbacks?
   private var framesOpen = false
@@ -365,6 +379,8 @@ private final class DriverCallbackGate: @unchecked Sendable {
   private var startupFailed = false
   private var terminalEventSent = false
   private var terminalDelivery: Task<Void, Never>?
+
+  init(continueInBackground: Bool) { self.continueInBackground = continueInBackground }
 
   func activate(generation: UInt64, callbacks: PCMAudioCallbacks) {
     lock.withLock {
@@ -459,6 +475,10 @@ private final class DriverCallbackGate: @unchecked Sendable {
         terminalEventSent = true
         return
       }
+      // Startup remains foreground-only. Once armed, the native encrypted
+      // owner supplies heartbeat, short authority windows and durable storage.
+      // Interruptions, route changes and permission revocation remain terminal.
+      if event == .backgrounded && continueInBackground { return }
       terminalEventSent = true
       framesOpen = false
       terminalDelivery = Task { await storedCallbacks.event(mapped) }

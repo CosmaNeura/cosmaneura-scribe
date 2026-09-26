@@ -35,13 +35,17 @@ struct InputRouteStartupTests {
     try await driver.release(sessionID: 1)
   }
 
-  @Test(arguments: [
-    AppleAudioSystemEvent.interruptionBegan, .mediaServicesLost, .mediaServicesReset,
-    .backgrounded, .permissionRevoked, .captureFailed,
-  ])
-  func activationStillRejectsNonRouteInterruptions(_ event: AppleAudioSystemEvent) async throws {
+  @Test(
+    arguments: [
+      AppleAudioSystemEvent.interruptionBegan, .mediaServicesLost, .mediaServicesReset,
+      .backgrounded, .permissionRevoked, .captureFailed,
+    ], [AppleRecordingLifecycle.foregroundOnly, .nativeEncrypted])
+  func activationStillRejectsNonRouteInterruptions(
+    _ event: AppleAudioSystemEvent, lifecycle: AppleRecordingLifecycle
+  ) async throws {
     let system = RouteSystem(activationEvent: event)
-    let driver = AVFoundationPCMDriver(system: system, foreground: Foreground())
+    let driver = AVFoundationPCMDriver(
+      system: system, foreground: Foreground(), lifecycle: lifecycle)
     await #expect(throws: AVFoundationDriverError.self) {
       try await driver.start(
         sessionID: 1, callbacks: CapturedEvents().callbacks, cancellation: StartupCancellation()
@@ -50,6 +54,21 @@ struct InputRouteStartupTests {
     #expect(!system.tapInstalled)
     try await driver.freezeInput(sessionID: 1)
     try await driver.release(sessionID: 1)
+  }
+
+  @Test(arguments: [AppleRecordingLifecycle.foregroundOnly, .nativeEncrypted])
+  func onlyArmedNativeEncryptionAllowsBackground(_ lifecycle: AppleRecordingLifecycle) async throws
+  {
+    let system = RouteSystem()
+    let events = CapturedEvents()
+    let driver = AVFoundationPCMDriver(
+      system: system, foreground: Foreground(), lifecycle: lifecycle)
+    try await driver.start(
+      sessionID: 1, callbacks: events.callbacks, cancellation: StartupCancellation())
+    system.emit(.backgrounded)
+    try await driver.freezeInput(sessionID: 1)
+    try await driver.release(sessionID: 1)
+    #expect(events.count == (lifecycle == .nativeEncrypted ? 0 : 1))
   }
 
   @Test func routeChangeAfterSelectionStillRejectsStartup() async throws {

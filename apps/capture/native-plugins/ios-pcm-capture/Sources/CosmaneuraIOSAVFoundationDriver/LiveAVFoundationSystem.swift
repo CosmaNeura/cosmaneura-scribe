@@ -167,8 +167,10 @@
     }
 
     public func configureAndActivate(profile: AppleAudioSessionProfile) throws {
-      guard case .foregroundTwoPartySpeech = profile else {
-        throw AVFoundationDriverError.operationFailed
+      // Both profiles use the same native input graph. Only the trusted driver
+      // lifecycle differs; the legacy PCM bridge keeps foreground-only capture.
+      switch profile {
+      case .foregroundTwoPartySpeech, .nativeEncryptedSpeech: break
       }
       lock.withLock { activationAttempted = true }
       do {
