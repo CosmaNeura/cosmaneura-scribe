@@ -58,6 +58,7 @@
     private let audioSession: AVAudioSession
     private let signalMonitor: PCMSignalMonitor?
     private let microphoneInput: AppleMicrophoneInputPreference
+    private let inputRouteEvents = AppleInputRouteEvents()
     private var selectedInputUID: String?
     private var engine = AVAudioEngine()
     private var tapInstalled = false
@@ -107,14 +108,17 @@
         ) { [weak self] note in
           let raw = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? NSNumber)?.uintValue
           let reason = AVAudioSession.RouteChangeReason(rawValue: raw ?? 0)
-          // Selecting our input can produce a configuration notification. The
-          // driver ignores it only before arming, and only the selected port
-          // qualifies. Device removal/addition remains a terminal route change.
-          let configured = reason == .categoryChange
+          guard let self else { return }
+          // Activation can announce a route before setPreferredInput has set
+          // selectedInputUID, especially after deactivation on Pause. Treat
+          // notifications inside that bounded configuration operation as setup;
+          // the selected port is verified before installing/starting the tap.
+          // Once armed, even configuration notifications remain terminal.
+          let configured =
+            reason == .categoryChange
             || (reason == .override || reason == .routeConfigurationChange)
-              && self?.hasSelectedInput() == true
-          let event: AppleAudioSystemEvent = configured ? .configurationChanged : .routeChanged
-          self?.emit(event)
+              && self.hasSelectedInput()
+          self.emit(self.inputRouteEvents.routeChange(knownConfiguration: configured))
         },
         notificationCenter.addObserver(
           forName: AVAudioSession.mediaServicesWereLostNotification,
@@ -168,31 +172,36 @@
       }
       lock.withLock { activationAttempted = true }
       do {
-        let selected = microphoneInput.selected
-        // This adapter records an in-person conversation and has no playback
-        // graph. Use recording input without the VoIP route/processing policy.
-        try audioSession.setCategory(
-          .record,
-          mode: .measurement,
-          options: selected == .bluetooth ? [.allowBluetoothHFP] : []
-        )
-        try audioSession.setActive(true)
-        let portTypes: [AVAudioSession.Port]
-        switch selected {
-        case .builtIn: portTypes = [.builtInMic]
-        case .bluetooth: portTypes = [.bluetoothHFP]
-        case .external: portTypes = [.usbAudio, .headsetMic]
+        try inputRouteEvents.withInputConfiguration {
+          let selected = microphoneInput.selected
+          // This adapter records an in-person conversation and has no playback
+          // graph. Use recording input without the VoIP route/processing policy.
+          try audioSession.setCategory(
+            .record,
+            mode: .measurement,
+            options: selected == .bluetooth ? [.allowBluetoothHFP] : []
+          )
+          try audioSession.setActive(true)
+          let portTypes: [AVAudioSession.Port]
+          switch selected {
+          case .builtIn: portTypes = [.builtInMic]
+          case .bluetooth: portTypes = [.bluetoothHFP]
+          case .external: portTypes = [.usbAudio, .headsetMic]
+          }
+          let available = (audioSession.availableInputs ?? []).filter {
+            portTypes.contains($0.portType)
+          }
+          // Keep the current eligible accessory if several are connected.
+          let currentUID = audioSession.currentRoute.inputs.first?.uid
+          guard let port = available.first(where: { $0.uid == currentUID }) ?? available.first
+          else {
+            throw AVFoundationDriverError.operationFailed
+          }
+          lock.withLock { selectedInputUID = port.uid }
+          try audioSession.setPreferredInput(port)
+          guard hasSelectedInput() else { throw AVFoundationDriverError.operationFailed }
+          signalMonitor?.setRoute(Self.inputRoute(audioSession.currentRoute))
         }
-        let available = (audioSession.availableInputs ?? []).filter { portTypes.contains($0.portType) }
-        // Keep the current eligible accessory if several are connected.
-        let currentUID = audioSession.currentRoute.inputs.first?.uid
-        guard let port = available.first(where: { $0.uid == currentUID }) ?? available.first else {
-          throw AVFoundationDriverError.operationFailed
-        }
-        lock.withLock { selectedInputUID = port.uid }
-        try audioSession.setPreferredInput(port)
-        guard hasSelectedInput() else { throw AVFoundationDriverError.operationFailed }
-        signalMonitor?.setRoute(Self.inputRoute(audioSession.currentRoute))
       } catch {
         throw AVFoundationDriverError.operationFailed
       }
@@ -263,7 +272,10 @@
           throw AVFoundationDriverError.operationFailed
         }
       }
-      lock.withLock { activationAttempted = false; selectedInputUID = nil }
+      lock.withLock {
+        activationAttempted = false
+        selectedInputUID = nil
+      }
       engine.reset()
       engine = AVAudioEngine()
     }
@@ -295,7 +307,9 @@
       emit(.permissionRevoked)
     }
 
-    private static func inputRoute(_ route: AVAudioSessionRouteDescription) -> PCMSignalMonitor.InputRoute {
+    private static func inputRoute(_ route: AVAudioSessionRouteDescription)
+      -> PCMSignalMonitor.InputRoute
+    {
       guard let input = route.inputs.first else { return .none }
       switch input.portType {
       case .builtInMic: return .builtIn
@@ -306,7 +320,9 @@
       }
     }
 
-    private static func copyFrames(_ buffer: AVAudioPCMBuffer, signalMonitor: PCMSignalMonitor?) -> OwnedAudioFrames? {
+    private static func copyFrames(_ buffer: AVAudioPCMBuffer, signalMonitor: PCMSignalMonitor?)
+      -> OwnedAudioFrames?
+    {
       let count = Int(buffer.frameLength)
       let channelCount = Int(buffer.format.channelCount)
       let roundedRate = buffer.format.sampleRate.rounded()
