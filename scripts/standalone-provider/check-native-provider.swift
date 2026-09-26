@@ -89,6 +89,45 @@ struct CheckNativeProvider {
     }
     @MainActor static func main() async throws {
         var checks = 0
+        for fault in ["none", "workspace", "revision", "recovery", "binding", "appointment", "extra", "denied", "malformed", "oversized"] {
+            let (auth, _, wire, connection) = try make()
+            let workspace = UUID(), recovery = UUID()
+            let binding = "scribe_capture_binding_01j00000000000000000000000"
+            let appointment = "appointment_01j00000000000000000000000"
+            let revision = auth.state().revision
+            var value: [String: Any] = ["revision": revision, "workspaceId": workspace.uuidString.lowercased(),
+                "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
+                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment]]
+            let body = String(decoding: try JSONSerialization.data(withJSONObject: ["workspace_id": workspace.uuidString.lowercased()]), as: UTF8.self)
+            await wire.setResponse(ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: value)))
+            _ = try await connection.send(request(auth, action: "mount", body: body))
+            let mounted = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
+            try require(mounted.workspaceID == workspace && mounted.recoveryScope == recovery && mounted.bindingRef == binding)
+            switch fault {
+            case "workspace": value["workspaceId"] = UUID().uuidString.lowercased()
+            case "revision": value["revision"] = UUID().uuidString.lowercased()
+            case "recovery": value["recoveryScope"] = "renderer-selected-namespace"
+            case "binding": value["bindingRef"] = "invalid"
+            case "appointment": value["encounter"] = ["appointmentRef": "appointment_01j00000000000000000000001"]
+            case "extra": value["unexpected"] = true
+            case "oversized": value["padding"] = String(repeating: "x", count: 8192)
+            default: break
+            }
+            await wire.setResponse(ProviderNativeReply(status: fault == "denied" ? 403 : 200,
+                body: fault == "malformed" ? Data("[]".utf8) : try JSONSerialization.data(withJSONObject: value)))
+            if fault == "malformed" || fault == "oversized" {
+                try await rejected(Task { try await connection.send(request(auth, action: "mount", body: body)) })
+            } else { _ = try await connection.send(request(auth, action: "mount", body: body)) }
+            if fault == "none" {
+                try require(try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision) == mounted)
+                _ = try await auth.signOut()
+            }
+            do {
+                _ = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
+                throw CheckFailure.failed
+            } catch is CheckFailure { throw CheckFailure.failed } catch {}
+            connection.close(); checks += 1
+        }
         do {
             let (auth, driver, wire, connection) = try make()
             for action in ["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes"] {

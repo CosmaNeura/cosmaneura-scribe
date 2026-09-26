@@ -6,6 +6,7 @@ enum ProviderNativeError: String, Error, Sendable {
     case invalidRequest = "provider_native_request_invalid"
     case cancelled = "provider_native_cancelled"
     case response = "provider_native_response_invalid"
+    case authorityChanged = "provider_native_authority_changed"
 }
 
 enum ProviderNativeAction: String, Sendable {
@@ -86,6 +87,18 @@ struct NativeProviderRecordingContext: Equatable, Sendable {
     }
 }
 
+/// Namespace copied from a verified native Core mount response. Keeping only
+/// these IDs avoids both a second mount request and renderer-chosen queue custody.
+struct NativeProviderRecordingMount: Equatable, Sendable {
+    let workspaceID: UUID
+    let bindingRef: String
+    let recoveryScope: UUID
+    fileprivate init(workspaceID: UUID, bindingRef: String, recoveryScope: UUID) {
+        self.workspaceID = workspaceID; self.bindingRef = bindingRef
+        self.recoveryScope = recoveryScope
+    }
+}
+
 protocol ProviderNativeWire: Sendable {
     func send(_ request: ProviderNativeRequest, token: String) async throws -> ProviderNativeReply
 }
@@ -98,12 +111,14 @@ protocol ProviderNativeWire: Sendable {
     private var pending: [UUID: (revision: String, task: Task<ProviderNativeReply, Error>)] = [:]
     private var earlyCancellations: Set<UUID> = []
     private var closed = false
+    private var recordingMounts: [UUID: (revision: String, mount: NativeProviderRecordingMount)] = [:]
 
     init(auth: NativeWorkspaceAuth, wire: any ProviderNativeWire) {
         self.auth = auth; self.wire = wire
     }
 
     func authChanged(_ state: NativeAuthState) {
+        recordingMounts = recordingMounts.filter { state.phase == .ready && $0.value.revision == state.revision }
         for (_, operation) in pending where state.phase != .ready || operation.revision != state.revision {
             operation.task.cancel()
         }
@@ -119,6 +134,7 @@ protocol ProviderNativeWire: Sendable {
 
     func close() {
         closed = true
+        recordingMounts.removeAll()
         for (_, operation) in pending { operation.task.cancel() }
     }
 
@@ -148,6 +164,13 @@ protocol ProviderNativeWire: Sendable {
         return state.revision
     }
 
+    func recordingMount(workspaceID: UUID, bindingRef: String, revision: String) throws -> NativeProviderRecordingMount {
+        try current(revision)
+        guard let saved = recordingMounts[workspaceID], saved.revision == revision,
+              saved.mount.bindingRef == bindingRef else { throw ProviderNativeError.unavailable }
+        return saved.mount
+    }
+
     /// Native-only key preparation input. Neither tenant nor account is taken
     /// from a renderer request, Core authority-tenant reference, or saved form.
     func recordingContext(workspaceID: UUID, bindingRef: String, sessionID: UUID,
@@ -168,6 +191,7 @@ protocol ProviderNativeWire: Sendable {
             body: String(decoding: body, as: UTF8.self))
         let reply = try await send(request)
         try current(revision)
+        try Self.requireRecordingResponse(reply.status)
         guard try auth.recordingAccountDigest(expectedRevision: revision) == account,
               reply.status == 200, reply.body.count <= 8192,
               let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
@@ -204,12 +228,52 @@ protocol ProviderNativeWire: Sendable {
         return age >= -5 && age <= 30
     }
 
+    /// Explicit Core denial retires capture; only an unavailable transport/service
+    /// may be retried within the already granted short native window.
+    static func requireRecordingResponse(_ status: Int) throws {
+        if [401, 403, 409, 422].contains(status) {
+            throw ProviderNativeError.authorityChanged
+        }
+        if status == 503 { throw ProviderNativeError.unavailable }
+        guard status == 200 else { throw ProviderNativeError.response }
+    }
+
+    private func rememberRecordingMount(_ request: ProviderNativeRequest, _ reply: ProviderNativeReply) {
+        guard request.action == .mount,
+              let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              let workspace = body["workspace_id"] as? String, let id = UUID(uuidString: workspace),
+              id.uuidString.lowercased() == workspace else { return }
+        recordingMounts.removeValue(forKey: id)
+        guard Set(body.keys) == ["workspace_id"], reply.status == 200, reply.body.count <= 8192,
+              let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+              Set(value.keys) == ["revision", "recoveryScope", "workspaceId", "appointmentRef", "bindingRef", "encounter"],
+              value["revision"] as? String == request.revision,
+              value["workspaceId"] as? String == workspace,
+              let recovery = value["recoveryScope"] as? String, let scope = UUID(uuidString: recovery),
+              scope.uuidString.lowercased() == recovery,
+              let binding = value["bindingRef"] as? String,
+              binding.range(of: "^scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil,
+              let appointment = value["appointmentRef"] as? String,
+              appointment.range(of: "^appointment_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil,
+              let encounter = value["encounter"] as? [String: Any], encounter["appointmentRef"] as? String == appointment,
+              recordingMounts.count < 100 else { return }
+        recordingMounts[id] = (request.revision, NativeProviderRecordingMount(
+            workspaceID: id, bindingRef: binding, recoveryScope: scope))
+    }
+
     func send(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
         guard !closed, pending[request.id] == nil, pending.count < 8 else {
             throw ProviderNativeError.unavailable
         }
         guard earlyCancellations.remove(request.id) == nil else { throw ProviderNativeError.cancelled }
         try current(request.revision)
+        // A replacement mount that is cancelled, rejected or malformed cannot
+        // leave an older namespace available for a new native recording.
+        if request.action == .mount,
+           let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+           let workspace = body["workspace_id"] as? String, let id = UUID(uuidString: workspace) {
+            recordingMounts.removeValue(forKey: id)
+        }
         let operation = Task { @MainActor [auth, wire] in
             try Task.checkCancellation()
             let token = try await auth.token(expectedRevision: request.revision,
@@ -224,12 +288,14 @@ protocol ProviderNativeWire: Sendable {
                 throw ProviderNativeError.response
             }
             if reply.status != 200 {
+                self.rememberRecordingMount(request, reply)
                 // Do not forward arbitrary proxy/SDK/error content to JavaScript.
                 return Self.sanitizedFailure(reply, action: request.action)
             }
             guard (try? JSONSerialization.jsonObject(with: reply.body)) is [String: Any] else {
                 throw ProviderNativeError.response
             }
+            self.rememberRecordingMount(request, reply)
             return reply
         }
         pending[request.id] = (request.revision, operation)
