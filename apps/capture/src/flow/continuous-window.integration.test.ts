@@ -2,7 +2,7 @@ import { webcrypto } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
-import { HttpCaptureBff } from "../bff/http-client";
+import { BffResponseError, HttpCaptureBff } from "../bff/http-client";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import { HttpCiphertextUploadTarget } from "../bff/upload-target";
 import type { CaptureSource, CaptureSourceStartOptions, CaptureSourceWindow } from "../capture";
@@ -18,6 +18,71 @@ const crypto = webcrypto as unknown as Crypto;
 // No physical audio or elapsed three-hour claim: the real flow, Core protocol,
 // AES-GCM and encrypted IndexedDB process 1,080 full-sized ten-second WAV chunks.
 describe("continuous configured desktop windows", () => {
+  it.each(["stop", "deactivate"] as const)("keeps acquisition independent of uploads and joins them before %s completes", async action => {
+    const f = await fixture(true), gate = deferred();
+    const receipt = f.bff.getChunkReceipt.bind(f.bff);
+    const reads = vi.spyOn(f.bff, "getChunkReceipt").mockImplementationOnce(async (...args) => {
+      await gate.promise; return receipt(...args);
+    });
+    const complete = vi.spyOn(f.bff, "completeCapture");
+    try {
+      await f.prepare(); await f.controller.startRecording();
+      await f.source.emit(); await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      await f.source.emit(); // This must finish while the first upload is held.
+      expect(f.controller.snapshot).toMatchObject({ state: "recording", recordedChunks: 2 });
+      expect(complete).not.toHaveBeenCalled();
+      let settled = false;
+      const closing = (action === "stop" ? f.controller.stopRecording() : f.controller.deactivate()).then(() => { settled = true; });
+      await vi.waitFor(() => expect(f.source.stops).toBe(1));
+      expect(settled).toBe(false); expect(complete).not.toHaveBeenCalled();
+      gate.resolve(); await closing;
+      expect(f.controller.snapshot.state).toBe(action === "stop" ? "processing" : "paused");
+      expect(complete).toHaveBeenCalledTimes(action === "stop" ? 1 : 0);
+      const metadata = (await f.storage.listMetadata()).filter(record => record.state !== "reserved");
+      expect(metadata).toHaveLength(2);
+      expect(metadata.every(record => ["encrypted", "purged"].includes(record.state))).toBe(true);
+      if (action === "deactivate") {
+        await f.reopen(); expect(f.source.starts).toBe(1);
+        expect(f.controller.snapshot).toMatchObject({ state: "paused", recordedChunks: 2 });
+        await f.controller.stopRecording();
+      }
+      expect((await f.storage.listMetadata()).filter(record => record.state === "purged")).toHaveLength(2);
+    } finally { gate.resolve(); await f.close(); }
+  });
+
+  it("retains offline chunks, retries without stopping capture, and finalizes only on explicit Stop", async () => {
+    const f = await fixture(true);
+    const reads = vi.spyOn(f.bff, "getChunkReceipt").mockRejectedValueOnce(new BffResponseError(503, "synthetic_offline", null));
+    const complete = vi.spyOn(f.bff, "completeCapture");
+    try {
+      await f.prepare(); await f.controller.startRecording(); await f.source.emit();
+      await vi.waitFor(async () => expect((await f.storage.listMetadata()).some(record => record.retry.upload.attempts === 1)).toBe(true));
+      expect(f.controller.snapshot.state).toBe("recording");
+      expect((await f.storage.list()).filter(record => record.state === "uploading")).toHaveLength(1);
+      f.clock.advance(1000); await f.source.emit();
+      await vi.waitFor(async () => expect((await f.storage.listMetadata()).filter(record => record.state === "purged")).toHaveLength(2));
+      expect(reads).toHaveBeenCalledTimes(3); expect(complete).not.toHaveBeenCalled();
+      expect(f.source.starts).toBe(1); expect(f.source.stops).toBe(0);
+      await f.controller.stopRecording(); expect(complete).toHaveBeenCalledTimes(1);
+      expect(f.controller.snapshot.state).toBe("processing");
+    } finally { await f.close(); }
+  });
+
+  it("renews the same native recording window while an encrypted upload is pending", async () => {
+    const f = await fixture(true), gate = deferred();
+    const receipt = f.bff.getChunkReceipt.bind(f.bff);
+    const reads = vi.spyOn(f.bff, "getChunkReceipt").mockImplementationOnce(async (...args) => { await gate.promise; return receipt(...args); });
+    try {
+      await f.prepare(); await f.controller.startRecording(); await f.source.emit();
+      await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      expect(f.clock.advance(780000)).toBe(true);
+      await vi.waitFor(() => expect(f.source.extensions).toHaveLength(1));
+      expect(f.controller.snapshot.state).toBe("recording"); expect(f.source.starts).toBe(1);
+      gate.resolve(); await f.controller.stopRecording();
+      expect(f.controller.snapshot.state).toBe("processing");
+    } finally { gate.resolve(); await f.close(); }
+  });
+
   it("retains three hours of encrypted audio across 13 renewals without restarting the source", async () => {
     const f = await fixture();
     try {
@@ -172,7 +237,7 @@ class Clock {
   }
 }
 
-async function fixture() {
+async function fixture(uploadWhileRecording = false) {
   const clock = new Clock(), server = createMockBffServer({ now: clock.now });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -183,7 +248,7 @@ async function fixture() {
   const source = new SyntheticWindowSource();
   const build = () => new CaptureFlowController({ bff, flowStore: store, queue: new CaptureQueue(storage, { crypto, now: () => clock.time }),
     queueTransport: new BffCaptureQueueTransport(bff, new HttpCiphertextUploadTarget([origin])),
-    source, crypto, now: clock.now, scheduleTimeout: clock.schedule, cancelTimeout: clock.cancel });
+    source, uploadWhileRecording, crypto, now: clock.now, scheduleTimeout: clock.schedule, cancelTimeout: clock.cancel });
   let controller = build(), sessionId = "";
   return { bff, source, clock, get store() { return store; }, get storage() { return storage; },
     get controller() { return controller; }, get sessionId() { return sessionId; },

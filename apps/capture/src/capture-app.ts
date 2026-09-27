@@ -239,7 +239,7 @@ export class CaptureApp extends LitElement {
               <h2 id="record-title">Record</h2>
               <p>
                 ${provider?.captureMode === "desktop_meeting"
-                  ? "Choose your Meet window in Chrome or your Zoom window when starting. This records your microphone and the selected application’s audio; other audio from that application may be included."
+                  ? "Choose your Meet window in Chrome or your Zoom window when starting. This records your microphone and the selected application’s audio; other audio from that application may be included. Encrypted audio uploads while you record. If you go offline, saved audio waits on this Mac."
                   : provider?.captureMode === "native_microphone" ? "Start and stop deliberately. Your recording is saved on this iPhone until upload is confirmed."
                   : provider ? "Keep this app in the foreground while recording. Start and stop deliberately."
                   : this.#sourceKind === "microphone"
@@ -280,7 +280,7 @@ export class CaptureApp extends LitElement {
                 ${(this.#snapshot.desktop?.phase === "starting" || this.#snapshot.native?.phase === "starting") ? "Cancel start"
                   : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
                   : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
-                  ? "Retry stop and upload" : "Stop and upload"}
+                  ? "Retry stop and upload" : this.#snapshot.desktop ? "Stop recording" : "Stop and upload"}
               </button>
               ${provider?.controller.pauseRecording && this.#snapshot.state === "recording" ? html`<button
                 class="secondary" data-testid="pause-recording" ?disabled=${this.#busy || this.#stopping}

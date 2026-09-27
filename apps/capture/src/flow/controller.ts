@@ -76,6 +76,8 @@ export interface CaptureFlowControllerOptions {
   readonly queue: CaptureQueue;
   readonly queueTransport: CaptureQueueTransport;
   readonly source: CaptureSource;
+  /** Trusted desktop host only; reuse the encrypted queue while acquisition runs. */
+  readonly uploadWhileRecording?: boolean;
   readonly storageCapacity?: CaptureStorageCapacity;
   /** Host pause includes its physical-stop and server-retirement barriers. */
   readonly pauseForStorage?: () => Promise<void>;
@@ -99,6 +101,10 @@ export class CaptureFlowController {
   readonly #queue: CaptureQueue;
   readonly #queueTransport: CaptureQueueTransport;
   readonly #source: CaptureSource;
+  readonly #uploadWhileRecording: boolean;
+  #backgroundUpload: Promise<void> | null = null;
+  #backgroundUploadQueued = false;
+  #backgroundUploadSuspended = true;
   readonly #storageCapacity: CaptureStorageCapacity | undefined;
   readonly #pauseForStorage: () => Promise<void>;
   #storageCheck: Promise<void> | null = null;
@@ -154,6 +160,7 @@ export class CaptureFlowController {
     this.#storageCapacity = options.storageCapacity;
     this.#pauseForStorage = options.pauseForStorage ?? (() => this.pauseRecording());
     this.#channel = options.source.channel ?? "microphone";
+    this.#uploadWhileRecording = options.uploadWhileRecording === true && this.#channel === "mixed";
     if (!["microphone", "mixed", "system_audio"].includes(this.#channel)) {
       throw new QueueInvariantError("capture_channel_invalid");
     }
@@ -466,6 +473,7 @@ export class CaptureFlowController {
       throw new QueueInvariantError("capture_interval_position_conflict");
     }
     this.#continuousCancelled = false;
+    this.#backgroundUploadSuspended = false;
     const hardMaximumChunks = Math.min(this.#requireCapabilities().max_chunks - this.#runFirstSequenceNumber,
       Math.floor((this.#requireActiveState().aggregatePlaintextBudgetBytes - this.#recordedPlaintextBytes)
         / this.#requireCapabilities().max_envelope_bytes));
@@ -503,6 +511,7 @@ export class CaptureFlowController {
       } else if (this.#snapshot.state === "recording" && !this.#sourcePausedBySignal) {
         this.#setSnapshot({ statusCode: this.#reviewAfterUpload ? "capture_recording" : "synthetic_preview_recording" });
         this.#armContinuousRenewal();
+        this.#queueBackgroundUpload();
       }
     } catch (error) {
       this.#clearAuthorityTimeout();
@@ -608,8 +617,9 @@ export class CaptureFlowController {
     this.#armAuthorityDeadline();
   }
 
-  /** Explicit physical pause. It retains the key/chunks and never uploads. */
+  /** Explicit physical pause; no new upload work is started by this action. */
   public async pauseRecording(): Promise<void> {
+    this.#backgroundUploadSuspended = true;
     this.#continuousCancelled = true;
     if (!this.#reviewAfterUpload || !["ready", "recording", "paused"].includes(this.#snapshot.state)) {
       throw new QueueInvariantError("capture_state_conflict");
@@ -621,6 +631,7 @@ export class CaptureFlowController {
       await this.#continuousTask?.catch(() => undefined);
       await this.#chunkPersistence;
       await this.#sourcePausePersistence;
+      await this.#backgroundUpload;
       this.#sourceStarted = false;
       this.#recordingAbortController = null;
       await this.#saveActivePhase("paused");
@@ -696,6 +707,7 @@ export class CaptureFlowController {
   }
 
   public async stopRecording(): Promise<void> {
+    this.#backgroundUploadSuspended = true;
     this.#continuousCancelled = true;
     if (this.#snapshot.state !== "recording" && this.#snapshot.state !== "paused") {
       throw new QueueInvariantError("capture_state_conflict");
@@ -721,6 +733,7 @@ export class CaptureFlowController {
       await this.#continuousTask?.catch(() => undefined);
       await this.#chunkPersistence;
       await this.#sourcePausePersistence;
+      await this.#backgroundUpload;
       if (this.#activeState?.continuation?.continuous) {
         await this.#saveActivePhase("paused");
         this.#setSnapshot({ state: "paused", statusCode: "capture_paused" });
@@ -754,8 +767,9 @@ export class CaptureFlowController {
     }
   }
 
-  /** Host teardown stops acquisition and retains recoverable work without upload. */
+  /** Host teardown stops acquisition, joins existing uploads and retains recovery. */
   public async deactivate(): Promise<void> {
+    this.#backgroundUploadSuspended = true;
     this.#continuousCancelled = true;
     this.#clearAuthorityTimeout();
     this.#recordingAbortController?.abort();
@@ -763,6 +777,7 @@ export class CaptureFlowController {
     await this.#continuousTask?.catch(() => undefined);
     await this.#chunkPersistence;
     await this.#sourcePausePersistence;
+    await this.#backgroundUpload;
     this.#sourceStarted = false;
     if (this.#activeState?.phase === "recording") {
       await this.#saveActivePhase("paused");
@@ -844,6 +859,29 @@ export class CaptureFlowController {
     }
     await this.#saveActivePhase("completing");
     await this.#completeAndRefresh();
+  }
+
+  #queueBackgroundUpload(): void {
+    if (!this.#uploadWhileRecording || !this.#reviewAfterUpload || this.#backgroundUploadSuspended
+      || !this.#sourceStarted || this.#snapshot.state !== "recording" || this.#snapshot.recordedChunks === 0) return;
+    this.#backgroundUploadQueued = true;
+    if (this.#backgroundUpload) return;
+    this.#backgroundUploadQueued = false;
+    // Never await network work from onChunk. The existing two-worker queue owns
+    // idempotency, retries and authenticated receipts. Stop joins this task before
+    // draining the remaining queue and finalizing; no transcript starts here.
+    this.#backgroundUpload = (async () => {
+      const drained = await this.#queue.drainOnce(this.#queueTransport);
+      for (const item of drained.items) {
+        if (item.outcome === "registered") await this.#queue.purge(item.objectId);
+      }
+    })().catch(() => {
+      // Offline/uncertain work stays in the encrypted queue for its normal retry.
+      // Network failure must not interrupt local audio acquisition.
+    }).finally(() => {
+      this.#backgroundUpload = null;
+      if (this.#backgroundUploadQueued) this.#queueBackgroundUpload();
+    });
   }
 
   async #completeAndRefresh(): Promise<void> {
@@ -1126,6 +1164,7 @@ export class CaptureFlowController {
       remainingBudgetSeconds: this.#remainingAggregateBudgetSeconds(recordedChunks),
       remainingAuthoritySeconds: this.#remainingCaptureSeconds(recordedChunks),
     });
+    this.#queueBackgroundUpload();
   }
 
   #setCapabilities(capabilities: CaptureCapabilities): void {

@@ -94,6 +94,7 @@ export class CaptureQueue {
   /** Applies the current session capability before any queue drain begins. */
   public configureUploadConcurrency(uploadConcurrency: number): void {
     assertUploadConcurrency(uploadConcurrency);
+    if (uploadConcurrency === this.#uploadConcurrency) return;
     if (this.#draining) throw new QueueInvariantError("queue_drain_in_progress");
     this.#uploadConcurrency = uploadConcurrency;
   }
