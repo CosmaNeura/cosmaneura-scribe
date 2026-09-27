@@ -28,6 +28,24 @@ const TENANT_ID = "20000000-0000-4000-8000-000000000002";
 const REGISTERED_AT = "2026-08-17T12:00:00.000Z";
 
 describe("CaptureQueue", () => {
+  it("does not claim queued audio when scheduling was cancelled, and keeps it available for retry", async () => {
+    const harness = await createHarness(), cancellation = new AbortController();
+    try {
+      const reservation = makeReservation(0);
+      await harness.queue.reserve(reservation, "reservation-batch-0001");
+      await harness.queue.encrypt(reservation.objectId, makeEnvelope(1));
+      const original = await harness.queue.get(reservation.objectId);
+      const transport = successfulTransport(() => harness.now.value);
+      const receipt = vi.spyOn(transport, "getReceipt");
+      cancellation.abort();
+      const result = await harness.queue.drainOnce(transport, undefined, cancellation.signal);
+      expect(result.items).toEqual([{ objectId: reservation.objectId, outcome: "skipped" }]);
+      expect(receipt).not.toHaveBeenCalled();
+      expect(await harness.queue.get(reservation.objectId)).toEqual(original);
+      await harness.queue.drainOnce(transport);
+      expect((await harness.queue.get(reservation.objectId))?.state).toBe("registered");
+    } finally { harness.storage.close(); }
+  });
   it("persists every ordered state and removes bytes only after a registration receipt", async () => {
     const harness = await createHarness();
     const states: string[] = [];

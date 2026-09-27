@@ -184,7 +184,8 @@ export class CaptureQueue {
    * Processes every currently eligible record once, with no more than the
    * generated protocol's two simultaneous upload workers.
    */
-  async drainOnce(transport: CaptureQueueTransport, progress?: (value: DrainProgress) => void): Promise<DrainResult> {
+  async drainOnce(transport: CaptureQueueTransport, progress?: (value: DrainProgress) => void,
+    stopScheduling?: AbortSignal): Promise<DrainResult> {
     return withOriginDrainLock(async () => {
       if (this.#draining) throw new QueueInvariantError("queue_drain_in_progress");
       this.#draining = true;
@@ -203,6 +204,9 @@ export class CaptureQueue {
         let nextIndex = 0;
         const worker = async (): Promise<void> => {
           while (true) {
+            // Finish any already claimed chunk and its durable receipt. Leave
+            // unclaimed records untouched for the next explicit drain/resume.
+            if (stopScheduling?.aborted) return;
             const index = nextIndex;
             nextIndex += 1;
             const record = records[index];

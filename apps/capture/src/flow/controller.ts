@@ -105,6 +105,7 @@ export class CaptureFlowController {
   readonly #source: CaptureSource;
   readonly #uploadWhileRecording: boolean;
   #backgroundUpload: Promise<void> | null = null;
+  #backgroundUploadCancellation: AbortController | null = null;
   #backgroundUploadQueued = false;
   #backgroundUploadSuspended = true;
   readonly #storageCapacity: CaptureStorageCapacity | undefined;
@@ -621,7 +622,7 @@ export class CaptureFlowController {
 
   /** Explicit physical pause; no new upload work is started by this action. */
   public async pauseRecording(): Promise<void> {
-    this.#backgroundUploadSuspended = true;
+    this.#suspendBackgroundUpload();
     this.#continuousCancelled = true;
     if (!this.#reviewAfterUpload || !["ready", "recording", "paused"].includes(this.#snapshot.state)) {
       throw new QueueInvariantError("capture_state_conflict");
@@ -709,7 +710,7 @@ export class CaptureFlowController {
   }
 
   public async stopRecording(): Promise<void> {
-    this.#backgroundUploadSuspended = true;
+    this.#suspendBackgroundUpload();
     this.#continuousCancelled = true;
     if (this.#snapshot.state !== "recording" && this.#snapshot.state !== "paused") {
       throw new QueueInvariantError("capture_state_conflict");
@@ -771,7 +772,7 @@ export class CaptureFlowController {
 
   /** Host teardown stops acquisition, joins existing uploads and retains recovery. */
   public async deactivate(): Promise<void> {
-    this.#backgroundUploadSuspended = true;
+    this.#suspendBackgroundUpload();
     this.#continuousCancelled = true;
     this.#clearAuthorityTimeout();
     this.#recordingAbortController?.abort();
@@ -863,17 +864,24 @@ export class CaptureFlowController {
     await this.#completeAndRefresh();
   }
 
+  #suspendBackgroundUpload(): void {
+    this.#backgroundUploadSuspended = true;
+    this.#backgroundUploadCancellation?.abort();
+  }
+
   #queueBackgroundUpload(): void {
     if (!this.#uploadWhileRecording || !this.#reviewAfterUpload || this.#backgroundUploadSuspended
       || !this.#sourceStarted || this.#snapshot.state !== "recording" || this.#snapshot.recordedChunks === 0) return;
     this.#backgroundUploadQueued = true;
     if (this.#backgroundUpload) return;
     this.#backgroundUploadQueued = false;
+    const cancellation = new AbortController();
+    this.#backgroundUploadCancellation = cancellation;
     // Never await network work from onChunk. The existing two-worker queue owns
     // idempotency, retries and authenticated receipts. Stop joins this task before
     // draining the remaining queue and finalizing; no transcript starts here.
     this.#backgroundUpload = (async () => {
-      const drained = await this.#queue.drainOnce(this.#queueTransport, this.#uploadProgress);
+      const drained = await this.#queue.drainOnce(this.#queueTransport, this.#uploadProgress, cancellation.signal);
       for (const item of drained.items) {
         if (item.outcome === "registered") await this.#queue.purge(item.objectId);
       }
@@ -882,6 +890,7 @@ export class CaptureFlowController {
       // Network failure must not interrupt local audio acquisition.
     }).finally(() => {
       this.#backgroundUpload = null;
+      this.#backgroundUploadCancellation = null;
       if (this.#backgroundUploadQueued) this.#queueBackgroundUpload();
     });
   }
@@ -1326,6 +1335,7 @@ export class CaptureFlowController {
     if (this.#snapshot.state !== "ready" && this.#snapshot.state !== "recording") return;
     const wasRecording = this.#snapshot.state === "recording";
     if (wasRecording) {
+      this.#suspendBackgroundUpload();
       this.#continuousCancelled = true;
       this.#sourcePausedBySignal = true;
       this.#recordingAbortController?.abort();
@@ -1342,6 +1352,7 @@ export class CaptureFlowController {
     code: CaptureSourceErrorCode | CaptureSourceInterruptionCode,
   ): void {
     if (this.#snapshot.state !== "recording" || this.#authorityExpiryRequested) return;
+    this.#suspendBackgroundUpload();
     this.#clearAuthorityTimeout();
     this.#continuousCancelled = true;
     this.#sourcePausedBySignal = true;
