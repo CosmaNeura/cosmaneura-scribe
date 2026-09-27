@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from typing import Annotated
@@ -96,6 +97,23 @@ settings = Settings(
     workflow_api_audience="11111111-1111-4111-8111-111111111114",
     trusted_platform_client_id=UUID("11111111-1111-4111-8111-111111111115"),
 )
+
+
+async def require_fresh_database() -> None:
+    freshness_provider = build_postgres_provider(settings)
+    try:
+        async with freshness_provider.engine.connect() as connection:
+            for table in ("scribe_sessions", "audio_chunks", "audit_events"):
+                count = await connection.scalar(text(f"SELECT count(*) FROM {table}"))
+                if count != 0:
+                    raise RuntimeError(
+                        "browser E2E requires a fresh disposable _test database"
+                    )
+    finally:
+        await freshness_provider.close()
+
+
+asyncio.run(require_fresh_database())
 provider = build_postgres_provider(settings)
 
 

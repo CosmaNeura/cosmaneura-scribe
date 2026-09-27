@@ -8,7 +8,17 @@ test("persists browser capture through the real API and PostgreSQL", async ({
   request,
 }) => {
   let uploads = 0;
+  let createdSessionId;
   let transcriptionPolls = 0;
+  page.on("response", async response => {
+    if (
+      response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/api/capture/sessions"
+      && response.status() === 201
+    ) {
+      createdSessionId = (await response.json()).id;
+    }
+  });
   await context.route("**/api/capture/sessions/*/transcription-status", async route => {
     transcriptionPolls += 1;
     const sessionId = new URL(route.request().url()).pathname.split("/").at(-2);
@@ -64,6 +74,8 @@ test("persists browser capture through the real API and PostgreSQL", async ({
   const response = await request.get("http://127.0.0.1:4175/__e2e__/evidence");
   expect(response.ok()).toBe(true);
   const evidence = await response.json();
+  expect(createdSessionId).toBeTruthy();
+  expect(evidence.session_id).toBe(createdSessionId);
   expect(evidence.status).toBe("uploaded");
   expect(evidence.chunk_count).toBeGreaterThanOrEqual(1);
   expect(evidence.audit_actions).toEqual(expect.arrayContaining([
