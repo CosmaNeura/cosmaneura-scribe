@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
 profile="${1:-}"
 case "$profile" in
   burst)
@@ -22,7 +24,6 @@ esac
 exec uv run locust \
   --locustfile tests/load/locustfile.py \
   --headless \
-  --host http://127.0.0.1:4175 \
   --users "$users" \
   --spawn-rate "$spawn_rate" \
   --run-time "$duration" \
