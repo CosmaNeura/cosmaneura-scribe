@@ -185,6 +185,219 @@ async def test_translation_discovery_uses_tenant_transaction(tmp_path: Path) -> 
     assert observed == [(tenant_id, settings.captured_worker_batch_size)]
 
 
+@pytest.mark.asyncio
+async def test_speech_discovery_scopes_query_and_returns_targets(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+    expected = (uuid4(), uuid4())
+    statements: list[tuple[str, object | None]] = []
+
+    class Scalars:
+        def __iter__(self):
+            return iter(expected)
+
+    class Result:
+        def scalars(self):
+            return Scalars()
+
+    class Connection:
+        async def execute(self, statement, parameters=None):
+            statements.append((str(statement), parameters))
+            return Result()
+
+    class Transaction:
+        async def __aenter__(self):
+            return Connection()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    repositories = SimpleNamespace(engine=SimpleNamespace(begin=lambda: Transaction()))
+
+    assert await captured_worker_job_runner._targets(
+        repositories, settings, tenant_id, None
+    ) == expected
+    assert "statement_timeout" in statements[0][0]
+    assert statements[1][1] == {"tenant": str(tenant_id)}
+    assert statements[2][1] == {
+        "tenant": tenant_id,
+        "maximum": settings.captured_worker_batch_size,
+    }
+
+
+@pytest.mark.asyncio
+async def test_speech_composition_reconciles_targets_and_closes_resources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = _settings(tmp_path)
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+    targets = (uuid4(), uuid4())
+    closed: list[str] = []
+    reconciled: list[UUID] = []
+    processed: list[UUID] = []
+
+    class Store:
+        async def reconcile_exhausted_speech(
+            self, tenant: UUID, session: UUID, *, max_attempts: int
+        ) -> None:
+            assert tenant == tenant_id
+            assert max_attempts == 3
+            reconciled.append(session)
+
+    class Transaction:
+        async def __aenter__(self):
+            return Store()
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    class Repositories:
+        def __init__(self, engine: object) -> None:
+            self.engine = engine
+
+        def transaction(self, tenant: UUID):
+            assert tenant == tenant_id
+            return Transaction()
+
+    class Worker:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["enabled"] is True
+
+        async def process(self, *, tenant_id: UUID, session_id: UUID) -> None:
+            assert tenant_id == next(iter(settings.configured_capture_tenant_ids))
+            processed.append(session_id)
+            if session_id == targets[1]:
+                raise RuntimeError("synthetic provider failure")
+
+    base = SimpleNamespace(engine=object(), close=lambda: _close(closed, "database"))
+    assembler = SimpleNamespace(close=lambda: _close(closed, "assembler"))
+    transcriber = SimpleNamespace(close=lambda: _close(closed, "transcriber"))
+    monkeypatch.setattr(captured_worker_job_runner, "build_postgres_provider", lambda _: base)
+    monkeypatch.setattr(
+        captured_worker_job_runner, "CapturedSourceRepositoryProvider", Repositories
+    )
+    monkeypatch.setattr(
+        captured_worker_job_runner, "build_audio_track_assembler", lambda *_: assembler
+    )
+    monkeypatch.setattr(
+        captured_worker_job_runner, "build_speech_to_text_provider", lambda _: transcriber
+    )
+    monkeypatch.setattr(captured_worker_job_runner, "CapturedTranscriptionWorker", Worker)
+
+    async def selected(*_: object):
+        return targets
+
+    monkeypatch.setattr(captured_worker_job_runner, "_targets", selected)
+
+    with pytest.raises(CapturedWorkerError, match="captured_worker_target_unavailable"):
+        await captured_worker_job_runner._execute(settings, tenant_id, None)
+
+    assert reconciled == list(targets)
+    assert processed == list(targets)
+    assert closed == ["transcriber", "assembler", "database"]
+
+
+async def _close(closed: list[str], name: str) -> None:
+    closed.append(name)
+
+
+@pytest.mark.asyncio
+async def test_translation_composition_builds_private_clients_and_closes_them(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = _settings(tmp_path, stage="translation")
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+    target = uuid4()
+    closed: list[str] = []
+    constructed: list[str] = []
+
+    class Repositories:
+        def __init__(self, engine: object) -> None:
+            self.engine = engine
+
+    class Credential:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["require_envvar"] is True
+            constructed.append("credential")
+
+        async def close(self) -> None:
+            closed.append("credential")
+
+    class Keys:
+        async def close(self) -> None:
+            closed.append("keys")
+
+    class Unwrapper:
+        def __init__(self, **_: object) -> None:
+            constructed.append("unwrapper")
+
+        async def close(self) -> None:
+            closed.append("unwrapper")
+            closed.append("credential")
+
+    class Worker:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["enabled"] is True
+            assert kwargs["limit"] == settings.captured_worker_batch_size
+            constructed.append("worker")
+
+        async def process(self, *, tenant_id: UUID, session_id: UUID) -> None:
+            assert (tenant_id, session_id) == (
+                next(iter(settings.configured_capture_tenant_ids)),
+                target,
+            )
+
+    base = SimpleNamespace(engine=object(), close=lambda: _close(closed, "database"))
+    monkeypatch.setattr(captured_worker_job_runner, "build_postgres_provider", lambda _: base)
+    monkeypatch.setattr(
+        captured_worker_job_runner, "CapturedSourceRepositoryProvider", Repositories
+    )
+    monkeypatch.setattr(captured_worker_job_runner, "DefaultAzureCredential", Credential)
+    monkeypatch.setattr(
+        captured_worker_job_runner, "build_audio_encryption_key_provider", lambda _: Keys()
+    )
+    monkeypatch.setattr(captured_worker_job_runner, "KeyVaultSessionKeyUnwrapper", Unwrapper)
+    monkeypatch.setattr(
+        captured_worker_job_runner,
+        "AzureGPT41TranslationAdapter",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        captured_worker_job_runner, "PrivateSpeechEndpointGuard", lambda *_: SimpleNamespace()
+    )
+    monkeypatch.setattr(captured_worker_job_runner, "TranslationJobCipher", lambda *_: object())
+    monkeypatch.setattr(captured_worker_job_runner, "CapturedTranslationWorker", Worker)
+
+    async def selected(*_: object):
+        return (target,)
+
+    monkeypatch.setattr(captured_worker_job_runner, "_targets", selected)
+
+    await captured_worker_job_runner._execute(settings, tenant_id, None)
+
+    assert constructed == ["credential", "credential", "unwrapper", "worker"]
+    assert closed == ["unwrapper", "credential", "keys", "credential", "database"]
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [(CapturedWorkerError("failure"), 1), (asyncio.CancelledError(), 130)],
+)
+def test_main_maps_worker_failures_to_process_status(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException, status: int
+) -> None:
+    async def fail(*_: object) -> bool:
+        raise error
+
+    monkeypatch.setattr(captured_worker_job_runner, "configure_standalone_logging", lambda: None)
+    monkeypatch.setattr(captured_worker_job_runner, "run_job_with_signal_cancellation", fail)
+
+    with pytest.raises(SystemExit) as raised:
+        captured_worker_job_runner.main()
+
+    assert raised.value.code == status
+
+
 @pytest.mark.parametrize("stage", ["speech", "translation"])
 def test_worker_settings_are_false_default_and_stage_closed(
     tmp_path: Path, stage: str
