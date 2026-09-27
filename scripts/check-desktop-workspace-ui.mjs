@@ -40,7 +40,7 @@ const schema = "doctor_note_schema_01j00000000000000000000000", transcriptRef = 
 const firstNote = "visit_note_01j00000000000000000000000", savedNote = "visit_note_01j00000000000000000000001";
 const english = "Invented test visit.", spanish = "Consulta de prueba inventada.";
 const now = new Date().toISOString(), methods = [], wire = [], authObservers = new Set();
-let accepted = false, prepared = false, pendingReview = null, creates = 0, closes = 0, authReads = 0, failListener = true, reviewReads = 0, discoveryReads = 0, notePrepares = 0;
+let accepted = false, prepared = false, pendingReview = null, creates = 0, closes = 0, authReads = 0, failListener = true, reviewReads = 0, discoveryReads = 0, notePrepares = 0, noteReads = 0, templateCount = 1;
 let fields = { Subjective: english, Assessment: "Invented fixture only." }, noteRef = firstNote;
 let state = { phase: "ready", revision: webcrypto.randomUUID() };
 let journal = { revision: "1", progress: { sessionId, uploaded: true, pendingSave: null,
@@ -110,14 +110,15 @@ const host = {
             }
             assert.equal(path, "/service/v1/agent/scribe/capture-notes"); assert.equal(body.expected_session_id, sessionId); assert.equal(accepted, true);
             if (body.action === "templates") return Response.json({ ...envelope, action: body.action, receipt: {
-              session_id: sessionId, templates: [{ schema_ref: schema, note_type: "Invented SOAP", field_names: Object.keys(fields) }] } });
+              session_id: sessionId, templates: Array.from({ length: templateCount }, (_, index) => ({ schema_ref: index ? "doctor_note_schema_01j00000000000000000000001" : schema,
+                note_type: index ? "Other invented template" : "Invented SOAP", field_names: Object.keys(fields) })) } });
             assert.equal(body.schema_ref, schema);
             if (body.action === "prepare") { prepared = true; notePrepares++; }
             else if (body.action === "save") {
               assert.deepEqual(body.edit, journal.progress.pendingSave.edit); assert.equal(key, body.edit.client_key);
               assert.equal(body.edit.expected_note_ref, noteRef); assert.equal(body.edit.expected_note_sha256, draft().note_sha256);
               fields = body.edit.fields; noteRef = savedNote;
-            } else assert.equal(body.action, "read");
+            } else { assert.equal(body.action, "read"); noteReads++; }
             return Response.json({ ...envelope, action: body.action, receipt: draft() });
           },
           async recorder() { throw new Error("No source activation in review/save check"); },
@@ -170,10 +171,10 @@ try {
   click('[data-review-action="accepted"]'); await until(() => root.querySelector('[data-review-action="continue"]'));
   assert.equal(reviewReads, 3, "Saving a decision must read the current review");
   assert.equal(decisions.length, 1); assert.equal(pendingReview, null);
-  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
-  assert.equal(reviewReads, 4, "Continue must use one fresh authorized read, without a duplicate at template selection");
-  root.querySelector('[name="schema"]').value = schema; click(action("read")); await until(() => root.querySelector(action("generate")));
-  assert.equal(reviewReads, 5, "Opening the selected note must read the current review again");
+  click('[data-review-action="continue"]'); await until(() => root.querySelector(action("generate")));
+  assert.equal(root.querySelector('[name="schema"]'), null, "The sole template needs no separate selection");
+  assert.equal(reviewReads, 5, "Continue and opening the sole note must each recheck the current review");
+  assert.equal(noteReads, 1); assert.equal(notePrepares, 0, "Opening must not prepare a note implicitly");
   click(action("generate")); await until(() => root.querySelector('[name="note-0"]'));
   assert.equal(reviewReads, 6, "Preparing a note must read its current source again");
   const editor = root.querySelector('[name="note-0"]');
@@ -210,17 +211,13 @@ try {
   click(action("discard-edits")); await until(() => root.querySelector('[data-review-action="continue"]'));
   assert.equal(fields.Subjective, english);
   assert.equal(root.querySelector(action("discard-edits")), null);
-  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
-  root.querySelector('[name="schema"]').value = schema; click(action("read"));
-  await until(() => root.querySelector('[name="note-0"]'));
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="note-0"]'));
   // Reverting an edit to the displayed baseline does not require a discard.
   root.querySelector('[name="note-0"]').value = "Temporary invented edit.";
   root.querySelector('[name="note-0"]').value = english;
   click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
   assert.equal(root.querySelector(action("discard-edits")), null);
-  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
-  root.querySelector('[name="schema"]').value = schema; click(action("read"));
-  await until(() => root.querySelector('[name="note-0"]'));
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="note-0"]'));
   root.querySelector('[name="note-0"]').value = "Invented clinician edit.";
   click(action("encounters")); await until(() => root.querySelector(action("discard-edits")));
   click(action("save"));
@@ -229,13 +226,30 @@ try {
   assert.ok(journalSaves.some(progress => progress.pendingSave)); assert.equal(fields.Subjective, "Invented clinician edit.");
   click(action("encounters")); await until(() => root.querySelector(action("open")));
   click(action("open")); await until(() => root.querySelector('[data-review-action="continue"]'));
-  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
-  root.querySelector('[name="schema"]').value = schema; click(action("read"));
-  await until(() => root.querySelector('[name="note-0"]'));
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="note-0"]'));
   assert.equal(root.querySelector('[name="note-0"]').value, "Invented clinician edit.");
   assert.equal(noteRef, savedNote); assert.equal(notePrepares, 1, "Reopening must not generate a duplicate note");
   assert.equal(discoveryReads, recoveryMode ? 1 : 0, "Reopening must reuse the durable journal");
   click(action("core")); await until(() => navigation.length === 1); assert.equal(navigation[0], savedNote);
+  // Several templates still require an explicit choice; no template offers only recovery actions.
+  click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  templateCount = 2;
+  const readsBeforeChoice = noteReads;
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
+  assert.equal(noteReads, readsBeforeChoice);
+  assert.equal(root.querySelector('[name="schema"]').value, "");
+  root.querySelector('[name="schema"]').value = schema; click(action("read"));
+  await until(() => root.querySelector('[name="note-0"]'));
+  assert.equal(noteReads, readsBeforeChoice + 1);
+  click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  templateCount = 0;
+  click('[data-review-action="continue"]'); await until(() => root.textContent.includes("No templates are available"));
+  assert.equal(root.querySelector('[name="schema"]'), null); assert.equal(root.querySelector(action("read")), null);
+  assert.equal(noteReads, readsBeforeChoice + 1); assert.equal(notePrepares, 1);
+  click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  templateCount = 1;
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="note-0"]'));
+  assert.equal(root.querySelector('[name="note-0"]').value, "Invented clinician edit.");
   root.querySelector('[name="note-0"]').value = "Unsaved edit before revocation.";
   click(action("review")); await until(() => root.querySelector(action("discard-edits")));
   change("signedOut"); assert.equal(root.textContent.includes("Invented clinician edit."), false);
@@ -248,7 +262,7 @@ try {
   await dispose(); dispose = null; await boundary.dispose();
   assert.equal(authObservers.size, 0); assert.equal(handlers.size, 0); assert.equal(rendererEvents.eventNames().length, 0);
   process.stdout.write(JSON.stringify({ checks: 3, compiled_provider_ui: true, actual_main_preload_mapping: true, compiled_preload: Boolean(preloadBundle), sender_rejection_before_native_access: true,
-    explicit_review_before_note: true, journaled_note_edit_and_core_navigation: true, unsaved_note_navigation_guard: true,
+    explicit_review_before_note: true, sole_template_opens_without_generation: true, multiple_and_missing_templates: true, journaled_note_edit_and_core_navigation: true, unsaved_note_navigation_guard: true,
     cross_device_discovery: Boolean(recoveryMode), saved_note_reopened: true,
     explicit_discard_and_keep_editing: true, in_place_transcript_comparison: true, revocation_clears_content: true,
     actual_electron: false, real_backend: false, physical_recording: false }) + "\n");

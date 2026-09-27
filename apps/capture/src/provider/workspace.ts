@@ -292,9 +292,18 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (!authorized(n)) return;
     templates = await noteTemplates(currentClient, session());
     if (!authorized(n)) return;
+    if (templates.length === 1) {
+      currentSchema = templates[0]!.schema_ref;
+      await readNote(false);
+      return;
+    }
+    if (!templates.length) {
+      show('<h1>Your Core note</h1><p>No templates are available. Add a template in Core.</p><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>');
+      return;
+    }
     show(`<h1>Your Core note</h1><p>The English transcript is ready. Choose your note template.</p>
       <label>Template<select name="schema"><option value="">Choose a template</option>${templates.map(t => `<option value="${escape(t.schema_ref)}">${escape(t.note_type)}</option>`).join("")}</select></label>
-      <button data-workspace-action="read">Open note</button>${templates.length ? "" : "<p>No templates are available. Add a template in Core.</p>"}
+      <button data-workspace-action="read">Open note</button>
       <button data-workspace-action="core">Open encounter in Core</button>`);
   }
   const readNote = async (prepare: boolean): Promise<void> => {
