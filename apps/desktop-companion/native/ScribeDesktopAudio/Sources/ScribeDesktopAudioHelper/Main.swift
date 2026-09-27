@@ -11,7 +11,7 @@ struct ScribeDesktopAudioHelper {
         signal(SIGPIPE, SIG_IGN)
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard arguments == ["--availability-v1"] || arguments == ["--request-permissions-v1"]
-            || arguments == ["--capture-v2"] else { _exit(64) }
+            || arguments == ["--capture-v2"] || arguments == ["--capture-v3"] else { _exit(64) }
         // This headless helper still uses AppKit/WindowServer through
         // ScreenCaptureKit. Establish its application on the OS main thread
         // and keep that runloop alive across Swift concurrency suspensions.
@@ -34,7 +34,7 @@ struct ScribeDesktopAudioHelper {
         }
         // The packaged main process selects this explicit mode only after its
         // existing fresh capture authority, selection, lease and indicator gate.
-        let result = await DesktopAudioProcess.run(source: MacMeetingAudio(enabled: true))
+        let result = await DesktopAudioProcess.run(source: MacMeetingAudio(enabled: true), allowsRenewal: arguments == ["--capture-v3"])
         _exit(result)
     }
 

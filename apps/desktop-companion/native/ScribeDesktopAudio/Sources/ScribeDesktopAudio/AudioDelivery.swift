@@ -58,19 +58,22 @@ final class AudioDelivery: @unchecked Sendable {
     private let queue: DispatchQueue
     private let sink: any DesktopAudioSink
     private let onFailure: @Sendable (DesktopAudioFailure) -> Void
+    private let validate: @Sendable () -> Bool
     private var accepting = true
     private var discarding = false
     private var pending = 0
     private var lastTimes: [DesktopAudioChannel: UInt64] = [:]
 
     init(sink: any DesktopAudioSink, queue: DispatchQueue = DispatchQueue(label: "scribe.desktop.audio.delivery"),
+         validate: @escaping @Sendable () -> Bool = { true },
          onFailure: @escaping @Sendable (DesktopAudioFailure) -> Void) {
-        self.sink = sink; self.queue = queue; self.onFailure = onFailure
+        self.sink = sink; self.queue = queue; self.onFailure = onFailure; self.validate = validate
     }
 
     func offer(_ frame: DesktopAudioFrame) {
         let decision: Int = lock.withLock {
             guard accepting else { return 0 }
+            guard validate() else { return 4 }
             guard pending < 4 else { return 2 }
             if let last = lastTimes[frame.channel], frame.hostTimeNanoseconds <= last { return 3 }
             lastTimes[frame.channel] = frame.hostTimeNanoseconds
@@ -79,7 +82,9 @@ final class AudioDelivery: @unchecked Sendable {
             // a reserved frame that has not yet reached the serial queue.
             queue.async { [self, frame] in
                 defer { frame.clear(); lock.withLock { pending -= 1 } }
-                if !lock.withLock({ discarding }), !sink.receive(frame) { fail(.sinkRejected) }
+                guard !lock.withLock({ discarding }) else { return }
+                guard validate() else { fail(.windowExpired); return }
+                if !sink.receive(frame) { fail(.sinkRejected) }
             }
             return 1
         }
@@ -87,6 +92,7 @@ final class AudioDelivery: @unchecked Sendable {
             frame.clear()
             if decision == 2 { fail(.bufferOverflow) }
             if decision == 3 { fail(.invalidAudio) }
+            if decision == 4 { fail(.windowExpired) }
             return
         }
     }

@@ -3,6 +3,14 @@ import Foundation
 public protocol DesktopProcessSource: Sendable {
     func start(selection: MeetingAudioSelection, maximumDurationSeconds: Int, sink: any DesktopAudioSink) async throws
     func stop(mode: DesktopAudioStopMode) async throws
+    func start(selection: MeetingAudioSelection, authorization: DesktopCaptureAuthorization, sink: any DesktopAudioSink) async throws
+    func extend(_ authorization: DesktopCaptureAuthorization) async throws
+}
+extension DesktopProcessSource {
+    public func start(selection: MeetingAudioSelection, authorization: DesktopCaptureAuthorization, sink: any DesktopAudioSink) async throws {
+        throw DesktopAudioFailure.unavailable
+    }
+    public func extend(_ authorization: DesktopCaptureAuthorization) async throws { throw DesktopAudioFailure.unavailable }
 }
 extension MacMeetingAudio: DesktopProcessSource {}
 
@@ -10,10 +18,10 @@ extension MacMeetingAudio: DesktopProcessSource {}
 /// an uncooperative native stop is bounded by process termination on parent loss.
 /// Do not embed this runner in the desktop app's own process.
 public enum DesktopAudioProcess {
-    public static func run(source: any DesktopProcessSource, input: FileHandle = .standardInput,
+    public static func run(source: any DesktopProcessSource, allowsRenewal: Bool = false, input: FileHandle = .standardInput,
                            output: FileHandle = .standardOutput) async -> Int32 {
         let done = ProcessCompletion(), writer = ProcessOutput(output)
-        let host = AudioProcessHost(source: source, output: writer, done: done)
+        let host = AudioProcessHost(source: source, allowsRenewal: allowsRenewal, output: writer, done: done)
         let reader = ProcessInput(input)
         Task.detached {
             do {
@@ -67,6 +75,9 @@ private actor AudioProcessHost {
     private let source: any DesktopProcessSource
     private let output: ProcessOutput
     private let done: ProcessCompletion
+    private let allowsRenewal: Bool
+    private var window: DesktopCaptureWindow?
+    private var extending = false
     private var mixer: AlignedMeetingPCM?
     private var sink: ProcessPCMSink?
     private var started = false
@@ -83,14 +94,37 @@ private actor AudioProcessHost {
     private var pendingStops = 0
     private var lastInput = ContinuousClock.now
 
-    init(source: any DesktopProcessSource, output: ProcessOutput, done: ProcessCompletion) {
-        self.source = source; self.output = output; self.done = done
+    init(source: any DesktopProcessSource, allowsRenewal: Bool, output: ProcessOutput, done: ProcessCompletion) {
+        self.source = source; self.allowsRenewal = allowsRenewal; self.output = output; self.done = done
     }
     func accept(_ command: ProcessCommand) {
         guard !disconnected else { return }
         lastInput = .now
         switch command {
         case .heartbeat: break
+        case .startRenewable(let selection, let authorization, let fence):
+            guard allowsRenewal, !started, !stopped else { fail(.invalidAudio); return }
+            started = true
+            let nextSink = ProcessPCMSink(output: output) { [weak self] error in Task { await self?.fail(error) } }
+            sink = nextSink
+            do {
+                window = try DesktopCaptureWindow(authorization, now: .now)
+                try AudioProcessFence.shared.acquire(fence)
+                let nextMixer = try AlignedMeetingPCM(maximumOutputFrames: authorization.maximumOutputFrames,
+                    hardMaximumOutputFrames: authorization.hardMaximumOutputFrames, sink: nextSink)
+                mixer = nextMixer
+                startTask = Task {
+                    do {
+                        try await source.start(selection: selection, authorization: authorization, sink: nextMixer)
+                        guard !discarded, !stopped, !disconnected else { return }
+                        guard window?.remaining(.now) ?? .zero > .zero else { throw DesktopAudioFailure.windowExpired }
+                        nativeReady = true; nextSink.nativeStarted()
+                    } catch {
+                        if !discarded, !stopped, !disconnected { fail((error as? DesktopAudioFailure) ?? .unavailable) }
+                    }
+                }
+            } catch { fail(.invalidAudio) }
+        case .extend(let request, let authorization): extend(request, authorization)
         case .start(let selection, let duration, let frames, let fence):
             guard !started, !stopped else { fail(.invalidAudio); return }
             started = true
@@ -115,6 +149,33 @@ private actor AudioProcessHost {
         case .acknowledge(let frame):
             guard sink?.acknowledge(frame) == true else { fail(.invalidAudio); return }
         case .stop(let request, let mode): stop(request: request, mode: mode)
+        }
+    }
+
+    private func extend(_ request: Int, _ authorization: DesktopCaptureAuthorization) {
+        guard allowsRenewal, nativeReady, !stopped, !discarded, !disconnected,
+              closing == nil, !extending, var next = window, let mixer else { fail(.invalidAudio); return }
+        do { try next.extend(authorization, now: .now) }
+        catch { fail(.invalidAudio); return }
+        extending = true
+        Task {
+            defer { extending = false }
+            do {
+                // Stage the verified frame budget before the native actor can
+                // deliver its first renewed callback. The source still owns
+                // its existing deadline until extend succeeds; any failure or
+                // concurrent stop discards this same mixer and source.
+                try mixer.extend(maximumOutputFrames: authorization.maximumOutputFrames)
+                try await source.extend(authorization)
+                // A stop or parent loss while the source awaited cannot publish
+                // a successful renewal or report that recording continued.
+                guard !stopped, !discarded, !disconnected, closing == nil,
+                      next.remaining(.now) > .zero else { throw DesktopAudioFailure.cancelled }
+                window = next
+                output.metadata(["type": "extended", "request": request, "generation": authorization.generation])
+            } catch {
+                if !stopped, !discarded, !disconnected { fail(.unavailable) }
+            }
         }
     }
 

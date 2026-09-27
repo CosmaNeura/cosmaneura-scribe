@@ -21,13 +21,13 @@ public enum DesktopAudioProcess {
         report(["mode": "availability", "application_ready": available])
     }
 
-    public static func run(source: MacMeetingAudio) async -> Int32 {
+    public static func run(source: MacMeetingAudio, allowsRenewal: Bool = false) async -> Int32 {
         // Resume from a cooperative worker back onto the application's main
         // thread, the boundary used by the real screen-filter construction.
         let ready = await Task.detached {
             await MainActor.run { applicationReady() }
         }.value
-        report(["mode": "capture", "application_ready": ready, "enabled": source.enabled])
+        report(["mode": "capture", "application_ready": ready, "enabled": source.enabled, "allows_renewal": allowsRenewal])
         return ready && source.enabled ? 0 : 70
     }
 
