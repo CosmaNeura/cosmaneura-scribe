@@ -40,12 +40,14 @@
     "lint": "eslint . --max-warnings 0",
     "mock:bff": "npm run mock:bff --workspace @cosmaneura-scribe/capture",
     "test": "npm run test --workspaces --if-present",
+    "test:coverage": "npm run test:coverage --workspaces --if-present",
     "test:golden": "npm run test:golden --workspace @cosmaneura-scribe/capture-protocol",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.10",
     "eslint": "10.8.1",
     "fake-indexeddb": "6.2.5",
     "globals": "17.11.0",

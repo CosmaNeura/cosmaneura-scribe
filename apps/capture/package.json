@@ -23,6 +23,7 @@
     "lint": "eslint . --max-warnings 0",
     "mock:bff": "tsx src/mock-bff/server.ts",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
