@@ -31,6 +31,27 @@ private final class Sink: DesktopAudioSink, @unchecked Sendable {
     var times: [UInt64] { lock.withLock { timestamps } }
 }
 
+private final class WindowValidity: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+    func expire() { lock.withLock { valid = false } }
+    var isValid: Bool { lock.withLock { valid } }
+}
+
+@Test func expiredWindowClearsPreviouslyQueuedAndNewAudio() async throws {
+    let consent = ConsentedFixture(), sink = Sink(), validity = WindowValidity()
+    let queue = DispatchQueue(label: "synthetic.window-expiry")
+    queue.suspend()
+    let gate = AudioDelivery(sink: sink, queue: queue, validate: { validity.isValid }, onFailure: { _ in })
+    let queued = try consent.frame(1), late = try consent.frame(2)
+    gate.offer(queued)
+    validity.expire()
+    queue.resume(); await gate.drain()
+    gate.offer(late); await gate.drain()
+    #expect(sink.times.isEmpty && sink.errors == [.windowExpired])
+    #expect(queued.isClear && late.isClear)
+}
+
 @Test func boundedDeliveryClearsAcceptedNativeSamples() async throws {
     let consent = ConsentedFixture(), sink = Sink(), gate = AudioDelivery(sink: sink, onFailure: { _ in })
     let a = try consent.frame(1), b = try consent.frame(2)

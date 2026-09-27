@@ -2,6 +2,47 @@ import Foundation
 import Testing
 @testable import ScribeDesktopAudio
 
+@Test func renewableCommandsHaveExactBoundedMetadata() throws {
+    func command(_ values: [String: Any]) throws -> Data {
+        var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: values)); return data
+    }
+    let run = UUID().uuidString.lowercased()
+    let authorization: [String: Any] = ["runId": run, "generation": 1, "expiresAtMilliseconds": 1_800_000_000_000,
+        "maximumOutputFrames": 16_000, "hardMaximumOutputFrames": 10_800 * 16_000]
+    let start: [String: Any] = ["type": "startRenewable", "application": "com.google.Chrome", "processID": 1,
+        "windowID": 1, "authorization": authorization,
+        "processFence": ["epoch": UUID().uuidString.lowercased(), "coordinatorDevice": "1", "coordinatorInode": "2",
+                         "captureDevice": "1", "captureInode": "3"]]
+    guard case .startRenewable(let selection, let value, _) = try ProcessCommand.parse(command(start)) else {
+        Issue.record("Missing renewable command"); return
+    }
+    #expect(selection.processID == 1 && value.runID == run && value.generation == 1)
+    guard case .extend(let request, let repeated) = try ProcessCommand.parse(command([
+        "type": "extend", "request": 1, "authorization": authorization])) else {
+        Issue.record("Missing extension command"); return
+    }
+    #expect(request == 1 && repeated == value)
+    for (key, invalid) in [("generation", true as Any), ("generation", 1.5), ("expiresAtMilliseconds", 9_007_199_254_740_992),
+                           ("maximumOutputFrames", 0), ("hardMaximumOutputFrames", 1), ("runId", "not-a-run")] {
+        var changed = authorization; changed[key] = invalid
+        #expect(throws: DesktopAudioFailure.self) {
+            try ProcessCommand.parse(command(["type": "extend", "request": 1, "authorization": changed]))
+        }
+    }
+    var extra = authorization; extra["token"] = "disallowed"
+    var missing = authorization; missing.removeValue(forKey: "runId")
+    for changed in [extra, missing] {
+        #expect(throws: DesktopAudioFailure.self) {
+            try ProcessCommand.parse(command(["type": "extend", "request": 1, "authorization": changed]))
+        }
+    }
+    for request: Any in [0, true, 1.5, 1_000_001] {
+        #expect(throws: DesktopAudioFailure.self) {
+            try ProcessCommand.parse(command(["type": "extend", "request": request, "authorization": authorization]))
+        }
+    }
+}
+
 @Test func privateCommandsRejectBooleanAuthorityAndExtraFields() throws {
     func command(_ values: [String: Any]) throws -> Data {
         var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: values)); return data

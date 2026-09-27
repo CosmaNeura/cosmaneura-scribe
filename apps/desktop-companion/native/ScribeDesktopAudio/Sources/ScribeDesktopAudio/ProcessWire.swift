@@ -6,6 +6,8 @@ import Foundation
 /// Kind 1 is bounded metadata JSON; kind 2 is u32 frame offset + PCM16LE.
 enum ProcessCommand: Sendable {
     case start(MeetingAudioSelection, duration: Int, frames: Int, fence: NativeFenceTicket)
+    case startRenewable(MeetingAudioSelection, DesktopCaptureAuthorization, NativeFenceTicket)
+    case extend(Int, DesktopCaptureAuthorization)
     case activate, heartbeat
     case acknowledge(Int)
     case stop(Int, DesktopAudioStopMode)
@@ -18,6 +20,17 @@ enum ProcessCommand: Sendable {
             guard Set(value.keys) == expected else { throw DesktopAudioFailure.invalidAudio }
         }
         switch kind {
+        case "startRenewable":
+            try keys(["type", "application", "processID", "windowID", "authorization", "processFence"])
+            guard let raw = value["application"] as? String,
+                  let application = MeetingAudioSelection.Application(rawValue: raw) else { throw DesktopAudioFailure.selectionChanged }
+            let pid = try integer(value["processID"], maximum: Int(Int32.max))
+            let window = try integer(value["windowID"], maximum: Int(UInt32.max))
+            return .startRenewable(try MeetingAudioSelection(application: application, processID: Int32(pid), windowID: UInt32(window)),
+                try authorization(value["authorization"]), try NativeFenceTicket(value["processFence"]))
+        case "extend":
+            try keys(["type", "request", "authorization"])
+            return .extend(try integer(value["request"], maximum: 1_000_000), try authorization(value["authorization"]))
         case "start":
             try keys(["type", "application", "processID", "windowID", "maximumDurationSeconds", "maximumOutputFrames", "processFence"])
             guard let raw = value["application"] as? String,
@@ -38,6 +51,15 @@ enum ProcessCommand: Sendable {
             return .stop(try integer(value["request"], maximum: 32), mode == "drain" ? .drain : .discard)
         default: throw DesktopAudioFailure.invalidAudio
         }
+    }
+
+    private static func authorization(_ value: Any?) throws -> DesktopCaptureAuthorization {
+        guard let value = value as? [String: Any],
+              Set(value.keys) == ["runId", "generation", "expiresAtMilliseconds", "maximumOutputFrames", "hardMaximumOutputFrames"],
+              let runID = value["runId"] as? String else { throw DesktopAudioFailure.invalidAudio }
+        return try DesktopCaptureAuthorization(runID: runID, generation: integer(value["generation"], maximum: 9_007_199_254_740_991),
+            expiresAtMilliseconds: Int64(integer(value["expiresAtMilliseconds"], maximum: 9_007_199_254_740_991)),
+            maximumOutputFrames: integer(value["maximumOutputFrames"]), hardMaximumOutputFrames: integer(value["hardMaximumOutputFrames"]))
     }
 
     private static func integer(_ value: Any?, minimum: Int = 1, maximum: Int = 1_382_400_000) throws -> Int {

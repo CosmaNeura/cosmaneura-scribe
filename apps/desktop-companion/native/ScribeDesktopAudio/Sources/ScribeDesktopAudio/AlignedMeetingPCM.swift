@@ -57,14 +57,29 @@ public final class AlignedMeetingPCM: DesktopAudioSink, @unchecked Sendable {
     private var core: MeetingPCMCore
     private var terminal = false
     private var delivering = false
+    private let hardMaximumOutputFrames: Int
 
     /// The trusted host derives this bound from current Core capture authority.
     /// Numeric validation alone grants no capture permission. No source starts
     /// here. Native delivery must serialize receive/finish/discard; failed may
     /// arrive concurrently. A concurrent/reentrant delivery is a terminal error.
-    public init(maximumOutputFrames: Int, sink: any DesktopPCMSink) throws {
-        guard (1...1_382_400_000).contains(maximumOutputFrames) else { throw DesktopAudioFailure.invalidAudio }
+    public init(maximumOutputFrames: Int, hardMaximumOutputFrames: Int? = nil, sink: any DesktopPCMSink) throws {
+        let hard = hardMaximumOutputFrames ?? maximumOutputFrames
+        guard (1...1_382_400_000).contains(hard), (1...hard).contains(maximumOutputFrames) else {
+            throw DesktopAudioFailure.invalidAudio
+        }
+        self.hardMaximumOutputFrames = hard
         self.sink = sink; self.core = MeetingPCMCore(maximumOutputFrames: maximumOutputFrames)
+    }
+
+    /// The owning process verifies the same live window before this call. The
+    /// mixer keeps its clock, source positions and output offset across renewal.
+    public func extend(maximumOutputFrames: Int) throws {
+        try lock.withLock {
+            guard !terminal, maximumOutputFrames >= core.maximumOutputFrames,
+                  maximumOutputFrames <= hardMaximumOutputFrames else { throw DesktopAudioFailure.invalidAudio }
+            core.maximumOutputFrames = maximumOutputFrames
+        }
     }
 
     public func receive(_ frame: DesktopAudioFrame) -> Bool {
@@ -247,7 +262,7 @@ private struct ClockTrack {
 }
 
 private struct MeetingPCMCore {
-    let maximumOutputFrames: Int
+    var maximumOutputFrames: Int
     var microphone = ClockTrack()
     var system = ClockTrack()
     var start: DesktopPCMStart?
