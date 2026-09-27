@@ -106,6 +106,40 @@ describe("CaptureQueue", () => {
     harness.storage.close();
   });
 
+  it("skips a redundant receipt after a confirmed upload but reconciles a lost registration after reopening", async () => {
+    const harness = await createHarness({ baseRetryMs: 100, random: () => 0 });
+    const reservation = makeReservation(0);
+    await harness.queue.reserve(reservation, "reservation-batch-0001");
+    await harness.queue.encrypt(reservation.objectId, makeEnvelope(2));
+    let registered: RegistrationReceipt | null = null;
+    let receiptReads = 0, uploads = 0, registrations = 0;
+    const transport = successfulTransport(() => harness.now.value, {
+      receipt: async () => {
+        receiptReads += 1;
+        return registered === null ? { state: "reserved" } : { state: "registered", registration: registered };
+      },
+      upload: async () => { uploads += 1; },
+      register: async request => {
+        registrations += 1;
+        registered = receiptFor(request);
+        throw new QueueTransportError("unknown_success", "registration_timeout");
+      },
+    });
+    expect((await harness.queue.drainOnce(transport)).items[0]?.outcome).toBe("deferred");
+    expect(receiptReads).toBe(1);
+    const retained = await harness.queue.get(reservation.objectId);
+    expect(retained?.state).toBe("uploaded");
+    expect(retained && "envelope" in retained).toBe(true);
+    harness.now.value = 1000;
+    const reopened = harness.queueWithStorage(harness.storage);
+    expect((await reopened.drainOnce(transport)).items[0]?.outcome).toBe("registered");
+    expect(receiptReads).toBe(2);
+    expect(uploads).toBe(1);
+    expect(registrations).toBe(1);
+    expect((await reopened.get(reservation.objectId))?.state).toBe("registered");
+    harness.storage.close();
+  });
+
   it("retries a transient receipt failure without terminalizing the chunk", async () => {
     const harness = await createHarness({ baseRetryMs: 100, random: () => 0 });
     const reservation = makeReservation(0);
@@ -139,7 +173,7 @@ describe("CaptureQueue", () => {
     harness.now.value = 50;
     const second = await harness.queue.drainOnce(transport);
     expect(second.items[0]).toMatchObject({ outcome: "registered" });
-    expect(receiptAttempt).toBe(3);
+    expect(receiptAttempt).toBe(2);
     expect((await harness.queue.get(reservation.objectId))?.state).toBe("registered");
     harness.storage.close();
   });
