@@ -380,8 +380,11 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
     settings = _settings(tmp_path, stage="translation")
     tenant_id = next(iter(settings.configured_capture_tenant_ids))
     target = uuid4()
-    closed: list[str] = []
+    closed: list[object] = []
     constructed: list[str] = []
+    credentials: list[Credential] = []
+    unwrappers: list[Unwrapper] = []
+    translators: list[dict[str, object]] = []
 
     class Repositories:
         def __init__(self, engine: object) -> None:
@@ -391,21 +394,25 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
         def __init__(self, **kwargs: object) -> None:
             assert kwargs["require_envvar"] is True
             constructed.append("credential")
+            credentials.append(self)
 
         async def close(self) -> None:
-            closed.append("credential")
+            closed.append(self)
 
     class Keys:
         async def close(self) -> None:
             closed.append("keys")
 
     class Unwrapper:
-        def __init__(self, **_: object) -> None:
+        def __init__(self, *, credential: Credential, **_: object) -> None:
             constructed.append("unwrapper")
+            self.credential = credential
+            unwrappers.append(self)
 
+        # Mirrors KeyVaultSessionKeyUnwrapper, which closes the credential it holds.
         async def close(self) -> None:
             closed.append("unwrapper")
-            closed.append("credential")
+            await self.credential.close()
 
     class Worker:
         def __init__(self, **kwargs: object) -> None:
@@ -432,7 +439,7 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
     monkeypatch.setattr(
         captured_worker_job_runner,
         "AzureGPT41TranslationAdapter",
-        lambda *_args, **_kwargs: SimpleNamespace(),
+        lambda *_args, **kwargs: translators.append(kwargs),
     )
     monkeypatch.setattr(
         captured_worker_job_runner, "PrivateSpeechEndpointGuard", lambda *_: SimpleNamespace()
@@ -448,7 +455,10 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
     await captured_worker_job_runner._execute(settings, tenant_id, None)
 
     assert constructed == ["credential", "credential", "unwrapper", "worker"]
-    assert closed == ["unwrapper", "credential", "keys", "credential", "database"]
+    shared, key_credential = credentials
+    assert unwrappers[0].credential is key_credential
+    assert translators[0]["credential"] is shared
+    assert closed == ["unwrapper", key_credential, "keys", shared, "database"]
 
 
 @pytest.mark.asyncio
