@@ -13,6 +13,10 @@ from cosmaneura_scribe.captured_worker_job_runner import (
     run_captured_worker,
 )
 from cosmaneura_scribe.captured_worker_settings import CapturedWorkerSettings
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from test_captured_source_runtime import Trial
+from test_captured_source_runtime import trial as trial
 
 
 def _settings(tmp_path: Path, *, stage: str = "speech") -> CapturedWorkerSettings:
@@ -295,6 +299,97 @@ async def test_speech_discovery_scopes_query_and_returns_targets(tmp_path: Path)
         "tenant": tenant_id,
         "maximum": settings.captured_worker_batch_size,
     }
+
+
+async def _expire_speech_lease(trial: Trial) -> None:
+    await trial.query(
+        "UPDATE transcription_jobs SET lease_until = clock_timestamp() - INTERVAL '1 second' "
+        "WHERE tenant_id = :tenant AND session_id = :session"
+    )
+
+
+async def _discovered(
+    trial: Trial, settings: CapturedWorkerSettings, tenant: UUID | None = None
+) -> tuple[UUID, ...]:
+    return await captured_worker_job_runner._targets(
+        trial.provider, settings, tenant or trial.tenant, None
+    )
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_speech_discovery_query_selects_unleased_work_for_its_tenant(
+    trial: Trial, tmp_path: Path
+) -> None:
+    settings = _settings(tmp_path)
+
+    assert await _discovered(trial, settings) == ()
+    await trial.processing()
+    assert await _discovered(trial, settings) == ()
+    await _expire_speech_lease(trial)
+    # Discovery runs as the NOSUPERUSER app role, so a hit also proves the
+    # tenant setting reached row-level security.
+    assert await _discovered(trial, settings) == (trial.draft.id,)
+    assert await _discovered(trial, settings, uuid4()) == ()
+    await trial.query(
+        "UPDATE transcription_jobs SET status = 'retryable', lease_token = NULL, "
+        "lease_until = NULL WHERE tenant_id = :tenant AND session_id = :session"
+    )
+    assert await _discovered(trial, settings) == (trial.draft.id,)
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fence",
+    [
+        pytest.param(
+            "UPDATE consent_records SET revoked_at = clock_timestamp() "
+            "WHERE tenant_id = :tenant AND id = :consent",
+            id="consent-revoked",
+        ),
+        pytest.param(
+            "UPDATE scribe_sessions SET source_received_at = "
+            "clock_timestamp() - INTERVAL '13 days', transcript_content_expires_at = "
+            "clock_timestamp() - INTERVAL '1 microsecond', "
+            "current_source_transcript_version = 1 "
+            "WHERE tenant_id = :tenant AND id = :session",
+            id="content-expired",
+        ),
+        pytest.param(
+            "UPDATE transcription_jobs SET lease_until = clock_timestamp() + INTERVAL '5 minutes' "
+            "WHERE tenant_id = :tenant AND session_id = :session",
+            id="lease-live",
+        ),
+        pytest.param(
+            "UPDATE transcription_jobs SET status = 'completed', lease_token = NULL, "
+            "lease_until = NULL WHERE tenant_id = :tenant AND session_id = :session",
+            id="job-completed",
+        ),
+    ],
+)
+async def test_speech_discovery_query_excludes_fenced_sessions(
+    trial: Trial, tmp_path: Path, fence: str
+) -> None:
+    settings = _settings(tmp_path)
+    await trial.processing()
+    await _expire_speech_lease(trial)
+    assert await _discovered(trial, settings) == (trial.draft.id,)
+
+    engine = create_async_engine(trial.admin_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            # Owner-only fixture edit; replica mode skips the lifecycle triggers
+            # that would otherwise refuse jumping straight to a fenced state.
+            await connection.execute(text("SET LOCAL session_replication_role = replica"))
+            await connection.execute(
+                text(fence),
+                {"tenant": trial.tenant, "session": trial.draft.id, "consent": trial.consent.id},
+            )
+    finally:
+        await engine.dispose()
+
+    assert await _discovered(trial, settings) == ()
 
 
 @pytest.mark.asyncio
