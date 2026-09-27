@@ -54,17 +54,53 @@ def _settings(tmp_path: Path, *, stage: str = "speech") -> CapturedWorkerSetting
     return CapturedWorkerSettings(**common)
 
 
+_ENVIRON = {
+    "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED": "true",
+    "AZURE_TOKEN_CREDENTIALS": "ManagedIdentityCredential",
+}
+
+
+def _unreachable_execute(calls: list[object]):
+    # The runner folds every in-try failure into execution_failed, so only a
+    # never-called execute distinguishes a binding gate from a failed run.
+    async def execute(*arguments: object) -> None:
+        calls.append(arguments)
+
+    return execute
+
+
+async def _assert_rejected_before_execution(
+    settings: CapturedWorkerSettings,
+    arguments: tuple[str, ...],
+    *,
+    environ: dict[str, str] = _ENVIRON,
+    code: str = "captured_worker_execution_failed",
+) -> None:
+    calls: list[object] = []
+    with pytest.raises(CapturedWorkerError, match=f"^{code}$"):
+        await run_captured_worker(
+            arguments=arguments,
+            environ=environ,
+            settings_factory=lambda: settings,
+            execute=_unreachable_execute(calls),
+        )
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_disabled_worker_fails_before_parsing_targets() -> None:
     def settings_factory() -> CapturedWorkerSettings:
         raise AssertionError("disabled worker must not parse settings")
 
+    calls: list[object] = []
     with pytest.raises(CapturedWorkerError, match="^captured_worker_disabled$"):
         await run_captured_worker(
             arguments=("not-a-uuid", "--pending"),
             environ={},
             settings_factory=settings_factory,
+            execute=_unreachable_execute(calls),
         )
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -92,25 +128,61 @@ async def test_worker_runs_one_explicit_tenant_target(tmp_path: Path, target: st
 
 
 @pytest.mark.asyncio
+async def test_worker_rejects_disabled_settings_before_execution(tmp_path: Path) -> None:
+    settings = _settings(tmp_path).model_copy(update={"captured_worker_enabled": False})
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+
+    await _assert_rejected_before_execution(settings, (str(tenant_id), "--pending"))
+
+
+@pytest.mark.asyncio
 async def test_worker_rejects_unconfigured_tenant_with_metadata_only_log(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     settings = _settings(tmp_path)
-    unknown_tenant = uuid4()
 
     with caplog.at_level(logging.INFO, logger="cosmaneura_scribe"):
-        with pytest.raises(CapturedWorkerError, match="captured_worker_execution_failed"):
-            await run_captured_worker(
-                arguments=(str(unknown_tenant), "--pending"),
-                environ={
-                    "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED": "true",
-                    "AZURE_TOKEN_CREDENTIALS": "ManagedIdentityCredential",
-                },
-                settings_factory=lambda: settings,
-            )
+        await _assert_rejected_before_execution(settings, (str(uuid4()), "--pending"))
 
     assert "captured_worker.failed" in caplog.text
-    assert "captured_worker_bindings_invalid" not in caplog.text
+    assert "captured_worker.completed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_zero_session_before_execution(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+
+    await _assert_rejected_before_execution(settings, (str(tenant_id), str(UUID(int=0))))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "credentials", [None, "", "EnvironmentCredential", "managedidentitycredential"]
+)
+async def test_worker_requires_managed_identity_credential_chain(
+    tmp_path: Path, credentials: str | None
+) -> None:
+    settings = _settings(tmp_path)
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+    environ = {"COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED": "true"}
+    if credentials is not None:
+        environ["AZURE_TOKEN_CREDENTIALS"] = credentials
+
+    await _assert_rejected_before_execution(
+        settings, (str(tenant_id), "--pending"), environ=environ
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [(), ("--pending", "--pending")])
+async def test_worker_rejects_wrong_argument_count_before_execution(
+    tmp_path: Path, extra: tuple[str, ...]
+) -> None:
+    settings = _settings(tmp_path)
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+
+    await _assert_rejected_before_execution(settings, (str(tenant_id), *extra))
 
 
 @pytest.mark.asyncio
@@ -377,6 +449,36 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
 
     assert constructed == ["credential", "credential", "unwrapper", "worker"]
     assert closed == ["unwrapper", "credential", "keys", "credential", "database"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing", ["azure_translation_endpoint", "azure_translation_deployment"]
+)
+async def test_translation_composition_rejects_missing_model_binding_before_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, missing: str
+) -> None:
+    settings = _settings(tmp_path, stage="translation").model_copy(update={missing: None})
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+    closed: list[str] = []
+    constructed: list[object] = []
+
+    base = SimpleNamespace(engine=object(), close=lambda: _close(closed, "database"))
+    monkeypatch.setattr(captured_worker_job_runner, "build_postgres_provider", lambda _: base)
+    monkeypatch.setattr(
+        captured_worker_job_runner, "CapturedSourceRepositoryProvider", lambda engine: engine
+    )
+    monkeypatch.setattr(
+        captured_worker_job_runner,
+        "DefaultAzureCredential",
+        lambda **kwargs: constructed.append(kwargs),
+    )
+
+    with pytest.raises(CapturedWorkerError, match="^captured_worker_bindings_invalid$"):
+        await captured_worker_job_runner._execute(settings, tenant_id, None)
+
+    assert constructed == []
+    assert closed == ["database"]
 
 
 @pytest.mark.parametrize(
