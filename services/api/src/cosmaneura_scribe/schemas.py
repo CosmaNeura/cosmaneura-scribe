@@ -148,6 +148,15 @@ class CaptureLeaseReceipt(BaseModel):
     expires_at: datetime
 
 
+class CaptureLeaseState(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_id: UUID
+    current_lease: CaptureLeaseReceipt | None
+    lease_closed: bool
+    session_status: SessionStatus
+
+
 class ChunkReservationBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

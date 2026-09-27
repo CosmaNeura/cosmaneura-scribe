@@ -426,6 +426,8 @@ class SourceStartRepository(CapturedSourceRepository):
 class SourceStartRepositoryProvider:
     """Borrows the explicitly supplied existing engine; never closes its owner."""
 
+    repository_type: type[SourceStartRepository] = SourceStartRepository
+
     def __init__(self, engine: AsyncEngine) -> None:
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -438,7 +440,7 @@ class SourceStartRepositoryProvider:
                 text("SELECT set_config('app.tenant_id', :tenant, true)"),
                 {"tenant": str(tenant_id)},
             )
-            yield SourceStartRepository(session)
+            yield self.repository_type(session)
 
 
 class SourceStartRuntime:

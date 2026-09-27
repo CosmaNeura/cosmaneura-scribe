@@ -508,7 +508,7 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
             await connection.execute(
                 text(
                     "GRANT SELECT, INSERT ON source_start_attempts, "
-                    f"source_start_retirements TO {role}"
+                    f"source_start_retirements, source_start_extensions TO {role}"
                 )
             )
             await connection.execute(

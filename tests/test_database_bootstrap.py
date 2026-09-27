@@ -892,6 +892,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 "normalized_source_receipt_keys",
                 "source_start_attempts",
                 "source_start_retirements",
+                "source_start_extensions",
             )
             for privilege in ("SELECT", "INSERT")
         }

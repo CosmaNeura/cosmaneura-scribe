@@ -430,6 +430,41 @@
         "title": "CaptureLeaseRenewRequest",
         "type": "object"
       },
+      "CaptureLeaseState": {
+        "additionalProperties": false,
+        "properties": {
+          "current_lease": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaptureLeaseReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lease_closed": {
+            "title": "Lease Closed",
+            "type": "boolean"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "session_status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          }
+        },
+        "required": [
+          "session_id",
+          "current_lease",
+          "lease_closed",
+          "session_status"
+        ],
+        "title": "CaptureLeaseState",
+        "type": "object"
+      },
       "CaptureMediaCapabilities": {
         "additionalProperties": false,
         "properties": {
@@ -1922,6 +1957,75 @@
         "title": "SessionStatus",
         "type": "string"
       },
+      "SourceExtensionIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_authorized_until": {
+            "format": "date-time",
+            "title": "Capture Authorized Until",
+            "type": "string"
+          },
+          "first_sequence_number": {
+            "exclusiveMaximum": 2048.0,
+            "minimum": 1.0,
+            "title": "First Sequence Number",
+            "type": "integer"
+          },
+          "lease_generation": {
+            "minimum": 2.0,
+            "title": "Lease Generation",
+            "type": "integer"
+          },
+          "lease_receipt_id": {
+            "format": "uuid",
+            "title": "Lease Receipt Id",
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/SourceStartIntent"
+          },
+          "previous_extension_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Extension Id"
+          },
+          "reservation_batch_id": {
+            "format": "uuid",
+            "title": "Reservation Batch Id",
+            "type": "string"
+          },
+          "reservation_count": {
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Reservation Count",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "lease_receipt_id",
+          "lease_generation",
+          "capture_authorized_until",
+          "reservation_batch_id",
+          "first_sequence_number",
+          "reservation_count"
+        ],
+        "title": "SourceExtensionIntent",
+        "type": "object"
+      },
       "SourceLocale": {
         "enum": [
           "en-US",
@@ -2854,6 +2958,95 @@
         ]
       }
     },
+    "/v1/captured-sessions/{session_id}/source-extension": {
+      "post": {
+        "operationId": "source_extension_v1_captured_sessions__session_id__source_extension_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceExtensionIntent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Source Extension",
+        "tags": [
+          "native-source-extension"
+        ]
+      }
+    },
     "/v1/captured-sessions/{session_id}/source-start/{action}": {
       "post": {
         "operationId": "source_start_v1_captured_sessions__session_id__source_start__action__post",
@@ -3532,6 +3725,62 @@
           }
         ],
         "summary": "Issue Capture Lease"
+      }
+    },
+    "/v1/sessions/{session_id}/capture-lease-state": {
+      "get": {
+        "description": "Observe a committed renewal; never create a lease while reconciling Stop.",
+        "operationId": "get_capture_lease_state_v1_sessions__session_id__capture_lease_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureLeaseState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Capture Lease State"
       }
     },
     "/v1/sessions/{session_id}/capture-leases/{lease_id}/renew": {

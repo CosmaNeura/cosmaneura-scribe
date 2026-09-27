@@ -93,6 +93,7 @@ from .schemas import (
     CaptureLeaseIssueRequest,
     CaptureLeaseReceipt,
     CaptureLeaseRenewRequest,
+    CaptureLeaseState,
     CaptureMediaCapabilities,
     CaptureSession,
     ChunkReceipt,
@@ -122,6 +123,7 @@ from .service_auth import (
 )
 from .session_state_v1 import SessionIngestMode, can_transition_session
 from .settings import Settings, get_settings
+from .source_extension_routes import router as source_extension_router
 from .source_start_routes import router as source_start_router
 from .storage import AudioStorage, build_audio_storage
 
@@ -471,6 +473,7 @@ app.include_router(
 app.include_router(creator_review_router)
 app.include_router(captured_admission_router)
 app.include_router(source_start_router)
+app.include_router(source_extension_router)
 
 
 @app.get(
@@ -860,6 +863,45 @@ async def renew_capture_lease(
             entity_id=lease_id,
         )
         return capture_lease_response(receipt)
+
+
+@app.get("/v1/sessions/{session_id}/capture-lease-state", response_model=CaptureLeaseState)
+async def get_capture_lease_state(
+    session_id: UUID,
+    tenant_id: TenantId,
+    provider: CaptureProvider,
+    policy: Policy,
+    settings: RuntimeSettings,
+) -> CaptureLeaseState:
+    """Observe a committed renewal; never create a lease while reconciling Stop."""
+    _require_capture_protocol(settings)
+    async with provider.transaction(tenant_id) as store:
+        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        receipt = None
+        if context.lease is not None:
+            receipt = await store.capture_lease_receipt_for_generation(
+                tenant_id,
+                session_id,
+                context.lease.generation,
+            )
+            if (
+                receipt is None
+                or receipt.lease_id != context.lease.lease_id
+                or receipt.expires_at != context.lease.expires_at
+            ):
+                raise HTTPException(status_code=503, detail="Capture lease state is unavailable.")
+        await store.audit(
+            tenant_id=tenant_id,
+            action="capture_lease.read",
+            entity_type="capture_session",
+            entity_id=session_id,
+        )
+        return CaptureLeaseState(
+            session_id=session_id,
+            current_lease=capture_lease_response(receipt) if receipt else None,
+            lease_closed=context.lease is not None and context.lease.closed_at is not None,
+            session_status=context.session.status,
+        )
 
 
 @app.post(
