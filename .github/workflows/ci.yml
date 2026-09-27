@@ -42,7 +42,7 @@ jobs:
       - run: uv sync --all-groups
       - run: uv run ruff check .
       - run: uv run pyright
-      - run: uv run pytest --cov=cosmaneura_scribe --cov-branch --cov-fail-under=80
+      - run: uv run pytest --cov=cosmaneura_scribe
       - run: uv run python scripts/check_phi_logs.py
       - run: uv run python scripts/check_secrets.py
       - run: uv run python scripts/check_adr_numbers.py
@@ -83,7 +83,7 @@ jobs:
       - run: npm run test:golden
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npm test --workspace @cosmaneura-scribe/capacitor-secure-queue
       - run: npm run test:coverage
       - run: npm run build
       - run: npm run build:capture-preview-api

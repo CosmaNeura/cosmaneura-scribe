@@ -46,6 +46,12 @@ markers = [
   "postgres: requires the disposable PostgreSQL integration-test database",
 ]
 
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
