@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM ghcr.io/astral-sh/uv:0.11.32-python3.12-trixie-slim AS builder
+FROM --platform=$BUILDPLATFORM ghcr.io/astral-sh/uv:0.11.32-python3.12-trixie-slim AS builder
+
+ARG TARGETARCH
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -12,7 +14,13 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY services/api ./services/api
 
-RUN uv sync --locked --no-editable
+# Run the installer natively; select wheels for the runtime's architecture.
+RUN case "$TARGETARCH" in \
+      amd64) uv_target_platform=x86_64-unknown-linux-gnu ;; \
+      arm64) uv_target_platform=aarch64-unknown-linux-gnu ;; \
+      *) echo "Unsupported target architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    uv sync --locked --no-editable --python-platform "$uv_target_platform"
 
 FROM python:3.12-slim-trixie AS runtime
 
