@@ -144,7 +144,7 @@ const rendererPort = {
 const exposed = {}, boundary = new DesktopProviderWorkspaceIpc(ipc, renderer, host); boundary.install();
 const contextBridge = { exposeInMainWorld(name, value) { exposed[name] = value; } };
 if (preloadBundle) {
-  runInNewContext(await readFile(preloadBundle, "utf8"), { TextEncoder, require(name) {
+  runInNewContext(await readFile(preloadBundle, "utf8"), { TextEncoder, TextDecoder, require(name) {
     assert.equal(name, "electron"); return { contextBridge, ipcRenderer: rendererPort };
   } }, { timeout: 1000 });
 } else installDesktopProviderPreload(contextBridge, rendererPort);
