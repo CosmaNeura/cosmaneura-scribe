@@ -887,8 +887,10 @@ export class CaptureFlowController {
   }
 
   readonly #uploadProgress = (progress: DrainProgress): void => {
+    // Queue persistence can precede the flow's recorded-count commit. Publish a
+    // conservative count until onChunk has acknowledged that same saved audio.
     if (this.#reviewAfterUpload) this.#setSnapshot({ uploadProgress: {
-      ...progress, total: Math.max(progress.total, this.#snapshot.recordedChunks),
+      total: this.#snapshot.recordedChunks, registered: Math.min(progress.registered, this.#snapshot.recordedChunks),
     } });
   };
 

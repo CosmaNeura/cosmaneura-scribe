@@ -18,6 +18,26 @@ const crypto = webcrypto as unknown as Crypto;
 // No physical audio or elapsed three-hour claim: the real flow, Core protocol,
 // AES-GCM and encrypted IndexedDB process 1,080 full-sized ten-second WAV chunks.
 describe("continuous configured desktop windows", () => {
+  it("keeps progress bounded when queue receipts precede the flow's next saved-count commit", async () => {
+    const f = await fixture(true), listGate = deferred(), saveGate = deferred(), saving = deferred();
+    let nextChunk: Promise<void> | undefined;
+    try {
+      await f.prepare(); await f.controller.startRecording();
+      const metadata = f.storage.listMetadata.bind(f.storage);
+      vi.spyOn(f.storage, "listMetadata").mockImplementationOnce(async () => { await listGate.promise; return metadata(); });
+      await f.source.emit();
+      const save = f.store.putActiveCaptureState.bind(f.store);
+      vi.spyOn(f.store, "putActiveCaptureState").mockImplementationOnce(async state => {
+        saving.resolve(); await saveGate.promise; return save(state);
+      });
+      nextChunk = f.source.emit(); await saving.promise; listGate.resolve();
+      await vi.waitFor(async () => expect((await metadata()).filter(record => record.state === "purged")).toHaveLength(2));
+      expect(f.controller.snapshot).toMatchObject({ recordedChunks: 1, uploadProgress: { total: 1, registered: 1 } });
+      saveGate.resolve(); await nextChunk;
+      await f.controller.stopRecording();
+      expect(f.controller.snapshot).toMatchObject({ state: "processing", uploadProgress: { total: 2, registered: 2 } });
+    } finally { listGate.resolve(); saveGate.resolve(); await nextChunk; await f.close(); }
+  });
   it.each(["stop", "deactivate"] as const)("keeps acquisition independent of uploads and joins them before %s completes", async action => {
     const f = await fixture(true), gate = deferred();
     const receipt = f.bff.getChunkReceipt.bind(f.bff);
