@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     # Owner: Scribe; initial shared-Core cohort: one explicitly approved tenant.
     # Default off; review by 2026-09-30. Never inferred from external-ingest flags.
     configured_capture_enabled: bool = False
+    # Owner: Scribe; same configured cohort, initially dark; review 2026-09-30.
+    configured_capture_continuation_enabled: bool = False
     configured_capture_tenant_ids: frozenset[UUID] = frozenset[UUID]()
     # Owner: Scribe; cohort: none (dark); review by 2026-09-30.
     beta_preview_host_enabled: bool = False
@@ -275,6 +277,8 @@ class Settings(BaseSettings):
             not self.capture_protocol_enabled or not self.configured_capture_tenant_ids
         ):
             raise ValueError("configured capture requires the capture protocol and explicit cohort")
+        if self.configured_capture_continuation_enabled and not self.configured_capture_enabled:
+            raise ValueError("native continuation requires configured capture")
         if any(tenant_id.int == 0 for tenant_id in self.external_ingest_beta_tenant_ids):
             raise ValueError("external ingest beta tenant IDs must be nonzero")
         if len(self.external_ingest_beta_tenant_ids) > 1:

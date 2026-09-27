@@ -230,7 +230,8 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     command.upgrade(config, "head")
     with pytest.raises(
         RuntimeError,
-        match=r"expand recovery retains larger (capture positions|transcript capacity)",
+        match=(r"expand recovery retains (larger (capture positions|transcript capacity)"
+               r"|dormant native extension history)"),
     ):
         command.downgrade(config, "0019")
 

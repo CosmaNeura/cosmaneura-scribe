@@ -3363,6 +3363,29 @@ class PostgresRepository:
         )
         return _capture_lease_receipt(row) if row is not None else None
 
+    async def capture_lease_receipt_for_generation(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        generation: int,
+    ) -> CaptureLeaseReceipt | None:
+        row = await self._one_or_none(
+            f"""
+            SELECT receipt.id, lease_id, session_id, generation, issued_at, expires_at
+            FROM capture_lease_receipts AS receipt
+            WHERE tenant_id = :tenant_id AND session_id = :session_id AND generation = :generation
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id AND session.id = :session_id
+                    AND {self._capture_scope("session")}
+              )
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            generation=generation,
+        )
+        return _capture_lease_receipt(row) if row is not None else None
+
     async def issue_capture_lease(
         self,
         tenant_id: UUID,

@@ -10,6 +10,7 @@ from .creator_review_routes import CreatorReviewRuntime
 from .postgres_repository import PostgresRepositoryProvider
 from .repository import RepositoryProvider
 from .settings import Settings
+from .source_extension_runtime import SourceExtensionRepositoryProvider, SourceExtensionRuntime
 from .source_start_runtime import SourceStartRepositoryProvider, SourceStartRuntime
 
 
@@ -35,9 +36,19 @@ def bind_configured_capture_service(
         SourceStartRepositoryProvider(provider.engine), tenant_ids=cohort, enabled=True
     )
 
+    if settings.configured_capture_continuation_enabled:
+        app.state.source_extension_runtime = SourceExtensionRuntime(
+            SourceExtensionRepositoryProvider(provider.engine), tenant_ids=cohort, enabled=True
+        )
+
 
 def unbind_configured_capture_service(app: FastAPI) -> None:
-    for name in ("captured_admission_runtime", "creator_review_runtime", "source_start_runtime"):
+    for name in (
+        "captured_admission_runtime",
+        "creator_review_runtime",
+        "source_start_runtime",
+        "source_extension_runtime",
+    ):
         if hasattr(app.state, name):
             delattr(app.state, name)
 
