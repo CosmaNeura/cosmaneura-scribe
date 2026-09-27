@@ -13,6 +13,10 @@ from cosmaneura_scribe.captured_worker_job_runner import (
     run_captured_worker,
 )
 from cosmaneura_scribe.captured_worker_settings import CapturedWorkerSettings
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from test_captured_source_runtime import Trial
+from test_captured_source_runtime import trial as trial
 
 
 def _settings(tmp_path: Path, *, stage: str = "speech") -> CapturedWorkerSettings:
@@ -54,17 +58,53 @@ def _settings(tmp_path: Path, *, stage: str = "speech") -> CapturedWorkerSetting
     return CapturedWorkerSettings(**common)
 
 
+_ENVIRON = {
+    "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED": "true",
+    "AZURE_TOKEN_CREDENTIALS": "ManagedIdentityCredential",
+}
+
+
+def _unreachable_execute(calls: list[object]):
+    # The runner folds every in-try failure into execution_failed, so only a
+    # never-called execute distinguishes a binding gate from a failed run.
+    async def execute(*arguments: object) -> None:
+        calls.append(arguments)
+
+    return execute
+
+
+async def _assert_rejected_before_execution(
+    settings: CapturedWorkerSettings,
+    arguments: tuple[str, ...],
+    *,
+    environ: dict[str, str] = _ENVIRON,
+    code: str = "captured_worker_execution_failed",
+) -> None:
+    calls: list[object] = []
+    with pytest.raises(CapturedWorkerError, match=f"^{code}$"):
+        await run_captured_worker(
+            arguments=arguments,
+            environ=environ,
+            settings_factory=lambda: settings,
+            execute=_unreachable_execute(calls),
+        )
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_disabled_worker_fails_before_parsing_targets() -> None:
     def settings_factory() -> CapturedWorkerSettings:
         raise AssertionError("disabled worker must not parse settings")
 
+    calls: list[object] = []
     with pytest.raises(CapturedWorkerError, match="^captured_worker_disabled$"):
         await run_captured_worker(
             arguments=("not-a-uuid", "--pending"),
             environ={},
             settings_factory=settings_factory,
+            execute=_unreachable_execute(calls),
         )
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -92,25 +132,61 @@ async def test_worker_runs_one_explicit_tenant_target(tmp_path: Path, target: st
 
 
 @pytest.mark.asyncio
+async def test_worker_rejects_disabled_settings_before_execution(tmp_path: Path) -> None:
+    settings = _settings(tmp_path).model_copy(update={"captured_worker_enabled": False})
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+
+    await _assert_rejected_before_execution(settings, (str(tenant_id), "--pending"))
+
+
+@pytest.mark.asyncio
 async def test_worker_rejects_unconfigured_tenant_with_metadata_only_log(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     settings = _settings(tmp_path)
-    unknown_tenant = uuid4()
 
     with caplog.at_level(logging.INFO, logger="cosmaneura_scribe"):
-        with pytest.raises(CapturedWorkerError, match="captured_worker_execution_failed"):
-            await run_captured_worker(
-                arguments=(str(unknown_tenant), "--pending"),
-                environ={
-                    "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED": "true",
-                    "AZURE_TOKEN_CREDENTIALS": "ManagedIdentityCredential",
-                },
-                settings_factory=lambda: settings,
-            )
+        await _assert_rejected_before_execution(settings, (str(uuid4()), "--pending"))
 
     assert "captured_worker.failed" in caplog.text
-    assert "captured_worker_bindings_invalid" not in caplog.text
+    assert "captured_worker.completed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_zero_session_before_execution(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+
+    await _assert_rejected_before_execution(settings, (str(tenant_id), str(UUID(int=0))))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "credentials", [None, "", "EnvironmentCredential", "managedidentitycredential"]
+)
+async def test_worker_requires_managed_identity_credential_chain(
+    tmp_path: Path, credentials: str | None
+) -> None:
+    settings = _settings(tmp_path)
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+    environ = {"COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED": "true"}
+    if credentials is not None:
+        environ["AZURE_TOKEN_CREDENTIALS"] = credentials
+
+    await _assert_rejected_before_execution(
+        settings, (str(tenant_id), "--pending"), environ=environ
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [(), ("--pending", "--pending")])
+async def test_worker_rejects_wrong_argument_count_before_execution(
+    tmp_path: Path, extra: tuple[str, ...]
+) -> None:
+    settings = _settings(tmp_path)
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+
+    await _assert_rejected_before_execution(settings, (str(tenant_id), *extra))
 
 
 @pytest.mark.asyncio
@@ -225,6 +301,97 @@ async def test_speech_discovery_scopes_query_and_returns_targets(tmp_path: Path)
     }
 
 
+async def _expire_speech_lease(trial: Trial) -> None:
+    await trial.query(
+        "UPDATE transcription_jobs SET lease_until = clock_timestamp() - INTERVAL '1 second' "
+        "WHERE tenant_id = :tenant AND session_id = :session"
+    )
+
+
+async def _discovered(
+    trial: Trial, settings: CapturedWorkerSettings, tenant: UUID | None = None
+) -> tuple[UUID, ...]:
+    return await captured_worker_job_runner._targets(
+        trial.provider, settings, tenant or trial.tenant, None
+    )
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_speech_discovery_query_selects_unleased_work_for_its_tenant(
+    trial: Trial, tmp_path: Path
+) -> None:
+    settings = _settings(tmp_path)
+
+    assert await _discovered(trial, settings) == ()
+    await trial.processing()
+    assert await _discovered(trial, settings) == ()
+    await _expire_speech_lease(trial)
+    # Discovery runs as the NOSUPERUSER app role, so a hit also proves the
+    # tenant setting reached row-level security.
+    assert await _discovered(trial, settings) == (trial.draft.id,)
+    assert await _discovered(trial, settings, uuid4()) == ()
+    await trial.query(
+        "UPDATE transcription_jobs SET status = 'retryable', lease_token = NULL, "
+        "lease_until = NULL WHERE tenant_id = :tenant AND session_id = :session"
+    )
+    assert await _discovered(trial, settings) == (trial.draft.id,)
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fence",
+    [
+        pytest.param(
+            "UPDATE consent_records SET revoked_at = clock_timestamp() "
+            "WHERE tenant_id = :tenant AND id = :consent",
+            id="consent-revoked",
+        ),
+        pytest.param(
+            "UPDATE scribe_sessions SET source_received_at = "
+            "clock_timestamp() - INTERVAL '13 days', transcript_content_expires_at = "
+            "clock_timestamp() - INTERVAL '1 microsecond', "
+            "current_source_transcript_version = 1 "
+            "WHERE tenant_id = :tenant AND id = :session",
+            id="content-expired",
+        ),
+        pytest.param(
+            "UPDATE transcription_jobs SET lease_until = clock_timestamp() + INTERVAL '5 minutes' "
+            "WHERE tenant_id = :tenant AND session_id = :session",
+            id="lease-live",
+        ),
+        pytest.param(
+            "UPDATE transcription_jobs SET status = 'completed', lease_token = NULL, "
+            "lease_until = NULL WHERE tenant_id = :tenant AND session_id = :session",
+            id="job-completed",
+        ),
+    ],
+)
+async def test_speech_discovery_query_excludes_fenced_sessions(
+    trial: Trial, tmp_path: Path, fence: str
+) -> None:
+    settings = _settings(tmp_path)
+    await trial.processing()
+    await _expire_speech_lease(trial)
+    assert await _discovered(trial, settings) == (trial.draft.id,)
+
+    engine = create_async_engine(trial.admin_url, connect_args={"ssl": False})
+    try:
+        async with engine.begin() as connection:
+            # Owner-only fixture edit; replica mode skips the lifecycle triggers
+            # that would otherwise refuse jumping straight to a fenced state.
+            await connection.execute(text("SET LOCAL session_replication_role = replica"))
+            await connection.execute(
+                text(fence),
+                {"tenant": trial.tenant, "session": trial.draft.id, "consent": trial.consent.id},
+            )
+    finally:
+        await engine.dispose()
+
+    assert await _discovered(trial, settings) == ()
+
+
 @pytest.mark.asyncio
 async def test_speech_composition_reconciles_targets_and_closes_resources(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -308,8 +475,11 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
     settings = _settings(tmp_path, stage="translation")
     tenant_id = next(iter(settings.configured_capture_tenant_ids))
     target = uuid4()
-    closed: list[str] = []
+    closed: list[object] = []
     constructed: list[str] = []
+    credentials: list[Credential] = []
+    unwrappers: list[Unwrapper] = []
+    translators: list[dict[str, object]] = []
 
     class Repositories:
         def __init__(self, engine: object) -> None:
@@ -319,21 +489,25 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
         def __init__(self, **kwargs: object) -> None:
             assert kwargs["require_envvar"] is True
             constructed.append("credential")
+            credentials.append(self)
 
         async def close(self) -> None:
-            closed.append("credential")
+            closed.append(self)
 
     class Keys:
         async def close(self) -> None:
             closed.append("keys")
 
     class Unwrapper:
-        def __init__(self, **_: object) -> None:
+        def __init__(self, *, credential: Credential, **_: object) -> None:
             constructed.append("unwrapper")
+            self.credential = credential
+            unwrappers.append(self)
 
+        # Mirrors KeyVaultSessionKeyUnwrapper, which closes the credential it holds.
         async def close(self) -> None:
             closed.append("unwrapper")
-            closed.append("credential")
+            await self.credential.close()
 
     class Worker:
         def __init__(self, **kwargs: object) -> None:
@@ -360,7 +534,7 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
     monkeypatch.setattr(
         captured_worker_job_runner,
         "AzureGPT41TranslationAdapter",
-        lambda *_args, **_kwargs: SimpleNamespace(),
+        lambda *_args, **kwargs: translators.append(kwargs),
     )
     monkeypatch.setattr(
         captured_worker_job_runner, "PrivateSpeechEndpointGuard", lambda *_: SimpleNamespace()
@@ -376,7 +550,40 @@ async def test_translation_composition_builds_private_clients_and_closes_them(
     await captured_worker_job_runner._execute(settings, tenant_id, None)
 
     assert constructed == ["credential", "credential", "unwrapper", "worker"]
-    assert closed == ["unwrapper", "credential", "keys", "credential", "database"]
+    shared, key_credential = credentials
+    assert unwrappers[0].credential is key_credential
+    assert translators[0]["credential"] is shared
+    assert closed == ["unwrapper", key_credential, "keys", shared, "database"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing", ["azure_translation_endpoint", "azure_translation_deployment"]
+)
+async def test_translation_composition_rejects_missing_model_binding_before_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, missing: str
+) -> None:
+    settings = _settings(tmp_path, stage="translation").model_copy(update={missing: None})
+    tenant_id = next(iter(settings.configured_capture_tenant_ids))
+    closed: list[str] = []
+    constructed: list[object] = []
+
+    base = SimpleNamespace(engine=object(), close=lambda: _close(closed, "database"))
+    monkeypatch.setattr(captured_worker_job_runner, "build_postgres_provider", lambda _: base)
+    monkeypatch.setattr(
+        captured_worker_job_runner, "CapturedSourceRepositoryProvider", lambda engine: engine
+    )
+    monkeypatch.setattr(
+        captured_worker_job_runner,
+        "DefaultAzureCredential",
+        lambda **kwargs: constructed.append(kwargs),
+    )
+
+    with pytest.raises(CapturedWorkerError, match="^captured_worker_bindings_invalid$"):
+        await captured_worker_job_runner._execute(settings, tenant_id, None)
+
+    assert constructed == []
+    assert closed == ["database"]
 
 
 @pytest.mark.parametrize(
@@ -396,20 +603,3 @@ def test_main_maps_worker_failures_to_process_status(
         captured_worker_job_runner.main()
 
     assert raised.value.code == status
-
-
-@pytest.mark.parametrize("stage", ["speech", "translation"])
-def test_worker_settings_are_false_default_and_stage_closed(
-    tmp_path: Path, stage: str
-) -> None:
-    defaults = CapturedWorkerSettings()
-    assert defaults.captured_worker_enabled is False
-    assert defaults.captured_worker_stage is None
-
-    settings = _settings(tmp_path, stage=stage)
-    assert settings.captured_worker_stage == stage
-
-    invalid = settings.model_dump()
-    invalid["database_user"] = "wrong-principal"
-    with pytest.raises(ValueError, match="captured_worker_bindings_invalid"):
-        CapturedWorkerSettings(**invalid)
