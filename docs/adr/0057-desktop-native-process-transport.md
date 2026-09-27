@@ -97,3 +97,21 @@ Native selection/permission/indicator UI, actual Meet/Zoom capture extent,
 physical interruption/recovery, Windows support, complete Core runtime, both
 standalone app packages and signed operating acceptance remain open. W13,
 Mac R2 and their accepted session trials remain unchanged.
+
+## Continuous-window amendment — 2026-09-27
+
+The configured desktop flow now opts into the receiver's private capture-v3
+protocol. It retains the original process and source while Core renews short
+capture windows. The existing PCM chunker grows only within a fixed initial
+budget and keeps its partially filled buffer and sequence. All receiving layers
+stage the verified allowance before awaiting native acknowledgement, because
+renewed audio can arrive before the acknowledgement. Duplicate extensions do not
+refresh deadlines; Stop rejects pending extension and prevents late reactivation.
+
+Durable continuous renewal uses flow record version 5, with the old deadline
+retained until replacement reservations arrive. Versions 2–4 remain readable;
+older clients fail closed on version 5. The same encryption, queue and upload
+protocol remain in use. The [renewal flight plan](../flight-plans/2026-09-27-desktop-recording-renewal.md)
+records recovery and release constraints. Generated-volume and native-pipe tests
+verify the software composition; installed Zoom/Chrome audio remains a separate
+acceptance result.

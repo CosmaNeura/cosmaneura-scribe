@@ -5,7 +5,7 @@ performance/essential UX. Existing local checks, implementer review and merge
 authority applies. No production, live data, microphone permission or fixture
 writes are implied. Preserve original recordings, keys, queues and source proof.
 
-The desktop flow currently has one Core 900-second lease/reservation window.
+Before this change the desktop flow had one Core 900-second lease/reservation window.
 Its native source, mixer, PCM chunker and flow each enforce that window. Raising
 one timer does not support a three-hour visit. Reuse Core issue/renew/reserve,
 the existing encrypted flow/queue, native capture/mixer and original exclusive
@@ -38,3 +38,36 @@ acceptance, re-evaluated before the next candidate promotion. No deployment or
 cohort activation in the receiver change. Recovery keeps the prior v2 entry and
 installed candidate; never erase or downgrade custody records created by a later
 continuous writer. No schema/data migration or new external dependency.
+
+## Connected client and durable recovery
+
+The main-process flow now requests renewal before the current window ends (two
+minutes for normal 15-minute windows, reduced proportionately for small windows).
+It persists a continuous renewal intent before sending Core the mutation. The
+old deadline remains effective while the renewed lease and reservations arrive.
+Native extension follows persisted reservations and keeps the same process,
+source, chunk sequence and partial PCM buffer. The initial hard budget is fixed.
+Concurrent chunk counters and receipt changes use a serialized metadata writer;
+Core requests never block the PCM callback. Stop and teardown await outstanding
+metadata work after physically stopping capture, so a late response cannot write
+into closed storage or restart the source.
+
+Continuous intents use encrypted flow record version 5. Version 4 paused-resume
+records remain readable; version 5 cannot be downgraded to version 4. This is a
+local record codec change, with no database DDL or migration. Older clients must
+fail closed on a retained version 5 recording. Recovery means keep the capable
+client and its custody until pending audio is uploaded, or ship a forward fix;
+never delete keys/queues or roll an occupied store back to an older writer.
+
+A lost renewal response reuses its original generation and idempotency key after
+reopen or deliberate Resume/Stop. A failed retry after confirmed Stop remains
+paused with saved audio available. Reservation recovery may add previously
+committed reservation rows but cannot rewrite encrypted chunks. Existing crash
+recovery conservatively counts full envelopes toward remaining storage capacity.
+
+Validation includes 1,080 full ten-second chunks through AES-GCM and encrypted
+IndexedDB, 13 successive renewals, reopen/key continuity, lost responses and Stop
+races. The actual Swift pipe and desktop renderer/flow/SQLite composition are
+tested separately with short generated microphone/system samples and real
+timers. These are software checks; physical Zoom/Chrome voices, installed
+performance and phone background acceptance remain distinct release gates.

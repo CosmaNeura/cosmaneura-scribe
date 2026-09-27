@@ -232,7 +232,7 @@ describe("durable desktop capture", () => {
       const wav = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(base64UrlDecode(envelope.header.nonce)),
         additionalData: new Uint8Array(base64UrlDecode(encrypted.reservation.additionalAuthenticatedData)) }, decryptKey, new Uint8Array(envelope.ciphertext)));
       expect(wav.length).toBe(9644);
-      const samples = new DataView(wav.buffer); for (let i = 44; i < wav.length; i += 2) expect(samples.getInt16(i, true)).toBe(4096);
+      const samples = new DataView(wav.buffer); for (let i = 44; i < wav.length; i += 2) expect(samples.getInt16(i, true)).toBe(12288);
       const restoredKey = (await flow.getSessionKey(session.id))!;
       expect(restoredKey.extractable).toBe(false); expect(restoredKey.usages).toEqual(["encrypt"]);
       const nonce = crypto.getRandomValues(new Uint8Array(12));

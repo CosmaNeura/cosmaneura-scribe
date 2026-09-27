@@ -7,7 +7,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { DesktopPCMDriver, DesktopPCMDriverSession, DesktopPCMFailure,
-  DesktopPCMStart, DesktopPCMCompletion } from "./native-pcm-driver.js";
+  DesktopPCMStart, DesktopPCMCompletion, DesktopCaptureAuthorization } from "./native-pcm-driver.js";
 import { parseDesktopPCMStart, parseDesktopPCMCompletion } from "./pcm-capture-source.js";
 import { NativeProcessDecoder, nativeCommand, nativeMetadata, exactKeys } from "./native-process-wire.js";
 import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
@@ -68,7 +68,7 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
     requireMain();
     if (!this.options.enabled || !this.options.isSessionActive() || configuration.sampleRateHz !== 16_000
       || !integer(configuration.maximumOutputFrames, 1, MAX_FRAMES)) throw failure();
-    return new ProcessSession(this.options, configuration.maximumOutputFrames, sink);
+    return new ProcessSession(this.options, configuration.maximumOutputFrames, sink, configuration.authorization);
   }
 }
 
@@ -94,10 +94,17 @@ class ProcessSession implements DesktopPCMDriverSession {
   private heartbeat?: ReturnType<typeof setInterval>;
   private startupTimer?: ReturnType<typeof setTimeout>;
   private captureTimer?: ReturnType<typeof setTimeout>;
+  private authorization: DesktopCaptureAuthorization | undefined;
+  private renewalRequest = 0;
+  private renewalsClosed = false;
+  private pendingExtension: { request: number; authorization: DesktopCaptureAuthorization;
+    response: ReturnType<typeof deferred<void>> } | undefined;
   private readonly stops = new Map<number, { readonly mode: "drain" | "discard";
     readonly response: ReturnType<typeof deferred<DesktopPCMCompletion | null>> }>();
 
-  constructor(private readonly options: NativeProcessDriverOptions, private maximumFrames: number, private readonly sink: Sink) {
+  constructor(private readonly options: NativeProcessDriverOptions, private maximumFrames: number, private readonly sink: Sink,
+    authorization?: DesktopCaptureAuthorization) {
+    this.authorization = authorization ? checkedAuthorization(authorization, maximumFrames) : undefined;
     // The handle exists before the first asynchronous authorization/file read.
     void this.ready.catch(() => undefined);
     this.diagnose("audio_start_pending");
@@ -118,9 +125,12 @@ class ProcessSession implements DesktopPCMDriverSession {
       || !["com.google.Chrome", "us.zoom.xos"].includes(selection.application)
       || !integer(selection.processID, 1, 2_147_483_647) || !integer(selection.windowID, 1, 4_294_967_295)
       || !Number.isSafeInteger(selection.captureAuthorizedUntil) || !integer(duration, 1, 86_400)) throw failure();
-    this.maximumFrames = Math.min(this.maximumFrames, duration * 16_000);
+    if (this.authorization) {
+      this.authorization = checkedAuthorization(this.authorization, this.maximumFrames);
+      if (this.authorization.expiresAtMilliseconds !== selection.captureAuthorizedUntil) throw failure();
+    } else this.maximumFrames = Math.min(this.maximumFrames, duration * 16_000);
     const processFence = parseNativeProcessFence(this.options.getProcessFence?.());
-    const child = launch(this.options.helperPath, "--capture-v2");
+    const child = launch(this.options.helperPath, this.authorization ? "--capture-v3" : "--capture-v2");
     this.child = child;
     child.once("spawn", () => { this.diagnose("audio_helper_spawned"); });
     child.stdout.on("data", (bytes: Buffer) => {
@@ -133,7 +143,7 @@ class ProcessSession implements DesktopPCMDriverSession {
       this.exitObserved = true; clearInterval(this.heartbeat); clearTimeout(this.startupTimer); clearTimeout(this.captureTimer);
       try { this.decoder.finish(); } catch { this.fail("failed"); }
       if (!this.confirmed) this.fail("failed");
-      this.readiness.reject(failure());
+      this.readiness.reject(failure()); this.pendingExtension?.response.reject(failure());
       // An owned child's observed exit proves cessation for discard, even if
       // its last reply was lost. It cannot prove a drained audio completion.
       for (const stop of this.stops.values()) {
@@ -142,7 +152,10 @@ class ProcessSession implements DesktopPCMDriverSession {
       }
       this.stops.clear(); this.exited.resolve();
     });
-    this.send({ type: "start", application: selection.application, processID: selection.processID,
+    if (this.authorization) {
+      this.send({ type: "startRenewable", application: selection.application, processID: selection.processID,
+        windowID: selection.windowID, authorization: this.authorization, processFence });
+    } else this.send({ type: "start", application: selection.application, processID: selection.processID,
       windowID: selection.windowID, maximumDurationSeconds: duration, maximumOutputFrames: this.maximumFrames, processFence });
     this.captureTimer = setTimeout(() => { this.fail("failed"); }, Math.max(0, selection.captureAuthorizedUntil - Date.now()));
     this.heartbeat = setInterval(() => {
@@ -158,7 +171,22 @@ class ProcessSession implements DesktopPCMDriverSession {
     if (!this.options.isSessionActive()) { this.fail("session_locked"); throw failure(); }
     this.active = true; this.send({ type: "activate" });
   }
+  async extend(value: DesktopCaptureAuthorization): Promise<void> {
+    if (!this.authorization || !this.active || this.failed || this.cancelled || this.renewalsClosed
+      || this.closingInput || this.exitObserved || this.pendingExtension || !this.options.isSessionActive()) throw failure();
+    const next = checkedAuthorization(value, value.maximumOutputFrames, this.authorization);
+    if (next.generation === this.authorization.generation) return;
+    if (this.renewalRequest >= 1_000_000) throw failure();
+    const response = deferred<void>();
+    const request = ++this.renewalRequest;
+    this.pendingExtension = { request, authorization: next, response };
+    this.maximumFrames = next.maximumOutputFrames;
+    this.send({ type: "extend", request, authorization: next });
+    try { await deadline(response.promise); }
+    catch (error) { if (!this.renewalsClosed) this.fail("failed"); throw error; }
+  }
   stop(options: { readonly mode: "drain" | "discard" }): Promise<DesktopPCMCompletion | null> {
+    this.renewalsClosed = true; this.pendingExtension?.response.reject(failure());
     if (options.mode === "discard" || !this.active) {
       this.cancelled = true; this.readiness.reject(failure());
     }
@@ -201,6 +229,17 @@ class ProcessSession implements DesktopPCMDriverSession {
     }
     const value = nativeMetadata(payload);
     switch (value.type) {
+      case "extended": {
+        const pending = this.pendingExtension;
+        if (!pending || !exactKeys(value, ["type", "request", "generation"])
+          || value.request !== pending.request || value.generation !== pending.authorization.generation) throw failure();
+        this.pendingExtension = undefined;
+        if (this.renewalsClosed || this.failed || this.cancelled || this.exitObserved) { pending.response.reject(failure()); return; }
+        this.authorization = pending.authorization;
+        clearTimeout(this.captureTimer);
+        this.captureTimer = setTimeout(() => { this.fail("failed"); }, Math.max(0, this.authorization.expiresAtMilliseconds - Date.now()));
+        pending.response.resolve(); return;
+      }
       case "ready":
         if (!exactKeys(value, ["type", "start"]) || this.startValue || this.confirmed) throw failure();
         if (this.cancelled) return;
@@ -341,4 +380,26 @@ async function deadline<T>(work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { return await Promise.race([work, new Promise<T>((_, reject) => { timer = setTimeout(() => { reject(failure()); }, DEADLINE_MS); })]); }
   finally { clearTimeout(timer); }
+}
+
+function checkedAuthorization(value: DesktopCaptureAuthorization, maximumFrames: number,
+  previous?: DesktopCaptureAuthorization): DesktopCaptureAuthorization {
+  if (!value || !exactKeys({ ...value }, ["runId", "generation", "expiresAtMilliseconds", "maximumOutputFrames", "hardMaximumOutputFrames"])
+    || typeof value.runId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value.runId)
+    || !integer(value.generation, 1, Number.MAX_SAFE_INTEGER)
+    || !Number.isSafeInteger(value.expiresAtMilliseconds) || value.expiresAtMilliseconds <= Date.now()
+    || value.expiresAtMilliseconds - Date.now() > 905_000
+    || !integer(value.hardMaximumOutputFrames, 1, MAX_FRAMES)
+    || !integer(value.maximumOutputFrames, 1, value.hardMaximumOutputFrames)
+    || value.maximumOutputFrames !== maximumFrames) throw failure();
+  if (previous) {
+    if (previous.expiresAtMilliseconds <= Date.now() || value.runId !== previous.runId
+      || value.hardMaximumOutputFrames !== previous.hardMaximumOutputFrames
+      || value.maximumOutputFrames < previous.maximumOutputFrames
+      || value.maximumOutputFrames - previous.maximumOutputFrames > 905 * 16_000) throw failure();
+    const duplicate = value.generation === previous.generation && value.expiresAtMilliseconds === previous.expiresAtMilliseconds
+      && value.maximumOutputFrames === previous.maximumOutputFrames;
+    if (!duplicate && (value.generation !== previous.generation + 1 || value.expiresAtMilliseconds <= previous.expiresAtMilliseconds)) throw failure();
+  } else if (value.generation !== 1 || value.maximumOutputFrames > 905 * 16_000) throw failure();
+  return Object.freeze({ ...value });
 }

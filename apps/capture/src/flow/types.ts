@@ -11,8 +11,11 @@ export const FLOW_RECORD_SCHEMA_VERSION = 2 as const;
 export const CHANNEL_FLOW_RECORD_SCHEMA_VERSION = 3 as const;
 /** A continued recording must never be opened by a one-interval writer. */
 export const CONTINUATION_FLOW_RECORD_SCHEMA_VERSION = 4 as const;
+/** Continuous renewal cannot be interpreted by an older paused-resume writer. */
+export const CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION = 5 as const;
 
 export interface CaptureContinuation {
+  readonly continuous?: true;
   readonly prepared: boolean;
   readonly firstSequenceNumber: number;
   readonly reservationCount: number;
@@ -64,7 +67,7 @@ export interface PreparedCaptureSession {
 
 export interface ActiveCaptureState {
   readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION
-    | typeof CONTINUATION_FLOW_RECORD_SCHEMA_VERSION;
+    | typeof CONTINUATION_FLOW_RECORD_SCHEMA_VERSION | typeof CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION;
   readonly continuation?: CaptureContinuation;
   readonly channel?: ChunkReservationBatchRequest["channel"];
   readonly sessionId: string;

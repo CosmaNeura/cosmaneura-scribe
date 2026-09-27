@@ -5,6 +5,7 @@ import {
   FLOW_RECORD_SCHEMA_VERSION,
   CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
   CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
+  CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION,
   type ActiveCaptureState,
   type CaptureFlowStore,
   type CapturePreparationState,
@@ -414,7 +415,7 @@ function validCaptureChannelVersion(value: Record<string, unknown>): boolean {
 
 function validActiveChannelVersion(value: Record<string, unknown>): boolean {
   return validCaptureChannelVersion(value) && value.continuation === undefined
-    || value.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION && value.reviewAfterUpload === true
+    || [CONTINUATION_FLOW_RECORD_SCHEMA_VERSION, CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION].includes(value.schemaVersion as 4 | 5) && value.reviewAfterUpload === true
       && (value.channel === undefined || value.channel === "mixed" || value.channel === "system_audio");
 }
 
@@ -548,10 +549,13 @@ export function assertActiveCaptureState(value: unknown): asserts value is Activ
     throw new QueueInvariantError("invalid_active_capture_state");
   }
   assertLease(value.lease, value.sessionId);
-  if (value.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION) {
+  if ([CONTINUATION_FLOW_RECORD_SCHEMA_VERSION, CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION].includes(value.schemaVersion as 4 | 5)) {
     const next = value.continuation;
+    const continuous = isRecord(next) && next.continuous === true;
     if (!isRecord(next) || Object.keys(next).sort().join(",") !==
-        "firstSequenceNumber,prepared,previousLease,renewIdempotencyKey,reservationCount"
+        (continuous ? "continuous,firstSequenceNumber,prepared,previousLease,renewIdempotencyKey,reservationCount"
+          : "firstSequenceNumber,prepared,previousLease,renewIdempotencyKey,reservationCount")
+      || continuous && (value.schemaVersion !== CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION || value.channel !== "mixed")
       || typeof next.prepared !== "boolean"
       || !Number.isSafeInteger(next.firstSequenceNumber) || (next.firstSequenceNumber as number) < 0
       || (next.firstSequenceNumber as number) > (value.recordedChunks as number)
@@ -564,10 +568,13 @@ export function assertActiveCaptureState(value: unknown): asserts value is Activ
     assertIdempotencyKey(next.renewIdempotencyKey); assertLease(next.previousLease, value.sessionId);
     if (next.previousLease.lease_id !== value.lease.lease_id
       || ![next.previousLease.generation, (next.previousLease.generation as number) + 1].includes(value.lease.generation)
-      || value.lease.generation === next.previousLease.generation && value.phase !== "paused"
-      || next.prepared === false && value.phase !== "paused"
+      || !continuous && value.lease.generation === next.previousLease.generation && value.phase !== "paused"
+      || !continuous && next.prepared === false && value.phase !== "paused"
       || next.prepared === true && value.lease.generation !== (next.previousLease.generation as number) + 1
-      || value.phase !== "paused" && value.captureAuthorizedUntil !== value.lease.expires_at) {
+      || !continuous && value.phase !== "paused" && value.captureAuthorizedUntil !== value.lease.expires_at
+      || continuous && (next.prepared === true
+        ? value.captureAuthorizedUntil !== value.lease.expires_at
+        : ![next.previousLease.expires_at, value.lease.expires_at].includes(value.captureAuthorizedUntil))) {
       throw new QueueInvariantError("invalid_active_capture_state");
     }
   }
@@ -582,7 +589,9 @@ export function assertActiveCaptureProgression(
     && replacement.continuation.renewIdempotencyKey !== existing.continuation?.renewIdempotencyKey;
   const prepared = existing.continuation?.prepared === false && replacement.continuation?.prepared === true
     && same({ ...existing.continuation, prepared: true }, replacement.continuation)
-    && existing.phase === "paused" && replacement.phase === "ready"
+    && (existing.continuation.continuous === true
+      ? existing.phase === replacement.phase
+      : existing.phase === "paused" && replacement.phase === "ready")
     && replacement.lease.generation === existing.continuation.previousLease.generation + 1
     && replacement.captureAuthorizedUntil === replacement.lease.expires_at;
   const renewed = existing.continuation !== undefined && same(existing.continuation, replacement.continuation)
@@ -592,8 +601,19 @@ export function assertActiveCaptureProgression(
     && replacement.lease.generation === existing.lease.generation + 1
     && replacement.lease.receipt_id !== existing.lease.receipt_id
     && Date.parse(replacement.lease.expires_at) > Date.parse(replacement.lease.issued_at)
-    && replacement.captureAuthorizedUntil === null && existing.phase === "paused" && replacement.phase === "paused";
-  if (begins && (existing.reviewAfterUpload !== true || existing.phase !== "paused" || replacement.phase !== "paused"
+    && (existing.continuation.continuous === true
+      ? replacement.captureAuthorizedUntil === existing.captureAuthorizedUntil && existing.phase === replacement.phase
+        && Date.parse(replacement.lease.expires_at) > Date.parse(existing.lease.expires_at)
+      : replacement.captureAuthorizedUntil === null && existing.phase === "paused" && replacement.phase === "paused");
+  const windowReserved = existing.continuation?.continuous === true && !existing.continuation.prepared
+    && same(existing.continuation, replacement.continuation) && same(existing.lease, replacement.lease)
+    && existing.lease.generation === existing.continuation.previousLease.generation + 1
+    && existing.captureAuthorizedUntil === existing.continuation.previousLease.expires_at
+    && replacement.captureAuthorizedUntil === existing.lease.expires_at;
+  if (begins && (existing.reviewAfterUpload !== true
+    || (replacement.continuation.continuous === true
+      ? existing.phase !== "recording" || replacement.phase !== "recording" || existing.channel !== "mixed"
+      : existing.phase !== "paused" || replacement.phase !== "paused")
     || !same(existing.lease, replacement.continuation.previousLease)
     || replacement.continuation.firstSequenceNumber !== existing.recordedChunks
     || replacement.continuation.prepared !== false || existing.continuation?.prepared === false
@@ -604,12 +624,13 @@ export function assertActiveCaptureProgression(
   if (
     (!same(existing.lease, replacement.lease) && !renewed) ||
     (!same(existing.continuation, replacement.continuation) && !begins && !prepared) ||
-    (existing.schemaVersion !== replacement.schemaVersion && !(begins && replacement.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION)) || existing.channel !== replacement.channel ||
+    (existing.schemaVersion !== replacement.schemaVersion && !(begins && (replacement.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION && existing.schemaVersion !== CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION
+      || replacement.schemaVersion === CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION))) || existing.channel !== replacement.channel ||
     existing.reviewAfterUpload !== replacement.reviewAfterUpload ||
     existing.completeIdempotencyKey !== replacement.completeIdempotencyKey ||
     existing.startedAt !== replacement.startedAt ||
     existing.aggregatePlaintextBudgetBytes !== replacement.aggregatePlaintextBudgetBytes ||
-    (!nullableStable(existing.captureAuthorizedUntil, replacement.captureAuthorizedUntil) && !renewed) ||
+    (!nullableStable(existing.captureAuthorizedUntil, replacement.captureAuthorizedUntil) && !renewed && !windowReserved) ||
     replacement.recordedChunks < existing.recordedChunks ||
     replacement.recordedPlaintextBytes < existing.recordedPlaintextBytes
   ) {

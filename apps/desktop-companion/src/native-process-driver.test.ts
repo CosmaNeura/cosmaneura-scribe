@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
@@ -73,7 +73,7 @@ describe("private native pipe framing", () => {
 
 describe.skipIf(!fixturePath)("actual Swift process with explicit invented source", () => {
   async function driver(pid = 1, authorize?: () => Promise<void>, hash?: string,
-    fence: () => NativeProcessFence = nativePipeFixtureFence): Promise<NativeProcessPCMDriver> {
+    fence: () => NativeProcessFence = nativePipeFixtureFence, expiresAt?: number): Promise<NativeProcessPCMDriver> {
     expect(consent.allPartiesAgreed).toBe(true);
     if (!fixturePath) throw new Error("compiled fixture required");
     return new NativeProcessPCMDriver({ enabled: true, helperPath: fixturePath,
@@ -81,9 +81,50 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
       getProcessFence: fence,
       isSessionActive: () => true, authorizeSelectedWindow: async () => {
         await authorize?.();
-        return { application: "com.google.Chrome", processID: pid, windowID: 1, captureAuthorizedUntil: Date.now() + 60_000 };
+        return { application: "com.google.Chrome", processID: pid, windowID: 1, captureAuthorizedUntil: expiresAt ?? Date.now() + 60_000 };
       } });
   }
+  it("carries a renewable window through every adapter and preserves partial WAV boundaries", async () => {
+    const expiresAt = Date.now() + 60_000, waves: Uint8Array[] = [], sequences: number[] = [], coverage: DesktopPCMCoverage[] = [];
+    const source = new DesktopPcmCaptureSource(await driver(1, undefined, undefined, nativePipeFixtureFence, expiresAt),
+      async value => { coverage.push(value); });
+    const initial = { runId: randomUUID(), generation: 1, expiresAtMilliseconds: expiresAt, maximumChunks: 2, hardMaximumChunks: 4 };
+    const next = { ...initial, generation: 2, expiresAtMilliseconds: expiresAt + 30_000, maximumChunks: 4 };
+    try {
+      await source.start({ capabilities: renewableCapabilities(), window: initial,
+        onChunk: async chunk => { waves.push(chunk.wavBytes.slice()); sequences.push(chunk.sequenceNumber); } });
+      await vi.waitFor(() => expect(waves).toHaveLength(1));
+      await source.extend(next); await source.extend(next);
+      await source.stop();
+      expect(sequences).toEqual([0, 1, 2]);
+      expect(waves.map(wave => wave.length)).toEqual([6444, 6444, 6444]);
+      expect(coverage.map(value => value.phase)).toEqual(["started", "stopped"]);
+      expect(coverage[1]).toMatchObject({ value: { outputFrames: 9600, endHostTimeNanoseconds: "1600000000" } });
+      for (const wave of waves) {
+        const view = new DataView(wave.buffer, wave.byteOffset, wave.length);
+        for (let offset = 44; offset < wave.length; offset += 2) expect(view.getInt16(offset, true)).toBe(12288);
+        wave.fill(0);
+      }
+      await expect(source.extend(next)).rejects.toThrow();
+    } finally { await source.stop(); }
+  });
+  it("fences an in-flight extension with Stop without restarting the helper", async () => {
+    const expiresAt = Date.now() + 60_000, waves: number[] = [], coverage: DesktopPCMCoverage[] = [];
+    const source = new DesktopPcmCaptureSource(await driver(5, undefined, undefined, nativePipeFixtureFence, expiresAt),
+      async value => { coverage.push(value); });
+    const initial = { runId: randomUUID(), generation: 1, expiresAtMilliseconds: expiresAt, maximumChunks: 2, hardMaximumChunks: 4 };
+    try {
+      await source.start({ capabilities: renewableCapabilities(), window: initial,
+        onChunk: async chunk => { waves.push(chunk.sequenceNumber); } });
+      await vi.waitFor(() => expect(waves).toHaveLength(1));
+      const extension = expect(source.extend({ ...initial, generation: 2,
+        expiresAtMilliseconds: expiresAt + 30_000, maximumChunks: 4 })).rejects.toThrow();
+      await source.stop(); await extension;
+      expect(waves).toEqual([0, 1]);
+      expect(coverage.map(value => value.phase)).toEqual(["started", "stopped"]);
+      expect(coverage[1]).toMatchObject({ value: { outputFrames: 4800 } });
+    } finally { await source.stop(); }
+  });
   it("waits for activation and packet acknowledgement, drains mixer tail, then confirms process exit", async () => {
     const native = await driver(); expect(await native.getAvailability()).toBe(true);
     const received: Uint8Array[] = [], references: Uint8Array[] = [], failures: DesktopPCMFailure[] = [];
@@ -250,4 +291,10 @@ function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(yes => { resolve = yes; });
   return { promise, resolve };
+}
+
+function renewableCapabilities(): CaptureCapabilities {
+  return { protocol_version: "1.0", media: { media_type: "audio/wav", encoding: "pcm_s16le", channels: 1, sample_rate_hz: 16_000 },
+    target_chunk_duration_ms: 200, max_envelope_bytes: 10_000, max_chunks: 2, remaining_aggregate_plaintext_bytes: 20_000,
+    capture_lease_ttl_seconds: 30, reservation_window_seconds: 30, max_reservations_per_batch: 2, upload_concurrency: 1 };
 }
