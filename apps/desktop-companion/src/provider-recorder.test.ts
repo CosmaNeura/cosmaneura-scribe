@@ -282,6 +282,11 @@ describe("confirmed stop recovery", () => {
 describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () => {
   it("shows native Stop and receipt progress while live upload and final confirmation are delayed", async () => {
     const f = await fixture(), uploadGate = deferred<void>(), completionGate = deferred<void>();
+    const bff = f.options.createBff(f.abort.signal), capabilities = await bff.getCapabilities(f.session.id);
+    // Use the existing short renewal fixture so new native packets arrive while
+    // both upload workers are held; no physical microphone or wall-clock visit.
+    vi.spyOn(bff, "getCapabilities").mockResolvedValue({ ...capabilities, max_reservations_per_batch: 10 });
+    const renewal = vi.spyOn(bff, "renewLease");
     const target = f.options.uploadTarget.putCompleteEnvelope.bind(f.options.uploadTarget);
     const upload = vi.spyOn(f.options.uploadTarget, "putCompleteEnvelope").mockImplementation(async (...args) => {
       await uploadGate.promise; return target(...args);
@@ -296,6 +301,7 @@ describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () =
       await vi.waitFor(() => expect(upload).toHaveBeenCalled());
       expect(upload.mock.calls.length).toBeLessThanOrEqual(2);
       await vi.waitFor(() => expect(view.controller.snapshot.recordedChunks).toBe(5), { timeout: 3000 });
+      expect(renewal).toHaveBeenCalledTimes(1);
       expect(view.controller.snapshot.uploadProgress).toEqual({ total: 5, registered: 0 });
       stopping = view.controller.stopRecording();
       await vi.waitFor(() => expect(view.controller.snapshot).toMatchObject({ statusCode: "capture_upload_settling",
