@@ -18,6 +18,26 @@ const crypto = webcrypto as unknown as Crypto;
 // No physical audio or elapsed three-hour claim: the real flow, Core protocol,
 // AES-GCM and encrypted IndexedDB process 1,080 full-sized ten-second WAV chunks.
 describe("continuous configured desktop windows", () => {
+  it("keeps progress bounded when queue receipts precede the flow's next saved-count commit", async () => {
+    const f = await fixture(true), listGate = deferred(), saveGate = deferred(), saving = deferred();
+    let nextChunk: Promise<void> | undefined;
+    try {
+      await f.prepare(); await f.controller.startRecording();
+      const metadata = f.storage.listMetadata.bind(f.storage);
+      vi.spyOn(f.storage, "listMetadata").mockImplementationOnce(async () => { await listGate.promise; return metadata(); });
+      await f.source.emit();
+      const save = f.store.putActiveCaptureState.bind(f.store);
+      vi.spyOn(f.store, "putActiveCaptureState").mockImplementationOnce(async state => {
+        saving.resolve(); await saveGate.promise; return save(state);
+      });
+      nextChunk = f.source.emit(); await saving.promise; listGate.resolve();
+      await vi.waitFor(async () => expect((await metadata()).filter(record => record.state === "purged")).toHaveLength(2));
+      expect(f.controller.snapshot).toMatchObject({ recordedChunks: 1, uploadProgress: { total: 1, registered: 1 } });
+      saveGate.resolve(); await nextChunk;
+      await f.controller.stopRecording();
+      expect(f.controller.snapshot).toMatchObject({ state: "processing", uploadProgress: { total: 2, registered: 2 } });
+    } finally { listGate.resolve(); saveGate.resolve(); await nextChunk; await f.close(); }
+  });
   it.each(["stop", "deactivate"] as const)("keeps acquisition independent of uploads and joins them before %s completes", async action => {
     const f = await fixture(true), gate = deferred();
     const receipt = f.bff.getChunkReceipt.bind(f.bff);
@@ -29,7 +49,8 @@ describe("continuous configured desktop windows", () => {
       await f.prepare(); await f.controller.startRecording();
       await f.source.emit(); await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
       await f.source.emit(); // This must finish while the first upload is held.
-      expect(f.controller.snapshot).toMatchObject({ state: "recording", recordedChunks: 2 });
+      expect(f.controller.snapshot).toMatchObject({ state: "recording", recordedChunks: 2,
+        uploadProgress: { total: 2, registered: 0 } });
       expect(complete).not.toHaveBeenCalled();
       let settled = false;
       const closing = (action === "stop" ? f.controller.stopRecording() : f.controller.deactivate()).then(() => { settled = true; });
@@ -47,6 +68,7 @@ describe("continuous configured desktop windows", () => {
         await f.controller.stopRecording();
       }
       expect((await f.storage.listMetadata()).filter(record => record.state === "purged")).toHaveLength(2);
+      expect(f.controller.snapshot.uploadProgress).toEqual({ total: 2, registered: 2 });
     } finally { gate.resolve(); await f.close(); }
   });
 
@@ -58,10 +80,12 @@ describe("continuous configured desktop windows", () => {
       await f.prepare(); await f.controller.startRecording(); await f.source.emit();
       await vi.waitFor(async () => expect((await f.storage.listMetadata()).some(record => record.retry.upload.attempts === 1)).toBe(true));
       expect(f.controller.snapshot.state).toBe("recording");
+      expect(f.controller.snapshot.uploadProgress).toEqual({ total: 1, registered: 0 });
       expect((await f.storage.list()).filter(record => record.state === "uploading")).toHaveLength(1);
       f.clock.advance(1000); await f.source.emit();
       await vi.waitFor(async () => expect((await f.storage.listMetadata()).filter(record => record.state === "purged")).toHaveLength(2));
       expect(reads).toHaveBeenCalledTimes(3); expect(complete).not.toHaveBeenCalled();
+      expect(f.controller.snapshot.uploadProgress).toEqual({ total: 2, registered: 2 });
       expect(f.source.starts).toBe(1); expect(f.source.stops).toBe(0);
       await f.controller.stopRecording(); expect(complete).toHaveBeenCalledTimes(1);
       expect(f.controller.snapshot.state).toBe("processing");

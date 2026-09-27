@@ -29,7 +29,7 @@ import type {
   CaptureSourceInterruptionCode,
 } from "../capture";
 import { QueueInvariantError } from "../queue/errors";
-import type { CaptureQueue } from "../queue/capture-queue";
+import type { CaptureQueue, DrainProgress } from "../queue/capture-queue";
 import type { CaptureQueueTransport, ChunkReservation } from "../queue/types";
 import { createWrappedSessionKey, type WrappedSessionKey } from "./session-key";
 import { CAPTURE_STORAGE_RESERVE_BYTES, captureStorageFailure, requiredCaptureStorageBytes,
@@ -63,6 +63,8 @@ export interface CaptureFlowSnapshot {
   readonly sessionId: string | null;
   readonly recordedChunks: number;
   readonly queuedChunks: number;
+  /** Receipt-confirmed progress, reconstructed from the existing encrypted queue. */
+  readonly uploadProgress?: DrainProgress;
   readonly elapsedSeconds: number;
   readonly remainingBudgetSeconds: number | null;
   readonly remainingAuthoritySeconds: number | null;
@@ -839,7 +841,7 @@ export class CaptureFlowController {
   }
 
   async #drainAndComplete(): Promise<void> {
-    const drained = await this.#queue.drainOnce(this.#queueTransport);
+    const drained = await this.#queue.drainOnce(this.#queueTransport, this.#uploadProgress);
     const records = await this.#queue.listMetadata();
     if (drained.items.some(item => item.outcome === "terminal") || records.some(record =>
       record.reservation.sessionId === this.#requireSessionId()
@@ -871,7 +873,7 @@ export class CaptureFlowController {
     // idempotency, retries and authenticated receipts. Stop joins this task before
     // draining the remaining queue and finalizing; no transcript starts here.
     this.#backgroundUpload = (async () => {
-      const drained = await this.#queue.drainOnce(this.#queueTransport);
+      const drained = await this.#queue.drainOnce(this.#queueTransport, this.#uploadProgress);
       for (const item of drained.items) {
         if (item.outcome === "registered") await this.#queue.purge(item.objectId);
       }
@@ -884,10 +886,19 @@ export class CaptureFlowController {
     });
   }
 
+  readonly #uploadProgress = (progress: DrainProgress): void => {
+    // Queue persistence can precede the flow's recorded-count commit. Publish a
+    // conservative count until onChunk has acknowledged that same saved audio.
+    if (this.#reviewAfterUpload) this.#setSnapshot({ uploadProgress: {
+      total: this.#snapshot.recordedChunks, registered: Math.min(progress.registered, this.#snapshot.recordedChunks),
+    } });
+  };
+
   async #completeAndRefresh(): Promise<void> {
     const sessionId = this.#requireSessionId();
     const lease = this.#requireLease();
     const active = this.#requireActiveState();
+    if (this.#reviewAfterUpload) this.#setSnapshot({ statusCode: "capture_upload_confirming" });
     await this.#bff.completeCapture(sessionId, {
       protocol_version: PROTOCOL_VERSION,
       capture_lease_id: lease.lease_id,
@@ -1160,6 +1171,7 @@ export class CaptureFlowController {
       recordedPlaintextBytes: this.#recordedPlaintextBytes }));
     this.#setSnapshot({
       recordedChunks,
+      ...(this.#snapshot.uploadProgress ? { uploadProgress: { ...this.#snapshot.uploadProgress, total: recordedChunks } } : {}),
       elapsedSeconds: captureSeconds(capabilities, recordedChunks),
       remainingBudgetSeconds: this.#remainingAggregateBudgetSeconds(recordedChunks),
       remainingAuthoritySeconds: this.#remainingCaptureSeconds(recordedChunks),

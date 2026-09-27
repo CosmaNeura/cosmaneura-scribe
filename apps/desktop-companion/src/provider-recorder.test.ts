@@ -280,6 +280,45 @@ describe("confirmed stop recovery", () => {
 });
 
 describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () => {
+  it("shows native Stop and receipt progress while live upload and final confirmation are delayed", async () => {
+    const f = await fixture(), uploadGate = deferred<void>(), completionGate = deferred<void>();
+    const bff = f.options.createBff(f.abort.signal), capabilities = await bff.getCapabilities(f.session.id);
+    // Use the existing short renewal fixture so new native packets arrive while
+    // both upload workers are held; no physical microphone or wall-clock visit.
+    vi.spyOn(bff, "getCapabilities").mockResolvedValue({ ...capabilities, max_reservations_per_batch: 10 });
+    const renewal = vi.spyOn(bff, "renewLease");
+    const target = f.options.uploadTarget.putCompleteEnvelope.bind(f.options.uploadTarget);
+    const upload = vi.spyOn(f.options.uploadTarget, "putCompleteEnvelope").mockImplementation(async (...args) => {
+      await uploadGate.promise; return target(...args);
+    });
+    const complete = HttpCaptureBff.prototype.completeCapture.bind(f.options.createBff(f.abort.signal));
+    f.complete.mockImplementationOnce(async (...args) => { await completionGate.promise; return complete(...args); });
+    const recorder = await f.open({ uploadWhileRecording: true }), w = wire(recorder);
+    const view = await connectDesktopRecorderView(w.port, f.session.id, f.abort.signal);
+    let stopping: Promise<void> | undefined;
+    try {
+      await view.controller.startRecording();
+      await vi.waitFor(() => expect(upload).toHaveBeenCalled());
+      expect(upload.mock.calls.length).toBeLessThanOrEqual(2);
+      await vi.waitFor(() => expect(view.controller.snapshot.recordedChunks).toBe(5), { timeout: 3000 });
+      expect(renewal).toHaveBeenCalledTimes(1);
+      expect(view.controller.snapshot.uploadProgress).toEqual({ total: 5, registered: 0 });
+      stopping = view.controller.stopRecording();
+      await vi.waitFor(() => expect(view.controller.snapshot).toMatchObject({ statusCode: "capture_upload_settling",
+        desktop: { phase: "stopped" }, uploadProgress: { total: 6, registered: 0 } }));
+      expect(f.indicator.current()?.visible).toBe(false); expect(f.complete).not.toHaveBeenCalled();
+      uploadGate.resolve();
+      await vi.waitFor(() => expect(f.complete).toHaveBeenCalledTimes(1));
+      expect(view.controller.snapshot).toMatchObject({ state: "uploading", statusCode: "capture_upload_confirming",
+        uploadProgress: { total: 6, registered: 6 }, desktop: { phase: "stopped" } });
+      completionGate.resolve(); await stopping;
+      expect(view.controller.snapshot.state).toBe("processing");
+      expect((await f.options.queueStorage.listMetadata()).filter(row => row.state === "purged")).toHaveLength(6);
+    } finally {
+      uploadGate.resolve(); completionGate.resolve(); await stopping?.catch(() => undefined);
+      await view.deactivate(); await w.boundary.dispose(); await f.close();
+    }
+  });
   it("renews through Core, native capture and SQLite without another window choice or source mount", async () => {
     const f = await fixture();
     const bff = f.options.createBff(f.abort.signal), capabilities = await bff.getCapabilities(f.session.id);

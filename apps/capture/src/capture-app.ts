@@ -179,6 +179,7 @@ export class CaptureApp extends LitElement {
         ? "Recording stop could not be confirmed. Stop recording in the native app before continuing."
         : "Recording closed. Return to your authorized encounters to continue."}</p>`;
     const provider = this.#provider;
+    const uploadProgress = this.#snapshot.native?.uploadProgress ?? this.#snapshot.uploadProgress;
     const captureFinished = provider && ["processing", "complete"].includes(this.#snapshot.state);
     return html`
       <div class="shell">
@@ -321,8 +322,9 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.statusCode === "capture_reopen_required" ? "Recording is stopped. Return to Your encounters and reopen this encounter to recover saved work."
               : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
               : this.#snapshot.statusCode === "capture_upload_pending" ? "Recording has stopped. Your saved recording is waiting for upload confirmation. Check your connection and retry."
+              : this.#snapshot.statusCode === "capture_upload_settling" ? "Recording stopped. Finishing the current upload…"
               : this.#snapshot.statusCode === "capture_upload_confirming" ? "Audio uploaded. Confirming receipt before transcription…"
-              : this.#snapshot.state === "uploading" ? "Uploading your recording"
+              : this.#snapshot.state === "uploading" ? "Recording stopped. Uploading your saved audio…"
               : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace"
               : this.#snapshot.desktop?.phase === "stopped" ? "Recording stopped"
               : this.#snapshot.desktop?.phase === "interrupted" ? "Recording interrupted. Confirm stop before uploading."
@@ -333,10 +335,10 @@ export class CaptureApp extends LitElement {
                 ? "Recording has stopped. Retry confirmation before uploading."
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : "Ready to record"}</p>
-            ${this.#snapshot.native?.uploadProgress && this.#snapshot.state === "uploading" ? html`<label>
-              Audio uploaded ${Math.floor(this.#snapshot.native.uploadProgress.registered * 100 / Math.max(1, this.#snapshot.native.uploadProgress.total))}%
-              <progress aria-label="Audio upload" max=${this.#snapshot.native.uploadProgress.total || 1}
-                value=${this.#snapshot.native.uploadProgress.registered}></progress>
+            ${uploadProgress && (this.#snapshot.state === "uploading" || this.#snapshot.statusCode === "capture_upload_settling") ? html`<label>
+              Audio uploaded ${Math.floor(uploadProgress.registered * 100 / Math.max(1, uploadProgress.total))}%
+              <progress aria-label="Audio upload" max=${uploadProgress.total || 1}
+                value=${uploadProgress.registered}></progress>
             </label>` : ""}
             <p>Recorded ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
             ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
