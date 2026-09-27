@@ -4,14 +4,55 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 
 import { MockCaptureService } from "../mock-bff/state";
-import { EncryptedIndexedDbFlowStore } from "./encrypted-store";
+import { EncryptedIndexedDbFlowStore, assertActiveCaptureState, assertActiveCaptureProgression } from "./encrypted-store";
 import { createWrappedSessionKey } from "./session-key";
-import type { ReservationIntent } from "./types";
+import type { ActiveCaptureState, ReservationIntent } from "./types";
 
 const TEST_CRYPTO = webcrypto as unknown as Crypto;
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("EncryptedIndexedDbFlowStore", () => {
+  it("limits continuous renewal to ordered receipts and retains the old deadline until reservations arrive", () => {
+    const lease = { protocol_version: "1.0" as const, receipt_id: TEST_CRYPTO.randomUUID(),
+      lease_id: TEST_CRYPTO.randomUUID(), session_id: SESSION_ID, generation: 1,
+      issued_at: "2026-09-27T12:00:00.000Z", expires_at: "2026-09-27T12:15:00.000Z" };
+    const active: ActiveCaptureState = { schemaVersion: 3, channel: "mixed", sessionId: SESSION_ID, lease,
+      reviewAfterUpload: true, captureAuthorizedUntil: lease.expires_at, aggregatePlaintextBudgetBytes: 402653184,
+      phase: "recording", completeIdempotencyKey: "continuity-complete", recordedChunks: 78,
+      recordedPlaintextBytes: 24963432, startedAt: lease.issued_at };
+    const pending: ActiveCaptureState = { ...active, schemaVersion: 5,
+      continuation: { continuous: true, prepared: false, firstSequenceNumber: 78, reservationCount: 90,
+        previousLease: lease, renewIdempotencyKey: "continuity-renew" } };
+    const renewed: ActiveCaptureState = { ...pending, recordedChunks: 79, recordedPlaintextBytes: 25283476,
+      lease: { ...lease, receipt_id: TEST_CRYPTO.randomUUID(), generation: 2,
+        issued_at: "2026-09-27T12:13:00.000Z", expires_at: "2026-09-27T12:28:00.000Z" } };
+    const reserved = { ...renewed, captureAuthorizedUntil: renewed.lease.expires_at };
+    const prepared = { ...reserved, continuation: { ...pending.continuation!, prepared: true } };
+    const check = (before: ActiveCaptureState, after: ActiveCaptureState) => {
+      assertActiveCaptureState(after); assertActiveCaptureProgression(before, after);
+    };
+    check(active, pending); check(pending, renewed); check(renewed, reserved); check(reserved, prepared);
+    for (const bad of [
+      { ...pending, schemaVersion: 4 as const },
+      { ...pending, channel: "microphone" as const },
+      { ...pending, captureAuthorizedUntil: null },
+      { ...pending, continuation: { ...pending.continuation!, prepared: true } },
+      { ...pending, continuation: { ...pending.continuation!, firstSequenceNumber: 79 } },
+    ]) expect(() => check(active, bad)).toThrow();
+    for (const bad of [
+      { ...renewed, lease: { ...renewed.lease, generation: 3 } },
+      { ...renewed, lease: { ...renewed.lease, expires_at: lease.expires_at } },
+      { ...renewed, lease: { ...renewed.lease, receipt_id: lease.receipt_id } },
+      { ...renewed, lease: { ...renewed.lease, lease_id: TEST_CRYPTO.randomUUID() } },
+      { ...renewed, captureAuthorizedUntil: renewed.lease.expires_at },
+      { ...renewed, recordedChunks: 77 },
+      { ...renewed, continuation: { ...pending.continuation!, renewIdempotencyKey: "substituted-renewal" } },
+    ]) expect(() => check(pending, bad)).toThrow();
+    expect(() => check(reserved, { ...prepared, schemaVersion: 4, continuation: {
+      prepared: true, firstSequenceNumber: 78, reservationCount: 90, previousLease: lease, renewIdempotencyKey: "continuity-renew",
+    } })).toThrow();
+    expect(() => check(prepared, { ...prepared, captureAuthorizedUntil: lease.expires_at })).toThrow();
+  });
   it("preserves an exact preparation mutation body and rejects rewrites", async () => {
     const indexedDB = new IDBFactory();
     const store = await EncryptedIndexedDbFlowStore.open({

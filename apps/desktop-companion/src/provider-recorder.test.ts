@@ -280,6 +280,36 @@ describe("confirmed stop recovery", () => {
 });
 
 describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () => {
+  it("renews through Core, native capture and SQLite without another window choice or source mount", async () => {
+    const f = await fixture();
+    const bff = f.options.createBff(f.abort.signal), capabilities = await bff.getCapabilities(f.session.id);
+    // Ten 100ms fixture chunks exercise the real renewal timer quickly; the
+    // same generated source emits both tracks on each side of the renewal.
+    vi.spyOn(bff, "getCapabilities").mockResolvedValue({ ...capabilities, max_reservations_per_batch: 10 });
+    const renewal = vi.spyOn(bff, "renewLease"), mount = vi.fn(f.options.authorizeMount);
+    const recorder = await f.open({ authorizeMount: mount }), w = wire(recorder);
+    const view = await connectDesktopRecorderView(w.port, f.session.id, f.abort.signal);
+    try {
+      await view.controller.startRecording();
+      // The aligned mixer retains its last packet until normal drain.
+      await vi.waitFor(() => expect(view.controller.snapshot.recordedChunks).toBe(5), { timeout: 3000 });
+      expect(renewal).toHaveBeenCalledTimes(1);
+      expect(view.controller.snapshot).toMatchObject({ state: "recording", desktop: { coverage: "aligned" } });
+      expect(f.indicator.current()?.visible).toBe(true);
+      const active = await f.options.flowStore.getActiveCaptureState();
+      expect(active).toMatchObject({ schemaVersion: 5, recordedChunks: 5, phase: "recording",
+        continuation: { continuous: true, prepared: true }, lease: { generation: 2 } });
+      const saved = (await f.options.queueStorage.listMetadata()).filter(record => record.state === "encrypted");
+      expect(saved.map(record => record.reservation.sequenceNumber)).toEqual([0, 1, 2, 3, 4]);
+      await view.controller.stopRecording();
+      expect(view.controller.snapshot).toMatchObject({ state: "processing", desktop: { coverage: "complete" } });
+      expect(f.complete.mock.calls[0]![1]).toMatchObject({ capture_lease_generation: 2,
+        channels: [{ channel: "mixed", final_sequence_number: 5 }] });
+      expect(mount).toHaveBeenCalledTimes(1); expect(f.selectWindow).toHaveBeenCalledTimes(1);
+      expect(f.authority).toHaveBeenCalledTimes(1); expect(f.options.retireSource).toHaveBeenCalledTimes(1);
+      expect(f.indicator.current()?.visible).toBe(false);
+    } finally { await view.deactivate(); await w.boundary.dispose(); await f.close(); }
+  });
   it("continues through renderer commands with fresh ownership and durable interval coverage", async () => {
     const f = await fixture(); let boundary: DesktopProviderRecorderIpc | undefined;
     try {

@@ -3,12 +3,14 @@ import { AudioCaptureError } from "./errors";
 export interface Pcm16ChunkerConfiguration {
   readonly targetFramesPerChunk: number;
   readonly maximumChunks: number;
+  readonly hardMaximumChunks?: number;
 }
 
 /** Maintains exact capability-derived chunk boundaries across worklet packets. */
 export class Pcm16Chunker {
   readonly #targetFramesPerChunk: number;
-  readonly #maximumChunks: number;
+  #maximumChunks: number;
+  readonly #hardMaximumChunks: number;
   #buffer: Int16Array<ArrayBuffer>;
   #bufferedFrames = 0;
   #emittedChunks = 0;
@@ -19,13 +21,22 @@ export class Pcm16Chunker {
       !Number.isSafeInteger(configuration.targetFramesPerChunk) ||
       configuration.targetFramesPerChunk < 1 ||
       !Number.isSafeInteger(configuration.maximumChunks) ||
-      configuration.maximumChunks < 1
+      configuration.maximumChunks < 1 ||
+      !Number.isSafeInteger(configuration.hardMaximumChunks ?? configuration.maximumChunks) ||
+      (configuration.hardMaximumChunks ?? configuration.maximumChunks) < configuration.maximumChunks
     ) {
       throw new AudioCaptureError("audio_capture_invalid_configuration");
     }
     this.#targetFramesPerChunk = configuration.targetFramesPerChunk;
     this.#maximumChunks = configuration.maximumChunks;
+    this.#hardMaximumChunks = configuration.hardMaximumChunks ?? configuration.maximumChunks;
     this.#buffer = allocatePcm16(configuration.targetFramesPerChunk);
+  }
+
+  public extend(maximumChunks: number): void {
+    if (this.#closed || !Number.isSafeInteger(maximumChunks) || maximumChunks < this.#maximumChunks
+      || maximumChunks > this.#hardMaximumChunks) throw new AudioCaptureError("audio_capture_invalid_configuration");
+    this.#maximumChunks = maximumChunks;
   }
 
   public push(samples: Int16Array): readonly Int16Array<ArrayBuffer>[] {

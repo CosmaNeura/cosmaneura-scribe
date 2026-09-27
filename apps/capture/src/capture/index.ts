@@ -6,6 +6,7 @@ export type {
   CaptureSourceErrorCode,
   CaptureSourceInterruptionCode,
   CaptureSourceStartOptions,
+  CaptureSourceWindow,
 } from "./source";
 export {
   encodePcm16MonoWav,

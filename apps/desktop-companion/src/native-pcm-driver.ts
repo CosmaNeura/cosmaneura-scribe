@@ -30,12 +30,20 @@ export interface DesktopPCMDriverSession {
    */
   readonly ready: Promise<DesktopPCMStart>;
   activate(): void;
+  extend?(authorization: DesktopCaptureAuthorization): Promise<void>;
   /** Drain stops the OS sources, delivers all accepted packets with awaited
    * acknowledgements, then returns mixer completion. Discard returns null.
    * Discard can upgrade a pending drain. Failure retains this exact handle;
    * a successful result confirms no source or subsequent callback remains.
    */
   stop(options: { readonly mode: "drain" | "discard" }): Promise<DesktopPCMCompletion | null>;
+}
+export interface DesktopCaptureAuthorization {
+  readonly runId: string;
+  readonly generation: number;
+  readonly expiresAtMilliseconds: number;
+  readonly maximumOutputFrames: number;
+  readonly hardMaximumOutputFrames: number;
 }
 export interface DesktopPCMDriver {
   /** Permission/unlocked-session read only. Focus loss is not desktop lock. */
@@ -44,7 +52,8 @@ export interface DesktopPCMDriver {
    * Return the session synchronously; startup cancellation must not await ready.
    * Configuration is derived from the existing Core reservation/capture window.
    */
-  start(configuration: { readonly maximumOutputFrames: number; readonly sampleRateHz: 16_000 }, sink: {
+  start(configuration: { readonly maximumOutputFrames: number; readonly sampleRateHz: 16_000;
+    readonly authorization?: DesktopCaptureAuthorization }, sink: {
     readonly onPcmPacket: (packet: DesktopPCMPacket) => Promise<void>;
     readonly onFailure: (code: DesktopPCMFailure) => void;
   }): DesktopPCMDriverSession;
