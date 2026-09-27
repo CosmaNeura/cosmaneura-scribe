@@ -225,6 +225,7 @@ export class CaptureQueue {
     transport: CaptureQueueTransport,
   ): Promise<DrainItemResult> {
     let operation: QueueOperation = "upload";
+    let uploadedNow = false;
     try {
       let current = await this.#requireRecord(objectId);
       if (current.state === "encrypted") {
@@ -265,14 +266,18 @@ export class CaptureQueue {
         current = await this.#mutate(objectId, (latest) =>
           latest.state === "uploading" ? markUploaded(latest) : latest,
         );
+        uploadedNow = true;
       }
 
       operation = "registration";
       if (current.state === "uploaded") {
         if (!isOperationDue(current, "registration", this.#now())) return skipped(objectId);
-        const remote = await transport.getReceipt(current.reservation);
+        // A confirmed upload in this attempt can register with its existing
+        // idempotency key immediately. Retained/uncertain attempts still read
+        // the receipt before replaying registration after recovery.
+        const remote = uploadedNow ? null : await transport.getReceipt(current.reservation);
         const receipt =
-          remote.state === "registered"
+          remote?.state === "registered"
             ? remote.registration
             : await transport.register(registrationRequest(current));
         await this.#reconcileRegistered(objectId, receipt);
