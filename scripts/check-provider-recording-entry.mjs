@@ -117,6 +117,22 @@ for (const platform of ["desktop", "ios"]) {
       }
       gate.resolve(); await until(() => root.getAttribute("aria-busy") !== "true");
       assert.equal(starts, 1); assert.equal(root.textContent.includes("Recording prepared"), false);
+      if (mode === "fresh") {
+        const recording = snapshot;
+        const progress = registered => platform === "desktop" ? { uploadProgress: { total: 2, registered } }
+          : { native: { phase: "uploading", busy: true, uploadProgress: { total: 2, registered } } };
+        update({ recordedChunks: 2, state: platform === "desktop" ? "recording" : "uploading",
+          statusCode: platform === "desktop" ? "capture_upload_settling" : "capture_upload_pending",
+          ...(snapshot.desktop ? { desktop: { ...snapshot.desktop, phase: "stopped" } } : {}), ...progress(1) });
+        await until(() => root.textContent.includes("Audio uploaded 50%"));
+        assert.equal(root.querySelector('progress[aria-label="Audio upload"]').value, 1);
+        if (platform === "desktop") assert.ok(root.textContent.includes("Recording stopped. Finishing the current upload"));
+        update({ state: "uploading", statusCode: "capture_upload_confirming", ...progress(2) });
+        await until(() => root.textContent.includes("Audio uploaded 100%"));
+        assert.ok(root.textContent.includes("Confirming receipt before transcription"));
+        assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
+        update(recording);
+      }
       root.querySelector('[data-workspace-action="encounters"]').click();
       await until(() => root.querySelector('[data-workspace-action="open"]'));
       root.querySelector('[data-workspace-action="open"]').click();

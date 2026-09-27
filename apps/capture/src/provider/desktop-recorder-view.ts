@@ -73,8 +73,9 @@ export function parseDesktopRecorderRequest(value: unknown): DesktopRecorderRequ
 /** Strict metadata allowlist. Legacy transcript fields must remain null here. */
 export function parseDesktopRecorderState(value: unknown): DesktopRecorderState {
   const envelope = exact(value, ["recorderId", "revision", "snapshot"]);
+  const hasProgress = !!envelope.snapshot && typeof envelope.snapshot === "object" && "uploadProgress" in envelope.snapshot;
   const snapshot = exact(envelope.snapshot, ["state", "statusCode", "sessionId", "recordedChunks", "queuedChunks", "elapsedSeconds",
-    "remainingBudgetSeconds", "remainingAuthoritySeconds", "transcriptionStatus", "transcript", "desktop"]);
+    "remainingBudgetSeconds", "remainingAuthoritySeconds", "transcriptionStatus", "transcript", "desktop", ...(hasProgress ? ["uploadProgress"] : [])]);
   const desktop = exact(snapshot.desktop, ["phase", "coverage", "trimmedStartMs", "trimmedEndMs"]);
   if (typeof snapshot.state !== "string" || !["idle", "preparing", "ready", "recording", "paused", "uploading", "processing", "complete", "error"].includes(snapshot.state)
     || typeof snapshot.statusCode !== "string" || !/^[a-z][a-z0-9_]{0,99}$/u.test(snapshot.statusCode)
@@ -84,6 +85,12 @@ export function parseDesktopRecorderState(value: unknown): DesktopRecorderState 
   uuid(snapshot.sessionId); uuid(envelope.recorderId); number(envelope.revision);
   for (const key of ["recordedChunks", "queuedChunks", "elapsedSeconds"] as const) number(snapshot[key]);
   for (const key of ["remainingBudgetSeconds", "remainingAuthoritySeconds"] as const) if (snapshot[key] !== null) number(snapshot[key]);
+  if (hasProgress) {
+    const progress = exact(snapshot.uploadProgress, ["total", "registered"]);
+    number(progress.total); number(progress.registered);
+    if ((progress.registered as number) > (progress.total as number)
+      || (progress.total as number) > (snapshot.recordedChunks as number)) throw failure();
+  }
   number(desktop.trimmedStartMs); if (desktop.trimmedEndMs !== null) number(desktop.trimmedEndMs);
   return structuredClone(value) as DesktopRecorderState;
 }

@@ -219,6 +219,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : ["paused", "error", "ready", "recording"].includes(flow.state) && !this.closed ? "interrupted" : "stopped";
     const start = this.coverage?.phase === "started" ? this.coverage.value : this.coverage?.value.start;
     return { ...flow, statusCode: this.stopConfirmationPending ? "capture_stop_acknowledgement_pending"
+      : this.stopping && phase === "stopped" && flow.state === "recording" ? "capture_upload_settling"
       : this.reopenRequired && flow.state === "error" ? "capture_reopen_required"
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,

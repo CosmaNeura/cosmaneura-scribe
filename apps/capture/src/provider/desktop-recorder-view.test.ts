@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
+import { connectDesktopRecorderView, parseDesktopRecorderState, type DesktopRecorderPort } from "./desktop-recorder-view";
 
 const sessionId = "10000000-0000-4000-8000-000000000001", recorderId = "20000000-0000-4000-8000-000000000002";
 const state = (revision: number, phase = "ready") => ({ recorderId, revision,
@@ -11,6 +11,17 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve };
 }
 describe("desktop recorder command view", () => {
+  it("accepts existing snapshots and only bounded receipt-count progress", () => {
+    const original = state(2);
+    expect(parseDesktopRecorderState(original)).toEqual(original);
+    const progress = (uploadProgress: unknown) => ({ ...original, snapshot: { ...original.snapshot, uploadProgress } });
+    expect(parseDesktopRecorderState(progress({ total: 2, registered: 1 })).snapshot.uploadProgress)
+      .toEqual({ total: 2, registered: 1 });
+    for (const invalid of [null, { total: 3, registered: 1 }, { total: 1, registered: 2 },
+      { total: 2, registered: -1 }, { total: 2, registered: 0.5 }, { total: 2, registered: 1, extra: "blocked" }]) {
+      expect(() => parseDesktopRecorderState(progress(invalid))).toThrow();
+    }
+  });
   it("does not overwrite newer state with an older command response or accept another recorder", async () => {
     let observer: ((value: unknown) => void) | undefined;
     const delayed = deferred<unknown>(), commands: Parameters<DesktopRecorderPort["request"]>[0][] = [];
