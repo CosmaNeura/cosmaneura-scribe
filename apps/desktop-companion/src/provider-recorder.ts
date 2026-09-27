@@ -27,6 +27,8 @@ export interface PreparedDesktopCapture {
 
 export interface DesktopProviderRecorderOptions {
   readonly enabled?: boolean;
+  /** Selected by the trusted beta host; direct/diagnostic compositions default off. */
+  readonly uploadWhileRecording?: boolean;
   readonly sessionId: string;
   readonly signal: AbortSignal;
   /** Existing authenticated Core transport, bound to this cancellation signal. */
@@ -119,6 +121,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     const bff = options.createBff(this.signal);
     this.createFlow = () => new CaptureFlowController({ bff, flowStore: options.flowStore, createSessionKey: options.createSessionKey,
       source: this.source, storageCapacity: options.storageCapacity, queue: new CaptureQueue(options.queueStorage),
+      uploadWhileRecording: options.uploadWhileRecording === true,
       pauseForStorage: () => this.pauseRecording(),
       queueTransport: new BffCaptureQueueTransport(bff, options.uploadTarget) });
     this.flow = this.createFlow();

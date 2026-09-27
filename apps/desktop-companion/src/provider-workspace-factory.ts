@@ -190,7 +190,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
               if (saved.progress?.sessionId !== sessionId || recorderSignal.aborted) throw unavailable();
               const linked = AbortSignal.any([mountSignal, recorderSignal]);
               const flow = new DurableDesktopFlowStore(owned.store!.namespace("flow"));
-              owned.recorder = await DesktopProviderRecorder.open({ enabled: true, sessionId, signal: linked,
+              owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, sessionId, signal: linked,
                 createBff: captureSignal => new CoreCaptureBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId),
                 authorizePreparation: async captureSignal => {
                   const client = new CoreCaptureClient(selected.scope, request, captureSignal);
