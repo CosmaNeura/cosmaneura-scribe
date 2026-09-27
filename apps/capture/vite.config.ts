@@ -7,11 +7,21 @@ import {
 } from "./src/pwa/service-worker-policy.ts";
 
 const MOCK_BFF_TARGET = "http://127.0.0.1:4174";
+const SYNTHETIC_E2E_TENANT = "11111111-1111-4111-8111-111111111112";
 const DEPLOYMENT_ATTESTATION_PATH = "capture-preview-deployment.json";
 const DEPLOYMENT_ATTESTATION_NAVIGATION = /^\/capture-preview-deployment\.json$/u;
 const SOURCE_SHA = /^[0-9a-f]{40}$/u;
 
 export default defineConfig(({ command }) => {
+  const bffTarget = process.env.VITE_CAPTURE_BFF_TARGET ?? MOCK_BFF_TARGET;
+  const useRealApi = process.env.VITE_CAPTURE_REAL_API === "true";
+  const captureProxy = useRealApi
+    ? {
+        target: bffTarget,
+        headers: { "X-Tenant-ID": SYNTHETIC_E2E_TENANT },
+        rewrite: (path: string) => path.replace(/^\/api\/capture/u, "/v1"),
+      }
+    : bffTarget;
   const deploymentPlugin = command === "build"
     ? [deploymentAttestation(process.env.DEPLOY_SHA)]
     : [];
@@ -48,8 +58,8 @@ export default defineConfig(({ command }) => {
       host: "127.0.0.1",
       port: 5173,
       proxy: {
-        "/api/capture": MOCK_BFF_TARGET,
-        "/mock-upload": MOCK_BFF_TARGET,
+        "/api/capture": captureProxy,
+        "/mock-upload": bffTarget,
       },
       strictPort: true,
     },
