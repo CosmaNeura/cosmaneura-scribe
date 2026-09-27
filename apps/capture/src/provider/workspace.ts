@@ -308,13 +308,23 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   }
   const readNote = async (prepare: boolean): Promise<void> => {
     requireValue(client && source && currentSchema);
-    const n = generation, activeClient = client;
-    // Recheck readiness and lineage for each view, including after save resolution.
-    const view = await new HttpCreatorReviewApi(session(), activeClient.reviewRequest(session())).read();
+    const n = generation, activeClient = client, id = session(), schema = currentSchema;
+    const review = new HttpCreatorReviewApi(id, activeClient.reviewRequest(id));
+    let view: CreatorReviewView, value: unknown;
+    if (prepare) {
+      view = await review.read();
+      if (!authorized(n)) return;
+      // Generation still waits for a fresh, ready transcript before any write.
+      reviewedSource(view);
+      value = await activeClient.note(id, "prepare", schema);
+    } else {
+      // Both reads independently authorize in Core. Wait for both and match
+      // their lineage before displaying either; never reuse a cached response.
+      [view, value] = await Promise.all([review.read(), activeClient.note(id, "read", schema)]);
+    }
     if (!authorized(n)) return;
     const fresh = reviewedSource(view);
-    const value = await activeClient.note(session(), prepare ? "prepare" : "read", currentSchema);
-    const result = await parseDraft(value, session(), currentSchema, fresh);
+    const result = await parseDraft(value, id, schema, fresh);
     if (!authorized(n)) return;
     source = fresh; draft = result; noteTranscript = view;
     renderNote();
