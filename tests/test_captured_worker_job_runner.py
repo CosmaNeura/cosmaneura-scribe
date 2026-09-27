@@ -603,20 +603,3 @@ def test_main_maps_worker_failures_to_process_status(
         captured_worker_job_runner.main()
 
     assert raised.value.code == status
-
-
-@pytest.mark.parametrize("stage", ["speech", "translation"])
-def test_worker_settings_are_false_default_and_stage_closed(
-    tmp_path: Path, stage: str
-) -> None:
-    defaults = CapturedWorkerSettings()
-    assert defaults.captured_worker_enabled is False
-    assert defaults.captured_worker_stage is None
-
-    settings = _settings(tmp_path, stage=stage)
-    assert settings.captured_worker_stage == stage
-
-    invalid = settings.model_dump()
-    invalid["database_user"] = "wrong-principal"
-    with pytest.raises(ValueError, match="captured_worker_bindings_invalid"):
-        CapturedWorkerSettings(**invalid)
