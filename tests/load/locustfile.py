@@ -5,17 +5,30 @@ Run only against the local E2E host and a disposable PostgreSQL database.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from locust import HttpUser, between, events, task
-from support import TENANT_ID, WRAPPED_DEK, require_local_host
+from support import (
+    DEFAULT_HOST,
+    TENANT_ID,
+    WRAPPED_DEK,
+    Thresholds,
+    require_local_host,
+    threshold_failures,
+)
 
 PROTOCOL_VERSION = "1.0"
-MAX_FAILURE_RATIO = float(os.getenv("SCRIBE_LOAD_MAX_FAILURE_RATIO", "0.01"))
-MAX_P95_MS = int(os.getenv("SCRIBE_LOAD_MAX_P95_MS", "750"))
-MIN_REQUESTS = int(os.getenv("SCRIBE_LOAD_MIN_REQUESTS", "100"))
+CHANNEL = "microphone"
+CIPHERTEXT_SIZE_BYTES = 4096
+CHUNKS_PER_SESSION = int(os.getenv("SCRIBE_LOAD_CHUNKS_PER_SESSION", "4"))
+THRESHOLDS = Thresholds.from_env()
+
+if CHUNKS_PER_SESSION < 1:
+    raise ValueError("SCRIBE_LOAD_CHUNKS_PER_SESSION must be at least 1")
 
 
 def _idem(prefix: str) -> str:
@@ -23,25 +36,26 @@ def _idem(prefix: str) -> str:
 
 
 class CaptureProtocolUser(HttpUser):
-    """One task is one complete, independent synthetic capture lifecycle."""
+    """One task is one independent synthetic capture session.
+
+    Request order mirrors the browser capture controller and upload queue; the
+    storage PUT is out of scope.
+    """
 
     wait_time = between(0.05, 0.2)
-    host = "http://127.0.0.1:4175"
+    host = DEFAULT_HOST
 
     def on_start(self) -> None:
-        require_local_host(self.host)
         self.client.headers.update({"X-Tenant-ID": TENANT_ID})
 
     def post_json(self, path: str, body: dict[str, object], name: str):
-        return self.client.post(
-            path,
-            json=body,
-            headers={"Idempotency-Key": _idem(name)},
-            name=name,
-        )
+        # Encode before the call so JSON serialisation is not counted as request latency.
+        payload = json.dumps(body).encode()
+        headers = {"Content-Type": "application/json", "Idempotency-Key": _idem(name)}
+        return self.client.post(path, data=payload, headers=headers, name=name)
 
     @task
-    def complete_capture_lifecycle(self) -> None:
+    def capture_session(self) -> None:
         run_id = str(uuid4())
         common = {
             "appointment_id": f"synthetic-appointment-{run_id}",
@@ -91,67 +105,101 @@ class CaptureProtocolUser(HttpUser):
         if not lease.ok:
             return
         lease_body = lease.json()
-        authority = {
-            "protocol_version": PROTOCOL_VERSION,
-            "capture_lease_id": lease_body["lease_id"],
-            "capture_lease_generation": lease_body["generation"],
-        }
-        reservations = self.post_json(
-            f"/v1/sessions/{session_id}/chunk-reservations",
-            {
-                **authority,
-                "channel": "microphone",
-                "first_sequence_number": 0,
-                "count": 1,
-            },
-            "POST reservations",
-        )
-        if not reservations.ok:
+
+        # The client renews only on a paused-then-resumed capture, then reserves
+        # the remaining window under the new generation; split the session there.
+        first_window = max(1, CHUNKS_PER_SESSION // 2)
+        if not self.upload_window(session_id, lease_body, 0, first_window):
             return
-        object_id = reservations.json()["reservations"][0]["object_id"]
-        authorization = self.post_json(
-            f"/v1/sessions/{session_id}/chunks/{object_id}/upload-authorization",
-            {"protocol_version": PROTOCOL_VERSION},
-            "POST upload authorization",
+        renewed = self.post_json(
+            f"/v1/sessions/{session_id}/capture-leases/{lease_body['lease_id']}/renew",
+            {"protocol_version": PROTOCOL_VERSION, "expected_generation": lease_body["generation"]},
+            "POST lease renew",
         )
-        if not authorization.ok:
+        if not renewed.ok:
             return
-        chunk = self.post_json(
-            f"/v1/sessions/{session_id}/chunks",
-            {
-                "sequence_number": 0,
-                "channel": "microphone",
-                "object_id": object_id,
-                "sha256": "0" * 64,
-                "ciphertext_size_bytes": 4096,
-            },
-            "POST chunk registration",
-        )
-        if not chunk.ok:
+        lease_body = renewed.json()
+        remaining = CHUNKS_PER_SESSION - first_window
+        if remaining and not self.upload_window(session_id, lease_body, first_window, remaining):
             return
         self.post_json(
             f"/v1/sessions/{session_id}/capture-complete",
             {
-                **authority,
-                "channels": [{"channel": "microphone", "final_sequence_number": 0}],
+                "protocol_version": PROTOCOL_VERSION,
+                "capture_lease_id": lease_body["lease_id"],
+                "capture_lease_generation": lease_body["generation"],
+                "channels": [{"channel": CHANNEL, "final_sequence_number": CHUNKS_PER_SESSION - 1}],
             },
             "POST capture complete",
         )
 
+    def upload_window(
+        self, session_id: str, lease: dict[str, object], first_sequence: int, count: int
+    ) -> bool:
+        reservations = self.post_json(
+            f"/v1/sessions/{session_id}/chunk-reservations",
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "capture_lease_id": lease["lease_id"],
+                "capture_lease_generation": lease["generation"],
+                "channel": CHANNEL,
+                "first_sequence_number": first_sequence,
+                "count": count,
+            },
+            "POST reservations",
+        )
+        if not reservations.ok:
+            return False
+        for reservation in reservations.json()["reservations"]:
+            object_id = reservation["object_id"]
+            receipt_path = f"/v1/sessions/{session_id}/chunks/{object_id}"
+            if not self.client.get(receipt_path, name="GET chunk receipt").ok:
+                return False
+            authorization = self.post_json(
+                f"{receipt_path}/upload-authorization",
+                {"protocol_version": PROTOCOL_VERSION},
+                "POST upload authorization",
+            )
+            if not authorization.ok:
+                return False
+            if not self.client.get(receipt_path, name="GET chunk receipt").ok:
+                return False
+            registration = self.post_json(
+                f"/v1/sessions/{session_id}/chunks",
+                {
+                    "object_id": object_id,
+                    "channel": CHANNEL,
+                    "sequence_number": reservation["sequence_number"],
+                    "sha256": hashlib.sha256(object_id.encode()).hexdigest(),
+                    "ciphertext_size_bytes": CIPHERTEXT_SIZE_BYTES,
+                },
+                "POST chunk registration",
+            )
+            if not registration.ok:
+                return False
+        return True
+
+
+@events.init.add_listener
+def refuse_non_local_target(environment, web_ui=None, **_kwargs) -> None:
+    """Abort before any user spawns; locust exits 1 when an init listener raises."""
+
+    if web_ui is not None:
+        # The web UI can retarget the host at swarm time, after this check.
+        raise RuntimeError("load workload runs headless only")
+    require_local_host(environment.host or CaptureProtocolUser.host)
+
 
 @events.quitting.add_listener
 def enforce_thresholds(environment, **_kwargs) -> None:
-    """Make headless runs fail when minimum evidence or SLO gates are missed."""
+    """Make headless runs fail when minimum evidence or SLO gates are missed.
 
-    stats = environment.stats.total
-    failures = []
-    if stats.num_requests < MIN_REQUESTS:
-        failures.append(f"requests {stats.num_requests} < {MIN_REQUESTS}")
-    if stats.fail_ratio > MAX_FAILURE_RATIO:
-        failures.append(f"failure ratio {stats.fail_ratio:.4f} > {MAX_FAILURE_RATIO:.4f}")
-    p95 = stats.get_response_time_percentile(0.95) or 0
-    if p95 > MAX_P95_MS:
-        failures.append(f"p95 {p95}ms > {MAX_P95_MS}ms")
+    Locust exits with --exit-code-on-error (1) on any request failure unless
+    process_exit_code is set, so a passing run must set 0 explicitly.
+    """
+
+    stats = environment.stats
+    failures = threshold_failures(stats.total, stats.entries.values(), THRESHOLDS)
+    environment.process_exit_code = 1 if failures else 0
     if failures:
-        environment.process_exit_code = 1
         print("load thresholds failed: " + "; ".join(failures))
