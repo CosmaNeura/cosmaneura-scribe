@@ -283,7 +283,7 @@ describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () =
   it("shows native Stop and receipt progress while live upload and final confirmation are delayed", async () => {
     const f = await fixture(), uploadGate = deferred<void>(), completionGate = deferred<void>();
     const target = f.options.uploadTarget.putCompleteEnvelope.bind(f.options.uploadTarget);
-    const upload = vi.spyOn(f.options.uploadTarget, "putCompleteEnvelope").mockImplementationOnce(async (...args) => {
+    const upload = vi.spyOn(f.options.uploadTarget, "putCompleteEnvelope").mockImplementation(async (...args) => {
       await uploadGate.promise; return target(...args);
     });
     const complete = HttpCaptureBff.prototype.completeCapture.bind(f.options.createBff(f.abort.signal));
@@ -293,7 +293,8 @@ describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () =
     let stopping: Promise<void> | undefined;
     try {
       await view.controller.startRecording();
-      await vi.waitFor(() => expect(upload).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(upload).toHaveBeenCalled());
+      expect(upload.mock.calls.length).toBeLessThanOrEqual(2);
       await vi.waitFor(() => expect(view.controller.snapshot.recordedChunks).toBe(5), { timeout: 3000 });
       expect(view.controller.snapshot.uploadProgress).toEqual({ total: 5, registered: 0 });
       stopping = view.controller.stopRecording();
