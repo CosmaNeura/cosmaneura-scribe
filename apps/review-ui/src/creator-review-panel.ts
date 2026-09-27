@@ -33,6 +33,17 @@ export function mountCreatorReview(
   let generation = 0;
   let recovered = false;
   let continuing = false;
+  let refreshing = false;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearRefresh = (): void => { clearTimeout(refreshTimer); refreshTimer = undefined; };
+  const waitingForTranscript = (): boolean => state.phase === "ready" && pending === null && !continuing
+    && state.view?.source === null && ["uploaded", "processing"].includes(state.view.status);
+  const scheduleRefresh = (): void => {
+    clearRefresh();
+    if (!disposed && waitingForTranscript() && document.visibilityState === "visible") {
+      refreshTimer = setTimeout(() => { refreshTimer = undefined; void refresh(true); }, 3000);
+    }
+  };
   const render = (): void => {
     if (disposed) return;
     root.innerHTML = renderCreatorReview(state);
@@ -46,11 +57,16 @@ export function mountCreatorReview(
     }
   };
 
-  const refresh = async (): Promise<void> => {
-    if (disposed || pending !== null) return;
+  const refresh = async (automatic = false): Promise<void> => {
+    if (disposed || pending !== null || refreshing
+      || automatic && (document.visibilityState !== "visible" || !waitingForTranscript())) return;
+    clearRefresh();
+    refreshing = true;
     const request = ++generation;
-    state = { ...state, phase: "loading", view: null };
-    render();
+    state = { ...state, phase: "loading", view: automatic ? state.view : null };
+    // Processing has no transcript content. Keep its status stable during the
+    // background read instead of flashing the loading screen every three seconds.
+    if (!automatic) render();
     try {
       const view = await api.read();
       if (disposed || request !== generation) return;
@@ -64,7 +80,6 @@ export function mountCreatorReview(
       if (pending !== null) {
         state = { phase: "retry", view: null,
           notice: "A previous decision needs confirmation. Retry that same decision to recover its result." };
-        render();
         return;
       }
       state = { ...state, phase: "ready", view };
@@ -74,12 +89,15 @@ export function mountCreatorReview(
         phase: "unavailable", view: null,
         notice: "This recording is unavailable. Check your session or access, then refresh.",
       };
+    } finally {
+      refreshing = false;
+      if (!disposed && request === generation) { render(); scheduleRefresh(); }
     }
-    render();
   };
 
   const save = async (): Promise<void> => {
     if (disposed || pending === null || state.phase === "saving") return;
+    clearRefresh();
     const operation = pending;
     state = { ...state, phase: "saving", notice: "Saving your decision…" };
     render();
@@ -119,6 +137,7 @@ export function mountCreatorReview(
 
   const continueToNote = async (): Promise<void> => {
     if (continuing || disposed || pending !== null || state.phase !== "ready" || !options.continueToNote) return;
+    clearRefresh();
     const request = ++generation;
     continuing = true;
     render();
@@ -137,6 +156,7 @@ export function mountCreatorReview(
     } finally {
       continuing = false;
       render();
+      scheduleRefresh();
     }
   };
 
@@ -170,15 +190,22 @@ export function mountCreatorReview(
     void save();
   };
 
+  const visibilityChanged = (): void => {
+    clearRefresh();
+    if (document.visibilityState === "visible" && waitingForTranscript()) void refresh(true);
+  };
   root.addEventListener("click", onClick);
+  document.addEventListener("visibilitychange", visibilityChanged);
   render();
   void refresh();
   return () => {
     disposed = true;
+    clearRefresh();
     generation += 1;
     pending = null;
     state = { phase: "unavailable", view: null, notice: "" };
     root.removeEventListener("click", onClick);
+    document.removeEventListener("visibilitychange", visibilityChanged);
     root.replaceChildren();
   };
 }
@@ -205,6 +232,8 @@ export function renderCreatorReview(state: CreatorReviewState): string {
       <strong>${escape(subtitle)}</strong>
       <p>${escape(state.notice || (ready
         ? "Review is complete. Your transcript is ready for note preparation."
+        : view?.status === "uploaded" || view?.status === "processing"
+          ? "Your transcript will appear here automatically when it is ready."
         : view?.status === "translation_pending"
           ? "The transcript is not ready for a note. Check the messages below for what is still needed."
           : "Review the proposed English before it is used for a note."))}</p>
