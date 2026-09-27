@@ -18,6 +18,36 @@ const crypto = webcrypto as unknown as Crypto;
 // No physical audio or elapsed three-hour claim: the real flow, Core protocol,
 // AES-GCM and encrypted IndexedDB process 1,080 full-sized ten-second WAV chunks.
 describe("continuous configured desktop windows", () => {
+  it.each(["pause", "deactivate"] as const)("leaves a backlog encrypted on %s after joining only the two claimed uploads", async action => {
+    const f = await fixture(true), listGate = deferred(), uploadGate = deferred();
+    let closing: Promise<void> | undefined;
+    try {
+      await f.prepare(); await f.controller.startRecording();
+      const metadata = f.storage.listMetadata.bind(f.storage);
+      vi.spyOn(f.storage, "listMetadata").mockImplementationOnce(async () => { await listGate.promise; return metadata(); });
+      const receipt = f.bff.getChunkReceipt.bind(f.bff);
+      const reads = vi.spyOn(f.bff, "getChunkReceipt").mockImplementation(async (...args) => {
+        await uploadGate.promise; return receipt(...args);
+      });
+      const complete = vi.spyOn(f.bff, "completeCapture");
+      for (let index = 0; index < 12; index++) await f.source.emit();
+      listGate.resolve(); await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(2));
+      closing = action === "pause" ? f.controller.pauseRecording() : f.controller.deactivate();
+      await vi.waitFor(() => expect(f.source.stops).toBe(1));
+      uploadGate.resolve(); await closing;
+      expect(reads).toHaveBeenCalledTimes(2); expect(complete).not.toHaveBeenCalled();
+      const records = await metadata();
+      expect(records.filter(record => record.state === "purged")).toHaveLength(2);
+      expect(records.filter(record => record.state === "encrypted")).toHaveLength(10);
+      expect(f.controller.snapshot).toMatchObject({ state: "paused", recordedChunks: 12,
+        uploadProgress: { total: 12, registered: 2 } });
+      await f.reopen(); expect(f.source.starts).toBe(1);
+      await f.controller.stopRecording();
+      expect(f.controller.snapshot).toMatchObject({ state: "processing", uploadProgress: { total: 12, registered: 12 } });
+      expect(complete).toHaveBeenCalledTimes(1); expect(reads).toHaveBeenCalledTimes(12);
+      expect((await f.storage.listMetadata()).filter(record => record.state === "purged")).toHaveLength(12);
+    } finally { listGate.resolve(); uploadGate.resolve(); await closing?.catch(() => undefined); await f.close(); }
+  });
   it("keeps progress bounded when queue receipts precede the flow's next saved-count commit", async () => {
     const f = await fixture(true), listGate = deferred(), saveGate = deferred(), saving = deferred();
     let nextChunk: Promise<void> | undefined;
