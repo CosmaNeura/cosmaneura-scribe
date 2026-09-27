@@ -23,8 +23,16 @@ tooling.
 
 ## Prerequisites
 
-Start a fresh disposable `_test` PostgreSQL database and the E2E API host as
-documented in `apps/capture/e2e/README.md`. The host refuses a reused database.
+Start the E2E API host (`apps/capture/e2e/support/real_api_host.py`) against a fresh disposable
+`_test` PostgreSQL database, reached as a role that may create roles. The host refuses a reused
+database and listens on `127.0.0.1:4175`. The tenant comes from the same file the browser suites
+use:
+
+```sh
+COSMANEURA_SCRIBE_E2E_TENANT_ID="$(sed -E 's/.*"([^"]+)".*/\1/' apps/capture/e2e/support/synthetic-tenant.mjs)" \
+COSMANEURA_SCRIBE_E2E_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:55438/cosmaneura_scribe_load_test \
+  uv run python apps/capture/e2e/support/real_api_host.py
+```
 
 ## Profiles
 

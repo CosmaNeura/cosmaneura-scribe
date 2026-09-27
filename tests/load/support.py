@@ -5,11 +5,20 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
+from uuid import UUID
 
-TENANT_ID = "11111111-1111-4111-8111-111111111112"
+_TENANT_SOURCE = (
+    Path(__file__).resolve().parents[2] / "apps/capture/e2e/support/synthetic-tenant.mjs"
+)
+_TENANT_MATCH = re.search(r'SYNTHETIC_TENANT_ID = "([0-9a-f-]{36})"', _TENANT_SOURCE.read_text())
+if _TENANT_MATCH is None:
+    raise RuntimeError(f"synthetic tenant is not declared in {_TENANT_SOURCE}")
+TENANT_ID = str(UUID(_TENANT_MATCH.group(1)))
 WRAPPED_DEK = base64.urlsafe_b64encode(b"k" * 384).rstrip(b"=").decode()
 DEFAULT_HOST = "http://127.0.0.1:4175"
 LOCAL_HOSTS = frozenset({DEFAULT_HOST, "http://localhost:4175"})
