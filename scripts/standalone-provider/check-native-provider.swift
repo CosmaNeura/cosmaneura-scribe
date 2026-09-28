@@ -66,12 +66,15 @@ func require(_ value: Bool, file: StaticString = #fileID, line: UInt = #line) th
 @main
 #endif
 struct CheckNativeProvider {
-    @MainActor static func make(contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now }) throws -> (NativeWorkspaceAuth, Driver, Wire, NativeProviderConnection) {
+    @MainActor static func make(contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+                               timingNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+                               requestTiming: @escaping @MainActor (ProviderNativeRequestTiming) -> Void = { _ in }) throws -> (NativeWorkspaceAuth, Driver, Wire, NativeProviderConnection) {
         let driver = Driver(), wire = Wire()
         let policy = try NativeTokenPolicy(issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider")
         let auth = NativeWorkspaceAuth(enabled: true, organizationID: "org_offline", tokenPolicy: policy,
             driver: { driver }, accessBlock: { Block() })
-        let connection = NativeProviderConnection(auth: auth, wire: wire, contextNow: contextNow)
+        let connection = NativeProviderConnection(auth: auth, wire: wire, contextNow: contextNow,
+                                                  timingNow: timingNow, requestTiming: requestTiming)
         auth.onChange = { [weak connection] state in connection?.authChanged(state) }
         return (auth, driver, wire, connection)
     }
@@ -94,6 +97,42 @@ struct CheckNativeProvider {
     }
     @MainActor static func main() async throws {
         var checks = 0
+        for outcome in ["success", "denied", "token-failure", "invalid-reply", "cancelled"] {
+            var instant = ContinuousClock.now
+            var timings: [ProviderNativeRequestTiming] = []
+            let (auth, driver, wire, connection) = try make(timingNow: {
+                defer { instant = instant.advanced(by: .milliseconds(10)) }
+                return instant
+            }, requestTiming: { timings.append($0) })
+            driver.expired = outcome == "token-failure"
+            await wire.setResponse(ProviderNativeReply(status: outcome == "denied" ? 403 : 200,
+                body: Data((outcome == "invalid-reply" ? "[]" : "{}").utf8)))
+            if outcome == "cancelled" {
+                await wire.hold()
+                let input = try request(auth)
+                let operation = Task { try await connection.send(input) }
+                try await wait { await wire.count == 1 }
+                try require(timings.isEmpty)
+                connection.cancel(input.id)
+                await wire.resume()
+                try await rejected(operation)
+            } else if ["token-failure", "invalid-reply"].contains(outcome) {
+                try await rejected(Task { try await connection.send(request(auth)) })
+            } else {
+                let reply = try await connection.send(request(auth))
+                try require(reply.status == (outcome == "denied" ? 403 : 200))
+            }
+            try require(timings.count == 1)
+            let timing = timings[0]
+            try require(timing.action == .catalog && timing.tokenMilliseconds == 10)
+            try require(timing.receiverMilliseconds == (outcome == "token-failure" ? nil : 10))
+            try require(timing.totalMilliseconds == (outcome == "token-failure" ? 10 : 40))
+            try require(timing.status == (outcome == "token-failure" ? nil : outcome == "denied" ? 403 : 200))
+            try require(timing.completed == ["success", "denied"].contains(outcome))
+            let calls = await wire.count
+            try require(calls == (outcome == "token-failure" ? 0 : 1))
+            connection.close(); checks += 1
+        }
         for fault in ["none", "workspace", "revision", "recovery", "binding", "appointment", "extra", "denied", "malformed", "oversized"] {
             let (auth, _, wire, connection) = try make()
             let workspace = UUID(), recovery = UUID()

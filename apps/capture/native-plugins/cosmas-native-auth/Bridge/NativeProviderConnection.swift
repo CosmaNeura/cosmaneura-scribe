@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import CosmasNativeAuth
 
 enum ProviderNativeError: String, Error, Sendable {
@@ -85,6 +86,28 @@ struct ProviderNativeReply: Sendable {
     let body: Data
 }
 
+/// Local performance data only. Never accept request/reply bytes, identifiers,
+/// credentials, URLs or error descriptions in this diagnostic boundary.
+struct ProviderNativeRequestTiming: Sendable {
+    let action: ProviderNativeAction
+    let tokenMilliseconds: Int
+    let receiverMilliseconds: Int?
+    let totalMilliseconds: Int
+    let status: Int?
+    let completed: Bool
+
+    private static let logger = Logger(subsystem: "com.cosmaneura.scribe.performance", category: "provider")
+
+    func log() {
+        Self.logger.info("provider_request action=\(action.rawValue, privacy: .public) token_ms=\(tokenMilliseconds) receiver_ms=\(receiverMilliseconds ?? -1) total_ms=\(totalMilliseconds) status=\(status ?? 0) completed=\(completed)")
+    }
+
+    static func milliseconds(from start: ContinuousClock.Instant, to end: ContinuousClock.Instant) -> Int {
+        let parts = start.duration(to: end).components
+        return max(0, Int((Double(parts.seconds) * 1000 + Double(parts.attoseconds) / 1e15).rounded()))
+    }
+}
+
 /// Minted only by a current Core response. This identifies key custody; the
 /// source-start gate still independently decides whether capture may begin.
 struct NativeProviderRecordingContext: Equatable, Sendable {
@@ -136,10 +159,15 @@ protocol ProviderNativeWire: Sendable {
     private var preparingRecording: UUID?
     private var recordingGeneration = UUID()
     private let contextNow: @MainActor () -> ContinuousClock.Instant
+    private let timingNow: @MainActor () -> ContinuousClock.Instant
+    private let requestTiming: @MainActor (ProviderNativeRequestTiming) -> Void
 
     init(auth: NativeWorkspaceAuth, wire: any ProviderNativeWire,
-         contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now }) {
+         contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+         timingNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+         requestTiming: @escaping @MainActor (ProviderNativeRequestTiming) -> Void = { $0.log() }) {
         self.auth = auth; self.wire = wire; self.contextNow = contextNow
+        self.timingNow = timingNow; self.requestTiming = requestTiming
     }
 
     func authChanged(_ state: NativeAuthState) {
@@ -375,13 +403,29 @@ protocol ProviderNativeWire: Sendable {
             recordingMounts.removeValue(forKey: id)
             preparedRecording = nil; recordingGeneration = UUID()
         }
-        let operation = Task { @MainActor [auth, wire] in
+        let operation = Task { @MainActor [auth, wire, timingNow, requestTiming] in
+            let started = timingNow()
+            var tokenEnd: ContinuousClock.Instant?, receiverStart: ContinuousClock.Instant?
+            var receiverEnd: ContinuousClock.Instant?, status: Int?
+            var completed = false
+            defer {
+                let ended = timingNow()
+                requestTiming(ProviderNativeRequestTiming(action: request.action,
+                    tokenMilliseconds: ProviderNativeRequestTiming.milliseconds(from: started, to: tokenEnd ?? ended),
+                    receiverMilliseconds: receiverStart.map {
+                        ProviderNativeRequestTiming.milliseconds(from: $0, to: receiverEnd ?? ended)
+                    }, totalMilliseconds: ProviderNativeRequestTiming.milliseconds(from: started, to: ended),
+                    status: status, completed: completed))
+            }
             try Task.checkCancellation()
             let token = try await auth.token(expectedRevision: request.revision,
                                              nativeSessionWithoutOrigin: true)
+            tokenEnd = timingNow()
             try self.current(request.revision)
             try Task.checkCancellation()
+            receiverStart = timingNow()
             let reply = try await wire.send(request, token: token)
+            receiverEnd = timingNow(); status = reply.status
             try Task.checkCancellation()
             try self.current(request.revision)
             guard [200, 401, 403, 409, 422, 503].contains(reply.status),
@@ -391,12 +435,14 @@ protocol ProviderNativeWire: Sendable {
             if reply.status != 200 {
                 self.rememberRecordingMount(request, reply)
                 // Do not forward arbitrary proxy/SDK/error content to JavaScript.
+                completed = true
                 return Self.sanitizedFailure(reply, action: request.action)
             }
             guard (try? JSONSerialization.jsonObject(with: reply.body)) is [String: Any] else {
                 throw ProviderNativeError.response
             }
             self.rememberRecordingMount(request, reply)
+            completed = true
             return reply
         }
         pending[request.id] = (request.revision, operation)
