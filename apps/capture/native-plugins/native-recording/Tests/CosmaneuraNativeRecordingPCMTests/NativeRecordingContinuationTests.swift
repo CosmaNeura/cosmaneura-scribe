@@ -29,8 +29,45 @@ import XCTest
   }
 
   func testThreeHoursUseActualPCMEncryptionAndFourteenShortLeases() async throws {
+    try await checkThreeHours(initialCount: 90, expectedLeases: 14)
+  }
+
+  func testFiveMinuteStartupWindowContinuesThroughThreeHours() async throws {
+    try await checkThreeHours(initialCount: 30, expectedLeases: 15)
+  }
+
+  func testStartupRefillRecoversLostReplyWhileRemainingAudioContinues() async throws {
     let f = try ContinuationFixture()
-    let owner = try await f.open()
+    let owner = try await f.open(initialCount: 30)
+    for _ in 0..<18 {
+      try await f.driver.offerPacket()
+      f.clock.advance(10)
+    }
+    await f.service.loseNextBatchReply()
+    await owner.maintain()
+    assertEqual((await owner.state).phase, .renewalDelayed)
+    assertEqual((await owner.state).sourceGeneration, 1)
+    try await f.driver.offerPacket()
+    f.clock.advance(10)
+    await owner.maintain()
+    let state = await owner.state
+    assertEqual(state.phase, .recording)
+    assertEqual(state.sourceGeneration, 2)
+    assertEqual(state.reservedThroughSequence, 108)
+    let calls = await f.service.batchCalls
+    assertEqual(calls.count, 3)
+    assertEqual(calls[1], calls[2])
+    assertEqual(calls[1].first, 30)
+    assertEqual(calls[1].count, 78)
+    try await owner.stop()
+    assertEqual(f.records.encryptedCount, 19)
+    assertEqual(await f.driver.starts, 1)
+    assertEqual(await f.driver.releases, 1)
+  }
+
+  private func checkThreeHours(initialCount: Int, expectedLeases: Int) async throws {
+    let f = try ContinuationFixture()
+    let owner = try await f.open(initialCount: initialCount)
     for chunk in 0..<1_080 {
       assertTrue(await owner.heartbeatAndObserve())
       await owner.maintain()
@@ -45,13 +82,13 @@ import XCTest
     let state = await owner.state
     assertEqual(state.phase, .stopped)
     XCTAssertNil(state.reason)
-    assertEqual(state.sourceGeneration, 14)
+    assertEqual(state.sourceGeneration, expectedLeases)
     assertEqual(state.capture.committedChunks, 1_080)
     assertEqual(state.capture.committedPlaintextBytes, 345_600_000 + 1_080 * 44)
     assertEqual(f.records.encryptedCount, 1_080)
     let counts = await f.service.counts
-    assertEqual(counts.leases, 14)
-    assertEqual(counts.batches, 14)
+    assertEqual(counts.leases, expectedLeases)
+    assertEqual(counts.batches, expectedLeases)
     assertEqual(await f.driver.starts, 1)
     assertEqual(await f.driver.releases, 1)
     assertEqual(state.capture.phase, .closed)
