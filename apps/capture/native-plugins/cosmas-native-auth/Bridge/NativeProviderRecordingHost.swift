@@ -198,9 +198,11 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         if let retained {
           batch = retained
         } else {
+          // Prepare five minutes initially. Native continuation replenishes the
+          // window with two minutes remaining, up to ninety outstanding slots.
           batch = try await reservations.reserve(
             lease: lease, first: checkpoint.committedChunks,
-            count: min(90, 2048 - checkpoint.committedChunks))
+            count: min(30, 2048 - checkpoint.committedChunks))
         }
         try current(ticket)
         PCMStartupDiagnostics.shared.record(.reservationsReady)
