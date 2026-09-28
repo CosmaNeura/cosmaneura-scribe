@@ -176,3 +176,33 @@ it("retries the same native desktop source after a lost stop acknowledgement", a
   ]);
   expect(request.mock.calls.some(([method]) => method === "sourceRelease")).toBe(false);
 });
+
+it.each([false, true])("preserves legacy opening and carries a validated combined read (%s)", async supported => {
+  const signal = new AbortController().signal, revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
+  const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
+  const encounter = { appointmentRef, title: "Invented visit", detail: "Opening fixture" };
+  const calls: Record<string, unknown>[] = [];
+  const native = { signal, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
+    addListener: async () => ({ remove: async () => undefined }),
+    request: async (_method: string, payload: Record<string, unknown>) => {
+      calls.push(payload);
+      const body = JSON.parse(payload.body as string);
+      return { status: 200, body: JSON.stringify(payload.action === "catalog"
+        ? { revision, encounters: [{ ...encounter, workspaceId }], opening_review_v1: supported }
+        : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID(),
+          ...(supported ? { openingReview: { contract_version: "1", workspace_id: workspaceId, binding_ref: bindingRef,
+            request_nonce: body.opening_nonce, checked_at: new Date().toISOString(), operation: "provider_encounter",
+            receipt: { schema_version: "1.0", status: "not_prepared", review: null } } } : {}) }) };
+    } } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  try {
+    await backend.listEncounters(signal);
+    const mount = await backend.openEncounter(appointmentRef, signal);
+    expect(mount.openingReview?.view).toBe(supported ? null : undefined);
+    expect(mount.openingReview?.scope).toEqual(supported ? mount.scope : undefined);
+    expect(Object.keys(JSON.parse(calls[1]!.body as string)).sort())
+      .toEqual(supported ? ["opening_nonce", "workspace_id"] : ["workspace_id"]);
+    expect(calls).toHaveLength(2);
+  } finally { await backend.dispose(); }
+});

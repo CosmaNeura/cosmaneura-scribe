@@ -43,13 +43,7 @@ export class CoreCaptureClient {
   /** Discover server work when this device has no journal; never infer absence from an error. */
   async discoverEncounter(): Promise<CreatorReviewView | null> {
     const value = await this.send("capture-operations", { operation: { kind: "provider_encounter" } }, crypto.randomUUID());
-    requireValue(value.operation === "provider_encounter" && record(value.receipt));
-    const receipt = value.receipt;
-    requireValue(Object.keys(receipt).sort().join(",") === "review,schema_version,status"
-      && receipt.schema_version === "1.0");
-    if (receipt.status === "not_prepared") { requireValue(receipt.review === null); return null; }
-    requireValue(receipt.status === "available" && record(receipt.review) && isUuid(receipt.review.session_id));
-    return parseCreatorReview(receipt.review, receipt.review.session_id);
+    return parseProviderEncounter(value);
   }
 
   /** Resume server custody before considering another consent submission. */
@@ -160,6 +154,17 @@ export class CoreCaptureClient {
       && Number.isFinite(Date.parse(value.checked_at)));
     return value;
   }
+}
+
+/** The same closed receipt is used by discovery and the combined opening read. */
+export function parseProviderEncounter(value: Record<string, unknown>): CreatorReviewView | null {
+  requireValue(value.operation === "provider_encounter" && record(value.receipt));
+  const receipt = value.receipt;
+  requireValue(Object.keys(receipt).sort().join(",") === "review,schema_version,status"
+    && receipt.schema_version === "1.0");
+  if (receipt.status === "not_prepared") { requireValue(receipt.review === null); return null; }
+  requireValue(receipt.status === "available" && record(receipt.review) && isUuid(receipt.review.session_id));
+  return parseCreatorReview(receipt.review, receipt.review.session_id);
 }
 
 /** Reuses the recorder/queue protocol after Core's configured admission. */

@@ -74,6 +74,50 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it("opens with a complete long transcript without a second Core request", async () => {
+    const f = fixture(), backend = await f.connect(), view = longReviewFixture(session);
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const result = JSON.parse(f.reply(request).body);
+      if (request.action === "catalog") result.opening_review_v1 = true;
+      if (request.action === "mount") result.openingReview = {
+        contract_version: "1", workspace_id: workspace, binding_ref: binding,
+        request_nonce: JSON.parse(request.body).opening_nonce, checked_at: new Date().toISOString(),
+        operation: "provider_encounter", receipt: { schema_version: "1.0", status: "available", review: view },
+      };
+      return f.reply(request, result);
+    });
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.openingReview?.view).toEqual(view);
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount"]);
+    } finally { await backend.dispose(); }
+  });
+
+  it.each([false, true])("requests a combined opening only with advertised capability (%s)", async supported => {
+    const f = fixture(), backend = await f.connect();
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const normal = f.reply(request), value = JSON.parse(normal.body);
+      if (request.action === "catalog") value.opening_review_v1 = supported;
+      if (request.action === "mount" && supported) value.openingReview = {
+        contract_version: "1", workspace_id: workspace, binding_ref: binding,
+        request_nonce: JSON.parse(request.body).opening_nonce, checked_at: new Date().toISOString(),
+        operation: "provider_encounter", receipt: { schema_version: "1.0", status: "not_prepared", review: null },
+      };
+      return { ...normal, body: JSON.stringify(value) };
+    });
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.openingReview?.view).toBe(supported ? null : undefined);
+      const body = JSON.parse(f.plugin.providerRequest.mock.calls[1]![0].body);
+      expect(Object.keys(body).sort()).toEqual(supported ? ["opening_nonce", "workspace_id"] : ["workspace_id"]);
+      await mount.reauthorizeRecorder(session, backend.signal);
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount", "recorder"]);
+      expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+
   it("passes a full long review through native and Core receivers while retaining the byte guard", async () => {
     const f = fixture(), backend = await f.connect();
     try {

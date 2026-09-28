@@ -53,3 +53,25 @@ silently create a fresh encounter. Preserve all journals, recordings and keys.
 No schema, stored transcript format, fixture/live data or environment change is
 part of this source PR. Core and Session Prep require no contract change. No
 deployment or native installation is claimed by the merge evidence.
+
+## Matched native client
+
+The client follow-up consumes the capability on both Mac and iPhone. The native
+mount limit grows only for a canonical combined-opening request; legacy mount
+requests retain their 8 KiB limit. The combined limit is the existing 32 MiB
+review budget plus bounded Core/provider envelopes; the desktop frame permits
+JSON string escaping of that same bound.
+
+The client checks nonce, workspace and binding before parsing the existing
+provider-encounter receipt. Hosts carry only the parsed review, scope and
+original receipt time. After journal recovery the workspace can use it once if
+no more than five seconds old. A different retained session, expired data or an
+older receiver takes the established fresh-read path. Pending note saves and
+admissions keep their existing recovery UI. Recorder authorization, refresh,
+decisions and note operations still contact Core. Opening never starts audio.
+
+Ship the renderer, main process and Swift helper together; this is not a
+renderer-only update for older native bridges. Keep the existing phone identity
+selection/install hold. Validate the merged receiver before native rollout;
+then compare opening latency on the same synthetic encounter. Software checks
+of request counts and UI behavior do not establish physical-device timing.

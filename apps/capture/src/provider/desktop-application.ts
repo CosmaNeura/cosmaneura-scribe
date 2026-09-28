@@ -5,6 +5,7 @@ import { assertProgress, type JournalSnapshot } from "./workspace-journal";
 import { parsePendingReviewDecision } from "../../../review-ui/src/creator-review-journal";
 import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
 import { reference, type CoreCaptureScope } from "./core-client";
+import { parseOpeningReview } from "./opening-review";
 import { parseDesktopProviderEvent, sessionState, exact, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
 
@@ -129,7 +130,9 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         },
         createEncounter: async operationSignal => { await send("create", {}, null, operationSignal); current(operationSignal); },
         openEncounter: async (appointmentRef, operationSignal) => {
-          const value = exact(await send("open", { appointmentRef }, null, operationSignal), ["encounterId", "encounter", "scope"]);
+          const result = await send("open", { appointmentRef }, null, operationSignal);
+          const hasOpening = typeof result === "object" && result !== null && "openingReview" in result;
+          const value = exact(result, ["encounterId", "encounter", "scope", ...(hasOpening ? ["openingReview"] : [])]);
           current(operationSignal);
           const encounterId = uuid(value.encounterId), displayed = encounter(value.encounter), scope = captureScope(value.scope);
           if (displayed.appointmentRef !== appointmentRef || scope.appointmentRef !== appointmentRef) throw unavailable();
@@ -140,6 +143,7 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
           const call = (method: DesktopProviderMethod, payload: Readonly<Record<string, unknown>>, extra = linked): Promise<unknown> =>
             send(method, payload, encounterId, AbortSignal.any([linked, extra]));
           return { encounter: displayed, scope, signal: linked,
+            ...(hasOpening ? { openingReview: parseOpeningReview(value.openingReview, scope) } : {}),
             request: async (path, body, key, extra) => {
               const result = exact(await call("core", { path, body, key }, extra), ["status", "body"]);
               if (![200, 401, 403, 409, 422, 503].includes(Number(result.status))) throw unavailable();

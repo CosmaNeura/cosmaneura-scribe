@@ -1,3 +1,4 @@
+import { openingReviewFromCore } from "./opening-review";
 import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import type { CiphertextUploadTarget } from "../bff/contracts";
@@ -41,6 +42,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   let revision: string | null = null, observed: NativeState | null = null;
   let listener: PluginListenerHandle | undefined, timer: ReturnType<typeof setInterval> | undefined;
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
+  let openingReviewSupported = false;
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const inheritedAbort = (): void => abort.abort();
   options.signal.addEventListener("abort", inheritedAbort, { once: true });
@@ -165,6 +167,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
         next.set(entry.appointmentRef, { workspaceId: row.workspaceId, encounter: entry });
       }
       current(signal); encounters.clear();
+      openingReviewSupported = value.opening_review_v1 === true;
       for (const [key, row] of next) encounters.set(key, row);
       return [...next.values()].map(row => row.encounter);
     },
@@ -176,7 +179,9 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       current(signal);
       const row = encounters.get(appointmentRef);
       if (!row) throw unavailable();
-      const value = await json("mount", { workspace_id: row.workspaceId }, signal);
+      const openingNonce = openingReviewSupported ? crypto.randomUUID() : undefined;
+      const value = await json("mount", { workspace_id: row.workspaceId,
+        ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
       if (!isUuid(value.recoveryScope) || value.workspaceId !== row.workspaceId || value.appointmentRef !== appointmentRef
         || !reference(value.bindingRef, "scribe_capture_binding") || !record(value.encounter)) throw unavailable();
       const displayed = encounter(value.encounter);
@@ -185,6 +190,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       let recordingAuthorization: string | null = null;
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
+        ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,
         ...(nativeRecording ? { nativeRecording: {
           open: (sessionId: string, requestId: string) => {

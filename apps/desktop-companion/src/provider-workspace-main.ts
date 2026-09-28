@@ -143,7 +143,8 @@ export class DesktopProviderWorkspaceMain {
             const encounter: Encounter = { id: crypto.randomUUID(), abort: opening, value: opened, work: new Set() };
             connection.encounter = encounter;
             opened.signal.addEventListener("abort", () => { void this.closeEncounter(connection, encounter).catch(() => undefined); }, { once: true });
-            return { encounterId: encounter.id, encounter: opened.encounter, scope: opened.scope };
+            return { encounterId: encounter.id, encounter: opened.encounter, scope: opened.scope,
+              ...(opened.openingReview ? { openingReview: opened.openingReview } : {}) };
           } catch (error) { opening.abort(); throw error; }
         } finally { connection.transitioning = false; }
       });

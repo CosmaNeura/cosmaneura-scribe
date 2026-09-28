@@ -1,3 +1,4 @@
+import { openingReviewFromCore } from "../../capture/src/provider/opening-review";
 import type { CiphertextUploadTarget } from "../../capture/src/bff/contracts";
 import type { ProviderEncounter } from "../../capture/src/provider/workspace-contracts";
 import { exact, object, uuid } from "../../capture/src/provider/desktop-host-protocol";
@@ -18,6 +19,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   if (state.phase !== "ready" || options.signal.aborted || native.signal.aborted) throw unavailable();
   const revision = state.revision, abort = new AbortController();
   const lifetime = AbortSignal.any([options.signal, native.signal, abort.signal]);
+  let openingReviewSupported = false;
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const sources = new Map<string, { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence }>();
   const releasePreparation = async (preparationId: string, stopped: boolean): Promise<void> => {
@@ -80,6 +82,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
         next.set(encounter.appointmentRef, { workspaceId: uuid(row.workspaceId), encounter });
       }
       current(signal); encounters.clear();
+      openingReviewSupported = value.opening_review_v1 === true;
       for (const [id, value] of next) encounters.set(id, value);
       return [...next.values()].map(value => value.encounter);
     },
@@ -87,7 +90,9 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
     openEncounter: async (appointmentRef, signal) => {
       current(signal);
       const row = encounters.get(appointmentRef); if (!row) throw unavailable();
-      const value = await json("mount", { workspace_id: row.workspaceId }, signal);
+      const openingNonce = openingReviewSupported ? crypto.randomUUID() : undefined;
+      const value = await json("mount", { workspace_id: row.workspaceId,
+        ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
       if (value.workspaceId !== row.workspaceId || value.appointmentRef !== appointmentRef
         || !reference(value.bindingRef, "scribe_capture_binding")) throw unavailable();
       const encounter = parseEncounter(object(value.encounter));
@@ -108,6 +113,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       };
       return {
         release, retireSource, encounter, scope, signal: AbortSignal.any([lifetime, signal]), recoveryScope: uuid(value.recoveryScope),
+        ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,
         request: (path, body, key, operationSignal) => {
           current(signal);

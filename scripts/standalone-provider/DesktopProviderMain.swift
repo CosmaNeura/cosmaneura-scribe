@@ -184,7 +184,7 @@ import Foundation
         do {
             var data = try JSONSerialization.data(withJSONObject: value)
             // Core JSON is nested in a JSON string, allowing at most twofold escaping.
-            guard data.count <= 2 * (32 * 1024 * 1024 + 8192) + 8192 else { throw ProviderNativeError.response }
+            guard data.count <= 2 * (32 * 1024 * 1024 + 16_384) + 8192 else { throw ProviderNativeError.response }
             data.append(10); try FileHandle.standardOutput.write(contentsOf: data)
         } catch { NSApplication.shared.terminate(nil) }
     }

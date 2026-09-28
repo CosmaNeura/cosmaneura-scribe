@@ -374,3 +374,13 @@ describe("native provider selection and ownership", () => {
     expect(sourceFactory.createProviderIOSCaptureSource).not.toHaveBeenCalled();
   });
 });
+
+it("carries opening display data through the native host without acquiring a recorder", async () => {
+  const f = connection();
+  const openingReview = { scope: { ...f.mount.scope }, receivedAt: Date.now() - 100, view: null };
+  const g = connection({ openingReview });
+  const opened = await g.openAny();
+  expect(opened.openingReview).toEqual(openingReview);
+  expect(g.mount.reauthorizeRecorder).not.toHaveBeenCalled();
+  expect(source.start).not.toHaveBeenCalled();
+});
