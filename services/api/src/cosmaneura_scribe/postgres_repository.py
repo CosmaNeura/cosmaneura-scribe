@@ -3728,25 +3728,17 @@ class PostgresRepository:
         if not lease_is_active:
             raise CaptureLeaseConflictError
 
-        existing_rows = (
-            (
-                await self._session.execute(
-                    text(
-                        """
-                        SELECT object_id, session_id, sequence_number, channel,
-                               protocol_version, additional_data,
-                               plaintext_budget_bytes, created_at
-                        FROM audio_chunk_reservations
-                        WHERE tenant_id = :tenant_id AND session_id = :session_id
-                        ORDER BY channel, sequence_number
-                        """
-                    ),
-                    {"tenant_id": tenant_id, "session_id": session_id},
-                )
-            )
-            .mappings()
-            .all()
+        reservation_query = text(
+            """
+            SELECT object_id, session_id, sequence_number, channel,
+                   protocol_version, additional_data, plaintext_budget_bytes, created_at
+            FROM audio_chunk_reservations
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            ORDER BY channel, sequence_number
+            """
         )
+        scope = {"tenant_id": tenant_id, "session_id": session_id}
+        existing_rows = (await self._session.execute(reservation_query, scope)).mappings().all()
         existing = {
             (CaptureChannel(row["channel"]), int(row["sequence_number"])): _chunk_reservation(
                 dict(row)
@@ -3785,7 +3777,10 @@ class PostgresRepository:
         ):
             raise CaptureReservationLimitError
 
-        for draft in new_drafts:
+        if new_drafts:
+            # SQLAlchemy/asyncpg batches parameter sets on this same locked
+            # transaction. Keep all immutable position/conflict rules while
+            # avoiding one database dispatch for every chunk.
             await self._session.execute(
                 text(
                     """
@@ -3800,38 +3795,35 @@ class PostgresRepository:
                     DO NOTHING
                     """
                 ),
-                {
-                    "object_id": draft.object_id,
-                    "tenant_id": tenant_id,
-                    "session_id": session_id,
-                    "sequence_number": draft.sequence_number,
-                    "channel": draft.channel.value,
-                    "protocol_version": draft.protocol_version,
-                    "additional_data": draft.additional_data,
-                    "plaintext_budget_bytes": draft.plaintext_budget_bytes,
-                },
+                [
+                    {
+                        **scope,
+                        "object_id": draft.object_id,
+                        "sequence_number": draft.sequence_number,
+                        "channel": draft.channel.value,
+                        "protocol_version": draft.protocol_version,
+                        "additional_data": draft.additional_data,
+                        "plaintext_budget_bytes": draft.plaintext_budget_bytes,
+                    }
+                    for draft in new_drafts
+                ],
             )
 
+        # Reload canonical database records together, including pre-existing
+        # overlapping positions. Request order may differ from database order.
+        canonical_rows = (await self._session.execute(reservation_query, scope)).mappings().all()
+        by_position = {
+            (CaptureChannel(row["channel"]), int(row["sequence_number"])): _chunk_reservation(
+                dict(row)
+            )
+            for row in canonical_rows
+        }
         canonical: list[ChunkReservationRecord] = []
         for draft in drafts:
-            row = await self._one_or_none(
-                """
-                SELECT object_id, session_id, sequence_number, channel,
-                       protocol_version, additional_data, plaintext_budget_bytes, created_at
-                FROM audio_chunk_reservations
-                WHERE tenant_id = :tenant_id
-                  AND session_id = :session_id
-                  AND sequence_number = :sequence_number
-                  AND channel = :channel
-                """,
-                tenant_id=tenant_id,
-                session_id=session_id,
-                sequence_number=draft.sequence_number,
-                channel=draft.channel.value,
-            )
+            row = by_position.get((draft.channel, draft.sequence_number))
             if row is None:
                 raise CaptureReservationLimitError
-            canonical.append(_chunk_reservation(row))
+            canonical.append(row)
 
         inserted_batch = await self._session.execute(
             text(
@@ -3865,25 +3857,26 @@ class PostgresRepository:
         )
         if inserted_batch.scalar_one_or_none() is None:
             raise CaptureLeaseConflictError
-        for ordinal, reservation in enumerate(canonical):
-            await self._session.execute(
-                text(
-                    """
-                    INSERT INTO audio_chunk_reservation_batch_items (
-                        tenant_id, session_id, batch_id, ordinal, object_id
-                    ) VALUES (
-                        :tenant_id, :session_id, :batch_id, :ordinal, :object_id
-                    )
-                    """
-                ),
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO audio_chunk_reservation_batch_items (
+                    tenant_id, session_id, batch_id, ordinal, object_id
+                ) VALUES (
+                    :tenant_id, :session_id, :batch_id, :ordinal, :object_id
+                )
+                """
+            ),
+            [
                 {
-                    "tenant_id": tenant_id,
-                    "session_id": session_id,
+                    **scope,
                     "batch_id": batch_id,
                     "ordinal": ordinal,
                     "object_id": reservation.object_id,
-                },
-            )
+                }
+                for ordinal, reservation in enumerate(canonical)
+            ],
+        )
         batch = await self.get_chunk_reservation_batch(tenant_id, batch_id)
         if batch is None:
             raise CaptureReservationLimitError
