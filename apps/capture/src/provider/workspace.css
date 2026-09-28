@@ -1,8 +1,9 @@
-.provider-workspace { max-width: 1100px; margin: auto; padding: 24px; color: #17352f; font: 16px/1.5 system-ui, sans-serif; }
+.provider-workspace { box-sizing: border-box; max-width: 1100px; margin: 24px auto; padding: 24px; border: 1px solid #dce5e3; border-radius: 20px; background: #fff; color: #203035; font: 16px/1.5 system-ui, sans-serif; }
 .provider-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #ccded7; padding-bottom: 16px; }
 .provider-workspace h1 { font-size: clamp(1.7rem, 4vw, 2.5rem); line-height: 1.2; }
 .provider-workspace button { min-height: 44px; margin: 8px 12px 8px 0; padding: 10px 18px; border: 1px solid #306b5c; border-radius: 8px; background: #f2faf5; color: #17352f; cursor: pointer; font: inherit; }
 .provider-workspace button:hover { background: #e0f0e7; }
+.provider-workspace button[data-workspace-action="prepare"], .provider-workspace button[data-workspace-action="save"], .provider-workspace cosmaneura-capture .primary { background: var(--scribe-gradient, linear-gradient(135deg, #146f6c, #17273c)); color: #fff; border-color: #146f6c; }
 .provider-workspace button:focus-visible, .provider-workspace input:focus-visible, .provider-workspace select:focus-visible, .provider-workspace textarea:focus-visible { outline: 3px solid #648ad9; outline-offset: 2px; }
 .provider-workspace label { display: grid; gap: 6px; margin: 18px 0; font-weight: 600; }
 .provider-workspace input, .provider-workspace select, .provider-workspace textarea { box-sizing: border-box; max-width: 100%; min-height: 44px; padding: 10px; border: 1px solid #8ea99f; border-radius: 6px; font: inherit; color: #17352f; background: white; }
@@ -17,4 +18,4 @@
 .provider-workspace .shell { padding: 0; }
 .provider-workspace .shell > header { display: none; }
 [data-provider-encounter] { margin: 4px 0 0; font-size: .95rem; }
-@media (max-width: 600px) { .provider-workspace { padding: 16px; } .provider-header { align-items: flex-start; } }
+@media (max-width: 600px) { .provider-workspace { margin: 12px; padding: 16px; } .provider-header { align-items: flex-start; } }
