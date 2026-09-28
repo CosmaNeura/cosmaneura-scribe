@@ -28,12 +28,17 @@ public final class PCMSignalMonitor: @unchecked Sendable {
   }
   private let lock = NSLock()
   private let now: @Sendable () -> UInt64
+  private let diagnostics: PCMStartupDiagnostics
   private var input = Reading()
   private var converted = Reading()
   private var zeroInputMilliseconds = 0.0
   private var route: InputRoute = .none
 
-  public init(now: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
+  public init(
+    diagnostics: PCMStartupDiagnostics = .shared,
+    now: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
+  ) {
+    self.diagnostics = diagnostics
     self.now = now
   }
 
@@ -59,12 +64,18 @@ public final class PCMSignalMonitor: @unchecked Sendable {
     }
     guard count > 0 else { return }
     let level = sqrt(sum / Double(count)), time = now()
-    lock.withLock {
+    let first = lock.withLock {
+      let first = (input.buffers == 0, nonzero && !input.everNonzero)
       input.buffers += 1; input.everNonzero = input.everNonzero || nonzero
       input.level = level; input.time = time
       zeroInputMilliseconds = nonzero ? 0
         : min(86_400_000, zeroInputMilliseconds + Double(frames) * 1_000 / Double(sampleRateHz))
+      return first
     }
+    // At most two fixed events per boundary/interval, asynchronously persisted.
+    // No samples, levels or continuous speech-activity timeline are retained.
+    if first.0 { diagnostics.record(.firstInputBuffer) }
+    if first.1 { diagnostics.record(.firstInputSignal) }
   }
 
   /// Called after downmix/resampling, before accumulation, encoding or clearing.
@@ -76,10 +87,14 @@ public final class PCMSignalMonitor: @unchecked Sendable {
       sum += value * value; nonzero = nonzero || sample != 0
     }
     let level = sqrt(sum / Double(samples.count)), time = now()
-    lock.withLock {
+    let first = lock.withLock {
+      let first = (converted.buffers == 0, nonzero && !converted.everNonzero)
       converted.buffers += 1; converted.everNonzero = converted.everNonzero || nonzero
       converted.level = level; converted.time = time
+      return first
     }
+    if first.0 { diagnostics.record(.firstConvertedBuffer) }
+    if first.1 { diagnostics.record(.firstConvertedSignal) }
   }
 
   public func snapshot() -> Snapshot {

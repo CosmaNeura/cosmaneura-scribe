@@ -145,12 +145,17 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         // the 15-second one-use start decision, and recheck after every await.
         guard try await requestPermission() else { throw ProviderNativeError.unavailable }
         try requireStarting()
+        PCMStartupDiagnostics.shared.record(.permissionAccepted)
+        PCMStartupDiagnostics.shared.record(.sourcePrepareRequested)
         _ = try await authority.source.prepare()
         try requireStarting()
+        PCMStartupDiagnostics.shared.record(.sourcePrepared)
+        PCMStartupDiagnostics.shared.record(.sourceConsumeRequested)
         try await NativeCaptureStartGate.consume(
           owner: authority.id, consumer: .nativeEncryptedMicrophone
         ) { permit in
           try requireStarting()
+          PCMStartupDiagnostics.shared.record(.authorityAccepted)
           authority.runID = permit.runID
           try recorder.start(
             runID: permit.runID,
@@ -162,6 +167,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         try requireStarting()
         try authority.validate()
         phase = .recording
+        PCMStartupDiagnostics.shared.record(.readyAccepted)
         observeTerminalState()
       } catch {
         if failure == nil { failure = .startFailed }

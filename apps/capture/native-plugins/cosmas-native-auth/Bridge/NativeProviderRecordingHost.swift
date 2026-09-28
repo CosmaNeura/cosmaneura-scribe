@@ -148,6 +148,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     else { throw ProviderNativeError.unavailable }
     try current(generation)
     let recoverSavedPosition = failure == .recoveryFailed
+    PCMStartupDiagnostics.shared.record(.startRequested)
     phase = .starting
     failure = nil
     let ticket = generation
@@ -189,10 +190,12 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         guard try Self.expires(lease) > Date().addingTimeInterval(15) else {
           throw ProviderNativeError.unavailable
         }
+        PCMStartupDiagnostics.shared.record(.leaseReady)
         let batch = try await reservations.reserve(
           lease: lease, first: checkpoint.committedChunks,
           count: min(90, 2048 - checkpoint.committedChunks))
         try current(ticket)
+        PCMStartupDiagnostics.shared.record(.reservationsReady)
         // Retain the original source proof even if graph construction fails.
         // No discarded constructor error may orphan stop-only custody.
         source = try makeSource(lease, batch)
