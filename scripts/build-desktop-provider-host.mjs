@@ -18,6 +18,8 @@ for (const name of ["provider.html", "desktop-start.js", "provider-capture.js", 
   if (!info.isFile() || info.isSymbolicLink() || info.size > 4 * 1024 * 1024) throw new Error("Invalid renderer build input");
   const bytes = await readFile(source); await writeFile(join(renderer, name), bytes); files[name] = hash(bytes);
 }
+const icon = await readFile(join(standalone, "Scribe.icns"));
+await writeFile(join(output, "Scribe.icns"), icon);
 await writeFile(join(renderer, "renderer-manifest.json"), JSON.stringify({ schema: 1, files }, null, 2) + "\n");
 const main = await build({ absWorkingDir: repo, entryPoints: [join(standalone, "main.mjs")], bundle: true, platform: "node", target: "node24",
   format: "cjs", outfile: join(output, "main.cjs"), external: ["electron", "./provider-host.mjs"], metafile: true, logLevel: "silent" });
@@ -33,7 +35,7 @@ await writeFile(join(output, "package.json"), JSON.stringify({ name: "cosmaneura
 const sourceFiles = [...new Set([...Object.keys(main.metafile.inputs), ...Object.keys(preload.metafile.inputs), ...Object.keys(factory.metafile.inputs)])].sort();
 const sourceSha256 = Object.fromEntries(await Promise.all(sourceFiles.map(async name => [name, hash(await readFile(join(repo, name)))])));
 const artifacts = {};
-for (const name of ["main.cjs", "preload.cjs", "provider-host.mjs", "package.json", "renderer/renderer-manifest.json", ...Object.keys(files).map(name => "renderer/" + name)]) {
+for (const name of ["main.cjs", "preload.cjs", "provider-host.mjs", "package.json", "Scribe.icns", "renderer/renderer-manifest.json", ...Object.keys(files).map(name => "renderer/" + name)]) {
   artifacts[name] = hash(await readFile(join(output, name)));
 }
 await writeFile(join(output, "host-build.json"), JSON.stringify({ schema: 1, proposed_electron_version: "44.4.3", source_sha256: sourceSha256,
