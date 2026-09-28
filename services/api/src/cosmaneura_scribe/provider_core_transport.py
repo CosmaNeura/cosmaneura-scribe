@@ -200,6 +200,33 @@ class ProviderCoreTransport:
         """Resolve the selected encounter without admitting or starting recording."""
         return (await self._negotiate(None)).mount
 
+    async def open_with_review(
+        self, request_nonce: UUID, key: str
+    ) -> tuple[CoreProviderMount, dict[str, object]]:
+        """Resolve and read in one opening request, never cache mount authority.
+
+        The existing provider_encounter read still checks current Core access.
+        Its negotiated credentials stay local to this call; subsequent actions
+        must negotiate again, including recorder preparation and source start.
+        """
+        _checked(request_nonce, UUID)
+        _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(key, str)))
+        current = await self._negotiate(None)
+        mount = current.mount
+        review = await self._request(
+            mount,
+            _ROOT + "capture-operations",
+            {
+                "workspace_id": str(mount.selection.workspace_id),
+                "binding_ref": mount.binding_ref,
+                "request_nonce": str(request_nonce),
+                "operation": {"kind": "provider_encounter"},
+            },
+            key,
+            _negotiated=current,
+        )
+        return mount, review
+
     async def request(
         self,
         mount: CoreProviderMount,
@@ -225,6 +252,7 @@ class ProviderCoreTransport:
         key: str,
         *,
         native_start: bool = False,
+        _negotiated: _NegotiatedMount | None = None,
     ) -> dict[str, object]:
         """Accept exactly the current provider client's three facade operations.
 
@@ -245,7 +273,13 @@ class ProviderCoreTransport:
             }[action],
         )
         _validate_intent(mount, action, payload, native_start=native_start)
-        current = await self._negotiate(mount.selection)
+        if _negotiated is not None:
+            _require(
+                action == "capture-operations"
+                and payload.get("operation") == {"kind": "provider_encounter"}
+                and not native_start
+            )
+        current = _negotiated or await self._negotiate(mount.selection)
         _require(current.mount == mount)
         headers = {**await self._workload_headers(), **current.headers()}
         headers["Idempotency-Key"] = key

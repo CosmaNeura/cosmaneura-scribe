@@ -223,7 +223,9 @@ class ProviderReceiver:
                     )
                     if not self.enabled:
                         raise AccessDenied()
-                    return _reply(200, {"revision": str(revision), "encounters": rows})
+                    return _reply(200, {
+                        "revision": str(revision), "encounters": rows, "opening_review_v1": True,
+                    })
 
                 workspace_id = _uuid(body.get("workspace_id"))
                 key = request.headers.get("idempotency-key", "")
@@ -248,8 +250,15 @@ class ProviderReceiver:
                 )
                 try:
                     if action == "mount":
-                        _require(set(body) == {"workspace_id"})
-                        mount = await transport.open()
+                        opening_review = None
+                        if "opening_nonce" in body:
+                            _require(set(body) == {"workspace_id", "opening_nonce"})
+                            mount, opening_review = await transport.open_with_review(
+                                _uuid(body["opening_nonce"]), key,
+                            )
+                        else:
+                            _require(set(body) == {"workspace_id"})
+                            mount = await transport.open()
                         # Use a fresh authorized observation for the display row.
                         context, encounter = await self.registry_read(lambda bind: self.selected(
                             authorization, revision, workspace_id, bind=bind
@@ -260,6 +269,8 @@ class ProviderReceiver:
                             "encounter": encounter,
                             "revision": str(revision),
                         }
+                        if opening_review is not None:
+                            result["openingReview"] = opening_review
                     else:
                         context = await fresh()
                         binding = body.get("binding_ref")

@@ -184,6 +184,94 @@ def body(**values):
     }
 
 
+async def test_open_with_review_reuses_only_its_own_negotiation(connection):
+    wire, client = connection
+    nonce = uuid4()
+    mount, review = await client.open_with_review(nonce, "offline-opening-read")
+    assert mount.binding_ref == BINDING
+    assert review["request_nonce"] == str(nonce)
+    assert review["operation"] == "provider_encounter"
+    assert len(wire.calls) == 4 and wire.counter == 1
+    assert wire.effects == [(ROOT + "capture-operations", body(
+        request_nonce=str(nonce), operation={"kind": "provider_encounter"},
+    ), "offline-opening-read")]
+    assert wire.context_calls > len(wire.calls)
+    # Neither a subsequent action nor another opening can reuse this authority.
+    await client.request(mount, ROOT + "capture-operations", body(
+        operation={"kind": "creator_review"},
+    ), "offline-next-read")
+    assert wire.counter == 2 and len(wire.calls) == 8
+    await client.open_with_review(uuid4(), "offline-another-opening")
+    assert wire.counter == 3 and len(wire.calls) == 12
+
+
+@pytest.mark.parametrize("boundary", [
+    "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
+    ROOT + "capture-bindings/resolve", ROOT + "capture-operations",
+])
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_opening_does_not_publish_access_changed_during_any_core_io(
+    connection, boundary, change,
+):
+    wire, client = connection
+
+    def alter(path):
+        if path == boundary:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+
+    wire.after = alter
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.open_with_review(uuid4(), "offline-opening-read")
+    assert caught.value.status == 403
+    assert wire.calls[-1][0] == boundary
+
+
+@pytest.mark.parametrize("field,value", [
+    ("binding_ref", "scribe_capture_binding_01j00000000000000000000001"),
+    ("workspace_id", str(uuid4())), ("request_nonce", str(uuid4())),
+    ("operation", "creator_review"), ("checked_at", "2000-01-01T00:00:00Z"),
+])
+async def test_opening_validates_existing_core_receipt(connection, field, value):
+    wire, client = connection
+    wire.alter = lambda path, result: (
+        {**result, field: value} if path.endswith("capture-operations") else result
+    )
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.open_with_review(uuid4(), "offline-opening-read")
+
+
+async def test_opening_cannot_reuse_setup_for_a_mutation(connection):
+    wire, client = connection
+    current = await client._negotiate(None)
+    with pytest.raises(ProviderCoreUnavailable):
+        await client._request(current.mount, ROOT + "capture-operations", body(
+            operation={"kind": "decide_translation", "payload": {"decision": "accepted"}},
+        ), "offline-forbidden-reuse", _negotiated=current)
+    assert wire.effects == []
+
+
+async def test_opening_is_cancelled_before_late_core_read(connection):
+    wire, client = connection
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(path):
+        if path.endswith("capture-bindings/resolve"):
+            entered.set()
+            await release.wait()
+
+    wire.before = hold
+    task = asyncio.create_task(client.open_with_review(uuid4(), "offline-opening-read"))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    assert wire.effects == []
+
+
 async def test_configured_admission_review_and_existing_note_routes(connection):
     wire, client = connection
     mount = await client.open()

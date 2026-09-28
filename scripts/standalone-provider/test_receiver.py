@@ -208,6 +208,10 @@ class CoreWire:
                             "review_queue": None,
                             "translation_progress": [],
                         }
+                    elif kind == "provider_encounter":
+                        receipt = {
+                            "schema_version": "1.0", "status": "not_prepared", "review": None,
+                        }
                     else:
                         receipt = {"session_id": SESSION_ID}
                     result.update(operation=kind, receipt=receipt)
@@ -416,6 +420,7 @@ async def test_catalog_mount_and_recorder_use_existing_identity_and_core(harness
     async with client(h) as c:
         catalog = await c.post("/provider/v1/catalog", json={})
         assert catalog.status_code == 200 and catalog.headers["cache-control"] == "no-store"
+        assert catalog.json()["opening_review_v1"] is True
         assert catalog.json()["encounters"] == [
             {
                 "workspaceId": h.workspace,
@@ -426,6 +431,7 @@ async def test_catalog_mount_and_recorder_use_existing_identity_and_core(harness
         ]
         mounted = await c.post("/provider/v1/mount", json={"workspace_id": h.workspace})
         assert mounted.status_code == 200
+        assert "openingReview" not in mounted.json()
         assert mounted.json()["bindingRef"] == BINDING
         for secret in (h.token(), "offline-workload-only", "offline-core-mount-token", h.subject):
             assert secret not in mounted.text
@@ -456,6 +462,63 @@ async def test_catalog_mount_and_recorder_use_existing_identity_and_core(harness
             },
         )
         assert wrong.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_optional_opening_read_reuses_setup_and_keeps_legacy_mount(harness):
+    h = harness
+    nonce = str(uuid4())
+    async with client(h) as c:
+        reply = await c.post("/provider/v1/mount", json={
+            "workspace_id": h.workspace, "opening_nonce": nonce,
+        })
+        assert reply.status_code == 200 and reply.headers["cache-control"] == "no-store"
+        value = reply.json()
+        assert value["bindingRef"] == BINDING
+        assert value["openingReview"]["request_nonce"] == nonce
+        assert value["openingReview"]["operation"] == "provider_encounter"
+        assert value["openingReview"]["receipt"] == {
+            "schema_version": "1.0", "status": "not_prepared", "review": None,
+        }
+        assert len(h.wire.calls) == 4 and h.wire.operations == ["provider_encounter"]
+        for secret in (h.token(), "offline-workload-only", "offline-core-mount-token", h.subject):
+            assert secret not in reply.text
+        legacy = await c.post("/provider/v1/mount", json={"workspace_id": h.workspace})
+        assert legacy.status_code == 200 and "openingReview" not in legacy.json()
+        assert len(h.wire.calls) == 7 and h.wire.operations == ["provider_encounter"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nonce", [None, 4, "", "not-a-uuid"])
+async def test_invalid_opening_nonce_does_not_reach_core(harness, nonce):
+    h = harness
+    async with client(h) as c:
+        reply = await c.post("/provider/v1/mount", json={
+            "workspace_id": h.workspace, "opening_nonce": nonce,
+        })
+    assert reply.status_code == 422 and h.wire.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", [
+    "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
+    "/service/v1/agent/scribe/capture-bindings/resolve",
+    "/service/v1/agent/scribe/capture-operations",
+])
+async def test_opening_hides_reply_after_committed_registry_revocation(harness, boundary):
+    h = harness
+
+    def after(path):
+        if path == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+
+    h.wire.after = after
+    async with client(h) as c:
+        reply = await c.post("/provider/v1/mount", json={
+            "workspace_id": h.workspace, "opening_nonce": str(uuid4()),
+        })
+    assert reply.status_code == 403 and "openingReview" not in reply.text
+    assert h.wire.calls[-1] == boundary
 
 
 @pytest.mark.asyncio
