@@ -38,12 +38,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let step = "request";
   let preferredLanguage: LanguageMode | null = null; // This authorized workspace's lifetime only.
   root.classList.add("provider-workspace");
-  root.innerHTML = `<header class="provider-header"><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
+  root.innerHTML = `<header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
     <p data-workspace-notice role="status"></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
   const content = root.querySelector<HTMLElement>("[data-workspace-content]")!;
   const notice = root.querySelector<HTMLElement>("[data-workspace-notice]")!;
   const navigation = root.querySelector<HTMLElement>("[data-workspace-navigation]")!;
   const encounterLabel = root.querySelector<HTMLElement>("[data-provider-encounter]")!;
+  const header = root.querySelector<HTMLElement>(".provider-header")!;
   const current = (n: number): boolean => !disposed && !host.signal.aborted && n === generation;
   const authorized = (n: number): boolean => current(n) && context !== null && !client?.signal.aborted;
   const clearNavigation = (): void => { pendingNavigation = null; navigation.replaceChildren(); };
@@ -105,6 +106,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const list = async (): Promise<void> => {
     await clearEncounter();
+    header.hidden = true;
     step = "encounter list";
     const n = generation;
     show("<h1>Your encounters</h1><p>Loading your authorized encounters…</p>");
@@ -113,20 +115,22 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(encounters.length <= 1000 && new Set(encounters.map(e => e.appointmentRef)).size === encounters.length);
     for (const e of encounters) requireValue(reference(e.appointmentRef, "appointment")
       && typeof e.title === "string" && e.title.length <= 300 && typeof e.detail === "string" && e.detail.length <= 1000);
-    show(`<h1>Your encounters</h1><p>Choose an encounter to record, review, or continue its note.</p>
-      <button data-workspace-action="create">Open Core dashboard</button><p>This opens Core in your browser, where a separate sign-in may be required. It does not create an encounter. After an encounter is assigned to you in Core, return here and select Your encounters to refresh.</p><ul class="provider-encounters">${encounters.map(e =>
+    show(`<div class="provider-list-heading"><h1>Your encounters</h1><button data-workspace-action="encounters" aria-label="Refresh encounters">Refresh</button></div>
+      <ul class="provider-encounters" aria-label="Authorized encounters">${encounters.map(e =>
       `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(e.detail)}</span></button></li>`).join("")}</ul>
-      ${encounters.length ? "" : "<p>No encounters are available. Ask your practice to assign an encounter in Core.</p>"}`);
+      ${encounters.length ? "" : "<p>No encounters are available yet.</p>"}
+      <details class="provider-encounter-help"${encounters.length ? "" : " open"}><summary>Missing an encounter?</summary><p>Ask your practice to assign the encounter in Core. The dashboard opens in your browser and may require a separate sign-in. It does not create an encounter. After assignment, return to Scribe and select Refresh.</p><button data-workspace-action="create">Open Core dashboard</button></details>`);
   };
   const preparation = (): void => {
     requireValue(context);
-    show(`<h1>${escape(context.encounter.title)}</h1><p>${escape(context.encounter.detail)}</p>
-      <h2>Prepare recording</h2><p>Confirm that everyone agrees, then press Start recording. Scribe prepares the visit and opens the recorder. You can stop at any time.</p>
+    show(`<section class="provider-preparation"><h1>Prepare recording</h1><p>${escape(context.encounter.detail)}</p>
+      <div class="provider-recording-fields">
       <label>Spoken language<select name="language"><option value="">Choose a language</option><option value="en-US"${preferredLanguage === "en-US" ? " selected" : ""}>English</option><option value="en-US+es-US"${preferredLanguage === "en-US+es-US" ? " selected" : ""}>English and Spanish</option></select></label>
       <label>Visit type<select name="modality"><option value="in_person">In person</option><option value="virtual">Video visit</option><option value="phone">Phone call</option></select></label>
+      </div>
       ${Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
       <label class="provider-consent"><input name="consent" type="checkbox">All parties have agreed to recording and transcription.</label>
-      <button data-workspace-action="prepare">Start recording</button>`);
+      <button data-workspace-action="prepare">Start recording</button></section>`);
   };
   const renewConsent = (): void => {
     const saved = progress();
@@ -243,6 +247,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const open = async (ref: string): Promise<void> => {
     await clearEncounter(); const n = generation;
+    header.hidden = false;
     openingRef = ref; step = "encounter connection";
     show("<h1>Opening encounter</h1><p>Checking access and restoring your saved work…</p>");
     const opening = new AbortController();
