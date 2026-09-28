@@ -58,3 +58,22 @@ a new client with a freshly loaded old catalog also uses its legacy path.
 Do not silently downgrade a failed authorized request. No migration, stored
 transcript format, environment configuration or Core/Session Prep API change
 is required. Physical capture/continuity acceptance remains separate.
+
+## Matched client
+
+The Mac/iPhone backend captures the advertised capability per authorized mount.
+Native requests use a 1 KiB body bound, the existing review response/frame bounds
+and the existing note transport timeout. The desktop main process additionally
+checks the closed read-only intent before native dispatch.
+
+An explicit Continue-to-note action reads the coordinated result and reuses the
+existing review parser, template validator and note hash/lineage validator. Its
+local one-use handoff is discarded on review refresh, disposal or access loss.
+The same hook runs after upload; existing confirmed-upload custody release must
+finish before showing the note. No cached credential or prior action result is
+used for a subsequent generation, template selection or save.
+
+Only the explicit size receipt invokes the legacy reads. The compiled UI checks
+cover both workspace and desktop renderer paths, including older receivers,
+multiple/no templates, unready review, hash mismatch, cancellation and refresh.
+Measured latency and native deployment acceptance remain release follow-ups.

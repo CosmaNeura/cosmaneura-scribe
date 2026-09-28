@@ -13,7 +13,7 @@ import { nativeProviderPlugin, type ProviderAction as Action, type NativeProvide
 import type { NativeRecordingPort } from "./native-recorder";
 import type { ProviderEncounter } from "./workspace";
 
-const limits: Record<Action, number> = { catalog: 2, mount: 256, recorder: 1024, "recorder-context": 1024,
+const limits: Record<Action, number> = { catalog: 2, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
 type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
 export type { ProviderNativePlugin } from "./native-plugin";
@@ -42,7 +42,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   let revision: string | null = null, observed: NativeState | null = null;
   let listener: PluginListenerHandle | undefined, timer: ReturnType<typeof setInterval> | undefined;
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
-  let openingReviewSupported = false;
+  let openingReviewSupported = false, noteOpeningSupported = false;
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const inheritedAbort = (): void => abort.abort();
   options.signal.addEventListener("abort", inheritedAbort, { once: true });
@@ -168,6 +168,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       }
       current(signal); encounters.clear();
       openingReviewSupported = value.opening_review_v1 === true;
+      noteOpeningSupported = value.note_opening_v1 === true;
       for (const [key, row] of next) encounters.set(key, row);
       return [...next.values()].map(row => row.encounter);
     },
@@ -179,6 +180,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       current(signal);
       const row = encounters.get(appointmentRef);
       if (!row) throw unavailable();
+      const supportsNoteOpening = noteOpeningSupported;
       const openingNonce = openingReviewSupported ? crypto.randomUUID() : undefined;
       const value = await json("mount", { workspace_id: row.workspaceId,
         ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
@@ -190,6 +192,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       let recordingAuthorization: string | null = null;
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
+        ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
         ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,
         ...(nativeRecording ? { nativeRecording: {
@@ -213,7 +216,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
           current(signal);
           const action = path.slice("/service/v1/agent/scribe/".length);
           if (path !== "/service/v1/agent/scribe/" + action
-            || !["capture-admissions", "capture-operations", "capture-notes"].includes(action)
+            || !["capture-admissions", "capture-operations", "capture-notes", ...(supportsNoteOpening ? ["note-opening"] : [])].includes(action)
             || body.workspace_id !== scope.workspaceId || body.binding_ref !== scope.bindingRef) throw unavailable();
           return request(action as Action, body, key, [signal, operationSignal]);
         },

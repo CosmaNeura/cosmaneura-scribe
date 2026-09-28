@@ -176,9 +176,10 @@ describe("desktop provider resource factory", () => {
 
 it("preserves the opening timestamp while acquiring existing desktop custody", async () => {
   const f = await fixture(), openingReview = { scope: { ...scope }, receivedAt: Date.now() - 100, view: null };
-  vi.mocked(f.backend.openEncounter).mockResolvedValue({ ...f.selected, openingReview });
+  vi.mocked(f.backend.openEncounter).mockResolvedValue({ ...f.selected, openingReview, noteOpeningSupported: true });
   const opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
   expect(opened.openingReview).toEqual(openingReview);
+  expect(opened.noteOpeningSupported).toBe(true);
   expect(f.authorizeRecorder).not.toHaveBeenCalled();
   expect(f.resources.selectWindow).not.toHaveBeenCalled();
 });

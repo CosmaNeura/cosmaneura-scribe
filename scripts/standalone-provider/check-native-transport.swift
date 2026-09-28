@@ -128,7 +128,7 @@ private func rejected(_ operation: Task<ProviderNativeReply, Error>) async throw
       "fresh per-request authorization")
     checks += 1
 
-    for action in ["capture-admissions", "capture-notes", "capture-admissions", "capture-notes"] {
+    for action in ["capture-admissions", "capture-notes", "capture-admissions", "capture-notes", "note-opening"] {
       _ = try await transport!.send(request(action), token: "offline-token")
     }
     try require(factory.sessions.count == 3, "bounded timeout pools")

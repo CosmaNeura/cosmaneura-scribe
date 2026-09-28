@@ -6,5 +6,5 @@ export const MAX_PROVIDER_RESPONSE_BYTES = MAX_CORE_CAPTURE_RESPONSE_BYTES + 819
 export const MAX_PROVIDER_FRAME_BYTES = 2 * MAX_PROVIDER_RESPONSE_BYTES + 8192;
 export function coreCaptureResponseLimit(action: string): number {
   if (action === "mount") return MAX_PROVIDER_RESPONSE_BYTES;
-  return action === "capture-operations" ? MAX_CORE_CAPTURE_RESPONSE_BYTES : 8 * 1024 * 1024;
+  return ["capture-operations", "note-opening"].includes(action) ? MAX_CORE_CAPTURE_RESPONSE_BYTES : 8 * 1024 * 1024;
 }

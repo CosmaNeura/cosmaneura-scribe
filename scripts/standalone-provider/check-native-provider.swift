@@ -210,11 +210,11 @@ struct CheckNativeProvider {
         }
         do {
             let (auth, driver, wire, connection) = try make()
-            for action in ["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes"] {
+            for action in ["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes", "note-opening"] {
                 _ = try await connection.send(request(auth, action: action))
             }
             let calls = await wire.count
-            try require(driver.tokens == 6 && calls == 6)
+            try require(driver.tokens == 7 && calls == 7)
             connection.close(); checks += 1
         }
         do {

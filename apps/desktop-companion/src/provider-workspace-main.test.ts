@@ -14,7 +14,7 @@ const decision = { key: "invented-review-operation", request: { schema_version: 
   translation_id: sessionId, decision: "accepted" as const, expected_source_segment_version: 1,
   expected_source_transcript_version: 1, expected_translation_version: 1 } };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
-async function fixture(openingReview?: { scope: typeof scope; receivedAt: number; view: null }) {
+async function fixture(openingReview?: { scope: typeof scope; receivedAt: number; view: null }, noteOpeningSupported = false) {
   let state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
   const authListeners = new Set<(value: ProviderSessionState) => void>(), events: DesktopProviderEvent[] = [];
   let saved: JournalSnapshot = { revision: "1", progress: structuredClone(consent) };
@@ -43,6 +43,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
           contextSignals.push(encounterSignal);
           return { scope, signal: encounterSignal, encounter: { appointmentRef: scope.appointmentRef, title: "Invented desktop visit", detail: "Invented consent" },
             request: backend, openInCore: navigation, ...(openingReview ? { openingReview } : {}),
+            ...(noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
             journal: { load: async () => structuredClone(saved), save: async (previous: JournalSnapshot, progress: ProviderProgress) => {
               if (previous.revision !== saved.revision) throw new Error("invented CAS conflict");
               saved = { revision: String(Number(saved.revision) + 1), progress: structuredClone(progress) }; return saved;
@@ -199,5 +200,18 @@ it("passes opening display data through main IPC without renewing its timestamp"
     const reply = await f.invoke("open", { appointmentRef: scope.appointmentRef }, { ...f.ids, encounterId: null });
     expect(reply.ok).toBe(true);
     expect(reply.result!.openingReview).toEqual(openingReview);
+  } finally { await f.main.dispose(); }
+});
+
+it.each([false, true])("main gates note-opening capability and rejects writes (%s)", async supported => {
+  const f = await fixture(undefined, supported);
+  try {
+    await f.connect(); await f.open();
+    const payload = { path: "/service/v1/agent/scribe/note-opening", key: crypto.randomUUID(), body: {
+      workspace_id: scope.workspaceId, binding_ref: scope.bindingRef, request_nonce: crypto.randomUUID(), expected_session_id: sessionId } };
+    const reply = await f.invoke("core", payload);
+    expect(reply.ok).toBe(supported); expect(f.backend).toHaveBeenCalledTimes(supported ? 1 : 0);
+    const invalid = await f.invoke("core", { ...payload, body: { ...payload.body, action: "save" } });
+    expect(invalid.ok).toBe(false); expect(f.backend).toHaveBeenCalledTimes(supported ? 1 : 0);
   } finally { await f.main.dispose(); }
 });

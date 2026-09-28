@@ -145,6 +145,7 @@ export class CaptureApp extends LitElement {
         new HttpCreatorReviewApi(binding.sessionId, binding.authorizedRequest), {
           journal: binding.journal,
           ...(binding.continueToNote ? { continueToNote: binding.continueToNote } : {}),
+          ...(binding.prepareNoteOpening ? { prepareNoteOpening: binding.prepareNoteOpening } : {}),
         });
     }
   }

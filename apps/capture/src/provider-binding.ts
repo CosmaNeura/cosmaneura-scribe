@@ -59,4 +59,5 @@ export interface ProviderCaptureBinding {
   readonly resumePendingUpload?: () => Promise<void>;
   /** Optional until the host has a qualified existing Core note entrypoint. */
   readonly continueToNote?: (view: CreatorReviewView) => Promise<void>;
+  readonly prepareNoteOpening?: () => Promise<{ view: CreatorReviewView; open: () => Promise<void> }>;
 }

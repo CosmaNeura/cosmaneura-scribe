@@ -93,6 +93,14 @@ export class CoreCaptureClient {
     return value.receipt;
   }
 
+  /** Optional native receiver coordination; subsequent edits still authorize afresh. */
+  async openNote(sessionId: string): Promise<unknown> {
+    requireValue(isUuid(sessionId));
+    const value = await this.send("note-opening", { expected_session_id: sessionId }, crypto.randomUUID());
+    requireValue(value.operation === "note_opening" && record(value.receipt) && value.receipt.session_id === sessionId);
+    return value.receipt;
+  }
+
   reviewRequest(sessionId: string): AuthorizedReviewRequest {
     requireValue(isUuid(sessionId));
     const expectedPath = `/v1/captured-sessions/${sessionId}/review`;

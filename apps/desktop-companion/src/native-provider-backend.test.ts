@@ -206,3 +206,34 @@ it.each([false, true])("preserves legacy opening and carries a validated combine
     expect(calls).toHaveLength(2);
   } finally { await backend.dispose(); }
 });
+
+it.each([false, true])("gates coordinated notes and preserves its native timeout (%s)", async supported => {
+  const signal = new AbortController().signal, revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
+  const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
+  const encounter = { appointmentRef, title: "Invented note opening", detail: "Offline fixture" };
+  const request = vi.fn(async (_method: string, payload: Record<string, unknown>, _signal?: AbortSignal, _timeout?: number) => {
+    expect(_signal?.aborted).toBe(false); expect(_timeout).toBeGreaterThan(0);
+    return { status: 200, body: JSON.stringify(payload.action === "catalog"
+      ? { revision, encounters: [{ ...encounter, workspaceId }], note_opening_v1: supported }
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+  });
+  const native = { signal, request, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
+    addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  try {
+    await backend.listEncounters(signal);
+    const mount = await backend.openEncounter(appointmentRef, signal);
+    expect(mount.noteOpeningSupported).toBe(supported ? true : undefined);
+    const body = { workspace_id: workspaceId, binding_ref: bindingRef,
+      expected_session_id: crypto.randomUUID(), request_nonce: crypto.randomUUID() };
+    const open = () => mount.request("/service/v1/agent/scribe/note-opening", body, "fresh-note-open", signal);
+    if (supported) {
+      await open();
+      expect(request.mock.calls.at(-1)?.[3]).toBe(125_000);
+      expect(JSON.parse(request.mock.calls.at(-1)?.[1].body as string)).toEqual(body);
+    } else await expect(async () => open()).rejects.toThrow();
+    expect(request.mock.calls.map(([, payload]) => payload.action))
+      .toEqual(["catalog", "mount", ...(supported ? ["note-opening"] : [])]);
+  } finally { await backend.dispose(); }
+});
