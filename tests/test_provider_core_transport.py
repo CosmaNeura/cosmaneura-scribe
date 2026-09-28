@@ -6,7 +6,7 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -182,6 +182,250 @@ def body(**values):
         "request_nonce": str(uuid4()),
         **values,
     }
+
+
+def note_case(wire, template_count=1):
+    """Core receipt metadata for transport orchestration; UI parsing is separate."""
+    source_id = str(uuid4())
+    source = {
+        "kind": "reviewed_english",
+        "source_version": 1,
+        "working_transcript_id": source_id,
+        "working_version": 1,
+    }
+    schema = "doctor_note_schema_" + SUFFIX
+    receipts = {
+        "review": {
+            "schema_version": "1.0",
+            "session_id": SESSION,
+            "status": "transcript_ready",
+            "source": {"source_transcript_version": 1},
+            "working": {
+                "working_transcript_id": source_id,
+                "working_transcript_version": 1,
+                "note_ready": True,
+            },
+        },
+        "templates": {
+            "session_id": SESSION,
+            "templates": [
+                {
+                    "schema_ref": schema[:-1] + str(index),
+                    "note_type": "Synthetic SOAP",
+                    "field_names": ["Subjective"],
+                }
+                for index in range(template_count)
+            ],
+        },
+        "note": {"session_id": SESSION, "schema_ref": schema, "reviewed_source": source},
+    }
+
+    def alter(path, value):
+        phase = (
+            "review"
+            if value.get("operation") == "creator_review"
+            else "templates"
+            if value.get("action") == "templates"
+            else "note"
+            if value.get("action") == "read"
+            else None
+        )
+        return {**value, "receipt": receipts[phase]} if phase else value
+
+    wire.alter = alter
+    return receipts
+
+
+async def test_note_opening_reuses_only_one_local_negotiation(connection):
+    wire, client = connection
+    fixtures = note_case(wire)
+    mount = await client.open()
+    wire.calls.clear()
+    nonce = uuid4()
+    value = await client.open_note(mount, UUID(SESSION), nonce, "offline-open-note")
+    assert len(wire.calls) == 6 and wire.counter == 2
+    assert value["request_nonce"] == str(nonce) and value["operation"] == "note_opening"
+    assert value["receipt"] == {
+        "session_id": SESSION,
+        "review": fixtures["review"],
+        "templates": fixtures["templates"]["templates"],
+        "note": fixtures["note"],
+    }
+    assert len({key for _, _, key in wire.effects}) == 3
+    assert [
+        data.get("action", data.get("operation", {}).get("kind")) for _, data, _ in wire.effects
+    ] == ["creator_review", "templates", "read"]
+    await client.request(
+        mount,
+        ROOT + "capture-notes",
+        body(
+            action="read",
+            expected_session_id=SESSION,
+            schema_ref=fixtures["note"]["schema_ref"],
+        ),
+        "offline-next-note-read",
+    )
+    assert wire.counter == 3 and len(wire.calls) == 10
+    assert USER_TOKEN not in json.dumps(value) and WORKLOAD_TOKEN not in json.dumps(value)
+
+
+@pytest.mark.parametrize("count", [0, 2])
+async def test_note_opening_never_selects_a_template_for_the_provider(connection, count):
+    wire, client = connection
+    fixtures = note_case(wire, count)
+    value = await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+    assert value["receipt"]["templates"] == fixtures["templates"]["templates"]
+    assert value["receipt"]["note"] is None
+    assert len(wire.effects) == 2
+
+
+async def test_note_opening_stops_at_current_unready_review(connection):
+    wire, client = connection
+    fixtures = note_case(wire)
+    fixtures["review"].update(status="capturing", source=None, working=None)
+    value = await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+    assert value["receipt"] == {
+        "session_id": SESSION,
+        "review": fixtures["review"],
+        "templates": None,
+        "note": None,
+    }
+    assert len(wire.effects) == 1
+
+
+@pytest.mark.parametrize("phase", ["review", "templates", "note"])
+async def test_note_opening_rejects_a_different_session_at_every_read(connection, phase):
+    wire, client = connection
+    fixtures = note_case(wire)
+    fixtures[phase]["session_id"] = str(uuid4())
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+    assert len(wire.effects) == ["review", "templates", "note"].index(phase) + 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("working_version", 2),
+        ("source_version", 2),
+        ("working_transcript_id", str(uuid4())),
+        ("capture_continuity", {"synthetic": "changed"}),
+    ],
+)
+async def test_note_opening_rejects_changed_note_lineage(connection, field, value):
+    wire, client = connection
+    fixtures = note_case(wire)
+    fixtures["note"]["reviewed_source"][field] = value
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+
+
+@pytest.mark.parametrize("boundary", range(1, 7))
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_note_opening_rechecks_access_at_each_core_boundary(connection, boundary, change):
+    wire, client = connection
+    note_case(wire)
+    mount = await client.open()
+    wire.calls.clear()
+
+    def after(_path):
+        if len(wire.calls) == boundary:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+
+    wire.after = after
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.open_note(mount, UUID(SESSION), uuid4(), "offline-open-note")
+    assert caught.value.status == 403 and len(wire.calls) == boundary
+
+
+@pytest.mark.parametrize("action", ["prepare", "save", "resolve", "read-with-edit"])
+async def test_note_opening_negotiation_cannot_be_reused_for_writes(connection, action):
+    wire, client = connection
+    current = await client._negotiate(None)
+    with pytest.raises(ProviderCoreUnavailable):
+        await client._request(
+            current.mount,
+            ROOT + "capture-notes",
+            body(
+                action="read" if action == "read-with-edit" else action,
+                expected_session_id=SESSION,
+                schema_ref="doctor_note_schema_" + SUFFIX,
+                edit={"synthetic": "must not reach Core"},
+            ),
+            "offline-forbidden-note-reuse",
+            _negotiated=current,
+        )
+    assert wire.effects == []
+
+
+async def test_note_opening_large_combination_explicitly_uses_separate_reads(
+    connection, monkeypatch
+):
+    wire, client = connection
+    fixtures = note_case(wire)
+    fixtures["note"]["synthetic_padding"] = "x" * 2000
+    monkeypatch.setattr(
+        "cosmaneura_scribe.provider_core_transport.MAX_CORE_CAPTURE_RESPONSE_BYTES", 2000
+    )
+    value = await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+    assert value["receipt"] == {"session_id": SESSION, "separate_reads_required": True}
+    assert len(wire.effects) == 3
+
+
+async def test_note_opening_cancellation_cannot_continue_to_note_read(connection):
+    wire, client = connection
+    note_case(wire)
+    mount = await client.open()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(path):
+        if path.endswith("capture-notes"):
+            entered.set()
+            await release.wait()
+
+    wire.before = hold
+    task = asyncio.create_task(client.open_note(mount, UUID(SESSION), uuid4(), "offline-open-note"))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    assert len(wire.effects) == 1
+
+
+async def test_note_opening_total_deadline_does_not_retry_or_continue(connection, monkeypatch):
+    wire, client = connection
+    note_case(wire)
+    mount = await client.open()
+    monkeypatch.setattr(
+        "cosmaneura_scribe.provider_core_transport.NOTE_OPENING_TOTAL_TIMEOUT_SECONDS", 0.02
+    )
+
+    async def hold(path):
+        if path.endswith("capture-notes"):
+            await asyncio.Event().wait()
+
+    wire.before = hold
+    with pytest.raises(ProviderCoreUnavailable, match="^core_provider_request_timeout$"):
+        await client.open_note(mount, UUID(SESSION), uuid4(), "offline-open-note")
+    assert len(wire.effects) == 1
+    assert len([path for path, _ in wire.calls if path.endswith("capture-notes")]) == 1
+
+
+async def test_concurrent_note_openings_keep_their_negotiations_separate(connection):
+    wire, client = connection
+    note_case(wire)
+    mount = await client.open()
+    wire.calls.clear()
+    values = await asyncio.gather(
+        *(client.open_note(mount, UUID(SESSION), uuid4(), "offline-open-note") for _ in range(2))
+    )
+    assert len(wire.calls) == 12 and wire.counter == 3
+    assert values[0]["request_nonce"] != values[1]["request_nonce"]
+    assert len({key for _, _, key in wire.effects}) == 6
 
 
 async def test_open_with_review_reuses_only_its_own_negotiation(connection):

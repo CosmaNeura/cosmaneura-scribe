@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from http.cookiejar import Cookie, CookieJar, DefaultCookiePolicy
 from typing import cast
 from urllib.parse import urlsplit
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 from pydantic import SecretStr
@@ -51,6 +51,7 @@ _SCOPE_KEYS = {"binding_ref", "workspace_id", "request_nonce"}
 # budgets only; they never extend a consent, capture lease or start decision.
 ADMISSION_CORE_TIMEOUT_SECONDS = 140
 ADMISSION_TOTAL_TIMEOUT_SECONDS = 180
+NOTE_OPENING_TOTAL_TIMEOUT_SECONDS = 100
 
 
 class _NoCookies(DefaultCookiePolicy):
@@ -244,6 +245,117 @@ class ProviderCoreTransport:
         except TimeoutError:
             raise ProviderCoreUnavailable("core_provider_request_timeout") from None
 
+    async def open_note(
+        self, mount: CoreProviderMount, session_id: UUID, request_nonce: UUID, key: str
+    ) -> dict[str, object]:
+        """Fresh review/templates/existing note with one request-local negotiation.
+
+        Never generate/save a note or retain credentials for another action. Each
+        Core read still rechecks current access before and after its own I/O.
+        """
+        _checked(mount, CoreProviderMount)
+        _checked(session_id, UUID)
+        _checked(request_nonce, UUID)
+        _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(key, str)))
+        try:
+            async with asyncio.timeout(NOTE_OPENING_TOTAL_TIMEOUT_SECONDS):
+                return await self._open_note(mount, session_id, request_nonce, key)
+        except TimeoutError:
+            raise ProviderCoreUnavailable("core_provider_request_timeout") from None
+
+    async def _open_note(
+        self, mount: CoreProviderMount, session_id: UUID, request_nonce: UUID, key: str
+    ) -> dict[str, object]:
+        current = await self._negotiate(mount.selection)
+        _require(current.mount == mount)
+        scope = {
+            "workspace_id": str(mount.selection.workspace_id),
+            "binding_ref": mount.binding_ref,
+        }
+
+        async def read(action: str, payload: dict[str, object], phase: str) -> dict[str, object]:
+            # Separate deterministic keys even for templates/read on the same
+            # Core route; never alias distinct intents under one idempotency key.
+            value = await self._request(
+                mount,
+                _ROOT + action,
+                {
+                    **scope,
+                    "request_nonce": str(uuid5(request_nonce, phase)),
+                    **payload,
+                },
+                str(uuid5(request_nonce, key + ":" + phase)),
+                _negotiated=current,
+            )
+            receipt = _object(value.get("receipt"))
+            _require(receipt.get("session_id") == str(session_id))
+            return receipt
+
+        review = await read(
+            "capture-operations", {"operation": {"kind": "creator_review"}}, "review"
+        )
+        _require(review.get("schema_version") == "1.0")
+        working = review.get("working")
+        templates: list[object] | None = None
+        note: dict[str, object] | None = None
+        if (
+            review.get("status") == "transcript_ready"
+            and isinstance(working, dict)
+            and cast(dict[str, object], working).get("note_ready") is True
+        ):
+            source = _note_source(review)
+            available = await read(
+                "capture-notes",
+                {
+                    "expected_session_id": str(session_id),
+                    "action": "templates",
+                },
+                "templates",
+            )
+            _require(set(available) == {"session_id", "templates"})
+            _require(isinstance(available["templates"], list))
+            templates = cast(list[object], available["templates"])
+            _require(len(templates) <= 100)
+            if len(templates) == 1:
+                schema = _object(templates[0]).get("schema_ref")
+                _require(_reference(schema, "doctor_note_schema"))
+                note = await read(
+                    "capture-notes",
+                    {
+                        "expected_session_id": str(session_id),
+                        "action": "read",
+                        "schema_ref": schema,
+                    },
+                    "note",
+                )
+                _require(note.get("schema_ref") == schema and note.get("reviewed_source") == source)
+        receipt: dict[str, object] = {
+            "session_id": str(session_id),
+            "review": review,
+            "templates": templates,
+            "note": note,
+        }
+        result: dict[str, object] = {
+            "contract_version": "1",
+            **scope,
+            "request_nonce": str(request_nonce),
+            "checked_at": self._clock().isoformat(),
+            "operation": "note_opening",
+            "receipt": receipt,
+        }
+        # Keep the existing native review byte budget. An oversized combination
+        # explicitly selects separately bounded legacy reads; never truncate it.
+        if (
+            len(
+                json.dumps(
+                    result, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+                ).encode("utf-8")
+            )
+            > MAX_CORE_CAPTURE_RESPONSE_BYTES
+        ):
+            result["receipt"] = {"session_id": str(session_id), "separate_reads_required": True}
+        return result
+
     async def _request(
         self,
         mount: CoreProviderMount,
@@ -274,11 +386,7 @@ class ProviderCoreTransport:
         )
         _validate_intent(mount, action, payload, native_start=native_start)
         if _negotiated is not None:
-            _require(
-                action == "capture-operations"
-                and payload.get("operation") == {"kind": "provider_encounter"}
-                and not native_start
-            )
+            _require(not native_start and _negotiated_read(action, payload))
         current = _negotiated or await self._negotiate(mount.selection)
         _require(current.mount == mount)
         headers = {**await self._workload_headers(), **current.headers()}
@@ -522,6 +630,37 @@ class ProviderCoreTransport:
             return stamp
         except (ValueError, TypeError):
             raise ProviderCoreUnavailable() from None
+
+
+def _negotiated_read(action: str, body: dict[str, object]) -> bool:
+    keys = set(body) - _SCOPE_KEYS
+    if action == "capture-operations":
+        return keys == {"operation"} and body.get("operation") in (
+            {"kind": "provider_encounter"}, {"kind": "creator_review"},
+        )
+    if action != "capture-notes":
+        return False
+    return (
+        body.get("action") == "templates" and keys == {"expected_session_id", "action"}
+        or body.get("action") == "read" and keys == {"expected_session_id", "action", "schema_ref"}
+        and _reference(body.get("schema_ref"), "doctor_note_schema")
+    )
+
+
+def _note_source(review: dict[str, object]) -> dict[str, object]:
+    source, working = _object(review.get("source")), _object(review.get("working"))
+    source_version = source.get("source_transcript_version")
+    working_version = working.get("working_transcript_version")
+    _require(type(source_version) is int and source_version > 0)
+    _require(type(working_version) is int and working_version > 0)
+    result: dict[str, object] = {
+        "kind": "reviewed_english", "source_version": source_version,
+        "working_transcript_id": _uuid(working.get("working_transcript_id")),
+        "working_version": working_version,
+    }
+    if "capture_continuity" in review:
+        result["capture_continuity"] = review["capture_continuity"]
+    return result
 
 
 def _validate_intent(

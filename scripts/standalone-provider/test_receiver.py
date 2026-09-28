@@ -109,6 +109,7 @@ class CoreWire:
         self.review_status = "created"
         self.review_http_status = 200
         self.review_schema_version = "1.0"
+        self.alter = lambda _path, _data, result: result
 
     async def handle(self, request):
         selected = self.selection
@@ -219,6 +220,7 @@ class CoreWire:
                     result.update(action=data["action"], receipt={"session_id": SESSION_ID})
                     if data["action"] in {"save", "resolve"}:
                         self.saved.append((request.headers["idempotency-key"], data["edit"]))
+        result = self.alter(path, data, result)
         if self.after:
             self.after(path)
         return httpx.Response(
@@ -421,6 +423,7 @@ async def test_catalog_mount_and_recorder_use_existing_identity_and_core(harness
         catalog = await c.post("/provider/v1/catalog", json={})
         assert catalog.status_code == 200 and catalog.headers["cache-control"] == "no-store"
         assert catalog.json()["opening_review_v1"] is True
+        assert catalog.json()["note_opening_v1"] is True
         assert catalog.json()["encounters"] == [
             {
                 "workspaceId": h.workspace,
@@ -497,6 +500,87 @@ async def test_invalid_opening_nonce_does_not_reach_core(harness, nonce):
             "workspace_id": h.workspace, "opening_nonce": nonce,
         })
     assert reply.status_code == 422 and h.wire.calls == []
+
+
+def note_opening_body(h):
+    return {"workspace_id": h.workspace, "binding_ref": BINDING,
+            "expected_session_id": SESSION_ID, "request_nonce": str(uuid4())}
+
+
+def ready_note(h):
+    """Only metadata for the receiver boundary; full UI parsing has its own fixtures."""
+    source = {"kind": "reviewed_english", "source_version": 1,
+              "working_transcript_id": str(uuid4()), "working_version": 1}
+    schema = "doctor_note_schema_" + SUFFIX
+
+    def alter(path, data, result):
+        if data and data.get("operation") == {"kind": "creator_review"}:
+            result["receipt"].update(status="transcript_ready",
+                source={"source_transcript_version": 1},
+                working={"working_transcript_id": source["working_transcript_id"],
+                         "working_transcript_version": 1, "note_ready": True})
+        elif path.endswith("capture-notes") and data["action"] == "templates":
+            result["receipt"]["templates"] = [{"schema_ref": schema,
+                "note_type": "Synthetic SOAP", "field_names": ["Subjective"]}]
+        elif path.endswith("capture-notes") and data["action"] == "read":
+            result["receipt"].update(schema_ref=schema, reviewed_source=source)
+        return result
+
+    h.wire.alter = alter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ready", [False, True])
+async def test_note_opening_uses_real_authorization_and_read_only_core(harness, ready):
+    h = harness
+    if ready:
+        ready_note(h)
+    body = note_opening_body(h)
+    async with client(h) as c:
+        reply = await c.post("/provider/v1/note-opening", json=body)
+    assert reply.status_code == 200 and reply.headers["cache-control"] == "no-store"
+    value = reply.json()
+    assert value["binding_ref"] == BINDING and value["workspace_id"] == h.workspace
+    assert value["request_nonce"] == body["request_nonce"] and value["operation"] == "note_opening"
+    assert value["receipt"]["session_id"] == SESSION_ID
+    assert (value["receipt"]["note"] is not None) == ready
+    assert len(h.wire.calls) == (6 if ready else 4)
+    assert h.wire.operations == ["creator_review"] and h.wire.saved == []
+    for secret in (h.token(), "offline-workload-only", "offline-core-mount-token", h.subject):
+        assert secret not in reply.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["nonce", "session", "write", "edit", "schema"])
+async def test_note_opening_rejects_unexpected_or_write_inputs_before_core(harness, change):
+    h = harness
+    body = note_opening_body(h)
+    if change == "nonce":
+        body["request_nonce"] = "invalid"
+    elif change == "session":
+        body["expected_session_id"] = "invalid"
+    else:
+        body[{"write": "action", "edit": "edit", "schema": "schema_ref"}[change]] = "forbidden"
+    async with client(h) as c:
+        reply = await c.post("/provider/v1/note-opening", json=body)
+    assert reply.status_code == 422 and h.wire.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", range(1, 7))
+async def test_note_opening_hides_every_reply_after_committed_revocation(harness, boundary):
+    h = harness
+    ready_note(h)
+
+    def after(_path):
+        if len(h.wire.calls) == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+
+    h.wire.after = after
+    async with client(h) as c:
+        reply = await c.post("/provider/v1/note-opening", json=note_opening_body(h))
+    assert reply.status_code == 403 and "receipt" not in reply.json()
+    assert len(h.wire.calls) == boundary and h.wire.saved == []
 
 
 @pytest.mark.asyncio
