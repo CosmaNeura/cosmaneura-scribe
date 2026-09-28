@@ -57,6 +57,7 @@ _LIMITS = {
     "recorder": 1024,
     "note-opening": 1024,
     "source-start": 4096,
+    "source-start-ready": 8192,
     "capture-admissions": 2048,
     "capture-operations": 4_194_304,
     "capture-notes": 262_144 + 8192,
@@ -297,6 +298,10 @@ class ProviderReceiver:
                                 _uuid(body["request_nonce"]),
                                 key,
                             )
+                        elif action == "source-start-ready":
+                            # Native-only prepare/authorize pair; generic renderer
+                            # operations cannot submit either start action.
+                            result = await transport.prepare_and_authorize_source(mount, body, key)
                         elif action == "source-start":
                             # Only the native owner uses this endpoint. Generic
                             # renderer capture-operations still rejects its kind.

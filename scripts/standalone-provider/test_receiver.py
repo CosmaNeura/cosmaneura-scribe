@@ -668,6 +668,84 @@ def source_payload(h, action):
     }
 
 
+def source_sequence_payload(h):
+    def alter(path, data, response):
+        if response.get("operation") != "source_start":
+            return response
+        operation = data["operation"]
+        intent = operation["payload"]
+        prepared = operation["action"] == "prepare"
+        now = datetime.now(UTC)
+        receipt = {
+            **{key: value for key, value in intent.items() if key != "owner_proof"},
+            "session_id": SESSION_ID, "source_start_id": intent["attempt_id"],
+            "creator_actor_id": h.wire.selection.actor_ref,
+            "consent_record_id": str(uuid4()), "capability_id": str(uuid4()),
+            "state": "prepared" if prepared else "issued",
+            "preparation_expires_at": (now + timedelta(seconds=30)).isoformat(),
+            "issued_at": None if prepared else now.isoformat(),
+            "expires_at": None if prepared else (now + timedelta(seconds=15)).isoformat(),
+        }
+        return {**response, "receipt": receipt if prepared else {
+            "receipt": receipt, "secret": intent["owner_proof"],
+        }}
+
+    h.wire.alter = alter
+    return {
+        **source_payload(h, "prepare"),
+        "authorize_idempotency_key": "offline-authorize-" + str(uuid4()),
+        "authorize_request_nonce": str(uuid4()),
+    }
+
+
+@pytest.mark.asyncio
+async def test_native_source_sequence_reuses_core_setup_and_rejects_generic_route(harness):
+    h = harness
+    payload = source_sequence_payload(h)
+    async with client(h) as c:
+        denied = await c.post("/provider/v1/capture-operations", json=payload)
+        assert denied.status_code == 503 and not h.wire.calls
+        result = await c.post("/provider/v1/source-start-ready", json=payload)
+    assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
+    assert result.json()["preparation"]["request_nonce"] == payload["request_nonce"]
+    assert result.json()["authorization"]["request_nonce"] == payload["authorize_request_nonce"]
+    assert h.wire.calls == [
+        "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
+        "/service/v1/agent/scribe/capture-operations",
+        "/service/v1/agent/scribe/capture-operations",
+    ]
+    assert h.wire.operations == ["source_start", "source_start"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", [1, 2, 3, 4])
+async def test_native_source_sequence_rechecks_frozen_account_after_each_core_request(
+    harness, boundary,
+):
+    h = harness
+    payload = source_sequence_payload(h)
+
+    def revoke(_):
+        if len(h.wire.calls) == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+
+    h.wire.after = revoke
+    async with client(h) as c:
+        result = await c.post("/provider/v1/source-start-ready", json=payload)
+    assert result.status_code == 403
+    assert "preparation" not in result.json() and "authorization" not in result.json()
+    assert len(h.wire.calls) == boundary
+    assert h.wire.operations == ["source_start"] * max(0, boundary - 2)
+
+
+@pytest.mark.asyncio
+async def test_native_source_sequence_rejects_missing_second_intent_without_core_work(harness):
+    h = harness
+    async with client(h) as c:
+        result = await c.post("/provider/v1/source-start-ready", json=source_payload(h, "prepare"))
+    assert result.status_code == 503 and not h.wire.calls
+
+
 @pytest.mark.asyncio
 async def test_native_source_route_keeps_scope_and_generic_route_cannot_start(harness):
     h = harness

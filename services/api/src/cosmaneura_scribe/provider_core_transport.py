@@ -23,7 +23,7 @@ import httpx
 from pydantic import SecretStr
 
 from .provider_core_connections import ProviderCoreConnections
-from .source_start_contract import SourceStartIntent
+from .source_start_contract import SourceStartIntent, SourceStartReceipt
 
 _ROOT = "/service/v1/agent/scribe/"
 MAX_CORE_CAPTURE_RESPONSE_BYTES = 32 * 1024 * 1024 + 8192
@@ -245,6 +245,55 @@ class ProviderCoreTransport:
         except TimeoutError:
             raise ProviderCoreUnavailable("core_provider_request_timeout") from None
 
+    async def prepare_and_authorize_source(
+        self, mount: CoreProviderMount, body: Mapping[str, object], key: str,
+    ) -> dict[str, object]:
+        """One native request, two existing Core decisions with distinct intents.
+
+        The native owner must journal its original stop proof before dispatch.
+        No automatic retry or persistent context is created by this sequence.
+        """
+        _checked(mount, CoreProviderMount)
+        payload = _snapshot(body, 8192)
+        authorize_key = payload.pop("authorize_idempotency_key", None)
+        authorize_nonce = _uuid(payload.pop("authorize_request_nonce", None))
+        for value in (key, authorize_key):
+            _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(value, str)))
+        _require(key != authorize_key and payload.get("request_nonce") != authorize_nonce)
+        _validate_intent(mount, "capture-operations", payload, native_start=True)
+        operation = _object(payload["operation"])
+        _require(operation["action"] == "prepare")
+        intent = SourceStartIntent.model_validate(operation["payload"])
+        authorization = {
+            **payload, "request_nonce": authorize_nonce,
+            "operation": {**operation, "action": "authorize"},
+        }
+        current = await self._negotiate(mount.selection, capture_mount=mount)
+        prepared = await self._dispatch(
+            mount, "capture-operations", payload, key, current,
+        )
+        try:
+            receipt = SourceStartReceipt.model_validate(prepared.get("receipt"))
+        except ValueError:
+            raise ProviderCoreUnavailable() from None
+        _require(
+            receipt.state == "prepared"
+            and receipt.creator_actor_id == mount.selection.actor_ref
+            and receipt.issued_at is None and receipt.expires_at is None
+            and self._clock() < receipt.preparation_expires_at <= intent.capture_authorized_until
+            and all(getattr(receipt, field) == getattr(intent, field) for field in (
+                "attempt_id", "source", "lease_id", "lease_receipt_id", "lease_generation",
+                "capture_authorized_until", "first_sequence_number",
+            ))
+        )
+        # Honor task cancellation between decisions. A network disconnect can
+        # still leave an ambiguous result; the native owner retains stop custody.
+        await asyncio.sleep(0)
+        authorized = await self._dispatch(
+            mount, "capture-operations", authorization, _checked(authorize_key, str), current,
+        )
+        return {"preparation": prepared, "authorization": authorized}
+
     async def open_note(
         self, mount: CoreProviderMount, session_id: UUID, request_nonce: UUID, key: str
     ) -> dict[str, object]:
@@ -391,6 +440,15 @@ class ProviderCoreTransport:
             mount.selection,
             capture_mount=mount if action == "capture-operations" else None,
         )
+        return await self._dispatch(mount, action, payload, key, current)
+
+    async def _dispatch(
+        self, mount: CoreProviderMount, action: str, payload: dict[str, object],
+        key: str, current: _NegotiatedMount,
+    ) -> dict[str, object]:
+        # Callers validate complete intents before reaching this helper. A
+        # combined native start shares negotiation only within its one request;
+        # _send and Core still check current access for each individual decision.
         _require(current.mount == mount)
         headers = {**await self._workload_headers(), **current.headers()}
         headers["Idempotency-Key"] = key
@@ -398,7 +456,7 @@ class ProviderCoreTransport:
         # concurrently for progress reads and an explicit provider action.
         value, _ = await self._send(
             mount.selection,
-            path,
+            _ROOT + action,
             payload,
             headers,
             version=("X-Cosmaneura-Capture-Version", "1"),
