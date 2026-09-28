@@ -177,7 +177,9 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
     let saved = host.saved
     let live = host.phase == .sealed ? nil : host.captureState
     let count = max(saved?.committedChunks ?? 0, live?.nextSequence ?? 0)
-    let bytes = max(saved?.committedPlaintextBytes ?? 0, live?.committedPlaintextBytes ?? 0)
+    let bytes = max(
+      saved?.committedPlaintextBytes ?? 0,
+      live.map { host.capturePriorPlaintextBytes + $0.committedPlaintextBytes } ?? 0)
     let completion: [String: Any]? = saved?.completionLease.map {
       [
         "idempotencyKey": saved!.completionIntent.uuidString.lowercased(),

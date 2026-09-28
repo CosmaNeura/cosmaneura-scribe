@@ -1,9 +1,9 @@
 import CosmaneuraIOSAVFoundationDriver
-import CosmaneuraIOSPCMCore
 import CosmasNativeAuth
 import Foundation
 import Security
 
+@testable import CosmaneuraIOSPCMCore
 @testable import CosmaneuraNativeRecording
 @testable import CosmaneuraNativeRecordingPCM
 
@@ -145,7 +145,7 @@ import Security
     }
   }
   private final class Interval: NativeProviderRecordingInterval {
-    let writer: NativeRecordingQueueWriter, reservation: NativeRecordingReservation
+    let sink: NativeRecordingPCMSink
     let source: Source
     let first: Int, prior: Int
     var phase: NativeProviderRecordingRun.Phase = .ready
@@ -157,18 +157,21 @@ import Security
     ) throws {
       self.source = source
       self.prior = prior
-      reservation = batch.reservations[0]
-      first = reservation.sequence
-      writer = try NativeRecordingQueueWriter(
-        encryption: cipher, recoveryScope: recovery, store: records,
+      first = batch.reservations[0].sequence
+      sink = try NativeRecordingPCMSink(
+        encryption: cipher, recoveryScope: recovery, records: records,
         firstSequence: first, priorPlaintextBytes: prior,
         maximumPlaintextBytes: NativeRecordingFlowOwner.maximumPlaintextBytes)
+      try sink.stage(batch)
     }
-    var captureState: NativeRecordingPCMState {
-      NativeRecordingPCMState(
-        phase: isPhysicallyIdle ? .closed : .accepting,
-        nextSequence: first + (committed ? 1 : 0), committedChunks: committed ? 1 : 0,
-        committedPlaintextBytes: prior + (committed ? 204 : 0), pendingReservations: 0)
+    var captureState: NativeRecordingPCMState { sink.state }
+    func emit(_ byteCount: Int = 160) throws {
+      let pcm = OwnedPCMBytes([UInt8](repeating: 4, count: byteCount))
+      _ = try sink.emit(
+        PCMEncodedPacket(
+          sequenceNumber: UInt64(sink.state.committedChunks), bytes: pcm))
+      try check(pcm.withUnsafeBytes { $0.allSatisfy { $0 == 0 } })
+      committed = true
     }
     func captureSignal() -> PCMSignalMonitor.Snapshot { meter.snapshot() }
     func start() {
@@ -179,11 +182,10 @@ import Security
       if phase == .stopped { return }
       isPhysicallyIdle = true
       if !committed && !empty {
-        var pcm = Data(repeating: 4, count: 160)
-        _ = try writer.persist(
-          pcm16: &pcm, objectID: reservation.objectID, sequence: reservation.sequence)
-        try check(pcm.allSatisfy { $0 == 0 })
-        committed = true
+        try emit()
+      }
+      if sink.state.phase != .closed {
+        try sink.finish(PCMStopResult(finalPacket: nil))
       }
       if failStop {
         phase = .stopPending
@@ -249,6 +251,65 @@ import Security
 
   static func run() async throws -> Int {
     var checks = 0
+    do {
+      // Use the real PCM sink: its byte count is local to the current interval.
+      // A shorter resumed interval must add to, not replace, the saved visit.
+      let f = try Fixture()
+      let bridge = NativeProviderRecordingBridge()
+      let revision = UUID().uuidString.lowercased()
+      let selection = try NativeProviderRecordingSelection([
+        "requestId": UUID().uuidString.lowercased(), "revision": revision,
+        "workspaceId": f.scope.workspaceID.uuidString.lowercased(),
+        "sessionId": f.scope.sessionID.uuidString.lowercased(),
+        "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
+      ])
+      let opened = try await bridge.open(
+        selection, current: {}, make: { f.host() }, inputMuted: { false })
+      let id = (opened["recording"] as! [String: Any])["recorderId"] as! String
+      let key = f.keys.value
+      func command(_ kind: String, bytes: Int, chunks: Int, ok: Bool = true) async throws {
+        let reply = try await bridge.command(
+          NativeProviderRecordingCommand([
+            "requestId": UUID().uuidString.lowercased(), "revision": revision,
+            "recorderId": id, "kind": kind,
+          ]), current: {}, inputMuted: { false })
+        try check(reply["ok"] as? Bool == ok)
+        if kind == "close" { return }
+        let state = reply["recording"] as! [String: Any]
+        try check(state["recordedPlaintextBytes"] as? Int == bytes)
+        try check(state["recordedChunks"] as? Int == chunks)
+      }
+      try await command("start", bytes: 0, chunks: 0)
+      try f.runs[0].emit(320_000)
+      try await command("read", bytes: 320_044, chunks: 1)
+      try await command("pause", bytes: 320_044, chunks: 1)
+      let retained = try f.records.rows.filter { row in
+        guard row.key.hasPrefix("scribe-provider-queue:") else { return false }
+        return (try JSONSerialization.jsonObject(with: row.value.data) as? [String: Any])?["state"]
+          as? String == "encrypted"
+      }
+      try check(retained.count == 1)
+      try await command("start", bytes: 320_044, chunks: 1)
+      try f.runs[1].emit(64_000)
+      try await command("read", bytes: 384_088, chunks: 2)
+      f.runs[1].failStop = true
+      try await command("pause", bytes: 384_088, chunks: 2, ok: false)
+      f.runs[1].failStop = false
+      try await command("pause", bytes: 384_088, chunks: 2)
+      try await command("read", bytes: 384_088, chunks: 2)
+      try await command("start", bytes: 384_088, chunks: 2)
+      try f.runs[2].emit(32_000)
+      try await command("read", bytes: 416_132, chunks: 3)
+      try await command("seal", bytes: 416_132, chunks: 3)
+      try await command("read", bytes: 416_132, chunks: 3)
+      try check(f.keys.value == key)
+      for (name, row) in retained {
+        try check(
+          f.records.rows[name]?.data == row.data && f.records.rows[name]?.revision == row.revision)
+      }
+      try await command("close", bytes: 0, chunks: 0)
+      checks += 1
+    }
     do {
       let f = try Fixture()
       let host = f.host()
