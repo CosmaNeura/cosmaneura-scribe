@@ -24,8 +24,20 @@ describe("iPhone microphone feedback", () => {
   it("distinguishes sustained zero from quiet speech without claiming a fatal failure", () => {
     expect(presentInputSignal({ ...signal, inputLevel: 0, convertedLevel: 0 }, 0).message).toBe("Quiet input");
     expect(presentInputSignal({ ...signal, inputLevel: 0, convertedLevel: 0, zeroInputMs: 3_000 }, 0).message)
-      .toBe("No input detected. If you’re speaking, pause and check the microphone.");
+      .toContain("stop phone screen sharing");
+    expect(presentInputSignal({ ...signal, zeroInputMs: 3_000 }, 0))
+      .toMatchObject({ title: "No microphone input", attention: true, level: 0 });
     expect(presentInputSignal({ ...signal, inputLevel: 0.00001, convertedLevel: 0.00001 }, 0).message).toBe("Quiet input");
+  });
+  it("does not claim recording until converted audio arrives, and keeps genuine quiet nonfatal", () => {
+    expect(presentInputSignal(null, 0)).toMatchObject({ title: "Checking microphone", attention: true });
+    expect(presentInputSignal({ ...signal, inputBuffers: 1, convertedBuffers: 1,
+      inputEverNonzero: false, convertedEverNonzero: false, inputLevel: 0, convertedLevel: 0 }, 0))
+      .toMatchObject({ title: "Checking microphone", attention: true, level: 0 });
+    expect(presentInputSignal(signal, 0)).toMatchObject({ title: "Recording", attention: false });
+    expect(presentInputSignal({ ...signal, inputLevel: 0.00001, convertedLevel: 0.00001 }, 0))
+      .toMatchObject({ title: "Recording", attention: false, message: "Quiet input" });
+    expect(presentInputSignal(signal, 1_600)).toMatchObject({ title: "Checking microphone", attention: true });
   });
   it("shows OS mute even before callbacks, clears bars, and never trusts stale mute state", () => {
     const muted = { ...signal, inputMuted: true, inputAgeMs: null };

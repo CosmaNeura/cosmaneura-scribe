@@ -125,7 +125,7 @@ try {
   assert.equal(upload.querySelector("progress").max, 1080);
   assert.equal(upload.querySelector("progress").value, 540);
   assert.ok(upload.textContent.includes("Audio uploaded 50%"));
-  assert.ok(upload.textContent.includes("Recorded 3:00:00"));
+  assert.ok(upload.textContent.includes("Elapsed 3:00:00"));
   notify({ ...snapshot, statusCode: "capture_upload_confirming", queuedChunks: 0,
     native: { ...snapshot.native, uploadProgress: { total: 1080, registered: 1080 } } });
   await until(() => upload.textContent.includes("Confirming receipt before transcription"));
