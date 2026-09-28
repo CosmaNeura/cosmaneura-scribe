@@ -1,21 +1,38 @@
 .provider-workspace { box-sizing: border-box; max-width: 1100px; margin: 24px auto; padding: 24px; border: 1px solid #dce5e3; border-radius: 20px; background: #fff; color: #203035; font: 16px/1.5 system-ui, sans-serif; }
 .provider-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #ccded7; padding-bottom: 16px; }
+.provider-header[hidden] { display: none; }
+.provider-header > div { min-width: 0; overflow-wrap: anywhere; }
+.provider-header > button { flex-shrink: 0; margin-right: 0; }
 .provider-workspace h1 { font-size: clamp(1.7rem, 4vw, 2.5rem); line-height: 1.2; }
 .provider-workspace button { min-height: 44px; margin: 8px 12px 8px 0; padding: 10px 18px; border: 1px solid #306b5c; border-radius: 8px; background: #f2faf5; color: #17352f; cursor: pointer; font: inherit; }
 .provider-workspace button:hover { background: #e0f0e7; }
 .provider-workspace button[data-workspace-action="prepare"], .provider-workspace button[data-workspace-action="save"], .provider-workspace cosmaneura-capture .primary { background: var(--scribe-gradient, linear-gradient(135deg, #146f6c, #17273c)); color: #fff; border-color: #146f6c; }
-.provider-workspace button:focus-visible, .provider-workspace input:focus-visible, .provider-workspace select:focus-visible, .provider-workspace textarea:focus-visible { outline: 3px solid #648ad9; outline-offset: 2px; }
+.provider-workspace button:focus-visible, .provider-workspace input:focus-visible, .provider-workspace select:focus-visible, .provider-workspace textarea:focus-visible, .provider-workspace summary:focus-visible { outline: 3px solid #648ad9; outline-offset: 2px; }
 .provider-workspace label { display: grid; gap: 6px; margin: 18px 0; font-weight: 600; }
 .provider-workspace input, .provider-workspace select, .provider-workspace textarea { box-sizing: border-box; max-width: 100%; min-height: 44px; padding: 10px; border: 1px solid #8ea99f; border-radius: 6px; font: inherit; color: #17352f; background: white; }
 .provider-workspace textarea { width: 100%; resize: vertical; font-weight: 400; }
 .provider-workspace small { font-weight: 400; }
 .provider-consent { display: flex !important; align-items: center; gap: 12px !important; }
 .provider-consent input { width: 22px; flex-shrink: 0; }
-.provider-encounters { list-style: none; padding: 0; }
-.provider-encounters button { display: grid; gap: 4px; width: 100%; text-align: left; padding: 18px; }
+.provider-list-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.provider-list-heading h1, .provider-list-heading button { margin: 0; }
+.provider-encounters { display: grid; gap: 12px; list-style: none; padding: 0; margin: 16px 0; }
+.provider-encounters li { min-width: 0; }
+.provider-encounters button { display: grid; gap: 4px; width: 100%; margin: 0; text-align: left; padding: 18px; overflow-wrap: anywhere; }
 .provider-encounters span { font-size: .95rem; color: #526d63; }
+.provider-encounter-help { margin-top: 20px; border-top: 1px solid #dce5e3; padding-top: 8px; color: #526d63; }
+.provider-encounter-help summary { box-sizing: border-box; min-height: 44px; padding: 10px 0; cursor: pointer; }
+.provider-encounter-help p { margin-top: 4px; }
+.provider-preparation { max-width: 760px; }
+.provider-preparation h1 { margin-bottom: 8px; }
+.provider-preparation label { margin: 12px 0; }
+.provider-recording-fields { display: grid; gap: 0 16px; }
+.provider-recording-fields label, .provider-recording-fields select { min-width: 0; width: 100%; }
+.provider-preparation .provider-consent { padding: 12px; border-radius: 8px; background: #f2faf5; }
 .provider-draft-status, [data-workspace-notice]:not(:empty) { padding: 14px; border-left: 4px solid #477c68; background: #eff6f2; }
+[data-workspace-notice]:empty { margin: 0; }
 .provider-workspace .shell { padding: 0; }
 .provider-workspace .shell > header { display: none; }
-[data-provider-encounter] { margin: 4px 0 0; font-size: .95rem; }
-@media (max-width: 600px) { .provider-workspace { margin: 12px; padding: 16px; } .provider-header { align-items: flex-start; } }
+[data-provider-encounter] { margin: 4px 0 0; font-size: 1rem; font-weight: 600; }
+@media (min-width: 601px) { .provider-recording-fields { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 600px) { .provider-workspace { margin: 12px; padding: 16px; } .provider-header { align-items: flex-start; flex-wrap: wrap; gap: 4px 16px; } .provider-preparation button[data-workspace-action="prepare"] { width: 100%; margin-right: 0; } }
