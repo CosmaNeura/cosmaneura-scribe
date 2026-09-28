@@ -182,8 +182,11 @@ export class CaptureApp extends LitElement {
     const provider = this.#provider;
     const uploadProgress = this.#snapshot.native?.uploadProgress ?? this.#snapshot.uploadProgress;
     const captureFinished = provider && ["processing", "complete"].includes(this.#snapshot.state);
+    const nativeProvider = provider?.captureMode === "native_microphone";
+    const showInputMeter = this.#snapshot.state === "recording" && !this.#stopping
+      && !this.#snapshot.desktop && this.#isNativeIPhone();
     return html`
-      <div class="shell">
+      <div class=${nativeProvider ? "shell provider-native-capture" : "shell"}>
         <header>
           <span class="brand">${provider ? "Cosmaneura Scribe" : "Cosmaneura Capture"}</span>
           <span class="status" data-testid=${provider ? "provider-recording" : "synthetic-only"}>
@@ -194,8 +197,8 @@ export class CaptureApp extends LitElement {
         </header>
         <main>
           <p class="eyebrow">${provider ? "Record · Review · Prepare note" : "Phase 3 foreground flow"}</p>
-          <h1>${captureFinished ? "Your encounter" : provider ? "Your encounter recording" : "Consented recording, safely staged"}</h1>
-          <p class="intro">
+          <h1>${captureFinished ? "Your encounter" : nativeProvider ? "Visit recording" : provider ? "Your encounter recording" : "Consented recording, safely staged"}</h1>
+          <p class="intro" ?hidden=${nativeProvider && !captureFinished}>
             ${captureFinished ? "Recording uploaded. Review the transcript below before preparing your note."
               : provider ? "Record this consented encounter, then review its transcript before preparing your note."
               : this.#sourceKind === "microphone"
@@ -236,13 +239,13 @@ export class CaptureApp extends LitElement {
           </section>`}
 
           ${captureFinished ? "" : html`<section class="flow-card recorder" aria-labelledby="record-title">
-            <div>
+            <div ?hidden=${nativeProvider && showInputMeter}>
               ${provider ? "" : html`<p class="step">Step 2</p>`}
-              <h2 id="record-title">Record</h2>
+              <h2 id="record-title">${nativeProvider ? "Microphone" : "Record"}</h2>
               <p>
                 ${provider?.captureMode === "desktop_meeting"
                   ? "Choose your Meet window in Chrome or your Zoom window when starting. This records your microphone and the selected application’s audio; other audio from that application may be included. Encrypted audio uploads while you record. If you go offline, saved audio waits on this Mac."
-                  : provider?.captureMode === "native_microphone" ? "Start and stop deliberately. Your recording is saved on this iPhone until upload is confirmed."
+                  : nativeProvider ? "Audio is saved on this iPhone until upload is confirmed."
                   : provider ? "Keep this app in the foreground while recording. Start and stop deliberately."
                   : this.#sourceKind === "microphone"
                   ? "The foreground microphone test adapter is explicitly enabled for synthetic test data."
@@ -250,7 +253,9 @@ export class CaptureApp extends LitElement {
                 ${provider ? "" : "The initial server-authorized recording window is fixed and is not renewed in this preview."}
               </p>
             </div>
-            ${this.#isNativeIPhone() ? html`<label>Microphone
+            ${showInputMeter
+              ? html`<scribe-ios-input-meter .readSignal=${provider?.controller.getCaptureSignal}></scribe-ios-input-meter>` : ""}
+            ${this.#isNativeIPhone() && (!nativeProvider || ["ready", "paused"].includes(this.#snapshot.state)) ? html`<label>Microphone
               <select data-testid="microphone-input" .value=${this.#microphoneInput}
                 ?disabled=${this.#busy || this.#stopping || !["ready", "paused"].includes(this.#snapshot.state)}
                 @change=${this.#changeMicrophone}>
@@ -263,6 +268,7 @@ export class CaptureApp extends LitElement {
               <button
                 data-testid="record-button"
                 class="record-button"
+                ?hidden=${nativeProvider && this.#snapshot.state !== "ready"}
                 aria-label=${provider ? "Start recording" : this.#sourceKind === "microphone"
                   ? "Start foreground microphone test recording"
                   : "Start silent synthetic recording"}
@@ -298,13 +304,10 @@ export class CaptureApp extends LitElement {
               ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
                 ?disabled=${this.#busy || this.#stopping} @click=${this.#retryUpload}>Retry upload</button>` : ""}
             </div>
-            ${this.#snapshot.state === "recording" && !this.#stopping && !this.#snapshot.desktop
-              && this.#sourceKind === "microphone" && Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios"
-              ? html`<scribe-ios-input-meter .readSignal=${provider?.controller.getCaptureSignal}></scribe-ios-input-meter>` : ""}
           </section>`}
 
           ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
-            <p role="status">${!this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
+            <p role="status" ?hidden=${nativeProvider && showInputMeter && this.#snapshot.statusCode === "capture_recording"}>${!this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
               || this.#busy && this.#snapshot.state === "ready") ? "Starting microphone… Recording is not confirmed yet."
               : this.#snapshot.desktop?.phase === "starting"
               ? this.#snapshot.statusCode === "capture_window_selection_pending"
@@ -344,7 +347,7 @@ export class CaptureApp extends LitElement {
               <progress aria-label="Audio upload" max=${uploadProgress.total || 1}
                 value=${uploadProgress.registered}></progress>
             </label>` : ""}
-            <p>Recorded ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
+            <p>${nativeProvider ? "Elapsed" : "Recorded"} ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
             ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`) : html`<section class="flow-card" aria-labelledby="status-title">
