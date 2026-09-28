@@ -55,6 +55,7 @@ _LIMITS = {
     "catalog": 2,
     "mount": 256,
     "recorder": 1024,
+    "note-opening": 1024,
     "source-start": 4096,
     "capture-admissions": 2048,
     "capture-operations": 4_194_304,
@@ -225,6 +226,7 @@ class ProviderReceiver:
                         raise AccessDenied()
                     return _reply(200, {
                         "revision": str(revision), "encounters": rows, "opening_review_v1": True,
+                        "note_opening_v1": True,
                     })
 
                 workspace_id = _uuid(body.get("workspace_id"))
@@ -279,7 +281,23 @@ class ProviderReceiver:
                         ):
                             raise InvalidRequest()
                         mount = CoreProviderMount(context.selection, binding)
-                        if action == "source-start":
+                        if action == "note-opening":
+                            _require(
+                                set(body)
+                                == {
+                                    "workspace_id",
+                                    "binding_ref",
+                                    "request_nonce",
+                                    "expected_session_id",
+                                }
+                            )
+                            result = await transport.open_note(
+                                mount,
+                                _uuid(body["expected_session_id"]),
+                                _uuid(body["request_nonce"]),
+                                key,
+                            )
+                        elif action == "source-start":
                             # Only the native owner uses this endpoint. Generic
                             # renderer capture-operations still rejects its kind.
                             result = await transport.request(
