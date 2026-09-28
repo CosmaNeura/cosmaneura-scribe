@@ -472,8 +472,8 @@ class ProviderCoreTransport:
             )
         context = await self._context(expected)
         selection = context.selection
-        issued, _ = await self._send(
-            selection,
+        issued, _ = await self._send_in_context(
+            context,
             "/embed/v1/context-tokens/exchange",
             {"requested_surface": "provider_assistant", "record_ref": selection.appointment_ref},
             {
@@ -569,7 +569,30 @@ class ProviderCoreTransport:
         max_bytes: int = 16_384,
         request_timeout: float = 20,
     ) -> tuple[dict[str, object], httpx.Headers]:
-        await self._context(selection)
+        context = await self._context(selection)
+        return await self._send_in_context(
+            context, path, payload, headers, status=status, version=version,
+            max_bytes=max_bytes, request_timeout=request_timeout,
+        )
+
+    async def _send_in_context(
+        self,
+        context: AuthorizedCoreProvider,
+        path: str,
+        payload: object,
+        headers: Mapping[str, str],
+        *,
+        status: int = 200,
+        version: tuple[str, str] | None = None,
+        max_bytes: int = 16_384,
+        request_timeout: float = 20,
+    ) -> tuple[dict[str, object], httpx.Headers]:
+        # Both callers just awaited _context, with no intervening I/O or await.
+        # Exchange needs that same context to build its user-token header; do
+        # not reread the registry merely to dispatch it. Never retain this
+        # context for another request; publication still checks access again.
+        _require(self._enabled)
+        selection = context.selection
         try:
             async with self._client.stream(
                 "POST",
