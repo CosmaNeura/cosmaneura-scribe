@@ -586,6 +586,7 @@ async def test_capture_start_and_stop_keep_fresh_authority_without_duplicate_bin
     wire, client = connection
     mount = await client.open()
     wire.calls.clear()
+    wire.context_calls = 0
     for index, operation in enumerate(startup_operations(source)):
         payload = body(operation=operation)
         result = await client.request(
@@ -604,8 +605,61 @@ async def test_capture_start_and_stop_keep_fresh_authority_without_duplicate_bin
             assert len(wire.calls) == 12
     # First four steps start capture; stop uses its original proof and key.
     assert len(wire.calls) == 15 and wire.counter == 6
+    assert wire.context_calls == 2 * len(wire.calls)
     assert len(wire.turns) == 6  # Opening and every action have distinct interactions.
     assert [effect[2] for effect in wire.effects] == [f"offline-start-step-{i}" for i in range(5)]
+
+
+@pytest.mark.parametrize("checkpoint", range(1, 7))
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_start_context_checked_before_and_after_each_core_request(
+    connection, checkpoint, change,
+):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    checks = 0
+
+    async def context():
+        nonlocal checks
+        checks += 1
+        if checks == checkpoint:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+        return await wire.context()
+
+    client._fresh_context = context
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount, ROOT + "capture-operations", body(operation=startup_operations()[3]),
+            "offline-context-start", native_start=True,
+        )
+    assert caught.value.status == 403 and checks == checkpoint
+    assert len(wire.calls) == checkpoint // 2
+    assert len(wire.effects) == (1 if checkpoint == 6 else 0)
+
+
+async def test_open_exchange_uses_the_immediately_checked_identity(connection):
+    wire, client = connection
+    trace = []
+
+    async def context():
+        trace.append("context")
+        return await wire.context()
+
+    async def before(path):
+        trace.append(path)
+
+    client._fresh_context = context
+    wire.before = before
+    await client.open()
+    assert trace == [
+        "context", "/embed/v1/context-tokens/exchange", "context",
+        "context", "/service/v1/agent/mount-context/resolve", "context",
+        "context", ROOT + "capture-bindings/resolve", "context",
+    ]
 
 
 @pytest.mark.parametrize("boundary", [1, 2, 3])
