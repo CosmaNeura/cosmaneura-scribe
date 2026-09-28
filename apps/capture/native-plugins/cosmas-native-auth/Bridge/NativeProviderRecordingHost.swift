@@ -191,9 +191,17 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
           throw ProviderNativeError.unavailable
         }
         PCMStartupDiagnostics.shared.record(.leaseReady)
-        let batch = try await reservations.reserve(
-          lease: lease, first: checkpoint.committedChunks,
-          count: min(90, 2048 - checkpoint.committedChunks))
+        let retained = try await reservations.reuseForStart(
+          lease: lease, first: checkpoint.committedChunks)
+        try current(ticket)
+        let batch: NativeRecordingReservationBatch
+        if let retained {
+          batch = retained
+        } else {
+          batch = try await reservations.reserve(
+            lease: lease, first: checkpoint.committedChunks,
+            count: min(90, 2048 - checkpoint.committedChunks))
+        }
         try current(ticket)
         PCMStartupDiagnostics.shared.record(.reservationsReady)
         // Retain the original source proof even if graph construction fails.

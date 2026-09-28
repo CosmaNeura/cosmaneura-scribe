@@ -80,7 +80,7 @@ import Security
     let scope: NativeRecordingScope, published: NativeRecordingPublicKey
     let leaseID = UUID()
     var objects: [Int: NativeRecordingReservation] = [:]
-    var bindings = 0, issues = 0, renewals = 0
+    var bindings = 0, issues = 0, renewals = 0, reservations = 0
     var failAll = false, hold = false, expired = false
     var pending: CheckedContinuation<Void, Never>?
     init(scope: NativeRecordingScope, published: NativeRecordingPublicKey) {
@@ -130,6 +130,7 @@ import Security
       -> NativeRecordingReservationBatch
     {
       _ = try recordingScope()
+      reservations += 1
       let rows = try (first..<(first + count)).map { sequence in
         if let row = objects[sequence] { return row }
         let object = UUID()
@@ -363,6 +364,8 @@ import Security
       try await command("pause", bytes: 384_088, chunks: 2)
       try await command("read", bytes: 384_088, chunks: 2)
       try await command("start", bytes: 384_088, chunks: 2)
+      try check(await f.service.reservations == 1)
+      try check(f.sources.count == 3 && f.sources[0].confirmed && f.sources[1].confirmed)
       try f.runs[2].emit(32_000)
       try await command("read", bytes: 416_132, chunks: 3)
       try await command("seal", bytes: 416_132, chunks: 3)

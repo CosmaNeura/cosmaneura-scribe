@@ -8,6 +8,26 @@ import XCTest
 @testable import CosmaneuraNativeRecordingPCM
 
 @MainActor final class NativeRecordingContinuationTests: XCTestCase {
+  func testShortResumedWindowRefillsBeforeReservedAudioRunsOut() async throws {
+    let f = try ContinuationFixture()
+    let owner = try await f.open(initialCount: 13)
+    assertEqual((await owner.state).reservedThroughSequence, 13)
+    try await f.driver.offerPacket()
+    f.clock.advance(10)
+    await owner.maintain()
+    let state = await owner.state
+    assertEqual(state.phase, .recording)
+    assertEqual(state.sourceGeneration, 2)
+    assertEqual(state.reservedThroughSequence, 91)
+    let calls = await f.service.batchCalls
+    assertEqual(calls.last?.first, 13)
+    assertEqual(calls.last?.count, 78)
+    try await f.driver.offerPacket()
+    try await owner.stop()
+    assertEqual(f.records.encryptedCount, 2)
+    assertEqual(await f.driver.starts, 1)
+  }
+
   func testThreeHoursUseActualPCMEncryptionAndFourteenShortLeases() async throws {
     let f = try ContinuationFixture()
     let owner = try await f.open()
@@ -607,10 +627,11 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
       foreground: EncryptedForeground(active: foreground), signal: PCMSignalMonitor(),
       sourceClock: clock, validateActiveSource: { [fence] in try await fence.validate() })
   }
-  func open(start: Bool = true, wrongRun: Bool = false) async throws -> NativeRecordingContinuation
+  func open(start: Bool = true, wrongRun: Bool = false, initialCount: Int = 90) async throws
+    -> NativeRecordingContinuation
   {
     let lease = try await leases.open()
-    let batch = try await reservations.reserve(lease: lease, first: 0, count: 90)
+    let batch = try await reservations.reserve(lease: lease, first: 0, count: initialCount)
     try sink.stage(batch)
     let authority = try PCMSourceAuthority(
       runID: UUID().uuidString.lowercased(), generation: 1,
@@ -619,7 +640,8 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
       permission: ContinuationConsent(), audio: driver, sink: sink, sourceClock: clock)
     let handle = try core.start(
       configuration: PCMConfiguration(
-        targetFramesPerChunk: 160_000, maximumChunks: 90, maximumInputFramesPerBuffer: 32_000,
+        targetFramesPerChunk: 160_000, maximumChunks: initialCount,
+        maximumInputFramesPerBuffer: 32_000,
         authority: authority))
     let supplied = try PCMSourceAuthority(
       runID: wrongRun ? UUID().uuidString.lowercased() : authority.runID, generation: 1,
