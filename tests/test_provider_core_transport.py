@@ -579,6 +579,207 @@ def startup_operations(source="ios_microphone"):
     ]
 
 
+def source_sequence_case(wire):
+    def alter(path, value):
+        if value.get("operation") != "source_start":
+            return value
+        operation = wire.effects[-1][1]["operation"]
+        intent = operation["payload"]
+        prepared = operation["action"] == "prepare"
+        receipt = {
+            **{key: item for key, item in intent.items() if key != "owner_proof"},
+            "session_id": SESSION, "source_start_id": intent["attempt_id"],
+            "creator_actor_id": SELECTION.actor_ref, "consent_record_id": str(uuid4()),
+            "state": "prepared" if prepared else "issued",
+            "preparation_expires_at": (NOW + timedelta(seconds=30)).isoformat(),
+            "issued_at": None if prepared else NOW.isoformat(),
+            "expires_at": None if prepared else (NOW + timedelta(seconds=15)).isoformat(),
+            "capability_id": str(uuid4()),
+        }
+        return {**value, "receipt": receipt if prepared else {
+            "receipt": receipt, "secret": intent["owner_proof"],
+        }}
+
+    wire.alter = alter
+    return body(
+        operation=startup_operations()[2],
+        authorize_idempotency_key="offline-authorize-" + str(uuid4()),
+        authorize_request_nonce=str(uuid4()),
+    )
+
+
+async def test_source_sequence_reuses_one_request_local_setup_and_preserves_intents(connection):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    wire.calls.clear()
+    wire.context_calls = 0
+    result = await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert len(wire.calls) == 4 and wire.context_calls == 8 and wire.counter == 2
+    assert [data["operation"]["action"] for _, data, _ in wire.effects] == ["prepare", "authorize"]
+    assert [key for _, _, key in wire.effects] == [
+        "offline-prepare-key", payload["authorize_idempotency_key"],
+    ]
+    assert wire.effects[0][1]["request_nonce"] == payload["request_nonce"]
+    assert wire.effects[1][1]["request_nonce"] == payload["authorize_request_nonce"]
+    assert all(data["operation"]["payload"] == payload["operation"]["payload"]
+               for _, data, _ in wire.effects)
+    assert result["preparation"]["receipt"]["state"] == "prepared"
+    assert result["authorization"]["receipt"]["receipt"]["state"] == "issued"
+    assert USER_TOKEN not in json.dumps(result) and WORKLOAD_TOKEN not in json.dumps(result)
+    await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert wire.counter == 3  # Every subsequent native request negotiates afresh.
+    assert wire.effects[:2] == wire.effects[2:]  # Explicit retry retains both exact intents.
+
+
+@pytest.mark.parametrize("failure", [
+    "action", "kind", "scope", "key", "same-key", "nonce", "same-nonce", "extra",
+])
+async def test_source_sequence_rejects_invalid_pair_before_core(connection, failure):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    wire.calls.clear()
+    if failure == "action":
+        payload["operation"]["action"] = "authorize"
+    elif failure == "kind":
+        payload["operation"]["kind"] = "creator_review"
+    elif failure == "scope":
+        payload["workspace_id"] = str(uuid4())
+    elif failure in {"key", "same-key"}:
+        payload["authorize_idempotency_key"] = "bad" if failure == "key" else "offline-prepare-key"
+    elif failure in {"nonce", "same-nonce"}:
+        payload["authorize_request_nonce"] = (
+            "bad" if failure == "nonce" else payload["request_nonce"]
+        )
+    else:
+        payload["secret_fallback"] = "forbidden"
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert wire.calls == [] and wire.effects == []
+
+
+@pytest.mark.parametrize("boundary", range(1, 9))
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_source_sequence_checks_current_access_at_all_eight_boundaries(
+    connection, boundary, change,
+):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    wire.calls.clear()
+    wire.context_calls = 0
+
+    async def fresh():
+        if wire.context_calls + 1 == boundary:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+        return await wire.context()
+
+    client._fresh_context = fresh
+    with pytest.raises(ProviderCoreUnavailable) as error:
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert error.value.status == 403 and len(wire.calls) == boundary // 2
+    assert len(wire.effects) == max(0, boundary // 2 - 2)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("state", "issued"), ("attempt_id", str(uuid4())), ("source", "desktop_companion"),
+    ("lease_id", str(uuid4())), ("lease_generation", 2), ("first_sequence_number", 1),
+    ("capture_authorized_until", (NOW + timedelta(minutes=14)).isoformat()),
+    ("creator_actor_id", "foreign-actor"), ("issued_at", NOW.isoformat()),
+    ("preparation_expires_at", (NOW - timedelta(seconds=1)).isoformat()),
+    ("preparation_expires_at", (NOW + timedelta(hours=1)).isoformat()),
+    ("extra_field", "invalid"),
+])
+async def test_source_sequence_rejects_invalid_preparation_before_authorizing(
+    connection, field, value,
+):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    original = wire.alter
+
+    def alter(path, response):
+        response = original(path, response)
+        if response.get("operation") == "source_start":
+            response["receipt"][field] = value
+        return response
+
+    wire.alter = alter
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert len(wire.effects) == 1
+
+
+async def test_source_sequence_cancellation_after_prepare_does_not_authorize(connection):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+
+    def cancel(_):
+        if len(wire.effects) == 1:
+            asyncio.current_task().cancel()
+
+    wire.after = cancel
+    task = asyncio.create_task(
+        client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(wire.effects) == 1
+
+
+@pytest.mark.parametrize("lost_at", [1, 2])
+async def test_source_sequence_lost_reply_never_retries_or_starts_another_step(connection, lost_at):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+
+    async def before(path):
+        if path.endswith("capture-operations") and len(wire.effects) + 1 == lost_at:
+            wire.lost = True
+
+    wire.before = before
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert len(wire.effects) == lost_at
+
+
+async def test_concurrent_source_sequences_keep_their_own_context_and_intents(connection):
+    wire, client = connection
+    mount = await client.open()
+    payloads = [source_sequence_case(wire), source_sequence_case(wire)]
+    entered, release = asyncio.Event(), asyncio.Event()
+    arrivals = 0
+
+    async def before(path):
+        nonlocal arrivals
+        if path.endswith("mount-context/resolve"):
+            arrivals += 1
+            if arrivals == 2:
+                entered.set()
+            await release.wait()
+
+    wire.before = before
+    tasks = [asyncio.create_task(client.prepare_and_authorize_source(
+        mount, payload, "offline-prepare-" + str(index),
+    )) for index, payload in enumerate(payloads)]
+    await asyncio.wait_for(entered.wait(), 2)
+    release.set()
+    results = await asyncio.gather(*tasks)
+    assert wire.counter == 3 and len(wire.effects) == 4
+    for payload, result in zip(payloads, results, strict=True):
+        assert result["preparation"]["request_nonce"] == payload["request_nonce"]
+        assert result["authorization"]["request_nonce"] == payload["authorize_request_nonce"]
+        assert (
+            result["preparation"]["receipt"]["attempt_id"]
+            == payload["operation"]["payload"]["attempt_id"]
+        )
+
+
 @pytest.mark.parametrize("source", ["ios_microphone", "desktop_companion"])
 async def test_capture_start_and_stop_keep_fresh_authority_without_duplicate_binding_lookup(
     connection, source,
