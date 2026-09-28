@@ -17,7 +17,7 @@ private final class Fixture: URLProtocol, @unchecked Sendable {
     if key.contains("hold") { Self.held[key] = self }
     Self.lock.unlock()
     let response = HTTPURLResponse(
-      url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+      url: request.url!, statusCode: key.contains("not-found") ? 404 : 200, httpVersion: "HTTP/1.1",
       headerFields: [
         "Content-Type": "application/json",
         "Cache-Control": key.contains("invalid") ? "public" : "no-store",
@@ -127,6 +127,23 @@ private func rejected(_ operation: Task<ProviderNativeReply, Error>) async throw
         == "Bearer offline-native-token",
       "fresh per-request authorization")
     checks += 1
+
+    do {
+      let wire = transport!
+      let combined = try ProviderNativeRequest(nativeStartID: UUID(),
+        revision: UUID().uuidString.lowercased(), key: "offline-not-found-combined",
+        body: Data("{}".utf8), combinedPreparation: true)
+      let result = try await wire.send(combined, token: "offline-native-token")
+      try require(result.status == 404, "new native route can explicitly report unsupported")
+      try require(Fixture.requests().last!.url!.path == "/provider/v1/source-start-ready", "fixed route")
+      try await rejected(Task {
+        try await wire.send(request(key: "offline-not-found-recorder"), token: "offline-token")
+      })
+      let legacy = try ProviderNativeRequest(nativeStartID: UUID(),
+        revision: UUID().uuidString.lowercased(), key: "offline-not-found-legacy", body: Data("{}".utf8))
+      try await rejected(Task { try await wire.send(legacy, token: "offline-token") })
+      checks += 1
+    }
 
     for action in ["capture-admissions", "capture-notes", "capture-admissions", "capture-notes", "note-opening"] {
       _ = try await transport!.send(request(action), token: "offline-token")

@@ -15,6 +15,7 @@ enum ProviderNativeAction: String, Sendable {
     case recorderContext = "recorder-context"
     case noteOpening = "note-opening"
     case sourceStart = "source-start"
+    case sourceStartReady = "source-start-ready"
     case admission = "capture-admissions", operation = "capture-operations", note = "capture-notes"
 
     var bodyLimit: Int {
@@ -23,6 +24,7 @@ enum ProviderNativeAction: String, Sendable {
         case .mount: 256
         case .recorder, .recorderContext, .noteOpening: 1024
         case .sourceStart: 4096
+        case .sourceStartReady: 8192
         case .admission: 2048
         case .operation: 4_194_304
         case .note: 262_144 + 8192
@@ -32,9 +34,15 @@ enum ProviderNativeAction: String, Sendable {
         switch self {
         case .catalog: 65_536
         case .mount, .recorder, .recorderContext, .sourceStart: 8192
+        case .sourceStartReady: 16_384
         case .operation, .noteOpening: 32 * 1024 * 1024 + 8192
         case .admission, .note: 8 * 1024 * 1024
         }
+    }
+
+    func acceptsResponseStatus(_ status: Int) -> Bool {
+        [200, 401, 403, 409, 422, 503].contains(status)
+            || (self == .sourceStartReady && status == 404)
     }
 }
 
@@ -61,7 +69,7 @@ struct ProviderNativeRequest: Sendable {
         guard let identifier = UUID(uuidString: id), identifier.uuidString.lowercased() == id,
               UUID(uuidString: revision)?.uuidString.lowercased() == revision,
               let operation = ProviderNativeAction(rawValue: action),
-              operation != .sourceStart,
+              operation != .sourceStart, operation != .sourceStartReady,
               key.range(of: "^[A-Za-z0-9._:-]{8,255}$", options: .regularExpression) != nil,
               body.utf8.count <= operation.bodyLimit, let data = body.data(using: .utf8),
               (try? JSONSerialization.jsonObject(with: data)) is [String: Any]
@@ -71,13 +79,15 @@ struct ProviderNativeRequest: Sendable {
     }
 
     // Not reachable from the generic Capacitor/renderer string-action initializer.
-    init(nativeStartID: UUID, revision: String, key: String, body: Data) throws {
+    init(nativeStartID: UUID, revision: String, key: String, body: Data,
+         combinedPreparation: Bool = false) throws {
+        let action: ProviderNativeAction = combinedPreparation ? .sourceStartReady : .sourceStart
         guard UUID(uuidString: revision)?.uuidString.lowercased() == revision,
               key.range(of: "^[A-Za-z0-9._:-]{8,255}$", options: .regularExpression) != nil,
-              body.count <= ProviderNativeAction.sourceStart.bodyLimit,
+              body.count <= action.bodyLimit,
               (try? JSONSerialization.jsonObject(with: body)) is [String: Any]
         else { throw ProviderNativeError.invalidRequest }
-        self.id = nativeStartID; self.revision = revision; self.action = .sourceStart
+        self.id = nativeStartID; self.revision = revision; self.action = action
         self.key = key; self.body = body
     }
 }
@@ -429,7 +439,7 @@ protocol ProviderNativeWire: Sendable {
             receiverEnd = timingNow(); status = reply.status
             try Task.checkCancellation()
             try self.current(request.revision)
-            guard [200, 401, 403, 409, 422, 503].contains(reply.status),
+            guard request.action.acceptsResponseStatus(reply.status),
                   reply.body.count <= request.responseLimit else {
                 throw ProviderNativeError.response
             }
