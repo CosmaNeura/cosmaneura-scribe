@@ -2,7 +2,7 @@ import type { NativeRecordingCommand } from "./native-recorder";
 import type { MicrophoneInput } from "../native/microphone-input";
 import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
-export type ProviderAction = "catalog" | "mount" | "recorder" | "recorder-context" | "capture-admissions" | "capture-operations" | "capture-notes";
+export type ProviderAction = "catalog" | "mount" | "recorder" | "recorder-context" | "capture-admissions" | "capture-operations" | "capture-notes" | "note-opening";
 export type ProviderSessionPhase = "disabled" | "loading" | "signedOut" | "signingIn" | "ready" | "signOutPending" | "unavailable";
 export interface ProviderSessionState { readonly phase: ProviderSessionPhase; readonly revision: string }
 export interface NativeProviderSession {

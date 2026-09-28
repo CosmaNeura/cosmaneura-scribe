@@ -85,7 +85,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
   // response caches. Separate timeout profiles preserve each route's budget.
   private func session(for action: ProviderNativeAction) -> URLSession {
     let profile: TimeoutProfile =
-      action == .admission ? .admission : action == .note ? .note : .standard
+      action == .admission ? .admission : (action == .note || action == .noteOpening) ? .note : .standard
     sessionLock.lock()
     defer { sessionLock.unlock() }
     if let existing = sessions[profile] { return existing }

@@ -19,7 +19,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   if (state.phase !== "ready" || options.signal.aborted || native.signal.aborted) throw unavailable();
   const revision = state.revision, abort = new AbortController();
   const lifetime = AbortSignal.any([options.signal, native.signal, abort.signal]);
-  let openingReviewSupported = false;
+  let openingReviewSupported = false, noteOpeningSupported = false;
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const sources = new Map<string, { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence }>();
   const releasePreparation = async (preparationId: string, stopped: boolean): Promise<void> => {
@@ -45,11 +45,11 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   const request = async (action: string, body: Record<string, unknown>, key: string,
     signal: AbortSignal): Promise<Response> => {
     current(signal);
-    if (!["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes"].includes(action)) throw unavailable();
+    if (!["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes", "note-opening"].includes(action)) throw unavailable();
     const value = exact(await native.request("providerRequest", {
       revision, action, key, body: JSON.stringify(body),
     }, AbortSignal.any([lifetime, signal]), action === "capture-admissions" ? 220_000
-      : action === "capture-notes" ? 125_000 : 35_000), ["status", "body"]);
+      : ["capture-notes", "note-opening"].includes(action) ? 125_000 : 35_000), ["status", "body"]);
     current(signal);
     if (typeof value.status !== "number" || typeof value.body !== "string"
       || ![200, 401, 403, 409, 422, 503].includes(value.status)) throw unavailable();
@@ -83,6 +83,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       }
       current(signal); encounters.clear();
       openingReviewSupported = value.opening_review_v1 === true;
+      noteOpeningSupported = value.note_opening_v1 === true;
       for (const [id, value] of next) encounters.set(id, value);
       return [...next.values()].map(value => value.encounter);
     },
@@ -90,6 +91,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
     openEncounter: async (appointmentRef, signal) => {
       current(signal);
       const row = encounters.get(appointmentRef); if (!row) throw unavailable();
+      const supportsNoteOpening = noteOpeningSupported;
       const openingNonce = openingReviewSupported ? crypto.randomUUID() : undefined;
       const value = await json("mount", { workspace_id: row.workspaceId,
         ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
@@ -113,13 +115,14 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       };
       return {
         release, retireSource, encounter, scope, signal: AbortSignal.any([lifetime, signal]), recoveryScope: uuid(value.recoveryScope),
+        ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
         ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,
         request: (path, body, key, operationSignal) => {
           current(signal);
           const action = path.slice("/service/v1/agent/scribe/".length);
           if (path !== "/service/v1/agent/scribe/" + action
-            || !["capture-admissions", "capture-operations", "capture-notes"].includes(action)
+            || !["capture-admissions", "capture-operations", "capture-notes", ...(supportsNoteOpening ? ["note-opening"] : [])].includes(action)
             || body.workspace_id !== scope.workspaceId || body.binding_ref !== scope.bindingRef) throw unavailable();
           return request(action, { ...body }, key, AbortSignal.any([signal, operationSignal]));
         },

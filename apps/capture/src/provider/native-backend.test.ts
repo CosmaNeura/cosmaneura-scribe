@@ -118,6 +118,28 @@ describe("native provider connection", () => {
     } finally { await backend.dispose(); }
   });
 
+  it.each([false, true])("gates note opening on its own advertised capability (%s)", async supported => {
+    const f = fixture(), backend = await f.connect();
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const normal = f.reply(request), value = JSON.parse(normal.body);
+      if (request.action === "catalog") value.note_opening_v1 = supported;
+      if (request.action === "note-opening") Object.assign(value, { operation: "note_opening",
+        receipt: { session_id: session, separate_reads_required: true } });
+      return { ...normal, body: JSON.stringify(value) };
+    });
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.noteOpeningSupported).toBe(supported ? true : undefined);
+      const client = new CoreCaptureClient(mount.scope, mount.request, mount.signal);
+      if (supported) expect(await client.openNote(session)).toEqual({ session_id: session, separate_reads_required: true });
+      else await expect(client.openNote(session)).rejects.toThrow();
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action))
+        .toEqual(["catalog", "mount", ...(supported ? ["note-opening"] : [])]);
+      expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+
   it("passes a full long review through native and Core receivers while retaining the byte guard", async () => {
     const f = fixture(), backend = await f.connect();
     try {

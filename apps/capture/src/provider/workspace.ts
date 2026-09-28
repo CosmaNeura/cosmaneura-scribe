@@ -18,6 +18,7 @@ import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecord
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
 import { openingReviewView } from "./opening-review";
+import { readNoteOpening, type NoteOpening } from "./note-opening";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
@@ -155,6 +156,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       decide: (request, key) => api.decide(request, key),
     }, {
       journal: context.reviewJournal(session()), continueToNote: openNotes,
+      ...(context.noteOpeningSupported ? { prepareNoteOpening: noteOpeningPreparation() } : {}),
     });
     disposeContent = () => { first = undefined; dispose(); };
   };
@@ -214,6 +216,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       languageMode: recordingProgress.admission.languageMode === "en-US" ? "english" : "english_spanish",
       authorizedRequest: activeClient.reviewRequest(id), journal: activeContext.reviewJournal(id),
       signal: activeClient.signal, deactivate: close, resumePendingUpload: () => lifecycle.resumePendingWork(),
+      ...(activeContext.noteOpeningSupported ? { prepareNoteOpening: noteOpeningPreparation(async () => {
+        await persist({ ...progress(), uploaded: true });
+        await lifecycle.releaseUploadedCapture();
+      }) } : {}),
       continueToNote: async (freshView) => {
         if (!authorized(n)) return;
         requireValue(freshView.session_id === id);
@@ -289,20 +295,40 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     }
     if (current(n)) openingRef = null;
   };
-  async function openNotes(view: CreatorReviewView): Promise<void> {
+  function noteOpeningPreparation(beforeOpen?: () => Promise<void>) {
+    requireValue(client && context?.noteOpeningSupported);
+    const activeClient = client, n = generation, id = session();
+    return async () => {
+      const opening = await readNoteOpening(activeClient, id);
+      const view = opening?.view ?? await new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read();
+      requireValue(authorized(n) && client === activeClient && view.session_id === id);
+      let consumed = false;
+      return { view, open: async () => {
+        requireValue(!consumed && authorized(n) && client === activeClient);
+        consumed = true;
+        await beforeOpen?.();
+        if (authorized(n) && client === activeClient) await openNotes(view, opening ?? undefined);
+      } };
+    };
+  }
+  async function openNotes(view: CreatorReviewView, opening?: NoteOpening): Promise<void> {
     requireValue(client && context && !client.signal.aborted && view.session_id === session());
     const n = generation;
     const currentClient = client;
-    // Continue just read this view through the current review API. Reuse it for
-    // template selection only; opening/preparing/saving the note still reads afresh.
+    requireValue(!opening || opening.view === view && opening.templates !== null);
+    // This explicit action owns the fresh coordinated read, when supported.
+    // Later template changes, generation and saves retain their fresh reads.
     source = reviewedSource(view);
     if (!progress().uploaded) await persist({ ...progress(), uploaded: true });
     if (!authorized(n)) return;
-    templates = await noteTemplates(currentClient, session());
+    templates = opening?.templates ?? await noteTemplates(currentClient, session());
     if (!authorized(n)) return;
     if (templates.length === 1) {
       currentSchema = templates[0]!.schema_ref;
-      await readNote(false);
+      if (opening) {
+        requireValue(opening.draft);
+        draft = opening.draft; noteTranscript = view; renderNote();
+      } else await readNote(false);
       return;
     }
     if (!templates.length) {

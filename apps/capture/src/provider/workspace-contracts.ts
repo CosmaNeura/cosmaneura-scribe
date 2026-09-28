@@ -25,6 +25,7 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly scope: CoreCaptureScope;
   readonly request: AuthorizedCoreRequest;
   readonly openingReview?: ProviderOpeningReview;
+  readonly noteOpeningSupported?: true;
   readonly signal: AbortSignal;
   readonly journal: ProviderWorkspaceJournal;
   readonly reviewJournal: (sessionId: string) => CreatorReviewJournal;

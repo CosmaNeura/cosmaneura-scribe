@@ -13,6 +13,7 @@ enum ProviderNativeError: String, Error, Sendable {
 enum ProviderNativeAction: String, Sendable {
     case catalog, mount, recorder
     case recorderContext = "recorder-context"
+    case noteOpening = "note-opening"
     case sourceStart = "source-start"
     case admission = "capture-admissions", operation = "capture-operations", note = "capture-notes"
 
@@ -20,7 +21,7 @@ enum ProviderNativeAction: String, Sendable {
         switch self {
         case .catalog: 2
         case .mount: 256
-        case .recorder, .recorderContext: 1024
+        case .recorder, .recorderContext, .noteOpening: 1024
         case .sourceStart: 4096
         case .admission: 2048
         case .operation: 4_194_304
@@ -31,7 +32,7 @@ enum ProviderNativeAction: String, Sendable {
         switch self {
         case .catalog: 65_536
         case .mount, .recorder, .recorderContext, .sourceStart: 8192
-        case .operation: 32 * 1024 * 1024 + 8192
+        case .operation, .noteOpening: 32 * 1024 * 1024 + 8192
         case .admission, .note: 8 * 1024 * 1024
         }
     }

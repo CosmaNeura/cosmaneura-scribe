@@ -172,6 +172,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
         });
         return {
           scope: selected.scope, encounter: selected.encounter, signal: mountSignal, request,
+          ...(selected.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
           ...(selected.openingReview ? { openingReview: selected.openingReview } : {}),
           openInCore: noteRef => guarded(() => selected.openInCore(noteRef)),
           journal: { load: () => guarded(() => journal.load()), save: (previous, progress) => guarded(() => journal.save(previous, progress)) },

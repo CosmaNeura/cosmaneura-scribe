@@ -38,8 +38,11 @@ export function sameSource(left: ReviewedSource, right: ReviewedSource): boolean
     && canonical(left.capture_continuity ?? null) === canonical(right.capture_continuity ?? null);
 }
 export async function noteTemplates(client: CoreCaptureClient, session: string): Promise<CoreNoteTemplate[]> {
-  const value = await client.note(session, "templates");
-  requireValue(closed(value, "session_id,templates") && Array.isArray(value.templates) && value.templates.length <= 100);
+  return parseNoteTemplates(await client.note(session, "templates"), session);
+}
+export function parseNoteTemplates(value: unknown, session: string): CoreNoteTemplate[] {
+  requireValue(closed(value, "session_id,templates") && value.session_id === session
+    && Array.isArray(value.templates) && value.templates.length <= 100);
   const ids = new Set<string>();
   for (const item of value.templates) {
     requireValue(closed(item, "schema_ref,note_type,field_names") && reference(item.schema_ref, "doctor_note_schema")

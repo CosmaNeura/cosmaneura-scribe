@@ -144,6 +144,7 @@ export class DesktopProviderWorkspaceMain {
             connection.encounter = encounter;
             opened.signal.addEventListener("abort", () => { void this.closeEncounter(connection, encounter).catch(() => undefined); }, { once: true });
             return { encounterId: encounter.id, encounter: opened.encounter, scope: opened.scope,
+              ...(opened.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
               ...(opened.openingReview ? { openingReview: opened.openingReview } : {}) };
           } catch (error) { opening.abort(); throw error; }
         } finally { connection.transitioning = false; }
@@ -212,6 +213,10 @@ export class DesktopProviderWorkspaceMain {
     if (path === "/service/v1/agent/scribe/capture-operations") {
       const operation = object(body.operation);
       if (typeof operation.kind !== "string" || !["provider_encounter", "creator_review", "decide_translation"].includes(operation.kind)) throw unavailable();
+    } else if (path === "/service/v1/agent/scribe/note-opening") {
+      if (!encounter.value.noteOpeningSupported) throw unavailable();
+      exact(body, ["workspace_id", "binding_ref", "request_nonce", "expected_session_id"]);
+      uuid(body.expected_session_id);
     } else if (path !== "/service/v1/agent/scribe/capture-admissions" && path !== "/service/v1/agent/scribe/capture-notes") throw unavailable();
     const response = await encounter.value.request(path, body, payload.key, signal);
     if (signal.aborted || ![200, 401, 403, 409, 422, 503].includes(response.status)) throw unavailable();
