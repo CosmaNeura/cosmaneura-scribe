@@ -55,6 +55,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private var cipher: NativeRecordingEncryption?
   private var source: (any NativeProviderMicrophoneSource)?
   private var run: (any NativeProviderRecordingInterval)?
+  // The PCM sink counts only this interval. Retain its exact saved baseline
+  // even after pause reconciliation, so progress can neither drop nor double.
+  private(set) var capturePriorPlaintextBytes = 0
   private var opening: Task<Void, Error>?
   private var starting: Task<Void, Error>?
   private var stopping: Task<Void, Error>?
@@ -169,6 +172,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         run = nil
         let next = try makeRun(
           source!, cipher, saved.committedPlaintextBytes, lease, batch, leases, reservations, input)
+        capturePriorPlaintextBytes = saved.committedPlaintextBytes
         run = next
         try await next.start()
         try current(ticket)
