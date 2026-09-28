@@ -27,20 +27,36 @@ import Security
   }
   private final class Records: NativeProviderRecordingHost.Records, @unchecked Sendable {
     var rows: [String: NativeRecordingStoredRecord] = [:]
+    var failSeal = false, failInventory = false, loseSealReply = false
     func read(key: String) throws -> NativeRecordingStoredRecord {
       guard let row = rows[key] else { throw NativeRecordingFailure.storageUnavailable }
       return row
     }
-    func readBinding(key: String) -> NativeRecordingStoredRecord? { rows[key] }
+    func readBinding(key: String) throws -> NativeRecordingStoredRecord? {
+      if loseSealReply, let row = rows[key],
+        let value = try JSONSerialization.jsonObject(with: row.data) as? [String: Any],
+        value["completionLease"] != nil
+      {
+        throw NativeRecordingFailure.storageUnavailable
+      }
+      return rows[key]
+    }
     func readLease(key: String) -> NativeRecordingStoredRecord? { rows[key] }
     func availableBytes() -> Int { 2_000_000_000 }
-    func listRecordingKeys(prefix: String) -> [String] { rows.keys.filter { $0.hasPrefix(prefix) } }
+    func listRecordingKeys(prefix: String) throws -> [String] {
+      if failInventory { throw NativeRecordingFailure.storageUnavailable }
+      return rows.keys.filter { $0.hasPrefix(prefix) }
+    }
     func createBinding(key: String, data: Data) throws {
       try compareAndSwap(key: key, expectedRevision: 0, data: data)
     }
     func createLease(key: String, data: Data) throws { try createBinding(key: key, data: data) }
     func compareAndSwapBinding(key: String, expectedRevision: UInt64, data: Data) throws {
+      let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+      let sealing = value?["completionLease"] != nil
+      if failSeal && sealing { throw NativeRecordingFailure.storageUnavailable }
       try compareAndSwap(key: key, expectedRevision: expectedRevision, data: data)
+      if loseSealReply && sealing { throw NativeRecordingFailure.storageUnavailable }
     }
     func compareAndSwapLease(key: String, expectedRevision: UInt64, data: Data) throws {
       try compareAndSwap(key: key, expectedRevision: expectedRevision, data: data)
@@ -252,6 +268,55 @@ import Security
   static func run() async throws -> Int {
     var checks = 0
     do {
+      let f = try Fixture()
+      let host = f.host()
+      try await host.open()
+      let key = f.keys.value
+      let intent = host.saved!.completionIntent
+      try await host.start()
+      f.records.failSeal = true
+      try await rejects { try await host.sealForUpload() }
+      try check(host.phase == .paused && host.failure == .recoveryFailed)
+      try check(host.saved!.committedChunks == 0 && f.runs[0].captureState.committedChunks == 1)
+      let retained = f.records.rows
+      f.records.failSeal = false
+      f.records.failInventory = true
+      try await rejects { try await host.start() }
+      try check(host.phase == .paused && host.failure == .recoveryFailed && f.runs.count == 1)
+      try check(f.sources.count == 1)
+      f.records.failInventory = false
+      try await host.start()
+      try check(host.phase == .recording && f.runs[1].first == 1 && f.runs[1].prior == 204)
+      try check(f.keys.value == key && host.saved!.completionIntent == intent)
+      for (name, row) in retained where name.hasPrefix("scribe-provider-queue:") {
+        try check(f.records.rows[name]?.data == row.data)
+      }
+      try await host.sealForUpload()
+      try check(host.phase == .sealed && host.saved!.committedChunks == 2)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      try await host.open()
+      let intent = host.saved!.completionIntent
+      let key = f.keys.value
+      try await host.start()
+      f.records.loseSealReply = true
+      try await rejects { try await host.sealForUpload() }
+      try check(host.phase == .paused && host.failure == .recoveryFailed)
+      f.records.loseSealReply = false
+      try await rejects { try await host.start() }
+      try check(host.phase == .sealed && f.runs.count == 1 && f.sources.count == 1)
+      try check(host.saved!.completionIntent == intent && f.keys.value == key)
+      let sealed = host.saved
+      try await host.sealForUpload()
+      try check(host.saved == sealed && host.saved!.committedChunks == 1)
+      try await host.close()
+      checks += 1
+    }
+    do {
       // Use the real PCM sink: its byte count is local to the current interval.
       // A shorter resumed interval must add to, not replace, the saved visit.
       let f = try Fixture()
@@ -417,6 +482,10 @@ import Security
       f.runs[0].empty = true
       try await rejects { try await host.sealForUpload() }
       try check(host.saved!.phase == .open && host.phase == .paused)
+      try await host.start()
+      try check(host.phase == .recording && f.runs[1].first == 0)
+      try await host.sealForUpload()
+      try check(host.phase == .sealed && host.saved!.committedChunks == 1)
       try await host.close()
       checks += 1
     }

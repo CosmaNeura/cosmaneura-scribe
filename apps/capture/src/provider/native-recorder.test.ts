@@ -27,6 +27,30 @@ async function fixture() {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
 describe("native provider controller", () => {
+  it.each([0, 1])("keeps failed sealing distinct from an ordinary pause with %i saved chunks", async recordedChunks => {
+    const h = await fixture(), command = h.port.command;
+    h.f.set({ phase: "recording", recordedChunks, recordedPlaintextBytes: recordedChunks * 204 });
+    h.port.command = request => {
+      if (request.kind === "seal") {
+        h.commands.push(request);
+        h.f.set({ phase: "paused", failure: "recoveryFailed" });
+        return Promise.resolve(h.f.response(request.requestId, false));
+      }
+      if (request.kind === "start") h.f.set({ failure: null });
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      await expect(view.controller.stopRecording()).rejects.toThrow();
+      expect(view.controller.snapshot).toMatchObject({ state: "paused", statusCode: "capture_recovery_pending", recordedChunks });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_recovery_pending");
+      await view.controller.resumeRecording!();
+      expect(view.controller.snapshot.statusCode).toBe("capture_recording");
+      expect(h.commands.map(c => c.kind)).toEqual(["seal", "read", "start"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
   it("shows Starting immediately, permits cancellation and ignores an older late start response", async () => {
     const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
     let startID = "";

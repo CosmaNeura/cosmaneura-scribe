@@ -281,6 +281,7 @@ export class CaptureApp extends LitElement {
               >
                 ${(this.#snapshot.desktop?.phase === "starting" || this.#snapshot.native?.phase === "starting") ? "Cancel start"
                   : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
+                  : this.#snapshot.statusCode === "capture_recovery_pending" ? "Retry saving and upload"
                   : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
                   ? "Retry stop and upload" : this.#snapshot.desktop ? "Stop recording" : "Stop and upload"}
               </button>
@@ -290,7 +291,8 @@ export class CaptureApp extends LitElement {
               ${provider?.controller.resumeRecording && this.#snapshot.state === "paused"
                 && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
                 class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
-                @click=${this.#resume}>Resume recording</button>` : ""}
+                @click=${this.#resume}>${this.#snapshot.statusCode === "capture_recovery_pending"
+                  ? "Retry recovery and resume" : "Resume recording"}</button>` : ""}
               ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
                 data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Set up recording access</button>` : ""}
               ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
@@ -315,6 +317,7 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
               : this.#snapshot.statusCode === "capture_start_failed" ? "Recording could not start. Check your microphone and connection, then retry Resume."
               : this.#snapshot.statusCode === "capture_preparation_failed" ? "Recording preparation could not finish. Reopen this encounter to retry. Saved work is retained."
+              : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
               : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or stop and upload."
               : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."

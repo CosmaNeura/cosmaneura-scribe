@@ -48,6 +48,7 @@ export async function connectNativeProviderRecorder(options: {
       : phase === "pausing" ? "capture_stopping" : phase === "stopPending" ? "audio_capture_native_stop_failed"
       : phase === "sealed" ? "capture_upload_pending" : phase === "sealing" ? "capture_sealing"
       : phase === "recording" ? "capture_recording"
+      : state.failure === "recoveryFailed" ? "capture_recovery_pending"
       : state.failure === "startFailed" ? "capture_start_failed" : phase === "paused" ? "capture_paused"
       : phase === "failed" ? "capture_preparation_failed" : phase === "closed" ? "capture_reopen_required" : "capture_ready"),
     recordedChunks: state.recordedChunks, queuedChunks: accepted ? 0 : uploadProgress
@@ -125,7 +126,8 @@ export async function connectNativeProviderRecorder(options: {
       current(); accepted = true; status = null; publish();
     } catch (error) {
       status = state?.phase === "sealed" || state?.phase === "sealing" ? "capture_upload_pending"
-        : state?.recordedChunks === 0 && state.phase === "paused" ? "capture_no_saved_audio" : null;
+        : state?.recordedChunks === 0 && state.phase === "paused" && state.failure !== "recoveryFailed"
+          ? "capture_no_saved_audio" : null;
       publish(); throw error;
     }
   })().finally(() => { uploading = null; });

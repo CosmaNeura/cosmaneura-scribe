@@ -36,7 +36,7 @@ const nativeRecording = { open: async (_session, requestId) => response(requestI
   if (request.kind === "close") return { requestId: request.requestId, ok: true, recording: null };
   if (request.kind === "start") {
     if (hold) { update({ phase: "starting", busy: true }); await new Promise(done => { heldStart = done; }); }
-    else update({ phase: "recording", busy: false, signal: { version: 2, signal: { inputBuffers: 30, convertedBuffers: 30,
+    else update({ phase: "recording", failure: null, busy: false, signal: { version: 2, signal: { inputBuffers: 30, convertedBuffers: 30,
       inputEverNonzero: true, convertedEverNonzero: true, inputLevel: 0.1, convertedLevel: 0.1,
       inputAgeMs: 0, convertedAgeMs: 0, zeroInputMs: 0, inputMuted: false, route: "usb" } } });
   } else if (request.kind === "pause") { update({ phase: "paused", busy: false }); heldStart?.(); }
@@ -92,6 +92,20 @@ try {
   await resources.controller.refreshTranscriptionStatus();
   await until(() => button("stop-button").textContent.includes("Retry stop"));
   assert.equal(button("resume-recording"), null);
+  update({ phase: "paused", failure: "recoveryFailed", recordedChunks: 1, recordedPlaintextBytes: 204 });
+  await resources.controller.refreshTranscriptionStatus();
+  await until(() => button("resume-recording")?.textContent.includes("Retry recovery and resume"));
+  assert.ok(button("stop-button").textContent.includes("Retry saving and upload"));
+  assert.ok(app.textContent.includes("saving could not be confirmed"));
+  button("stop-button").click();
+  await until(() => calls.includes("seal") && resources.controller.snapshot.statusCode === "capture_recovery_pending"
+    && !button("resume-recording").disabled && app.textContent.includes("saving could not be confirmed"));
+  assert.ok(app.textContent.includes("saving could not be confirmed"));
+  const startsBeforeRecovery = calls.filter(kind => kind === "start").length;
+  button("resume-recording").click();
+  await until(() => app.querySelector("scribe-ios-input-meter"));
+  assert.equal(calls.filter(kind => kind === "start").length, startsBeforeRecovery + 1);
+  assert.equal(app.textContent.includes("saving could not be confirmed"), false);
   app.remove(); await resources.deactivate();
   assert.equal(calls.filter(kind => kind === "close").length, 1); assert.equal(locked, false);
   // The same compiled screen renders receipt-confirmed progress and keeps
@@ -117,6 +131,6 @@ try {
   await until(() => upload.textContent.includes("Confirming receipt before transcription"));
   assert.equal(upload.querySelector("progress").value, 1080);
   upload.remove();
-  console.log(JSON.stringify({ checks: 8, compiled_native_provider: true, source_and_core_fixtures: true,
+  console.log(JSON.stringify({ checks: 10, compiled_native_provider: true, source_and_core_fixtures: true,
     cancellable_start: true, native_meter_and_input: true, physical_recording: false }));
 } finally { heldStart?.(); await resources.deactivate(); dom.window.close(); }
