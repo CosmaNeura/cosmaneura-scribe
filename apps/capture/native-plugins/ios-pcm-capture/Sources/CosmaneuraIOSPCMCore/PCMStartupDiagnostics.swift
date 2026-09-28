@@ -5,6 +5,7 @@ import Foundation
 public enum PCMStartupEvent: String, Codable, Sendable {
   case startRequested, ticketAccepted, permissionAccepted, authorityAccepted, handleCreated
   case leaseReady, reservationsReady, sourcePrepareRequested, sourcePrepared, sourceConsumeRequested
+  case sourceReadyRequested, sourceReadyReceived
   case firstInputBuffer, firstInputSignal, firstConvertedBuffer, firstConvertedSignal
   case startRejected, readyRequested, readyAccepted, readyRejected
   case driverStarting, sessionActivated, tapInstalled, engineStarted, driverArmed, driverRejected

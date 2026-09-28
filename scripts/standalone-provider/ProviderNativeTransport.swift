@@ -176,7 +176,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
       // or size limits. Other requests using the pool must keep running.
       defer { bytes.task.cancel() }
       guard let http = response as? HTTPURLResponse, http.url == request.url,
-        [200, 401, 403, 409, 422, 503].contains(http.statusCode),
+        operation.action.acceptsResponseStatus(http.statusCode),
         http.mimeType == "application/json",
         http.value(forHTTPHeaderField: "Cache-Control")?.split(separator: ",").contains(where: {
           $0.trimmingCharacters(in: .whitespaces).lowercased() == "no-store"

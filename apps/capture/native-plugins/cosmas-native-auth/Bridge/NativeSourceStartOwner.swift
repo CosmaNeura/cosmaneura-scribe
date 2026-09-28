@@ -131,6 +131,10 @@ struct NativeSourceDecision: Sendable {
         try enter(); defer { busy = false }
         guard let grant else { throw ProviderNativeError.unavailable }
         let result = try await send(action: "authorize", key: authorizeKey)
+        return try decision(result, grant: grant)
+    }
+
+    private func decision(_ result: [String: Any], grant: NativeSourceGrant) throws -> NativeSourceDecision {
         guard Set(result.keys) == ["receipt", "secret"],
               let receipt = result["receipt"] as? [String: Any],
               let secret = result["secret"] as? String, secret == proof else {
@@ -158,9 +162,22 @@ struct NativeSourceDecision: Sendable {
     /// Called in the native microphone start path, immediately before acquiring
     /// audio. Returns metadata only. No permission can be manufactured in JavaScript.
     func consumeForMicrophone() async throws -> NativeCapturePermit {
-        guard preparation.source == .ios else { throw ProviderNativeError.unavailable }
-        let decision = try await authorize()
-        guard let expiry = sourceDate(decision.expiresAt), expiry > Date(),
+        guard preparation.source == .ios, microphoneRunID == nil else {
+            throw ProviderNativeError.unavailable
+        }
+        let decision: NativeSourceDecision
+        if grant == nil, let ready = try await prepareAndAuthorizeMicrophone() {
+            decision = ready
+        } else {
+            // Only an explicit unsupported-route response chooses the older
+            // server path. Uncertain/denied requests retain original stop custody.
+            if grant == nil { _ = try await prepare() }
+            decision = try await authorize()
+        }
+        try journal.requireUsable()
+        guard !closed, !retiring,
+              try connection.stopRevision(userID: record.userID, organizationID: record.organizationID) == revision,
+              let expiry = sourceDate(decision.expiresAt), expiry > Date(),
               NativeSourceConsumption.consumed.insert(decision.capabilityID).inserted else {
             throw ProviderNativeError.unavailable
         }
@@ -171,6 +188,43 @@ struct NativeSourceDecision: Sendable {
                                              startExpiresAt: expiry, captureExpiresAt: captureExpiry)
         microphoneRunID = permit.runID
         return permit
+    }
+
+    private func prepareAndAuthorizeMicrophone() async throws -> NativeSourceDecision? {
+        try enter(); defer { busy = false }
+        guard preparation.source == .ios, grant == nil, !issued else {
+            throw ProviderNativeError.unavailable
+        }
+        let nonce = UUID().uuidString.lowercased(), authorizeNonce = UUID().uuidString.lowercased()
+        var body = envelope(action: "prepare", nonce: nonce)
+        body["authorize_idempotency_key"] = authorizeKey
+        body["authorize_request_nonce"] = authorizeNonce
+        let request = try ProviderNativeRequest(
+            nativeStartID: UUID(), revision: revision, key: prepareKey,
+            body: JSONSerialization.data(withJSONObject: body), combinedPreparation: true)
+        let reply = try await connection.send(request)
+        try Task.checkCancellation()
+        guard !closed, !retiring else { throw ProviderNativeError.unavailable }
+        // The receiver rejects unsupported routes before Core dispatch. Core
+        // access denials become403; no other status is safe for legacy fallback.
+        if reply.status == 404 { return nil }
+        guard reply.status == 200,
+              let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+              Set(value.keys) == ["preparation", "authorization"],
+              let prepared = value["preparation"] as? [String: Any],
+              let authorized = value["authorization"] as? [String: Any] else {
+            throw ProviderNativeError.response
+        }
+        let receipt = try responseReceipt(prepared, nonce: nonce)
+        let checked = try checkReceipt(receipt)
+        guard receipt["state"] as? String == "prepared",
+              receipt["issued_at"] is NSNull, receipt["expires_at"] is NSNull,
+              let expires = receipt["preparation_expires_at"] as? String,
+              let expiry = sourceDate(expires), let deadline = sourceDate(preparation.captureAuthorizedUntil),
+              Date() < expiry, expiry <= deadline else { throw ProviderNativeError.response }
+        let ready = try decision(responseReceipt(authorized, nonce: authorizeNonce), grant: checked)
+        grant = checked
+        return ready
     }
 
     /// Native continuation checks the original issued source and current account.
@@ -224,8 +278,7 @@ struct NativeSourceDecision: Sendable {
         busy = true
     }
 
-    private func send(action: String, key: String) async throws -> [String: Any] {
-        let nonce = UUID().uuidString.lowercased()
+    private func envelope(action: String, nonce: String) -> [String: Any] {
         var payload: [String: Any] = [
             "schema_version": "1.0", "attempt_id": attemptID, "owner_proof": proof,
             "source": preparation.source.rawValue,
@@ -235,11 +288,16 @@ struct NativeSourceDecision: Sendable {
             "capture_authorized_until": preparation.captureAuthorizedUntil,
         ]
         if preparation.firstSequenceNumber > 0 { payload["first_sequence_number"] = preparation.firstSequenceNumber }
-        let body: [String: Any] = [
+        return [
             "workspace_id": preparation.workspaceID.uuidString.lowercased(),
             "binding_ref": preparation.bindingRef, "request_nonce": nonce,
             "operation": ["kind": "source_start", "action": action, "payload": payload],
         ]
+    }
+
+    private func send(action: String, key: String) async throws -> [String: Any] {
+        let nonce = UUID().uuidString.lowercased()
+        let body = envelope(action: action, nonce: nonce)
         // Only the trusted host can supply a fresh, same-account revision, and
         // only cessation uses it. No start decision is rebound or refreshed.
         let requestRevision = action == "stop" ? try stopRevision?() ?? revision : revision
@@ -247,8 +305,14 @@ struct NativeSourceDecision: Sendable {
                                                body: JSONSerialization.data(withJSONObject: body))
         let reply = try await connection.send(request)
         guard !closed, (!retiring || action == "stop"), reply.status == 200,
-              let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
-              value["contract_version"] as? String == "1",
+              let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any] else {
+            throw ProviderNativeError.response
+        }
+        return try responseReceipt(value, nonce: nonce)
+    }
+
+    private func responseReceipt(_ value: [String: Any], nonce: String) throws -> [String: Any] {
+        guard value["contract_version"] as? String == "1",
               value["operation"] as? String == "source_start",
               value["workspace_id"] as? String == preparation.workspaceID.uuidString.lowercased(),
               value["binding_ref"] as? String == preparation.bindingRef,

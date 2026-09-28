@@ -9,7 +9,6 @@ import Foundation
 /// The production source is the existing Core owner with its original stop proof.
 @MainActor protocol NativeProviderMicrophoneSource: AnyObject {
   var recordingPreparation: NativeSourcePreparation { get }
-  func prepare() async throws -> NativeSourceGrant
   func consumeForMicrophone() async throws -> NativeCapturePermit
   func requireActiveMicrophone(runID: String) throws
   func retireForAuthenticationChange()
@@ -146,15 +145,13 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         guard try await requestPermission() else { throw ProviderNativeError.unavailable }
         try requireStarting()
         PCMStartupDiagnostics.shared.record(.permissionAccepted)
-        PCMStartupDiagnostics.shared.record(.sourcePrepareRequested)
-        _ = try await authority.source.prepare()
-        try requireStarting()
-        PCMStartupDiagnostics.shared.record(.sourcePrepared)
+        PCMStartupDiagnostics.shared.record(.sourceReadyRequested)
         PCMStartupDiagnostics.shared.record(.sourceConsumeRequested)
         try await NativeCaptureStartGate.consume(
           owner: authority.id, consumer: .nativeEncryptedMicrophone
         ) { permit in
           try requireStarting()
+          PCMStartupDiagnostics.shared.record(.sourceReadyReceived)
           PCMStartupDiagnostics.shared.record(.authorityAccepted)
           authority.runID = permit.runID
           try recorder.start(

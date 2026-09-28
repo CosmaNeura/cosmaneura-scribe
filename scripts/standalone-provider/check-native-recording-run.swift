@@ -40,6 +40,7 @@ private func runRequire(_ value: Bool, line: UInt = #line) throws {
     return grant
   }
   func consumeForMicrophone() async throws -> NativeCapturePermit {
+    _ = try await prepare()
     issued += 1
     if holdAuthorize { await withCheckedContinuation { authorizeWait = $0 } }
     // Deliberately returns even after retirement: the shared gate must fence it.
@@ -156,20 +157,61 @@ private actor SourceWire: ProviderNativeWire {
   let sourceID = UUID().uuidString.lowercased(), consentID = UUID().uuidString.lowercased()
   let capabilityID = UUID().uuidString.lowercased()
   var stopAttempts: [(String, Data)] = []
+  var requests: [ProviderNativeRequest] = []
   var loseStop = false
+  var sequenceStatus = 200, fault = "none", holdSequence = false
+  private var held: CheckedContinuation<Void, Never>?
+  private var entered: CheckedContinuation<Void, Never>?
   init(_ preparation: NativeSourcePreparation) { self.preparation = preparation }
   func loseNextStop() { loseStop = true }
+  func configure(status: Int = 200, fault: String = "none", hold: Bool = false) {
+    sequenceStatus = status; self.fault = fault; holdSequence = hold
+  }
+  func waitUntilHeld() async {
+    if held == nil { await withCheckedContinuation { entered = $0 } }
+  }
+  func release() { held?.resume(); held = nil }
   func send(_ request: ProviderNativeRequest, token: String) async throws -> ProviderNativeReply {
+    requests.append(request)
     let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
     let operation = body["operation"] as! [String: Any]
     let action = operation["action"] as! String
     let payload = operation["payload"] as! [String: Any]
-    let now = Date()
-    let format = ISO8601DateFormatter()
-    let expires = format.string(
-      from: min(
-        now.addingTimeInterval(10),
-        format.date(from: preparation.captureAuthorizedUntil)!))
+    if request.action == .sourceStartReady {
+      if holdSequence {
+        await withCheckedContinuation { held = $0; entered?.resume(); entered = nil }
+      }
+      if fault == "lost" { throw ProviderNativeError.unavailable }
+      if sequenceStatus != 200 {
+        return ProviderNativeReply(status: sequenceStatus, body: Data("{}".utf8))
+      }
+      var prepared = response(action: "prepare", body: body)
+      var authorizeBody = body
+      authorizeBody["request_nonce"] = body["authorize_request_nonce"]!
+      var authorized = response(action: "authorize", body: authorizeBody)
+      var preparationReceipt = prepared["receipt"] as! [String: Any]
+      var authorization = authorized["receipt"] as! [String: Any]
+      var receipt = authorization["receipt"] as! [String: Any]
+      switch fault {
+      case "prepare-nonce": prepared["request_nonce"] = UUID().uuidString.lowercased()
+      case "authorize-nonce": authorized["request_nonce"] = UUID().uuidString.lowercased()
+      case "prepare-state": preparationReceipt["state"] = "issued"
+      case "prepare-session": preparationReceipt["session_id"] = UUID().uuidString.lowercased()
+      case "prepare-expired": preparationReceipt["preparation_expires_at"] = "2000-01-01T00:00:00Z"
+      case "authorize-secret": authorization["secret"] = "different-proof"
+      case "authorize-source": receipt["source_start_id"] = UUID().uuidString.lowercased()
+      case "authorize-consent": receipt["consent_record_id"] = UUID().uuidString.lowercased()
+      case "authorize-expired": receipt["expires_at"] = "2000-01-01T00:00:00Z"
+      case "authorize-position": receipt["first_sequence_number"] = 2
+      default: break
+      }
+      prepared["receipt"] = preparationReceipt
+      authorization["receipt"] = receipt
+      authorized["receipt"] = authorization
+      return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
+        "preparation": prepared, "authorization": authorized,
+      ]))
+    }
     if action == "stop" {
       // Canonicalize only the original proof payload; each envelope nonce is new.
       stopAttempts.append(
@@ -179,6 +221,18 @@ private actor SourceWire: ProviderNativeWire {
         throw ProviderNativeError.unavailable
       }
     }
+    return ProviderNativeReply(status: 200,
+      body: try JSONSerialization.data(withJSONObject: response(action: action, body: body)))
+  }
+  private func response(action: String, body: [String: Any]) -> [String: Any] {
+    let operation = body["operation"] as! [String: Any]
+    let payload = operation["payload"] as! [String: Any]
+    let now = Date()
+    let format = ISO8601DateFormatter()
+    let expires = format.string(
+      from: min(
+        now.addingTimeInterval(10),
+        format.date(from: preparation.captureAuthorizedUntil)!))
     var receipt: [String: Any] = [
       "schema_version": "1.0", "session_id": preparation.sessionID.uuidString.lowercased(),
       "attempt_id": payload["attempt_id"]!, "source_start_id": sourceID,
@@ -189,20 +243,56 @@ private actor SourceWire: ProviderNativeWire {
       "state": action == "prepare" ? "prepared" : (action == "stop" ? "stopped" : "issued"),
       "preparation_expires_at": format.string(from: now.addingTimeInterval(60)),
       "capture_authorized_until": preparation.captureAuthorizedUntil,
-      "issued_at": format.string(from: now), "expires_at": expires, "capability_id": capabilityID,
+      "issued_at": action == "prepare" ? NSNull() : format.string(from: now),
+      "expires_at": action == "prepare" ? NSNull() : expires, "capability_id": capabilityID,
     ]
     if preparation.firstSequenceNumber > 0 {
       receipt["first_sequence_number"] = preparation.firstSequenceNumber
     }
     let result: [String: Any] =
       action == "authorize" ? ["receipt": receipt, "secret": payload["owner_proof"]!] : receipt
-    return ProviderNativeReply(
-      status: 200,
-      body: try JSONSerialization.data(withJSONObject: [
+    return [
         "contract_version": "1", "operation": "source_start", "workspace_id": body["workspace_id"]!,
         "binding_ref": body["binding_ref"]!, "request_nonce": body["request_nonce"]!,
         "checked_at": format.string(from: now), "receipt": result,
-      ]))
+      ]
+  }
+}
+
+@MainActor private struct BoundSource {
+  let fixture: Fixture
+  let driver = Driver()
+  let journal: NativeSourceProofJournal
+  let wire: SourceWire
+  let auth: NativeWorkspaceAuth
+  let source: NativeSourceStartOwner
+  let connection: NativeProviderConnection
+  init() throws {
+    fixture = try Fixture()
+    journal = try NativeSourceProofJournal(platform: .ios, backing: JournalMemory())
+    wire = SourceWire(fixture.preparation)
+    let policy = try NativeTokenPolicy(
+      issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider")
+    let driver = driver
+    auth = NativeWorkspaceAuth(
+      enabled: true, organizationID: "org_offline", tokenPolicy: policy,
+      driver: { driver }, accessBlock: { Block() })
+    connection = NativeProviderConnection(auth: auth, wire: wire)
+    let connection = connection
+    auth.onChange = { [weak connection] state in connection?.authChanged(state) }
+    source = try NativeSourceStartOwner(
+      connection: connection, revision: auth.state().revision,
+      preparation: fixture.preparation, identity: auth.state().identity!, journal: journal)
+  }
+  func run(permission: @escaping @MainActor () async throws -> Bool = { true }) throws
+    -> NativeProviderRecordingRun
+  {
+    try NativeProviderRecordingRun(
+      source: source, lease: fixture.lease, batch: fixture.batch, requestPermission: permission
+    ) { validate in
+      fixture.recorder.validate = validate
+      return fixture.recorder
+    }
   }
 }
 
@@ -494,9 +584,112 @@ private actor SourceWire: ProviderNativeWire {
       try runRequire(journal.pending.count == 1)
       checks += 2
     }
+    checks += try await checkSourceSequence()
     checks += try await checkActualEncryptedRun()
     checks += try await CheckNativeRecordingHost.run()
     print("native recording run checks passed: \(checks)")
+  }
+
+  @MainActor static func checkSourceSequence() async throws -> Int {
+    var checks = 0
+    do {
+      let f = try BoundSource(), original = try BoundSource()
+      // The new string action must never be available to renderer callers.
+      try await rejects {
+        _ = try ProviderNativeRequest(id: UUID().uuidString.lowercased(),
+          revision: f.auth.state().revision, action: "source-start-ready", key: "synthetic-start", body: "{}")
+      }
+      let pending = f.journal.pending
+      let run = try f.run()
+      try await run.start()
+      try runRequire(await f.wire.requests.count == 1)
+      try runRequire(await f.wire.requests.first?.action == .sourceStartReady)
+      try runRequire(f.fixture.recorder.starts == 1 && f.journal.pending == pending)
+      try await rejects { _ = try await f.source.consumeForMicrophone() }
+      try runRequire(await f.wire.requests.count == 1)
+      try await run.stop()
+      try runRequire(f.journal.pending.isEmpty && original.journal.pending.count == 1)
+      try await original.source.confirmStopped()
+      checks += 6
+    }
+    do {
+      let f = try BoundSource()
+      await f.wire.configure(status: 404)
+      let run = try f.run()
+      try await run.start()
+      let requests = await f.wire.requests
+      try runRequire(requests.map(\.action) == [.sourceStartReady, .sourceStart, .sourceStart])
+      let first = try JSONSerialization.jsonObject(with: requests[0].body) as! [String: Any]
+      try runRequire(requests[0].key == requests[1].key)
+      try runRequire(first["authorize_idempotency_key"] as? String == requests[2].key)
+      let payloads = try requests.map { request -> Data in
+        let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
+        let operation = body["operation"] as! [String: Any]
+        return try JSONSerialization.data(withJSONObject: operation["payload"]!, options: .sortedKeys)
+      }
+      try runRequire(payloads[0] == payloads[1] && payloads[1] == payloads[2])
+      try await run.stop()
+      checks += 4
+    }
+    for status in [401, 403, 409, 422, 503, 302, 500] {
+      let f = try BoundSource()
+      await f.wire.configure(status: status)
+      try await rejects { _ = try await f.source.consumeForMicrophone() }
+      try runRequire(await f.wire.requests.count == 1)
+      try runRequire(f.journal.pending.count == 1 && f.fixture.recorder.starts == 0)
+      try await f.source.confirmStopped()
+      checks += 2
+    }
+    for fault in ["lost", "prepare-nonce", "authorize-nonce", "prepare-state", "prepare-session",
+                  "prepare-expired", "authorize-secret", "authorize-source", "authorize-consent",
+                  "authorize-expired", "authorize-position"] {
+      let f = try BoundSource()
+      await f.wire.configure(fault: fault)
+      try await rejects { _ = try await f.source.consumeForMicrophone() }
+      try runRequire(await f.wire.requests.count == 1)
+      try runRequire(f.journal.pending.count == 1 && f.fixture.recorder.starts == 0)
+      try await f.source.confirmStopped()
+      checks += 2
+    }
+    do {
+      let f = try BoundSource()
+      await f.wire.configure(hold: true)
+      let run = try f.run(), start = Task { try await run.start() }
+      await f.wire.waitUntilHeld()
+      try await rejects { try await run.stop() }
+      try runRequire(f.journal.pending.count == 1 && f.fixture.recorder.starts == 0)
+      await f.wire.release()
+      try await rejects { try await start.value }
+      try await run.stop()
+      try runRequire(run.phase == .stopped && f.journal.pending.isEmpty && f.fixture.recorder.starts == 0)
+      checks += 2
+    }
+    do {
+      let f = try BoundSource()
+      await f.wire.configure(hold: true)
+      let identity = f.driver.identity
+      let start = Task { try await f.source.consumeForMicrophone() }
+      await f.wire.waitUntilHeld()
+      f.driver.identity = nil
+      _ = f.auth.state()
+      await f.wire.release()
+      try await rejects { _ = try await start.value }
+      try runRequire(f.journal.pending.count == 1)
+      f.driver.identity = identity
+      _ = f.auth.state()
+      try await f.source.confirmStopped()
+      checks += 1
+    }
+    do {
+      let f = try BoundSource()
+      let run = try f.run(permission: { false })
+      try await rejects { try await run.start() }
+      let requests = await f.wire.requests
+      try runRequire(!requests.contains { $0.action == .sourceStartReady })
+      try runRequire(f.fixture.recorder.starts == 0 && run.phase == .stopped)
+      checks += 2
+    }
+    return checks
   }
 }
 
