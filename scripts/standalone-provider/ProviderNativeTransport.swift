@@ -183,9 +183,10 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
         }) == true
       else { throw ProviderNativeError.response }
       var data = Data()
+      let responseLimit = operation.responseLimit
       for try await byte in bytes {
         try Task.checkCancellation()
-        guard data.count < operation.action.responseLimit else {
+        guard data.count < responseLimit else {
           throw ProviderNativeError.response
         }
         data.append(byte)

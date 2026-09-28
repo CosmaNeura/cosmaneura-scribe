@@ -87,8 +87,8 @@ struct CheckNativeProvider {
         }
         throw CheckFailure.failed
     }
-    static func rejected<T: Sendable>(_ operation: Task<T, Error>) async throws {
-        do { _ = try await operation.value; throw CheckFailure.failed }
+    static func rejected<T: Sendable>(_ operation: Task<T, Error>, file: StaticString = #fileID, line: UInt = #line) async throws {
+        do { _ = try await operation.value; try require(false, file: file, line: line) }
         catch is CheckFailure { throw CheckFailure.failed }
         catch { }
     }
@@ -129,8 +129,44 @@ struct CheckNativeProvider {
             }
             do {
                 _ = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
-                throw CheckFailure.failed
+                try require(false)
             } catch is CheckFailure { throw CheckFailure.failed } catch {}
+            connection.close(); checks += 1
+        }
+        for fault in ["none", "missing", "nonce", "workspace", "binding", "operation"] {
+            let (auth, _, wire, connection) = try make()
+            let workspace = UUID(), recovery = UUID(), nonce = UUID().uuidString.lowercased()
+            let binding = "scribe_capture_binding_01j00000000000000000000000"
+            let appointment = "appointment_01j00000000000000000000000", revision = auth.state().revision
+            let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "workspace_id": workspace.uuidString.lowercased(), "opening_nonce": nonce,
+            ]), as: UTF8.self)
+            var review: [String: Any] = ["contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
+                "binding_ref": binding, "request_nonce": nonce, "operation": "provider_encounter"]
+            switch fault {
+            case "nonce": review["request_nonce"] = UUID().uuidString.lowercased()
+            case "workspace": review["workspace_id"] = UUID().uuidString.lowercased()
+            case "binding": review["binding_ref"] = "scribe_capture_binding_01j00000000000000000000001"
+            case "operation": review["operation"] = "creator_review"
+            default: break
+            }
+            var value: [String: Any] = ["revision": revision, "workspaceId": workspace.uuidString.lowercased(),
+                "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
+                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment]]
+            if fault != "missing" { value["openingReview"] = review }
+            await wire.setResponse(ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: value)))
+            let input = try request(auth, action: "mount", body: body)
+            try require(input.responseLimit == 32 * 1024 * 1024 + 16_384)
+            _ = try await connection.send(input)
+            if fault == "none" {
+                let mounted = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
+                try require(mounted.recoveryScope == recovery)
+            } else {
+                do {
+                    _ = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
+                    try require(false)
+                } catch is CheckFailure { throw CheckFailure.failed } catch {}
+            }
             connection.close(); checks += 1
         }
         do {
@@ -155,6 +191,22 @@ struct CheckNativeProvider {
             data.append(32)
             await wire.setResponse(ProviderNativeReply(status: 200, body: data))
             try await rejected(Task { try await connection.send(request(auth, action: "capture-operations")) })
+            connection.close(); checks += 1
+        }
+        do {
+            let (auth, _, wire, connection) = try make()
+            let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "workspace_id": UUID().uuidString.lowercased(), "opening_nonce": UUID().uuidString.lowercased(),
+            ]), as: UTF8.self)
+            let input = try request(auth, action: "mount", body: body), limit = input.responseLimit
+            var data = Data("{\"padding\":\"".utf8)
+            data.append(Data(repeating: 120, count: limit - data.count - 2)); data.append(Data("\"}".utf8))
+            await wire.setResponse(ProviderNativeReply(status: 200, body: data))
+            let response = try await connection.send(input)
+            try require(response.body.count == limit)
+            try await rejected(Task { try await connection.send(request(auth, action: "mount")) })
+            data.append(32); await wire.setResponse(ProviderNativeReply(status: 200, body: data))
+            try await rejected(Task { try await connection.send(request(auth, action: "mount", body: body)) })
             connection.close(); checks += 1
         }
         do {

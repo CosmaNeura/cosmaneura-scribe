@@ -17,6 +17,7 @@ import { assertProgress, type JournalSnapshot, type ProviderProgress } from "./w
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources } from "./workspace-contracts";
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
+import { openingReviewView } from "./opening-review";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
@@ -153,11 +154,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     });
     disposeContent = () => { first = undefined; dispose(); };
   };
-  const recordOrReview = async (startRequested?: MicrophoneInput): Promise<void> => {
+  const recordOrReview = async (startRequested?: MicrophoneInput, openingView?: CreatorReviewView): Promise<void> => {
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
     step = "recording status check";
-    const view = await new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read();
+    const view = openingView?.session_id === id ? openingView
+      : await new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read();
     if (!authorized(n)) return;
     if (!["created", "capturing"].includes(view.status)) {
       if (!progress().uploaded) await persist({ ...progress(), uploaded: true });
@@ -263,14 +265,15 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const loaded = await opened.journal.load();
     if (!authorized(n)) return;
     journal = loaded;
+    const first = openingReviewView(opened.openingReview, opened.scope);
     if (loaded.progress) {
       assertProgress(loaded.progress);
       if (loaded.progress.pendingSave) {
         show(`<h1>Confirm your previous save</h1><p>A note save needs confirmation before you can edit again.</p><button data-workspace-action="resolve">Recover note save</button>`);
-      } else if (loaded.progress.sessionId) await recordOrReview();
+      } else if (loaded.progress.sessionId) await recordOrReview(undefined, first ?? undefined);
       else show(`<h1>Recover recording preparation</h1><p>Confirm the original request before starting another recording.</p><button data-workspace-action="admit">Retry preparation</button>`);
     } else {
-      const recovered = await client.discoverEncounter();
+      const recovered = first === undefined ? await client.discoverEncounter() : first;
       if (!authorized(n)) return;
       if (recovered === null) preparation();
       else {

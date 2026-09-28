@@ -173,3 +173,12 @@ describe("desktop provider resource factory", () => {
     expect(f.release).toHaveBeenCalledTimes(1); expect(dispose).toHaveBeenCalledTimes(1);
   });
 });
+
+it("preserves the opening timestamp while acquiring existing desktop custody", async () => {
+  const f = await fixture(), openingReview = { scope: { ...scope }, receivedAt: Date.now() - 100, view: null };
+  vi.mocked(f.backend.openEncounter).mockResolvedValue({ ...f.selected, openingReview });
+  const opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  expect(opened.openingReview).toEqual(openingReview);
+  expect(f.authorizeRecorder).not.toHaveBeenCalled();
+  expect(f.resources.selectWindow).not.toHaveBeenCalled();
+});

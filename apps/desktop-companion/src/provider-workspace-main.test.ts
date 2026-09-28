@@ -14,7 +14,7 @@ const decision = { key: "invented-review-operation", request: { schema_version: 
   translation_id: sessionId, decision: "accepted" as const, expected_source_segment_version: 1,
   expected_source_transcript_version: 1, expected_translation_version: 1 } };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
-async function fixture() {
+async function fixture(openingReview?: { scope: typeof scope; receivedAt: number; view: null }) {
   let state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
   const authListeners = new Set<(value: ProviderSessionState) => void>(), events: DesktopProviderEvent[] = [];
   let saved: JournalSnapshot = { revision: "1", progress: structuredClone(consent) };
@@ -42,7 +42,7 @@ async function fixture() {
         openEncounter: async (_ref: string, encounterSignal: AbortSignal) => {
           contextSignals.push(encounterSignal);
           return { scope, signal: encounterSignal, encounter: { appointmentRef: scope.appointmentRef, title: "Invented desktop visit", detail: "Invented consent" },
-            request: backend, openInCore: navigation,
+            request: backend, openInCore: navigation, ...(openingReview ? { openingReview } : {}),
             journal: { load: async () => structuredClone(saved), save: async (previous: JournalSnapshot, progress: ProviderProgress) => {
               if (previous.revision !== saved.revision) throw new Error("invented CAS conflict");
               saved = { revision: String(Number(saved.revision) + 1), progress: structuredClone(progress) }; return saved;
@@ -188,4 +188,16 @@ describe("trusted desktop provider workspace", () => {
       expect(f.stop).toHaveBeenCalled(); expect(f.dispose).toHaveBeenCalledTimes(1);
     } finally { gate.resolve(); f.refuseStop(false); await f.main.dispose(); }
   });
+});
+
+
+it("passes opening display data through main IPC without renewing its timestamp", async () => {
+  const openingReview = { scope, receivedAt: Date.now() - 100, view: null };
+  const f = await fixture(openingReview);
+  try {
+    await f.connect();
+    const reply = await f.invoke("open", { appointmentRef: scope.appointmentRef }, { ...f.ids, encounterId: null });
+    expect(reply.ok).toBe(true);
+    expect(reply.result!.openingReview).toEqual(openingReview);
+  } finally { await f.main.dispose(); }
 });

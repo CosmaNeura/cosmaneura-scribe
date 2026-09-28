@@ -23,7 +23,11 @@ private final class Fixture: URLProtocol, @unchecked Sendable {
         "Cache-Control": key.contains("invalid") ? "public" : "no-store",
       ])!
     client!.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-    if key.contains("oversize") {
+    if key.contains("opening-long") {
+      let data = Data(("{\"padding\":\"" + String(repeating: "x", count: 9000) + "\"}").utf8)
+      client!.urlProtocol(self, didLoad: data)
+      client!.urlProtocolDidFinishLoading(self)
+    } else if key.contains("oversize") {
       client!.urlProtocol(self, didLoad: Data(repeating: 32, count: 8193))
     } else if key.contains("hold") || key.contains("invalid") {
       client!.urlProtocol(self, didLoad: Data("{".utf8))
@@ -150,6 +154,27 @@ private func rejected(_ operation: Task<ProviderNativeReply, Error>) async throw
     }
     try require(factory.sessions.count == 3, "rejected response does not discard pool")
     checks += 1
+
+    do {
+      let wire = transport!
+      let body = String(
+        decoding: try JSONSerialization.data(withJSONObject: [
+          "workspace_id": UUID().uuidString.lowercased(),
+          "opening_nonce": UUID().uuidString.lowercased(),
+        ]), as: UTF8.self)
+      let opening = try ProviderNativeRequest(
+        id: UUID().uuidString.lowercased(),
+        revision: UUID().uuidString.lowercased(), action: "mount", key: "offline-opening-long",
+        body: body)
+      let reply = try await wire.send(opening, token: "offline-opening-token")
+      try require(reply.body.count > 8192, "combined opening streams its bounded larger body")
+      try await rejected(
+        Task {
+          try await wire.send(
+            request("mount", key: "offline-opening-long-legacy"), token: "offline-legacy-token")
+        })
+      checks += 1
+    }
 
     do {
       let wire = transport!

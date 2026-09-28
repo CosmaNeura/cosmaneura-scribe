@@ -7,6 +7,7 @@ import type { PreparedProviderRecorder } from "../provider-binding";
 import type { CreatorReviewJournal } from "../../../review-ui/src/creator-review-journal";
 import type { AuthorizedCoreRequest, CoreCaptureScope } from "./core-client";
 import type { ProviderWorkspaceJournal } from "./workspace-journal";
+import type { ProviderOpeningReview } from "./opening-review";
 
 /** Core supplies display values through its existing authorized encounter list. */
 export interface ProviderEncounter { readonly appointmentRef: string; readonly title: string; readonly detail: string }
@@ -23,6 +24,7 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly encounter: ProviderEncounter;
   readonly scope: CoreCaptureScope;
   readonly request: AuthorizedCoreRequest;
+  readonly openingReview?: ProviderOpeningReview;
   readonly signal: AbortSignal;
   readonly journal: ProviderWorkspaceJournal;
   readonly reviewJournal: (sessionId: string) => CreatorReviewJournal;

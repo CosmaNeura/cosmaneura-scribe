@@ -43,6 +43,18 @@ struct ProviderNativeRequest: Sendable {
     let key: String
     let body: Data
 
+    var openingNonce: UUID? {
+        guard action == .mount,
+              let value = try? JSONSerialization.jsonObject(with: body) as? [String: String],
+              Set(value.keys) == ["workspace_id", "opening_nonce"],
+              let text = value["opening_nonce"], let nonce = UUID(uuidString: text),
+              nonce.uuidString.lowercased() == text else { return nil }
+        return nonce
+    }
+    var responseLimit: Int {
+        openingNonce == nil ? action.responseLimit : 32 * 1024 * 1024 + 16_384
+    }
+
     init(id: String, revision: String, action: String, key: String, body: String) throws {
         guard let identifier = UUID(uuidString: id), identifier.uuidString.lowercased() == id,
               UUID(uuidString: revision)?.uuidString.lowercased() == revision,
@@ -319,9 +331,13 @@ protocol ProviderNativeWire: Sendable {
               let workspace = body["workspace_id"] as? String, let id = UUID(uuidString: workspace),
               id.uuidString.lowercased() == workspace else { return }
         recordingMounts.removeValue(forKey: id)
-        guard Set(body.keys) == ["workspace_id"], reply.status == 200, reply.body.count <= 8192,
+        let opening = request.openingNonce
+        let bodyKeys: Set<String> = opening == nil ? ["workspace_id"] : ["workspace_id", "opening_nonce"]
+        var replyKeys: Set<String> = ["revision", "recoveryScope", "workspaceId", "appointmentRef", "bindingRef", "encounter"]
+        if opening != nil { replyKeys.insert("openingReview") }
+        guard Set(body.keys) == bodyKeys, reply.status == 200, reply.body.count <= request.responseLimit,
               let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
-              Set(value.keys) == ["revision", "recoveryScope", "workspaceId", "appointmentRef", "bindingRef", "encounter"],
+              Set(value.keys) == replyKeys,
               value["revision"] as? String == request.revision,
               value["workspaceId"] as? String == workspace,
               let recovery = value["recoveryScope"] as? String, let scope = UUID(uuidString: recovery),
@@ -332,6 +348,14 @@ protocol ProviderNativeWire: Sendable {
               appointment.range(of: "^appointment_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil,
               let encounter = value["encounter"] as? [String: Any], encounter["appointmentRef"] as? String == appointment,
               recordingMounts.count < 100 else { return }
+        if let opening {
+            guard let review = value["openingReview"] as? [String: Any],
+                  review["contract_version"] as? String == "1",
+                  review["workspace_id"] as? String == workspace,
+                  review["binding_ref"] as? String == binding,
+                  review["request_nonce"] as? String == opening.uuidString.lowercased(),
+                  review["operation"] as? String == "provider_encounter" else { return }
+        }
         recordingMounts[id] = (request.revision, NativeProviderRecordingMount(
             workspaceID: id, bindingRef: binding, recoveryScope: scope))
     }
@@ -361,7 +385,7 @@ protocol ProviderNativeWire: Sendable {
             try Task.checkCancellation()
             try self.current(request.revision)
             guard [200, 401, 403, 409, 422, 503].contains(reply.status),
-                  reply.body.count <= request.action.responseLimit else {
+                  reply.body.count <= request.responseLimit else {
                 throw ProviderNativeError.response
             }
             if reply.status != 200 {
