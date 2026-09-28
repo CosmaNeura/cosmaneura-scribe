@@ -387,7 +387,10 @@ class ProviderCoreTransport:
         _validate_intent(mount, action, payload, native_start=native_start)
         if _negotiated is not None:
             _require(not native_start and _negotiated_read(action, payload))
-        current = _negotiated or await self._negotiate(mount.selection)
+        current = _negotiated or await self._negotiate(
+            mount.selection,
+            capture_mount=mount if action == "capture-operations" else None,
+        )
         _require(current.mount == mount)
         headers = {**await self._workload_headers(), **current.headers()}
         headers["Idempotency-Key"] = key
@@ -455,7 +458,18 @@ class ProviderCoreTransport:
         except Exception:
             raise ProviderCoreUnavailable("core_provider_workload_unavailable") from None
 
-    async def _negotiate(self, expected: CoreProviderSelection | None) -> _NegotiatedMount:
+    async def _negotiate(
+        self,
+        expected: CoreProviderSelection | None,
+        *,
+        capture_mount: CoreProviderMount | None = None,
+    ) -> _NegotiatedMount:
+        if capture_mount is not None:
+            _checked(capture_mount, CoreProviderMount)
+            _require(
+                capture_mount.selection == expected
+                and _reference(capture_mount.binding_ref, "scribe_capture_binding")
+            )
         context = await self._context(expected)
         selection = context.selection
         issued, _ = await self._send(
@@ -502,6 +516,12 @@ class ProviderCoreTransport:
         )
         interaction = response_headers.get("X-Cosmaneura-Interaction-Ref", "")
         _require(re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", interaction))
+        if capture_mount is not None:
+            # Capture operations authorize this exact binding in Core before
+            # any downstream work, then recheck it before publishing. Reuse the
+            # identifier only; token/interaction and registry checks stay fresh
+            # for every request. Opening, admission and notes still resolve it.
+            return _NegotiatedMount(capture_mount, token, interaction, turn)
         headers = {
             "X-Cosmaneura-Mount-Context": _secret(token),
             "X-Cosmaneura-Client-Turn-ID": str(turn),

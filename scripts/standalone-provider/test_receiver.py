@@ -656,6 +656,58 @@ async def test_recorder_does_not_publish_denied_or_revoked_session(harness, fail
     assert h.wire.operations == ["creator_review"]
 
 
+def source_payload(h, action):
+    return {
+        "workspace_id": h.workspace, "binding_ref": BINDING, "request_nonce": str(uuid4()),
+        "operation": {"kind": "source_start", "action": action, "payload": {
+            "schema_version": "1.0", "attempt_id": str(uuid4()), "source": "ios_microphone",
+            "owner_proof": "d" * 64, "lease_id": str(uuid4()), "lease_receipt_id": str(uuid4()),
+            "lease_generation": 1,
+            "capture_authorized_until": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
+        }},
+    }
+
+
+@pytest.mark.asyncio
+async def test_native_source_route_keeps_scope_and_generic_route_cannot_start(harness):
+    h = harness
+    payload = source_payload(h, "prepare")
+    async with client(h) as c:
+        denied = await c.post("/provider/v1/capture-operations", json=payload)
+        # The existing generic transport reports unlisted operations as 503.
+        # Rejection must happen before any Core request, regardless of the code.
+        assert denied.status_code == 503 and not h.wire.calls
+        result = await c.post("/provider/v1/source-start", json=payload)
+    assert result.status_code == 200
+    assert result.json()["binding_ref"] == BINDING
+    assert result.json()["request_nonce"] == payload["request_nonce"]
+    assert h.wire.calls == [
+        "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
+        "/service/v1/agent/scribe/capture-operations",
+    ]
+    assert h.wire.operations == ["source_start"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["prepare", "authorize"])
+@pytest.mark.parametrize("boundary", [1, 2, 3])
+async def test_native_source_request_rechecks_frozen_account_at_each_core_boundary(
+    harness, action, boundary,
+):
+    h = harness
+
+    def revoke(_):
+        if len(h.wire.calls) == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+
+    h.wire.after = revoke
+    async with client(h) as c:
+        result = await c.post("/provider/v1/source-start", json=source_payload(h, action))
+    assert result.status_code == 403 and "receipt" not in result.json()
+    assert len(h.wire.calls) == boundary
+    assert h.wire.operations == (["source_start"] if boundary == 3 else [])
+
+
 @pytest.mark.asyncio
 async def test_qualified_native_profile_uses_unchanged_verifier(harness):
     h = harness

@@ -444,9 +444,9 @@ async def test_open_with_review_reuses_only_its_own_negotiation(connection):
     await client.request(mount, ROOT + "capture-operations", body(
         operation={"kind": "creator_review"},
     ), "offline-next-read")
-    assert wire.counter == 2 and len(wire.calls) == 8
+    assert wire.counter == 2 and len(wire.calls) == 7
     await client.open_with_review(uuid4(), "offline-another-opening")
-    assert wire.counter == 3 and len(wire.calls) == 12
+    assert wire.counter == 3 and len(wire.calls) == 11
 
 
 @pytest.mark.parametrize("boundary", [
@@ -557,6 +557,171 @@ async def test_configured_admission_review_and_existing_note_routes(connection):
     assert wire.counter == 10  # Fresh exchange for every action, not a cached mount token.
     assert wire.context_calls > len(wire.calls)
     assert USER_TOKEN not in repr(mount) and WORKLOAD_TOKEN not in repr(client)
+
+
+def startup_operations(source="ios_microphone"):
+    lease_id, receipt_id = str(uuid4()), str(uuid4())
+    intent = {
+        "schema_version": "1.0", "attempt_id": str(uuid4()), "source": source,
+        "owner_proof": "d" * 64, "lease_id": lease_id, "lease_receipt_id": receipt_id,
+        "lease_generation": 1,
+        "capture_authorized_until": (NOW + timedelta(minutes=15)).isoformat(),
+    }
+    return [
+        {"kind": "issue_lease", "payload": {"protocol_version": "1.0"}},
+        {"kind": "reserve_chunks", "payload": {
+            "protocol_version": "1.0", "capture_lease_id": lease_id,
+            "capture_lease_generation": 1, "channel": "microphone",
+            "first_sequence_number": 0, "count": 90,
+        }},
+        *({"kind": "source_start", "action": action, "payload": intent}
+          for action in ("prepare", "authorize", "stop")),
+    ]
+
+
+@pytest.mark.parametrize("source", ["ios_microphone", "desktop_companion"])
+async def test_capture_start_and_stop_keep_fresh_authority_without_duplicate_binding_lookup(
+    connection, source,
+):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    for index, operation in enumerate(startup_operations(source)):
+        payload = body(operation=operation)
+        result = await client.request(
+            mount, ROOT + "capture-operations", payload, f"offline-start-step-{index}",
+            native_start=operation["kind"] == "source_start",
+        )
+        assert result["operation"] == operation["kind"]
+        assert wire.calls[index * 3:] == [
+            ("/embed/v1/context-tokens/exchange", {
+                "requested_surface": "provider_assistant", "record_ref": SELECTION.appointment_ref,
+            }),
+            ("/service/v1/agent/mount-context/resolve", None),
+            (ROOT + "capture-operations", payload),
+        ]
+        if index == 3:
+            assert len(wire.calls) == 12
+    # First four steps start capture; stop uses its original proof and key.
+    assert len(wire.calls) == 15 and wire.counter == 6
+    assert len(wire.turns) == 6  # Opening and every action have distinct interactions.
+    assert [effect[2] for effect in wire.effects] == [f"offline-start-step-{i}" for i in range(5)]
+
+
+@pytest.mark.parametrize("boundary", [1, 2, 3])
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_capture_operation_rechecks_access_at_every_remaining_boundary(
+    connection, boundary, change,
+):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+
+    def change_access(_):
+        if len(wire.calls) == boundary:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+
+    wire.after = change_access
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount, ROOT + "capture-operations", body(operation=startup_operations()[3]),
+            "offline-one-use-start", native_start=True,
+        )
+    assert caught.value.status == 403 and len(wire.calls) == boundary
+    assert len(wire.effects) == (1 if boundary == 3 else 0)
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 410])
+async def test_core_binding_denial_never_resolves_a_replacement_or_retries(connection, status):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    wire.alter = lambda path, value: (
+        httpx.Response(status) if path.endswith("capture-operations") else value
+    )
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount, ROOT + "capture-operations", body(operation=startup_operations()[0]),
+            "offline-lease-key",
+        )
+    assert caught.value.status == 403 and len(wire.calls) == 3
+    assert len(wire.effects) == 1
+
+
+async def test_cancelled_fresh_capture_negotiation_never_dispatches_the_operation(connection):
+    wire, client = connection
+    mount = await client.open()
+    arrived = asyncio.Event()
+
+    async def hold(path):
+        if path.endswith("mount-context/resolve"):
+            arrived.set()
+            await asyncio.Event().wait()
+
+    wire.before = hold
+    task = asyncio.create_task(client.request(
+        mount, ROOT + "capture-operations", body(operation=startup_operations()[2]),
+        "offline-cancel-start", native_start=True,
+    ))
+    await asyncio.wait_for(arrived.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not wire.effects
+
+
+async def test_uncertain_native_start_preserves_body_proof_and_key_on_explicit_retry(connection):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    payload = body(operation=startup_operations()[3])
+    wire.lost = True
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(mount, ROOT + "capture-operations", payload, "offline-original-start",
+                             native_start=True)
+    assert len(wire.effects) == 1 and len(wire.calls) == 3
+    wire.lost = False
+    await client.request(mount, ROOT + "capture-operations", payload, "offline-original-start",
+                         native_start=True)
+    assert len(wire.calls) == 6 and wire.effects[0] == wire.effects[1]
+    assert wire.counter == 3  # Explicit retry also exchanges a new context token.
+
+
+@pytest.mark.parametrize("field,value", [
+    ("surface", "patient_assistant"), ("auth_tier", "patient"),
+    ("actor_id", "authority_actor_01j00000000000000000000001"),
+    ("tenant_id", "authority_tenant_01j00000000000000000000001"),
+])
+async def test_capture_operation_requires_matching_fresh_mount_identity(connection, field, value):
+    wire, client = connection
+    mount = await client.open()
+    wire.alter = lambda path, result: (
+        {**result, field: value} if path.endswith("mount-context/resolve") else result
+    )
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(mount, ROOT + "capture-operations",
+                             body(operation=startup_operations()[1]), "offline-reserve")
+    assert not wire.effects
+
+
+@pytest.mark.parametrize("field,value", [
+    ("binding_ref", "scribe_capture_binding_01j00000000000000000000001"),
+    ("workspace_id", str(uuid4())), ("request_nonce", str(uuid4())),
+    ("operation", "creator_review"), ("checked_at", "2000-01-01T00:00:00Z"),
+])
+async def test_capture_operation_with_known_binding_still_validates_reply(connection, field, value):
+    wire, client = connection
+    mount = await client.open()
+    wire.alter = lambda path, result: (
+        {**result, field: value} if path.endswith("capture-operations") else result
+    )
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(mount, ROOT + "capture-operations",
+                             body(operation=startup_operations()[1]), "offline-reserve")
+    assert len(wire.effects) == 1
 
 
 @pytest.mark.parametrize("status", ["created", "capturing"])
@@ -866,7 +1031,7 @@ async def test_concurrent_requests_keep_their_own_interaction_and_snapshot(conne
 
     async def before(path):
         nonlocal arrivals
-        if path.endswith("capture-bindings/resolve"):
+        if path.endswith("mount-context/resolve"):
             arrivals += 1
             arrived.set()
             if arrivals == 2:
