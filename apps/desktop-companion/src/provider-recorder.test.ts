@@ -164,7 +164,7 @@ describe("confirmed stop recovery", () => {
     } finally { await f.close(); }
   });
 
-  it("retains zero saved chunks as paused without upload, completion, or fresh authority", async () => {
+  it("retains zero saved chunks as paused until explicit resume and preserves the interruption warning", async () => {
     const f = await fixture(true), driver = interruptedDriver(f);
     const issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");
     const upload = vi.spyOn(f.options.uploadTarget, "putCompleteEnvelope");
@@ -187,6 +187,14 @@ describe("confirmed stop recovery", () => {
       expect(f.nativeStart).toHaveBeenCalledTimes(1);
       expect(driver.stop).toHaveBeenCalledWith({ mode: "discard" });
       expect(f.options.retireSource).toHaveBeenCalledTimes(1);
+      await view.controller.resumeRecording!();
+      expect(view.controller.snapshot).toMatchObject({ state: "recording", recordedChunks: 0, desktop: { coverage: "incomplete" } });
+      await view.deactivate(); await w.boundary.dispose();
+      const resources = await f.reopen();
+      const reopened = await f.open({ ...resources,
+        authorizePreparation: async () => ({ sessionId: f.session.id, status: "capturing" }) });
+      expect(reopened.snapshot).toMatchObject({ state: "paused", recordedChunks: 0, desktop: { coverage: "incomplete" } });
+      expect(f.nativeStart).toHaveBeenCalledTimes(2); // Reopen cannot start a third capture.
     } finally { await w.boundary.dispose(); await f.close(); }
   });
 
@@ -280,6 +288,42 @@ describe("confirmed stop recovery", () => {
 });
 
 describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () => {
+  it.each([true, false])("retains accurate first-capture coverage after unused setup expiry (history reader: %s)", async historyReader => {
+    const f = await fixture(), choosing = deferred(), chosen = deferred();
+    const selectWindow = vi.fn().mockImplementationOnce(async () => {
+      choosing.resolve(); await chosen.promise; return f.selectWindow();
+    }).mockImplementation(f.selectWindow);
+    const coverage = (value: DesktopProviderRecorderOptions["coverage"]): DesktopProviderRecorderOptions["coverage"] => historyReader ? value : {
+      load: () => value.load(), persist: item => value.persist(item),
+      beginInterval: (receipt: string, first: number) => value.beginInterval!(receipt, first),
+    };
+    try {
+      const recorder = await f.open({ selectWindow, coverage: coverage(f.options.coverage) });
+      const before = (await f.options.flowStore.getActiveCaptureState())!;
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await choosing.promise;
+      vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse(before.lease.expires_at) + 1_000);
+      await recorder.stopRecording(); await rejected;
+      // The restored queue holds Date.now; reset that same clock before renewal
+      // instead of stranding it in the future when global Date is restored.
+      vi.setSystemTime(vi.getRealSystemTime()); chosen.resolve();
+      expect(recorder.snapshot).toMatchObject({ state: "paused", recordedChunks: 0, desktop: { coverage: "not_started" } });
+      await recorder.resumeRecording();
+      expect(recorder.snapshot.desktop?.coverage).toBe(historyReader ? "aligned" : "incomplete");
+      await vi.waitFor(() => expect(recorder.snapshot.recordedChunks).toBeGreaterThanOrEqual(2));
+      await recorder.stopRecording();
+      expect(recorder.snapshot).toMatchObject({ state: "processing", desktop: { coverage: historyReader ? "complete" : "incomplete" } });
+      expect((await f.options.flowStore.getActiveCaptureState())?.continuation?.firstSequenceNumber).toBe(0);
+      await recorder.deactivate();
+      const resources = await f.reopen();
+      const reopened = await f.open({ ...resources, coverage: coverage(resources.coverage),
+        authorizePreparation: async () => ({ sessionId: f.session.id, status: "processing" }) });
+      expect(reopened.snapshot.desktop?.coverage).toBe(historyReader ? "complete" : "incomplete");
+      expect(f.complete).toHaveBeenCalledTimes(1);
+      expect(f.authority).toHaveBeenCalledTimes(1); // Reopen never starts another capture.
+    } finally { vi.useRealTimers(); chosen.resolve(); await f.close(); }
+  });
+
   it("shows native Stop and receipt progress while live upload and final confirmation are delayed", async () => {
     const f = await fixture(), uploadGate = deferred<void>(), completionGate = deferred<void>();
     const bff = f.options.createBff(f.abort.signal), capabilities = await bff.getCapabilities(f.session.id);

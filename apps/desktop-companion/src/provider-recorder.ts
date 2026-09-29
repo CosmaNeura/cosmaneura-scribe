@@ -50,7 +50,8 @@ export interface DesktopProviderRecorderOptions {
   readonly queueStorage: CaptureQueueStorage;
   readonly uploadTarget: CiphertextUploadTarget;
   readonly coverage: { load(): Promise<DesktopPCMCoverage | null>; persist(value: DesktopPCMCoverage): Promise<void>;
-    beginInterval?(receiptId: string, firstSequenceNumber: number): Promise<void> };
+    beginInterval?(receiptId: string, firstSequenceNumber: number): Promise<void>;
+    hasPriorCapture?(receiptId: string): Promise<boolean> };
   readonly native: Omit<NativeProcessDriverOptions, "enabled" | "authorizeSelectedWindow">;
   /** Native picker, deliberate choice only; never a renderer PID or first window. */
   readonly selectWindow: (signal: AbortSignal) => Promise<Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil">>;
@@ -202,6 +203,11 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           await recorder.preparedContext();
           recorder.unmountedAvailability = await recorder.availability(recorder.signal);
         }
+        if (active?.continuation) {
+          recorder.continuityUnconfirmed = active.continuation.firstSequenceNumber > 0
+            || await options.coverage.hasPriorCapture?.(active.lease.receipt_id) !== false;
+          recorder.requireOpen();
+        }
       });
       return recorder;
     } catch (error) { await recorder.deactivate(); throw error; }
@@ -336,7 +342,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       const active = await this.options.flowStore.getActiveCaptureState(); this.requireOpen();
       if (!active?.continuation?.prepared || !this.options.coverage.beginInterval) throw unavailable();
       await this.options.coverage.beginInterval(active.lease.receipt_id, active.continuation.firstSequenceNumber);
-      this.coverage = await this.options.coverage.load(); this.continuityUnconfirmed = true; this.requireOpen();
+      this.continuityUnconfirmed ||= this.coverage !== null || active.continuation.firstSequenceNumber > 0
+        || await this.options.coverage.hasPriorCapture?.(active.lease.receipt_id) !== false;
+      this.coverage = await this.options.coverage.load(); this.requireOpen();
       this.unsubscribeController(); this.controller = this.createController();
       this.unsubscribeController = this.controller.subscribe(() => this.publish());
       this.unmountedAvailability = await this.availability(this.signal);
