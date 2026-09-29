@@ -40,11 +40,18 @@ from cosmas_os.api.auth import (
 )
 from cosmas_os.application import workspace as ws
 from cosmas_os.config import Settings
-from cosmas_os.models import CoreCaptureAccount, CoreProviderAccount, EncounterWorkspace
+from cosmas_os.models import (
+    AppointmentObservation,
+    CoreCaptureAccount,
+    CoreProviderAccount,
+    EncounterWorkspace,
+    PatientLink,
+    Principal,
+)
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import SecretStr
-from sqlalchemy import Connection, Engine, select
+from sqlalchemy import Connection, Engine, or_, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -417,20 +424,15 @@ class ProviderReceiver:
         with Session(selected_bind) as session:
             identity = self.identity(session, authorization)
             account = self.account(session, identity)
-            workspace = ws._workspace(
-                session,
-                identity.box_id,
-                identity.principal_id,
-                str(workspace_id),
-                row_locks=row_locks,
-            )
-            appointment = ws._encounter(
-                session,
-                identity.box_id,
-                workspace.appointment_id,
-                workspace.patient_link_id,
-                row_locks=row_locks,
-            )
+            if row_locks:
+                workspace = ws._workspace(
+                    session, identity.box_id, identity.principal_id, str(workspace_id),
+                )
+                appointment = ws._encounter(
+                    session, identity.box_id, workspace.appointment_id, workspace.patient_link_id,
+                )
+            else:
+                appointment = self.read_only_appointment(session, identity, workspace_id)
             if appointment.source != "cosmaneura_core":
                 raise AccessDenied()
             # A changed environment, reviewed account or creator cannot reopen a
@@ -452,6 +454,46 @@ class ProviderReceiver:
                 "title": appointment.patient_label,
                 "detail": "",
             }
+
+    @staticmethod
+    def read_only_appointment(
+        session: Session, identity: RequestIdentity | CoreProviderIdentity, workspace_id: UUID,
+    ) -> AppointmentObservation:
+        # Same current-row predicates as _workspace/_encounter, in one query.
+        # This path only serves one fresh read-only registry snapshot. Legacy
+        # callers retain the original row-locking helpers; no access is cached.
+        bind = session.get_bind()
+        if not isinstance(bind, Connection):
+            raise InvalidRequest()
+        options = bind.get_execution_options()
+        if (options.get("isolation_level") != "REPEATABLE READ"
+                or options.get("postgresql_readonly") is not True):
+            raise InvalidRequest()
+        appointment = session.scalar(
+            select(AppointmentObservation)
+            .select_from(EncounterWorkspace)
+            .join(Principal, Principal.id == EncounterWorkspace.owner_id)
+            .join(AppointmentObservation,
+                  AppointmentObservation.id == EncounterWorkspace.appointment_id)
+            .join(PatientLink, PatientLink.id == AppointmentObservation.patient_link_id)
+            .where(
+                EncounterWorkspace.id == str(workspace_id),
+                EncounterWorkspace.box_id == identity.box_id,
+                EncounterWorkspace.owner_id == identity.principal_id,
+                Principal.box_id == identity.box_id,
+                Principal.principal_type == "human", Principal.state == "active",
+                Principal.tombstoned_at.is_(None),
+                AppointmentObservation.box_id == identity.box_id,
+                PatientLink.box_id == identity.box_id, PatientLink.state == "confirmed",
+                PatientLink.revoked_at.is_(None),
+                or_(EncounterWorkspace.patient_link_id.is_(None),
+                    EncounterWorkspace.patient_link_id == AppointmentObservation.patient_link_id),
+            )
+            .execution_options(populate_existing=True)
+        )
+        if appointment is None:
+            raise AccessDenied()
+        return appointment
 
     def context(self, authorization: str, revision: UUID, workspace_id: UUID,
                 *, bind: Engine | Connection | None = None):
