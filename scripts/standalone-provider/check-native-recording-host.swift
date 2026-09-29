@@ -510,14 +510,32 @@ import Security
       try check(f.sources.isEmpty && f.runs.isEmpty)
       checks += 1
     }
-    do {
+    for retryStop in [false, true] {
       let f = try Fixture()
       let host = f.host()
       try await host.open()
       try await host.start()
-      try f.runs[0].stop()
+      let key = f.keys.value
+      f.runs[0].failStop = retryStop
+      if retryStop {
+        try await rejects { try f.runs[0].stop() }
+        try await rejects { try await host.refresh() }
+        try check(host.phase == .stopPending && host.failure == .stopPending)
+        f.runs[0].failStop = false
+        try await host.pause()
+      } else {
+        try f.runs[0].stop()
+        try await host.refresh()
+      }
+      try check(host.phase == .paused && host.failure == .captureInterrupted)
+      try check(host.saved!.committedChunks == 1 && f.runs.count == 1 && f.keys.value == key)
       try await host.refresh()
-      try check(host.phase == .paused && host.saved!.committedChunks == 1)
+      try check(host.failure == .captureInterrupted && f.runs.count == 1)
+      try await host.start()
+      try check(host.phase == .recording && host.failure == nil && f.runs.count == 2)
+      try await host.pause()
+      try check(host.phase == .paused && host.failure == nil)
+      try check(host.saved!.committedChunks == 2 && f.keys.value == key)
       try await host.close()
       checks += 1
     }
