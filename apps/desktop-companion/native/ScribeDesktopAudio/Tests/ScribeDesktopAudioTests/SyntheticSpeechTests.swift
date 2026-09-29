@@ -38,6 +38,14 @@ func generatedSpeechSurvivesNativeMeetingMix(systemRate: Int) async throws {
   let system = timeline(patient, rate: systemRate, slot: slot, starts: [1, 2])
   let mixed = try await mix(microphone, system, systemRate: systemRate, reverse: false)
   let reversed = try await mix(microphone, system, systemRate: systemRate, reverse: true)
+  // Half-second renewals cross each isolated voice and simultaneous speech.
+  // Compare every output sample with the unrenewed timeline, not only energy.
+  let renewed = try await mix(
+    microphone, system, systemRate: systemRate, reverse: false, renewEveryTicks: 50)
+  let renewedReversed = try await mix(
+    microphone, system, systemRate: systemRate, reverse: true, renewEveryTicks: 50)
+  let renewalPreservesSpeech = mixed == renewed && mixed == renewedReversed
+  #expect(renewalPreservesSpeech, "Renewal must not drop, duplicate or alter spoken samples")
   let microphoneOnly = try await mix(
     microphone, Array(repeating: 0, count: system.count), systemRate: systemRate, reverse: false)
   let systemOnly = try await mix(
@@ -120,7 +128,11 @@ private final class SpeechSink: DesktopPCMSink, @unchecked Sendable {
   private var values: [Int16] = []
   private var failures: [DesktopAudioFailure] = []
   private var packets: [DesktopPCMPacket] = []
-  func started(_ start: DesktopPCMStart) -> Bool { true }
+  private var starts = 0
+  func started(_ start: DesktopPCMStart) -> Bool {
+    lock.withLock { starts += 1 }
+    return true
+  }
   func receive(_ packet: DesktopPCMPacket) -> Bool {
     lock.withLock {
       packets.append(packet)
@@ -131,21 +143,37 @@ private final class SpeechSink: DesktopPCMSink, @unchecked Sendable {
   func failed(_ reason: DesktopAudioFailure) { lock.withLock { failures.append(reason) } }
   func result() throws -> [Int16] {
     try lock.withLock {
-      try #require(failures.isEmpty && packets.allSatisfy { $0.isClear })
+      try #require(failures.isEmpty && starts == 1 && packets.allSatisfy { $0.isClear })
+      var position = 0
+      for packet in packets {
+        try #require(packet.firstFrame == position)
+        position += packet.frameCount
+      }
+      try #require(position == values.count)
       return values
     }
   }
 }
 
-private func mix(_ microphone: [Float], _ system: [Float], systemRate: Int, reverse: Bool)
+private func mix(
+  _ microphone: [Float], _ system: [Float], systemRate: Int, reverse: Bool,
+  renewEveryTicks: Int? = nil
+)
   async throws -> [Int16]
 {
   let sink = SpeechSink()
   let expected = microphone.count * 16_000 / 44_100
-  let mixer = try AlignedMeetingPCM(maximumOutputFrames: expected, sink: sink)
+  let initialLimit = renewEveryTicks.map { min(expected, $0 * 2 * 160) } ?? expected
+  let mixer = try AlignedMeetingPCM(
+    maximumOutputFrames: initialLimit, hardMaximumOutputFrames: expected, sink: sink)
   let delivery = AudioDelivery(sink: mixer, onFailure: { _ in })
   let channels = systemRate == 48_000 ? 2 : 1
+  var renewals = 0
   for tick in 0..<(microphone.count / 441) {
+    if let interval = renewEveryTicks, tick > 0, tick.isMultiple(of: interval) {
+      try mixer.extend(maximumOutputFrames: min(expected, (tick + interval * 2) * 160))
+      renewals += 1
+    }
     let time = CMTime(value: Int64(1_000_000_000 + tick * 10_000_000), timescale: 1_000_000_000)
     let mic = try frame(
       microphone, at: tick * 441, rate: 44_100, channels: 1, channel: .microphone, time: time)
@@ -159,6 +187,7 @@ private func mix(_ microphone: [Float], _ system: [Float], systemRate: Int, reve
   delivery.seal()
   await delivery.drain()
   let finished = try mixer.finish()
+  if renewEveryTicks != nil { #expect(renewals > 0) }
   #expect(finished.outputFrames == expected)
   #expect(finished.microphoneTailNanoseconds == 0 && finished.systemTailNanoseconds == 0)
   return try sink.result()
