@@ -108,7 +108,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         } else if (context && journal.progress?.pendingSave) {
           show('<h1>Confirm your previous save</h1><p>Your exact edits are retained for recovery.</p><button data-workspace-action="resolve">Recover note save</button>');
         } else if (step === "encounter setup" || step === "encounter creation") {
-          show('<h1>Check encounter creation</h1><button data-workspace-action="new-encounter">Check and continue</button><button data-workspace-action="encounters">Your encounters</button>');
+          show('<h1>Check encounter creation</h1><button data-workspace-action="check-creation">Check and continue</button><button data-workspace-action="encounters">Your encounters</button>');
         } else if (openingRef) {
           show(`<h1>Encounter could not open</h1><p>Check your connection, then retry. Recording has not started.</p><button data-workspace-action="open" data-appointment="${escape(openingRef)}">Retry opening encounter</button>`);
         } else if (step === "encounter list") {
@@ -138,7 +138,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ${encounters.length ? "" : "<p>No encounters are available yet.</p>"}
       <details class="provider-encounter-help"${encounters.length ? "" : " open"}><summary>Missing an encounter?</summary><p>Ask your practice to assign the encounter in Core. The dashboard opens in your browser and may require a separate sign-in. It does not create an encounter. After assignment, return to Scribe and select Refresh.</p><button data-workspace-action="create">Open Core dashboard</button></details>`);
   };
-  const setup = async (): Promise<void> => {
+  const setup = async (checkPending = false): Promise<void> => {
     requireValue(host.encounterSetup);
     await clearEncounter(); header.hidden = true; step = "encounter setup";
     const n = generation;
@@ -146,7 +146,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const state = await host.encounterSetup.state(host.signal);
     if (!current(n)) return;
     requireValue(!host.account || host.account.email === state.account);
-    setupState = state; showSetup();
+    setupState = state;
+    // Only an explicit recovery action can resubmit the retained request.
+    // Ordinary New encounter navigation still stops at the pending-request screen.
+    if (checkPending && state.pending) await create(null);
+    else showSetup();
   };
   const create = async (patient: EncounterDraft["patient"] | null): Promise<void> => {
     requireValue(host.encounterSetup && setupState);
@@ -478,6 +482,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
         case "create": await host.createEncounter(host.signal); await list(); break;
         case "new-encounter": await setup(); break;
+        case "check-creation": await setup(true); break;
         case "retry-creation": await create(null); break;
         case "select-patient": {
           requireValue(setupState && !setupState.pending);
