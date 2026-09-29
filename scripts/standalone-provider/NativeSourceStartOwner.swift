@@ -74,6 +74,7 @@ struct NativeSourceDecision: Sendable {
     private let connection: NativeProviderConnection
     private let revision: String
     private let preparation: NativeSourcePreparation
+    private let now: @MainActor () -> Date
     private let stopRevision: (@MainActor () throws -> String)?
     private let attemptID = UUID().uuidString.lowercased()
     private let prepareKey = UUID().uuidString.lowercased()
@@ -93,11 +94,15 @@ struct NativeSourceDecision: Sendable {
     var recordingPreparation: NativeSourcePreparation { preparation }
 #if os(macOS)
     private var desktopAuthorizationRequested = false
+    private var desktopCombinedAttempted = false
+    private var desktopLegacyFallback = false
+    private var desktopPreparedDecision: NativeSourceDecision?
 #endif
 
     init(connection: NativeProviderConnection, revision: String,
          preparation: NativeSourcePreparation, identity: NativeAuthIdentity,
          journal: NativeSourceProofJournal,
+         now: @escaping @MainActor () -> Date = { Date() },
          stopRevision: (@MainActor () throws -> String)? = nil) throws {
         guard UUID(uuidString: revision)?.uuidString.lowercased() == revision else {
             throw ProviderNativeError.invalidRequest
@@ -108,7 +113,7 @@ struct NativeSourceDecision: Sendable {
         }
         proof = bytes.map { String(format: "%02x", $0) }.joined()
         _ = bytes.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) }
-        self.connection = connection; self.revision = revision; self.preparation = preparation
+        self.connection = connection; self.revision = revision; self.preparation = preparation; self.now = now
         self.stopRevision = stopRevision; self.journal = journal
         record = NativeSourceProofRecord(attemptID: UUID(uuidString: attemptID)!,
             stopKey: UUID(uuidString: stopKey)!, proof: proof, identity: identity, preparation: preparation)
@@ -134,16 +139,34 @@ struct NativeSourceDecision: Sendable {
         try enter(); defer { busy = false }
         guard let grant else { throw ProviderNativeError.unavailable }
 #if os(macOS)
+        // Once this method is entered, even a lost pipe reply may have exposed
+        // authority. Preparation-only cleanup is no longer safe.
         desktopAuthorizationRequested = true
+        if desktopCombinedAttempted && !desktopLegacyFallback {
+            let prepared = desktopPreparedDecision
+            desktopPreparedDecision = nil
+            try Task.checkCancellation()
+            guard let prepared,
+                  try connection.stopRevision(userID: record.userID,
+                      organizationID: record.organizationID) == revision,
+                  let expiry = sourceDate(prepared.expiresAt), expiry > now() else {
+                throw ProviderNativeError.unavailable
+            }
+            return prepared
+        }
 #endif
         let result = try await send(action: "authorize", key: authorizeKey)
+        return try decision(result, grant: grant)
+    }
+
+    private func decision(_ result: [String: Any], grant: NativeSourceGrant) throws -> NativeSourceDecision {
         guard Set(result.keys) == ["receipt", "secret"],
               let receipt = result["receipt"] as? [String: Any],
               let secret = result["secret"] as? String, secret == proof else {
             throw ProviderNativeError.response
         }
         let checked = try checkReceipt(receipt)
-        let now = Date()
+        let now = now()
         guard checked.sourceLeaseID == grant.sourceLeaseID,
               checked.actorID == grant.actorID, checked.consentRecordID == grant.consentRecordID,
               receipt["state"] as? String == "issued",
@@ -160,6 +183,58 @@ struct NativeSourceDecision: Sendable {
                                     issuedAt: issuedAt, expiresAt: expiresAt,
                                     captureAuthorizedUntil: preparation.captureAuthorizedUntil)
     }
+
+#if os(macOS)
+    /// Called only after deliberate Start and the trusted meeting-window choice.
+    /// Retain the decision in native memory until the existing authorize RPC;
+    /// returning the grant alone cannot start the audio helper.
+    func prepareForDesktopStart() async throws -> NativeSourceGrant {
+        if let ready = try await prepareAndAuthorizeDesktop() { return ready }
+        // Only a known unsupported route permits the older separate decisions.
+        return try await prepare()
+    }
+
+    private func prepareAndAuthorizeDesktop() async throws -> NativeSourceGrant? {
+        try enter(); defer { busy = false }
+        guard preparation.source == .desktop, grant == nil, !issued,
+              !desktopCombinedAttempted else { throw ProviderNativeError.unavailable }
+        desktopCombinedAttempted = true
+        let nonce = UUID().uuidString.lowercased(), authorizeNonce = UUID().uuidString.lowercased()
+        var body = envelope(action: "prepare", nonce: nonce)
+        body["authorize_idempotency_key"] = authorizeKey
+        body["authorize_request_nonce"] = authorizeNonce
+        let request = try ProviderNativeRequest(nativeStartID: UUID(), revision: revision,
+            key: prepareKey, body: JSONSerialization.data(withJSONObject: body), combinedPreparation: true)
+        let reply = try await connection.send(request)
+        try Task.checkCancellation()
+        guard !closed, !retiring else { throw ProviderNativeError.unavailable }
+        if reply.status == 404 { desktopLegacyFallback = true; return nil }
+        guard reply.status == 200,
+              let pair = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+              Set(pair.keys) == ["preparation", "authorization"],
+              let prepared = pair["preparation"] as? [String: Any],
+              let authorized = pair["authorization"] as? [String: Any] else {
+            throw ProviderNativeError.response
+        }
+        let receipt = try responseReceipt(prepared, nonce: nonce)
+        let checked = try checkReceipt(receipt)
+        guard receipt["state"] as? String == "prepared",
+              receipt["issued_at"] is NSNull, receipt["expires_at"] is NSNull,
+              let expires = receipt["preparation_expires_at"] as? String,
+              let expiry = sourceDate(expires), let deadline = sourceDate(preparation.captureAuthorizedUntil),
+              now() < expiry, expiry <= deadline else { throw ProviderNativeError.response }
+        let authorization = try responseReceipt(authorized, nonce: authorizeNonce)
+        guard let issuedReceipt = authorization["receipt"] as? [String: Any],
+              issuedReceipt["capability_id"] as? String == receipt["capability_id"] as? String,
+              issuedReceipt["preparation_expires_at"] as? String == receipt["preparation_expires_at"] as? String else {
+            throw ProviderNativeError.response
+        }
+        let ready = try decision(authorization, grant: checked)
+        grant = checked
+        desktopPreparedDecision = ready
+        return checked
+    }
+#endif
 
     /// Called in the native microphone start path, immediately before acquiring
     /// audio. Returns metadata only. No permission can be manufactured in JavaScript.
@@ -203,8 +278,8 @@ struct NativeSourceDecision: Sendable {
     }
 
 #if os(macOS)
-    /// This process never dispatched authorization, so physical start was
-    /// impossible. The paired backend can retire even a never-committed prepare.
+    /// No decision was exposed to the audio owner, so physical start was
+    /// impossible, including a combined request with an uncertain reply.
     func cancelUnstartedDesktopPreparation() async throws {
         guard !desktopAuthorizationRequested else { throw ProviderNativeError.unavailable }
         try await confirmStopped()
@@ -230,9 +305,19 @@ struct NativeSourceDecision: Sendable {
 
     /// Authentication loss irrevocably disables preparation/authorization for
     /// this owner. Its original proof remains usable only for confirmed stop.
-    func retireForAuthenticationChange() { retiring = true }
+    func retireForAuthenticationChange() {
+        retiring = true
+#if os(macOS)
+        desktopPreparedDecision = nil
+#endif
+    }
 
-    func close() { closed = true; proof = ""; grant = nil; microphoneRunID = nil }
+    func close() {
+        closed = true; proof = ""; grant = nil; microphoneRunID = nil
+#if os(macOS)
+        desktopPreparedDecision = nil
+#endif
+    }
 
     private func enter(allowRetiring: Bool = false) throws {
         try journal.requireUsable()
@@ -240,8 +325,7 @@ struct NativeSourceDecision: Sendable {
         busy = true
     }
 
-    private func send(action: String, key: String) async throws -> [String: Any] {
-        let nonce = UUID().uuidString.lowercased()
+    private func envelope(action: String, nonce: String) -> [String: Any] {
         var payload: [String: Any] = [
             "schema_version": "1.0", "attempt_id": attemptID, "owner_proof": proof,
             "source": preparation.source.rawValue,
@@ -251,11 +335,16 @@ struct NativeSourceDecision: Sendable {
             "capture_authorized_until": preparation.captureAuthorizedUntil,
         ]
         if preparation.firstSequenceNumber > 0 { payload["first_sequence_number"] = preparation.firstSequenceNumber }
-        let body: [String: Any] = [
+        return [
             "workspace_id": preparation.workspaceID.uuidString.lowercased(),
             "binding_ref": preparation.bindingRef, "request_nonce": nonce,
             "operation": ["kind": "source_start", "action": action, "payload": payload],
         ]
+    }
+
+    private func send(action: String, key: String) async throws -> [String: Any] {
+        let nonce = UUID().uuidString.lowercased()
+        let body = envelope(action: action, nonce: nonce)
         // Only the trusted host can supply a fresh, same-account revision, and
         // only cessation uses it. No start decision is rebound or refreshed.
         let requestRevision = action == "stop" ? try stopRevision?() ?? revision : revision
@@ -263,8 +352,14 @@ struct NativeSourceDecision: Sendable {
                                                body: JSONSerialization.data(withJSONObject: body))
         let reply = try await connection.send(request)
         guard !closed, (!retiring || action == "stop"), reply.status == 200,
-              let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
-              value["contract_version"] as? String == "1",
+              let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any] else {
+            throw ProviderNativeError.response
+        }
+        return try responseReceipt(value, nonce: nonce)
+    }
+
+    private func responseReceipt(_ value: [String: Any], nonce: String) throws -> [String: Any] {
+        guard value["contract_version"] as? String == "1",
               value["operation"] as? String == "source_start",
               value["workspace_id"] as? String == preparation.workspaceID.uuidString.lowercased(),
               value["binding_ref"] as? String == preparation.bindingRef,
