@@ -137,7 +137,10 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
           current(signal); current(operationSignal);
           const preparationId = crypto.randomUUID(), source: { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence } = { retiringPreparation: false };
           sources.set(preparationId, source); ownedSources.add(preparationId);
-          const raw = await native.request("sourcePrepare", {
+          // Called after deliberate Start and window selection. The native
+          // owner keeps the short-lived decision until sourceAuthorize consumes
+          // it; this reply exposes only the original grant and process fence.
+          const raw = await native.request("sourcePrepareForStart", {
             revision, preparationId, workspaceId: scope.workspaceId, bindingRef: scope.bindingRef,
             sessionId: prepared.sessionId, leaseId: prepared.captureLeaseId,
             leaseReceiptId: prepared.leaseReceiptId, leaseGeneration: prepared.captureLeaseGeneration,

@@ -53,7 +53,7 @@ it("retains an unacknowledged preparation until native cleanup confirms it befor
     if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
       : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
-    if (method === "sourcePrepare") {
+    if (method === "sourcePrepareForStart") {
       preparationIds.push(payload.preparationId);
       if (lostPreparation) { lostPreparation = false; throw new Error("lost preparation reply"); }
       return preparedReply(grant);
@@ -95,7 +95,7 @@ it("cleans an unknown native preparation after the recorder request is cancelled
     if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
       : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
-    if (method === "sourcePrepare") { preparationId = payload.preparationId; attempt.abort(); throw new Error("request cancelled"); }
+    if (method === "sourcePrepareForStart") { preparationId = payload.preparationId; attempt.abort(); throw new Error("request cancelled"); }
     if (method === "sourcePreparationRelease") return null;
     throw new Error("Unexpected native request");
   });
@@ -125,7 +125,7 @@ it("retains a returned source grant for cleanup when the scope is cancelled with
     if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
       : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
-    if (method === "sourcePrepare") { attempt.abort(); return preparedReply(grant); }
+    if (method === "sourcePrepareForStart") { attempt.abort(); return preparedReply(grant); }
     if (method === "sourceRelease") return null;
     throw new Error("Unexpected native request");
   });
@@ -156,7 +156,7 @@ it("retries the same native desktop source after a lost stop acknowledgement", a
     if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
       : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
-    if (method === "sourcePrepare") return preparedReply(grant);
+    if (method === "sourcePrepareForStart") return preparedReply(grant);
     if (method === "sourceStopped") { if (lost) { lost = false; throw new Error("lost stop reply"); } return null; }
     throw new Error("Unexpected native request");
   });

@@ -8,12 +8,15 @@ import Foundation
         let preparationID: UUID
         let preparation: NativeSourcePreparation
         let owner: NativeSourceStartOwner
+        let forStart: Bool
         var grant: NativeSourceGrant?
+        // The authority-bearing RPC to main was entered, including a lost reply.
+        // A combined preparation retains its decision entirely inside native.
         var authorizationRequested = false
         var retiring = false
 
-        init(_ id: UUID, _ preparation: NativeSourcePreparation, _ owner: NativeSourceStartOwner) {
-            preparationID = id; self.preparation = preparation; self.owner = owner
+        init(_ id: UUID, _ preparation: NativeSourcePreparation, _ owner: NativeSourceStartOwner, forStart: Bool) {
+            preparationID = id; self.preparation = preparation; self.owner = owner; self.forStart = forStart
         }
     }
     private var entries: [UUID: Entry] = [:]
@@ -21,13 +24,14 @@ import Foundation
     private var retiredSources: Set<String> = []
     private var closed = false
 
-    func prepare(id: UUID, preparation: NativeSourcePreparation,
+    func prepare(id: UUID, preparation: NativeSourcePreparation, forStart: Bool = false,
                  makeOwner: () throws -> NativeSourceStartOwner) async throws -> NativeSourceGrant {
         guard !closed, !retiredPreparations.contains(id),
               !entries.values.contains(where: { $0.retiring }) else { throw ProviderNativeError.unavailable }
         let entry: Entry
         if let prior = entries[preparation.sessionID] {
-            guard prior.preparationID == id, prior.preparation == preparation, !prior.retiring else {
+            guard prior.preparationID == id, prior.preparation == preparation,
+                  prior.forStart == forStart, !prior.retiring else {
                 throw ProviderNativeError.unavailable
             }
             entry = prior
@@ -35,10 +39,10 @@ import Foundation
             guard entries.count < 8, !entries.values.contains(where: { $0.preparationID == id }) else {
                 throw ProviderNativeError.unavailable
             }
-            entry = Entry(id, preparation, try makeOwner())
+            entry = Entry(id, preparation, try makeOwner(), forStart: forStart)
             entries[preparation.sessionID] = entry
         }
-        let grant = try await entry.owner.prepare()
+        let grant = try await (forStart ? entry.owner.prepareForDesktopStart() : entry.owner.prepare())
         guard !closed, entries[preparation.sessionID] === entry, !entry.retiring else {
             throw ProviderNativeError.unavailable
         }
@@ -71,8 +75,8 @@ import Foundation
         }
         guard !entry.authorizationRequested else { throw ProviderNativeError.unavailable }
         entry.retiring = true
-        // No authorization was ever requested for this owner, hence no physical
-        // source could start. The existing stop route also handles expired leases.
+        // No decision was exposed to the audio owner, hence no physical source
+        // could start. The existing stop route also handles expired leases.
         // A pending prepare or lost retirement reply retains the exact owner.
         try await entry.owner.cancelUnstartedDesktopPreparation()
         retire(entry)
@@ -88,7 +92,7 @@ import Foundation
         if stopped { try await entry.owner.confirmStopped() }
         else {
             // A known preparation can also outlive authentication. Its stop-only
-            // cleanup is safe only if no authorization was ever requested.
+            // cleanup is safe only before any decision could reach the audio owner.
             guard !entry.authorizationRequested else { throw ProviderNativeError.unavailable }
             try await entry.owner.cancelUnstartedDesktopPreparation()
         }

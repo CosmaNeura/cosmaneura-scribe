@@ -98,7 +98,7 @@ import Foundation
             let reply = try await connection.send(request)
             guard let json = String(data: reply.body, encoding: .utf8) else { throw ProviderNativeError.response }
             return ["status": reply.status, "body": json]
-        case "sourcePrepare":
+        case "sourcePrepare", "sourcePrepareForStart":
             guard Set(payload.keys.filter { $0 != "firstSequenceNumber" }) == ["revision", "preparationId", "workspaceId", "bindingRef", "sessionId",
                 "leaseId", "leaseReceiptId", "leaseGeneration", "captureAuthorizedUntil"],
                   let revision = payload["revision"] as? String,
@@ -123,7 +123,8 @@ import Foundation
                 leaseReceiptID: Self.uuid(payload["leaseReceiptId"]), leaseGeneration: generation.intValue,
                 captureAuthorizedUntil: deadline, source: .desktop,
                 firstSequenceNumber: nativeSourceFirstSequence(payload["firstSequenceNumber"]))
-            let grant = try await sources.prepare(id: Self.uuid(payload["preparationId"]), preparation: preparation) {
+            let grant = try await sources.prepare(id: Self.uuid(payload["preparationId"]), preparation: preparation,
+                forStart: method == "sourcePrepareForStart") {
                 try NativeSourceStartOwner(connection: connection, revision: revision,
                     preparation: preparation, identity: identity, journal: recovery.journal, stopRevision: { [connection] in try connection.stopRevision(for: identity) })
             }
