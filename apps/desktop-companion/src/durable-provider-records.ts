@@ -62,6 +62,14 @@ export class DurableDesktopCoverage {
     const prior = await this.read();
     return prior?.intervals ? prior.intervals.at(-1)!.coverage : prior?.value ?? null;
   }
+  /** Only an exact current interval with no earlier native start or saved chunks
+   * proves an unused setup. Unknown/legacy history retains the continuity warning. */
+  async hasPriorCapture(receiptId: string): Promise<boolean> {
+    uuid(receiptId);
+    const intervals = (await this.read())?.intervals, current = intervals?.at(-1);
+    return !current || current.receiptId !== receiptId || current.firstSequenceNumber > 0
+      || intervals!.slice(0, -1).some(item => item.coverage !== null);
+  }
   /** Called after confirmed physical/server stop, before a fresh source start.
    * Receipt ID makes retries exact even for a zero-chunk interval. */
   async beginInterval(receiptId: string, firstSequenceNumber: number): Promise<void> {

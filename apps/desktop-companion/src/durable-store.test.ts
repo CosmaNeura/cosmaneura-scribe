@@ -162,8 +162,33 @@ describe("durable desktop capture", () => {
       store.close(); store = await DurableDesktopRecordStore.open(options);
       const coverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
       expect(await coverage.load()).toBeNull();
+      expect(await coverage.hasPriorCapture(workspaceId)).toBe(true);
       await coverage.beginInterval(workspaceId, 1080);
       await expect(coverage.beginInterval(recoveryScope, 2048)).rejects.toThrow();
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+
+  it.each(["started", "stopped"] as const)("distinguishes empty setup history from a prior %s interval after reopening", async phase => {
+    const path = await directory(), key = await master(), options = { directory: path, recoveryScope, workspaceId, key };
+    let store = await DurableDesktopRecordStore.open(options);
+    try {
+      const coverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
+      expect(await coverage.hasPriorCapture(workspaceId)).toBe(true); // Unknown interval.
+      await coverage.beginInterval(workspaceId, 0);
+      expect(await coverage.hasPriorCapture(workspaceId)).toBe(false);
+      const start = { hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" };
+      await coverage.persist({ phase: "started", value: start });
+      if (phase === "stopped") await coverage.persist({ phase, value: { start,
+        endHostTimeNanoseconds: "1100000000", outputFrames: 1600,
+        microphoneTailNanoseconds: "0", systemTailNanoseconds: "0" } });
+      store.close(); store = await DurableDesktopRecordStore.open(options);
+      const restored = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
+      expect((await restored.load())?.phase).toBe(phase);
+      expect(await restored.hasPriorCapture(workspaceId)).toBe(false); // Current capture is not a prior gap.
+      expect(await restored.hasPriorCapture(recoveryScope)).toBe(true); // Wrong receipt cannot clear a warning.
+      await restored.beginInterval(recoveryScope, 0);
+      expect(await restored.load()).toBeNull();
+      expect(await restored.hasPriorCapture(recoveryScope)).toBe(true); // Even with zero saved chunks.
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
   });
 
