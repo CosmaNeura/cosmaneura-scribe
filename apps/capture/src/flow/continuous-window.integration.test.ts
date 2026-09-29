@@ -25,17 +25,17 @@ describe("continuous configured desktop windows", () => {
       await f.prepare(); await f.controller.startRecording();
       const metadata = f.storage.listMetadata.bind(f.storage);
       vi.spyOn(f.storage, "listMetadata").mockImplementationOnce(async () => { await listGate.promise; return metadata(); });
-      const receipt = f.bff.getChunkReceipt.bind(f.bff);
-      const reads = vi.spyOn(f.bff, "getChunkReceipt").mockImplementation(async (...args) => {
-        await uploadGate.promise; return receipt(...args);
+      const authorize = f.bff.authorizeUpload.bind(f.bff);
+      const authorizations = vi.spyOn(f.bff, "authorizeUpload").mockImplementation(async (...args) => {
+        await uploadGate.promise; return authorize(...args);
       });
       const complete = vi.spyOn(f.bff, "completeCapture");
       for (let index = 0; index < 12; index++) await f.source.emit();
-      listGate.resolve(); await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(2));
+      listGate.resolve(); await vi.waitFor(() => expect(authorizations).toHaveBeenCalledTimes(2));
       closing = action === "pause" ? f.controller.pauseRecording() : f.controller.deactivate();
       await vi.waitFor(() => expect(f.source.stops).toBe(1));
       uploadGate.resolve(); await closing;
-      expect(reads).toHaveBeenCalledTimes(2); expect(complete).not.toHaveBeenCalled();
+      expect(authorizations).toHaveBeenCalledTimes(2); expect(complete).not.toHaveBeenCalled();
       const records = await metadata();
       expect(records.filter(record => record.state === "purged")).toHaveLength(2);
       expect(records.filter(record => record.state === "encrypted")).toHaveLength(10);
@@ -44,7 +44,7 @@ describe("continuous configured desktop windows", () => {
       await f.reopen(); expect(f.source.starts).toBe(1);
       await f.controller.stopRecording();
       expect(f.controller.snapshot).toMatchObject({ state: "processing", uploadProgress: { total: 12, registered: 12 } });
-      expect(complete).toHaveBeenCalledTimes(1); expect(reads).toHaveBeenCalledTimes(12);
+      expect(complete).toHaveBeenCalledTimes(1); expect(authorizations).toHaveBeenCalledTimes(12);
       expect((await f.storage.listMetadata()).filter(record => record.state === "purged")).toHaveLength(12);
     } finally { listGate.resolve(); uploadGate.resolve(); await closing?.catch(() => undefined); await f.close(); }
   });
@@ -70,14 +70,14 @@ describe("continuous configured desktop windows", () => {
   });
   it.each(["stop", "deactivate"] as const)("keeps acquisition independent of uploads and joins them before %s completes", async action => {
     const f = await fixture(true), gate = deferred();
-    const receipt = f.bff.getChunkReceipt.bind(f.bff);
-    const reads = vi.spyOn(f.bff, "getChunkReceipt").mockImplementationOnce(async (...args) => {
-      await gate.promise; return receipt(...args);
+    const authorize = f.bff.authorizeUpload.bind(f.bff);
+    const authorizations = vi.spyOn(f.bff, "authorizeUpload").mockImplementationOnce(async (...args) => {
+      await gate.promise; return authorize(...args);
     });
     const complete = vi.spyOn(f.bff, "completeCapture");
     try {
       await f.prepare(); await f.controller.startRecording();
-      await f.source.emit(); await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      await f.source.emit(); await vi.waitFor(() => expect(authorizations).toHaveBeenCalledTimes(1));
       await f.source.emit(); // This must finish while the first upload is held.
       expect(f.controller.snapshot).toMatchObject({ state: "recording", recordedChunks: 2,
         uploadProgress: { total: 2, registered: 0 } });
@@ -104,7 +104,7 @@ describe("continuous configured desktop windows", () => {
 
   it("retains offline chunks, retries without stopping capture, and finalizes only on explicit Stop", async () => {
     const f = await fixture(true);
-    const reads = vi.spyOn(f.bff, "getChunkReceipt").mockRejectedValueOnce(new BffResponseError(503, "synthetic_offline", null));
+    const authorizations = vi.spyOn(f.bff, "authorizeUpload").mockRejectedValueOnce(new BffResponseError(503, "synthetic_offline", null));
     const complete = vi.spyOn(f.bff, "completeCapture");
     try {
       await f.prepare(); await f.controller.startRecording(); await f.source.emit();
@@ -114,7 +114,7 @@ describe("continuous configured desktop windows", () => {
       expect((await f.storage.list()).filter(record => record.state === "uploading")).toHaveLength(1);
       f.clock.advance(1000); await f.source.emit();
       await vi.waitFor(async () => expect((await f.storage.listMetadata()).filter(record => record.state === "purged")).toHaveLength(2));
-      expect(reads).toHaveBeenCalledTimes(3); expect(complete).not.toHaveBeenCalled();
+      expect(authorizations).toHaveBeenCalledTimes(3); expect(complete).not.toHaveBeenCalled();
       expect(f.controller.snapshot.uploadProgress).toEqual({ total: 2, registered: 2 });
       expect(f.source.starts).toBe(1); expect(f.source.stops).toBe(0);
       await f.controller.stopRecording(); expect(complete).toHaveBeenCalledTimes(1);
@@ -124,11 +124,11 @@ describe("continuous configured desktop windows", () => {
 
   it("renews the same native recording window while an encrypted upload is pending", async () => {
     const f = await fixture(true), gate = deferred();
-    const receipt = f.bff.getChunkReceipt.bind(f.bff);
-    const reads = vi.spyOn(f.bff, "getChunkReceipt").mockImplementationOnce(async (...args) => { await gate.promise; return receipt(...args); });
+    const authorize = f.bff.authorizeUpload.bind(f.bff);
+    const authorizations = vi.spyOn(f.bff, "authorizeUpload").mockImplementationOnce(async (...args) => { await gate.promise; return authorize(...args); });
     try {
       await f.prepare(); await f.controller.startRecording(); await f.source.emit();
-      await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(authorizations).toHaveBeenCalledTimes(1));
       expect(f.clock.advance(780000)).toBe(true);
       await vi.waitFor(() => expect(f.source.extensions).toHaveLength(1));
       expect(f.controller.snapshot.state).toBe("recording"); expect(f.source.starts).toBe(1);
