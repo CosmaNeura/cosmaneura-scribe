@@ -2799,6 +2799,289 @@
         ]
       }
     },
+    "/v1/captured-sessions/{session_id}/capture-lease": {
+      "post": {
+        "operationId": "issue_creator_capture_lease_v1_captured_sessions__session_id__capture_lease_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureLeaseIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureLeaseReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Issue Creator Capture Lease",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/capture-leases/{lease_id}/renew": {
+      "post": {
+        "operationId": "renew_creator_capture_lease_v1_captured_sessions__session_id__capture_leases__lease_id__renew_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lease Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureLeaseRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureLeaseReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Renew Creator Capture Lease",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/chunk-reservations": {
+      "post": {
+        "operationId": "reserve_creator_audio_chunks_v1_captured_sessions__session_id__chunk_reservations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkReservationBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkReservationBatchReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reserve Creator Audio Chunks",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
     "/v1/captured-sessions/{session_id}/review": {
       "get": {
         "operationId": "read_creator_review_v1_captured_sessions__session_id__review_get",
