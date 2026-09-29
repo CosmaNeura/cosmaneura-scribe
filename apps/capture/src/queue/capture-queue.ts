@@ -202,22 +202,33 @@ export class CaptureQueue {
           skipped(record.reservation.objectId),
         );
         let nextIndex = 0;
+        let workerFailed = false;
         const worker = async (): Promise<void> => {
-          while (true) {
-            // Finish any already claimed chunk and its durable receipt. Leave
-            // unclaimed records untouched for the next explicit drain/resume.
-            if (stopScheduling?.aborted) return;
-            const index = nextIndex;
-            nextIndex += 1;
-            const record = records[index];
-            if (record === undefined) return;
-            results[index] = await this.#processOne(record.reservation.objectId, transport);
-            if (results[index]?.outcome === "registered") registered += 1;
-            publish();
+          try {
+            while (true) {
+              // Finish any already claimed chunk and its durable receipt. Leave
+              // unclaimed records untouched for the next explicit drain/resume.
+              if (workerFailed || stopScheduling?.aborted) return;
+              const index = nextIndex;
+              nextIndex += 1;
+              const record = records[index];
+              if (record === undefined) return;
+              results[index] = await this.#processOne(record.reservation.objectId, transport);
+              if (results[index]?.outcome === "registered") registered += 1;
+              publish();
+            }
+          } catch (error) {
+            workerFailed = true;
+            throw error;
           }
         };
         const workerCount = Math.min(this.#uploadConcurrency, records.length);
-        await Promise.all(Array.from({ length: workerCount }, worker));
+        // A storage failure can escape the per-chunk retry handler. Retain both
+        // drain locks until every claimed upload/receipt has settled, otherwise
+        // recovery or teardown can race a surviving worker against a new drain.
+        const workers = await Promise.allSettled(Array.from({ length: workerCount }, worker));
+        const failed = workers.find(result => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
         return { items: results };
       } finally {
         this.#draining = false;
