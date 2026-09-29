@@ -24,6 +24,7 @@ import httpx
 from pydantic import SecretStr
 
 from .provider_core_connections import ProviderCoreConnections
+from .provider_performance import provider_phase_timing
 from .source_start_contract import SourceStartCapability, SourceStartIntent, SourceStartReceipt
 
 _ROOT = "/service/v1/agent/scribe/"
@@ -537,12 +538,13 @@ class ProviderCoreTransport:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403) from None
 
     async def _workload_headers(self) -> dict[str, str]:
-        try:
-            async with asyncio.timeout(10):
-                value = await self._workload_token()
-            return {"Authorization": "Bearer " + _secret(value)}
-        except Exception:
-            raise ProviderCoreUnavailable("core_provider_workload_unavailable") from None
+        with provider_phase_timing("workload_token"):
+            try:
+                async with asyncio.timeout(10):
+                    value = await self._workload_token()
+                return {"Authorization": "Bearer " + _secret(value)}
+            except Exception:
+                raise ProviderCoreUnavailable("core_provider_workload_unavailable") from None
 
     async def _negotiate(
         self,
@@ -680,67 +682,73 @@ class ProviderCoreTransport:
         _require(self._enabled)
         selection = context.selection
         try:
-            async with self._client.stream(
-                "POST",
-                self._origin + path,
-                json=payload,
-                timeout=httpx.Timeout(request_timeout, connect=5),
-                headers={"Accept": "application/json", "Cache-Control": "no-store", **headers},
-            ) as response:
-                if response.status_code in {401, 403, 404, 410}:
-                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
-                if response.status_code != status:
-                    if (
-                        path == _ROOT + "capture-admissions"
-                        and response.status_code == 409
-                        and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
-                        and response.headers.get("content-type", "")
-                        .split(";", 1)[0]
-                        .strip()
-                        .lower()
-                        == "application/problem+json"
-                        and "no-store"
-                        in {
-                            item.strip().lower()
-                            for item in response.headers.get("cache-control", "").split(",")
-                        }
-                    ):
-                        failure_bytes = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            _require(len(failure_bytes) + len(chunk) <= 2048)
-                            failure_bytes.extend(chunk)
-                        failure = _decode(failure_bytes)
+            phase = {
+                "/embed/v1/context-tokens/exchange": "core_exchange",
+                "/service/v1/agent/mount-context/resolve": "core_mount",
+                _ROOT + "capture-bindings/resolve": "core_binding",
+            }.get(path, "core_operation")
+            with provider_phase_timing(phase):
+                async with self._client.stream(
+                    "POST",
+                    self._origin + path,
+                    json=payload,
+                    timeout=httpx.Timeout(request_timeout, connect=5),
+                    headers={"Accept": "application/json", "Cache-Control": "no-store", **headers},
+                ) as response:
+                    if response.status_code in {401, 403, 404, 410}:
+                        raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                    if response.status_code != status:
                         if (
-                            failure.get("code") == "CAPTURE_CONSENT_REQUIRED"
-                            and failure.get("status") == 409
-                            and failure.get("retryable") is False
+                            path == _ROOT + "capture-admissions"
+                            and response.status_code == 409
+                            and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
+                            and response.headers.get("content-type", "")
+                            .split(";", 1)[0]
+                            .strip()
+                            .lower()
+                            == "application/problem+json"
+                            and "no-store"
+                            in {
+                                item.strip().lower()
+                                for item in response.headers.get("cache-control", "").split(",")
+                            }
                         ):
-                            await self._context(selection)
-                            raise ProviderCoreUnavailable("core_provider_consent_required", 409)
-                    code, result = {
-                        409: ("core_provider_conflict", 409),
-                        202: ("core_provider_pending", 503),
-                    }.get(response.status_code, ("core_provider_request_unconfirmed", 503))
-                    raise ProviderCoreUnavailable(code, result)
-                _require(
-                    response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                    == "application/json"
-                )
-                _require(
-                    "no-store"
-                    in {
-                        p.strip().lower()
-                        for p in response.headers.get("cache-control", "").split(",")
-                    }
-                )
-                if version:
-                    _require(response.headers.get(version[0]) == version[1])
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    _require(len(data) + len(chunk) <= max_bytes)
-                    data.extend(chunk)
-                value = _decode(data)
-                response_headers = httpx.Headers(response.headers)
+                            failure_bytes = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                _require(len(failure_bytes) + len(chunk) <= 2048)
+                                failure_bytes.extend(chunk)
+                            failure = _decode(failure_bytes)
+                            if (
+                                failure.get("code") == "CAPTURE_CONSENT_REQUIRED"
+                                and failure.get("status") == 409
+                                and failure.get("retryable") is False
+                            ):
+                                await self._context(selection)
+                                raise ProviderCoreUnavailable("core_provider_consent_required", 409)
+                        code, result = {
+                            409: ("core_provider_conflict", 409),
+                            202: ("core_provider_pending", 503),
+                        }.get(response.status_code, ("core_provider_request_unconfirmed", 503))
+                        raise ProviderCoreUnavailable(code, result)
+                    _require(
+                        response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        == "application/json"
+                    )
+                    _require(
+                        "no-store"
+                        in {
+                            p.strip().lower()
+                            for p in response.headers.get("cache-control", "").split(",")
+                        }
+                    )
+                    if version:
+                        _require(response.headers.get(version[0]) == version[1])
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        _require(len(data) + len(chunk) <= max_bytes)
+                        data.extend(chunk)
+                    value = _decode(data)
+                    response_headers = httpx.Headers(response.headers)
             await self._context(selection)
             return value, response_headers
         except httpx.HTTPError:
