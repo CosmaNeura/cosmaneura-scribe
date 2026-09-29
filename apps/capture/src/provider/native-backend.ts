@@ -12,8 +12,10 @@ import { nativeProviderPlugin, type ProviderAction as Action, type NativeProvide
   type ProviderNativePlugin } from "./native-plugin";
 import type { NativeRecordingPort } from "./native-recorder";
 import type { ProviderEncounter } from "./workspace";
+import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
+import { parseProviderAccount, type ProviderAccount, createEncounterSetup } from "./encounter-setup";
 
-const limits: Record<Action, number> = { catalog: 2, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024,
+const limits: Record<Action, number> = { catalog: 2, encounters: 4096, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
 type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
 export type { ProviderNativePlugin } from "./native-plugin";
@@ -42,7 +44,9 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   let revision: string | null = null, observed: NativeState | null = null;
   let listener: PluginListenerHandle | undefined, timer: ReturnType<typeof setInterval> | undefined;
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
-  let openingReviewSupported = false, noteOpeningSupported = false;
+  let openingReviewSupported = false, noteOpeningSupported = false, creationSupported = false;
+  let account: ProviderAccount | undefined;
+  const owners: { setup?: ReturnType<typeof createEncounterSetup> } = {};
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const inheritedAbort = (): void => abort.abort();
   options.signal.addEventListener("abort", inheritedAbort, { once: true });
@@ -64,6 +68,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     options.signal.removeEventListener("abort", inheritedAbort);
     encounters.clear();
     await listener?.remove();
+    await owners.setup?.dispose();
   })();
   const refresh = (): Promise<void> => {
     if (abort.signal.aborted) return Promise.resolve();
@@ -154,11 +159,25 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     return value;
   };
 
+  const encounterSetup = owners.setup = createEncounterSetup({
+    current,
+    records: () => Promise.resolve({ records: SecureQueue, close: () => Promise.resolve() }),
+    created: entry => { encounters.set(entry.appointmentRef, { workspaceId: entry.workspaceId, encounter: entry }); },
+    request: async (body, key, signal) => {
+      const response = await request("encounters", body, key, [signal]);
+      if (response.status !== 200) throw unavailable();
+      const value: unknown = await response.json(); current(signal);
+      if (!record(value) || value.revision !== revision) throw unavailable();
+      return value;
+    },
+  });
   return {
+    get encounterSetup() { return creationSupported ? encounterSetup : undefined; },
+    get account() { return account; },
     signal: abort.signal, dispose,
     listEncounters: async signal => {
       const value = await json("catalog", {}, signal);
-      if (!Array.isArray(value.encounters) || value.encounters.length > 100) throw unavailable();
+      if (!Array.isArray(value.encounters) || value.encounters.length > 1000) throw unavailable();
       const next = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
       for (const row of value.encounters) {
         if (!record(row) || !isUuid(row.workspaceId)) throw unavailable();
@@ -169,6 +188,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       current(signal); encounters.clear();
       openingReviewSupported = value.opening_review_v1 === true;
       noteOpeningSupported = value.note_opening_v1 === true;
+      creationSupported = value.encounter_creation_v1 === true;
+      account = creationSupported ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }) : undefined;
       for (const [key, row] of next) encounters.set(key, row);
       return [...next.values()].map(row => row.encounter);
     },
@@ -269,3 +290,8 @@ function encounter(value: Record<string, unknown>): ProviderEncounter {
   return Object.freeze({ appointmentRef: value.appointmentRef, title: value.title, detail: value.detail });
 }
 function unavailable(): QueueInvariantError { return new QueueInvariantError("provider_native_connection_unavailable"); }
+
+function objectAccount(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable();
+  return value as Record<string, unknown>;
+}

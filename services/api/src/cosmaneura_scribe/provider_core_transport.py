@@ -56,6 +56,11 @@ ADMISSION_TOTAL_TIMEOUT_SECONDS = 180
 NOTE_OPENING_TOTAL_TIMEOUT_SECONDS = 100
 
 
+def provider_cookie_jar() -> CookieJar:
+    """Share the existing no-cookie policy with other fixed Core transports."""
+    return CookieJar(policy=_NoCookies())
+
+
 class _NoCookies(DefaultCookiePolicy):
     """Core access here uses explicit credentials, never shared browser state."""
 

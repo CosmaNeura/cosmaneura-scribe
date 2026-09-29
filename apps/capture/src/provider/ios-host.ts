@@ -35,7 +35,7 @@ export interface PreparedProviderIOSCapture {
   readonly captureAuthorizedUntil: string;
   readonly firstSequenceNumber?: number;
 }
-export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter"> {
+export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedProviderIOSMount>;
 }
 
@@ -45,6 +45,8 @@ export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal"
 export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWorkspaceHost {
   requireNative();
   return {
+    get encounterSetup() { return backend.encounterSetup; },
+    get account() { return backend.account; },
     signal: backend.signal,
     listEncounters: signal => backend.listEncounters(signal),
     createEncounter: signal => backend.createEncounter(signal),

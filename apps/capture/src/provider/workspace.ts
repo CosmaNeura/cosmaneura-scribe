@@ -18,6 +18,8 @@ import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecord
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
 import { openingReviewView } from "./opening-review";
+import { encounterSetupMarkup } from "./encounter-setup-view";
+import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
@@ -39,16 +41,18 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let openingRef: string | null = null;
   let pendingNavigation: "encounters" | "review" | null = null;
   let step = "request";
+  let setupState: EncounterSetupState | null = null;
   let preferredLanguage: LanguageMode = "en-US"; // This authorized workspace's lifetime only.
   let preferredModality: "in_person" | "virtual" | "phone" = isIOS ? "in_person" : "virtual";
   root.classList.add("provider-workspace");
-  root.innerHTML = `<header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
+  root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
     <p data-workspace-notice role="status"></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
   const content = root.querySelector<HTMLElement>("[data-workspace-content]")!;
   const notice = root.querySelector<HTMLElement>("[data-workspace-notice]")!;
   const navigation = root.querySelector<HTMLElement>("[data-workspace-navigation]")!;
   const encounterLabel = root.querySelector<HTMLElement>("[data-provider-encounter]")!;
   const header = root.querySelector<HTMLElement>(".provider-header")!;
+  const accountLabel = root.querySelector<HTMLElement>("[data-provider-account]")!;
   const current = (n: number): boolean => !disposed && !host.signal.aborted && n === generation;
   const authorized = (n: number): boolean => current(n) && context !== null && !client?.signal.aborted;
   const clearNavigation = (): void => { pendingNavigation = null; navigation.replaceChildren(); };
@@ -94,6 +98,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           ? "Recording stop could not be confirmed. Stop it in the native app before continuing."
           : error instanceof CaptureDeviceCustodyError
             ? "This device could not confirm access to the recording key or saved recording state. Your saved work is retained."
+            : step === "encounter setup" || step === "encounter creation"
+              ? "Your encounter request could not be confirmed. Check your connection, then check its result. Pending work is retained securely on this device."
             : step === "encounter list"
               ? "Your encounters could not be loaded. Check your connection, then retry."
               : `The ${step} could not be confirmed. Your saved work is retained. Return to Your encounters and reopen this encounter to recover.`;
@@ -101,6 +107,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           show('<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p><button data-workspace-action="encounters">Your encounters</button>');
         } else if (context && journal.progress?.pendingSave) {
           show('<h1>Confirm your previous save</h1><p>Your exact edits are retained for recovery.</p><button data-workspace-action="resolve">Recover note save</button>');
+        } else if (step === "encounter setup" || step === "encounter creation") {
+          show('<h1>Check encounter creation</h1><button data-workspace-action="new-encounter">Check and continue</button><button data-workspace-action="encounters">Your encounters</button>');
         } else if (openingRef) {
           show(`<h1>Encounter could not open</h1><p>Check your connection, then retry. Recording has not started.</p><button data-workspace-action="open" data-appointment="${escape(openingRef)}">Retry opening encounter</button>`);
         } else if (step === "encounter list") {
@@ -117,14 +125,68 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     show("<h1>Your encounters</h1><p>Loading your authorized encounters…</p>");
     const encounters = await host.listEncounters(host.signal);
     if (!current(n)) return;
+    const account = host.account;
+    accountLabel.hidden = !account;
+    accountLabel.textContent = account ? `${account.environment} · Signed in as ${account.email}` : "";
     requireValue(encounters.length <= 1000 && new Set(encounters.map(e => e.appointmentRef)).size === encounters.length);
     for (const e of encounters) requireValue(reference(e.appointmentRef, "appointment")
       && typeof e.title === "string" && e.title.length <= 300 && typeof e.detail === "string" && e.detail.length <= 1000);
     show(`<div class="provider-list-heading"><h1>Your encounters</h1><button data-workspace-action="encounters" aria-label="Refresh encounters">Refresh</button></div>
+      ${host.encounterSetup ? '<button data-workspace-action="new-encounter">New encounter</button>' : ''}
       <ul class="provider-encounters" aria-label="Authorized encounters">${encounters.map(e =>
       `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(e.detail)}</span></button></li>`).join("")}</ul>
       ${encounters.length ? "" : "<p>No encounters are available yet.</p>"}
       <details class="provider-encounter-help"${encounters.length ? "" : " open"}><summary>Missing an encounter?</summary><p>Ask your practice to assign the encounter in Core. The dashboard opens in your browser and may require a separate sign-in. It does not create an encounter. After assignment, return to Scribe and select Refresh.</p><button data-workspace-action="create">Open Core dashboard</button></details>`);
+  };
+  const setup = async (): Promise<void> => {
+    requireValue(host.encounterSetup);
+    await clearEncounter(); header.hidden = true; step = "encounter setup";
+    const n = generation;
+    show('<h1>New encounter</h1><p>Loading your patients…</p>');
+    const state = await host.encounterSetup.state(host.signal);
+    if (!current(n)) return;
+    requireValue(!host.account || host.account.email === state.account);
+    setupState = state; showSetup();
+  };
+  const create = async (patient: EncounterDraft["patient"] | null): Promise<void> => {
+    requireValue(host.encounterSetup && setupState);
+    step = "encounter creation";
+    const n = generation;
+    const draft: EncounterDraft | null = patient === null ? null : {
+      creationKey: crypto.randomUUID(), patient, appointmentAt: new Date().toISOString(), title: "Visit",
+    };
+    show('<h1>Creating your encounter…</h1><p>Saving to Core. Recording has not started.</p>');
+    const created = await host.encounterSetup.submit(draft, host.signal);
+    if (!current(n)) return;
+    setupState = null;
+    await open(created.appointmentRef);
+  };
+  const showSetup = (query = ""): void => {
+    requireValue(setupState);
+    show(encounterSetupMarkup(setupState, query));
+    const search = content.querySelector<HTMLFormElement>("[data-patient-search]");
+    const newPatient = content.querySelector<HTMLFormElement>("[data-new-patient]");
+    const onSearch = (event: SubmitEvent): void => {
+      event.preventDefault();
+      void run(async () => {
+        requireValue(host.encounterSetup && setupState);
+        step = "encounter setup";
+        const n = generation, query = input("patient-query").trim();
+        const result = await host.encounterSetup.search(query, host.signal);
+        if (!current(n)) return;
+        requireValue(result.account === setupState.account);
+        setupState = { ...result, pending: setupState.pending }; showSetup(query);
+      });
+    };
+    const onNew = (event: SubmitEvent): void => {
+      event.preventDefault();
+      if (!newPatient?.reportValidity()) return;
+      const name = input("new-patient-name").trim(), dateOfBirth = input("new-patient-dob");
+      if (!name) { notice.textContent = "Enter the patient's name."; return; }
+      void run(() => create({ kind: "new", name, dateOfBirth }));
+    };
+    search?.addEventListener("submit", onSearch); newPatient?.addEventListener("submit", onNew);
+    disposeContent = () => { search?.removeEventListener("submit", onSearch); newPatient?.removeEventListener("submit", onNew); };
   };
   const preparation = (): void => {
     requireValue(context);
@@ -415,6 +477,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           break;
         }
         case "create": await host.createEncounter(host.signal); await list(); break;
+        case "new-encounter": await setup(); break;
+        case "retry-creation": await create(null); break;
+        case "select-patient": {
+          requireValue(setupState && !setupState.pending);
+          const patient = setupState.patients.find(p => p.patientRef === button.dataset.patient);
+          requireValue(patient); await create({ kind: "existing", patientRef: patient.patientRef }); break;
+        }
         case "open": await open(button.dataset.appointment!); break;
         case "prepare": {
           // Only this currently displayed, explicit attestation can initiate a

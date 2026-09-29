@@ -12,6 +12,7 @@ from .safe_logging import log_event
 
 # Keep literal action labels visible to the existing PHI-log AST policy.
 _TOTAL_LOGGERS: dict[str, Callable[[float], None]] = {
+    "encounters": lambda ms: log_event(action="provider.encounters.total", duration_ms=ms),
     "catalog": lambda ms: log_event(action="provider.catalog.total", duration_ms=ms),
     "mount": lambda ms: log_event(action="provider.mount.total", duration_ms=ms),
     "recorder": lambda ms: log_event(action="provider.recorder.total", duration_ms=ms),

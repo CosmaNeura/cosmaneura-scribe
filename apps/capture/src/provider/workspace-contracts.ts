@@ -8,6 +8,7 @@ import type { CreatorReviewJournal } from "../../../review-ui/src/creator-review
 import type { AuthorizedCoreRequest, CoreCaptureScope } from "./core-client";
 import type { ProviderWorkspaceJournal } from "./workspace-journal";
 import type { ProviderOpeningReview } from "./opening-review";
+import type { ProviderEncounterSetup, ProviderAccount } from "./encounter-setup";
 
 /** Core supplies display values through its existing authorized encounter list. */
 export interface ProviderEncounter { readonly appointmentRef: string; readonly title: string; readonly detail: string }
@@ -34,6 +35,8 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
+  readonly encounterSetup?: ProviderEncounterSetup | undefined;
+  readonly account?: ProviderAccount | undefined;
   readonly signal: AbortSignal;
   readonly listEncounters: (signal: AbortSignal) => Promise<readonly ProviderEncounter[]>;
   /** Uses Core's existing encounter/mount authorization, never a browser actor claim. */

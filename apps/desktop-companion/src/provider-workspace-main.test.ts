@@ -30,6 +30,11 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
   const backend = vi.fn(async () => { if (coreGate) await coreGate; return Response.json({ allowed: "invented-result" }); });
   const navigation = vi.fn(async () => undefined), create = vi.fn(async () => undefined);
   const signOut = vi.fn(async () => { changed("signedOut"); return state; });
+  const setup = {
+    state: vi.fn(async () => ({ account: "provider@synthetic.invalid", patients: [], moreResults: false, pending: null })),
+    search: vi.fn(async () => ({ account: "provider@synthetic.invalid", patients: [], moreResults: false })),
+    submit: vi.fn(async () => ({ appointmentRef: scope.appointmentRef, title: "Synthetic Patient", detail: "Visit" })),
+  };
   const host: DesktopProviderMainHost = {
     session: { getState: async () => state, signIn: async () => { changed("ready"); return state; },
       signOut,
@@ -37,7 +42,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
     connect: vi.fn(async signal => {
       opens++;
       if (connectGate) await connectGate;
-      return { dispose, workspace: { signal, createEncounter: create,
+      return { dispose, workspace: { signal, createEncounter: create, encounterSetup: setup, account: { email: "provider@synthetic.invalid", environment: "Staging" },
         listEncounters: async () => [{ appointmentRef: scope.appointmentRef, title: "Invented desktop visit", detail: "Invented all-party consent" }],
         openEncounter: async (_ref: string, encounterSignal: AbortSignal) => {
           contextSignals.push(encounterSignal);
@@ -64,7 +69,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
     expect(reply.ok).toBe(true); connectionId = reply.result!.connectionId as string; encounterId = null; };
   const open = async () => { const reply = await invoke("open", { appointmentRef: scope.appointmentRef }, { connectionId, encounterId: null });
     expect(reply.ok).toBe(true); encounterId = reply.result!.encounterId as string; };
-  return { main, invoke, connect, open, backend, attached, stop, dispose, events, changed, contextSignals, navigation, signOut,
+  return { main, invoke, connect, open, backend, setup, attached, stop, dispose, events, changed, contextSignals, navigation, signOut,
     get opens() { return opens; },
     get ids() { return { connectionId, encounterId }; }, get saved() { return saved; },
     delayCore: (value: Promise<void>) => { coreGate = value; }, delayRecorder: (value: Promise<void>) => { recorderGate = value; },
@@ -213,5 +218,22 @@ it.each([false, true])("main gates note-opening capability and rejects writes (%
     expect(reply.ok).toBe(supported); expect(f.backend).toHaveBeenCalledTimes(supported ? 1 : 0);
     const invalid = await f.invoke("core", { ...payload, body: { ...payload.body, action: "save" } });
     expect(invalid.ok).toBe(false); expect(f.backend).toHaveBeenCalledTimes(supported ? 1 : 0);
+  } finally { await f.main.dispose(); }
+});
+
+
+it("routes encounter setup through the current desktop owner and rejects caller authority", async () => {
+  const f = await fixture();
+  try {
+    await f.connect();
+    expect((await f.invoke("encounter_setup", { action: "info" })).result).toEqual({ enabled: true, account: { email: "provider@synthetic.invalid", environment: "Staging" } });
+    expect((await f.invoke("encounter_setup", { action: "state" })).ok).toBe(true);
+    expect((await f.invoke("encounter_setup", { action: "search", query: "Synthetic" })).ok).toBe(true);
+    expect((await f.invoke("encounter_setup", { action: "submit", draft: null })).ok).toBe(true);
+    expect(f.setup.submit).toHaveBeenCalledTimes(1);
+    expect((await f.invoke("encounter_setup", { action: "submit", draft: null, actor: "foreign" })).ok).toBe(false);
+    const saved = f.ids; f.changed("signedOut");
+    expect((await f.invoke("encounter_setup", { action: "submit", draft: null }, saved)).ok).toBe(false);
+    expect(f.setup.submit).toHaveBeenCalledTimes(1);
   } finally { await f.main.dispose(); }
 });

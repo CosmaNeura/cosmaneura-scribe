@@ -8,6 +8,7 @@ import { readBoundedJson } from "../../review-ui/src/beta-api";
 import { coreCaptureResponseLimit } from "../../review-ui/src/capture-response-limits";
 import { parseDesktopProviderRequest, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderRequest, type DesktopProviderEvent } from "../../capture/src/provider/desktop-host-protocol";
+import { parseEncounterDraft } from "../../capture/src/provider/encounter-setup";
 import type { DesktopProviderRecorder } from "./provider-recorder.js";
 
 export interface DesktopProviderMainHost {
@@ -118,7 +119,7 @@ export class DesktopProviderWorkspaceMain {
       await this.closeConnection(); return null;
     }
     const connection = this.currentConnection(request.connectionId);
-    if (["list", "create", "open"].includes(request.method)) {
+    if (["list", "create", "encounter_setup", "open"].includes(request.method)) {
       if (request.encounterId !== null || connection.transitioning) throw unavailable();
       connection.transitioning = true;
       return this.track(connection.work, async () => {
@@ -132,6 +133,25 @@ export class DesktopProviderWorkspaceMain {
           if (request.method === "create") {
             exact(payload, []); await connection.value!.workspace.createEncounter(linked);
             this.requireConnection(connection, signal); return null;
+          }
+          if (request.method === "encounter_setup") {
+            const workspace = connection.value!.workspace, setup = workspace.encounterSetup;
+            let result: unknown;
+            if (payload.action === "info") {
+              exact(payload, ["action"]); result = { enabled: !!setup, account: workspace.account ?? null };
+            } else {
+              if (!setup) throw unavailable();
+              if (payload.action === "state") { exact(payload, ["action"]); result = await setup.state(linked); }
+              else if (payload.action === "search") {
+                exact(payload, ["action", "query"]);
+                if (typeof payload.query !== "string" || payload.query.length > 200) throw unavailable();
+                result = await setup.search(payload.query, linked);
+              } else if (payload.action === "submit") {
+                exact(payload, ["action", "draft"]);
+                result = await setup.submit(payload.draft === null ? null : parseEncounterDraft(payload.draft), linked);
+              } else throw unavailable();
+            }
+            this.requireConnection(connection, signal); return result;
           }
           exact(payload, ["appointmentRef"]);
           if (!reference(payload.appointmentRef, "appointment")) throw unavailable();
