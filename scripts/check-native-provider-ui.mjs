@@ -88,6 +88,19 @@ try {
   Object.defineProperty(window.document, "visibilityState", { configurable: true, value: "hidden" });
   window.document.dispatchEvent(new window.Event("visibilitychange"));
   assert.equal(calls.includes("close"), false);
+  const startsBeforeInterruption = calls.filter(kind => kind === "start").length;
+  update({ phase: "paused", failure: "captureInterrupted" });
+  await resources.controller.refreshTranscriptionStatus();
+  await until(() => app.textContent.includes("Recording was interrupted."));
+  assert.ok(app.textContent.includes("Speech during the interruption was not recorded."));
+  assert.equal(app.querySelector("scribe-ios-input-meter"), null);
+  assert.equal(button("resume-recording").disabled, false);
+  assert.equal(button("stop-button").disabled, false);
+  assert.equal(calls.filter(kind => kind === "start").length, startsBeforeInterruption);
+  button("resume-recording").click();
+  await until(() => app.querySelector("scribe-ios-input-meter"));
+  assert.equal(app.textContent.includes("Recording was interrupted."), false);
+  assert.equal(calls.filter(kind => kind === "start").length, startsBeforeInterruption + 1);
   update({ phase: "stopPending", failure: "stopPending" });
   await resources.controller.refreshTranscriptionStatus();
   await until(() => button("stop-button").textContent.includes("Retry stop"));
@@ -131,6 +144,6 @@ try {
   await until(() => upload.textContent.includes("Confirming receipt before transcription"));
   assert.equal(upload.querySelector("progress").value, 1080);
   upload.remove();
-  console.log(JSON.stringify({ checks: 10, compiled_native_provider: true, source_and_core_fixtures: true,
+  console.log(JSON.stringify({ checks: 11, compiled_native_provider: true, source_and_core_fixtures: true,
     cancellable_start: true, native_meter_and_input: true, physical_recording: false }));
 } finally { heldStart?.(); await resources.deactivate(); dom.window.close(); }

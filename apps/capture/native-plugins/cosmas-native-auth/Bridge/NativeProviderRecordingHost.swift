@@ -24,7 +24,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     case unopened, opening, ready, starting, recording, pausing, paused, stopPending, sealing,
       sealed, failed, closed
   }
-  enum Failure: String { case preparationFailed, startFailed, stopPending, recoveryFailed }
+  enum Failure: String {
+    case preparationFailed, startFailed, stopPending, recoveryFailed, captureInterrupted
+  }
   typealias Service = NativeRecordingBindingService & NativeRecordingLeaseService
     & NativeRecordingReservationService
   typealias Records = NativeRecordingFlowStore & NativeRecordingLeaseRecordStore
@@ -65,6 +67,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private var sealing: Task<Void, Error>?
   private var generation = UUID()
   private var retired = false
+  private var interruptionObserved = false
   private let input = AppleMicrophoneInputPreference()
   private(set) var phase: Phase = .unopened
   private(set) var failure: Failure?
@@ -151,6 +154,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     PCMStartupDiagnostics.shared.record(.startRequested)
     phase = .starting
     failure = nil
+    interruptionObserved = false
     let ticket = generation
     let task = Task { @MainActor [self] in
       do {
@@ -347,6 +351,11 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     if let stopping { return try await stopping.value }
     if phase == .sealed { return }
     guard phase != .closed else { throw ProviderNativeError.unavailable }
+    // Preserve an unsolicited native stop across stop-confirmation retries.
+    // A deliberate Pause still starts from a recording run and is not a fault.
+    if phase == .recording, let run, run.phase != .recording {
+      interruptionObserved = true
+    }
     generation = UUID()
     opening?.cancel()
     starting?.cancel()
@@ -364,6 +373,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         }
         phase = .paused
         if failure == .stopPending || failure == .recoveryFailed { failure = nil }
+        if failure == nil && interruptionObserved { failure = .captureInterrupted }
       } catch {
         phase = .stopPending
         failure = .stopPending

@@ -27,6 +27,26 @@ async function fixture() {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
 describe("native provider controller", () => {
+  it("keeps an interruption visible without resuming until the provider chooses Resume", async () => {
+    const h = await fixture(), command = h.port.command;
+    h.f.set({ phase: "paused", failure: "captureInterrupted", recordedChunks: 1, recordedPlaintextBytes: 204 });
+    h.port.command = request => {
+      if (request.kind === "start") h.f.set({ failure: null });
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      expect(view.controller.snapshot).toMatchObject({ state: "paused", statusCode: "capture_interrupted", recordedChunks: 1 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_interrupted");
+      expect(h.commands.map(c => c.kind)).toEqual(["read"]);
+      await view.controller.resumeRecording!();
+      expect(view.controller.snapshot.statusCode).toBe("capture_recording");
+      expect(view.controller.snapshot.recordedChunks).toBe(1);
+      expect(h.commands.map(c => c.kind)).toEqual(["read", "start"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
   it.each([0, 1])("keeps failed sealing distinct from an ordinary pause with %i saved chunks", async recordedChunks => {
     const h = await fixture(), command = h.port.command;
     h.f.set({ phase: "recording", recordedChunks, recordedPlaintextBytes: recordedChunks * 204 });

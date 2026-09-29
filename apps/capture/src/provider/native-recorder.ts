@@ -14,7 +14,7 @@ export interface NativeRecordingState {
   readonly version: 1; readonly revision: number; readonly recorderId: string; readonly sessionId: string;
   readonly phase: "unopened" | "opening" | "ready" | "starting" | "recording" | "pausing" | "paused"
     | "stopPending" | "sealing" | "sealed" | "failed" | "closed";
-  readonly failure: "preparationFailed" | "startFailed" | "stopPending" | "recoveryFailed" | null;
+  readonly failure: "preparationFailed" | "startFailed" | "stopPending" | "recoveryFailed" | "captureInterrupted" | null;
   readonly busy: boolean; readonly recordedChunks: number; readonly recordedPlaintextBytes: number;
   readonly maximumPlaintextBytes: number; readonly input: MicrophoneInput; readonly signal: unknown;
   readonly completion: { readonly idempotencyKey: string; readonly leaseId: string; readonly leaseGeneration: number;
@@ -49,6 +49,7 @@ export async function connectNativeProviderRecorder(options: {
       : phase === "sealed" ? "capture_upload_pending" : phase === "sealing" ? "capture_sealing"
       : phase === "recording" ? "capture_recording"
       : state.failure === "recoveryFailed" ? "capture_recovery_pending"
+      : state.failure === "captureInterrupted" ? "capture_interrupted"
       : state.failure === "startFailed" ? "capture_start_failed" : phase === "paused" ? "capture_paused"
       : phase === "failed" ? "capture_preparation_failed" : phase === "closed" ? "capture_reopen_required" : "capture_ready"),
     recordedChunks: state.recordedChunks, queuedChunks: accepted ? 0 : uploadProgress
@@ -182,7 +183,7 @@ export function parseNativeRecordingState(value: unknown): NativeRecordingState 
     "recordedPlaintextBytes", "maximumPlaintextBytes", "input", "completion", "signal"]);
   if (data.version !== 1 || !integer(data.revision, 1, Number.MAX_SAFE_INTEGER)
     || typeof data.phase !== "string" || !["unopened", "opening", "ready", "starting", "recording", "pausing", "paused", "stopPending", "sealing", "sealed", "failed", "closed"].includes(data.phase)
-    || data.failure !== null && (typeof data.failure !== "string" || !["preparationFailed", "startFailed", "stopPending", "recoveryFailed"].includes(data.failure))
+    || data.failure !== null && (typeof data.failure !== "string" || !["preparationFailed", "startFailed", "stopPending", "recoveryFailed", "captureInterrupted"].includes(data.failure))
     || typeof data.busy !== "boolean" || !isMicrophoneInput(data.input)
     || !integer(data.recordedChunks, 0, 2048) || data.maximumPlaintextBytes !== 402_653_184
     || !integer(data.recordedPlaintextBytes, Number(data.recordedChunks) * 46,
