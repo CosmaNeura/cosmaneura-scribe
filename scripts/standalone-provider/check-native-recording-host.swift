@@ -82,16 +82,25 @@ import Security
     var objects: [Int: NativeRecordingReservation] = [:]
     var bindings = 0, issues = 0, renewals = 0, reservations = 0
     var reservationSizes: [Int] = []
+    var leaseIntents: [UUID] = []
+    var leaseReceipts: [UUID: NativeRecordingLease] = [:]
+    var loseLeaseReply = false
+    var now: Date?
     var failAll = false, hold = false, expired = false
     var pending: CheckedContinuation<Void, Never>?
     init(scope: NativeRecordingScope, published: NativeRecordingPublicKey) {
       self.scope = scope
       self.published = published
     }
-    func configure(hold: Bool = false, expired: Bool = false, failAll: Bool = false) {
+    func configure(
+      hold: Bool = false, expired: Bool = false, failAll: Bool = false,
+      loseLeaseReply: Bool = false, now: Date? = nil
+    ) {
       self.hold = hold
       self.expired = expired
       self.failAll = failAll
+      self.loseLeaseReply = loseLeaseReply
+      self.now = now
     }
     func release() {
       hold = false
@@ -117,15 +126,23 @@ import Security
     func requestLease(previous: NativeRecordingLease?, intent: UUID) async throws
       -> NativeRecordingLease
     {
+      leaseIntents.append(intent)
       if hold { await withCheckedContinuation { pending = $0 } }
       _ = try recordingScope()
+      if let receipt = leaseReceipts[intent] { return receipt }
       if previous == nil { issues += 1 } else { renewals += 1 }
-      let issued = Date().addingTimeInterval(previous == nil && expired ? -1800 : -2)
-      return try NativeRecordingLease(
+      let issued = (now ?? Date()).addingTimeInterval(previous == nil && expired ? -1800 : -2)
+      let receipt = try NativeRecordingLease(
         receiptID: UUID(), leaseID: leaseID, sessionID: scope.sessionID,
         generation: (previous?.generation ?? 0) + 1,
         issuedAt: ISO8601DateFormatter().string(from: issued),
         expiresAt: ISO8601DateFormatter().string(from: issued.addingTimeInterval(900)))
+      leaseReceipts[intent] = receipt
+      if loseLeaseReply {
+        loseLeaseReply = false
+        throw Failed(line: #line)
+      }
+      return receipt
     }
     func reserve(lease: NativeRecordingLease, first: Int, count: Int, intent: UUID) throws
       -> NativeRecordingReservationBatch
@@ -169,6 +186,7 @@ import Security
     let first: Int, prior: Int
     var phase: NativeProviderRecordingRun.Phase = .ready
     var isPhysicallyIdle = true, failStop = false, empty = false, committed = false
+    var stopCalls = 0
     let meter = PCMSignalMonitor()
     init(
       source: Source, cipher: NativeRecordingEncryption, recovery: UUID, records: Records,
@@ -198,6 +216,7 @@ import Security
       isPhysicallyIdle = false
     }
     func stop() throws {
+      stopCalls += 1
       if phase == .stopped { return }
       isPhysicallyIdle = true
       if !committed && !empty {
@@ -238,7 +257,7 @@ import Security
           version: "synthetic-v1",
           modulusBase64URL: nativeBase64URL(data.subdata(in: 9..<393))))
     }
-    func host() -> NativeProviderRecordingHost {
+    func host(now: @escaping @MainActor () -> Date = { Date() }) -> NativeProviderRecordingHost {
       NativeProviderRecordingHost(
         scope: scope, recoveryScope: recovery, service: service, records: records, keys: keys,
         requireCurrent: { if self.deny { throw NativeRecordingBindingFailure.authorityChanged } },
@@ -264,12 +283,125 @@ import Security
             records: self.records, prior: prior, batch: batch)
           self.runs.append(run)
           return run
-        })
+        }, now: now)
     }
   }
 
   static func run() async throws -> Int {
     var checks = 0
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      await f.service.configure(hold: true)
+      try await host.open()
+      try await wait { await f.service.pending != nil }
+      try check(host.phase == .ready && !host.busy && f.sources.isEmpty && f.runs.isEmpty)
+      let key = f.keys.value
+      let start = Task { try await host.start() }
+      await Task.yield()
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      await f.service.release()
+      try await start.value
+      try check(await f.service.leaseIntents.count == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(host.phase == .recording && f.runs.count == 1 && f.keys.value == key)
+      try await host.pause()
+      try await host.start()
+      try check(await f.service.leaseIntents.count == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(f.runs.count == 2 && f.runs[1].first == 1 && f.keys.value == key)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      await f.service.configure(loseLeaseReply: true)
+      try await host.open()
+      try await wait { await f.service.leaseIntents.count == 1 }
+      for _ in 0..<10 { await Task.yield() }
+      try check(await f.service.leaseIntents.count == 1)
+      try check(host.phase == .ready && host.failure == nil && f.sources.isEmpty)
+      try await host.start()
+      let intents = await f.service.leaseIntents
+      try check(intents.count == 2 && Set(intents).count == 1)
+      try check(await f.service.issues == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(host.phase == .recording && f.runs.count == 1)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      var now = Date()
+      let host = f.host(now: { now })
+      await f.service.configure(now: now)
+      try await host.open()
+      try await wait { await f.service.reservations == 1 }
+      try check(host.phase == .ready && f.sources.isEmpty)
+      now = now.addingTimeInterval(901)
+      await f.service.configure(now: now)
+      try await host.start()
+      try check(await f.service.renewals == 1)
+      try check(await f.service.reservationSizes == [30, 30])
+      try check(f.sources[0].recordingPreparation.leaseGeneration == 2)
+      try check(host.phase == .recording)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      await f.service.configure(hold: true)
+      try await host.open()
+      try await wait { await f.service.pending != nil }
+      let close = Task { try await host.close() }
+      try await wait { host.requiresReopen }
+      let other = f.host()
+      try await rejects { try await other.open() }
+      try await other.close()
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      await f.service.release()
+      try await close.value
+      try check(host.phase == .closed)
+      let reopened = f.host()
+      try await reopened.open()
+      try await reopened.start()
+      let intents = await f.service.leaseIntents
+      try check(intents.count == 2 && Set(intents).count == 1)
+      try check(await f.service.issues == 1)
+      try check(f.runs.count == 1)
+      try await reopened.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      var now = Date()
+      let host = f.host(now: { now })
+      await f.service.configure(now: now)
+      try await host.open()
+      try await host.start()
+      let key = f.keys.value
+      let intent = host.saved!.completionIntent
+      now = now.addingTimeInterval(901)
+      await f.service.configure(hold: true, now: now)
+      try await host.pause()
+      try await wait { await f.service.pending != nil }
+      try check(f.runs[0].isPhysicallyIdle && host.saved!.committedChunks == 1)
+      let seal = Task { try await host.sealForUpload() }
+      try await wait { f.runs[0].stopCalls == 2 }
+      try check(f.sources.count == 1 && f.runs.count == 1)
+      await f.service.release()
+      try await seal.value
+      let intents = await f.service.leaseIntents
+      try check(intents.count == 3 && intents[1] == intents[2])
+      try check(await f.service.renewals == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(host.phase == .sealed && host.saved!.committedChunks == 1)
+      try check(host.saved!.completionIntent == intent && f.keys.value == key)
+      try await host.close()
+      checks += 1
+    }
     do {
       let f = try Fixture()
       let host = f.host()
@@ -389,8 +521,7 @@ import Security
       let intent = host.saved!.completionIntent
       try check(host.phase == .ready && f.sources.isEmpty && f.runs.isEmpty)
       let bindings = await f.service.bindings
-      let issues = await f.service.issues
-      try check(bindings == 1 && issues == 0)
+      try check(bindings == 1)
       let other = f.host()
       try await rejects { try await other.open() }
       try await other.close()
@@ -425,8 +556,8 @@ import Security
     do {
       let f = try Fixture()
       let host = f.host()
-      try await host.open()
       await f.service.configure(hold: true)
+      try await host.open()
       let first = Task { try await host.start() }
       let duplicate = Task { try await host.start() }
       try await wait { await f.service.pending != nil }
@@ -441,8 +572,8 @@ import Security
     do {
       let f = try Fixture()
       let host = f.host()
-      try await host.open()
       await f.service.configure(expired: true)
+      try await host.open()
       try await host.start()
       try check(await f.service.renewals == 1)
       try await host.close()
@@ -498,8 +629,8 @@ import Security
     do {
       let f = try Fixture()
       let host = f.host()
-      try await host.open()
       await f.service.configure(hold: true)
+      try await host.open()
       let start = Task { try await host.start() }
       try await wait { await f.service.pending != nil }
       host.retire()

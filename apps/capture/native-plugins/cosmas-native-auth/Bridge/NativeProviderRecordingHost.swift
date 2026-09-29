@@ -54,12 +54,14 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private let recoverSources: @MainActor () async throws -> Void
   private let makeSource: SourceFactory
   private let makeRun: RunFactory
+  private let now: @MainActor () -> Date
   private var cipher: NativeRecordingEncryption?
   private var source: (any NativeProviderMicrophoneSource)?
   private var run: (any NativeProviderRecordingInterval)?
   // The PCM sink counts only this interval. Retain its exact saved baseline
   // even after pause reconciliation, so progress can neither drop nor double.
   private(set) var capturePriorPlaintextBytes = 0
+  private var warming: (id: UUID, task: Task<Void, Never>)?
   private var opening: Task<Void, Error>?
   private var starting: Task<Void, Error>?
   private var stopping: Task<Void, Error>?
@@ -78,7 +80,8 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     records: any Records, keys: any NativeRecordingKeyStorage = KeychainNativeRecordingStorage(),
     requireCurrent: @escaping @MainActor () throws -> Void,
     recoverSources: @escaping @MainActor () async throws -> Void,
-    makeSource: @escaping SourceFactory, makeRun: @escaping RunFactory
+    makeSource: @escaping SourceFactory, makeRun: @escaping RunFactory,
+    now: @escaping @MainActor () -> Date = { Date() }
   ) {
     self.scope = scope
     self.recoveryScope = recoveryScope
@@ -86,6 +89,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     self.recoverSources = recoverSources
     self.makeSource = makeSource
     self.makeRun = makeRun
+    self.now = now
     flow = NativeRecordingFlowOwner(
       scope: scope, recoveryScope: recoveryScope, service: service, records: records)
     binding = NativeRecordingBindingOwner(
@@ -95,8 +99,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       scope: scope, recoveryScope: recoveryScope, service: service, records: records)
   }
 
-  /// Does not request microphone permission or acquire a capture lease. Opening
-  /// preloads existing key custody, so pressing Record need not repeat key work.
+  /// Opens authorized key custody, then prepares lease/reservation metadata
+  /// without delaying the screen. Microphone permission and source admission
+  /// remain exclusively in the deliberate start path.
   func open() async throws {
     guard !retired else { throw ProviderNativeError.unavailable }
     if let opening { return try await opening.value }
@@ -129,6 +134,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         saved = try await flow.reconcileAfterStop(encryption: cipher!)
         try current(ticket)
         phase = saved!.committedChunks == 0 ? .ready : .paused
+        warmRecordingWindow()
       } catch {
         if phase == .opening {
           phase = .failed
@@ -183,33 +189,12 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         guard checkpoint.committedChunks < 2048,
           checkpoint.committedPlaintextBytes < NativeRecordingFlowOwner.maximumPlaintextBytes
         else { throw ProviderNativeError.unavailable }
-        var lease = try await leases.open()
+        // Join preparation already in flight, then revalidate the durable
+        // receipts. Failed prewarming is retried only by this deliberate Start.
+        if let warming { await warming.task.value }
         try current(ticket)
-        // Expired/near-expiry receipts remain useful for upload recovery but
-        // cannot prepare a new interval. Renew under the same durable intent.
-        if try Self.expires(lease) <= Date().addingTimeInterval(60) {
-          lease = try await leases.renew()
-          try current(ticket)
-        }
-        guard try Self.expires(lease) > Date().addingTimeInterval(15) else {
-          throw ProviderNativeError.unavailable
-        }
-        PCMStartupDiagnostics.shared.record(.leaseReady)
-        let retained = try await reservations.reuseForStart(
-          lease: lease, first: checkpoint.committedChunks)
-        try current(ticket)
-        let batch: NativeRecordingReservationBatch
-        if let retained {
-          batch = retained
-        } else {
-          // Prepare five minutes initially. Native continuation replenishes the
-          // window with two minutes remaining, up to ninety outstanding slots.
-          batch = try await reservations.reserve(
-            lease: lease, first: checkpoint.committedChunks,
-            count: min(30, 2048 - checkpoint.committedChunks))
-        }
-        try current(ticket)
-        PCMStartupDiagnostics.shared.record(.reservationsReady)
+        let (lease, batch) = try await prepareRecordingWindow(
+          checkpoint: checkpoint, ticket: ticket, reportStartup: true)
         // Retain the original source proof even if graph construction fails.
         // No discarded constructor error may orphan stop-only custody.
         source = try makeSource(lease, batch)
@@ -250,6 +235,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     guard [.ready, .starting, .recording, .pausing, .paused, .stopPending, .sealed].contains(phase)
     else { throw ProviderNativeError.unavailable }
     try await stop(reconcile: true)
+    warmRecordingWindow()
   }
 
   /// Stop and freeze completion before allowing the existing ciphertext uploader.
@@ -267,6 +253,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     }
     let task = Task { @MainActor [self] in
       try await stop(reconcile: false)
+      if let warming { await warming.task.value }
       try current(generation)
       guard let cipher else { throw ProviderNativeError.unavailable }
       phase = .sealing
@@ -319,6 +306,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   func retire() {
     retired = true
     generation = UUID()
+    warming?.task.cancel()
     opening?.cancel()
     starting?.cancel()
     sealing?.cancel()
@@ -333,10 +321,12 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     if phase == .closed { return }
     retired = true
     generation = UUID()
+    warming?.task.cancel()
     opening?.cancel()
     starting?.cancel()
     sealing?.cancel()
     try await stop(reconcile: false)
+    if let warming { await warming.task.value }
     if let opening { _ = try? await opening.value }
     if let starting { _ = try? await starting.value }
     if let sealing { _ = try? await sealing.value }
@@ -345,6 +335,67 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     }
     phase = .closed
     if Self.owner == id { Self.owner = nil }
+  }
+
+  /// One bounded attempt per successful open/pause. These existing owners
+  /// persist their original intents before I/O; no permission, source proof or
+  /// microphone graph is created. A failed attempt never schedules a retry.
+  private func warmRecordingWindow() {
+    guard !retired, [.ready, .paused].contains(phase), failure != .recoveryFailed,
+      let checkpoint = saved, checkpoint.phase == .open,
+      checkpoint.committedChunks < 2048,
+      checkpoint.committedPlaintextBytes < NativeRecordingFlowOwner.maximumPlaintextBytes
+    else { return }
+    let previous = warming?.task
+    let id = UUID()
+    let ticket = generation
+    let task = Task { @MainActor [self] in
+      defer { if warming?.id == id { warming = nil } }
+      // A cancelled request may still be settling. Never overlap the durable
+      // owners with a replacement preparation or drop the original intent.
+      if let previous { await previous.value }
+      do {
+        try current(ticket)
+        _ = try await prepareRecordingWindow(
+          checkpoint: checkpoint, ticket: ticket, reportStartup: false)
+      } catch {
+        // Deliberate Start uses the normal durable recovery path.
+      }
+    }
+    warming = (id, task)
+  }
+
+  private func prepareRecordingWindow(
+    checkpoint: NativeRecordingFlowSnapshot, ticket: UUID, reportStartup: Bool
+  ) async throws -> (NativeRecordingLease, NativeRecordingReservationBatch) {
+    var lease = try await leases.open()
+    try current(ticket)
+    // Expired/near-expiry receipts remain useful for upload recovery but
+    // cannot prepare a new interval. Renew under the same durable intent.
+    if try Self.expires(lease) <= now().addingTimeInterval(60) {
+      lease = try await leases.renew()
+      try current(ticket)
+    }
+    guard try Self.expires(lease) > now().addingTimeInterval(15) else {
+      throw ProviderNativeError.unavailable
+    }
+    if reportStartup { PCMStartupDiagnostics.shared.record(.leaseReady) }
+    let retained = try await reservations.reuseForStart(
+      lease: lease, first: checkpoint.committedChunks)
+    try current(ticket)
+    let batch: NativeRecordingReservationBatch
+    if let retained {
+      batch = retained
+    } else {
+      // Prepare five minutes initially. Native continuation replenishes the
+      // window with two minutes remaining, up to ninety outstanding slots.
+      batch = try await reservations.reserve(
+        lease: lease, first: checkpoint.committedChunks,
+        count: min(30, 2048 - checkpoint.committedChunks))
+    }
+    try current(ticket)
+    if reportStartup { PCMStartupDiagnostics.shared.record(.reservationsReady) }
+    return (lease, batch)
   }
 
   private func stop(reconcile: Bool) async throws {
@@ -357,6 +408,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       interruptionObserved = true
     }
     generation = UUID()
+    warming?.task.cancel()
     opening?.cancel()
     starting?.cancel()
     phase = .pausing
