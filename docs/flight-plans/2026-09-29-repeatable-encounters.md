@@ -36,3 +36,14 @@ scoping; consent, recording/upload, transcript, prepare/edit/save/reopen; prior
 recordings and recovery retained. Record automated, simulated, physical and real
 two-party Zoom evidence separately. Human sign-in or workforce agreement is not
 manufactured. No invitations or messages are sent to other users.
+
+Physical acceptance found that iPhone build 46 could load the catalog but its
+native action parser lacked `encounters`, rejecting patient discovery before a
+server request. Match the reviewed desktop contract in the iPhone bridge and
+require both connection and transport files to match before native assembly.
+Native checks must exercise patient discovery and creation through that parser,
+including request/response size limits. JavaScript mocks alone do not qualify it.
+This correction needs a same-identity iPhone update; Core, receiver and desktop
+remain on the deployed compatible release. Preserve build 46 and all app data
+for recovery. Repeat physical creation through the consent screen, then the
+recording-to-saved-note check; compilation is not physical acceptance.

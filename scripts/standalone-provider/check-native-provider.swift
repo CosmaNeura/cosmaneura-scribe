@@ -97,6 +97,32 @@ struct CheckNativeProvider {
     }
     @MainActor static func main() async throws {
         var checks = 0
+        // Exercise the actual iPhone bridge parser, not a JavaScript RPC mock.
+        // Both patient discovery and creation must reach the existing wire.
+        for operation in ["patients", "create"] {
+            let (auth, driver, wire, connection) = try make()
+            let body = "{\"action\":\"\(operation)\"}"
+            let input = try request(auth, action: "encounters", body: body)
+            await wire.setResponder { received in
+                try require(received.action == .encounters && received.body == Data(body.utf8))
+                return ProviderNativeReply(status: 200, body: Data("{}".utf8))
+            }
+            let reply = try await connection.send(input)
+            let count = await wire.count
+            try require(reply.status == 200 && count == 1 && driver.tokens == 1)
+            try require(input.action.bodyLimit == 4096 && input.action.responseLimit == 1_048_576)
+            connection.close(); checks += 1
+        }
+        do {
+            let (auth, _, wire, connection) = try make()
+            try await rejected(Task { try request(auth, action: "encounters", body: "{\"padding\":\"" + String(repeating: "x", count: 4096) + "\"}") })
+            await wire.setResponse(ProviderNativeReply(status: 200,
+                body: Data(("{\"padding\":\"" + String(repeating: "x", count: 1_048_576) + "\"}").utf8)))
+            try await rejected(Task { try await connection.send(request(auth, action: "encounters")) })
+            let count = await wire.count
+            try require(count == 1)
+            connection.close(); checks += 1
+        }
         for outcome in ["success", "denied", "token-failure", "invalid-reply", "cancelled"] {
             var instant = ContinuousClock.now
             var timings: [ProviderNativeRequestTiming] = []
