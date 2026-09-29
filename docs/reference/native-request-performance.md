@@ -1,5 +1,11 @@
 # Native request performance
 
+Before physical audio timing, follow the
+[physical audio test environment](physical-audio-test-environment.md) procedure.
+Device Hub mirroring has interfered with iPhone microphone capture in the current
+test setup. Verify it is closed before and after each run; do not use mirrored
+screens to qualify recording readiness.
+
 The iPhone bridge and Mac provider helper use Apple's unified logging to record
 local request timing under subsystem `com.cosmaneura.scribe.performance`, category
 `provider`, at info level. A `provider_request` event contains only the validated
