@@ -11,7 +11,7 @@ enum ProviderNativeError: String, Error, Sendable {
 }
 
 enum ProviderNativeAction: String, Sendable {
-    case catalog, mount, recorder
+    case catalog, encounters, mount, recorder
     case recorderContext = "recorder-context"
     case noteOpening = "note-opening"
     case sourceStart = "source-start"
@@ -21,6 +21,7 @@ enum ProviderNativeAction: String, Sendable {
     var bodyLimit: Int {
         switch self {
         case .catalog: 2
+        case .encounters: 4096
         case .mount: 256
         case .recorder, .recorderContext, .noteOpening: 1024
         case .sourceStart: 4096
@@ -32,7 +33,7 @@ enum ProviderNativeAction: String, Sendable {
     }
     var responseLimit: Int {
         switch self {
-        case .catalog: 65_536
+        case .catalog, .encounters: 1_048_576
         case .mount, .recorder, .recorderContext, .sourceStart: 8192
         case .sourceStartReady: 16_384
         case .operation, .noteOpening: 32 * 1024 * 1024 + 8192

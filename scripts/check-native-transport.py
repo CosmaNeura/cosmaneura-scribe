@@ -16,10 +16,9 @@ def main() -> None:
     source = root / "apps/capture/native-plugins/cosmas-native-auth"
     bridge = source / "Bridge"
     standalone = root / "scripts/standalone-provider"
-    if (bridge / "ProviderNativeTransport.swift").read_bytes() != (
-        standalone / "ProviderNativeTransport.swift"
-    ).read_bytes():
-        raise SystemExit("native transport copies differ")
+    for shared in ("ProviderNativeTransport.swift", "NativeProviderConnection.swift"):
+        if (bridge / shared).read_bytes() != (standalone / shared).read_bytes():
+            raise SystemExit(f"native contract copies differ: {shared}")
     common = [
         "xcrun",
         "swiftc",
