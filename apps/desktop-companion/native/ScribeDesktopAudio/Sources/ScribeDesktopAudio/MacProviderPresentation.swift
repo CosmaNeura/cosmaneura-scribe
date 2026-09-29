@@ -53,23 +53,9 @@ public final class MacProviderWindowPicker: NSObject, NSWindowDelegate {
                                      styleMask: [.titled, .closable], backing: .buffered, defer: false)
                 panel = window; window.title = "Choose a meeting window"; window.delegate = self
                 window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
-                let list = MeetingWindowChoices(frame: NSRect(x: 0, y: 0, width: 480, height: rows.count * 52 - 8))
-                list.orientation = .vertical; list.alignment = .leading; list.spacing = 8
-                list.autoresizingMask = [.width]
-                choices = rows.map { _, label in
-                    let button = NSButton(title: label, target: self, action: #selector(confirmSelection(_:)))
-                    button.alignment = .left; button.bezelStyle = .rounded
-                    button.lineBreakMode = .byTruncatingTail; button.toolTip = label
-                    button.setAccessibilityHelp("Start recording this meeting window and your microphone.")
-                    list.addArrangedSubview(button)
-                    button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
-                    button.heightAnchor.constraint(equalToConstant: 44).isActive = true
-                    return button
-                }
-                let scroll = NSScrollView()
-                scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
-                scroll.autohidesScrollers = true; scroll.drawsBackground = false; scroll.documentView = list
-                scroll.heightAnchor.constraint(equalToConstant: CGFloat(listHeight)).isActive = true
+                let controls = providerWindowChoices(rows.map(\.1), target: self, action: #selector(confirmSelection(_:)))
+                choices = controls.buttons
+                let scroll = controls.scroll
                 let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelSelection(_:)))
                 cancel = cancelButton; cancelButton.keyEquivalent = "\u{1b}"
                 let disclosure = NSTextField(wrappingLabelWithString:
@@ -108,6 +94,32 @@ public final class MacProviderWindowPicker: NSObject, NSWindowDelegate {
         choices.removeAll(); cancel = nil; selections.removeAll()
         pending.resume(with: result)
     }
+}
+
+@MainActor
+func providerWindowChoices(_ labels: [String], target: AnyObject, action: Selector) -> (scroll: NSScrollView, buttons: [NSButton]) {
+    let listHeight = min(272, labels.count * 52 - 8)
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: listHeight))
+    scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
+    scroll.autohidesScrollers = true; scroll.drawsBackground = false
+    // Match the initial clip width before autoresizing; a zero-width scroll
+    // view otherwise adds its entire first layout width to the document.
+    let list = MeetingWindowChoices(frame: NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: CGFloat(labels.count * 52 - 8)))
+    list.orientation = .vertical; list.alignment = .leading; list.spacing = 8
+    list.autoresizingMask = [.width]
+    let buttons = labels.map { label in
+        let button = NSButton(title: label, target: target, action: action)
+        button.alignment = .left; button.bezelStyle = .rounded
+        button.lineBreakMode = .byTruncatingTail; button.toolTip = label
+        button.setAccessibilityHelp("Start recording this meeting window and your microphone.")
+        list.addArrangedSubview(button)
+        button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        return button
+    }
+    scroll.documentView = list
+    scroll.heightAnchor.constraint(equalToConstant: CGFloat(listHeight)).isActive = true
+    return (scroll, buttons)
 }
 
 @MainActor
