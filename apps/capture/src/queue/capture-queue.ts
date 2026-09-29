@@ -244,6 +244,7 @@ export class CaptureQueue {
     let uploadedNow = false;
     try {
       let current = await this.#requireRecord(objectId);
+      const firstUploadAttempt = current.state === "encrypted";
       if (current.state === "encrypted") {
         if (!isOperationDue(current, "upload", this.#now())) return skipped(objectId);
         current = await this.#mutate(objectId, (latest) =>
@@ -253,17 +254,34 @@ export class CaptureQueue {
 
       if (current.state === "uploading") {
         if (!isOperationDue(current, "upload", this.#now())) return skipped(objectId);
-        const remote = await transport.getReceipt(current.reservation);
-        if (remote.state === "registered") {
-          await this.#reconcileRegistered(objectId, remote.registration);
-          return { objectId, outcome: "registered" };
+        if (!firstUploadAttempt) {
+          const remote = await transport.getReceipt(current.reservation);
+          if (remote.state === "registered") {
+            await this.#reconcileRegistered(objectId, remote.registration);
+            return { objectId, outcome: "registered" };
+          }
         }
 
-        const authorization = await transport.authorizeUpload(
-          current.reservation.sessionId,
-          current.reservation.objectId,
-          current.idempotencyKeys.uploadAuthorization,
-        );
+        let authorization;
+        try {
+          // Authorization already checks the reservation and rejects registered
+          // chunks. A retained encrypted backup can still be registered remotely;
+          // reconcile that receipt before treating a rejected first attempt as failed.
+          authorization = await transport.authorizeUpload(
+            current.reservation.sessionId,
+            current.reservation.objectId,
+            current.idempotencyKeys.uploadAuthorization,
+          );
+        } catch (error) {
+          if (firstUploadAttempt) {
+            const remote = await transport.getReceipt(current.reservation);
+            if (remote.state === "registered") {
+              await this.#reconcileRegistered(objectId, remote.registration);
+              return { objectId, outcome: "registered" };
+            }
+          }
+          throw error;
+        }
         if (
           authorization.objectId !== current.reservation.objectId ||
           authorization.additionalAuthenticatedData !==
