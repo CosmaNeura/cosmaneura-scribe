@@ -182,12 +182,12 @@ try {
       assert.equal(root.textContent.includes("Private storage detail"), false);
       journalFailure = false;
       root.querySelector('[data-workspace-action="open"]').click();
-      await until(() => root.textContent.includes("Prepare recording"));
+      await until(() => root.textContent.includes("Record this visit"));
       assert.equal(root.querySelector('[name="regions"]'), null);
-      const consent = root.querySelector('[name="consent"]'); consent.focus();
+      const consent = root.querySelector('[data-workspace-action="prepare"]'); consent.focus();
       await new Promise(resolve => setTimeout(resolve, 5200));
-      assert.equal(root.querySelector('[name="consent"]'), consent, "Polling must retain the opened encounter and consent control");
-      assert.equal(window.document.activeElement, consent); assert.equal(consent.checked, false);
+      assert.equal(root.querySelector('[data-workspace-action="prepare"]'), consent, "Polling must retain the opened encounter and consent control");
+      assert.equal(window.document.activeElement, consent); assert.equal(consent.textContent, "Confirm consent & record");
       assert.equal(nativeCalls.some(call => call.startsWith("IOSPCM.")), false);
     } finally {
       mountGate?.resolve(); mountGate = null; mountFailure = false; journalFailure = false;
@@ -227,11 +227,9 @@ try {
       await until(() => root.querySelector('[data-workspace-action="prepare"]'));
       assert.equal(root.querySelector('[name="regions"]'), null);
       assert.equal(root.querySelector('[name="timezone"]'), null);
-      root.querySelector('[name="language"]').value = "en-US";
-      root.querySelector('[data-workspace-action="prepare"]').click(); await turn();
+      await turn();
       assert.equal(admissions, 0); assert.equal(saved, null);
-      assert.ok(root.textContent.includes("confirm all-party consent"));
-      root.querySelector('[name="consent"]').checked = true;
+      assert.ok(root.textContent.includes("everyone has agreed to recording and transcription"));
       root.querySelector('[data-workspace-action="prepare"]').click();
       await until(() => admissions === 1); await turn();
       assert.deepEqual(saved.admission.attestation.participant_regions, []);
@@ -491,7 +489,7 @@ try {
       await until(() => root.querySelector('[data-session-action="sign-in"]'));
       click("sign-in"); await until(visible);
       root.querySelector('[data-workspace-action="open"]').click();
-      await until(() => root.textContent.includes("Prepare recording"));
+      await until(() => root.textContent.includes("Record this visit"));
       assert.equal(nativeCalls.filter(call => call.endsWith(".providerRequest")).length, 3);
       assert.equal(nativeCalls.some(call => call.startsWith("IOSPCM.")), false);
       assert.equal(nativeCalls.some(call => call.endsWith(".getToken")), false);

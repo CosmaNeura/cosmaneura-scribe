@@ -26,6 +26,11 @@
 .provider-preparation { max-width: 760px; }
 .provider-preparation h1 { margin-bottom: 8px; }
 .provider-preparation label { margin: 12px 0; }
+.provider-recording-options { margin: 20px 0; padding: 4px 16px; border: 1px solid #dce5e3; border-radius: 12px; }
+.provider-recording-options summary { min-height: 44px; padding: 10px 0; cursor: pointer; font-weight: 600; }
+.provider-recording-options summary small { display: block; margin-top: 4px; color: #526d63; overflow-wrap: anywhere; }
+.provider-consent-explanation { max-width: 62ch; margin: 20px 0 8px; }
+.provider-start-help { margin: 6px 0; color: #526d63; font-size: .95rem; }
 .provider-recording-fields { display: grid; gap: 0 16px; }
 .provider-recording-fields label, .provider-recording-fields select { min-width: 0; width: 100%; }
 .provider-preparation .provider-consent { padding: 12px; border-radius: 8px; background: #f2faf5; }

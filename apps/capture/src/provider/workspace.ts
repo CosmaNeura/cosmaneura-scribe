@@ -22,6 +22,7 @@ import { readNoteOpening, type NoteOpening } from "./note-opening";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
+  const isIOS = Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
   let disposed = false, generation = 0, busy = false;
   let context: AuthorizedProviderEncounter | null = null;
   let client: CoreCaptureClient | null = null;
@@ -34,10 +35,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let noteTranscript: CreatorReviewView | null = null;
   let currentSchema = "";
   let consentRenewalOffered = false;
+  let consentAction: HTMLButtonElement | null = null;
   let openingRef: string | null = null;
   let pendingNavigation: "encounters" | "review" | null = null;
   let step = "request";
-  let preferredLanguage: LanguageMode | null = null; // This authorized workspace's lifetime only.
+  let preferredLanguage: LanguageMode = "en-US"; // This authorized workspace's lifetime only.
+  let preferredModality: "in_person" | "virtual" | "phone" = isIOS ? "in_person" : "virtual";
   root.classList.add("provider-workspace");
   root.innerHTML = `<header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
     <p data-workspace-notice role="status"></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
@@ -49,7 +52,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const current = (n: number): boolean => !disposed && !host.signal.aborted && n === generation;
   const authorized = (n: number): boolean => current(n) && context !== null && !client?.signal.aborted;
   const clearNavigation = (): void => { pendingNavigation = null; navigation.replaceChildren(); };
-  const show = (markup: string): void => { clearNavigation(); disposeContent?.(); disposeContent = null; content.innerHTML = markup; };
+  const show = (markup: string): void => { clearNavigation(); consentAction = null; disposeContent?.(); disposeContent = null; content.innerHTML = markup; };
   const persist = async (progress: ProviderProgress): Promise<void> => {
     requireValue(context && !client?.signal.aborted);
     const activeContext = context, activeClient = client;
@@ -68,6 +71,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     content.replaceChildren(); draft = null; source = null; templates = []; noteTranscript = null;
     encounterLabel.textContent = "";
     consentRenewalOffered = false;
+    consentAction = null;
     openingRef = null;
     context = null; client = null; journal = { revision: null, progress: null };
     // A host acquisition can finish after revocation. Await its ownership handoff
@@ -124,14 +128,27 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const preparation = (): void => {
     requireValue(context);
-    show(`<section class="provider-preparation"><h1>Prepare recording</h1><p>${escape(context.encounter.detail)}</p>
+    show(`<section class="provider-preparation"><h1>Record this visit</h1><p>${escape(context.encounter.detail)}</p>
+      <details class="provider-recording-options"><summary>Recording options<small data-recording-summary></small></summary>
       <div class="provider-recording-fields">
-      <label>Spoken language<select name="language"><option value="">Choose a language</option><option value="en-US"${preferredLanguage === "en-US" ? " selected" : ""}>English</option><option value="en-US+es-US"${preferredLanguage === "en-US+es-US" ? " selected" : ""}>English and Spanish</option></select></label>
-      <label>Visit type<select name="modality"><option value="in_person">In person</option><option value="virtual">Video visit</option><option value="phone">Phone call</option></select></label>
+      <label>Spoken language<select name="language"><option value="en-US"${preferredLanguage === "en-US" ? " selected" : ""}>English</option><option value="en-US+es-US"${preferredLanguage === "en-US+es-US" ? " selected" : ""}>English and Spanish</option></select></label>
+      <label>Visit type<select name="modality">${([ ["in_person", "In person"], ["virtual", "Video visit"], ["phone", "Phone call"] ] as const)
+        .map(([value, label]) => `<option value="${value}"${preferredModality === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
       </div>
-      ${Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios" ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
-      <label class="provider-consent"><input name="consent" type="checkbox">All parties have agreed to recording and transcription.</label>
-      <button data-workspace-action="prepare">Start recording</button></section>`);
+      ${isIOS ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
+      </details>
+      <p class="provider-consent-explanation" id="provider-start-consent">By choosing “Confirm consent &amp; record,” you confirm that everyone has agreed to recording and transcription.</p>
+      <button data-workspace-action="prepare" aria-describedby="provider-start-consent">Confirm consent &amp; record</button>
+      ${isIOS ? "" : "<p class=\"provider-start-help\">Next, choose your Zoom or Chrome meeting window. Keep using your meeting app while Scribe records.</p>"}</section>`);
+    const options = content.querySelector<HTMLDetailsElement>(".provider-recording-options")!;
+    const summarize = (): void => {
+      const choices = [...options.querySelectorAll<HTMLSelectElement>("select")].map(select => select.selectedOptions[0]?.textContent ?? "");
+      if (!isIOS) choices.push("Microphone + meeting audio");
+      options.querySelector<HTMLElement>("[data-recording-summary]")!.textContent = choices.join(" · ");
+    };
+    summarize(); options.addEventListener("change", summarize);
+    disposeContent = () => options.removeEventListener("change", summarize);
+    consentAction = content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]');
   };
   const renewConsent = (): void => {
     const saved = progress();
@@ -400,10 +417,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "create": await host.createEncounter(host.signal); await list(); break;
         case "open": await open(button.dataset.appointment!); break;
         case "prepare": {
+          // Only this currently displayed, explicit attestation can initiate a
+          // new recording. Reopening or recovering never replays the action.
+          if (button !== consentAction || journal.progress !== null) return;
           const language = input("language"), modality = input("modality");
-          const consent = content.querySelector<HTMLInputElement>('[name="consent"]')?.checked;
-          if (!consent || !["en-US", "en-US+es-US"].includes(language)) {
-            notice.textContent = "Choose the spoken language and confirm all-party consent before preparing."; return;
+          if (!["en-US", "en-US+es-US"].includes(language) || !["in_person", "virtual", "phone"].includes(modality)) {
+            notice.textContent = "Check the language and visit type in Recording options before continuing."; return;
           }
           const next: ProviderProgress = { admission: { key: crypto.randomUUID(), languageMode: language as LanguageMode,
             attestation: { modality: modality as "in_person" | "virtual" | "phone", participant_regions: [],
@@ -411,8 +430,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           sessionId: null, uploaded: false, pendingSave: null };
           const microphone = content.querySelector<HTMLSelectElement>('[name="microphone"]')?.value ?? "built_in";
           requireValue(isMicrophoneInput(microphone));
-          assertProgress(next); await persist(next);
+          assertProgress(next); consentAction = null; button.disabled = true; await persist(next);
           preferredLanguage = next.admission.languageMode;
+          preferredModality = next.admission.attestation.modality;
           await admit("initial", microphone); break;
         }
         case "admit": await admit("recover"); break;
