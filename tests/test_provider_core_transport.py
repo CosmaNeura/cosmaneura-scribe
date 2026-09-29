@@ -581,23 +581,22 @@ def startup_operations(source="ios_microphone"):
 
 def source_sequence_case(wire):
     def alter(path, value):
-        if value.get("operation") != "source_start":
+        if value.get("operation") != "source_start_sequence":
             return value
-        operation = wire.effects[-1][1]["operation"]
-        intent = operation["payload"]
-        prepared = operation["action"] == "prepare"
-        receipt = {
+        intent = wire.effects[-1][1]["operation"]["payload"]
+        common = {
             **{key: item for key, item in intent.items() if key != "owner_proof"},
             "session_id": SESSION, "source_start_id": intent["attempt_id"],
             "creator_actor_id": SELECTION.actor_ref, "consent_record_id": str(uuid4()),
-            "state": "prepared" if prepared else "issued",
             "preparation_expires_at": (NOW + timedelta(seconds=30)).isoformat(),
-            "issued_at": None if prepared else NOW.isoformat(),
-            "expires_at": None if prepared else (NOW + timedelta(seconds=15)).isoformat(),
             "capability_id": str(uuid4()),
         }
-        return {**value, "receipt": receipt if prepared else {
-            "receipt": receipt, "secret": intent["owner_proof"],
+        prepared = {**common, "state": "prepared", "issued_at": None, "expires_at": None}
+        issued = {**common, "state": "issued", "issued_at": NOW.isoformat(),
+                  "expires_at": (NOW + timedelta(seconds=15)).isoformat()}
+        return {**value, "receipt": {
+            "preparation": prepared,
+            "authorization": {"receipt": issued, "secret": intent["owner_proof"]},
         }}
 
     wire.alter = alter
@@ -615,21 +614,28 @@ async def test_source_sequence_reuses_one_request_local_setup_and_preserves_inte
     wire.calls.clear()
     wire.context_calls = 0
     result = await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
-    assert len(wire.calls) == 4 and wire.context_calls == 8 and wire.counter == 2
-    assert [data["operation"]["action"] for _, data, _ in wire.effects] == ["prepare", "authorize"]
-    assert [key for _, _, key in wire.effects] == [
-        "offline-prepare-key", payload["authorize_idempotency_key"],
-    ]
-    assert wire.effects[0][1]["request_nonce"] == payload["request_nonce"]
-    assert wire.effects[1][1]["request_nonce"] == payload["authorize_request_nonce"]
-    assert all(data["operation"]["payload"] == payload["operation"]["payload"]
-               for _, data, _ in wire.effects)
+    assert len(wire.calls) == 3 and wire.context_calls == 6 and wire.counter == 2
+    assert len(wire.effects) == 1
+    _, sent, prepare_key = wire.effects[0]
+    assert prepare_key == "offline-prepare-key"
+    assert sent["request_nonce"] == payload["request_nonce"]
+    assert sent["operation"] == {
+        "kind": "source_start_sequence", "payload": payload["operation"]["payload"],
+        "authorize_idempotency_key": payload["authorize_idempotency_key"],
+    }
     assert result["preparation"]["receipt"]["state"] == "prepared"
     assert result["authorization"]["receipt"]["receipt"]["state"] == "issued"
+    assert result["preparation"]["request_nonce"] == payload["request_nonce"]
+    assert result["authorization"]["request_nonce"] == payload["authorize_request_nonce"]
+    assert (
+        result["authorization"]["receipt"]["secret"]
+        == payload["operation"]["payload"]["owner_proof"]
+    )
+    assert {item["operation"] for item in result.values()} == {"source_start"}
     assert USER_TOKEN not in json.dumps(result) and WORKLOAD_TOKEN not in json.dumps(result)
     await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
     assert wire.counter == 3  # Every subsequent native request negotiates afresh.
-    assert wire.effects[:2] == wire.effects[2:]  # Explicit retry retains both exact intents.
+    assert wire.effects[0] == wire.effects[1]  # Explicit retry retains both exact intents.
 
 
 @pytest.mark.parametrize("failure", [
@@ -659,9 +665,9 @@ async def test_source_sequence_rejects_invalid_pair_before_core(connection, fail
     assert wire.calls == [] and wire.effects == []
 
 
-@pytest.mark.parametrize("boundary", range(1, 9))
+@pytest.mark.parametrize("boundary", range(1, 7))
 @pytest.mark.parametrize("change", ["revoke", "selection"])
-async def test_source_sequence_checks_current_access_at_all_eight_boundaries(
+async def test_source_sequence_checks_current_access_at_all_six_boundaries(
     connection, boundary, change,
 ):
     wire, client = connection
@@ -694,7 +700,7 @@ async def test_source_sequence_checks_current_access_at_all_eight_boundaries(
     ("preparation_expires_at", (NOW + timedelta(hours=1)).isoformat()),
     ("extra_field", "invalid"),
 ])
-async def test_source_sequence_rejects_invalid_preparation_before_authorizing(
+async def test_source_sequence_rejects_invalid_preparation_in_combined_reply(
     connection, field, value,
 ):
     wire, client = connection
@@ -704,8 +710,8 @@ async def test_source_sequence_rejects_invalid_preparation_before_authorizing(
 
     def alter(path, response):
         response = original(path, response)
-        if response.get("operation") == "source_start":
-            response["receipt"][field] = value
+        if response.get("operation") == "source_start_sequence":
+            response["receipt"]["preparation"][field] = value
         return response
 
     wire.alter = alter
@@ -714,7 +720,73 @@ async def test_source_sequence_rejects_invalid_preparation_before_authorizing(
     assert len(wire.effects) == 1
 
 
-async def test_source_sequence_cancellation_after_prepare_does_not_authorize(connection):
+@pytest.mark.parametrize("target,field,value", [
+    ("envelope", "unexpected", "private-sentinel"),
+    ("pair", "unexpected", "private-sentinel"),
+    ("authorization", "unexpected", "private-sentinel"),
+    ("authorization", "secret", "e" * 64),
+    ("authorization", "secret", "\u00e9" * 64),
+    ("issued", "unexpected", "private-sentinel"),
+    ("issued", "session_id", str(uuid4())),
+    ("issued", "source_start_id", str(uuid4())),
+    ("issued", "consent_record_id", str(uuid4())),
+    ("issued", "capability_id", str(uuid4())),
+    ("issued", "first_sequence_number", 1),
+    ("issued", "state", "stopped"),
+    ("issued", "issued_at", None),
+    ("issued", "expires_at", None),
+    ("issued", "issued_at", (NOW + timedelta(seconds=6)).isoformat()),
+    ("issued", "issued_at", (NOW + timedelta(seconds=16)).isoformat()),
+    ("issued", "issued_at", (NOW - timedelta(seconds=1)).isoformat()),
+    ("issued", "expires_at", NOW.isoformat()),
+    ("issued", "expires_at", (NOW + timedelta(seconds=16)).isoformat()),
+])
+async def test_source_sequence_rejects_invalid_authorization_without_publishing(
+    connection, target, field, value,
+):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    original = wire.alter
+
+    def alter(path, response):
+        response = original(path, response)
+        if response.get("operation") == "source_start_sequence":
+            targets = {
+                "envelope": response, "pair": response["receipt"],
+                "authorization": response["receipt"]["authorization"],
+                "issued": response["receipt"]["authorization"]["receipt"],
+            }
+            targets[target][field] = value
+        return response
+
+    wire.alter = alter
+    with pytest.raises(ProviderCoreUnavailable) as error:
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert len(wire.effects) == 1
+    assert "private-sentinel" not in str(error.value)
+    assert payload["operation"]["payload"]["owner_proof"] not in str(error.value)
+
+
+@pytest.mark.parametrize("native_start", [False, True])
+async def test_core_sequence_rejects_generic_transport(connection, native_start):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    wire.calls.clear()
+    direct = body(operation={
+        "kind": "source_start_sequence", "payload": payload["operation"]["payload"],
+        "authorize_idempotency_key": payload["authorize_idempotency_key"],
+    })
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount, ROOT + "capture-operations", direct, "offline-prepare-key",
+            native_start=native_start,
+        )
+    assert not wire.calls and not wire.effects
+
+
+async def test_source_sequence_cancellation_after_core_never_publishes_or_retries(connection):
     wire, client = connection
     mount = await client.open()
     payload = source_sequence_case(wire)
@@ -732,20 +804,28 @@ async def test_source_sequence_cancellation_after_prepare_does_not_authorize(con
     assert len(wire.effects) == 1
 
 
-@pytest.mark.parametrize("lost_at", [1, 2])
-async def test_source_sequence_lost_reply_never_retries_or_starts_another_step(connection, lost_at):
+@pytest.mark.parametrize("fault", ["lost", "rejected", "conflict", "malformed"])
+async def test_source_sequence_uncertain_reply_never_retries_or_falls_back(connection, fault):
     wire, client = connection
     mount = await client.open()
     payload = source_sequence_case(wire)
+    original = wire.alter
 
-    async def before(path):
-        if path.endswith("capture-operations") and len(wire.effects) + 1 == lost_at:
-            wire.lost = True
+    def altered(path, value):
+        if value.get("operation") != "source_start_sequence":
+            return value
+        if fault in {"rejected", "conflict"}:
+            return httpx.Response(422 if fault == "rejected" else 409)
+        if fault == "malformed":
+            return {**value, "receipt": {"preparation": {}}}
+        return original(path, value)
 
-    wire.before = before
+    wire.alter = altered
+    wire.lost = fault == "lost"
     with pytest.raises(ProviderCoreUnavailable):
         await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
-    assert len(wire.effects) == lost_at
+    assert len(wire.effects) == 1
+    assert wire.effects[0][1]["operation"]["kind"] == "source_start_sequence"
 
 
 async def test_concurrent_source_sequences_keep_their_own_context_and_intents(connection):
@@ -770,7 +850,7 @@ async def test_concurrent_source_sequences_keep_their_own_context_and_intents(co
     await asyncio.wait_for(entered.wait(), 2)
     release.set()
     results = await asyncio.gather(*tasks)
-    assert wire.counter == 3 and len(wire.effects) == 4
+    assert wire.counter == 3 and len(wire.effects) == 2
     for payload, result in zip(payloads, results, strict=True):
         assert result["preparation"]["request_nonce"] == payload["request_nonce"]
         assert result["authorization"]["request_nonce"] == payload["authorize_request_nonce"]

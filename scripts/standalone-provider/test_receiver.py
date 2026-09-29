@@ -670,24 +670,23 @@ def source_payload(h, action):
 
 def source_sequence_payload(h):
     def alter(path, data, response):
-        if response.get("operation") != "source_start":
+        if response.get("operation") != "source_start_sequence":
             return response
-        operation = data["operation"]
-        intent = operation["payload"]
-        prepared = operation["action"] == "prepare"
+        intent = data["operation"]["payload"]
         now = datetime.now(UTC)
-        receipt = {
+        common = {
             **{key: value for key, value in intent.items() if key != "owner_proof"},
             "session_id": SESSION_ID, "source_start_id": intent["attempt_id"],
             "creator_actor_id": h.wire.selection.actor_ref,
             "consent_record_id": str(uuid4()), "capability_id": str(uuid4()),
-            "state": "prepared" if prepared else "issued",
             "preparation_expires_at": (now + timedelta(seconds=30)).isoformat(),
-            "issued_at": None if prepared else now.isoformat(),
-            "expires_at": None if prepared else (now + timedelta(seconds=15)).isoformat(),
         }
-        return {**response, "receipt": receipt if prepared else {
-            "receipt": receipt, "secret": intent["owner_proof"],
+        prepared = {**common, "state": "prepared", "issued_at": None, "expires_at": None}
+        issued = {**common, "state": "issued", "issued_at": now.isoformat(),
+                  "expires_at": (now + timedelta(seconds=15)).isoformat()}
+        return {**response, "receipt": {
+            "preparation": prepared,
+            "authorization": {"receipt": issued, "secret": intent["owner_proof"]},
         }}
 
     h.wire.alter = alter
@@ -712,13 +711,27 @@ async def test_native_source_sequence_reuses_core_setup_and_rejects_generic_rout
     assert h.wire.calls == [
         "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
         "/service/v1/agent/scribe/capture-operations",
-        "/service/v1/agent/scribe/capture-operations",
     ]
-    assert h.wire.operations == ["source_start", "source_start"]
+    assert h.wire.operations == ["source_start_sequence"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("boundary", [1, 2, 3, 4])
+@pytest.mark.parametrize("route", ["capture-operations", "source-start", "source-start-ready"])
+async def test_receiver_rejects_direct_core_sequence_operation(harness, route):
+    h = harness
+    payload = source_sequence_payload(h)
+    direct = {key: value for key, value in payload.items() if not key.startswith("authorize_")}
+    direct["operation"] = {
+        "kind": "source_start_sequence", "payload": payload["operation"]["payload"],
+        "authorize_idempotency_key": payload["authorize_idempotency_key"],
+    }
+    async with client(h) as c:
+        result = await c.post("/provider/v1/" + route, json=direct)
+    assert result.status_code == 503 and not h.wire.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", [1, 2, 3])
 async def test_native_source_sequence_rechecks_frozen_account_after_each_core_request(
     harness, boundary,
 ):
@@ -735,7 +748,7 @@ async def test_native_source_sequence_rechecks_frozen_account_after_each_core_re
     assert result.status_code == 403
     assert "preparation" not in result.json() and "authorization" not in result.json()
     assert len(h.wire.calls) == boundary
-    assert h.wire.operations == ["source_start"] * max(0, boundary - 2)
+    assert h.wire.operations == ["source_start_sequence"] * max(0, boundary - 2)
 
 
 @pytest.mark.asyncio

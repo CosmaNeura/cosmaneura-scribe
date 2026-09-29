@@ -9,6 +9,7 @@ or register a runtime. Workload and mount credentials never leave this transport
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
@@ -23,7 +24,7 @@ import httpx
 from pydantic import SecretStr
 
 from .provider_core_connections import ProviderCoreConnections
-from .source_start_contract import SourceStartIntent, SourceStartReceipt
+from .source_start_contract import SourceStartCapability, SourceStartIntent, SourceStartReceipt
 
 _ROOT = "/service/v1/agent/scribe/"
 MAX_CORE_CAPTURE_RESPONSE_BYTES = 32 * 1024 * 1024 + 8192
@@ -248,7 +249,7 @@ class ProviderCoreTransport:
     async def prepare_and_authorize_source(
         self, mount: CoreProviderMount, body: Mapping[str, object], key: str,
     ) -> dict[str, object]:
-        """One native request, two existing Core decisions with distinct intents.
+        """One Core request composes two existing decisions with distinct intents.
 
         The native owner must journal its original stop proof before dispatch.
         No automatic retry or persistent context is created by this sequence.
@@ -264,35 +265,62 @@ class ProviderCoreTransport:
         operation = _object(payload["operation"])
         _require(operation["action"] == "prepare")
         intent = SourceStartIntent.model_validate(operation["payload"])
-        authorization = {
-            **payload, "request_nonce": authorize_nonce,
-            "operation": {**operation, "action": "authorize"},
+        sequence = {
+            **payload,
+            "operation": {
+                "kind": "source_start_sequence", "payload": operation["payload"],
+                "authorize_idempotency_key": authorize_key,
+            },
         }
         current = await self._negotiate(mount.selection, capture_mount=mount)
-        prepared = await self._dispatch(
-            mount, "capture-operations", payload, key, current,
+        combined = await self._dispatch(
+            mount, "capture-operations", sequence, key, current,
         )
+        _require(set(combined) == _SCOPE_KEYS | {
+            "contract_version", "checked_at", "operation", "receipt",
+        })
+        pair = _object(combined.get("receipt"))
+        _require(set(pair) == {"preparation", "authorization"})
         try:
-            receipt = SourceStartReceipt.model_validate(prepared.get("receipt"))
+            receipt = SourceStartReceipt.model_validate(pair["preparation"])
+            decision = SourceStartCapability.model_validate(pair["authorization"])
         except ValueError:
             raise ProviderCoreUnavailable() from None
+        issued = decision.receipt
+        now = self._clock()
         _require(
             receipt.state == "prepared"
             and receipt.creator_actor_id == mount.selection.actor_ref
             and receipt.issued_at is None and receipt.expires_at is None
-            and self._clock() < receipt.preparation_expires_at <= intent.capture_authorized_until
+            and now < receipt.preparation_expires_at <= intent.capture_authorized_until
             and all(getattr(receipt, field) == getattr(intent, field) for field in (
                 "attempt_id", "source", "lease_id", "lease_receipt_id", "lease_generation",
                 "capture_authorized_until", "first_sequence_number",
             ))
+            and receipt.model_dump(exclude={"state", "issued_at", "expires_at"})
+            == issued.model_dump(exclude={"state", "issued_at", "expires_at"})
+            and issued.state == "issued"
+            and issued.issued_at is not None and issued.expires_at is not None
+            and issued.issued_at <= now + timedelta(seconds=5)
+            and issued.issued_at < issued.preparation_expires_at
+            and now < issued.expires_at <= issued.capture_authorized_until
+            and timedelta(0) < issued.expires_at - issued.issued_at <= timedelta(seconds=15)
+            and len(decision.secret.get_secret_value()) == 64
+            and hmac.compare_digest(
+                decision.secret.get_secret_value().encode("utf-8"),
+                intent.owner_proof.get_secret_value().encode("ascii"),
+            )
         )
-        # Honor task cancellation between decisions. A network disconnect can
-        # still leave an ambiguous result; the native owner retains stop custody.
+        # Core owns cancellation between its decisions. An ambiguous reply still
+        # leaves stop custody with the native owner; never fall back or retry.
         await asyncio.sleep(0)
-        authorized = await self._dispatch(
-            mount, "capture-operations", authorization, _checked(authorize_key, str), current,
-        )
-        return {"preparation": prepared, "authorization": authorized}
+        envelope = {**combined, "operation": "source_start"}
+        return {
+            "preparation": {**envelope, "receipt": pair["preparation"]},
+            "authorization": {
+                **envelope, "request_nonce": authorize_nonce, "receipt": pair["authorization"],
+            },
+        }
 
     async def open_note(
         self, mount: CoreProviderMount, session_id: UUID, request_nonce: UUID, key: str
@@ -448,7 +476,7 @@ class ProviderCoreTransport:
     ) -> dict[str, object]:
         # Callers validate complete intents before reaching this helper. A
         # combined native start shares negotiation only within its one request;
-        # _send and Core still check current access for each individual decision.
+        # _send checks current access around I/O; Core checks each decision.
         _require(current.mount == mount)
         headers = {**await self._workload_headers(), **current.headers()}
         headers["Idempotency-Key"] = key
