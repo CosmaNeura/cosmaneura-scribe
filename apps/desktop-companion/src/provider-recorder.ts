@@ -183,10 +183,16 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         ].includes(current.status)) throw unavailable();
         const active = await options.flowStore.getActiveCaptureState(), preparing = await options.flowStore.getPreparationState();
         recorder.requireOpen();
+        // A failed start can retain a prepared continuation while earlier chunks
+        // have already advanced the server to capturing. Restore that exact
+        // durable attempt; fresh setup and finalized work remain excluded.
+        const mayRestoreReady = current.status === "created" || current.status === "capturing"
+          && active?.phase === "ready" && active.continuation?.prepared === true
+          && active.continuation.continuous !== true;
         if (active && (active.sessionId !== options.sessionId || active.reviewAfterUpload !== true || active.channel !== "mixed")
           || preparing && (preparing.sessionId !== options.sessionId || preparing.mode !== "configured_core" || preparing.channel !== "mixed")
           || current.status !== "created" && active === null && preparing === null
-          || current.status !== "created" && active?.phase === "ready") throw unavailable();
+          || !mayRestoreReady && active?.phase === "ready") throw unavailable();
         recorder.coverage = await options.coverage.load(); recorder.requireOpen();
         recorder.continuityUnconfirmed = active?.continuation !== undefined;
         if (!await recorder.flow.restore()) await recorder.flow.prepareConfigured(options.sessionId);
@@ -199,7 +205,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
             recorder.coverage = await options.coverage.load(); recorder.requireOpen();
           }
           if (recorder.coverage !== null) throw unavailable(); // Never replay an attempt over retained coverage.
-          if (current.status !== "created") throw unavailable();
+          if (!mayRestoreReady) throw unavailable();
           await recorder.preparedContext();
           recorder.unmountedAvailability = await recorder.availability(recorder.signal);
         }

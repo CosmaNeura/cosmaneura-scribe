@@ -133,6 +133,69 @@ function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("confirmed stop recovery", () => {
+  it.each(["capturing", "processing", "transcript_ready"] as const)(
+    "revalidates a failed resume against server %s without replacing saved work or starting capture", async status => {
+    const f = await fixture(true), driver = interruptedDriver(f);
+    const bff = f.options.createBff(f.abort.signal), renew = vi.spyOn(bff, "renewLease");
+    const mount = vi.fn(f.options.authorizeMount), recorder = await f.open({ authorizeMount: mount });
+    try {
+      await recorder.startRecording(); await driver.interrupt(true);
+      await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
+      mount.mockRejectedValueOnce(new Error("invented lost resume reply"));
+      await expect(recorder.resumeRecording()).rejects.toThrow();
+      const ready = (await f.options.flowStore.getActiveCaptureState())!;
+      expect(ready).toMatchObject({ phase: "ready", recordedChunks: 1,
+        continuation: { prepared: true, firstSequenceNumber: 1 } });
+      const key = await f.options.flowStore.getSessionKeyState(f.session.id);
+      const queue = await f.options.queueStorage.list();
+      await recorder.deactivate();
+      const resources = await f.reopen();
+      const open = () => f.open({ ...resources, authorizeMount: mount,
+        authorizePreparation: async () => ({ sessionId: f.session.id, status }) });
+      if (status !== "capturing") {
+        await expect(open()).rejects.toThrow();
+        const retained = await f.reopen();
+        expect(await retained.flowStore.getActiveCaptureState()).toEqual(ready);
+        expect(await retained.flowStore.getSessionKeyState(f.session.id)).toEqual(key);
+        expect(await retained.queueStorage.list()).toEqual(queue);
+        expect(f.nativeStart).toHaveBeenCalledTimes(1); expect(mount).toHaveBeenCalledTimes(2);
+        return;
+      }
+      const restored = await open();
+      expect(restored.snapshot).toMatchObject({ state: "ready", recordedChunks: 1,
+        desktop: { phase: "ready", coverage: "incomplete" } });
+      const recovered = (await resources.flowStore.getActiveCaptureState())!;
+      // Restoration conservatively includes the retained ciphertext envelope overhead.
+      expect(recovered.recordedPlaintextBytes).toBeGreaterThanOrEqual(ready.recordedPlaintextBytes);
+      expect({ ...recovered, recordedPlaintextBytes: ready.recordedPlaintextBytes }).toEqual(ready);
+      expect(await resources.flowStore.getSessionKeyState(f.session.id)).toEqual(key);
+      expect(await resources.queueStorage.list()).toEqual(queue);
+      expect(await resources.coverage.hasPriorCapture(ready.lease.receipt_id)).toBe(true);
+      expect(f.nativeStart).toHaveBeenCalledTimes(1); expect(f.selectWindow).toHaveBeenCalledTimes(2);
+      expect(mount).toHaveBeenCalledTimes(2); expect(renew).toHaveBeenCalledTimes(1);
+      expect(f.complete).not.toHaveBeenCalled();
+      await restored.startRecording();
+      expect(restored.snapshot.state).toBe("recording");
+      expect(mount.mock.calls.at(-1)![0]).toMatchObject({ captureLeaseGeneration: ready.lease.generation,
+        leaseReceiptId: ready.lease.receipt_id, firstSequenceNumber: 1 });
+      expect(f.nativeStart).toHaveBeenCalledTimes(2); expect(renew).toHaveBeenCalledTimes(1);
+    } finally { await f.close(); }
+  });
+
+  it.each(["capturing", "processing", "transcript_ready"] as const)(
+    "rejects initial ready storage when the server is %s", async status => {
+      const f = await fixture(true), recorder = await f.open();
+      try {
+        await recorder.deactivate();
+        const resources = await f.reopen(), before = await resources.flowStore.getActiveCaptureState();
+        await expect(f.open({ ...resources,
+          authorizePreparation: async () => ({ sessionId: f.session.id, status }) })).rejects.toThrow();
+        const retained = await f.reopen();
+        expect(await retained.flowStore.getActiveCaptureState()).toEqual(before);
+        expect(f.nativeStart).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
+      } finally { await f.close(); }
+    });
+
   it("checks storage before native choice and retires the source after a low-space pause", async () => {
     const f = await fixture(true);
     let sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
