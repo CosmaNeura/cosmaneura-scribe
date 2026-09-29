@@ -26,6 +26,7 @@ from cosmaneura_scribe.provider_core_transport import (
     ProviderCoreTransport,
     ProviderCoreUnavailable,
 )
+from cosmaneura_scribe.provider_performance import provider_phase_timing, provider_request_timing
 from cosmas_os.api.auth import (
     CORE_STAGING_PERSONAL,
     AccessDenied,
@@ -163,15 +164,16 @@ class ProviderReceiver:
         self.core_connections = core_connections
 
     async def registry_read[T](self, operation: Callable[[Engine | Connection], T]) -> T:
-        if isinstance(self.engine, AsyncEngine):
-            # Each call starts a new, consistent, read-only registry snapshot.
-            # Remote operations recheck authority through another fresh call.
-            async with self.engine.connect() as connection:
-                connection = await connection.execution_options(
-                    isolation_level="REPEATABLE READ", postgresql_readonly=True,
-                )
-                return await connection.run_sync(operation)
-        return await run_in_threadpool(operation, self.engine)
+        with provider_phase_timing("registry"):
+            if isinstance(self.engine, AsyncEngine):
+                # Each call starts a new, consistent, read-only registry snapshot.
+                # Remote operations recheck authority through another fresh call.
+                async with self.engine.connect() as connection:
+                    connection = await connection.execution_options(
+                        isolation_level="REPEATABLE READ", postgresql_readonly=True,
+                    )
+                    return await connection.run_sync(operation)
+            return await run_in_threadpool(operation, self.engine)
 
     def app(self) -> FastAPI:
         app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -212,7 +214,8 @@ class ProviderReceiver:
             ):
                 return _reply(404, {"detail": "provider_unavailable"})
             try:
-                return await call_next(request)
+                with provider_request_timing(action):
+                    return await call_next(request)
             except Exception:
                 # Framework/SQL/credential exceptions must not echo request data.
                 return _reply(503, {"detail": "provider_unavailable"})

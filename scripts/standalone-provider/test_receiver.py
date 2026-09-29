@@ -417,6 +417,32 @@ def client(h):
 
 
 @pytest.mark.asyncio
+async def test_request_phase_timings_cover_real_receiver_without_private_values(
+    harness, monkeypatch,
+):
+    from cosmaneura_scribe import provider_performance
+
+    h = harness
+    events = []
+    monkeypatch.setattr(provider_performance, "log_event", lambda **event: events.append(event))
+    assert set(receiver._LIMITS) == provider_performance.PROVIDER_ACTIONS
+    async with client(h) as c:
+        result = await c.post("/provider/v1/mount", json={
+            "workspace_id": h.workspace, "opening_nonce": str(uuid4()),
+        })
+    assert result.status_code == 200
+    assert {event["action"] for event in events} == {
+        "provider.registry", "provider.workload_token", "provider.mount.total",
+        "provider.core_exchange", "provider.core_mount",
+        "provider.core_binding", "provider.core_operation",
+    }
+    assert all(set(event) == {"action", "duration_ms"} for event in events)
+    assert all(event["duration_ms"] >= 0 for event in events)
+    for private in (h.headers["Authorization"], h.workspace, h.revision, APPOINTMENT, BINDING):
+        assert private not in repr(events)
+
+
+@pytest.mark.asyncio
 async def test_catalog_mount_and_recorder_use_existing_identity_and_core(harness):
     h = harness
     async with client(h) as c:
