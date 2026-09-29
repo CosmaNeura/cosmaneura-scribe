@@ -560,3 +560,93 @@ async def test_native_start_and_retirement_after_thousandth_chunk(scope: Scope):
     retired = await _act(runtime, trial, unstarted, "stop", "late-source-retire")
     assert isinstance(retired, SourceStartRetirementReceipt)
     assert retired.first_sequence_number == 1080
+
+
+@pytest.mark.parametrize("source,channel", [
+    ("desktop_companion", "mixed"), ("ios_microphone", "microphone"),
+])
+@pytest.mark.parametrize("renew", [False, True])
+async def test_resume_after_registered_chunk_preserves_start_fences(
+    scope: Scope, capture: CaptureHarness, source: str, channel: str, renew: bool,
+):
+    trial = capture.trial
+    key = await capture.post("audio-key", {
+        "key_version": "capture-key-version", "wrapped_dek": WRAPPED_DEK,
+    }, "resume-audio-key")
+    assert key.status_code == 201
+    lease = await capture.post("capture-lease", {"protocol_version": "1.0"}, "resume-lease")
+    assert lease.status_code == 201
+    current = lease.json()
+    reservations = await capture.post("chunk-reservations", {
+        "protocol_version": "1.0", "capture_lease_id": current["lease_id"],
+        "capture_lease_generation": current["generation"], "channel": channel,
+        "first_sequence_number": 0, "count": 2,
+    }, "resume-reservations")
+    assert reservations.status_code == 201
+    first = SourceStartIntent(
+        attempt_id=uuid4(), source=source, owner_proof=SecretStr("a" * 64),
+        lease_id=current["lease_id"], lease_receipt_id=current["receipt_id"],
+        lease_generation=current["generation"], capture_authorized_until=current["expires_at"],
+    )
+    runtime = scope.source()
+    await _act(runtime, trial, first, "prepare")
+    await _act(runtime, trial, first, "authorize")
+    object_id = reservations.json()["reservations"][0]["object_id"]
+    authorization = await capture.post(f"chunks/{object_id}/upload-authorization", {
+        "protocol_version": "1.0",
+    }, "resume-upload-authorization")
+    assert authorization.status_code == 201
+    chunk = await capture.post("chunks", {
+        "sequence_number": 0, "channel": channel, "object_id": object_id,
+        "sha256": "0" * 64, "ciphertext_size_bytes": 64,
+    }, "resume-register")
+    assert chunk.status_code == 201
+    assert (await trial.query(
+        "SELECT status FROM scribe_sessions WHERE tenant_id=:tenant AND id=:session"
+    )).scalar_one() == "capturing"
+    second = first.model_copy(update={"attempt_id": uuid4(), "first_sequence_number": 1})
+    with pytest.raises((SourceStartConflict, SourceStartUnavailable)):
+        await _act(runtime, trial, second, "prepare", "resume-competing")
+    await _act(runtime, trial, first, "stop")
+    if renew:
+        renewed = await capture.post(f"capture-leases/{current['lease_id']}/renew", {
+            "protocol_version": "1.0", "expected_generation": current["generation"],
+        }, "resume-renew")
+        assert renewed.status_code == 200
+        current = renewed.json()
+        following = await capture.post("chunk-reservations", {
+            "protocol_version": "1.0", "capture_lease_id": current["lease_id"],
+            "capture_lease_generation": current["generation"], "channel": channel,
+            "first_sequence_number": 1, "count": 1,
+        }, "resume-following-reservation")
+        assert following.status_code == 201
+        second = SourceStartIntent.model_validate({
+            **second.model_dump(), "lease_receipt_id": current["receipt_id"],
+            "lease_generation": current["generation"],
+            "capture_authorized_until": current["expires_at"],
+        })
+    with pytest.raises(SourceStartUnavailable):
+        await runtime.act(trial.tenant, trial.draft.id, "another_synthetic_creator",
+                          "resume-other-creator", "prepare", second)
+    with pytest.raises(SourceStartUnavailable):
+        await runtime.act(uuid4(), trial.draft.id, trial.draft.creator_actor_id,
+                          "resume-other-tenant", "prepare", second)
+    prepared = await _act(runtime, trial, second, "prepare", "resume-prepare")
+    assert isinstance(prepared, SourceStartReceipt) and prepared.first_sequence_number == 1
+    issued = await _act(runtime, trial, second, "authorize", "resume-authorize")
+    assert isinstance(issued, SourceStartCapability) and issued.receipt.state == "issued"
+    assert await _act(runtime, trial, second, "authorize", "resume-authorize") == issued
+    await _act(runtime, trial, second, "stop", "resume-stop")
+    assert (await trial.query(
+        "SELECT count(*) FROM audio_chunks WHERE tenant_id=:tenant AND session_id=:session"
+    )).scalar_one() == 1
+    complete = await capture.post("capture-complete", {
+        "protocol_version": "1.0", "capture_lease_id": current["lease_id"],
+        "capture_lease_generation": current["generation"],
+        "channels": [{"channel": channel, "final_sequence_number": 0}],
+    }, "resume-complete")
+    assert complete.status_code == 200 and complete.json()["status"] == "uploaded"
+    for action in ("prepare", "authorize"):
+        with pytest.raises(SourceStartUnavailable):
+            await _act(runtime, trial, second.model_copy(update={"attempt_id": uuid4()}),
+                       action, f"resume-after-finalization-{action}")

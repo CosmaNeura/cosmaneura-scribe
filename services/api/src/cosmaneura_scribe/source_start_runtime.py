@@ -54,7 +54,13 @@ class SourceStartRepository(CapturedSourceRepository):
         if action == "stop":
             return await self._stop(tenant_id, session_id, actor, key, intent)
         session = await self.lock_live_capture(tenant_id, session_id)
-        if session.creator_actor_id != actor or session.status.value != "created":
+        # Registering the first background-uploaded chunk moves the session to
+        # capturing. A later native interval still needs this same start gate;
+        # finalization, active ownership and current lease checks remain below.
+        if (
+            session.creator_actor_id != actor
+            or session.status.value not in {"created", "capturing"}
+        ):
             raise SourceStartUnavailable()
         await self._lock_attempt(tenant_id, intent.attempt_id)
         if await self._one_or_none(
