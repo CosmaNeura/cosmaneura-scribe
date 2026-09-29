@@ -45,6 +45,7 @@ from .capture_responses import (
 from .captured_admission_routes import router as captured_admission_router
 from .consent import ConsentError, ConsentPolicy
 from .consent_routes import build_consent_router
+from .creator_recording_routes import router as creator_recording_router
 from .creator_review_routes import router as creator_review_router
 from .delivery_reconciler import (
     complete_delivery_failure,
@@ -449,11 +450,29 @@ async def _capture_context_or_404(
     policy: ConsentPolicy,
     *,
     require_audio_key: bool = True,
+    creator_actor_id: str | None = None,
 ) -> CaptureContext:
     context = await store.lock_capture_context(tenant_id, session_id)
     if context is None:
         raise HTTPException(status_code=404, detail="Capture session not found.")
     _assert_capture_context(context, policy, require_audio_key=require_audio_key)
+    if creator_actor_id is not None:
+        from .captured_source_runtime import CapturedSourceRepository, CapturedSourceUnavailable
+        from .normalized_source_persistence import NormalizedSourcePersistenceError
+
+        # Preserve idempotency -> consent -> session lock order. The original
+        # creator/consent check now shares the mutation's transaction and runs
+        # before both a new write and an exact receipt replay.
+        try:
+            if not isinstance(store, CapturedSourceRepository):
+                raise CapturedSourceUnavailable()
+            selected = await store.lock_live_capture(tenant_id, session_id)
+            if selected.creator_actor_id != creator_actor_id:
+                raise CapturedSourceUnavailable()
+        except (CapturedSourceUnavailable, NormalizedSourcePersistenceError):
+            raise HTTPException(
+                404, "Configured capture is unavailable.", headers={"Cache-Control": "no-store"}
+            ) from None
     return context
 
 
@@ -471,6 +490,7 @@ app.include_router(
     )
 )
 app.include_router(creator_review_router)
+app.include_router(creator_recording_router)
 app.include_router(captured_admission_router)
 app.include_router(source_start_router)
 app.include_router(source_extension_router)
@@ -769,6 +789,22 @@ async def issue_capture_lease(
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureLeaseReceipt:
+    return await execute_capture_lease_issue(
+        session_id, payload, tenant_id, idempotency_key, provider, policy, settings
+    )
+
+
+async def execute_capture_lease_issue(
+    session_id: UUID,
+    payload: CaptureLeaseIssueRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: CaptureProvider,
+    policy: Policy,
+    settings: Settings,
+    *,
+    creator_actor_id: str | None = None,
+) -> CaptureLeaseReceipt:
     _require_capture_protocol(settings)
     receipt_id = uuid4()
     lease_id = uuid4()
@@ -781,7 +817,9 @@ async def issue_capture_lease(
             _fingerprint(payload),
             receipt_id,
         )
-        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        context = await _capture_context_or_404(
+            store, tenant_id, session_id, policy, creator_actor_id=creator_actor_id
+        )
         if previous_id is not None:
             previous = await store.get_capture_lease_receipt(tenant_id, previous_id)
             if previous is None or previous.session_id != session_id:
@@ -823,6 +861,23 @@ async def renew_capture_lease(
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureLeaseReceipt:
+    return await execute_capture_lease_renewal(
+        session_id, lease_id, payload, tenant_id, idempotency_key, provider, policy, settings
+    )
+
+
+async def execute_capture_lease_renewal(
+    session_id: UUID,
+    lease_id: UUID,
+    payload: CaptureLeaseRenewRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: CaptureProvider,
+    policy: Policy,
+    settings: Settings,
+    *,
+    creator_actor_id: str | None = None,
+) -> CaptureLeaseReceipt:
     _require_capture_protocol(settings)
     receipt_id = uuid4()
     async with provider.transaction(tenant_id) as store:
@@ -834,7 +889,9 @@ async def renew_capture_lease(
             _fingerprint(payload),
             receipt_id,
         )
-        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        context = await _capture_context_or_404(
+            store, tenant_id, session_id, policy, creator_actor_id=creator_actor_id
+        )
         if previous_id is not None:
             previous = await store.get_capture_lease_receipt(tenant_id, previous_id)
             if (
@@ -918,6 +975,22 @@ async def reserve_audio_chunks(
     policy: Policy,
     settings: RuntimeSettings,
 ) -> ChunkReservationBatchReceipt:
+    return await execute_chunk_reservation(
+        session_id, payload, tenant_id, idempotency_key, provider, policy, settings
+    )
+
+
+async def execute_chunk_reservation(
+    session_id: UUID,
+    payload: ChunkReservationBatchRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: CaptureProvider,
+    policy: Policy,
+    settings: Settings,
+    *,
+    creator_actor_id: str | None = None,
+) -> ChunkReservationBatchReceipt:
     _require_capture_protocol(settings)
     if payload.count > MAX_RESERVATIONS_PER_BATCH:
         raise HTTPException(status_code=422, detail="Reservation batch is too large.")
@@ -951,7 +1024,9 @@ async def reserve_audio_chunks(
             _fingerprint(payload),
             batch_id,
         )
-        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        context = await _capture_context_or_404(
+            store, tenant_id, session_id, policy, creator_actor_id=creator_actor_id
+        )
         if previous_id is not None:
             previous = await store.get_chunk_reservation_batch(tenant_id, previous_id)
             if previous is None or previous.session_id != session_id:
