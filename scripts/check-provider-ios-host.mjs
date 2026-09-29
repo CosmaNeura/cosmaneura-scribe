@@ -67,8 +67,8 @@ try {
   await settle();
   const open = root.querySelector('[data-workspace-action="open"]');
   assert.ok(open); open.click(); await settle();
-  assert.ok(root.textContent.includes("Prepare recording"));
-  assert.ok(root.textContent.includes("All parties"));
+  assert.ok(root.textContent.includes("Record this visit"));
+  assert.ok(root.textContent.includes("everyone has agreed to recording and transcription"));
   assert.equal(authorizations, 0);
   assert.ok(calls.some(call => call.key === `provider-workspace-v1:${recovery}:${workspace}`));
   const authorized = await host.openEncounter(appointment, abort.signal);
@@ -107,7 +107,7 @@ try {
   const closeConnected = module.namespace.mountProviderWorkspace(connectedRoot, module.namespace.createProviderIOSHost(backend));
   try {
     await settle(); connectedRoot.querySelector('[data-workspace-action="open"]').click(); await settle();
-    assert.ok(connectedRoot.textContent.includes("Prepare recording"));
+    assert.ok(connectedRoot.textContent.includes("Record this visit"));
     assert.deepEqual(nativeCalls, ["catalog", "mount", "capture-operations"]);
     nativeStateChanged({ phase: "signedOut", revision: webcrypto.randomUUID() }); await settle();
     assert.equal(connectedRoot.childElementCount, 0); assert.equal(listenerRemoved, true);

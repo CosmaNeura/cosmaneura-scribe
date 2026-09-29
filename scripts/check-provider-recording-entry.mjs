@@ -38,7 +38,7 @@ for (const platform of ["desktop", "ios"]) {
   const scope = { workspaceId: "20000000-0000-4000-8000-000000000002", appointmentRef: "appointment_01j00000000000000000000000",
     bindingRef: "scribe_capture_binding_01j00000000000000000000000" };
   const encounter = { appointmentRef: scope.appointmentRef, title: "Invented recording entry", detail: "Synthetic all-party consent only" };
-  for (const mode of ["fresh", "recovered", "revoked", "permission"]) {
+  for (const mode of ["fresh", "options", "recovered", "revoked", "permission", "journal-failure"]) {
     const abort = new window.AbortController(), gate = deferred(), acquisition = deferred(), listeners = new Set();
     let starts = 0, closes = 0, admissions = 0, acquiring = false;
     const admission = { key: webcrypto.randomUUID(), languageMode: "en-US", attestation: { modality: "virtual", participant_regions: [],
@@ -62,12 +62,17 @@ for (const platform of ["desktop", "ios"]) {
     };
     const dispose = module.namespace.mountProviderWorkspace(root, { signal: abort.signal, listEncounters: async () => [encounter], createEncounter: forbidden,
       openEncounter: async () => ({ encounter, scope, signal: abort.signal,
-        journal: { load: async () => saved, save: async (_prior, progress) => { saved = { revision: String(Number(saved.revision ?? 0) + 1), progress }; return saved; } },
+        journal: { load: async () => saved, save: async (_prior, progress) => {
+          if (mode === "journal-failure") throw new Error("Invented private storage unavailable");
+          saved = { revision: String(Number(saved.revision ?? 0) + 1), progress }; return saved;
+        } },
         reviewJournal: () => ({ load: async () => null, save: forbidden, clear: forbidden }), openInCore: forbidden,
         request: async (path, body) => {
           const base = { ...body, contract_version: "1", checked_at: new Date().toISOString() };
           if (path.endsWith("capture-admissions")) {
             admissions++; assert.equal(body.attestation.all_parties_consented, true);
+            assert.equal(body.configured_capture.language_mode, mode === "options" ? "en-US+es-US" : "en-US");
+            assert.equal(body.attestation.modality, mode === "options" ? "phone" : platform === "ios" ? "in_person" : "virtual");
             return Response.json({ ...base, operation_ref: "scribe_admission_01j00000000000000000000000", appointment_ref: scope.appointmentRef,
               consent_record_id: sessionId, session_id: sessionId });
           }
@@ -92,13 +97,33 @@ for (const platform of ["desktop", "ios"]) {
       }
       await until(() => root.querySelector('[data-workspace-action="prepare"]'));
       assert.equal(starts, 0); assert.equal(acquiring, false);
-      root.querySelector('[name="language"]').value = "en-US+es-US";
-      const start = root.querySelector('[data-workspace-action="prepare"]'); start.click();
-      await until(() => root.textContent.includes("confirm all-party consent"));
+      const options = root.querySelector(".provider-recording-options");
+      assert.equal(options.open, false); assert.equal(root.querySelector('[name="consent"]'), null);
+      assert.equal(root.querySelector('[name="language"]').value, "en-US");
+      assert.equal(root.querySelector('[name="modality"]').value, platform === "ios" ? "in_person" : "virtual");
+      assert.ok(options.querySelector("summary").textContent.includes("English"));
+      assert.ok(options.querySelector("summary").textContent.includes(platform === "ios" ? "iPhone microphone" : "Microphone + meeting audio"));
+      const start = root.querySelector('[data-workspace-action="prepare"]');
+      assert.equal(start.textContent, "Confirm consent & record");
+      assert.ok(window.document.getElementById(start.getAttribute("aria-describedby")).textContent.includes("everyone has agreed to recording and transcription"));
+      // A detached/replaced action cannot reuse consent from a different screen.
+      const forged = start.cloneNode(true); start.after(forged); forged.click();
+      await until(() => root.getAttribute("aria-busy") !== "true"); forged.remove();
       assert.equal(admissions, 0); assert.equal(saved.progress, null);
-      root.querySelector('[name="consent"]').checked = true;
-      if (platform === "ios") root.querySelector('[name="microphone"]').value = "external";
+      if (mode === "options") {
+        options.querySelector("summary").click();
+        const choose = (name, value) => { const field = root.querySelector(`[name="${name}"]`); field.value = value; field.dispatchEvent(new window.Event("change", { bubbles: true })); };
+        choose("language", "en-US+es-US"); choose("modality", "phone");
+        if (platform === "ios") choose("microphone", "external");
+        assert.ok(options.querySelector("summary").textContent.includes("English and Spanish · Phone call"));
+        assert.equal(starts, 0); assert.equal(admissions, 0); assert.equal(saved.progress, null);
+      }
       start.click(); start.click(); // Double taps must not create another admission/start.
+      if (mode === "journal-failure") {
+        await until(() => root.getAttribute("aria-busy") !== "true");
+        assert.equal(start.disabled, true); assert.equal(acquiring, false); assert.equal(starts, 0);
+        assert.equal(admissions, 0); assert.equal(saved.progress, null); checks++; continue;
+      }
       await until(() => acquiring);
       if (mode === "revoked") {
         abort.abort(); acquisition.resolve(); await until(() => closes > 0);
@@ -112,8 +137,9 @@ for (const platform of ["desktop", "ios"]) {
       assert.equal(admissions, 1); assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
       assert.equal(saved.progress.sessionId, sessionId);
       if (platform === "ios") {
-        assert.equal(nativeCalls.at(-1), "external");
-        assert.equal(root.querySelector('[data-testid="microphone-input"]').value, "external");
+        const microphone = mode === "options" ? "external" : "built_in";
+        assert.equal(nativeCalls.at(-1), microphone);
+        assert.equal(root.querySelector('[data-testid="microphone-input"]').value, microphone);
       }
       gate.resolve(); await until(() => root.getAttribute("aria-busy") !== "true");
       assert.equal(starts, 1); assert.equal(root.textContent.includes("Recording prepared"), false);

@@ -23,7 +23,7 @@ const admission = { key: webcrypto.randomUUID(), languageMode: "en-US", attestat
   participant_regions: ["US-NY"], method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } };
 const forbidden = () => { throw new Error("Unrequested source, credential, mutation or external I/O"); };
 const scenarios = [
-  { name: "new", opening: null, text: "Prepare recording", calls: 0 },
+  { name: "new", opening: null, text: "Record this visit", calls: 0 },
   { name: "recovered-review", opening: view(), text: "Recording uploaded", calls: 0, refresh: true },
   { name: "saved-review", opening: view(), progress, text: "Recording uploaded", calls: 0, refresh: true },
   { name: "stale", opening: view(), progress, age: 6000, text: "Recording uploaded", calls: 1 },
@@ -42,6 +42,8 @@ for (const mode of ["workspace", "desktop"]) for (const scenario of scenarios) {
   const window = dom.window, root = window.document.getElementById("root");
   Object.defineProperty(window, "crypto", { value: webcrypto });
   Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
+  // Match Electron's supported abort API; jsdom 25 omits AbortSignal.any.
+  if (mode === "desktop") Object.assign(window, { AbortController, AbortSignal });
   window.fetch = forbidden;
   const module = new SourceTextModule(code, { context: dom.getInternalVMContext() });
   await module.link(forbidden); await module.evaluate();
