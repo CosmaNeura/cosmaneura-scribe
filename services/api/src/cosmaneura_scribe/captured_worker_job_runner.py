@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -31,6 +32,10 @@ from .transcription_job_runner import (
 from .translation_job_encryption import TranslationJobCipher
 
 _ENABLED = "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED"
+# Scheduled jobs start once per minute. Reuse their initialized clients across
+# a bounded pickup window instead of leaving uploads waiting for the next start.
+PENDING_PICKUP_SECONDS = 65.0
+PENDING_POLL_SECONDS = 5.0
 WorkerExecution = Callable[[CapturedWorkerSettings, UUID, UUID | None], Awaitable[None]]
 
 
@@ -159,19 +164,44 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
                 job_cipher=TranslationJobCipher(keys, unwrapper), enabled=True,
                 limit=settings.captured_worker_batch_size,
             )
-        failed = False
+        await _dispatch(repositories, settings, tenant, session, worker)
+    finally:
+        await close_job_resources(closers)
+
+
+async def _dispatch(
+    repositories: CapturedSourceRepositoryProvider, settings: CapturedWorkerSettings,
+    tenant: UUID, session: UUID | None,
+    worker: CapturedTranscriptionWorker | CapturedTranslationWorker,
+) -> None:
+    deadline = time.monotonic() + PENDING_PICKUP_SECONDS
+    seen: set[UUID] = set()
+    failed = False
+    while True:
         for target in await _targets(repositories, settings, tenant, session):
+            if target in seen:
+                continue  # A failed target is never retried within this execution.
+            seen.add(target)
             try:
                 if settings.captured_worker_stage == "speech":
                     async with repositories.transaction(tenant) as store:
                         await store.reconcile_exhausted_speech(tenant, target, max_attempts=3)
+                # Existing durable claims arbitrate overlapping scheduled runs.
                 await worker.process(tenant_id=tenant, session_id=target)
             except Exception:
                 failed = True
-        if failed:
-            raise CapturedWorkerError("captured_worker_target_unavailable")
-    finally:
-        await close_job_resources(closers)
+            if len(seen) >= settings.captured_worker_batch_size:
+                break
+        if session is not None or len(seen) >= settings.captured_worker_batch_size:
+            break  # Preserve explicit one-target runs and the existing work budget.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(PENDING_POLL_SECONDS, remaining))
+        if time.monotonic() >= deadline:
+            break  # Pickup expires; accepted work was allowed to finish normally.
+    if failed:
+        raise CapturedWorkerError("captured_worker_target_unavailable")
 
 
 def main() -> None:
