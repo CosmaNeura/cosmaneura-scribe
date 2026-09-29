@@ -320,6 +320,7 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
               : this.#snapshot.statusCode === "capture_start_failed" ? "Recording could not start. Check your microphone and connection, then retry Resume."
               : this.#snapshot.statusCode === "capture_preparation_failed" ? "Recording preparation could not finish. Reopen this encounter to retry. Saved work is retained."
+              : this.#snapshot.statusCode === "capture_setup_expired" ? "Recording setup expired before any audio was saved. Select Resume recording to prepare again."
               : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
               : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or stop and upload."

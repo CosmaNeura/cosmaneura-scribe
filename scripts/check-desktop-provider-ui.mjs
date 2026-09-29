@@ -105,6 +105,20 @@ try {
     button("stop-button").click(); await until(() => /Recording interrupted/u.test(root.textContent));
     assert.deepEqual(f.calls.slice(0, 3), ["read", "start", "stop"]); checks++;
   } finally { await dispose(); }
+  const expired = fixture(); dispose = await open(expired);
+  try {
+    expired.change({ state: "paused", statusCode: "capture_setup_expired", remainingAuthoritySeconds: 0 },
+      { phase: "interrupted", coverage: "not_started" });
+    await until(() => /Recording setup expired before any audio was saved/u.test(root.textContent));
+    assert.doesNotMatch(root.textContent, /Recording interrupted/u);
+    assert.equal(button("record-button").disabled, true);
+    assert.equal(button("resume-recording").disabled, false);
+    assert.deepEqual(expired.calls, ["read"]); checks++;
+    expired.change({ statusCode: "capture_authority_expired" }, { coverage: "incomplete" });
+    await until(() => /Recording interrupted/u.test(root.textContent));
+    assert.doesNotMatch(root.textContent, /Recording setup expired before any audio was saved/u);
+    assert.equal(button("stop-button").disabled, false); checks++;
+  } finally { await dispose(); }
   const g = fixture(); dispose = await open(g);
   try {
     button("record-button").click(); await until(() => /audio are aligned/u.test(root.textContent));
@@ -133,6 +147,7 @@ try {
     checks++;
   } finally { await dispose(); }
   process.stdout.write(JSON.stringify({ checks, compiled_provider_workspace: true, desktop_command_view: true,
-    startup_cancel: true, stop_retry_and_review: true, upload_retry_and_review: true, immediate_revocation_clear: true,
+    startup_cancel: true, expired_setup_recovery: true, real_interruption_preserved: true,
+    stop_retry_and_review: true, upload_retry_and_review: true, immediate_revocation_clear: true,
     actual_electron: false, physical_recording: false }) + "\n");
 } finally { dom.window.close(); }

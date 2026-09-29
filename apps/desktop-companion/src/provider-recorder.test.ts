@@ -896,8 +896,8 @@ describe("cancelled preparation recovery", () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(Date.parse(before!.lease.expires_at) + 1_000);
       await recorder.stopRecording(); await rejected;
-      expect(recorder.snapshot).toMatchObject({ state: "paused", statusCode: "capture_authority_expired",
-        desktop: { phase: "interrupted" } });
+      expect(recorder.snapshot).toMatchObject({ state: "paused", statusCode: "capture_setup_expired",
+        recordedChunks: 0, desktop: { phase: "interrupted", coverage: "not_started" } });
       expect((await f.options.flowStore.getActiveCaptureState())!.lease).toEqual(before!.lease);
       await expect(recorder.startRecording()).rejects.toThrow();
       expect(issue).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
