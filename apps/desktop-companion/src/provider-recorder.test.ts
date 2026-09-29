@@ -143,6 +143,8 @@ describe("confirmed stop recovery", () => {
       await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
       mount.mockRejectedValueOnce(new Error("invented lost resume reply"));
       await expect(recorder.resumeRecording()).rejects.toThrow();
+      expect(recorder.snapshot).toMatchObject({ state: "ready", statusCode: "capture_start_failed",
+        desktop: { phase: "ready" } });
       const ready = (await f.options.flowStore.getActiveCaptureState())!;
       expect(ready).toMatchObject({ phase: "ready", recordedChunks: 1,
         continuation: { prepared: true, firstSequenceNumber: 1 } });
@@ -176,6 +178,7 @@ describe("confirmed stop recovery", () => {
       expect(f.complete).not.toHaveBeenCalled();
       await restored.startRecording();
       expect(restored.snapshot.state).toBe("recording");
+      expect(restored.snapshot.statusCode).not.toBe("capture_start_failed");
       expect(mount.mock.calls.at(-1)![0]).toMatchObject({ captureLeaseGeneration: ready.lease.generation,
         leaseReceiptId: ready.lease.receipt_id, firstSequenceNumber: 1 });
       expect(f.nativeStart).toHaveBeenCalledTimes(2); expect(renew).toHaveBeenCalledTimes(1);
@@ -747,6 +750,24 @@ it.skipIf(!helperPath)("retains paused desktop capture and encrypted chunks unti
 });
 
 describe("prepared desktop start", () => {
+  it("publishes a fixed failed-start status through IPC and clears it on explicit retry", async () => {
+    const f = await fixture(true); interruptedDriver(f);
+    const mount = vi.fn(f.options.authorizeMount).mockRejectedValueOnce(new Error("invented private transport detail"));
+    const recorder = await f.open({ authorizeMount: mount }), w = wire(recorder);
+    const view = await connectDesktopRecorderView(w.port, f.session.id, f.abort.signal);
+    try {
+      const prepared = await f.options.flowStore.getActiveCaptureState();
+      await expect(view.controller.startRecording()).rejects.toThrow();
+      expect(view.controller.snapshot).toMatchObject({ state: "ready", statusCode: "capture_start_failed" });
+      expect(JSON.stringify(w.messages)).not.toContain("invented private transport detail");
+      expect(await f.options.flowStore.getActiveCaptureState()).toEqual(prepared);
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      await view.controller.startRecording();
+      expect(view.controller.snapshot).toMatchObject({ state: "recording", statusCode: "capture_recording" });
+      expect(f.nativeStart).toHaveBeenCalledTimes(1);
+    } finally { await w.boundary.dispose(); await f.close(); }
+  });
+
   it("requests recording permissions only on explicit setup without starting or replacing the prepared lease", async () => {
     const f = await fixture(true), issue = vi.spyOn(f.options.createBff(f.abort.signal), "issueLease");
     f.nativeAvailability!.mockResolvedValue(false);

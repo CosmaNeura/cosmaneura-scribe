@@ -318,7 +318,9 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
               : this.#snapshot.statusCode === "capture_stopping" ? "Stopping recording…"
               : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
-              : this.#snapshot.statusCode === "capture_start_failed" ? "Recording could not start. Check your microphone and connection, then retry Resume."
+              : this.#snapshot.statusCode === "capture_start_failed" ? this.#snapshot.desktop
+                ? "Recording did not start. Your saved audio is retained. Choose Start recording to try again."
+                : "Recording could not start. Check your microphone and connection, then retry Resume."
               : this.#snapshot.statusCode === "capture_preparation_failed" ? "Recording preparation could not finish. Reopen this encounter to retry. Saved work is retained."
               : this.#snapshot.statusCode === "capture_setup_expired" ? "Recording setup expired before any audio was saved. Select Resume recording to prepare again."
               : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
