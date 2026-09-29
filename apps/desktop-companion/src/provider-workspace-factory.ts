@@ -24,7 +24,7 @@ export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderE
   readonly authority: DesktopProviderRecorderOptions["authority"];
   readonly processFence?: DesktopProviderRecorderOptions["native"]["getProcessFence"];
 }
-export interface DesktopProviderBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter"> {
+export interface DesktopProviderBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedDesktopProviderMount>;
   dispose(): Promise<void>;
 }
@@ -132,6 +132,8 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
   return { dispose, workspace: {
     signal: lifetime,
     listEncounters: operation => transition(operation, () => backend.listEncounters(AbortSignal.any([lifetime, operation]))),
+    get encounterSetup() { return backend.encounterSetup; },
+    get account() { return backend.account; },
     createEncounter: operation => transition(operation, () => backend.createEncounter(AbortSignal.any([lifetime, operation]))),
     openEncounter: (appointmentRef, operation) => transition(operation, async () => {
       if (!reference(appointmentRef, "appointment")) throw unavailable();

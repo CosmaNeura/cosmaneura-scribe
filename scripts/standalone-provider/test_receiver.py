@@ -996,3 +996,102 @@ async def test_current_typescript_client_runs_through_receiver(harness):
                 await process.wait()
     assert len(h.wire.saved) == 2 and h.wire.saved[0] == h.wire.saved[1]
     assert h.wire.saved[0][1]["fields"] == {"Plan": "Invented follow-up plan"}
+
+
+@pytest.mark.asyncio
+async def test_core_owned_encounters_join_legacy_catalog_without_registry_writes(harness):
+    h = harness
+    h.receiver.encounter_creation_enabled = True
+    entries, calls = {}, []
+    original = h.wire.handle
+    actor, tenant = h.wire.selection.actor_ref, h.wire.selection.tenant_ref
+
+    async def workflow(request):
+        if request.url.path != "/embed/v1/scribe/encounters":
+            return await original(request)
+        body = json.loads(request.content)
+        calls.append(body)
+        assert body["expected_actor_ref"] == actor and body["expected_tenant_ref"] == tenant
+        result = {
+            "version": "1",
+            "action": body["action"],
+            "request_nonce": body["request_nonce"],
+            "account": {
+                "actor_ref": actor,
+                "tenant_ref": tenant,
+                "email": "provider@synthetic.invalid",
+            },
+        }
+        if body["action"] == "create":
+            assert request.headers["idempotency-key"] == body["creation_key"]
+            entries.setdefault(
+                body["creation_key"],
+                {
+                    "workspace_id": str(uuid4()),
+                    "appointment_ref": "appointment_" + f"{len(entries) + 1:026d}",
+                    "patient_name": "Synthetic Patient",
+                    "title": "Visit",
+                    "appointment_at": "2026-09-29T12:00:00Z",
+                },
+            )
+            result.update(
+                creation_key=body["creation_key"], encounter=entries[body["creation_key"]]
+            )
+        elif body["action"] == "list":
+            result["encounters"] = list(entries.values())
+        else:
+            result["encounter"] = next(
+                e for e in entries.values() if e["workspace_id"] == body["workspace_id"]
+            )
+        return httpx.Response(
+            200,
+            json=result,
+            headers={"Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "1"},
+        )
+
+    h.receiver.core_http = httpx.MockTransport(workflow)
+    with h.receiver.engine.connect() as connection:
+        before = connection.scalar(text("SELECT count(*) FROM encounter_workspaces"))
+    async with client(h) as c:
+        for _ in range(3):
+            key = str(uuid4())
+            body = {"action": "create", "creation_key": key, "request_nonce": str(uuid4())}
+            created = await c.post(
+                "/provider/v1/encounters", json=body, headers={"Idempotency-Key": key}
+            )
+            assert created.status_code == 200
+            repeated = await c.post(
+                "/provider/v1/encounters",
+                json={**body, "request_nonce": str(uuid4())},
+                headers={"Idempotency-Key": key},
+            )
+            assert repeated.json()["encounter"] == created.json()["encounter"]
+        catalog = await c.post("/provider/v1/catalog", json={})
+        assert catalog.status_code == 200 and len(catalog.json()["encounters"]) == 4
+        assert catalog.json()["account"]["email"] == "provider@synthetic.invalid"
+        assert catalog.json()["environment"] == "Staging"
+        for entry in entries.values():
+            selected, display = await h.receiver.selected_current(
+                h.headers["Authorization"], UUID(h.revision), UUID(entry["workspace_id"])
+            )
+            assert selected.selection.appointment_ref == entry["appointment_ref"]
+            assert selected.selection.recovery_scope == h.wire.selection.recovery_scope
+            assert display["title"] == "Synthetic Patient"
+        legacy, _ = await h.receiver.selected_current(
+            h.headers["Authorization"], UUID(h.revision), UUID(h.workspace)
+        )
+        assert legacy.selection == h.wire.selection
+    with h.receiver.engine.connect() as connection:
+        assert connection.scalar(text("SELECT count(*) FROM encounter_workspaces")) == before
+
+
+@pytest.mark.asyncio
+async def test_new_workflow_disabled_and_legacy_revocation_cannot_fall_through(harness):
+    h = harness
+    async with client(h) as c:
+        reply = await c.post("/provider/v1/encounters", json={"action": "list"})
+        assert reply.status_code == 422 and h.wire.calls == []
+        h.receiver.encounter_creation_enabled = True
+        h.mutate(PatientLink, h.link, revoked_at=datetime.now(UTC))
+        reply = await c.post("/provider/v1/mount", json={"workspace_id": h.workspace})
+        assert reply.status_code == 403 and h.wire.calls == []

@@ -1,3 +1,4 @@
+import { parseProviderAccount, parseSetupState, parseEncounterDraft, type ProviderEncounterSetup, type ProviderAccount } from "./encounter-setup";
 import { mountProviderApplication, type ProviderApplicationHost } from "./application";
 import type { ProviderSessionState } from "./native-plugin";
 import type { ProviderEncounter, ProviderWorkspaceHost } from "./workspace";
@@ -6,7 +7,7 @@ import { parsePendingReviewDecision } from "../../../review-ui/src/creator-revie
 import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
 import { reference, type CoreCaptureScope } from "./core-client";
 import { parseOpeningReview } from "./opening-review";
-import { parseDesktopProviderEvent, sessionState, exact, uuid, jsonCopy, unavailable,
+import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
 
 /** Mount the complete provider UI with the reviewed sandboxed desktop preload.
@@ -122,11 +123,30 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         operationSignal = abort.signal): Promise<unknown> => {
         current(operationSignal); return request(method, payload, id, encounterId, AbortSignal.any([abort.signal, operationSignal]));
       };
+      let creationEnabled = false, account: ProviderAccount | undefined;
+      const setup: ProviderEncounterSetup = {
+        state: async extra => parseSetupState(await send("encounter_setup", { action: "state" }, null, extra)),
+        search: async (query, extra) => {
+          const result = object(await send("encounter_setup", { action: "search", query }, null, extra));
+          const parsed = parseSetupState({ ...result, pending: null });
+          return { account: parsed.account, patients: parsed.patients, moreResults: parsed.moreResults };
+        },
+        submit: async (draft, extra) => encounter(await send("encounter_setup", {
+          action: "submit", draft: draft === null ? null : parseEncounterDraft(draft),
+        }, null, extra)),
+      };
       const workspace: ProviderWorkspaceHost = {
+        get account() { return account; },
+        get encounterSetup() { return creationEnabled ? setup : undefined; },
         signal: abort.signal,
         listEncounters: async operationSignal => {
           const values = await send("list", {}, null, operationSignal); current(operationSignal);
-          if (!Array.isArray(values) || values.length > 1000) throw unavailable(); return values.map(encounter);
+          if (!Array.isArray(values) || values.length > 1000) throw unavailable();
+          const info = exact(await send("encounter_setup", { action: "info" }, null, operationSignal), ["enabled", "account"]);
+          current(operationSignal);
+          if (typeof info.enabled !== "boolean") throw unavailable();
+          creationEnabled = info.enabled; account = info.account === null ? undefined : parseProviderAccount(info.account);
+          return values.map(encounter);
         },
         createEncounter: async operationSignal => { await send("create", {}, null, operationSignal); current(operationSignal); },
         openEncounter: async (appointmentRef, operationSignal) => {

@@ -33,6 +33,7 @@ class ReceiverConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
     schema_version: Literal[1] = Field(default=1, alias="schema")
     enabled: bool = False
+    encounter_creation_enabled: bool = False
     platforms: tuple[Literal["ios", "desktop"], ...] = ("ios", "desktop")
     desktop_native_session_without_origin: bool = False
     environment_id: UUID | None = None
@@ -321,6 +322,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
             apps[origin] = ProviderReceiver(
                 profile, engine, settings, verifier, workload_token, enabled=True,
                 core_connections=core_connections,
+                encounter_creation_enabled=config.encounter_creation_enabled,
             ).app()
         return ReceiverResources(
             AzureIngress(OriginReceivers(apps), profile=ACA_PROFILE), close

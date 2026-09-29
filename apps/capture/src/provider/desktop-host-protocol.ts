@@ -4,7 +4,7 @@ import type { ProviderSessionState } from "./native-plugin";
 
 export const DESKTOP_PROVIDER_CHANNELS = Object.freeze({ request: "scribe:provider:workspace:v1", event: "scribe:provider:workspace-event:v1" });
 export type DesktopProviderMethod = "session_read" | "sign_in" | "sign_out" | "connect" | "disconnect" | "cancel"
-  | "list" | "create" | "open" | "core" | "journal_load" | "journal_save" | "review_load" | "review_save" | "review_clear" | "recorder" | "open_core";
+  | "list" | "create" | "encounter_setup" | "open" | "core" | "journal_load" | "journal_save" | "review_load" | "review_save" | "review_clear" | "recorder" | "open_core";
 export interface DesktopProviderRequest {
   readonly requestId: string;
   readonly method: DesktopProviderMethod;
@@ -20,7 +20,7 @@ export interface DesktopProviderPort {
   request(value: DesktopProviderRequest): Promise<unknown>;
   subscribe(listener: (event: unknown) => void): () => void;
 }
-const methods: readonly string[] = ["session_read", "sign_in", "sign_out", "connect", "disconnect", "cancel", "list", "create", "open", "core",
+const methods: readonly string[] = ["session_read", "sign_in", "sign_out", "connect", "disconnect", "cancel", "list", "create", "encounter_setup", "open", "core",
   "journal_load", "journal_save", "review_load", "review_save", "review_clear", "recorder", "open_core"];
 
 export function parseDesktopProviderRequest(value: unknown): DesktopProviderRequest {

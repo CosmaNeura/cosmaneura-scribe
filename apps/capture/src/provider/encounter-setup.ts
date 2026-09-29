@@ -1,0 +1,166 @@
+import type { SecureQueuePlugin } from "@cosmaneura-scribe/capacitor-secure-queue";
+import { isUuid } from "../../../review-ui/src/contracts";
+import { record, reference } from "./core-client";
+import type { ProviderEncounter } from "./workspace-contracts";
+
+export interface ProviderPatient { patientRef: string; name: string; dateOfBirth: string }
+export interface EncounterDraft {
+  creationKey: string;
+  patient: { kind: "existing"; patientRef: string } | { kind: "new"; name: string; dateOfBirth: string };
+  appointmentAt: string;
+  title: string;
+}
+export interface EncounterSetupState {
+  account: string;
+  patients: ProviderPatient[];
+  moreResults: boolean;
+  pending: EncounterDraft | null;
+}
+export interface ProviderEncounterSetup {
+  state(signal: AbortSignal): Promise<EncounterSetupState>;
+  search(query: string, signal: AbortSignal): Promise<Omit<EncounterSetupState, "pending">>;
+  submit(draft: EncounterDraft | null, signal: AbortSignal): Promise<ProviderEncounter>;
+}
+export type CreationRecords = Pick<SecureQueuePlugin, "get" | "create" | "compareAndSwap">;
+export interface ProviderAccount { email: string; environment: string }
+export function parseProviderAccount(value: unknown): ProviderAccount {
+  if (!record(value) || Object.keys(value).sort().join(",") !== "email,environment"
+    || value.environment !== "Staging") throw fail();
+  return { email: text(value.email, 320), environment: value.environment };
+}
+export function parseSetupState(value: unknown): EncounterSetupState {
+  if (!record(value) || Object.keys(value).sort().join(",") !== "account,moreResults,patients,pending"
+    || !Array.isArray(value.patients) || value.patients.length > 100 || typeof value.moreResults !== "boolean") throw fail();
+  const patients = value.patients.map(raw => {
+    if (!record(raw) || Object.keys(raw).sort().join(",") !== "dateOfBirth,name,patientRef"
+      || !reference(raw.patientRef, "patient")) throw fail();
+    return { patientRef: raw.patientRef, name: text(raw.name), dateOfBirth: text(raw.dateOfBirth, 10) };
+  });
+  if (new Set(patients.map(p => p.patientRef)).size !== patients.length) throw fail();
+  return { account: text(value.account, 320), patients, moreResults: value.moreResults,
+    pending: value.pending === null ? null : parseEncounterDraft(value.pending) };
+}
+type Snapshot = { revision: string | null; pending: EncounterDraft | null };
+const PREFIX = "provider-encounter-creation-v1:";
+const fail = (): Error => new Error("Encounter creation could not be confirmed. Your pending request is retained.");
+const text = (value: unknown, max = 200): string => {
+  if (typeof value !== "string" || !value.length || value.length > max || value.includes("\0")) throw fail();
+  return value;
+};
+
+export function parseEncounterDraft(value: unknown): EncounterDraft {
+  if (!record(value) || Object.keys(value).sort().join(",") !== "appointmentAt,creationKey,patient,title"
+    || !isUuid(value.creationKey) || !record(value.patient)) throw fail();
+  const patient = value.patient;
+  if (patient.kind === "existing") {
+    if (Object.keys(patient).sort().join(",") !== "kind,patientRef" || !reference(patient.patientRef, "patient")) throw fail();
+  } else if (patient.kind === "new") {
+    if (Object.keys(patient).sort().join(",") !== "dateOfBirth,kind,name"
+      || !/^\d{4}-\d{2}-\d{2}$/u.test(text(patient.dateOfBirth, 10)) || text(patient.name).trim() !== patient.name) throw fail();
+  } else throw fail();
+  const stamp = text(value.appointmentAt, 40);
+  if (!Number.isFinite(Date.parse(stamp)) || !/(Z|[+-]\d{2}:\d{2})$/u.test(stamp)) throw fail();
+  text(value.title);
+  return { creationKey: value.creationKey, patient: patient.kind === "existing"
+    ? { kind: "existing", patientRef: patient.patientRef as string }
+    : { kind: "new", name: patient.name as string, dateOfBirth: patient.dateOfBirth as string },
+    appointmentAt: stamp, title: value.title as string };
+}
+
+export function parseCreatedEncounter(value: unknown): ProviderEncounter & { workspaceId: string } {
+  if (!record(value) || !isUuid(value.workspace_id) || !reference(value.appointment_ref, "appointment")) throw fail();
+  return { workspaceId: value.workspace_id, appointmentRef: value.appointment_ref,
+    title: text(value.patient_name), detail: `${text(value.title)} · ${text(value.appointment_at, 40)}` };
+}
+
+/** Shared mobile/desktop retry owner. Every intent is encrypted durably before
+ * its first network submission. An uncertain result never rotates the key. */
+export function createEncounterSetup(options: {
+  request(body: Record<string, unknown>, key: string, signal: AbortSignal): Promise<Record<string, unknown>>;
+  records(recoveryScope: string, signal: AbortSignal): Promise<{ records: CreationRecords; close(): Promise<void> }>;
+  created(encounter: ProviderEncounter & { workspaceId: string }): void;
+  current(signal?: AbortSignal): void;
+}): ProviderEncounterSetup & { dispose(): Promise<void> } {
+  let recovery: string | null = null, account: string | null = null;
+  let storage: Promise<Awaited<ReturnType<typeof options.records>>> | null = null;
+  let busy = false;
+  const accept = (value: Record<string, unknown>): void => {
+    if (!isUuid(value.recoveryScope) || !record(value.account)) throw fail();
+    const email = text(value.account.email, 320);
+    if (recovery !== null && (value.recoveryScope !== recovery || email !== account)) throw fail();
+    recovery = value.recoveryScope; account = email;
+  };
+  const journal = async (signal: AbortSignal): Promise<CreationRecords> => {
+    options.current(signal);
+    if (!recovery) throw fail();
+    storage ??= options.records(recovery, signal).catch(error => { storage = null; throw error; });
+    const opened = await storage;
+    options.current(signal); return opened.records;
+  };
+  const load = async (signal: AbortSignal): Promise<Snapshot> => {
+    const records = await journal(signal), key = PREFIX + recovery;
+    let saved;
+    try { saved = await records.get({ key }); }
+    catch (error) {
+      if (record(error) && error.code === "SECURE_QUEUE_NOT_FOUND") return { revision: null, pending: null };
+      throw fail();
+    }
+    options.current(signal);
+    if (saved.key !== key || !/^[1-9][0-9]*$/u.test(saved.revision) || saved.data.length > 8192) throw fail();
+    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(
+      Uint8Array.from(atob(saved.data), ch => ch.charCodeAt(0))));
+    if (!record(value) || Object.keys(value).sort().join(",") !== "pending,recoveryScope,version"
+      || value.version !== 1 || value.recoveryScope !== recovery) throw fail();
+    return { revision: saved.revision, pending: value.pending === null ? null : parseEncounterDraft(value.pending) };
+  };
+  const save = async (previous: Snapshot, pending: EncounterDraft | null, signal: AbortSignal): Promise<Snapshot> => {
+    const records = await journal(signal), key = PREFIX + recovery;
+    const raw = new TextEncoder().encode(JSON.stringify({ version: 1, recoveryScope: recovery, pending }));
+    const data = btoa(Array.from(raw, byte => String.fromCharCode(byte)).join(""));
+    const saved = previous.revision === null ? await records.create({ key, data })
+      : await records.compareAndSwap({ key, data, expectedRevision: previous.revision });
+    options.current(signal);
+    if (!/^[1-9][0-9]*$/u.test(saved.revision)) throw fail();
+    return { revision: saved.revision, pending };
+  };
+  const search = async (query: string, signal: AbortSignal): Promise<Omit<EncounterSetupState, "pending">> => {
+    options.current(signal);
+    if (typeof query !== "string" || query.length > 200) throw fail();
+    const value = await options.request({ action: "patients", query, request_nonce: crypto.randomUUID() }, crypto.randomUUID(), signal);
+    options.current(signal); accept(value);
+    if (!Array.isArray(value.patients) || value.patients.length > 100 || typeof value.more_results !== "boolean") throw fail();
+    const patients = value.patients.map(raw => {
+      if (!record(raw) || !reference(raw.patient_ref, "patient")) throw fail();
+      return { patientRef: raw.patient_ref, name: text(raw.name), dateOfBirth: text(raw.date_of_birth, 10) };
+    });
+    if (new Set(patients.map(p => p.patientRef)).size !== patients.length) throw fail();
+    return { account: account!, patients, moreResults: value.more_results };
+  };
+  return {
+    search,
+    state: async signal => ({ ...await search("", signal), pending: (await load(signal)).pending }),
+    submit: async (input, signal) => {
+      options.current(signal);
+      if (busy) throw fail();
+      busy = true;
+      try {
+        let saved = await load(signal);
+        const draft = input === null ? saved.pending : parseEncounterDraft(input);
+        if (!draft || saved.pending !== null && JSON.stringify(saved.pending) !== JSON.stringify(draft)) throw fail();
+        if (saved.pending === null) saved = await save(saved, draft, signal);
+        const patient = draft.patient.kind === "existing"
+          ? { kind: "existing", patient_ref: draft.patient.patientRef }
+          : { kind: "new", name: draft.patient.name, date_of_birth: draft.patient.dateOfBirth };
+        const value = await options.request({ action: "create", creation_key: draft.creationKey,
+          patient, appointment_at: draft.appointmentAt, title: draft.title, request_nonce: crypto.randomUUID() }, draft.creationKey, signal);
+        options.current(signal); accept(value);
+        if (value.creation_key !== draft.creationKey) throw fail();
+        const encounter = parseCreatedEncounter(value.encounter);
+        options.created(encounter);
+        await save(saved, null, signal);
+        return { appointmentRef: encounter.appointmentRef, title: encounter.title, detail: encounter.detail };
+      } finally { busy = false; }
+    },
+    dispose: async () => { const closing = storage; if (closing) await (await closing).close(); storage = null; },
+  };
+}

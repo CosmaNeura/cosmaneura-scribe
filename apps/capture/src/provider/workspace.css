@@ -53,3 +53,12 @@
 [data-provider-encounter] { margin: 4px 0 0; font-size: 1rem; font-weight: 600; }
 @media (min-width: 601px) { .provider-recording-fields { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 600px) { .provider-workspace { margin: 12px; padding: 16px; } .provider-header { align-items: flex-start; flex-wrap: wrap; gap: 4px 16px; } .provider-preparation button[data-workspace-action="prepare"] { width: 100%; margin-right: 0; } }
+
+.provider-account { margin: 0 0 14px; padding: 8px 12px; background: #eff6f2; border-radius: 8px; color: #31594e; overflow-wrap: anywhere; font-size: .9rem; }
+.provider-workspace button[data-workspace-action="new-encounter"], .provider-workspace [data-new-patient] button, .provider-workspace button[data-workspace-action="retry-creation"] { background: var(--scribe-gradient, linear-gradient(135deg, #146f6c, #17273c)); color: white; }
+.provider-setup { max-width: 760px; }
+.provider-setup [data-patient-search] { display: flex; align-items: end; gap: 12px; }
+.provider-setup [data-patient-search] label { flex: 1; min-width: 0; margin: 12px 0 8px; }
+.provider-setup [data-patient-search] input { width: 100%; }
+.provider-setup [data-patient-search] button { margin-right: 0; }
+.provider-workspace[aria-busy="true"] button { cursor: wait; opacity: .7; }

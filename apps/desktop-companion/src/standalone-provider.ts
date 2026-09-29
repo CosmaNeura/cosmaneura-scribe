@@ -9,6 +9,8 @@ import { connectDesktopNativeBackend } from "./native-provider-backend.js";
 import { createDesktopProviderConnection } from "./provider-workspace-factory.js";
 import { openDeviceCustody, type DeviceProtection } from "./device-custody.js";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
+import { DurableDesktopRecordStore } from "./durable-record-store.js";
+import { desktopJournalRecords } from "./durable-provider-records.js";
 
 interface PackagedRuntime {
   readonly packageDirectory: string;
@@ -64,6 +66,18 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
         if (profile.enabled !== true || linked.aborted || !native.isReady()) throw unavailable();
         const uploadTarget = new HttpCiphertextUploadTarget(profile.uploadOrigins as string[], fetch, "azure_block_blob");
         const backend = await connectDesktopNativeBackend(native, { signal: linked, uploadTarget,
+          creationRecords: async (recoveryScope, signal) => {
+            const directory = join(runtime.userDataDirectory, "provider-creation-v1");
+            // A separate encrypted namespace, scoped to Core's reviewed account.
+            const workspaceId = "56f527ab-0caf-459b-bda9-cf7f0ca2f709";
+            const custody = await openDeviceCustody(directory, runtime.protection, { recoveryScope, workspaceId }, signal);
+            try {
+              const store = await DurableDesktopRecordStore.open({ directory, recoveryScope, workspaceId, key: custody.key });
+              if (signal.aborted || linked.aborted) { store.close(); throw unavailable(); }
+              return { records: desktopJournalRecords(store.namespace("pending-creation")),
+                close: async () => { store.close(); await custody.release(); } };
+            } catch (error) { await custody.release(); throw error; }
+          },
           openCore: async appointment => {
             if (linked.aborted) throw unavailable();
             const path = appointment === null ? "/notes" : "/notes/" + encodeURIComponent(appointment);
