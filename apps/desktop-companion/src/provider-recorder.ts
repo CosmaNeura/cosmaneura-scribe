@@ -86,6 +86,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private attempt: AbortController | null = null;
   private selectedWindow: Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil"> | null = null;
   private choosingWindow = false;
+  private startFailed = false;
   private operation: Promise<void> | null = null;
   private action: "prepare" | "start" | "other" | null = null;
   private stopping: Promise<void> | null = null;
@@ -236,6 +237,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : this.stopping && phase === "stopped" && flow.state === "recording" ? "capture_upload_settling"
       : this.reopenRequired && flow.state === "error" ? "capture_reopen_required"
       : setupExpired ? "capture_setup_expired"
+      : phase === "ready" && this.startFailed && flow.statusCode !== "capture_storage_low" ? "capture_start_failed"
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
       desktop: { phase, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
@@ -251,6 +253,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   startRecording(): Promise<void> {
     this.requireOpen();
     if (this.snapshot.desktop?.phase !== "ready" || this.stopping) return Promise.reject(unavailable());
+    this.startFailed = false;
     this.attempt = new AbortController();
     const attempt = this.attempt;
     return this.run("start", async () => {
@@ -291,6 +294,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           }
         }
         await this.controller.handleRendererCommand({ schemaVersion: 1, kind: "start", requestId: crypto.randomUUID() });
+      } catch (error) {
+        this.startFailed = !attempt.signal.aborted;
+        throw error;
       } finally { this.selectedWindow = null; }
     });
   }
