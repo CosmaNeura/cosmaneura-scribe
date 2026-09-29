@@ -315,6 +315,91 @@ describe("CaptureQueue", () => {
     harness.storage.close();
   });
 
+  it.each(["process", "web"])("retains the %s drain lock after a worker storage failure until its peer settles", async (lockKind) => {
+    const previousLocks = Object.getOwnPropertyDescriptor(globalThis.navigator, "locks");
+    let held = false;
+    Object.defineProperty(globalThis.navigator, "locks", { configurable: true, value: lockKind === "process" ? undefined : {
+      request: async (_name: string, _options: LockOptions, callback: (lock: Lock | null) => Promise<unknown>) => {
+        if (held) return callback(null);
+        held = true;
+        try { return await callback({ mode: "exclusive", name: "synthetic-drain-lock" }); }
+        finally { held = false; }
+      },
+    } });
+    const harness = await createHarness();
+    const failed = makeReservation(0), slow = makeReservation(1), waiting = makeReservation(2);
+    for (const reservation of [failed, slow, waiting]) {
+      await harness.queue.reserve(reservation, "reservation-batch-0001");
+      await harness.queue.encrypt(reservation.objectId, makeEnvelope(reservation.sequenceNumber + 60));
+    }
+    const original = await harness.queue.get(failed.objectId);
+    const unclaimed = await harness.queue.get(waiting.objectId);
+    const slowStarted = deferred(), releaseSlow = deferred();
+    const storageFailed = deferred();
+    const storageError = new Error("Synthetic retry-state write failure");
+    const compareAndSwap = harness.storage.compareAndSwap.bind(harness.storage);
+    const failingWrite = vi.spyOn(harness.storage, "compareAndSwap").mockImplementation(async (id, revision, replacement) => {
+      if (id === failed.objectId && replacement.retry.upload.attempts > 0) {
+        storageFailed.resolve();
+        throw storageError;
+      }
+      return compareAndSwap(id, revision, replacement);
+    });
+    let failUpload = true;
+    const transport = successfulTransport(() => harness.now.value, {
+      upload: async url => {
+        if (url.endsWith(failed.objectId) && failUpload) {
+          await slowStarted.promise;
+          throw new QueueTransportError("retryable", "synthetic_network_failure");
+        }
+        if (url.endsWith(slow.objectId)) {
+          slowStarted.resolve();
+          await releaseSlow.promise;
+        }
+      },
+    });
+    const authorizations = vi.spyOn(transport, "authorizeUpload");
+    let settled = false;
+    const draining = harness.queue.drainOnce(transport).then(
+      value => { settled = true; return { value }; },
+      error => { settled = true; return { error }; },
+    );
+    try {
+      await storageFailed.promise;
+      // Let the rejected storage operation propagate while the peer is held
+      // in a real queue upload, rather than stubbing the drain implementation.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(() => harness.queue.configureUploadConcurrency(1)).toThrow("queue_drain_in_progress");
+      const overlapping = successfulTransport(() => harness.now.value);
+      const overlappingRead = vi.spyOn(overlapping, "getReceipt");
+      await expect(harness.queueWithStorage(harness.storage).drainOnce(overlapping)).rejects.toMatchObject({ code: "queue_drain_in_progress" });
+      expect(overlappingRead).not.toHaveBeenCalled();
+      releaseSlow.resolve();
+      expect(await draining).toEqual({ error: storageError });
+      expect((await harness.queue.get(slow.objectId))?.state).toBe("registered");
+      expect(await harness.queue.get(waiting.objectId)).toEqual(unclaimed);
+      const retained = await harness.queue.get(failed.objectId);
+      expect(retained).toMatchObject({ state: "uploading", idempotencyKeys: original!.idempotencyKeys });
+      expect(retained && "envelope" in retained ? retained.envelope : null).toEqual(
+        original && "envelope" in original ? original.envelope : null,
+      );
+      failingWrite.mockRestore(); failUpload = false;
+      await harness.queue.drainOnce(transport);
+      expect((await harness.queue.listMetadata()).every(record => record.state === "registered")).toBe(true);
+      const attempts = authorizations.mock.calls.filter(call => call[1] === failed.objectId);
+      expect(attempts).toHaveLength(2);
+      expect(attempts[1]).toEqual(attempts[0]);
+    } finally {
+      releaseSlow.resolve();
+      await draining;
+      await vi.waitFor(async () => expect((await harness.queue.get(slow.objectId))?.state).toBe("registered"));
+      failingWrite.mockRestore(); harness.storage.close();
+      if (previousLocks === undefined) delete (globalThis.navigator as { locks?: LockManager }).locks;
+      else Object.defineProperty(globalThis.navigator, "locks", previousLocks);
+    }
+  });
+
   it("rejects invalid runtime upload concurrency", async () => {
     const harness = await createHarness();
     expect(() => harness.queue.configureUploadConcurrency(0)).toThrow(
@@ -486,6 +571,12 @@ describe("CaptureQueue", () => {
 interface HarnessOptions {
   readonly baseRetryMs?: number;
   readonly random?: () => number;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 async function createHarness(options: HarnessOptions = {}) {
