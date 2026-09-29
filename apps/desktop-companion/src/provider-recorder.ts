@@ -218,9 +218,12 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : flow.state === "ready" && (control.state === "ready" || this.unmountedAvailability === "ready") ? "ready"
       : ["paused", "error", "ready", "recording"].includes(flow.state) && !this.closed ? "interrupted" : "stopped";
     const start = this.coverage?.phase === "started" ? this.coverage.value : this.coverage?.value.start;
+    const setupExpired = phase === "interrupted" && flow.statusCode === "capture_authority_expired"
+      && !this.captureMayBeActive && !this.continuityUnconfirmed && this.coverage === null && flow.recordedChunks === 0;
     return { ...flow, statusCode: this.stopConfirmationPending ? "capture_stop_acknowledgement_pending"
       : this.stopping && phase === "stopped" && flow.state === "recording" ? "capture_upload_settling"
       : this.reopenRequired && flow.state === "error" ? "capture_reopen_required"
+      : setupExpired ? "capture_setup_expired"
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
       desktop: { phase, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
