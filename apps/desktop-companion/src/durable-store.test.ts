@@ -1,3 +1,4 @@
+import { NativeCreatorEditJournal } from "../../review-ui/src/native-edit-journal";
 import { fork } from "node:child_process";
 import { createHash, randomBytes, webcrypto } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -152,6 +153,23 @@ describe("durable desktop capture", () => {
       const restoredCoverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
       expect(await restoredCoverage.load()).toEqual({ phase: "started", value: start });
       await expect(restoredCoverage.persist({ phase: "started", value: { ...start, hostTimeNanoseconds: "2" } })).rejects.toThrow();
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+  it("retains Unicode transcript corrections encrypted across reopening without crossing creators", async () => {
+    const path = await directory(), key = await master(), options = { directory: path, recoveryScope, workspaceId, key };
+    let store = await DurableDesktopRecordStore.open(options);
+    const operation = { key: "synthetic-edit-stable-key", request: { schema_version: "1.0" as const,
+      expected_source_transcript_version: 1, expected_working_transcript_id: workspaceId, expected_working_transcript_version: 1,
+      corrections: [{ source_segment_id: attemptId, expected_source_segment_version: 1, content: "Sí — synthetic correction 🩺" }], speakers: [] } };
+    try {
+      await new NativeCreatorEditJournal(desktopJournalRecords(store.namespace("review")), recoveryScope, attemptId).save(operation);
+      store.close(); store = await DurableDesktopRecordStore.open(options);
+      const records = desktopJournalRecords(store.namespace("review"));
+      const restored = new NativeCreatorEditJournal(records, recoveryScope, attemptId);
+      expect(await restored.load()).toEqual(operation);
+      expect(await new NativeCreatorEditJournal(records, workspaceId, attemptId).load()).toBeNull();
+      await expect(restored.clear("different-synthetic-key")).rejects.toThrow();
+      await restored.clear(operation.key); expect(await restored.load()).toBeNull();
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
   });
   it("reopens native coverage after a late long-visit resume", async () => {
