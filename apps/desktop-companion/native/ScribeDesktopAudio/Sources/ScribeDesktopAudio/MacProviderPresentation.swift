@@ -169,6 +169,8 @@ public final class MacProviderRecordingIndicator: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var status: NSStatusItem?
     private var controls: ProviderRecordingControls?
+    private let mainWindow = ProviderMainWindowLease.system()
+    private var handoff = ProviderWindowHandoff()
     private var stopMenuItem: NSMenuItem?
     private var screenObserver: NSObjectProtocol?
     private var notified = false
@@ -215,7 +217,7 @@ public final class MacProviderRecordingIndicator: NSObject, NSWindowDelegate {
         updateLabels()
         // A status update must not repeatedly raise a competing window. The
         // first indicator and a new stop failure still demand visible awareness.
-        if firstPresentation || enteringFailure { panel?.orderFrontRegardless() }
+        reconcileSurface(front: firstPresentation || enteringFailure)
         guard visible else {
             reportVisibilityLoss(); throw ProviderPresentationFailure.unavailable
         }
@@ -229,9 +231,37 @@ public final class MacProviderRecordingIndicator: NSObject, NSWindowDelegate {
     public func windowWillClose(_ notification: Notification) { reportVisibilityLoss() }
     /// The native host also calls this on its presentation heartbeat. A Cocoa
     /// visibility check is not physical full-screen/multi-display acceptance.
-    public func verifyVisibility() { if state.session != nil && !visible { reportVisibilityLoss() } }
+    public func refreshMainWindow(_ windowID: UInt32?) throws {
+        try mainWindow.refresh(windowID)
+        verifyVisibility()
+    }
+    public func verifyVisibility() {
+        guard state.session != nil else { return }
+        reconcileSurface()
+        if !visible { reportVisibilityLoss() }
+    }
+    private var usesMainWindow: Bool {
+        if case .recording = state { return mainWindow.coversRecording }
+        return false // A failed stop always retains independent native controls.
+    }
+    private func reconcileSurface(front: Bool = false) {
+        guard state.session != nil, let panel else { return }
+        switch handoff.reconcile(mainCovers: usesMainWindow, forceNative: front) {
+        case .keep: break
+        case .hideNative: panel.orderOut(nil)
+        case .showNative:
+            if !NSScreen.screens.contains(where: { $0.visibleFrame.contains(panel.frame) }),
+               let frame = NSScreen.main?.visibleFrame {
+                panel.setFrameOrigin(NSPoint(x: max(frame.minX, frame.maxX - panel.frame.width - 16),
+                                             y: max(frame.minY, frame.maxY - panel.frame.height - 16)))
+            }
+            panel.orderFrontRegardless()
+        }
+    }
     private var visible: Bool {
-        guard let panel, panel.isVisible, !panel.isMiniaturized, status?.button != nil else { return false }
+        guard status?.button != nil else { return false }
+        if usesMainWindow { return true }
+        guard let panel, panel.isVisible, !panel.isMiniaturized else { return false }
         return NSScreen.screens.contains { $0.frame.intersects(panel.frame) }
     }
     @objc private func stopRequested(_ sender: AnyObject) {
@@ -240,7 +270,8 @@ public final class MacProviderRecordingIndicator: NSObject, NSWindowDelegate {
     }
     private func reportVisibilityLoss() {
         guard let session = state.session, !notified else { return }
-        notified = true; state = .failed(session); updateLabels(); visibilityLost(session)
+        notified = true; state = .failed(session); updateLabels()
+        reconcileSurface(front: true); visibilityLost(session)
     }
     private func updateLabels() {
         let failed: Bool

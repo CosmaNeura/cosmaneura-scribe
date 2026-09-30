@@ -1,3 +1,4 @@
+import type { DesktopRecordingWindow } from "./recording-window.js";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { exact, object } from "../../capture/src/provider/desktop-host-protocol";
@@ -17,6 +18,7 @@ interface PackagedRuntime {
   readonly userDataDirectory: string;
   readonly protection: DeviceProtection;
   readonly diagnostics?: RuntimeDiagnostic;
+  readonly recordingWindow?: DesktopRecordingWindow;
   openExternal(url: string): Promise<void>;
 }
 
@@ -87,12 +89,14 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
         let presentation: NativeProviderPresentation | undefined;
         try {
           presentation = await NativeProviderPresentation.open({ enabled: true, ...presentationOptions,
-            isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady() });
+            isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady(),
+            ...(runtime.recordingWindow ? { primaryWindowId: () => runtime.recordingWindow!.primaryWindowId() } : {}) });
           diagnostics("presentation_ready");
           const connection = createDesktopProviderConnection(backend, { enabled: true,
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
             openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
             indicator: presentation, presentation, selectWindow: presentation.selectWindow,
+            ...(runtime.recordingWindow ? { recordingWindow: runtime.recordingWindow } : {}),
             native: { ...audioOptions, diagnostics, isSessionActive: () => !linked.aborted && native.isReady() },
           }, linked);
           const owned = { workspace: connection.workspace,

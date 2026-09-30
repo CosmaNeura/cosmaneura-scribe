@@ -215,7 +215,8 @@ export class CaptureApp extends LitElement {
     const showInputMeter = this.#snapshot.state === "recording" && !this.#stopping
       && !this.#snapshot.desktop && this.#isNativeIPhone();
     return html`
-      <div class=${nativeProvider ? "shell provider-native-capture" : desktopProvider ? "shell provider-desktop-capture" : "shell"}>
+      <div class=${nativeProvider ? "shell provider-native-capture" : desktopProvider
+        ? `shell provider-desktop-capture${this.#isDesktopCompact() ? " provider-desktop-compact" : ""}` : "shell"}>
         <header>
           <span class="brand">${provider ? "Cosmaneura Scribe" : "Cosmaneura Capture"}</span>
           <span class="status" data-testid=${provider ? "provider-recording" : "synthetic-only"}>
@@ -426,6 +427,13 @@ export class CaptureApp extends LitElement {
     `;
   }
 
+  #isDesktopCompact(): boolean {
+    const phase = this.#snapshot.desktop?.phase;
+    return this.#provider?.captureMode === "desktop_meeting" && phase !== undefined
+      && (["starting", "recording", "stopping"].includes(phase)
+        || this.#snapshot.state === "paused" && phase === "interrupted");
+  }
+
   #renderProviderProgress(): TemplateResult {
     const desktopProvider = this.#provider?.captureMode === "desktop_meeting";
     const nativeProvider = this.#provider?.captureMode === "native_microphone";
@@ -456,7 +464,9 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or stop and upload."
               : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."
               : this.#snapshot.statusCode === "capture_interrupted" ? "Recording was interrupted. Saved audio is retained. Check your microphone and connection, then resume or stop and upload. Speech during the interruption was not recorded."
-              : this.#snapshot.statusCode === "capture_paused" ? "Recording is paused. Resume when ready, or stop and upload. Missing speech during the pause cannot be recovered."
+              : this.#snapshot.statusCode === "capture_paused" ? this.#isDesktopCompact()
+                ? html`<strong>Paused</strong><span class="recording-state-detail">No audio is being recorded.</span>`
+                : "Recording is paused. Resume when ready, or stop and upload. Missing speech during the pause cannot be recovered."
               : this.#snapshot.statusCode === "capture_no_saved_audio" ? "No audio was saved from this recording. Resume recording when ready."
               : this.#snapshot.statusCode === "capture_reopen_required" ? "Recording is stopped. Return to Your encounters and reopen this encounter to recover saved work."
               : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
@@ -487,7 +497,8 @@ export class CaptureApp extends LitElement {
             <p class="recording-duration"><span>${nativeProvider ? "Elapsed" : "Recorded"}</span> <strong>${formatDuration(this.#snapshot.elapsedSeconds)}</strong></p>
             ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
               ? html`<p class="recording-control-hint">Use Pause for a break. Stop and upload when the visit is finished.</p>` : ""}
-            ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
+            ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p
+              ?hidden=${this.#isDesktopCompact() && this.#snapshot.remainingAuthoritySeconds > 300}>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`;
   }

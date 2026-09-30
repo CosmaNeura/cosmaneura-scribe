@@ -1,3 +1,4 @@
+import type { DesktopRecordingWindow } from "./recording-window.js";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter } from "../../capture/src/provider/workspace-contracts";
 import { CoreCaptureBff, CoreCaptureClient, reference } from "../../capture/src/provider/core-client";
 import { NativeProviderWorkspaceJournal } from "../../capture/src/provider/workspace-journal";
@@ -44,6 +45,7 @@ export interface DesktopProviderResources {
   /** When using the native presentation transport, retain its lifecycle/events
    * with the connection. Existing injected fixture resources may omit it. */
   readonly presentation?: NativePresentationOwner;
+  readonly recordingWindow?: DesktopRecordingWindow;
 }
 type Connection = Awaited<ReturnType<DesktopProviderMainHost["connect"]>>;
 type Custody = Awaited<ReturnType<DesktopProviderResources["openCustody"]>>;
@@ -58,6 +60,7 @@ interface Mount {
   recorderOpening: boolean;
   closing?: Promise<void>;
   removeAbort?: () => void;
+  removeWindow?: () => void;
 }
 
 /** Trusted connection factory for the existing main host. It owns real encrypted
@@ -87,6 +90,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
       await Promise.allSettled([...owned.work]);
       // Failed native stop retains store/key ownership and blocks replacement.
       await owned.recorder?.deactivate();
+      owned.removeWindow?.(); delete owned.removeWindow; resources.recordingWindow?.update(null);
       await owned.releaseBackend?.();
       owned.store?.close();
       await owned.custody?.release();
@@ -189,7 +193,8 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
             if (owned.recorderOpening || owned.recorder?.availableForView) throw unavailable();
             owned.recorderOpening = true;
             try {
-              await owned.recorder?.deactivate(); check();
+              await owned.recorder?.deactivate();
+              owned.removeWindow?.(); delete owned.removeWindow; resources.recordingWindow?.update(null); check();
               const saved = await journal.load(); check();
               if (saved.progress?.sessionId !== sessionId || recorderSignal.aborted) throw unavailable();
               const linked = AbortSignal.any([mountSignal, recorderSignal]);
@@ -221,6 +226,9 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                 // closeMount owns its closure after every native stop is confirmed.
                 release: () => Promise.resolve(),
               });
+              if (resources.recordingWindow) {
+                owned.removeWindow = owned.recorder.subscribe(snapshot => resources.recordingWindow!.update(snapshot));
+              }
               check(); if (linked.aborted) throw unavailable(); return owned.recorder;
             } finally { owned.recorderOpening = false; }
           }),

@@ -4,12 +4,14 @@
 import "../../src/capture-app.ts";
 import "../../src/styles.css";
 import "../../src/provider/workspace.css";
+import "../../src/provider/application.css";
+import scribeIcon from "../../public/icon.svg?raw";
 
 const sessionId = "40000000-0000-4000-8000-000000000004";
 const abort = new AbortController(), listeners = new Set(), commands = [];
 let finishChoice;
 let snapshot = { sessionId, state: "ready", statusCode: "capture_ready", recordedChunks: 0,
-  queuedChunks: 0, elapsedSeconds: 0, remainingBudgetSeconds: null, remainingAuthoritySeconds: null,
+  queuedChunks: 0, elapsedSeconds: 0, remainingBudgetSeconds: null, remainingAuthoritySeconds: 900,
   transcript: null, transcriptionStatus: null,
   desktop: { phase: "ready", coverage: "not_started", trimmedStartMs: 0, trimmedEndMs: null } };
 const emit = (fields, desktop = {}) => {
@@ -43,6 +45,10 @@ app.bindProvider({ sessionId, controller, sourceKind: "microphone", captureMode:
   languageMode: "english", signal: abort.signal, authorizedRequest: forbidden,
   journal: { load: forbidden, save: forbidden }, deactivate: async () => {} });
 const root = document.querySelector("#provider");
+const application = document.createElement("div"); application.className = "provider-application";
+root.replaceWith(application);
+application.innerHTML = `<header class="provider-session-header"><div class="provider-brand"><span class="provider-brand-icon" aria-hidden="true">${scribeIcon}</span><strong>Scribe</strong></div><div data-session-actions><button data-session-action="sign-out" disabled>Sign out</button></div></header>`;
+application.append(root);
 root.classList.add("provider-workspace");
 root.innerHTML = '<p class="provider-account">Local synthetic · Signed in as provider@example.invalid</p><header class="provider-header"><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter>Invented visit — no real patient</p></div><button disabled>Your encounters</button></header>';
 root.append(app);
@@ -53,5 +59,6 @@ window.desktopControlsLab = {
       { phase: "recording", coverage: "aligned" });
     finishChoice();
   },
+  incomplete: () => emit({}, { coverage: "incomplete" }),
   close: () => abort.abort(),
 };
