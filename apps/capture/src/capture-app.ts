@@ -209,13 +209,13 @@ export class CaptureApp extends LitElement {
         ? "Recording stop could not be confirmed. Stop recording in the native app before continuing."
         : "Recording closed. Return to your authorized encounters to continue."}</p>`;
     const provider = this.#provider;
-    const uploadProgress = this.#snapshot.native?.uploadProgress ?? this.#snapshot.uploadProgress;
     const captureFinished = provider && ["processing", "complete"].includes(this.#snapshot.state);
     const nativeProvider = provider?.captureMode === "native_microphone";
+    const desktopProvider = provider?.captureMode === "desktop_meeting";
     const showInputMeter = this.#snapshot.state === "recording" && !this.#stopping
       && !this.#snapshot.desktop && this.#isNativeIPhone();
     return html`
-      <div class=${nativeProvider ? "shell provider-native-capture" : "shell"}>
+      <div class=${nativeProvider ? "shell provider-native-capture" : desktopProvider ? "shell provider-desktop-capture" : "shell"}>
         <header>
           <span class="brand">${provider ? "Cosmaneura Scribe" : "Cosmaneura Capture"}</span>
           <span class="status" data-testid=${provider ? "provider-recording" : "synthetic-only"}>
@@ -226,8 +226,8 @@ export class CaptureApp extends LitElement {
         </header>
         <main>
           <p class="eyebrow">${provider ? "Record · Review · Prepare note" : "Phase 3 foreground flow"}</p>
-          <h1>${captureFinished ? "Your encounter" : nativeProvider ? "Visit recording" : provider ? "Your encounter recording" : "Consented recording, safely staged"}</h1>
-          <p class="intro" ?hidden=${nativeProvider && !captureFinished}>
+          <h1>${captureFinished ? "Your encounter" : nativeProvider || desktopProvider ? "Visit recording" : provider ? "Your encounter recording" : "Consented recording, safely staged"}</h1>
+          <p class="intro" ?hidden=${(nativeProvider || desktopProvider) && !captureFinished}>
             ${captureFinished ? "Recording uploaded. Review the transcript below before preparing your note."
               : provider ? "Record this consented encounter, then review its transcript before preparing your note."
               : this.#sourceKind === "microphone"
@@ -267,8 +267,8 @@ export class CaptureApp extends LitElement {
             </button>
           </section>`}
 
-          ${captureFinished ? "" : html`<section class="flow-card recorder" aria-labelledby="record-title">
-            <div ?hidden=${nativeProvider && showInputMeter}>
+          ${captureFinished ? "" : html`<section class="flow-card recorder" aria-label="Recording controls">
+            <div ?hidden=${desktopProvider || nativeProvider && showInputMeter}>
               ${provider ? "" : html`<p class="step">Step 2</p>`}
               <h2 id="record-title">${nativeProvider ? "Microphone" : "Record"}</h2>
               <p>
@@ -282,6 +282,7 @@ export class CaptureApp extends LitElement {
                 ${provider ? "" : "The initial server-authorized recording window is fixed and is not renewed in this preview."}
               </p>
             </div>
+            ${desktopProvider ? this.#renderProviderProgress() : ""}
             ${showInputMeter
               ? html`<scribe-ios-input-meter .readSignal=${provider?.controller.getCaptureSignal}></scribe-ios-input-meter>` : ""}
             ${this.#isNativeIPhone() && (!nativeProvider || ["ready", "paused"].includes(this.#snapshot.state)) ? html`<label>Microphone
@@ -297,7 +298,7 @@ export class CaptureApp extends LitElement {
               <button
                 data-testid="record-button"
                 class="record-button"
-                ?hidden=${nativeProvider && this.#snapshot.state !== "ready"}
+                ?hidden=${(nativeProvider || desktopProvider) && this.#snapshot.state !== "ready" || desktopProvider && this.#isStarting()}
                 aria-label=${provider ? "Start recording" : this.#sourceKind === "microphone"
                   ? "Start foreground microphone test recording"
                   : "Start silent synthetic recording"}
@@ -308,9 +309,20 @@ export class CaptureApp extends LitElement {
                 <span aria-hidden="true"></span>
                 ${this.#busy && this.#snapshot.state === "ready" || this.#snapshot.statusCode === "capture_starting" ? "Starting…" : "Record"}
               </button>
+              ${provider?.controller.pauseRecording && this.#snapshot.state === "recording"
+                && (!this.#snapshot.desktop || this.#snapshot.desktop.phase === "recording") ? html`<button
+                class="secondary" data-testid="pause-recording" ?disabled=${this.#busy || this.#stopping}
+                @click=${this.#pause}>Pause recording</button>` : ""}
+              ${provider?.controller.resumeRecording && this.#snapshot.state === "paused"
+                && (!this.#snapshot.desktop || ["ready", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase))
+                && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
+                class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
+                @click=${this.#resume}>${this.#snapshot.statusCode === "capture_recovery_pending"
+                  ? "Retry recovery and resume" : "Resume recording"}</button>` : ""}
               <button
                 data-testid="stop-button"
                 class="secondary"
+                ?hidden=${desktopProvider && !this.#canStop() && !this.#stopping}
                 ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && !this.#snapshot.native && this.#busy}
                 @click=${this.#stop}
               >
@@ -319,79 +331,21 @@ export class CaptureApp extends LitElement {
                   : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
                   : this.#snapshot.statusCode === "capture_recovery_pending" ? "Retry saving and upload"
                   : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
-                  ? "Retry stop and upload" : this.#snapshot.desktop ? "Stop recording" : "Stop and upload"}
+                  ? "Retry stop and upload" : "Stop and upload"}
               </button>
-              ${provider?.controller.pauseRecording && this.#snapshot.state === "recording" ? html`<button
-                class="secondary" data-testid="pause-recording" ?disabled=${this.#busy || this.#stopping}
-                @click=${this.#pause}>Pause recording</button>` : ""}
-              ${provider?.controller.resumeRecording && this.#snapshot.state === "paused"
-                && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
-                class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
-                @click=${this.#resume}>${this.#snapshot.statusCode === "capture_recovery_pending"
-                  ? "Retry recovery and resume" : "Resume recording"}</button>` : ""}
               ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
                 data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Set up recording access</button>` : ""}
               ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
                 ?disabled=${this.#busy || this.#stopping} @click=${this.#retryUpload}>Retry upload</button>` : ""}
             </div>
+            ${desktopProvider ? html`<details class="recording-source-help">
+              <summary>Microphone + meeting audio</summary>
+              <p>Choose your Zoom window or Meet window in Chrome. Scribe records your microphone and the selected application’s audio; other audio from that application may be included.</p>
+              <p>Encrypted audio uploads while you record. If you go offline, saved audio waits on this Mac.</p>
+            </details>` : ""}
           </section>`}
 
-          ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
-            <p role="status" ?hidden=${nativeProvider && showInputMeter && this.#snapshot.statusCode === "capture_recording"}>${this.#stopping
-              ? this.#isStarting() ? "Cancelling start… Waiting for recording to stop." : "Stopping recording…"
-              : !this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
-              || this.#busy && this.#snapshot.state === "ready") ? "Starting microphone… Recording is not confirmed yet."
-              : this.#snapshot.desktop?.phase === "starting"
-              ? this.#snapshot.statusCode === "capture_window_selection_pending"
-                ? "Choose a meeting window in the Scribe dialog. Recording has not started."
-                : "Starting microphone and meeting audio… Recording is not confirmed yet."
-              : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
-              : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
-              : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
-              : this.#snapshot.statusCode === "capture_stopping" ? "Stopping recording…"
-              : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
-              : this.#snapshot.statusCode === "capture_start_failed" ? this.#snapshot.desktop
-                ? "Recording did not start. Your saved audio is retained. Choose Start recording to try again."
-                : "Recording could not start. Check your microphone and connection, then retry Resume."
-              : this.#snapshot.statusCode === "capture_preparation_failed" ? "Recording preparation could not finish. Reopen this encounter to retry. Saved work is retained."
-              : this.#snapshot.statusCode === "capture_setup_expired" ? "Recording setup expired before any audio was saved. Select Resume recording to prepare again."
-              : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
-              : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
-              : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or stop and upload."
-              : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."
-              : this.#snapshot.statusCode === "capture_interrupted" ? "Recording was interrupted. Saved audio is retained. Check your microphone and connection, then resume or stop and upload. Speech during the interruption was not recorded."
-              : this.#snapshot.statusCode === "capture_paused" ? "Recording is paused. Resume when ready, or stop and upload. Missing speech during the pause cannot be recovered."
-              : this.#snapshot.statusCode === "capture_no_saved_audio" ? "No audio was saved from this recording. Resume recording when ready."
-              : this.#snapshot.statusCode === "capture_reopen_required" ? "Recording is stopped. Return to Your encounters and reopen this encounter to recover saved work."
-              : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
-              : this.#snapshot.statusCode === "capture_upload_pending" ? "Recording has stopped. Your saved recording is waiting for upload confirmation. Check your connection and retry."
-              : this.#snapshot.statusCode === "capture_upload_settling" ? "Recording stopped. Finishing the current upload…"
-              : this.#snapshot.statusCode === "capture_upload_confirming" ? "Audio uploaded. Confirming receipt before transcription…"
-              : this.#snapshot.state === "uploading" ? "Recording stopped. Uploading your saved audio…"
-              : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace"
-              : this.#snapshot.desktop?.phase === "stopped" ? "Recording stopped"
-              : this.#snapshot.desktop?.phase === "interrupted" ? "Recording interrupted. Confirm stop before uploading."
-              : this.#snapshot.state === "recording" ? "Recording"
-              : this.#snapshot.statusCode === "audio_capture_native_stop_failed"
-                ? "Recording stop is unconfirmed. Retry stopping before continuing."
-              : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
-                ? "Recording has stopped. Retry confirmation before uploading."
-              : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
-              : "Ready to record"}</p>
-            ${this.#isStarting() && !this.#stopping ? html`<p data-testid="startup-progress" aria-live="off">
-              ${this.#snapshot.statusCode === "capture_window_selection_pending" ? "Waiting for window selection" : "Connecting"}
-              · ${this.#startupSeconds}s. Wait for Recording and an advancing timer before speaking.
-              ${this.#startupSeconds >= 12 && this.#canStop() ? "Taking longer than expected. Choose Cancel start to stop waiting safely." : ""}
-            </p>` : ""}
-            ${uploadProgress && (this.#snapshot.state === "uploading" || this.#snapshot.statusCode === "capture_upload_settling") ? html`<label>
-              Audio uploaded ${Math.floor(uploadProgress.registered * 100 / Math.max(1, uploadProgress.total))}%
-              <progress aria-label="Audio upload" max=${uploadProgress.total || 1}
-                value=${uploadProgress.registered}></progress>
-            </label>` : ""}
-            <p>${nativeProvider ? "Elapsed" : "Recorded"} ${formatDuration(this.#snapshot.elapsedSeconds)}</p>
-            ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
-              Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
-          </section>`) : html`<section class="flow-card" aria-labelledby="status-title">
+          ${provider ? (captureFinished || desktopProvider ? "" : this.#renderProviderProgress()) : html`<section class="flow-card" aria-labelledby="status-title">
             <div>
               <p class="step">Step 3</p>
               <h2 id="status-title">Status</h2>
@@ -448,7 +402,10 @@ export class CaptureApp extends LitElement {
             ${provider ? "" : this.#renderTranscript()}
           </section>`}
 
-          ${provider && this.#snapshot.desktop ? html`<p data-testid="desktop-coverage" role="status">
+          ${provider && this.#snapshot.desktop ? html`<details data-testid="desktop-coverage"
+            ?open=${this.#snapshot.desktop.coverage === "incomplete"}>
+            <summary>${this.#snapshot.desktop.coverage === "incomplete" ? "Check recording coverage" : "Recording details"}</summary>
+            <p role="status">
             ${this.#snapshot.desktop.coverage === "incomplete"
               ? "Recording coverage is incomplete. Review the retained audio and transcript for missing speech."
               : this.#snapshot.desktop.coverage === "aligned" ? "Microphone and meeting audio are aligned."
@@ -460,13 +417,79 @@ export class CaptureApp extends LitElement {
               : "Recording has not started."}
             ${this.#snapshot.desktop.trimmedStartMs > 0 ? ` The first ${this.#snapshot.desktop.trimmedStartMs} ms before both sources were available was excluded.` : ""}
             ${(this.#snapshot.desktop.trimmedEndMs ?? 0) > 0 ? ` The final ${this.#snapshot.desktop.trimmedEndMs} ms without both sources was excluded.` : ""}
-          </p>` : ""}
+          </p></details>` : ""}
 
           ${provider ? html`<div data-provider-review></div>`
             : html`<p class="fixed-status" role="status">${this.#snapshot.statusCode}</p>`}
         </main>
       </div>
     `;
+  }
+
+  #renderProviderProgress(): TemplateResult {
+    const desktopProvider = this.#provider?.captureMode === "desktop_meeting";
+    const nativeProvider = this.#provider?.captureMode === "native_microphone";
+    const showInputMeter = this.#snapshot.state === "recording" && !this.#stopping
+      && !this.#snapshot.desktop && this.#isNativeIPhone();
+    const uploadProgress = this.#snapshot.native?.uploadProgress ?? this.#snapshot.uploadProgress;
+    return html`<section class=${desktopProvider ? "recording-progress" : "flow-card"} aria-label="Recording progress">
+            <p role="status" ?hidden=${nativeProvider && showInputMeter && this.#snapshot.statusCode === "capture_recording"}>${this.#stopping
+              ? this.#isStarting() ? "Cancelling start… Waiting for recording to stop." : "Stopping recording…"
+              : !this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
+              || this.#busy && this.#snapshot.state === "ready") ? "Starting microphone… Recording is not confirmed yet."
+              : this.#snapshot.desktop?.phase === "starting"
+              ? this.#snapshot.statusCode === "capture_window_selection_pending"
+                ? "Choose your Zoom or Meet window in “Scribe · Choose a meeting window”. Recording has not started."
+                : "Starting microphone and meeting audio… Recording is not confirmed yet."
+              : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
+              : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
+              : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
+              : this.#snapshot.statusCode === "capture_stopping" ? "Stopping recording…"
+              : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
+              : this.#snapshot.statusCode === "capture_start_failed" ? this.#snapshot.desktop
+                ? "Recording did not start. Your saved audio is retained. Choose Start recording to try again."
+                : "Recording could not start. Check your microphone and connection, then retry Resume."
+              : this.#snapshot.statusCode === "capture_preparation_failed" ? "Recording preparation could not finish. Reopen this encounter to retry. Saved work is retained."
+              : this.#snapshot.statusCode === "capture_setup_expired" ? "Recording setup expired before any audio was saved. Select Resume recording to prepare again."
+              : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
+              : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
+              : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or stop and upload."
+              : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."
+              : this.#snapshot.statusCode === "capture_interrupted" ? "Recording was interrupted. Saved audio is retained. Check your microphone and connection, then resume or stop and upload. Speech during the interruption was not recorded."
+              : this.#snapshot.statusCode === "capture_paused" ? "Recording is paused. Resume when ready, or stop and upload. Missing speech during the pause cannot be recovered."
+              : this.#snapshot.statusCode === "capture_no_saved_audio" ? "No audio was saved from this recording. Resume recording when ready."
+              : this.#snapshot.statusCode === "capture_reopen_required" ? "Recording is stopped. Return to Your encounters and reopen this encounter to recover saved work."
+              : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
+              : this.#snapshot.statusCode === "capture_upload_pending" ? "Recording has stopped. Your saved recording is waiting for upload confirmation. Check your connection and retry."
+              : this.#snapshot.statusCode === "capture_upload_settling" ? "Recording stopped. Finishing the current upload…"
+              : this.#snapshot.statusCode === "capture_upload_confirming" ? "Audio uploaded. Confirming receipt before transcription…"
+              : this.#snapshot.state === "uploading" ? "Recording stopped. Uploading your saved audio…"
+              : this.#snapshot.state === "error" ? "Recording needs recovery in your workspace"
+              : this.#snapshot.desktop?.phase === "stopped" ? "Recording stopped"
+              : this.#snapshot.desktop?.phase === "interrupted" ? "Recording interrupted. Confirm stop before uploading."
+              : this.#snapshot.state === "recording" ? "Recording"
+              : this.#snapshot.statusCode === "audio_capture_native_stop_failed"
+                ? "Recording stop is unconfirmed. Retry stopping before continuing."
+              : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
+                ? "Recording has stopped. Retry confirmation before uploading."
+              : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
+              : "Ready to record"}</p>
+            ${this.#isStarting() && !this.#stopping ? html`<p data-testid="startup-progress" aria-live="off">
+              ${this.#snapshot.statusCode === "capture_window_selection_pending" ? "Waiting for window selection" : "Connecting"}
+              · ${this.#startupSeconds}s. Wait for Recording and an advancing timer before speaking.
+              ${this.#startupSeconds >= 12 && this.#canStop() ? "Taking longer than expected. Choose Cancel start to stop waiting safely." : ""}
+            </p>` : ""}
+            ${uploadProgress && (this.#snapshot.state === "uploading" || this.#snapshot.statusCode === "capture_upload_settling") ? html`<label>
+              Audio uploaded ${Math.floor(uploadProgress.registered * 100 / Math.max(1, uploadProgress.total))}%
+              <progress aria-label="Audio upload" max=${uploadProgress.total || 1}
+                value=${uploadProgress.registered}></progress>
+            </label>` : ""}
+            <p class="recording-duration"><span>${nativeProvider ? "Elapsed" : "Recorded"}</span> <strong>${formatDuration(this.#snapshot.elapsedSeconds)}</strong></p>
+            ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
+              ? html`<p class="recording-control-hint">Use Pause for a break. Stop and upload when the visit is finished.</p>` : ""}
+            ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p>
+              Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
+          </section>`;
   }
 
   #renderTranscript(): TemplateResult | string {

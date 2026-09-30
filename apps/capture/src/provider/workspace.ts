@@ -11,7 +11,7 @@ import { HttpCreatorReviewApi, type CreatorReviewView } from "../../../review-ui
 import { mountCreatorReview, renderNoteTranscript } from "../../../review-ui/src/creator-review-panel";
 import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
   type LanguageMode } from "./core-client";
-import { noteTemplates, parseDraft, pendingSave, resolveNote, reviewedSource, saveNote,
+import { noteTemplates, parseDraft, pendingSave, resolveNote, reviewedSource, sameSource, saveNote,
   type CoreDraft, type CoreNoteTemplate, type ReviewedSource } from "./core-notes";
 import { assertProgress, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources } from "./workspace-contracts";
@@ -37,6 +37,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let disposeContent: (() => void) | null = null;
   let templates: CoreNoteTemplate[] = [], source: ReviewedSource | null = null, draft: CoreDraft | null = null;
   let noteTranscript: CreatorReviewView | null = null;
+  let checkPreparedNote: (() => Promise<void>) | null = null;
   let currentSchema = "";
   let consentRenewalOffered = false;
   let consentAction: HTMLButtonElement | null = null;
@@ -105,6 +106,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         ? "Checking access to this visit." : step === "saved encounter recovery" ? "Restoring saved work."
         : step === "recording status check" ? "Checking recording status."
         : step === "device recording access" ? "Connecting this device to the recording."
+        : step === "note preparation" ? "Preparing your draft note."
         : step === "recording admission" ? "Confirming recording consent and storage." : "Waiting for confirmation."}`;
     }, 1000);
     let outcome: WorkflowTimingOutcome = "resolved";
@@ -473,24 +475,109 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(client && source && currentSchema);
     const n = generation, activeClient = client, id = session(), schema = currentSchema;
     const review = new HttpCreatorReviewApi(id, activeClient.reviewRequest(id));
-    let view: CreatorReviewView, value: unknown;
-    if (prepare) {
-      view = await review.read();
+    let preparationSource: ReviewedSource | null = null;
+    try {
+      let view: CreatorReviewView, value: unknown;
+      if (prepare) {
+        step = "note preparation";
+        view = await review.read();
+        if (!authorized(n)) return;
+        // Generation still waits for a fresh, ready transcript before any write.
+        preparationSource = reviewedSource(view);
+        show('<h1>Preparing your draft note…</h1><p>The draft will appear here when it is ready. Your recording and transcript are retained.</p>');
+        value = await activeClient.note(id, "prepare", schema);
+      } else {
+        // Both reads independently authorize in Core. Wait for both and match
+        // their lineage before displaying either; never reuse a cached response.
+        [view, value] = await Promise.all([review.read(), activeClient.note(id, "read", schema)]);
+      }
       if (!authorized(n)) return;
-      // Generation still waits for a fresh, ready transcript before any write.
-      reviewedSource(view);
-      value = await activeClient.note(id, "prepare", schema);
-    } else {
-      // Both reads independently authorize in Core. Wait for both and match
-      // their lineage before displaying either; never reuse a cached response.
-      [view, value] = await Promise.all([review.read(), activeClient.note(id, "read", schema)]);
+      const fresh = reviewedSource(view);
+      const result = await parseDraft(value, id, schema, fresh);
+      if (!authorized(n)) return;
+      source = fresh; draft = result; noteTranscript = view;
+      if (prepare && result.status === "not_prepared") awaitPreparedNote(n, activeClient, id, schema, fresh);
+      else renderNote();
+    } catch (error) {
+      if (!preparationSource) throw error;
+      if (authorized(n)) awaitPreparedNote(n, activeClient, id, schema, preparationSource);
     }
-    if (!authorized(n)) return;
-    const fresh = reviewedSource(view);
-    const result = await parseDraft(value, id, schema, fresh);
-    if (!authorized(n)) return;
-    source = fresh; draft = result; noteTranscript = view;
-    renderNote();
+  };
+  const awaitPreparedNote = (n: number, activeClient: CoreCaptureClient, id: string, schema: string,
+    expectedSource: ReviewedSource): void => {
+    requireValue(context && authorized(n));
+    const activeContext = context;
+    // A lost prepare response can follow a committed draft. Recover by reads
+    // only; replaying prepare could otherwise start another model operation.
+    show('<h1>Checking for your draft note…</h1><p data-note-readiness role="status">Preparation is not confirmed yet. We will check for the draft automatically.</p><button data-workspace-action="check-note">Check for note</button><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>');
+    let closed = false, checking = false, expired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let reading: AbortController | null = null;
+    const expiresAt = Date.now() + 90_000;
+    const status = content.querySelector<HTMLElement>("[data-note-readiness]")!;
+    const button = content.querySelector<HTMLButtonElement>('[data-workspace-action="check-note"]')!;
+    const active = (): boolean => !closed && authorized(n) && context === activeContext
+      && client === activeClient && currentSchema === schema;
+    const message = (): void => {
+      if (!active()) return;
+      status.textContent = expired
+        ? "The draft is not confirmed yet. Choose Check for note to look again. Your saved work is retained."
+        : "The draft is not available yet. Checking automatically; preparation will not be submitted again.";
+    };
+    const check = async (automatic = false): Promise<void> => {
+      if (!active() || checking || document.visibilityState !== "visible") return;
+      if (automatic && (expired || Date.now() >= expiresAt)) { expired = true; message(); return; }
+      clearTimeout(timer); checking = true; button.disabled = true;
+      const controller = new AbortController(); reading = controller;
+      forwardAbort(activeClient.signal, controller);
+      const readClient = new CoreCaptureClient(activeClient.scope, activeContext.request, controller.signal);
+      const timeout = setTimeout(() => controller.abort(), automatic ? Math.min(30_000, expiresAt - Date.now()) : 30_000);
+      status.textContent = "Checking for your prepared note…";
+      try {
+        const [view, value] = await interruptibleRead(Promise.all([
+          new HttpCreatorReviewApi(id, readClient.reviewRequest(id)).read(), readClient.note(id, "read", schema),
+        ]), controller.signal);
+        if (!active() || controller.signal.aborted) return;
+        const fresh = reviewedSource(view);
+        requireValue(sameSource(fresh, expectedSource));
+        const result = await parseDraft(value, id, schema, fresh);
+        if (!active() || controller.signal.aborted) return;
+        if (result.status === "draft") {
+          source = fresh; draft = result; noteTranscript = view; renderNote();
+          notice.textContent = "Draft ready. Review and edit it before clinical use.";
+          return;
+        }
+        message();
+      } catch {
+        if (active() && document.visibilityState === "visible" && controller.signal.reason !== "note-check-hidden") {
+          status.textContent = "The note check could not be confirmed. Check your connection, then choose Check for note or review the transcript. Your saved work is retained.";
+          expired = true;
+        }
+      } finally {
+        clearTimeout(timeout); controller.abort();
+        if (reading === controller) reading = null;
+        checking = false;
+        if (active()) {
+          button.disabled = false;
+          if (!expired && document.visibilityState === "visible") timer = setTimeout(() => { void check(true); }, 3000);
+        }
+      }
+    };
+    const visibility = (): void => {
+      clearTimeout(timer);
+      if (document.visibilityState === "visible") void check(true);
+      else reading?.abort("note-check-hidden");
+    };
+    const deadline = setTimeout(() => { expired = true; clearTimeout(timer); reading?.abort(); message(); }, 90_000);
+    const manual = (): Promise<void> => check();
+    checkPreparedNote = manual;
+    document.addEventListener("visibilitychange", visibility);
+    disposeContent = () => {
+      closed = true; clearTimeout(timer); clearTimeout(deadline); reading?.abort();
+      document.removeEventListener("visibilitychange", visibility);
+      if (checkPreparedNote === manual) checkPreparedNote = null;
+    };
+    void check(true);
   };
   const renderNote = (): void => {
     requireValue(draft);
@@ -499,7 +586,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ${draft.status === "draft" ? '<div class="provider-save-bar"><p data-note-save-state role="status" aria-atomic="true">Saved</p><button data-workspace-action="save">Save draft</button></div>' : ""}
       ${draft.status === "draft" && noteTranscript ? renderNoteTranscript(noteTranscript) : ""}
       ${draft.status === "draft" ? draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")
-        : '<button data-workspace-action="generate">Prepare draft note</button>'}
+        : '<button data-workspace-action="generate">Prepare draft note</button><button data-workspace-action="check-note">Check for note</button>'}
       <button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>`);
     content.addEventListener("input", updateSaveState);
     disposeContent = () => content.removeEventListener("input", updateSaveState);
@@ -527,6 +614,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (!button || !root.contains(button)) return;
     // Only a currently displayed read-only opening can bypass the busy guard.
     if (button.dataset.workspaceAction === "cancel-opening") { cancelOpening?.(); return; }
+    // Read-only note checks own their cancellation and never block navigation.
+    if (button.dataset.workspaceAction === "check-note" && checkPreparedNote) {
+      if (!button.disabled) void checkPreparedNote();
+      return;
+    }
     void run(async () => {
       switch (button.dataset.workspaceAction) {
         case "encounters": await guardNavigation("encounters"); break;
@@ -579,6 +671,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
         case "read": currentSchema = input("schema"); requireValue(templates.some(t => t.schema_ref === currentSchema)); await readNote(false); break;
         case "generate": await readNote(true); break;
+        case "check-note": requireValue(client && source); awaitPreparedNote(generation, client, session(), currentSchema, source); break;
         case "review": await guardNavigation("review"); break;
         case "core": requireValue(context); await context.openInCore(draft?.note_ref ?? null); break;
         case "save": {

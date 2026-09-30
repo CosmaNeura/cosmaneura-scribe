@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { HttpCreatorReviewApi, parseCreatorReview, parseCaptureContinuity } from "./creator-review-api";
-import { renderCreatorReview, renderNoteTranscript } from "./creator-review-panel";
+import { renderCreatorReview, renderNoteTranscript, transcriptParagraphs } from "./creator-review-panel";
 import { longReviewFixture } from "./long-review.fixture";
 import { MAX_CREATOR_REVIEW_BYTES } from "./capture-response-limits";
 
@@ -30,6 +30,42 @@ const view = {
 };
 
 describe("creator review surface", () => {
+  it("breaks long speech into readable paragraphs without changing characters or assigning voices", () => {
+    for (const text of [
+      "Dr. Avery described a fictional test. No medication was discussed. ".repeat(20),
+      "síntoma sin puntuación ".repeat(80),
+      "First sentence.\nSecond sentence!  Third sentence? Fourth sentence. Fifth sentence.",
+      "<script>never interpret this</script> & original wording.",
+    ]) {
+      const parts = transcriptParagraphs(text);
+      expect(parts.join("")).toBe(text);
+      expect(parts.every(part => part.length <= 401)).toBe(true);
+      if (text.length > 400) expect(parts.length).toBeGreaterThan(1);
+    }
+    const html = renderCreatorReview({ phase: "ready", view: parseCreatorReview(view, session), notice: "" });
+    expect(html.match(/class="creator-segment-heading"/gu)).toHaveLength(1);
+    expect(html).toContain("Speaker not assigned");
+    expect(html).not.toContain("<script>");
+  });
+  it("keeps the same detected speaker number across languages without inferring a patient or clinician", () => {
+    const speakerA = "00000000-0000-4000-8000-000000000011";
+    const speakerB = "00000000-0000-4000-8000-000000000012";
+    const ids = [segment, translation, working];
+    const segments = ids.map((id, index) => ({ ...view.source.segments[0]!, source_segment_id: id,
+      speaker_id: index === 1 ? speakerB : speakerA, source_locale: index === 2 ? "en-US" : "es-US",
+      content: index === 2 ? "Invented English speech." : "Habla ficticia.", start_ms: index * 1000, end_ms: index * 1000 + 900 }));
+    const parsed = parseCreatorReview({ ...view, status: "transcript_ready", source: { ...view.source, segments },
+      working: { ...view.working, note_ready: true, blockers: [], segments: segments.map(item => ({
+        source_segment_id: item.source_segment_id, source_segment_version: 1,
+        resolution: item.source_locale === "en-US" ? "english_source" : "spanish_translation", content: "Invented English speech.",
+      })) }, review_queue: { ...view.review_queue, status: "complete", items: [] },
+    }, session);
+    const html = renderCreatorReview({ phase: "ready", view: parsed, notice: "" });
+    expect(html.match(/Speaker 1 · not identified/gu)).toHaveLength(2);
+    expect(html.match(/Speaker 2 · not identified/gu)).toHaveLength(1);
+    expect(html).not.toContain("<strong>Clinician</strong>");
+    expect(html).not.toContain("<strong>Patient</strong>");
+  });
   it("receives every segment of a bounded maximum-length review", async () => {
     const source = longReviewFixture(session), json = JSON.stringify(source);
     expect(new TextEncoder().encode(json).length).toBeGreaterThan(8 * 1024 * 1024);
