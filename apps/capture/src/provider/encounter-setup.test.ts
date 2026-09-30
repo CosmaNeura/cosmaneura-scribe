@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { registerPlugin } from "@capacitor/core";
 import { createEncounterSetup, parseEncounterDraft, type CreationRecords, type EncounterDraft } from "./encounter-setup";
 
 const patientRef = "patient_01j00000000000000000000000";
@@ -17,21 +18,33 @@ function records() {
   };
   return { store, data };
 }
-function fixture() {
+function fixture(capacitorProxy = false) {
   const disk = records(), scope = crypto.randomUUID(), workspaceId = crypto.randomUUID();
+  // Capacitor exposes every property as a method, including `then`. Reject
+  // assimilation explicitly so this regression fails without hanging the suite.
+  const assimilated = vi.fn();
+  const store = capacitorProxy ? new Proxy(registerPlugin<CreationRecords>(`CreationTest${scope}`, {
+    web: disk.store,
+  }), { get: (target, property, receiver): unknown => {
+    if (property === "then") {
+      assimilated();
+      throw new Error("Capacitor storage proxy must not be awaited");
+    }
+    return Reflect.get(target, property, receiver);
+  } }) : disk.store;
   const response = (action: unknown) => ({ action, recoveryScope: scope, account: { email: "provider@synthetic.invalid" } });
   const request = vi.fn(async (body: Record<string, unknown>, _key: string, _signal: AbortSignal): Promise<Record<string, unknown>> => { void _key; void _signal; return body.action === "patients"
     ? { ...response(body.action), patients: [{ patient_ref: patientRef, name: "Synthetic Patient", date_of_birth: "1980-01-02" }], more_results: false }
     : { ...response(body.action), creation_key: body.creation_key, encounter: { workspace_id: workspaceId, appointment_ref: appointmentRef,
       patient_name: "Synthetic Patient", title: "Visit", appointment_at: "2026-09-29T12:00:00Z" } }; });
-  const openStore = vi.fn(async () => ({ records: disk.store, close: vi.fn(async () => undefined) }));
+  const openStore = vi.fn(async () => ({ records: store, close: vi.fn(async () => undefined) }));
   const created = vi.fn(), abort = new AbortController();
   const newOwner = () => createEncounterSetup({ request, records: openStore, created, current: signal => { if (abort.signal.aborted || signal?.aborted) throw new Error("closed"); } });
-  return { ...disk, scope, request, created, abort, openStore, newOwner, signal: abort.signal };
+  return { ...disk, scope, request, created, abort, openStore, newOwner, assimilated, signal: abort.signal };
 }
 describe("shared mobile/desktop encounter creation", () => {
-  it("durably retains an uncertain request across restart, retries the same key and clears only after confirmation", async () => {
-    const f = fixture(), first = f.newOwner();
+  it.each([false, true])("loads patients and retains an uncertain request across restart with Capacitor proxy=%s", async capacitorProxy => {
+    const f = fixture(capacitorProxy), first = f.newOwner();
     expect((await first.state(f.signal)).pending).toBeNull();
     f.request.mockRejectedValueOnce(new Error("lost response after server commit"));
     await expect(first.submit(initial, f.signal)).rejects.toThrow();
@@ -46,6 +59,7 @@ describe("shared mobile/desktop encounter creation", () => {
     expect(creations.map(([, key]) => key)).toEqual([initial.creationKey, initial.creationKey]);
     expect(creations[0]![0].patient).toEqual(creations[1]![0].patient);
     expect((await second.state(f.signal)).pending).toBeNull();
+    expect(f.assimilated).not.toHaveBeenCalled();
     await second.dispose();
   });
   it("serializes double clicks and refuses a different intent while the first result is unknown", async () => {

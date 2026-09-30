@@ -90,15 +90,17 @@ export function createEncounterSetup(options: {
     if (recovery !== null && (value.recoveryScope !== recovery || email !== account)) throw fail();
     recovery = value.recoveryScope; account = email;
   };
-  const journal = async (signal: AbortSignal): Promise<CreationRecords> => {
+  const journal = async (signal: AbortSignal): Promise<{ records: CreationRecords }> => {
     options.current(signal);
     if (!recovery) throw fail();
     storage ??= options.records(recovery, signal).catch(error => { storage = null; throw error; });
     const opened = await storage;
-    options.current(signal); return opened.records;
+    // Keep the Capacitor proxy nested: resolving it directly asks for its
+    // synthetic `then` method and leaves the caller waiting indefinitely.
+    options.current(signal); return opened;
   };
   const load = async (signal: AbortSignal): Promise<Snapshot> => {
-    const records = await journal(signal), key = PREFIX + recovery;
+    const { records } = await journal(signal), key = PREFIX + recovery;
     let saved;
     try { saved = await records.get({ key }); }
     catch (error) {
@@ -114,7 +116,7 @@ export function createEncounterSetup(options: {
     return { revision: saved.revision, pending: value.pending === null ? null : parseEncounterDraft(value.pending) };
   };
   const save = async (previous: Snapshot, pending: EncounterDraft | null, signal: AbortSignal): Promise<Snapshot> => {
-    const records = await journal(signal), key = PREFIX + recovery;
+    const { records } = await journal(signal), key = PREFIX + recovery;
     const raw = new TextEncoder().encode(JSON.stringify({ version: 1, recoveryScope: recovery, pending }));
     const data = btoa(Array.from(raw, byte => String.fromCharCode(byte)).join(""));
     const saved = previous.revision === null ? await records.create({ key, data })
