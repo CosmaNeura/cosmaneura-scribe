@@ -21,6 +21,40 @@ from test_capture_protocol_api import capture_client as capture_client
 from alembic import command
 
 
+def test_observe_unstarted_session_before_key_keeps_capture_and_consent_gates(
+    capture_client, repository_backend
+):
+    tenant = uuid4()
+    session = _create_capture_session(
+        capture_client, tenant, "unstarted-lease-state", register_audio_key=False
+    )
+    path = f"/v1/sessions/{session['id']}/capture-lease-state"
+    empty = capture_client.get(path, headers=_headers(tenant))
+    assert empty.status_code == 200
+    assert empty.json() == {
+        "session_id": session["id"],
+        "session_status": "created",
+        "current_lease": None,
+        "lease_closed": False,
+    }
+    # Observation does not create a key or authorize capture.
+    issue = capture_client.post(
+        f"/v1/sessions/{session['id']}/capture-lease",
+        headers=_headers(tenant, "unstarted-lease-issue"),
+        json={"protocol_version": "1.0"},
+    )
+    assert issue.status_code == 409
+    assert issue.json()["detail"] == "Register the session audio key before capture."
+    assert "capture_lease.issued" not in repository_backend.audit_actions(tenant)
+    assert capture_client.get(path, headers=_headers(uuid4())).status_code == 404
+    revoked = capture_client.post(
+        f"/v1/consents/{session['consent_record_id']}/revocations",
+        headers=_headers(tenant, "unstarted-consent-revoke"),
+    )
+    assert revoked.status_code == 200
+    assert capture_client.get(path, headers=_headers(tenant)).status_code == 409
+
+
 def test_observe_missing_current_closed_and_foreign_lease(capture_client, repository_backend):
     tenant = uuid4()
     session = _create_capture_session(capture_client, tenant, "lease-state")
