@@ -135,12 +135,42 @@ class CoreProviderMount:
         }
 
 
+@dataclass(repr=False)
+class _OpeningSequence:
+    """Single opening only; a post-I/O check is the next adjacent pre-I/O check.
+
+    All workload credential I/O precedes the shared boundary. Taking the context
+    is synchronous, and dispatch must follow without any intervening await.
+    The final read closes this object; it cannot authorize another operation.
+    """
+
+    context: AuthorizedCoreProvider | None = None
+    workload_headers: dict[str, str] | None = None
+    closed: bool = False
+
+    def take(self) -> AuthorizedCoreProvider:
+        _require(not self.closed and self.context is not None)
+        value = _checked(self.context, AuthorizedCoreProvider)
+        self.context = None
+        return value
+
+    def headers(self) -> dict[str, str]:
+        _require(not self.closed and self.workload_headers is not None)
+        return dict(cast(dict[str, str], self.workload_headers))
+
+    def close(self) -> None:
+        self.context = None
+        self.workload_headers = None
+        self.closed = True
+
+
 @dataclass(frozen=True, repr=False)
 class _NegotiatedMount:
     mount: CoreProviderMount
     token: SecretStr
     interaction_ref: str
     turn: UUID
+    opening: _OpeningSequence | None = None
 
     def headers(self) -> dict[str, str]:
         return {
@@ -222,7 +252,7 @@ class ProviderCoreTransport:
         """
         _checked(request_nonce, UUID)
         _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(key, str)))
-        current = await self._negotiate(None)
+        current = await self._negotiate(None, opening=True)
         mount = current.mount
         review = await self._request(
             mount,
@@ -487,25 +517,33 @@ class ProviderCoreTransport:
         # combined native start shares negotiation only within its one request;
         # _send checks current access around I/O; Core checks each decision.
         _require(current.mount == mount)
-        headers = {**await self._workload_headers(), **current.headers()}
+        headers = {
+            **(current.opening.headers() if current.opening else await self._workload_headers()),
+            **current.headers(),
+        }
         headers["Idempotency-Key"] = key
         # Credentials remain request-local even when this connection is used
         # concurrently for progress reads and an explicit provider action.
-        value, _ = await self._send(
-            mount.selection,
-            _ROOT + action,
-            payload,
-            headers,
-            version=("X-Cosmaneura-Capture-Version", "1"),
-            max_bytes=MAX_CORE_CAPTURE_RESPONSE_BYTES
-            if action == "capture-operations"
-            else 8 * 1024 * 1024,
-            request_timeout=ADMISSION_CORE_TIMEOUT_SECONDS
-            if action == "capture-admissions"
-            else 100
-            if action == "capture-notes" and payload.get("action") == "prepare"
-            else 20,
-        )
+        try:
+            value, _ = await self._send(
+                mount.selection,
+                _ROOT + action,
+                payload,
+                headers,
+                version=("X-Cosmaneura-Capture-Version", "1"),
+                max_bytes=MAX_CORE_CAPTURE_RESPONSE_BYTES
+                if action == "capture-operations"
+                else 8 * 1024 * 1024,
+                opening=current.opening,
+                request_timeout=ADMISSION_CORE_TIMEOUT_SECONDS
+                if action == "capture-admissions"
+                else 100
+                if action == "capture-notes" and payload.get("action") == "prepare"
+                else 20,
+            )
+        finally:
+            if current.opening:
+                current.opening.close()
         _require(
             value.get("contract_version") == "1"
             and value.get("binding_ref") == mount.binding_ref
@@ -559,7 +597,10 @@ class ProviderCoreTransport:
         expected: CoreProviderSelection | None,
         *,
         capture_mount: CoreProviderMount | None = None,
+        opening: bool = False,
     ) -> _NegotiatedMount:
+        _require(not opening or capture_mount is None and expected is None)
+        sequence = _OpeningSequence() if opening else None
         if capture_mount is not None:
             _checked(capture_mount, CoreProviderMount)
             _require(
@@ -578,6 +619,7 @@ class ProviderCoreTransport:
             },
             status=201,
             version=("X-Cosmaneura-Embed-Version", "1.0"),
+            opening=sequence,
         )
         stamp = self._recent(issued.get("issued_at"))
         try:
@@ -598,10 +640,11 @@ class ProviderCoreTransport:
             "/service/v1/agent/mount-context/resolve",
             None,
             {
-                **await self._workload_headers(),
+                **(sequence.headers() if sequence else await self._workload_headers()),
                 "X-Cosmaneura-Mount-Context": _secret(token),
                 "X-Cosmaneura-Client-Turn-ID": str(turn),
             },
+            opening=sequence,
         )
         _require(
             resolved.get("surface") == "provider_assistant"
@@ -633,8 +676,9 @@ class ProviderCoreTransport:
                 "appointment_ref": selection.appointment_ref,
                 "request_nonce": nonce,
             },
-            {**await self._workload_headers(), **headers},
+            {**(sequence.headers() if sequence else await self._workload_headers()), **headers},
             version=("X-Cosmaneura-Capture-Version", "1"),
+            opening=sequence,
         )
         _require(
             binding.get("contract_version") == "1"
@@ -651,6 +695,7 @@ class ProviderCoreTransport:
             token,
             interaction,
             turn,
+            sequence,
         )
 
     async def _send(
@@ -664,11 +709,13 @@ class ProviderCoreTransport:
         version: tuple[str, str] | None = None,
         max_bytes: int = 16_384,
         request_timeout: float = 20,
+        opening: _OpeningSequence | None = None,
     ) -> tuple[dict[str, object], httpx.Headers]:
-        context = await self._context(selection)
+        context = opening.take() if opening else await self._context(selection)
+        _require(context.selection == selection)
         return await self._send_in_context(
             context, path, payload, headers, status=status, version=version,
-            max_bytes=max_bytes, request_timeout=request_timeout,
+            max_bytes=max_bytes, request_timeout=request_timeout, opening=opening,
         )
 
     async def _send_in_context(
@@ -682,11 +729,12 @@ class ProviderCoreTransport:
         version: tuple[str, str] | None = None,
         max_bytes: int = 16_384,
         request_timeout: float = 20,
+        opening: _OpeningSequence | None = None,
     ) -> tuple[dict[str, object], httpx.Headers]:
-        # Both callers just awaited _context, with no intervening I/O or await.
-        # Exchange needs that same context to build its user-token header; do
-        # not reread the registry merely to dispatch it. Never retain this
-        # context for another request; publication still checks access again.
+        # Context was checked immediately before dispatch, or consumed from
+        # the adjacent opening post-I/O check without an intervening await.
+        # Exchange needs that same context for its user-token header. Never
+        # retain it across requests; publication still checks access again.
         _require(self._enabled)
         selection = context.selection
         try:
@@ -757,7 +805,16 @@ class ProviderCoreTransport:
                         data.extend(chunk)
                     value = _decode(data)
                     response_headers = httpx.Headers(response.headers)
-            await self._context(selection)
+            if opening is not None:
+                _require(not opening.closed and opening.context is None)
+                if opening.workload_headers is None:
+                    _require(path == "/embed/v1/context-tokens/exchange")
+                    # Credential retrieval can yield or change access. Finish it
+                    # before the post-exchange check shared with mount dispatch.
+                    opening.workload_headers = await self._workload_headers()
+                opening.context = await self._context(selection)
+            else:
+                await self._context(selection)
             return value, response_headers
         except httpx.HTTPError:
             raise ProviderCoreUnavailable("core_provider_request_unconfirmed") from None
