@@ -254,9 +254,16 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       "workspace_id": context.workspaceID.uuidString.lowercased(), "binding_ref": bindingRef,
       "request_nonce": nonce, "operation": operation,
     ])
+    // Core requires the aggregate request key to differ from every component.
+    // Derive it from the retained bind intent so existing pending journals can
+    // reopen with the same recipe, without replacing keys or component intents.
+    let operationKey =
+      kind == "prepare_recording_window"
+      ? "native-initial-window-v1:\(intent.uuidString.lowercased())"
+      : intent.uuidString.lowercased()
     let request = try ProviderNativeRequest(
       id: UUID().uuidString.lowercased(), revision: revision,
-      action: "capture-operations", key: intent.uuidString.lowercased(),
+      action: "capture-operations", key: operationKey,
       body: String(decoding: body, as: UTF8.self))
     let reply: ProviderNativeReply
     do { reply = try await connection.send(request) } catch ProviderNativeError.response {

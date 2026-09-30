@@ -10,6 +10,10 @@
 .provider-workspace button:focus-visible, .provider-workspace input:focus-visible, .provider-workspace select:focus-visible, .provider-workspace textarea:focus-visible, .provider-workspace summary:focus-visible { outline: 3px solid #648ad9; outline-offset: 2px; }
 .provider-workspace label { display: grid; gap: 6px; margin: 18px 0; font-weight: 600; }
 .provider-workspace input, .provider-workspace select, .provider-workspace textarea { box-sizing: border-box; max-width: 100%; min-height: 44px; padding: 10px; border: 1px solid #8ea99f; border-radius: 6px; font: inherit; color: #17352f; background: white; }
+/* Small form text makes iOS zoom the page on focus. Keep pinch zoom available. */
+@media (pointer: coarse) {
+  .provider-workspace input, .provider-workspace select, .provider-workspace textarea { font-size: max(16px, 1em); }
+}
 .provider-workspace textarea { width: 100%; resize: vertical; font-weight: 400; }
 .provider-workspace small { font-weight: 400; }
 .provider-consent { display: flex !important; align-items: center; gap: 12px !important; }
