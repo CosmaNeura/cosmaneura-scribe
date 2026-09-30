@@ -295,6 +295,44 @@ import Security
       await f.service.configure(hold: true)
       try await host.open()
       try await wait { await f.service.pending != nil }
+      let key = f.keys.value
+      let intent = host.saved!.completionIntent
+      var settled = false
+      let start = Task {
+        defer { settled = true }
+        do { try await host.start(); return true } catch { return false }
+      }
+      try await wait { host.phase == .starting }
+      try await host.pause()
+      // The held service deliberately ignores cancellation. Cancel must settle
+      // the visible Start while the original preparation remains in custody.
+      try await wait { settled && !host.busy }
+      try check(await start.value == false)
+      try check(host.phase == .paused && host.failure == nil)
+      try check(await f.service.pending != nil)
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      // Retrying waits behind the same retained request, never overlaps it or
+      // changes its idempotency key. Late completion cannot start the old run.
+      let retry = Task { try await host.start() }
+      try await wait { host.phase == .starting }
+      try check(await f.service.leaseIntents.count == 1)
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      await f.service.release()
+      try await retry.value
+      let intents = await f.service.leaseIntents
+      try check(intents.count == 2 && Set(intents).count == 1)
+      try check(await f.service.issues == 1)
+      try check(host.phase == .recording && f.runs.count == 1)
+      try check(f.keys.value == key && host.saved!.completionIntent == intent)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      await f.service.configure(hold: true)
+      try await host.open()
+      try await wait { await f.service.pending != nil }
       try check(host.phase == .ready && !host.busy && f.sources.isEmpty && f.runs.isEmpty)
       let key = f.keys.value
       let start = Task { try await host.start() }

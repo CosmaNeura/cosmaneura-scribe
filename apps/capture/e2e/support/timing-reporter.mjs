@@ -2,8 +2,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 
 const categories = new Set(["expect", "fixture", "hook", "pw:api", "test.step", "test.attach"]);
-const sources = new Set(["capture-flow.pw.mjs", "capture-accessibility.pw.mjs", "capture-page.mjs", "wire-journal.mjs", "envelope-contract.mjs", "provider-note.pw.mjs", "note-server.mjs"]);
-const phases = new Set(["open", "prepare", "start", "durable_chunk", "recover", "stop_upload", "complete", "accessibility", "note_open", "note_save", "note_reopen", "note_recover"]);
+const sources = new Set(["capture-flow.pw.mjs", "capture-accessibility.pw.mjs", "capture-page.mjs", "wire-journal.mjs", "envelope-contract.mjs", "provider-note.pw.mjs", "note-server.mjs", "provider-startup.pw.mjs"]);
+const phases = new Set(["open", "prepare", "start", "cancel_start", "resume", "durable_chunk", "recover", "stop_upload", "complete", "accessibility", "note_open", "note_save", "note_reopen", "note_recover"]);
 const statuses = new Set(["passed", "failed", "timedOut", "skipped", "interrupted"]);
 
 /** Deliberate allowlist: never serialize titles, errors, output, payloads or attachments. */

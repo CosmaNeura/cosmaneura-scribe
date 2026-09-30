@@ -191,7 +191,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         else { throw ProviderNativeError.unavailable }
         // Join preparation already in flight, then revalidate the durable
         // receipts. Failed prewarming is retried only by this deliberate Start.
-        if let warming { await warming.task.value }
+        if let warming { try await NativeProviderPreparationWait().wait(for: warming.task) }
         try current(ticket)
         let (lease, batch) = try await prepareRecordingWindow(
           checkpoint: checkpoint, ticket: ticket, reportStartup: true)
@@ -472,5 +472,39 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     parser.formatOptions = [.withInternetDateTime]
     guard let date = parser.date(from: lease.expiresAt) else { throw ProviderNativeError.response }
     return date
+  }
+}
+
+/// Cancelling the visible Start must not wait for a non-cooperative network
+/// callback. The host still retains `warming` and joins it before retry/close;
+/// this waiter owns no preparation, receipt, source permission or stop proof.
+@MainActor private final class NativeProviderPreparationWait {
+  private var continuation: CheckedContinuation<Void, Error>?
+  private var cancelled = false
+
+  func wait(for preparation: Task<Void, Never>) async throws {
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        self.continuation = continuation
+        if cancelled || Task.isCancelled {
+          finish(cancelled: true)
+          return
+        }
+        Task { @MainActor in
+          await preparation.value
+          self.finish(cancelled: false)
+        }
+      }
+    } onCancel: {
+      Task { @MainActor in self.finish(cancelled: true) }
+    }
+  }
+
+  private func finish(cancelled: Bool) {
+    self.cancelled = self.cancelled || cancelled
+    guard let continuation else { return }
+    self.continuation = nil
+    if self.cancelled { continuation.resume(throwing: CancellationError()) }
+    else { continuation.resume() }
   }
 }

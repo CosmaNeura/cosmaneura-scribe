@@ -78,6 +78,9 @@ for (const mode of ["workspace", "desktop"]) for (const scenario of scenarios) {
         case "session_read": result = { phase: "ready", revision }; break;
         case "connect": result = { connectionId, revision }; break;
         case "list": result = [encounter]; break;
+        case "encounter_setup":
+          assert.equal(request.payload.action, "info");
+          result = { enabled: false, account: null }; break;
         case "open": result = { encounterId, encounter, scope, ...(openingReview ? { openingReview } : {}) }; break;
         case "journal_load": result = await journal.load(); break;
         case "journal_save": result = await journal.save(request.payload.previous, request.payload.progress); break;
@@ -103,6 +106,10 @@ for (const mode of ["workspace", "desktop"]) for (const scenario of scenarios) {
     await until(() => (scenario.revoke ? !root.textContent.includes("Recording uploaded")
       : root.textContent.includes(scenario.text)) && !root.hasAttribute("aria-busy"));
     assert.equal(coreCalls.length, scenario.calls, `${mode}/${scenario.name} opening calls`);
+    if (scenario.revoke) {
+      assert.ok(root.textContent.includes("Encounter access ended"));
+      assert.equal(root.textContent.includes("could not be confirmed"), false);
+    }
     if (scenario.progress || scenario.name === "foreign-custody" || scenario.revoke || scenario.name === "new") {
       assert.deepEqual(journalWrites, []); assert.deepEqual(saved, original);
     } else assert.equal(saved.progress.sessionId, sessionId);

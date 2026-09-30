@@ -41,6 +41,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
   private readonly child: Child;
   private sequence = 0;
   private choice: number | null = null;
+  private cancellingChoice: number | null = null;
   private active: string | null = null;
   private phase: RecordingIndicatorSnapshot["phase"] = "inactive";
   private publishing = false;
@@ -112,6 +113,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
     const cancel = (): void => {
       cancelled.reject(unavailable());
       if (this.choice !== request.id) return;
+      this.cancellingChoice = request.id;
       this.send({ type: "cancel", request: request.id });
       const pending = this.pending.get(request.id);
       if (pending && !pending.timer) pending.timer = setTimeout(() => this.fail(), TIMEOUT);
@@ -144,6 +146,13 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
         // the same UI pipe without permitting another recording or picker.
         this.fail();
         await this.terminateInactive(); this.active = null; this.phase = "inactive"; return;
+      }
+      if (snapshot.phase === "inactive" && this.choice !== null && this.cancellingChoice === this.choice) {
+        // Cancel returns to the recorder immediately, before the native pipe
+        // can acknowledge that its picker closed. Let that bounded response
+        // settle before publishing inactive; this race is not a broken helper.
+        // A missing acknowledgement still fails at the existing cancel limit.
+        await this.pending.get(this.choice)!.response.promise.catch(() => undefined);
       }
       if (!this.isHealthy() || this.choice !== null) throw unavailable();
       if (snapshot.phase !== "inactive") { this.active = snapshot.captureSessionId; this.phase = snapshot.phase; }
@@ -211,7 +220,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
         || !integer(value.processID, 1, 2_147_483_647) || !integer(value.windowID, 1, 4_294_967_295)) throw unavailable();
     } else if (!exactKeys(value, ["type", "request"])) throw unavailable();
     clearTimeout(pending.timer); this.pending.delete(value.request);
-    if (this.choice === value.request) this.choice = null;
+    if (this.choice === value.request) { this.choice = null; this.cancellingChoice = null; }
     if (value.type === "closed") this.closeAcknowledged = true;
     if (value.type === "unavailable") pending.response.reject(unavailable());
     else pending.response.resolve(value);
@@ -220,7 +229,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
     if (this.broken) return;
     this.broken = true; clearInterval(this.heartbeat); this.readiness.reject(unavailable());
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.response.reject(unavailable()); }
-    this.pending.clear(); this.choice = null; this.decoder.clear();
+    this.pending.clear(); this.choice = null; this.cancellingChoice = null; this.decoder.clear();
     this.child.stdin.end();
     this.emit({ kind: "failed", sessionId: this.active });
   }

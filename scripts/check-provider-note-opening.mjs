@@ -127,6 +127,15 @@ for (const mode of ["workspace", "desktop"]) for (const scenario of scenarios) {
     } else {
       await until(() => root.querySelector("[data-note-field]"));
       assert.equal(root.querySelector("[data-note-field]").value, fields.Plan);
+      const field = root.querySelector("[data-note-field]"), state = root.querySelector("[data-note-save-state]");
+      assert.equal(state.textContent, "Saved");
+      assert.equal(root.querySelector('[data-workspace-action="save"]').textContent, "Save draft");
+      assert.ok(root.textContent.includes("Saving does not mark it reviewed"));
+      field.value += " Synthetic unsaved edit.";
+      field.dispatchEvent(new window.Event("input", { bubbles: true }));
+      assert.equal(state.textContent, "Unsaved edits");
+      field.value = field.defaultValue; field.dispatchEvent(new window.Event("input", { bubbles: true }));
+      assert.equal(state.textContent, "Saved");
     }
     assert.equal(calls.length, scenario === "legacy" ? 4 : scenario === "fallback" ? 5 : scenario === "refreshed" ? 2 : 1);
     results.push({ mode, scenario, requests: calls.length, passed: true });

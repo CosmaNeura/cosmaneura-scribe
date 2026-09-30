@@ -603,6 +603,44 @@ describe.skipIf(!helperPath)("desktop provider main and renderer recorder", () =
   });
 });
 describe("window choice before server start authority", () => {
+  it("closes a never-settling choice when its existing setup lease expires", async () => {
+    const f = await fixture(true), choosing = deferred(), chosen = deferred();
+    let choiceSignal: AbortSignal | undefined;
+    const scheduled: { delay: number; fire: () => void }[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const timers = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+      if (typeof callback === "function" && typeof delay === "number") {
+        scheduled.push({ delay, fire: () => callback(...args) });
+      }
+      return realSetTimeout(callback, delay, ...args);
+    });
+    try {
+      const recorder = await f.open({ selectWindow: async signal => {
+        choiceSignal = signal; choosing.resolve(); await chosen.promise;
+        return { application: "com.google.Chrome", processID: 1, windowID: 1 };
+      } });
+      timers.mockRestore();
+      const before = await f.options.flowStore.getActiveCaptureState();
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await choosing.promise;
+      const remaining = Date.parse(before!.captureAuthorizedUntil!) - Date.now();
+      const expiry = scheduled.find(timer => timer.delay >= remaining && timer.delay <= remaining + 1_000);
+      expect(expiry).toBeDefined();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.parse(before!.captureAuthorizedUntil!) + 1);
+      expiry!.fire();
+      await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
+      expect(recorder.snapshot).toMatchObject({ statusCode: "capture_setup_expired", recordedChunks: 0,
+        desktop: { phase: "interrupted", coverage: "not_started" } });
+      expect(choiceSignal?.aborted).toBe(true);
+      await rejected;
+      chosen.resolve(); await Promise.resolve();
+      expect((await f.options.flowStore.getActiveCaptureState())!.lease).toEqual(before!.lease);
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.complete).not.toHaveBeenCalled();
+    } finally { timers.mockRestore(); chosen.resolve(); await f.close(); vi.useRealTimers(); }
+  });
+
   it("waits for deliberate choice without requesting authority or starting native I/O", async () => {
     const f = await fixture(true), choosing = deferred(), chosen = deferred();
     const selection = vi.fn(async () => {
@@ -750,6 +788,54 @@ it.skipIf(!helperPath)("retains paused desktop capture and encrypted chunks unti
 });
 
 describe("prepared desktop start", () => {
+  it("overlaps fresh setup with the read-only availability probe and waits for both", async () => {
+    const f = await fixture(true), capabilitiesEntered = deferred(), releaseCapabilities = deferred(), releaseProbe = deferred();
+    const bff = f.options.createBff(f.abort.signal), capabilities = await bff.getCapabilities(f.session.id);
+    const preflight = vi.fn(f.options.authorizePreparation);
+    vi.spyOn(bff, "getCapabilities").mockImplementation(async () => {
+      capabilitiesEntered.resolve(); await releaseCapabilities.promise; return capabilities;
+    });
+    f.nativeAvailability!.mockImplementation(async () => { await releaseProbe.promise; return true; });
+    let opened = false;
+    const opening = f.open({ authorizePreparation: preflight }).then(value => { opened = true; return value; });
+    try {
+      await capabilitiesEntered.promise;
+      expect(f.nativeAvailability).toHaveBeenCalledOnce();
+      expect(preflight).toHaveBeenCalledBefore(f.nativeAvailability!);
+      expect(opened).toBe(false);
+      releaseCapabilities.resolve();
+      // Await the final setup reservation, rather than a wall-clock sleep.
+      await vi.waitFor(async () => expect((await f.options.flowStore.getActiveCaptureState())?.captureAuthorizedUntil).toBeTruthy());
+      expect(opened).toBe(false);
+      releaseProbe.resolve();
+      const recorder = await opening;
+      expect(recorder.snapshot.desktop?.phase).toBe("ready");
+      expect(f.nativeAvailability).toHaveBeenCalledOnce();
+      expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.authority).not.toHaveBeenCalled();
+    } finally {
+      releaseCapabilities.resolve(); releaseProbe.resolve(); await opening.catch(() => undefined); await f.close();
+    }
+  });
+
+  it("retains opening ownership until its overlapped probe settles after a preparation failure", async () => {
+    const f = await fixture(true), releaseProbe = deferred(), probeEntered = deferred();
+    const bff = f.options.createBff(f.abort.signal);
+    vi.spyOn(bff, "getCapabilities").mockRejectedValue(new Error("invented capabilities failure"));
+    f.nativeAvailability!.mockImplementation(async () => {
+      probeEntered.resolve(); await releaseProbe.promise; return true;
+    });
+    const opening = f.open(), rejected = expect(opening).rejects.toThrow("invented capabilities failure");
+    try {
+      await probeEntered.promise;
+      await vi.waitFor(async () => expect((await f.options.flowStore.getSessionKeyState(f.session.id))?.state).toBe("bound"));
+      expect(f.release).not.toHaveBeenCalled();
+      releaseProbe.resolve(); await rejected;
+      expect(f.release).toHaveBeenCalledOnce();
+      expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { releaseProbe.resolve(); await opening.catch(() => undefined); await f.close(); }
+  });
+
   it("publishes a fixed failed-start status through IPC and clears it on explicit retry", async () => {
     const f = await fixture(true); interruptedDriver(f);
     const mount = vi.fn(f.options.authorizeMount).mockRejectedValueOnce(new Error("invented private transport detail"));
@@ -826,6 +912,7 @@ describe("prepared desktop start", () => {
     try {
       await expect(f.open({ authorizePreparation: async () => { throw new Error("invented revocation"); }, authorizeMount: mount })).rejects.toThrow();
       expect(preparation).not.toHaveBeenCalled(); expect(bind).not.toHaveBeenCalled(); expect(issue).not.toHaveBeenCalled();
+      expect(f.nativeAvailability).not.toHaveBeenCalled();
       expect(mount).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });
@@ -834,6 +921,7 @@ describe("prepared desktop start", () => {
     try {
       await expect(f.open({ authorizePreparation: async () => ({ sessionId: crypto.randomUUID(), status: "created" }) })).rejects.toThrow();
       expect(issue).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.nativeAvailability).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });
   it("retains and reuses the same lease after a lost grant reply instead of issuing another lease", async () => {

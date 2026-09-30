@@ -22,6 +22,7 @@ import { encounterSetupMarkup } from "./encounter-setup-view";
 import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
 import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./workflow-timing";
+import { encounterDetail } from "./workspace-display";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
@@ -40,6 +41,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let consentRenewalOffered = false;
   let consentAction: HTMLButtonElement | null = null;
   let openingRef: string | null = null;
+  let cancelOpening: (() => void) | null = null;
   let pendingNavigation: "encounters" | "review" | null = null;
   let step = "request";
   let setupState: EncounterSetupState | null = null;
@@ -47,9 +49,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let preferredModality: "in_person" | "virtual" | "phone" = isIOS ? "in_person" : "virtual";
   root.classList.add("provider-workspace");
   root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
-    <p data-workspace-notice role="status"></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
+    <p data-workspace-notice role="status"></p><p data-workspace-progress hidden></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
   const content = root.querySelector<HTMLElement>("[data-workspace-content]")!;
   const notice = root.querySelector<HTMLElement>("[data-workspace-notice]")!;
+  const activity = root.querySelector<HTMLElement>("[data-workspace-progress]")!;
   const navigation = root.querySelector<HTMLElement>("[data-workspace-navigation]")!;
   const encounterLabel = root.querySelector<HTMLElement>("[data-provider-encounter]")!;
   const header = root.querySelector<HTMLElement>(".provider-header")!;
@@ -78,6 +81,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     consentRenewalOffered = false;
     consentAction = null;
     openingRef = null;
+    cancelOpening = null;
     context = null; client = null; journal = { revision: null, progress: null };
     // A host acquisition can finish after revocation. Await its ownership handoff
     // so disposal cannot report success before those late handles are closed.
@@ -93,6 +97,16 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     busy = true; notice.textContent = ""; step = "request";
     root.setAttribute("aria-busy", "true");
     const finishTiming = beginWorkflowTiming(timingAction);
+    const started = performance.now();
+    const activityTimer = setInterval(() => {
+      if (disposed || host.signal.aborted) return;
+      activity.hidden = !!content.querySelector("cosmaneura-capture");
+      activity.textContent = `Working · ${Math.floor((performance.now() - started) / 1000)}s. ${step === "encounter connection"
+        ? "Checking access to this visit." : step === "saved encounter recovery" ? "Restoring saved work."
+        : step === "recording status check" ? "Checking recording status."
+        : step === "device recording access" ? "Connecting this device to the recording."
+        : step === "recording admission" ? "Confirming recording consent and storage." : "Waiting for confirmation."}`;
+    }, 1000);
     let outcome: WorkflowTimingOutcome = "resolved";
     try { await action(); }
     catch (error) {
@@ -102,6 +116,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           ? "Recording stop could not be confirmed. Stop it in the native app before continuing."
           : error instanceof CaptureDeviceCustodyError
             ? "This device could not confirm access to the recording key or saved recording state. Your saved work is retained."
+            : context && journal.progress?.pendingSave
+              ? "Save confirmation is pending. Your exact edits are retained. Check save status to continue."
             : step === "encounter setup" || step === "encounter creation"
               ? "Your encounter request could not be confirmed. Check your connection, then check its result. Pending work is retained securely on this device."
             : step === "encounter list"
@@ -110,7 +126,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         if (error instanceof CaptureDeviceCustodyError) {
           show('<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p><button data-workspace-action="encounters">Your encounters</button>');
         } else if (context && journal.progress?.pendingSave) {
-          show('<h1>Confirm your previous save</h1><p>Your exact edits are retained for recovery.</p><button data-workspace-action="resolve">Recover note save</button>');
+          showSaveRecovery();
         } else if (step === "encounter setup" || step === "encounter creation") {
           show('<h1>Check encounter creation</h1><button data-workspace-action="check-creation">Check and continue</button><button data-workspace-action="encounters">Your encounters</button>');
         } else if (openingRef) {
@@ -120,6 +136,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
       }
     } finally {
+      clearInterval(activityTimer); activity.hidden = true; activity.textContent = "";
       busy = false; root.removeAttribute("aria-busy");
       finishTiming(disposed || host.signal.aborted ? "cancelled" : outcome);
     }
@@ -141,7 +158,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     show(`<div class="provider-list-heading"><h1>Your encounters</h1><button data-workspace-action="encounters" aria-label="Refresh encounters">Refresh</button></div>
       ${host.encounterSetup ? '<button data-workspace-action="new-encounter">New encounter</button>' : ''}
       <ul class="provider-encounters" aria-label="Authorized encounters">${encounters.map(e =>
-      `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(e.detail)}</span></button></li>`).join("")}</ul>
+      `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span></button></li>`).join("")}</ul>
       ${encounters.length ? "" : "<p>No encounters are available yet.</p>"}
       <details class="provider-encounter-help"${encounters.length ? "" : " open"}><summary>Missing an encounter?</summary><p>Ask your practice to assign the encounter in Core. The dashboard opens in your browser and may require a separate sign-in. It does not create an encounter. After assignment, return to Scribe and select Refresh.</p><button data-workspace-action="create">Open Core dashboard</button></details>`);
   };
@@ -201,26 +218,33 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const preparation = (): void => {
     requireValue(context);
-    show(`<section class="provider-preparation"><h1>Record this visit</h1><p>${escape(context.encounter.detail)}</p>
-      <details class="provider-recording-options"><summary>Recording options<small data-recording-summary></small></summary>
+    show(`<section class="provider-preparation"><h1>Record this visit</h1><p>${escape(encounterDetail(context.encounter.detail))}</p>
       <div class="provider-recording-fields">
-      <label>Spoken language<select name="language"><option value="en-US"${preferredLanguage === "en-US" ? " selected" : ""}>English</option><option value="en-US+es-US"${preferredLanguage === "en-US+es-US" ? " selected" : ""}>English and Spanish</option></select></label>
       <label>Visit type<select name="modality">${([ ["in_person", "In person"], ["virtual", "Video visit"], ["phone", "Phone call"] ] as const)
         .map(([value, label]) => `<option value="${value}"${preferredModality === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+      <label>Spoken language<select name="language"><option value="en-US"${preferredLanguage === "en-US" ? " selected" : ""}>English</option><option value="en-US+es-US"${preferredLanguage === "en-US+es-US" ? " selected" : ""}>English and Spanish</option></select></label>
       </div>
+      <p class="provider-start-help" data-recording-guidance role="status"></p>
+      <details class="provider-recording-options"><summary>Audio details<small data-recording-summary></small></summary>
       ${isIOS ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
+      ${isIOS ? "" : "<p>Scribe records your microphone and audio from the selected application. Other audio playing in that application may also be included. This Mac build does not support microphone-only recording.</p>"}
       </details>
       <p class="provider-consent-explanation" id="provider-start-consent">By choosing “Confirm consent &amp; record,” you confirm that everyone has agreed to recording and transcription.</p>
       <button data-workspace-action="prepare" aria-describedby="provider-start-consent">Confirm consent &amp; record</button>
-      ${isIOS ? "" : "<p class=\"provider-start-help\">Next, choose your Zoom or Chrome meeting window. Keep using your meeting app while Scribe records.</p>"}</section>`);
+      </section>`);
     const options = content.querySelector<HTMLDetailsElement>(".provider-recording-options")!;
     const summarize = (): void => {
-      const choices = [...options.querySelectorAll<HTMLSelectElement>("select")].map(select => select.selectedOptions[0]?.textContent ?? "");
-      if (!isIOS) choices.push("Microphone + meeting audio");
-      options.querySelector<HTMLElement>("[data-recording-summary]")!.textContent = choices.join(" · ");
+      options.querySelector<HTMLElement>("[data-recording-summary]")!.textContent = isIOS
+        ? content.querySelector<HTMLSelectElement>('[name="microphone"]')!.selectedOptions[0]!.textContent
+        : "Microphone + selected application audio";
+      content.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = isIOS
+        ? input("modality") === "in_person" ? "Records the selected iPhone microphone. Keep Scribe in the foreground."
+          : "Records the selected iPhone microphone. Call audio is not captured directly; use Scribe on a separate device where both voices can be heard."
+        : input("modality") === "virtual" ? "Next, choose your Zoom or Chrome meeting window. Scribe records your microphone and that application's audio."
+          : "This Mac build requires a Zoom or Chrome window and records microphone + application audio, including for this visit type. For an in-person microphone recording, use the iPhone app.";
     };
-    summarize(); options.addEventListener("change", summarize);
-    disposeContent = () => options.removeEventListener("change", summarize);
+    summarize(); content.addEventListener("change", summarize);
+    disposeContent = () => content.removeEventListener("change", summarize);
     consentAction = content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]');
   };
   const renewConsent = (): void => {
@@ -250,13 +274,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     });
     disposeContent = () => { first = undefined; dispose(); };
   };
-  const recordOrReview = async (startRequested?: MicrophoneInput, openingView?: CreatorReviewView): Promise<void> => {
+  const endOpening = (): void => {
+    cancelOpening = null; content.querySelector('[data-workspace-action="cancel-opening"]')?.remove();
+  };
+  const recordOrReview = async (startRequested?: MicrophoneInput, openingView?: CreatorReviewView, openingSignal?: AbortSignal): Promise<void> => {
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
     step = "recording status check";
     const view = openingView?.session_id === id ? openingView
-      : await new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read();
+      : await interruptibleRead(new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read(), openingSignal);
     if (!authorized(n)) return;
+    endOpening(); // Recorder ownership or journal mutation starts after this boundary.
     if (!["created", "capturing"].includes(view.status)) {
       if (!progress().uploaded) await persist({ ...progress(), uploaded: true });
       if (authorized(n)) showReview(view);
@@ -345,45 +373,56 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     await clearEncounter(); const n = generation;
     header.hidden = false;
     openingRef = ref; step = "encounter connection";
-    show("<h1>Opening encounter</h1><p>Checking access and restoring your saved work…</p>");
+    show('<h1>Opening encounter</h1><p>Checking access and restoring your saved work…</p><button data-workspace-action="cancel-opening">Cancel opening</button>');
     const opening = new AbortController();
+    let cancelled = false;
+    const cancel = (): void => { cancelled = true; opening.abort(); };
+    cancelOpening = cancel;
     encounterAbort = opening;
     forwardAbort(host.signal, opening);
-    const opened = await host.openEncounter(ref, opening.signal);
-    if (!current(n)) return;
-    requireValue(opened.encounter.appointmentRef === ref && opened.scope.appointmentRef === ref && !opened.signal.aborted);
-    context = opened;
-    encounterLabel.textContent = opened.encounter.title;
-    forwardAbort(opened.signal, opening);
-    const signal = opening.signal;
-    client = new CoreCaptureClient(opened.scope, opened.request, signal);
-    signal.addEventListener("abort", () => {
+    try {
+      const opened = await interruptibleRead(host.openEncounter(ref, opening.signal), opening.signal);
       if (!current(n)) return;
-      void clearEncounter().catch(() => { if (!disposed) notice.textContent = "Recording stop could not be confirmed. Stop it in the native app before continuing."; });
-      notice.textContent = "Encounter access ended. Return to your encounters to continue.";
-    }, { once: true });
-    step = "saved encounter recovery";
-    const loaded = await opened.journal.load();
-    if (!authorized(n)) return;
-    journal = loaded;
-    const first = openingReviewView(opened.openingReview, opened.scope);
-    if (loaded.progress) {
-      assertProgress(loaded.progress);
-      if (loaded.progress.pendingSave) {
-        show(`<h1>Confirm your previous save</h1><p>A note save needs confirmation before you can edit again.</p><button data-workspace-action="resolve">Recover note save</button>`);
-      } else if (loaded.progress.sessionId) await recordOrReview(undefined, first ?? undefined);
-      else show(`<h1>Recover recording preparation</h1><p>Confirm the original request before starting another recording.</p><button data-workspace-action="admit">Retry preparation</button>`);
-    } else {
-      const recovered = first === undefined ? await client.discoverEncounter() : first;
+      requireValue(opened.encounter.appointmentRef === ref && opened.scope.appointmentRef === ref && !opened.signal.aborted);
+      context = opened;
+      encounterLabel.textContent = opened.encounter.title;
+      forwardAbort(opened.signal, opening);
+      const signal = opening.signal;
+      client = new CoreCaptureClient(opened.scope, opened.request, signal);
+      signal.addEventListener("abort", () => {
+        if (!current(n) || cancelled) return;
+        void clearEncounter().catch(() => { if (!disposed) notice.textContent = "Recording stop could not be confirmed. Stop it in the native app before continuing."; });
+        notice.textContent = "Encounter access ended. Return to your encounters to continue.";
+      }, { once: true });
+      step = "saved encounter recovery";
+      const loaded = await interruptibleRead(opened.journal.load(), opening.signal);
       if (!authorized(n)) return;
-      if (recovered === null) preparation();
-      else {
-        if (recovered.status === "created" || recovered.status === "capturing") throw new CaptureDeviceCustodyError();
-        await persist({ admission: null, sessionId: recovered.session_id, uploaded: true, pendingSave: null });
-        if (authorized(n)) showReview(recovered);
+      journal = loaded;
+      const first = openingReviewView(opened.openingReview, opened.scope);
+      if (loaded.progress) {
+        assertProgress(loaded.progress);
+        if (loaded.progress.pendingSave) {
+          endOpening(); showSaveRecovery();
+        } else if (loaded.progress.sessionId) await recordOrReview(undefined, first ?? undefined, opening.signal);
+        else { endOpening(); show(`<h1>Recover recording preparation</h1><p>Confirm the original request before starting another recording.</p><button data-workspace-action="admit">Retry preparation</button>`); }
+      } else {
+        const recovered = first === undefined ? await interruptibleRead(client.discoverEncounter(), opening.signal) : first;
+        if (!authorized(n)) return;
+        endOpening();
+        if (recovered === null) preparation();
+        else {
+          if (recovered.status === "created" || recovered.status === "capturing") throw new CaptureDeviceCustodyError();
+          await persist({ admission: null, sessionId: recovered.session_id, uploaded: true, pendingSave: null });
+          if (authorized(n)) showReview(recovered);
+        }
       }
-    }
-    if (current(n)) openingRef = null;
+      if (current(n)) openingRef = null;
+    } catch (error) {
+      if (!current(n)) return;
+      if (!cancelled) throw error;
+      await list();
+      if (!disposed && !host.signal.aborted) notice.textContent = "Opening cancelled. Your saved work is retained.";
+    } finally { if (cancelOpening === cancel) endOpening(); }
   };
   function noteOpeningPreparation(beforeOpen?: () => Promise<void>) {
     requireValue(client && context?.noteOpeningSupported);
@@ -455,28 +494,39 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const renderNote = (): void => {
     requireValue(draft);
-    show(`<h1>${escape(draft.note_type)}</h1><p class="provider-draft-status">${draft.status === "draft" ? "Unreviewed Core draft · Review and edit before clinical use." : "No note has been prepared for this reviewed transcript."}</p>
+    show(`<h1>${escape(draft.note_type)}</h1><p class="provider-draft-status">${draft.status === "draft" ? "Needs clinical review · Review and edit this draft before clinical use. Saving does not mark it reviewed." : "No note has been prepared for this reviewed transcript."}</p>
       ${draft.reviewed_source.capture_continuity ? '<p role="status">Recording continuity is unconfirmed. Review this note for missing speech; gap lengths are unknown.</p>' : ""}
+      ${draft.status === "draft" ? '<div class="provider-save-bar"><p data-note-save-state role="status" aria-atomic="true">Saved</p><button data-workspace-action="save">Save draft</button></div>' : ""}
       ${draft.status === "draft" && noteTranscript ? renderNoteTranscript(noteTranscript) : ""}
       ${draft.status === "draft" ? draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")
-        + '<button data-workspace-action="save">Save edits to Core</button>' : '<button data-workspace-action="generate">Prepare Core note</button>'}
+        : '<button data-workspace-action="generate">Prepare draft note</button>'}
       <button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>`);
+    content.addEventListener("input", updateSaveState);
+    disposeContent = () => content.removeEventListener("input", updateSaveState);
   };
+  const hasUnsavedEdits = (): boolean => [...content.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")]
+    .some(field => field.value !== field.defaultValue);
+  const updateSaveState = (): void => {
+    const status = content.querySelector<HTMLElement>("[data-note-save-state]");
+    if (status) status.textContent = hasUnsavedEdits() ? "Unsaved edits" : "Saved";
+  };
+  const showSaveRecovery = (): void => show('<h1>Confirm your previous save</h1><p>Your exact edits are retained. Check whether the save completed before editing again.</p><button data-workspace-action="resolve">Check save status</button>');
   const navigate = async (destination: "encounters" | "review"): Promise<void> => {
     if (destination === "encounters") await list(); else showReview();
   };
   const guardNavigation = async (destination: "encounters" | "review"): Promise<void> => {
     // Keep the actual editor mounted. A navigation request never saves or
     // journals note text, and forced access closure still clears it immediately.
-    const dirty = [...content.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")]
-      .some(field => field.value !== field.defaultValue);
+    const dirty = hasUnsavedEdits();
     if (!dirty) { await navigate(destination); return; }
     pendingNavigation = destination;
-    navigation.innerHTML = '<p>Your note has unsaved edits. Save them to Core before leaving, or discard them.</p><button data-workspace-action="keep-editing">Keep editing</button><button data-workspace-action="discard-edits">Discard edits and leave</button>';
+    navigation.innerHTML = '<p>Your note has unsaved edits. Save your draft before leaving, or discard the edits.</p><button data-workspace-action="keep-editing">Keep editing</button><button data-workspace-action="discard-edits">Discard edits and leave</button>';
   };
   const click = (event: MouseEvent): void => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-workspace-action]") : null;
     if (!button || !root.contains(button)) return;
+    // Only a currently displayed read-only opening can bypass the busy guard.
+    if (button.dataset.workspaceAction === "cancel-opening") { cancelOpening?.(); return; }
     void run(async () => {
       switch (button.dataset.workspaceAction) {
         case "encounters": await guardNavigation("encounters"); break;
@@ -503,7 +553,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           if (button !== consentAction || journal.progress !== null) return;
           const language = input("language"), modality = input("modality");
           if (!["en-US", "en-US+es-US"].includes(language) || !["in_person", "virtual", "phone"].includes(modality)) {
-            notice.textContent = "Check the language and visit type in Recording options before continuing."; return;
+            notice.textContent = "Check the spoken language and visit type before continuing."; return;
           }
           const next: ProviderProgress = { admission: { key: crypto.randomUUID(), languageMode: language as LanguageMode,
             attestation: { modality: modality as "in_person" | "virtual" | "phone", participant_regions: [],
@@ -543,7 +593,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           if (!authorized(n)) return;
           await persist({ ...progress(), pendingSave: null });
           if (!authorized(n)) return;
-          draft = saved; renderNote(); notice.textContent = "Edits saved to Core. Clinical review is still required.";
+          draft = saved; renderNote(); notice.textContent = "Draft saved. Clinical review is still required.";
           break;
         }
         case "resolve": {
@@ -565,7 +615,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
               if (field) field.value = pending.edit.fields[key]!;
             });
           }
-          notice.textContent = result === "saved" ? "Previous save confirmed. The current Core draft is shown."
+          updateSaveState();
+          notice.textContent = result === "saved" ? "Previous save confirmed. Your saved draft is shown."
             : unchanged ? "The previous save did not complete. Your edits are restored below; review and save again."
               : "The previous save is closed. The Core draft changed; review its current version before editing again.";
           break;
@@ -602,6 +653,18 @@ function escape(value: string): string {
 }
 
 class RecorderStopUnconfirmed extends Error {}
+
+/** Only use for reads before recorder acquisition or a retained-state write. */
+async function interruptibleRead<T>(read: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return read;
+  let abort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(new Error("Encounter opening cancelled"));
+    if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([read, cancelled]); }
+  finally { if (abort) signal.removeEventListener("abort", abort); }
+}
 
 /** Early iOS 17 WebViews lack AbortSignal.any. Keep one owned encounter lifetime. */
 function forwardAbort(source: AbortSignal, target: AbortController): void {

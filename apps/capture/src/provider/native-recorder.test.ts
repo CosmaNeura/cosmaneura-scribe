@@ -81,10 +81,91 @@ describe("native provider controller", () => {
       expect(view.controller.snapshot.native?.phase).toBe("starting");
       expect(view.controller.snapshot.state).toBe("ready");
       await view.controller.stopRecording();
+      await starting;
+      expect(view.controller.snapshot.native?.phase).toBe("paused");
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
       const old = { ...h.f.state, revision: 1, phase: "recording" };
       pending.resolve({ requestId: startID, ok: true, recording: old }); await starting;
       expect(view.controller.snapshot.state).toBe("paused");
       expect(h.commands.map(c => c.kind)).toEqual(["pause"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("keeps a newer Resume starting when the cancelled Start fails late", async () => {
+    const h = await fixture(), first = deferred<unknown>(), second = deferred<unknown>();
+    const command = h.port.command;
+    let calls = 0, firstID = "", secondID = "";
+    h.port.command = request => {
+      if (request.kind !== "start") return command(request);
+      if (++calls === 1) { firstID = request.requestId; return first.promise; }
+      secondID = request.requestId;
+      return second.promise;
+    };
+    const view = await h.open();
+    try {
+      const starting = view.controller.startRecording();
+      await view.controller.stopRecording();
+      await starting;
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
+      const resuming = view.controller.resumeRecording!();
+      expect(view.controller.snapshot.statusCode).toBe("capture_starting");
+      first.resolve(h.f.response(firstID, false));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(view.controller.snapshot.statusCode).toBe("capture_starting");
+      expect(view.controller.snapshot.native?.phase).toBe("starting");
+      expect(h.commands.map(c => c.kind)).toEqual(["pause"]);
+      h.f.set({ phase: "recording" });
+      second.resolve(h.f.response(secondID));
+      await resuming;
+      expect(view.controller.snapshot.statusCode).toBe("capture_recording");
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("does not settle Start until native cancellation is confirmed", async () => {
+    const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
+    let startID = "", rejectPause = true, settled = false;
+    h.port.command = request => {
+      if (request.kind === "start") { startID = request.requestId; return pending.promise; }
+      if (request.kind === "pause" && rejectPause) return Promise.resolve(h.f.response(request.requestId, false));
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      const starting = view.controller.startRecording().then(() => { settled = true; });
+      await expect(view.controller.stopRecording()).rejects.toThrow();
+      expect(settled).toBe(false);
+      expect(view.controller.snapshot.statusCode).toBe("capture_starting");
+      rejectPause = false;
+      await view.controller.stopRecording();
+      await starting;
+      expect(settled).toBe(true);
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
+      pending.resolve(h.f.response(startID));
+      await Promise.resolve();
+      expect(h.commands.map(c => c.kind)).toEqual(["pause"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("releases a cancelled Start even when its failure-confirmation read is delayed", async () => {
+    const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
+    let readID = "";
+    h.port.command = request => {
+      if (request.kind === "start") return Promise.resolve(h.f.response(request.requestId, false));
+      if (request.kind === "read") { readID = request.requestId; return pending.promise; }
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      const starting = view.controller.startRecording();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      expect(readID).not.toBe("");
+      await view.controller.stopRecording();
+      await starting;
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
+      pending.resolve(h.f.response(readID));
+      await Promise.resolve();
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
     } finally { await view.deactivate(); h.storage.close(); }
   });
 
