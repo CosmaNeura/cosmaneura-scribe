@@ -26,7 +26,7 @@ const manifest = {
   schema_version: 1, source_commit: commit, source_dirty: dirty,
   dependency_lock_sha256: createHash("sha256").update(readFileSync(packageFile)).digest("hex"),
   node: process.versions.node, npm: "11.5.2", requested_trials: Number(repetitions),
-  scope: "local synthetic browser capture and accessibility; not staging/device acceptance",
+  scope: "local synthetic browser capture, note save/recovery and accessibility; not staging/device acceptance",
   trials: [], passed: false,
 };
 const receipt = () => writeFileSync(resolve(output, "RESULT.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 });
