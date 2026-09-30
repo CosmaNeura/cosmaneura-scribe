@@ -30,7 +30,7 @@ func providerMainWindowVisible(_ id: UInt32, parent: Int32, helper: Int32,
     guard parent > 1, let index = windows.firstIndex(where: { $0.id == id }) else { return false }
     let target = windows[index]
     guard target.owner == parent, target.alpha == 1,
-          target.layer >= NSWindow.Level.floating.rawValue,
+          target.layer >= NSWindow.Level.statusBar.rawValue,
           target.bounds.width >= 360, target.bounds.height >= 240,
           screens.contains(where: { $0.contains(target.bounds) }) else { return false }
     // The list is front-to-back. A partially covered controller is not proof

@@ -107,7 +107,7 @@ func providerMeetingPickerPanel(listHeight: Int, visibleFrame: NSRect?) -> NSPan
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
     window.title = "Scribe · Choose a meeting window"
     window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
-    window.isFloatingPanel = true; window.level = .floating
+    window.isFloatingPanel = true; window.level = .statusBar
     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     if let visibleFrame {
         window.setFrameOrigin(NSPoint(x: visibleFrame.midX - window.frame.width / 2,
@@ -324,7 +324,7 @@ func providerRecordingStatusPanel(_ controls: ProviderRecordingControls, visible
                          styleMask: [.titled, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
     window.title = "Scribe recording status"
     window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
-    window.isFloatingPanel = true; window.level = .floating
+    window.isFloatingPanel = true; window.level = .statusBar
     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
     window.isExcludedFromWindowsMenu = true
     install(controls.stack, in: window, inset: 12)

@@ -14,7 +14,7 @@ export interface RecordingWindowPort {
   getMinimumSize(): [number, number];
   setBounds(bounds: WindowBounds): void;
   setMinimumSize(width: number, height: number): void;
-  setAlwaysOnTop(value: boolean, level?: "floating"): void;
+  setAlwaysOnTop(value: boolean, level?: "status"): void;
   setVisibleOnAllWorkspaces(value: boolean, options?: { visibleOnFullScreen: boolean }): void;
   getMediaSourceId(): string;
   showInactive(): void;
@@ -55,7 +55,8 @@ export class MainRecordingWindow implements DesktopRecordingWindow {
       window.setMinimumSize(width, height);
       window.setBounds({ x: Math.max(area.x, area.x + area.width - width - 16),
         y: Math.max(area.y, area.y + 16), width, height });
-      window.setAlwaysOnTop(true, "floating");
+      // Status level stays above Dock overlays and below OS popup menus.
+      window.setAlwaysOnTop(true, "status");
       window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       window.showInactive();
     } else {

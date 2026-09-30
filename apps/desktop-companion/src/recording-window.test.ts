@@ -23,7 +23,7 @@ describe("trusted main recording window", () => {
     expect(f.controller.primaryWindowId()).toBeNull();
     f.controller.update(snapshot("starting"));
     expect(f.window.setBounds).toHaveBeenCalledWith({ x: -496, y: 40, width: 480, height: 360 });
-    expect(f.window.setAlwaysOnTop).toHaveBeenCalledWith(true, "floating");
+    expect(f.window.setAlwaysOnTop).toHaveBeenCalledWith(true, "status");
     expect(f.window.setVisibleOnAllWorkspaces).toHaveBeenCalledWith(true, { visibleOnFullScreen: true });
     await responsive();
     expect(f.controller.primaryWindowId()).toBe(73);

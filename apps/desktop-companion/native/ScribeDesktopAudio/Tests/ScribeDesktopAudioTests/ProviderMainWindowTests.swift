@@ -5,7 +5,7 @@ import Testing
 private let workArea = CGRect(x: -1440, y: 24, width: 1440, height: 840)
 private let mainBounds = CGRect(x: -500, y: 40, width: 480, height: 360)
 private func window(_ id: UInt32 = 73, owner: Int32 = 41, bounds: CGRect = mainBounds,
-                    alpha: Double = 1, layer: Int = NSWindow.Level.floating.rawValue) -> ProviderWindowMetadata {
+                    alpha: Double = 1, layer: Int = NSWindow.Level.statusBar.rawValue) -> ProviderWindowMetadata {
     ProviderWindowMetadata(id: id, owner: owner, bounds: bounds, alpha: alpha, layer: layer)
 }
 
@@ -23,7 +23,7 @@ private func window(_ id: UInt32 = 73, owner: Int32 = 41, bounds: CGRect = mainB
     #expect(handoff.reconcile(mainCovers: false, forceNative: true) == .showNative)
 }
 
-@Test func mainCoverageRequiresTheExactParentAndAnUncoveredFloatingWindow() {
+@Test func mainCoverageRequiresTheExactParentAndAnUncoveredStatusLevelWindow() {
     let check: ([ProviderWindowMetadata]) -> Bool = {
         providerMainWindowVisible(73, parent: 41, helper: 42, windows: $0, screens: [workArea])
     }
@@ -33,6 +33,11 @@ private func window(_ id: UInt32 = 73, owner: Int32 = 41, bounds: CGRect = mainB
     #expect(!check([window(74)]))
     #expect(!check([window(alpha: 0.5)]))
     #expect(!check([window(layer: 0)]))
+    #expect(!check([window(layer: NSWindow.Level.floating.rawValue)]))
+    #expect(!check([window(layer: NSWindow.Level.statusBar.rawValue - 1)]))
+    #expect(NSWindow.Level.statusBar.rawValue < NSWindow.Level.popUpMenu.rawValue)
+    #expect(check([window(), window(90, owner: 99, layer: 20)])) // Dock overlay behind
+    #expect(!check([window(90, owner: 99, layer: NSWindow.Level.popUpMenu.rawValue), window()]))
     #expect(!check([window(bounds: CGRect(x: 100, y: 40, width: 480, height: 360))]))
     #expect(!check([window(bounds: CGRect(x: -500, y: 40, width: 480, height: 120))]))
     #expect(!check([window(90, owner: 99), window()])) // another app is above the controls

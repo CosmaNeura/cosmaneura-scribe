@@ -6,7 +6,7 @@ Owner: John Clemente. Initial cohort: owner's staging Mac beta; review by
 over Zoom, smaller guidance below controls and reliable recovery from freezes.
 
 During starting, recording, stopping and a confirmed pause, the main window is
-480×360, floating across Spaces, with the encounter, status, timer and relevant
+480×360, held above ordinary app windows across Spaces, with the encounter, status, timer and relevant
 Pause/Resume/Stop actions together. It restores its prior bounds after recording
 finishes. It changes presentation only, never source selection or consent.
 Account actions return in the expanded view. Incomplete coverage and unconfirmed
@@ -17,7 +17,7 @@ stop remain explicit; a normal paused state says that no audio is recorded.
 The presentation helper accepts a new private, explicitly selected v2 protocol.
 Old v1 callers retain their native panel behavior. Main offers an exact OS
 window identifier over its inherited pipe. The helper gets the parent PID
-itself and verifies ownership, floating level, opacity, full screen bounds and
+itself and verifies ownership, status-window level, opacity, work-area bounds and
 absence of occluding windows. It reads no window titles or pixels. A 2.5-second
 monotonic lease expires without refresh. Invalid identity cannot rebind it.
 
@@ -31,10 +31,14 @@ unresponsive/crash event closes through the existing awaited stop path, never
 destroying an unconfirmed active recorder first.
 
 These budgets describe polling/lease behavior, not a guaranteed physical UI
-reaction time. The isolated Electron stall harness verifies responsiveness with
-a fabricated page and no recording; native visibility metadata and AppKit tests
-are separate evidence. Physical fullscreen/Space/window overlap still needs
-qualification on the installed Mac.
+reaction time. An actual OS harness with a synthetic Electron window and the production
+presentation helper verified the exact window owner and layer, healthy-main
+handoff, minimize/restore, a higher owned occluder, lease expiry and renderer
+stall. Status level 25 keeps the controls above the observed screen-wide layer
+20 overlay and below OS popup menus at level 101. The renderer offer withdrew
+in 1,511 ms; expired-lease fallback was observed at 3,084 ms. No microphone or
+installed Scribe was used. These single-display synthetic checks do not qualify
+physical fullscreen Zoom, multiple displays or a real recording.
 
 ## Verification and delivery
 
