@@ -19,11 +19,12 @@ const review = { schema_version: "1.0", session_id: session, status: "transcript
       resolution: "english_source", content: "Invented speech." }] },
   review_queue: { schema_version: "1.0", session_id: session, source_transcript_version: 1,
     working_transcript_id: working, working_transcript_version: 1, status: "complete", items: [] } };
-const schema = "doctor_note_schema_" + id, fields = { Plan: "Invented saved note; no patient." };
-const template = { schema_ref: schema, note_type: "Synthetic SOAP", field_names: ["Plan"] };
+const schema = "doctor_note_schema_" + id, legacyHeading = "Exam deferred to in-person visit 08/26/2026";
+const fields = { Plan: "Invented saved note; no patient.", [legacyHeading]: "Not mentioned in transcript." };
+const template = { schema_ref: schema, note_type: "Synthetic SOAP", field_names: Object.keys(fields) };
 const note = { session_id: session, scribe_source_id: working, source_sha256: "a".repeat(64), schema_ref: schema,
   transcript_ref: "ai_visit_transcript_" + id, note_ref: "visit_note_" + id, status: "draft", note_type: "Synthetic SOAP",
-  fields, field_order: ["Plan"], note_sha256: createHash("sha256").update(JSON.stringify(Object.entries(fields))).digest("hex"),
+  fields, field_order: Object.keys(fields), note_sha256: createHash("sha256").update(JSON.stringify(Object.entries(fields))).digest("hex"),
   created_at: new Date().toISOString(), review_required: true,
   reviewed_source: { kind: "reviewed_english", source_version: 1, working_transcript_id: working, working_version: 1 } };
 const absent = { ...note, status: "not_prepared", transcript_ref: null, note_ref: null,
@@ -31,13 +32,15 @@ const absent = { ...note, status: "not_prepared", transcript_ref: null, note_ref
 const forbidden = () => { throw new Error("Unrequested write, recording, or external I/O"); };
 const flush = async () => { await new Promise(done => setTimeout(done, 5)); };
 const results = [];
-for (const scenario of ["lost-reply", "delayed", "expired", "hidden", "departed", "revoked", "hung-manual",
+for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "hidden", "departed", "revoked", "hung-manual",
   "changed-source", "invalid-draft", "access-denied", "review-failed", "read-only"]) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "capacitor://localhost/index.html",
     runScripts: "outside-only", pretendToBeVisual: true });
   const window = dom.window, root = window.document.getElementById("root");
   Object.defineProperty(window, "crypto", { value: webcrypto });
   Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
+  window.ResizeObserver = class { observe() {} disconnect() {} };
+  window.matchMedia = () => ({ matches: false });
   window.fetch = forbidden;
   // Drive only long application deadlines. DOM/microtask delivery stays real.
   const timers = new Map(), realTimeout = window.setTimeout.bind(window), realClear = window.clearTimeout.bind(window);
@@ -64,7 +67,7 @@ for (const scenario of ["lost-reply", "delayed", "expired", "hidden", "departed"
   const module = new SourceTextModule(code, { context: dom.getInternalVMContext() });
   await module.link(forbidden); await module.evaluate();
   const lifetime = new window.AbortController(), encounterLifetime = new window.AbortController();
-  const calls = [], held = []; let available = false, readCount = 0;
+  const calls = [], held = []; let available = false, readCount = 0, releaseReview;
   const currentReview = () => scenario === "changed-source" && calls.includes("prepare")
     ? { ...review, source: { ...review.source, source_transcript_version: 2 },
       working: { ...review.working, source_transcript_version: 2, working_transcript_version: 2 },
@@ -80,6 +83,7 @@ for (const scenario of ["lost-reply", "delayed", "expired", "hidden", "departed"
       receipt: { session_id: session, review, templates: [template], note: absent } });
     if (action === "capture-operations") {
       assert.equal(kind, "creator_review");
+      if (scenario === "pending-review" && !releaseReview) await new Promise(resolve => { releaseReview = resolve; });
       if (scenario === "review-failed") return new Response(null, { status: 503 });
       return Response.json({ ...envelope, operation: kind, receipt: currentReview() });
     }
@@ -119,7 +123,17 @@ for (const scenario of ["lost-reply", "delayed", "expired", "hidden", "departed"
     click("open"); await until(() => root.querySelector('[data-review-action="continue"]')?.disabled === false);
     root.querySelector('[data-review-action="continue"]').click();
     await until(() => root.querySelector('[data-workspace-action="generate"]') && !root.hasAttribute("aria-busy"));
+    const prepareButton = root.querySelector('[data-workspace-action="generate"]');
     click(scenario === "read-only" ? "check-note" : "generate");
+    if (scenario === "pending-review") {
+      assert.match(root.querySelector("h1").textContent, /Preparing your draft note/);
+      assert.equal(root.querySelector('[data-workspace-action="generate"]'), null);
+      prepareButton.click();
+      await until(() => releaseReview);
+      assert.equal(calls.filter(c => c === "prepare").length, 0);
+      assert.equal(calls.filter(c => c === "creator_review").length, 1);
+      releaseReview();
+    }
     if (scenario === "review-failed") {
       await until(() => !root.hasAttribute("aria-busy") && root.textContent.includes("could not be confirmed"));
       assert.equal(calls.filter(c => c === "prepare").length, 0); assert.equal(readCount, 0);
@@ -133,9 +147,9 @@ for (const scenario of ["lost-reply", "delayed", "expired", "hidden", "departed"
         assert.equal(root.querySelector(".provider-note-options").open, false);
         assert.match(root.querySelector("[data-note-wait-time]").textContent, /Checking automatically/);
       }
-      if (scenario === "delayed") { available = true; await advance(3000); await until(fieldsReady); }
+      if (["delayed", "pending-review"].includes(scenario)) { available = true; await advance(3000); await until(fieldsReady); }
       if (scenario === "expired") {
-        await advance(90_000); assert.equal(readCount, 30);
+        await advance(300_000); assert.equal(readCount, 100);
         const count = readCount; await advance(120_000); await visibility(false); await visibility(true);
         assert.equal(readCount, count); assert.match(root.textContent, /Choose Check for note/);
         assert.equal(root.querySelector(".provider-note-options").open, true);
@@ -173,6 +187,12 @@ for (const scenario of ["lost-reply", "delayed", "expired", "hidden", "departed"
     if (fieldsReady()) {
       assert.equal(root.querySelector("[data-note-wait-time]"), null);
       assert.equal(fieldsReady().value, fields.Plan);
+      const legacyField = root.querySelector('[name="note-1"]');
+      assert.equal(legacyField.value, fields[legacyHeading]);
+      assert.match(legacyField.closest("label").textContent, /^Deferred examination/);
+      assert.equal(legacyField.closest("label").textContent.includes("08/26/2026"), false);
+      const original = [...root.querySelectorAll("details")].find(detail => detail.querySelector("summary")?.textContent === "Original template headings");
+      assert.ok(original && !original.open && original.textContent.includes(legacyHeading));
       fieldsReady().value += " Unsubmitted synthetic edit.";
       fieldsReady().dispatchEvent(new window.Event("input", { bubbles: true }));
       assert.equal(root.querySelector("[data-note-save-state]").textContent, "Unsaved edits");
