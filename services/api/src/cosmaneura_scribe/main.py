@@ -930,10 +930,12 @@ async def get_capture_lease_state(
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureLeaseState:
-    """Observe a committed renewal; never create a lease while reconciling Stop."""
+    """Observe capture authority, including untouched setup; never issue or renew it."""
     _require_capture_protocol(settings)
     async with provider.transaction(tenant_id) as store:
-        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        context = await _capture_context_or_404(
+            store, tenant_id, session_id, policy, require_audio_key=False
+        )
         receipt = None
         if context.lease is not None:
             receipt = await store.capture_lease_receipt_for_generation(

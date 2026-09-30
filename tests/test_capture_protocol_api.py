@@ -59,7 +59,9 @@ def capture_client(client: TestClient) -> TestClient:
     return client
 
 
-def _create_capture_session(client: TestClient, tenant_id: UUID, suffix: str) -> dict[str, object]:
+def _create_capture_session(
+    client: TestClient, tenant_id: UUID, suffix: str, *, register_audio_key: bool = True
+) -> dict[str, object]:
     identity = {
         "appointment_id": f"appointment-{suffix}",
         "practitioner_id": f"practitioner-{suffix}",
@@ -84,6 +86,8 @@ def _create_capture_session(client: TestClient, tenant_id: UUID, suffix: str) ->
         json={**identity, "consent_record_id": consent.json()["id"]},
     )
     assert session.status_code == 201
+    if not register_audio_key:
+        return session.json()
     audio_key = client.post(
         f"/v1/sessions/{session.json()['id']}/audio-key",
         headers=_headers(tenant_id, f"audio-key-{suffix}-0001"),

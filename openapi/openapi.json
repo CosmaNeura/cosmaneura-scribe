@@ -4012,7 +4012,7 @@
     },
     "/v1/sessions/{session_id}/capture-lease-state": {
       "get": {
-        "description": "Observe a committed renewal; never create a lease while reconciling Stop.",
+        "description": "Observe capture authority, including untouched setup; never issue or renew it.",
         "operationId": "get_capture_lease_state_v1_sessions__session_id__capture_lease_state_get",
         "parameters": [
           {
