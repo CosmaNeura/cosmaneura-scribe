@@ -151,6 +151,26 @@ describe("desktop provider resource factory", () => {
     await connection.dispose(); expect(dispose).toHaveBeenCalledAfter(deactivate); expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("closes an idle workspace when its presentation fails so the app can offer connection recovery", async () => {
+    const f = await fixture();
+    let listener!: (event: NativePresentationEvent) => void, healthy = true;
+    const dispose = vi.fn(async () => undefined), unsubscribe = vi.fn();
+    const connection = f.connect({ presentation: { isHealthy: () => healthy, dispose,
+      onEvent: next => { listener = next; return unsubscribe; } } });
+    await connection.workspace.listEncounters(new AbortController().signal);
+    listener({ kind: "stop_requested", sessionId });
+    expect(connection.workspace.signal.aborted).toBe(false);
+    healthy = false; listener({ kind: "failed", sessionId: null });
+    expect(connection.workspace.signal.aborted).toBe(true);
+    await expect(connection.workspace.listEncounters(new AbortController().signal)).rejects.toThrow();
+    await connection.dispose();
+    expect(f.backend.listEncounters).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1); expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(f.disposeBackend).toHaveBeenCalledTimes(1);
+    expect(f.resources.openCustody).not.toHaveBeenCalled();
+    expect(f.resources.selectWindow).not.toHaveBeenCalled();
+  });
+
   it("revokes capture on presentation failure but retains custody/presentation until source-stop retry succeeds", async () => {
     const f = await fixture();
     let listener!: (event: NativePresentationEvent) => void, healthy = true, refuse = true;
@@ -166,6 +186,7 @@ describe("desktop provider resource factory", () => {
     });
     await opened.recorder(sessionId, new AbortController().signal);
     healthy = false; listener({ kind: "failed", sessionId });
+    expect(connection.workspace.signal.aborted).toBe(true);
     expect(opened.signal.aborted).toBe(true); expect(options.native.isSessionActive()).toBe(false);
     await expect(connection.dispose()).rejects.toThrow();
     expect(f.release).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();

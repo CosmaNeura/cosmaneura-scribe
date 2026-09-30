@@ -109,12 +109,12 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
   };
   const onAbort = (): void => { void dispose().catch(() => undefined); };
   const removePresentation = resources.presentation?.onEvent(event => {
-    if (closed || !mount) return;
+    if (closed) return;
     if (event.kind === "failed") {
-      // Revocation interrupts startup immediately; closeMount retains keys and
-      // the recorder after an unconfirmed source stop, allowing owner retry.
-      void closeMount().catch(() => undefined);
-    } else if (event.sessionId === mount.recorder?.snapshot.sessionId) {
+      // Notify the app even when idle so it can offer a fresh connection.
+      // Normal disposal still retains custody after an unconfirmed source stop.
+      abort.abort();
+    } else if (mount && event.sessionId === mount.recorder?.snapshot.sessionId) {
       void mount.recorder.stopRecording().catch(() => undefined);
     }
   });
