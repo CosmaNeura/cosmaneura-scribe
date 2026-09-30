@@ -1721,12 +1721,16 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             "normalized_working_blockers",
         )
         async with engine.begin() as connection:
-            assert await _role_table_privileges(connection, RUNTIME_ROLE) == runtime_expected
+            assert await _role_table_privileges(connection, RUNTIME_ROLE) == runtime_expected | {
+                ("creator_transcript_edits", "SELECT"), ("creator_transcript_edits", "INSERT")
+            }
             assert (
                 await _role_column_privileges(connection, RUNTIME_ROLE)
                 == runtime_enabled_column_expected
             )
-            assert await _role_table_privileges(connection, TRANSLATION_ROLE) == set()
+            assert await _role_table_privileges(connection, TRANSLATION_ROLE) == {
+                ("creator_transcript_edits", "SELECT")
+            }
             assert (
                 await _role_column_privileges(connection, TRANSLATION_ROLE)
                 == translation_column_expected

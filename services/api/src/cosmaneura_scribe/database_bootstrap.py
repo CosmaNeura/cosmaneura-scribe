@@ -395,6 +395,7 @@ async def _grant_working_transcript_permissions(
     connection: AsyncConnection,
     role: str,
 ) -> None:
+    await connection.execute(text(f"GRANT SELECT ON creator_transcript_edits TO {role}"))
     await connection.execute(
         text(
             "GRANT SELECT (tenant_id, session_id, working_transcript_id, "
@@ -610,6 +611,9 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                     )
                 )
                 await _grant_working_transcript_permissions(connection, role)
+                await connection.execute(text(
+                    f"GRANT INSERT ON creator_transcript_edits TO {role}"
+                ))
     finally:
         await provider.close()
 

@@ -27,6 +27,12 @@ from .capture_protocol_v1 import (
     PROTOCOL_VERSION,
     RESERVATION_PLAINTEXT_BUDGET_BYTES,
 )
+from .creator_edit_contract import (
+    CreatorTranscriptEditBodyV1,
+    CreatorTranscriptEditV1,
+    validate_edit_history,
+)
+from .creator_edit_projection import apply_creator_edits
 from .external_transcript_v1 import (
     NormalizedSourceTranscriptReceiptV1,
     NormalizedSourceTranscriptRequestV1,
@@ -1214,6 +1220,7 @@ class PostgresRepository:
             await self._get_working_review_inputs(tenant_id, session_id, source_version),
             working_transcript_id=working_id,
             working_transcript_version=working_version,
+            creator_edits=await self.get_creator_edit_inputs(tenant_id, session_id, source_version),
         )
         if (
             current["working_fingerprint"] != derivation.working_fingerprint
@@ -1237,6 +1244,123 @@ class PostgresRepository:
             working_fingerprint=derivation.working_fingerprint,
         )
         return derivation
+
+    async def get_creator_edit_inputs(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        source_version: int,
+    ) -> tuple[CreatorTranscriptEditV1, ...]:
+        rows = await self._session.execute(
+            text("""
+            SELECT edit_id, result_working_version, created_at, request
+            FROM creator_transcript_edits
+            WHERE tenant_id = :tenant AND session_id = :session
+              AND source_transcript_version = :source
+            ORDER BY result_working_version LIMIT 1025
+        """),
+            {"tenant": tenant_id, "session": session_id, "source": source_version},
+        )
+        try:
+            edits = tuple(
+                CreatorTranscriptEditV1.model_validate(
+                    {
+                        "edit_id": row["edit_id"],
+                        "working_transcript_version": row["result_working_version"],
+                        "created_at": row["created_at"],
+                        "request": row["request"],
+                    }
+                )
+                for row in rows.mappings()
+            )
+            validate_edit_history(edits)
+            return edits
+        except (TypeError, ValueError):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.EVIDENCE_INVALID
+            ) from None
+
+    async def record_creator_transcript_edit(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        actor: str,
+        request: CreatorTranscriptEditBodyV1,
+        edit_id: UUID,
+    ) -> CreatorTranscriptEditV1:
+        current = await self.get_creator_working_transcript(
+            tenant_id,
+            session_id,
+            creator_actor_id=actor,
+        )
+        if current is None:
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        existing = next((edit for edit in current.creator_edits if edit.edit_id == edit_id), None)
+        if existing is not None:
+            if existing.request != request:
+                raise WorkingTranscriptPersistenceError(
+                    WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                )
+            return existing
+        working = current.working_transcript
+        if (
+            working.source_transcript_version != request.expected_source_transcript_version
+            or working.working_transcript_id != request.expected_working_transcript_id
+            or working.working_transcript_version != request.expected_working_transcript_version
+        ):
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        created_at = await self._session.scalar(text("SELECT clock_timestamp()"))
+        edit = CreatorTranscriptEditV1(
+            edit_id=edit_id,
+            created_at=created_at,
+            working_transcript_version=working.working_transcript_version + 1,
+            request=request,
+        )
+        # Reject nonexistent/blocked targets before any protected edit is stored.
+        apply_creator_edits(
+            working.model_copy(
+                update={
+                    "working_transcript_version": edit.working_transcript_version,
+                }
+            ),
+            (edit,),
+        )
+        validate_edit_history((*current.creator_edits, edit))
+        await self._session.execute(
+            text("""
+            INSERT INTO creator_transcript_edits
+                (tenant_id, session_id, edit_id, source_transcript_version,
+                 prior_working_version, result_working_version,
+                 creator_actor_id, request, created_at)
+            VALUES (:tenant, :session, :edit, :source, :prior, :result, :actor,
+                    CAST(:request AS jsonb), :created)
+        """),
+            {
+                "tenant": tenant_id,
+                "session": session_id,
+                "edit": edit_id,
+                "source": request.expected_source_transcript_version,
+                "prior": working.working_transcript_version,
+                "result": edit.working_transcript_version,
+                "actor": actor,
+                "request": request.model_dump_json(),
+                "created": created_at,
+            },
+        )
+        publication = await self.publish_current_working_transcript(tenant_id, session_id)
+        if (
+            publication is None
+            or publication.working_transcript_version != edit.working_transcript_version
+        ):
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        await self.audit(
+            tenant_id=tenant_id,
+            action="creator_transcript_edit.recorded",
+            entity_type="creator_transcript_edit",
+            entity_id=edit_id,
+        )
+        return edit
 
     async def publish_current_working_transcript(
         self,
@@ -1273,9 +1397,12 @@ class PostgresRepository:
             session_id,
             source_version,
         )
+        creator_edits = await self.get_creator_edit_inputs(tenant_id, session_id, source_version)
         working_id = session.working_transcript_id or uuid4()
         current_version = session.current_working_transcript_version
-        if current_version is not None:
+        if current_version is not None and (
+            not creator_edits or creator_edits[-1].working_transcript_version <= current_version
+        ):
             current = await self._get_working_header(
                 tenant_id,
                 session_id,
@@ -1295,6 +1422,7 @@ class PostgresRepository:
                 reviews,
                 working_transcript_id=working_id,
                 working_transcript_version=current_version,
+                creator_edits=creator_edits,
             )
             if current["working_fingerprint"] == current_derivation.working_fingerprint:
                 if session.status != current_derivation.status:
@@ -1339,6 +1467,7 @@ class PostgresRepository:
             reviews,
             working_transcript_id=working_id,
             working_transcript_version=next_version,
+            creator_edits=creator_edits,
         )
         if not can_publish_working_transcript(session.status, derivation.status):
             raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)

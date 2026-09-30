@@ -5,6 +5,9 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
+from .canonical_json import canonical_sha256
+from .creator_edit_contract import CreatorTranscriptEditV1
+from .creator_edit_projection import apply_creator_edits
 from .external_transcript_v1 import (
     EnglishWorkingTranscriptV1,
     ExternalTranscriptBundleV1,
@@ -89,6 +92,7 @@ class WorkingTranscriptDerivation:
     working_transcript: EnglishWorkingTranscriptV1 = field(repr=False)
     status: ConfiguredExternalSessionStatus
     working_fingerprint: str = field(repr=False)
+    creator_edits: tuple[CreatorTranscriptEditV1, ...] = field(default=(), repr=False)
 
     def __repr__(self) -> str:
         return "WorkingTranscriptDerivation(<protected>)"
@@ -140,6 +144,7 @@ def derive_persisted_working_transcript(
     *,
     working_transcript_id: UUID,
     working_transcript_version: int,
+    creator_edits: tuple[CreatorTranscriptEditV1, ...] = (),
 ) -> WorkingTranscriptDerivation:
     """Build one canonical projection from trusted, persisted evidence."""
     try:
@@ -173,11 +178,18 @@ def derive_persisted_working_transcript(
             working_transcript_version=working_transcript_version,
         )
         working = build_english_working_transcript(bundle)
+        fingerprint = english_working_transcript_fingerprint(bundle)
+        if creator_edits:
+            working = apply_creator_edits(working, creator_edits)
+            fingerprint = canonical_sha256(
+                {"base": fingerprint, "creator_edits": creator_edits, "working_transcript": working}
+            )
         return WorkingTranscriptDerivation(
             bundle=bundle,
             working_transcript=working,
             status=derive_working_transcript_status(working),
-            working_fingerprint=english_working_transcript_fingerprint(bundle),
+            working_fingerprint=fingerprint,
+            creator_edits=creator_edits,
         )
     except (TypeError, ValueError):
         raise WorkingTranscriptPersistenceError(

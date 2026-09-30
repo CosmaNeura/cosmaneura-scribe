@@ -72,6 +72,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/captured-sessions/{session_id}/capture-lease": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Issue Creator Capture Lease */
+        post: operations["issue_creator_capture_lease_v1_captured_sessions__session_id__capture_lease_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/captured-sessions/{session_id}/capture-leases/{lease_id}/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Renew Creator Capture Lease */
+        post: operations["renew_creator_capture_lease_v1_captured_sessions__session_id__capture_leases__lease_id__renew_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/captured-sessions/{session_id}/chunk-reservations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reserve Creator Audio Chunks */
+        post: operations["reserve_creator_audio_chunks_v1_captured_sessions__session_id__chunk_reservations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/captured-sessions/{session_id}/review": {
         parameters: {
             query?: never;
@@ -84,6 +135,40 @@ export interface paths {
         put?: never;
         /** Decide Creator Review */
         post: operations["decide_creator_review_v1_captured_sessions__session_id__review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/captured-sessions/{session_id}/review/edit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Edit Creator Transcript */
+        post: operations["edit_creator_transcript_v1_captured_sessions__session_id__review_edit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/captured-sessions/{session_id}/source-extension": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Source Extension */
+        post: operations["source_extension_v1_captured_sessions__session_id__source_extension_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -254,6 +339,26 @@ export interface paths {
         put?: never;
         /** Issue Capture Lease */
         post: operations["issue_capture_lease_v1_sessions__session_id__capture_lease_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{session_id}/capture-lease-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Capture Lease State
+         * @description Observe capture authority, including untouched setup; never issue or renew it.
+         */
+        get: operations["get_capture_lease_state_v1_sessions__session_id__capture_lease_state_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -653,6 +758,18 @@ export interface components {
              */
             protocol_version: "1.0";
         };
+        /** CaptureLeaseState */
+        CaptureLeaseState: {
+            current_lease: components["schemas"]["CaptureLeaseReceipt"] | null;
+            /** Lease Closed */
+            lease_closed: boolean;
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            session_status: components["schemas"]["SessionStatus"];
+        };
         /** CaptureMediaCapabilities */
         CaptureMediaCapabilities: {
             /**
@@ -1035,6 +1152,16 @@ export interface components {
         /** CreatorReviewViewV1 */
         CreatorReviewViewV1: {
             capture_continuity?: components["schemas"]["CaptureContinuity"] | null;
+            /**
+             * Editing Allowed
+             * @default false
+             */
+            editing_allowed: boolean;
+            /**
+             * Review Edits
+             * @default []
+             */
+            review_edits: components["schemas"]["CreatorTranscriptEditV1"][];
             review_queue?: components["schemas"]["CreatorTranslationReviewQueueV1"] | null;
             /**
              * Schema Version
@@ -1056,6 +1183,107 @@ export interface components {
              */
             translation_progress: components["schemas"]["CreatorTranslationProgressV1"][];
             working?: components["schemas"]["EnglishWorkingTranscriptV1"] | null;
+        };
+        /** CreatorSpeakerConfirmationV1 */
+        CreatorSpeakerConfirmationV1: {
+            /** Detail */
+            detail?: ("interpreter" | "other") | null;
+            /** Display Name */
+            display_name?: string | null;
+            role: components["schemas"]["SpeakerRole"];
+            /**
+             * Speaker Id
+             * Format: uuid
+             */
+            speaker_id: string;
+        };
+        /** CreatorTextCorrectionV1 */
+        CreatorTextCorrectionV1: {
+            /** Content */
+            content: string;
+            /** Expected Source Segment Version */
+            expected_source_segment_version: number;
+            /**
+             * Source Segment Id
+             * Format: uuid
+             */
+            source_segment_id: string;
+        };
+        /** CreatorTranscriptEditBodyV1 */
+        CreatorTranscriptEditBodyV1: {
+            /**
+             * Corrections
+             * @default []
+             */
+            corrections: components["schemas"]["CreatorTextCorrectionV1"][];
+            /** Expected Source Transcript Version */
+            expected_source_transcript_version: number;
+            /**
+             * Expected Working Transcript Id
+             * Format: uuid
+             */
+            expected_working_transcript_id: string;
+            /** Expected Working Transcript Version */
+            expected_working_transcript_version: number;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /**
+             * Speakers
+             * @default []
+             */
+            speakers: components["schemas"]["CreatorSpeakerConfirmationV1"][];
+        };
+        /** CreatorTranscriptEditReceiptV1 */
+        CreatorTranscriptEditReceiptV1: {
+            /**
+             * Edit Id
+             * Format: uuid
+             */
+            edit_id: string;
+            /**
+             * Saved
+             * @default true
+             * @constant
+             */
+            saved: true;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+            /**
+             * Session Id
+             * Format: uuid
+             */
+            session_id: string;
+            /**
+             * Working Transcript Id
+             * Format: uuid
+             */
+            working_transcript_id: string;
+            /** Working Transcript Version */
+            working_transcript_version: number;
+        };
+        /** CreatorTranscriptEditV1 */
+        CreatorTranscriptEditV1: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Edit Id
+             * Format: uuid
+             */
+            edit_id: string;
+            request: components["schemas"]["CreatorTranscriptEditBodyV1"];
+            /** Working Transcript Version */
+            working_transcript_version: number;
         };
         /**
          * CreatorTranslationDecisionBodyV1
@@ -1362,6 +1590,39 @@ export interface components {
          * @enum {string}
          */
         SessionStatus: "created" | "capturing" | "uploaded" | "processing" | "transcript_ready" | "handed_off" | "failed";
+        /** SourceExtensionIntent */
+        SourceExtensionIntent: {
+            /**
+             * Capture Authorized Until
+             * Format: date-time
+             */
+            capture_authorized_until: string;
+            /** First Sequence Number */
+            first_sequence_number: number;
+            /** Lease Generation */
+            lease_generation: number;
+            /**
+             * Lease Receipt Id
+             * Format: uuid
+             */
+            lease_receipt_id: string;
+            owner: components["schemas"]["SourceStartIntent"];
+            /** Previous Extension Id */
+            previous_extension_id?: string | null;
+            /**
+             * Reservation Batch Id
+             * Format: uuid
+             */
+            reservation_batch_id: string;
+            /** Reservation Count */
+            reservation_count: number;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+        };
         /**
          * SourceLocale
          * @enum {string}
@@ -1737,6 +1998,127 @@ export interface operations {
             };
         };
     };
+    issue_creator_capture_lease_v1_captured_sessions__session_id__capture_lease_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureLeaseIssueRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureLeaseReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    renew_creator_capture_lease_v1_captured_sessions__session_id__capture_leases__lease_id__renew_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+                lease_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureLeaseRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureLeaseReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reserve_creator_audio_chunks_v1_captured_sessions__session_id__chunk_reservations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChunkReservationBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChunkReservationBatchReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_creator_review_v1_captured_sessions__session_id__review_get: {
         parameters: {
             query?: never;
@@ -1799,6 +2181,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CreatorDecisionReceiptV1"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_creator_transcript_v1_captured_sessions__session_id__review_edit_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatorTranscriptEditBodyV1"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatorTranscriptEditReceiptV1"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    source_extension_v1_captured_sessions__session_id__source_extension_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SourceExtensionIntent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -2149,6 +2611,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CaptureLeaseReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_capture_lease_state_v1_sessions__session_id__capture_lease_state_get: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureLeaseState"];
                 };
             };
             /** @description Validation Error */
