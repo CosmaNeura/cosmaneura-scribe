@@ -16,9 +16,9 @@ import type { DesktopPCMCoverage, DesktopPCMDriver, DesktopPCMDriverSession,
  */
 export class DesktopPcmCaptureSource extends NativePcmCaptureSource {
   public constructor(driver: DesktopPCMDriver, persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
-    inputSignal?: (value: DesktopInputSignal | null) => void) {
+    inputSignal?: (value: DesktopInputSignal | null) => void, capturedFrames?: (frames: number) => void) {
     requireMainProcess();
-    super(new DesktopChunkBridge(driver, persistCoverage, inputSignal), "mixed");
+    super(new DesktopChunkBridge(driver, persistCoverage, inputSignal, capturedFrames), "mixed");
   }
 }
 
@@ -27,7 +27,8 @@ class DesktopChunkBridge implements NativePcmBridge {
   readonly supportsRenewal = true as const;
   constructor(private readonly driver: DesktopPCMDriver,
     private readonly persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
-    private readonly inputSignal?: (value: DesktopInputSignal | null) => void) {}
+    private readonly inputSignal?: (value: DesktopInputSignal | null) => void,
+    private readonly capturedFrames?: (frames: number) => void) {}
 
   getAvailability(): Promise<boolean> { requireMainProcess(); return this.driver.getAvailability(); }
 
@@ -76,8 +77,11 @@ class DesktopChunkBridge implements NativePcmBridge {
           samples = new Int16Array(bytes.byteLength / 2);
           const view = new DataView(bytes.buffer);
           for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true);
-          receivedFrames += samples.length;
           chunks = chunker.push(samples);
+          receivedFrames += samples.length;
+          // Count the accepted mixed stream once, before ten-second WAV commits.
+          // This is elapsed capture feedback, never persistence or upload proof.
+          try { this.capturedFrames?.(receivedFrames); } catch { /* Observer isolation. */ }
           for (const chunk of chunks) await send(chunk);
         } catch {
           terminal("failed"); throw failure();

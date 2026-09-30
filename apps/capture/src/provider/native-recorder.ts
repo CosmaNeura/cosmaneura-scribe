@@ -16,6 +16,8 @@ export interface NativeRecordingState {
     | "stopPending" | "sealing" | "sealed" | "failed" | "closed";
   readonly failure: "preparationFailed" | "startFailed" | "stopPending" | "recoveryFailed" | "captureInterrupted" | null;
   readonly busy: boolean; readonly recordedChunks: number; readonly recordedPlaintextBytes: number;
+  /** Accepted 16 kHz mono frames, including the retained pre-run baseline. Not custody proof. */
+  readonly capturedAudioFrames?: number;
   readonly maximumPlaintextBytes: number; readonly input: MicrophoneInput; readonly signal: unknown;
   readonly completion: { readonly idempotencyKey: string; readonly leaseId: string; readonly leaseGeneration: number;
     readonly finalSequence: number } | null;
@@ -56,7 +58,8 @@ export async function connectNativeProviderRecorder(options: {
       : phase === "failed" ? "capture_preparation_failed" : phase === "closed" ? "capture_reopen_required" : "capture_ready"),
     recordedChunks: state.recordedChunks, queuedChunks: accepted ? 0 : uploadProgress
       ? uploadProgress.total - uploadProgress.registered : state.recordedChunks,
-    elapsedSeconds: Math.floor(Math.max(0, state.recordedPlaintextBytes - state.recordedChunks * 44) / 32_000),
+    elapsedSeconds: Math.floor((state.capturedAudioFrames
+      ?? Math.max(0, state.recordedPlaintextBytes - state.recordedChunks * 44) / 2) / 16_000),
     remainingBudgetSeconds: Math.floor((state.maximumPlaintextBytes - state.recordedPlaintextBytes) / 32_000),
     remainingAuthoritySeconds: null, transcriptionStatus: null, transcript: null,
     native: { phase: awaitingStart ? "starting" : phase, busy: state.busy,
@@ -89,12 +92,13 @@ export async function connectNativeProviderRecorder(options: {
   const read = (): Promise<void> => reading ??= invoke("read").finally(() => { lastReadAt = performance.now(); reading = null; });
   const upload = (): Promise<void> => uploading ??= (async () => {
     current();
-    uploadProgress = undefined; status = "capture_uploading"; publish();
+    uploadProgress = undefined; status = null; publish();
     try {
       if (state?.phase !== "sealed") await invoke("seal");
       current();
       const sealed = state;
       if (sealed?.phase !== "sealed" || !sealed.completion) throw failure();
+      status = "capture_uploading"; publish();
       const completion = sealed.completion;
       const drained = await queue.drainOnce(transport, progress => {
         // Counts are feedback, never completion authority. Suppress them when
@@ -205,8 +209,9 @@ export async function connectNativeProviderRecorder(options: {
 }
 
 export function parseNativeRecordingState(value: unknown): NativeRecordingState {
+  const hasFrames = value !== null && typeof value === "object" && Object.hasOwn(value, "capturedAudioFrames");
   const data = exact(value, ["version", "revision", "recorderId", "sessionId", "phase", "failure", "busy", "recordedChunks",
-    "recordedPlaintextBytes", "maximumPlaintextBytes", "input", "completion", "signal"]);
+    "recordedPlaintextBytes", "maximumPlaintextBytes", "input", "completion", "signal", ...(hasFrames ? ["capturedAudioFrames"] : [])]);
   if (data.version !== 1 || !integer(data.revision, 1, Number.MAX_SAFE_INTEGER)
     || typeof data.phase !== "string" || !["unopened", "opening", "ready", "starting", "recording", "pausing", "paused", "stopPending", "sealing", "sealed", "failed", "closed"].includes(data.phase)
     || data.failure !== null && (typeof data.failure !== "string" || !["preparationFailed", "startFailed", "stopPending", "recoveryFailed", "captureInterrupted"].includes(data.failure))
@@ -214,6 +219,9 @@ export function parseNativeRecordingState(value: unknown): NativeRecordingState 
     || !integer(data.recordedChunks, 0, 2048) || data.maximumPlaintextBytes !== 402_653_184
     || !integer(data.recordedPlaintextBytes, Number(data.recordedChunks) * 46,
       Math.min(402_653_184, Number(data.recordedChunks) * 320_044))) throw failure();
+  if (hasFrames && !integer(data.capturedAudioFrames,
+    Math.max(0, Number(data.recordedPlaintextBytes) - Number(data.recordedChunks) * 44) / 2,
+    2048 * 160_000)) throw failure();
   uuid(data.recorderId); uuid(data.sessionId); parseInputSignal(data.signal);
   if (data.completion !== null) {
     const completion = exact(data.completion, ["idempotencyKey", "leaseId", "leaseGeneration", "finalSequence"]);

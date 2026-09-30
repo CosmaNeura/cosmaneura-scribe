@@ -343,7 +343,9 @@ export class CaptureApp extends LitElement {
                 ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && !this.#snapshot.native && this.#busy}
                 @click=${this.#stop}
               >
-                ${this.#stopping ? this.#isStarting() ? "Cancelling start…" : "Stopping…"
+                ${this.#stopping ? this.#snapshot.native?.phase === "sealing" ? "Saving…"
+                  : this.#uploadAfterStop() ? this.#snapshot.statusCode === "capture_upload_confirming" ? "Confirming upload…" : "Uploading…"
+                  : this.#isStarting() ? "Cancelling start…" : "Stopping…"
                   : (this.#snapshot.desktop?.phase === "starting" || this.#snapshot.native?.phase === "starting") ? "Cancel start"
                   : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
                   : this.#snapshot.statusCode === "capture_recovery_pending" ? "Retry saving and upload"
@@ -465,6 +467,13 @@ export class CaptureApp extends LitElement {
         && this.#snapshot.desktop.coverage === "not_started");
   }
 
+  #uploadAfterStop(): boolean {
+    // Native sealed means physical stop plus durable completion intent. Desktop
+    // only enters this copy after its native stop and retained-flow transition.
+    return this.#snapshot.native?.phase === "sealed" || this.#snapshot.desktop?.phase === "stopped"
+      && (this.#snapshot.state === "uploading" || this.#snapshot.statusCode === "capture_upload_settling");
+  }
+
   #renderProviderProgress(): TemplateResult {
     const desktopProvider = this.#provider?.captureMode === "desktop_meeting";
     const nativeProvider = this.#provider?.captureMode === "native_microphone";
@@ -473,6 +482,7 @@ export class CaptureApp extends LitElement {
     const uploadProgress = this.#snapshot.native?.uploadProgress ?? this.#snapshot.uploadProgress;
     return html`<section class=${desktopProvider || nativeProvider ? "recording-progress" : "flow-card"} aria-label="Recording progress">
             <p role="status" ?hidden=${nativeProvider && showInputMeter && this.#snapshot.statusCode === "capture_recording"}>${this.#stopping
+              && this.#snapshot.native?.phase !== "sealing" && !this.#uploadAfterStop()
               ? this.#isStarting() ? "Cancelling start… Waiting for recording to stop." : "Stopping recording…"
               : !this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
               || this.#busy && this.#snapshot.state === "ready") ? nativeProvider

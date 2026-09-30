@@ -103,6 +103,7 @@ import Foundation
   public func snapshot() async -> NativeRecordingContinuationState? { await continuation?.state }
   public func captureSignal() -> PCMSignalMonitor.Snapshot { signal.snapshot() }
   public var captureState: NativeRecordingPCMState { sink.state }
+  public var capturedAudioFrames: Int { handle?.capturedAudioFrames ?? 0 }
   public var isPhysicallyIdle: Bool { physicalClosureConfirmed }
 
   public func stop() async throws {

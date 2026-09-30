@@ -202,11 +202,13 @@ import Security
       try sink.stage(batch)
     }
     var captureState: NativeRecordingPCMState { sink.state }
+    var capturedAudioFrames = 0
     func emit(_ byteCount: Int = 160) throws {
       let pcm = OwnedPCMBytes([UInt8](repeating: 4, count: byteCount))
       _ = try sink.emit(
         PCMEncodedPacket(
           sequenceNumber: UInt64(sink.state.committedChunks), bytes: pcm))
+      capturedAudioFrames += byteCount / 2
       try check(pcm.withUnsafeBytes { $0.allSatisfy { $0 == 0 } })
       committed = true
     }
@@ -523,6 +525,7 @@ import Security
         let state = reply["recording"] as! [String: Any]
         try check(state["recordedPlaintextBytes"] as? Int == bytes)
         try check(state["recordedChunks"] as? Int == chunks)
+        try check(state["capturedAudioFrames"] as? Int == (bytes - chunks * 44) / 2)
       }
       try await command("start", bytes: 0, chunks: 0)
       try f.runs[0].emit(320_000)

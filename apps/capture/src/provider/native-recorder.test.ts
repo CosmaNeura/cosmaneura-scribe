@@ -27,6 +27,50 @@ async function fixture() {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
 describe("native provider controller", () => {
+  it("reports accepted frames before a chunk is committed and freezes without new frames", async () => {
+    const h = await fixture();
+    h.f.set({ phase: "recording", capturedAudioFrames: 16_000 });
+    const view = await h.open();
+    try {
+      expect(view.controller.snapshot).toMatchObject({ elapsedSeconds: 1, recordedChunks: 0, queuedChunks: 0 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.elapsedSeconds).toBe(1);
+      h.f.set({ capturedAudioFrames: 32_000 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.elapsedSeconds).toBe(2);
+      h.f.set({ phase: "paused", recordedChunks: 1, recordedPlaintextBytes: 64_044 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.elapsedSeconds).toBe(2);
+      await view.controller.resumeRecording!();
+      h.f.set({ capturedAudioFrames: 48_000 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot).toMatchObject({ elapsedSeconds: 3, recordedChunks: 1 });
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("does not label upload before native stop and sealing are confirmed", async () => {
+    const h = await fixture(), held = deferred<unknown>();
+    let sealId = "";
+    h.f.set({ phase: "recording" });
+    const command = h.port.command;
+    h.port.command = request => {
+      if (request.kind !== "seal") return command(request);
+      sealId = request.requestId; h.f.set({ phase: "pausing", busy: true }); return held.promise;
+    };
+    const view = await h.open();
+    try {
+      const stopping = view.controller.stopRecording(), rejected = expect(stopping).rejects.toThrow();
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_stopping");
+      h.f.set({ phase: "sealing" });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_sealing");
+      h.f.set({ phase: "paused", busy: false, failure: "recoveryFailed" });
+      held.resolve(h.f.response(sealId, false)); await rejected;
+      expect(view.controller.snapshot.statusCode).toBe("capture_recovery_pending");
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
   it("keeps an interruption visible without resuming until the provider chooses Resume", async () => {
     const h = await fixture(), command = h.port.command;
     h.f.set({ phase: "paused", failure: "captureInterrupted", recordedChunks: 1, recordedPlaintextBytes: 204 });
@@ -331,7 +375,9 @@ describe("native provider controller", () => {
   });
 
   it.each([{ phase: {} }, { failure: {} }, { recordedChunks: 2049 }, { recordedPlaintextBytes: 1 },
-    { maximumPlaintextBytes: 1 }, { revision: -1 }, { completion: { finalSequence: 3 } }, { secret: "excluded" }])(
+    { maximumPlaintextBytes: 1 }, { revision: -1 }, { completion: { finalSequence: 3 } }, { secret: "excluded" },
+    ...[-1, 0.5, NaN, Infinity, 327_680_001].map(capturedAudioFrames => ({ capturedAudioFrames })),
+    { recordedChunks: 1, recordedPlaintextBytes: 320_044, capturedAudioFrames: 159_999 }])(
   "rejects malformed native metadata %j", update => {
     expect(() => parseNativeRecordingState({ ...recordingFixture().state, ...update })).toThrow();
   });

@@ -133,6 +133,49 @@ function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("automatic interrupted-owner settlement", () => {
+  it("shows subchunk accepted duration and adds exact retained duration once on Resume", async () => {
+    const f = await fixture(true);
+    const bff = f.options.createBff(f.abort.signal);
+    vi.spyOn(bff, "getCapabilities").mockResolvedValue({ ...await bff.getCapabilities(f.session.id), target_chunk_duration_ms: 10_000 });
+    let frames = 0, sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
+    const start = { hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" };
+    f.nativeStart!.mockImplementation((_configuration, next) => {
+      sink = next; frames = 0;
+      return { ready: Promise.resolve(start), activate: () => undefined, stop: async ({ mode }) => mode === "discard" ? null : {
+        start, outputFrames: frames, endHostTimeNanoseconds: String(1_000_000_000n + BigInt(frames) * 62_500n),
+        microphoneTailNanoseconds: "0", systemTailNanoseconds: "0" } };
+    });
+    const recorder = await f.open();
+    const second = async () => {
+      for (let i = 0; i < 4; i++) {
+        const firstFrame = frames; frames += 4_000;
+        await sink.onPcmPacket({ firstFrame, pcmBytes: new Uint8Array(8_000) });
+      }
+    };
+    try {
+      await recorder.startRecording(); await second();
+      expect(recorder.snapshot).toMatchObject({ elapsedSeconds: 1, recordedChunks: 0 });
+      expect((await f.options.queueStorage.list()).filter(row => row.state === "encrypted")).toHaveLength(0);
+      await recorder.pauseRecording();
+      expect(recorder.snapshot).toMatchObject({ elapsedSeconds: 1, recordedChunks: 1 });
+      await recorder.resumeRecording();
+      expect(recorder.snapshot.elapsedSeconds).toBe(1);
+      await second();
+      expect(recorder.snapshot).toMatchObject({ elapsedSeconds: 2, recordedChunks: 1 });
+      await recorder.pauseRecording();
+      expect(recorder.snapshot).toMatchObject({ elapsedSeconds: 2, recordedChunks: 2 });
+      expect(f.complete).not.toHaveBeenCalled();
+      await recorder.deactivate();
+      const resources = await f.reopen();
+      const reopened = await f.open({ ...resources,
+        authorizePreparation: async () => ({ sessionId: f.session.id, status: "capturing" }) });
+      // Restore conservatively budgets encrypted envelope bytes. Duration must
+      // still come from actual retained native frames, not that storage bound.
+      expect((await resources.flowStore.getActiveCaptureState())!.recordedPlaintextBytes).toBeGreaterThan(64_088);
+      expect(reopened.snapshot).toMatchObject({ elapsedSeconds: 2, recordedChunks: 2 });
+    } finally { await f.close(); }
+  });
+
   it("settles the original physical stop and retirement before enabling Resume, without uploading", async () => {
     const f = await fixture(true), driver = interruptedDriver(f);
     const nativeStopped = deferred(), retirement = deferred(), retirementEntered = deferred();

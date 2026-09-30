@@ -202,6 +202,7 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
       "sessionId": host.scope.sessionID.uuidString.lowercased(), "phase": host.phase.rawValue,
       "failure": host.failure?.rawValue as Any? ?? NSNull(), "busy": host.busy,
       "recordedChunks": count, "recordedPlaintextBytes": bytes,
+      "capturedAudioFrames": host.capturedAudioFrames,
       "maximumPlaintextBytes": NativeRecordingFlowOwner.maximumPlaintextBytes,
       "input": host.microphoneInput.rawValue, "completion": completion as Any? ?? NSNull(),
       "signal": ["version": 2, "signal": signal as Any? ?? NSNull()],

@@ -63,6 +63,7 @@ private func runRequire(_ value: Bool, line: UInt = #line) throws {
 
 @MainActor private final class Recorder: NativeProviderEncryptedRecorder {
   var isPhysicallyIdle = true
+  var capturedAudioFrames = 0
   var starts = 0, stops = 0, readyCalls = 0
   var holdReady = false, stopFails = false, terminal = false, startFails = false
   var readyWait: CheckedContinuation<Void, Never>?
