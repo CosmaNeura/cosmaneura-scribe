@@ -211,7 +211,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const onNew = (event: SubmitEvent): void => {
       event.preventDefault();
       if (!newPatient?.reportValidity()) return;
-      const name = input("new-patient-name").trim(), dateOfBirth = input("new-patient-dob");
+      const name = input("new-patient-name").trim(), dateOfBirth = input("new-patient-dob") || null;
       if (!name) { notice.textContent = "Enter the patient's name."; return; }
       void run(() => create({ kind: "new", name, dateOfBirth }), "patient-create");
     };

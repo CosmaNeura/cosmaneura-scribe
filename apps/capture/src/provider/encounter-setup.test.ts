@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { registerPlugin } from "@capacitor/core";
-import { createEncounterSetup, parseEncounterDraft, type CreationRecords, type EncounterDraft } from "./encounter-setup";
+import { createEncounterSetup, parseEncounterDraft, parseSetupState, type CreationRecords, type EncounterDraft } from "./encounter-setup";
 
 const patientRef = "patient_01j00000000000000000000000";
 const appointmentRef = "appointment_01j00000000000000000000000";
@@ -43,24 +43,39 @@ function fixture(capacitorProxy = false) {
   return { ...disk, scope, request, created, abort, openStore, newOwner, assimilated, signal: abort.signal };
 }
 describe("shared mobile/desktop encounter creation", () => {
-  it.each([false, true])("loads patients and retains an uncertain request across restart with Capacitor proxy=%s", async capacitorProxy => {
+  it.each([[false, "1980-01-02"], [true, "1980-01-02"], [false, null], [true, null]] as const)("retains an uncertain request across restart with Capacitor proxy=%s and DOB=%s", async (capacitorProxy, dateOfBirth) => {
+    const draft: EncounterDraft = { ...initial, patient: { kind: "new", name: "Synthetic Patient", dateOfBirth } };
     const f = fixture(capacitorProxy), first = f.newOwner();
     expect((await first.state(f.signal)).pending).toBeNull();
     f.request.mockRejectedValueOnce(new Error("lost response after server commit"));
-    await expect(first.submit(initial, f.signal)).rejects.toThrow();
+    await expect(first.submit(draft, f.signal)).rejects.toThrow();
     expect(f.store.create).toHaveBeenCalledTimes(1); expect(f.created).not.toHaveBeenCalled();
     await first.dispose();
     const second = f.newOwner();
-    expect((await second.state(f.signal)).pending).toEqual(initial);
+    expect((await second.state(f.signal)).pending).toEqual(draft);
     const reopened = await second.submit(null, f.signal);
     expect(reopened.appointmentRef).toBe(appointmentRef);
     const creations = f.request.mock.calls.filter(([body]) => body.action === "create");
     expect(creations).toHaveLength(2);
-    expect(creations.map(([, key]) => key)).toEqual([initial.creationKey, initial.creationKey]);
+    expect(creations.map(([, key]) => key)).toEqual([draft.creationKey, draft.creationKey]);
     expect(creations[0]![0].patient).toEqual(creations[1]![0].patient);
+    expect(creations[0]![0].patient).toEqual({ kind: "new", name: "Synthetic Patient", date_of_birth: dateOfBirth });
     expect((await second.state(f.signal)).pending).toBeNull();
     expect(f.assimilated).not.toHaveBeenCalled();
     await second.dispose();
+  });
+  it("loads a patient without DOB through both Core and desktop bridge parsers", async () => {
+    const f = fixture(), owner = f.newOwner();
+    const original = f.request.getMockImplementation()!;
+    f.request.mockImplementationOnce(async (...args) => ({ ...await original(...args), patients: [
+      { patient_ref: patientRef, name: "Synthetic Patient", date_of_birth: null },
+    ] }));
+    const state = await owner.state(f.signal);
+    expect(state.patients[0]!.dateOfBirth).toBeNull();
+    expect(parseSetupState(state)).toEqual(state);
+    await owner.submit({ ...initial, patient: { kind: "existing", patientRef } }, f.signal);
+    expect(f.created).toHaveBeenCalledTimes(1);
+    await owner.dispose();
   });
   it("serializes double clicks and refuses a different intent while the first result is unknown", async () => {
     const f = fixture(), owner = f.newOwner(); await owner.state(f.signal);
@@ -103,6 +118,7 @@ describe("shared mobile/desktop encounter creation", () => {
   it.each([
     { ...initial, patient: { kind: "existing", patientRef: "patient-name" } },
     { ...initial, patient: { kind: "new", name: " ", dateOfBirth: "1980-01-02" } },
+    ...["", undefined, "01/02/1980", "unknown"].map(dateOfBirth => ({ ...initial, patient: { kind: "new", name: "Synthetic Patient", dateOfBirth } })),
     { ...initial, expected_actor_ref: "caller-selected" },
     { ...initial, appointmentAt: "2026-09-29T12:00:00" },
   ])("rejects ambiguous or extra encounter intent", value => expect(() => parseEncounterDraft(value)).toThrow());

@@ -16,7 +16,8 @@ from pydantic import SecretStr
 pytestmark = pytest.mark.asyncio
 
 
-async def test_fixed_human_boundary_rechecks_account_and_keeps_key():
+@pytest.mark.parametrize("date_of_birth", [None, "1980-01-02"])
+async def test_fixed_human_boundary_rechecks_account_and_keeps_key(date_of_birth):
     account = ProviderEncounterAccount(
         "account", uuid4(), "actor", "tenant", SecretStr("synthetic-user-token")
     )
@@ -34,6 +35,11 @@ async def test_fixed_human_boundary_rechecks_account_and_keeps_key():
         body = json.loads(request.content)
         assert body["expected_actor_ref"] == account.actor_ref
         assert body["expected_tenant_ref"] == account.tenant_ref
+        assert body["patient"] == {
+            "kind": "new",
+            "name": "Synthetic walk-in",
+            "date_of_birth": date_of_birth,
+        }
         return httpx.Response(
             200,
             json={
@@ -54,7 +60,17 @@ async def test_fixed_human_boundary_rechecks_account_and_keeps_key():
     key = str(uuid4())
     try:
         reply = await client.request(
-            {"action": "create", "creation_key": key, "request_nonce": str(uuid4())}, key
+            {
+                "action": "create",
+                "creation_key": key,
+                "request_nonce": str(uuid4()),
+                "patient": {
+                    "kind": "new",
+                    "name": "Synthetic walk-in",
+                    "date_of_birth": date_of_birth,
+                },
+            },
+            key,
         )
         assert reply["recoveryScope"] == str(account.recovery_scope)
         assert seen == ["fresh", "request", "fresh"]
