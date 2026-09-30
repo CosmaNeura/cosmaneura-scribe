@@ -12,3 +12,9 @@
 .provider-application button[data-session-action]:focus-visible { outline: 3px solid #648ad9; outline-offset: 2px; }
 .provider-application .provider-header > div > strong { display: none; }
 @media (max-width: 600px) { .provider-session-header, .provider-session-status { padding: 16px; } }
+
+.provider-application:has(.provider-desktop-compact) { background: white; font-size: 14px; }
+.provider-application:has(.provider-desktop-compact) .provider-session-header { padding: 6px 12px; gap: 8px; }
+.provider-application:has(.provider-desktop-compact) .provider-brand { font-size: 17px; gap: 8px; }
+.provider-application:has(.provider-desktop-compact) .provider-brand-icon { width: 24px; height: 24px; border-radius: 6px; }
+.provider-application:has(.provider-desktop-compact) [data-session-actions] { display: none; }

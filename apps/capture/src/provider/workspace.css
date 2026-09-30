@@ -72,3 +72,24 @@
 .provider-setup [data-patient-search] input { width: 100%; }
 .provider-setup [data-patient-search] button { margin-right: 0; }
 .provider-workspace[aria-busy="true"] button[data-workspace-action]:not([data-workspace-action="cancel-opening"]) { cursor: wait; opacity: .7; }
+
+/* Match the main process's compact recording window, including the app wrapper. */
+.provider-workspace:has(.provider-desktop-compact) { margin: 0; padding: 10px 12px; }
+.provider-workspace:has(.provider-desktop-compact) .provider-account { margin: 0 0 6px; padding: 0; background: none; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.provider-workspace:has(.provider-desktop-compact) .provider-header { padding-bottom: 8px; margin-bottom: 10px; }
+.provider-workspace:has(.provider-desktop-compact) .provider-header button { display: none; }
+.provider-workspace:has(.provider-desktop-compact) [data-provider-encounter] { margin: 0; font-size: 13px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.provider-desktop-compact main > h1, .provider-desktop-compact main > p,
+.provider-desktop-compact [data-testid="desktop-coverage"]:not([open]) { display: none; }
+.provider-desktop-compact .recorder { padding: 0; border: 0; box-shadow: none; gap: 8px; }
+.provider-desktop-compact .recording-progress { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.provider-desktop-compact .recording-progress > [role="status"] { font-size: 18px; line-height: 1.3; }
+.provider-desktop-compact .recording-state-detail { display: block; font-size: 13px; font-weight: 400; margin-top: 4px; }
+.provider-desktop-compact .recording-duration strong { font-size: 1.8rem; }
+.provider-desktop-compact .recording-duration span { font-size: 11px; }
+.provider-desktop-compact .recording-progress > p:not([role="status"]):not(.recording-duration):not(.recording-control-hint) { grid-column: 1 / -1; font-size: 11px; }
+.provider-desktop-compact .recording-control-hint { display: none; }
+.provider-desktop-compact .record-actions { gap: 8px; }
+.provider-desktop-compact .record-actions button { min-height: 44px; padding: 8px 12px; font-size: 14px; }
+.provider-desktop-compact .recording-source-help { margin: 0; padding-top: 8px; font-size: 11px; line-height: 1.3; }
+.provider-desktop-compact .recording-source-help summary { font-size: 11px; }

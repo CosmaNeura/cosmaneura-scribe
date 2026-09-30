@@ -19,6 +19,8 @@ export interface NativePresentationOptions {
   readonly helperPath: string;
   readonly helperSha256: string;
   readonly isSessionActive: () => boolean;
+  /** Exact main-owned CGWindowID; never a renderer visibility assertion. */
+  readonly primaryWindowId?: () => number | null;
 }
 type Metadata = Record<string, unknown>;
 type Selection = Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil">;
@@ -55,7 +57,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
   private disposing: Promise<void> | undefined;
 
   private constructor(private readonly options: NativePresentationOptions) {
-    this.child = spawn(options.helperPath, ["--presentation-v1"], {
+    this.child = spawn(options.helperPath, [options.primaryWindowId ? "--presentation-v2" : "--presentation-v1"], {
       stdio: ["pipe", "pipe", "ignore"], env: {}, cwd: dirname(options.helperPath), windowsHide: true,
     });
     void this.readiness.promise.catch(() => undefined);
@@ -88,7 +90,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
       if (!owner.isHealthy()) throw unavailable();
       owner.heartbeat = setInterval(() => {
         if (!owner.isHealthy()) { owner.fail(); return; }
-        void owner.request("heartbeat", "heartbeat").promise.catch(() => owner.fail());
+        void owner.refreshPrimaryWindow().then(() => owner.request("heartbeat", "heartbeat").promise).catch(() => owner.fail());
       }, 1_000);
       return owner;
     } catch {
@@ -156,6 +158,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
       }
       if (!this.isHealthy() || this.choice !== null) throw unavailable();
       if (snapshot.phase !== "inactive") { this.active = snapshot.captureSessionId; this.phase = snapshot.phase; }
+      if (snapshot.phase === "recording") await this.refreshPrimaryWindow();
       await this.request("publish", "published", { phase: snapshot.phase, session: snapshot.captureSessionId }).promise;
       if (snapshot.phase === "inactive") { this.active = null; this.phase = "inactive"; }
     } catch { this.fail(); throw unavailable(); }
@@ -185,6 +188,13 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
     })().catch(error => { this.disposing = undefined; throw error; });
   }
 
+  private async refreshPrimaryWindow(): Promise<void> {
+    if (!this.options.primaryWindowId) return;
+    const windowID = this.options.primaryWindowId();
+    if (windowID !== null && !integer(windowID, 1, 4_294_967_295)) throw unavailable();
+    await this.request("primaryWindow", "primaryWindow", { windowID }).promise;
+  }
+
   private request(type: string, expected: string, fields: Metadata = {}, timed = true): { id: number; promise: Promise<Metadata> } {
     if (this.broken || this.exited || this.pending.size >= 8 || this.sequence >= 2_147_483_647) throw unavailable();
     const id = ++this.sequence, response = deferred<Metadata>();
@@ -201,7 +211,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
   }
   private receive(value: Metadata): void {
     if (value.type === "ready") {
-      if (this.ready || !exactKeys(value, ["type", "version"]) || value.version !== 1) throw unavailable();
+      if (this.ready || !exactKeys(value, ["type", "version"]) || value.version !== (this.options.primaryWindowId ? 2 : 1)) throw unavailable();
       this.ready = true; this.readiness.resolve(); return;
     }
     if (!this.ready) throw unavailable();

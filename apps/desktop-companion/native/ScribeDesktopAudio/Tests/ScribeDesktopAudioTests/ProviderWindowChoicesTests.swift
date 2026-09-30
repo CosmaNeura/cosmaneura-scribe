@@ -19,7 +19,7 @@ func meetingPickerIsFloatingAndCenteredWithoutImplicitWindowSelection() {
         defer { window.close() }
         #expect(!window.isVisible && !window.isKeyWindow)
         #expect(window.title == "Scribe · Choose a meeting window")
-        #expect(window.level == .floating && window.isFloatingPanel)
+        #expect(window.level == .statusBar && window.isFloatingPanel)
         #expect(!window.hidesOnDeactivate)
         #expect(window.collectionBehavior.contains(.canJoinAllSpaces))
         #expect(window.collectionBehavior.contains(.fullScreenAuxiliary))
@@ -46,7 +46,7 @@ func compactRecordingStatusFitsBothStatesAndRetainsAnExplicitStopAction() {
     #expect(!window.isVisible && !window.isKeyWindow)
     #expect(window.title == "Scribe recording status")
     #expect(window.styleMask.contains(.nonactivatingPanel))
-    #expect(window.level == .floating && window.isFloatingPanel)
+    #expect(window.level == .statusBar && window.isFloatingPanel)
     #expect(!window.hidesOnDeactivate)
     #expect(window.collectionBehavior.contains(.canJoinAllSpaces))
     #expect(window.collectionBehavior.contains(.fullScreenAuxiliary))
