@@ -38,10 +38,12 @@ const controller = {
     // Deliberately exercise failure recovery without permitting a second Start.
     emit({ state: "paused", statusCode: "capture_start_unconfirmed" }, { phase: "stop_unconfirmed" });
   },
+  async showWindowChooser() { commands.push("show_chooser"); },
   refreshTranscriptionStatus: forbidden,
 };
 const app = document.createElement("cosmaneura-capture");
 app.bindProvider({ sessionId, controller, sourceKind: "microphone", captureMode: "desktop_meeting",
+  encounterLabel: "Avery Example", visitLabel: "Video visit",
   languageMode: "english", signal: abort.signal, authorizedRequest: forbidden,
   journal: { load: forbidden, save: forbidden }, deactivate: async () => {} });
 const root = document.querySelector("#provider");
@@ -56,9 +58,13 @@ window.desktopControlsLab = {
   commands,
   choose: () => {
     emit({ state: "recording", statusCode: "capture_recording", elapsedSeconds: 83, recordedChunks: 8 },
-      { phase: "recording", coverage: "aligned" });
+      { phase: "recording", coverage: "aligned", inputSignal: { microphone: { level: 0.125, ageMs: 0 }, meetingAudio: { level: 0.25, ageMs: 0 } } });
     finishChoice();
   },
   incomplete: () => emit({}, { coverage: "incomplete" }),
+  confirming: () => emit({ state: "paused", statusCode: "capture_stop_acknowledgement_pending" }, { phase: "stopping" }),
+  confirmationLost: () => emit({ state: "paused", statusCode: "capture_stop_acknowledgement_pending" }, { phase: "interrupted" }),
+  settledPause: () => emit({ state: "paused", statusCode: "capture_paused" }, { phase: "interrupted" }),
+  quiet: () => emit({}, { inputSignal: { microphone: { level: 0, ageMs: 0 }, meetingAudio: null } }),
   close: () => abort.abort(),
 };

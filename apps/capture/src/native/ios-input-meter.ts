@@ -6,9 +6,9 @@ import { parseInputSignal, presentInputSignal, type IosInputSignal } from "./ios
 export class IosInputMeter extends LitElement {
   static override styles = css`
     :host { display: block; min-width: 0; }
-    .feedback { padding: 1rem; border: 1px solid #b9d3ca; border-radius: .75rem; background: #f2f8f5; }
+    .feedback { padding: .75rem; border: 1px solid #b9d3ca; border-radius: .75rem; background: #f2f8f5; }
     .attention { border-color: #bb7926; background: #fff5e5; color: #64410d; }
-    h3 { font-size: 1.15rem; margin: 0 0 .25rem; }
+    h3 { font-size: 1rem; margin: 0 0 .25rem; }
     strong { font-size: .9rem; }
     .bars { display: flex; align-items: end; gap: 4px; height: 32px; margin: .5rem 0; }
     .bar { width: 7px; border-radius: 3px; background: #d5ddd9; }

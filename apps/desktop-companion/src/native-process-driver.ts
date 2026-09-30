@@ -84,6 +84,7 @@ class ProcessSession implements DesktopPCMDriverSession {
   private cancelled = false;
   private failed = false;
   private receivedFrames = 0;
+  private inputSequence = 0;
   private receiving = false;
   private packetWork = Promise.resolve();
   private exitObserved = false;
@@ -229,6 +230,18 @@ class ProcessSession implements DesktopPCMDriverSession {
     }
     const value = nativeMetadata(payload);
     switch (value.type) {
+      case "inputSignal": {
+        if (!exactKeys(value, ["type", "sequence", "channel", "level"])
+          || !integer(value.sequence, this.inputSequence + 1, Number.MAX_SAFE_INTEGER)
+          || value.sequence !== this.inputSequence + 1
+          || value.channel !== "microphone" && value.channel !== "meetingAudio"
+          || typeof value.level !== "number" || !Number.isFinite(value.level) || value.level < 0 || value.level > 1) throw failure();
+        this.inputSequence = value.sequence;
+        if (this.active && !this.failed && !this.cancelled && !this.confirmed && !this.renewalsClosed) {
+          try { this.sink.onInputSignal?.({ channel: value.channel, level: value.level }); } catch { /* Meter is advisory. */ }
+        }
+        return;
+      }
       case "extended": {
         const pending = this.pendingExtension;
         if (!pending || !exactKeys(value, ["type", "request", "generation"])

@@ -92,3 +92,27 @@ private func window(_ id: UInt32 = 73, owner: Int32 = 41, bounds: CGRect = mainB
         #expect(throws: ProviderPresentationFailure.self) { try PresentationCommand.parse(data, protocolVersion: 2) }
     }
 }
+
+@Test func pickerRevealIsBoundToAnEarlierPendingChoiceAndCannotAcceptWindowSelection() throws {
+    func command(_ fields: [String: Any]) throws -> Data {
+        var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: fields)); return data
+    }
+    let valid = try command(["type": "focusChooser", "request": 2, "choiceRequest": 1])
+    if case .focusChooser(2, 1) = try PresentationCommand.parse(valid) {} else {
+        Issue.record("The exact existing picker request was not parsed")
+    }
+    for fields: [String: Any] in [
+        ["type": "focusChooser", "request": 2, "choiceRequest": true],
+        ["type": "focusChooser", "request": 2, "choiceRequest": 0],
+        ["type": "focusChooser", "request": 2, "choiceRequest": 2],
+        ["type": "focusChooser", "request": 2, "choiceRequest": 3],
+        ["type": "focusChooser", "request": 2, "choiceRequest": 1, "windowID": 73],
+    ] {
+        #expect(throws: ProviderPresentationFailure.self) { try PresentationCommand.parse(command(fields)) }
+    }
+}
+
+@Test @MainActor func revealWithoutAnExistingPickerCannotCreateOne() {
+    let picker = MacProviderWindowPicker(enabled: true)
+    #expect(throws: ProviderPresentationFailure.self) { try picker.showWindowChooser() }
+}

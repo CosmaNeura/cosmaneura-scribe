@@ -56,6 +56,8 @@ export interface DesktopProviderRecorderOptions {
   readonly native: Omit<NativeProcessDriverOptions, "enabled" | "authorizeSelectedWindow">;
   /** Native picker, deliberate choice only; never a renderer PID or first window. */
   readonly selectWindow: (signal: AbortSignal) => Promise<Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil">>;
+  /** Reveal only the current native chooser; never select or start another request. */
+  readonly showWindowChooser?: () => Promise<void>;
   /** Retire backend ownership only after the physical native stop barrier. */
   readonly retireSource: () => Promise<void>;
   /** Close creator-scoped stores and release exclusive host ownership after stop. */
@@ -93,6 +95,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private operation: Promise<void> | null = null;
   private action: "prepare" | "start" | "other" | null = null;
   private stopping: Promise<void> | null = null;
+  private stopIntent: { upload: boolean } | null = null;
   private stoppingNative = false;
   private stopConfirmationPending = false;
   private reopenRequired = false;
@@ -101,6 +104,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private deactivated = false;
   private closed = false;
   private captureMayBeActive = false;
+  private inputLevels: Partial<Record<"microphone" | "meetingAudio", { level: number; receivedAt: number }>> = {};
 
   private constructor(private readonly options: DesktopProviderRecorderOptions) {
     if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
@@ -122,6 +126,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       } });
     this.source = new DesktopPcmCaptureSource(driver, async value => {
       await options.coverage.persist(value); this.coverage = structuredClone(value); this.publish();
+    }, value => {
+      if (value === null) this.inputLevels = {};
+      else this.inputLevels[value.channel] = { level: value.level, receivedAt: performance.now() };
+      this.publish();
     });
     const bff = options.createBff(this.signal);
     this.createFlow = () => new CaptureFlowController({ bff, flowStore: options.flowStore, createSessionKey: options.createSessionKey,
@@ -247,8 +255,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
 
   get snapshot(): ProviderRecorderSnapshot {
     const flow = this.flow.snapshot, control = this.controller.snapshot();
-    const phase = this.captureMayBeActive && control.state === "failed" ? "stop_unconfirmed"
-      : this.stoppingNative || this.closing && !this.closed ? "stopping"
+    const phase = this.stoppingNative || this.closing && !this.closed ? "stopping"
+      : this.captureMayBeActive && control.state === "failed" ? "stop_unconfirmed"
+      : this.stopping && (this.stopConfirmationPending || flow.state === "paused") ? "stopping"
       : this.stopping && !this.captureMayBeActive ? "stopped"
       : this.reopenRequired && flow.state === "error" ? "stopped"
       : this.action === "start" ? "starting" : control.state === "recording" && flow.state === "recording" ? "recording"
@@ -265,11 +274,17 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : phase === "ready" && this.startFailed && flow.statusCode !== "capture_storage_low" ? "capture_start_failed"
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
-      desktop: { phase, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
+      desktop: { phase, inputSignal: { microphone: this.inputLevel("microphone", phase),
+        meetingAudio: this.inputLevel("meetingAudio", phase) }, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
         : this.coverage ? phase === "recording" ? "aligned" : "incomplete" : "not_started",
       trimmedStartMs: start ? milliseconds(start.microphonePrerollNanoseconds, start.systemPrerollNanoseconds) : 0,
       trimmedEndMs: this.coverage?.phase === "stopped"
         ? milliseconds(this.coverage.value.microphoneTailNanoseconds, this.coverage.value.systemTailNanoseconds) : null } };
+  }
+  private inputLevel(channel: "microphone" | "meetingAudio", phase: string): { level: number; ageMs: number } | null {
+    const value = this.inputLevels[channel];
+    if (phase !== "recording" || !value) return null;
+    return { level: value.level, ageMs: Math.max(0, Math.floor(performance.now() - value.receivedAt)) };
   }
   get availableForView(): boolean { return !this.deactivated && !this.signal.aborted; }
   subscribe(listener: (value: ProviderRecorderSnapshot) => void): () => void {
@@ -337,44 +352,59 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   pauseRecording(): Promise<void> { return this.stopCapture(false); }
   private stopCapture(upload: boolean): Promise<void> {
     this.requireOpen();
-    if (this.stopping) return this.stopping;
+    if (this.stopping) {
+      // Finish may arrive while an interruption is already settling. Preserve
+      // that deliberate upload request without starting a second stop owner.
+      if (upload && this.stopIntent) this.stopIntent.upload = true;
+      return this.stopping;
+    }
     if (this.operation && this.action !== "start") return Promise.reject(unavailable());
+    const intent = this.stopIntent = { upload };
     this.stoppingNative = true;
     if (this.action === "start") this.attempt?.abort();
     const prior = this.operation;
     this.stopping = (async () => {
-      await prior?.catch(() => undefined); this.requireOpen();
-      this.unmountedAvailability = null;
-      if (this.controller.snapshot().state === "recording") {
-        await this.controller.handleRendererCommand({ schemaVersion: 1, kind: "stop", requestId: crypto.randomUUID() });
-      } else await this.controller.shutdownFromMain(crypto.randomUUID());
-      this.requireOpen();
-      this.stoppingNative = false; this.publish();
-      if (this.controller.snapshot().state !== "stopped" || this.captureMayBeActive) throw unavailable();
-      // Persist the physical pause and stop its lease timer before waiting on
-      // the server. A lost reply keeps the same encrypted work and owner retry.
-      await this.flow.deactivate();
-      this.stopConfirmationPending = true; this.publish();
-      await this.options.retireSource(); this.requireOpen();
-      this.stopConfirmationPending = false;
-      // Server acknowledgement and upload are outside the bounded native stop/indicator operation.
-      if (this.flow.snapshot.state === "ready") await this.recoverUnstartedCapture();
-      else if (["recording", "paused"].includes(this.flow.snapshot.state)) {
-        if (upload) await this.flow.stopRecording(); else await this.flow.pauseRecording();
-      } else if (this.flow.snapshot.state === "error") {
-        const saved = await this.options.flowStore.getActiveCaptureState(); this.requireOpen();
-        if (!saved || saved.sessionId !== this.options.sessionId || saved.phase !== "paused"
-          || saved.channel !== "mixed" || saved.reviewAfterUpload !== true) throw unavailable();
-        // Physical closure and original-owner retirement are confirmed above.
-        // Keep the unknown error; normal same-encounter reopen revalidates the
-        // durable state. This changes presentation only, never capture authority.
-        this.reopenRequired = true;
+      try {
+        await prior?.catch(() => undefined); this.requireOpen();
+        this.unmountedAvailability = null;
+        if (this.controller.snapshot().state === "recording") {
+          await this.controller.handleRendererCommand({ schemaVersion: 1, kind: "stop", requestId: crypto.randomUUID() });
+        } else await this.controller.shutdownFromMain(crypto.randomUUID());
+        this.requireOpen();
+        this.stoppingNative = false; this.publish();
+        if (this.controller.snapshot().state !== "stopped" || this.captureMayBeActive) throw unavailable();
+        // Persist the physical pause and stop its lease timer before waiting on
+        // the server. A lost reply keeps the same encrypted work and owner retry.
+        await this.flow.deactivate();
+        this.stopConfirmationPending = true; this.publish();
+        await this.options.retireSource(); this.requireOpen();
+        this.stopConfirmationPending = false;
+        // Server acknowledgement and upload are outside the bounded native stop/indicator operation.
+        if (this.flow.snapshot.state === "ready") await this.recoverUnstartedCapture();
+        else if (["recording", "paused"].includes(this.flow.snapshot.state)) {
+          if (!intent.upload) await this.flow.pauseRecording();
+          // Recheck after the durable pause: Finish can be requested while its
+          // encrypted state is being saved. Automatic interruption never uploads.
+          if (intent.upload) await this.flow.stopRecording();
+        } else if (this.flow.snapshot.state === "error") {
+          const saved = await this.options.flowStore.getActiveCaptureState(); this.requireOpen();
+          if (!saved || saved.sessionId !== this.options.sessionId || saved.phase !== "paused"
+            || saved.channel !== "mixed" || saved.reviewAfterUpload !== true) throw unavailable();
+          // Physical closure and original-owner retirement are confirmed above.
+          // Keep the unknown error; normal same-encounter reopen revalidates the
+          // durable state. This changes presentation only, never capture authority.
+          this.reopenRequired = true;
+        }
+      } finally {
+        // Clear the shared intent in this same continuation, with no additional
+        // promise-finally gap in which a late Finish could be silently lost.
+        this.stopping = null; this.stopIntent = null; this.stoppingNative = false; this.publish();
       }
-    })().finally(() => { this.stopping = null; this.stoppingNative = false; this.publish(); });
+    })();
     this.publish(); return this.stopping;
   }
   resumeRecording(): Promise<void> {
-    if (this.flow.snapshot.state !== "paused") return Promise.reject(unavailable());
+    if (this.flow.snapshot.state !== "paused" || this.stopConfirmationPending) return Promise.reject(unavailable());
     return this.run("other", async () => {
       // The preceding helper and server owner must both be retired before any renewal.
       await this.controller.shutdownFromMain(crypto.randomUUID()); this.requireOpen();
@@ -438,6 +468,15 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.publish(); return this.closing;
   }
   private readonly onRevocation = (): void => { void this.deactivate().catch(() => undefined); };
+  async showWindowChooser(): Promise<void> {
+    this.requireOpen();
+    const attempt = this.attempt;
+    if (!this.choosingWindow || !attempt || attempt.signal.aborted || this.action !== "start"
+      || this.stopping || !this.options.showWindowChooser) throw unavailable();
+    await this.options.showWindowChooser();
+    this.requireOpen();
+    if (attempt !== this.attempt || attempt.signal.aborted) throw unavailable();
+  }
   private halt(): Promise<void> {
     return this.halting ??= this.flow.deactivate().then(() => { this.captureMayBeActive = false; })
       .finally(() => { this.halting = null; this.publish(); });
@@ -461,6 +500,13 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         // failed flow. Cancellation also discards any later native selection.
         if (this.choosingWindow) this.attempt?.abort();
         for (const listener of this.adapterListeners) listener({ kind: "failed" });
+        if (snapshot.state === "paused" && this.captureMayBeActive && !this.stopping) {
+          // Do not await inside the source callback: its accepted encrypted
+          // chunks and pause journal must finish before retirement can settle.
+          // Reuse the physical stop and exact server-owner recovery path now,
+          // rather than making the provider wait for it on a later Resume.
+          void this.stopCapture(false).catch(() => undefined);
+        }
       }
       this.publish();
     });

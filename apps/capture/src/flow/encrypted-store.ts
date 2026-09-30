@@ -6,6 +6,8 @@ import {
   CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
   CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
   CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION,
+  WINDOW_PREPARATION_SCHEMA_VERSION,
+  SERVER_CONTINUATION_SCHEMA_VERSION,
   type ActiveCaptureState,
   type CaptureFlowStore,
   type CapturePreparationState,
@@ -415,15 +417,16 @@ function validCaptureChannelVersion(value: Record<string, unknown>): boolean {
 
 function validActiveChannelVersion(value: Record<string, unknown>): boolean {
   return validCaptureChannelVersion(value) && value.continuation === undefined
-    || [CONTINUATION_FLOW_RECORD_SCHEMA_VERSION, CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION].includes(value.schemaVersion as 4 | 5) && value.reviewAfterUpload === true
+    || [CONTINUATION_FLOW_RECORD_SCHEMA_VERSION, CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION, SERVER_CONTINUATION_SCHEMA_VERSION].includes(value.schemaVersion as 4 | 5 | 7) && value.reviewAfterUpload === true
       && (value.channel === undefined || value.channel === "mixed" || value.channel === "system_audio");
 }
 
 export function assertPreparationState(value: unknown): asserts value is CapturePreparationState {
   if (isRecord(value) && value.mode === "configured_core") {
-    if (Object.keys(value).filter(key => key !== "channel").sort().join(",") !==
+    const compound = value.schemaVersion === WINDOW_PREPARATION_SCHEMA_VERSION;
+    if (Object.keys(value).filter(key => key !== "channel" && (!compound || key !== "windowPreparation")).sort().join(",") !==
         "completeIdempotencyKey,leaseIdempotencyKey,leaseRequest,mode,schemaVersion,sessionId,startedAt"
-      || !validCaptureChannelVersion(value)
+      || !(compound ? value.channel === undefined || value.channel === "mixed" || value.channel === "system_audio" : validCaptureChannelVersion(value))
       || typeof value.startedAt !== "string" || !Number.isFinite(Date.parse(value.startedAt))
       || typeof value.sessionId !== "string" || typeof value.completeIdempotencyKey !== "string"
       || (value.leaseIdempotencyKey !== null && typeof value.leaseIdempotencyKey !== "string")
@@ -436,6 +439,28 @@ export function assertPreparationState(value: unknown): asserts value is Capture
     assertUuid(value.sessionId, "invalid_preparation_state");
     assertIdempotencyKey(value.completeIdempotencyKey);
     if (value.leaseIdempotencyKey !== null) assertIdempotencyKey(value.leaseIdempotencyKey);
+    if (compound) {
+      if (!("windowPreparation" in value)) throw new QueueInvariantError("invalid_preparation_state");
+      const intent = value.windowPreparation;
+      if (intent !== null) {
+        if (!isRecord(intent) || Object.keys(intent).sort().join(",") !==
+          "aggregatePlaintextBudgetBytes,bindIdempotencyKey,idempotencyKey,keyVersion,reservationCount,reserveIdempotencyKey,wrappedDek"
+          || value.leaseIdempotencyKey === null
+          || typeof intent.keyVersion !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(intent.keyVersion)
+          || typeof intent.wrappedDek !== "string" || !/^[A-Za-z0-9_-]{512}$/u.test(intent.wrappedDek)
+          || !Number.isSafeInteger(intent.reservationCount) || (intent.reservationCount as number) < 1 || (intent.reservationCount as number) > 90
+          || !Number.isSafeInteger(intent.aggregatePlaintextBudgetBytes) || (intent.aggregatePlaintextBudgetBytes as number) < 1) {
+          throw new QueueInvariantError("invalid_preparation_state");
+        }
+        for (const key of ["idempotencyKey", "bindIdempotencyKey", "reserveIdempotencyKey"] as const) {
+          if (typeof intent[key] !== "string") throw new QueueInvariantError("invalid_preparation_state");
+          assertIdempotencyKey(intent[key]);
+        }
+        if (new Set([intent.idempotencyKey, intent.bindIdempotencyKey, intent.reserveIdempotencyKey, value.leaseIdempotencyKey]).size !== 4) {
+          throw new QueueInvariantError("invalid_preparation_state");
+        }
+      }
+    }
     return;
   }
   if (
@@ -483,7 +508,9 @@ export function assertPreparationProgression(
       || existing.completeIdempotencyKey !== replacement.completeIdempotencyKey
       || existing.schemaVersion !== replacement.schemaVersion || existing.channel !== replacement.channel
       || !nullableStable(existing.leaseIdempotencyKey, replacement.leaseIdempotencyKey)
-      || !nullableStableJson(existing.leaseRequest, replacement.leaseRequest)) {
+      || !nullableStableJson(existing.leaseRequest, replacement.leaseRequest)
+      || !nullableStableJson(existing.windowPreparation ? { ...existing.windowPreparation } : null,
+        replacement.windowPreparation ? { ...replacement.windowPreparation } : null)) {
       throw new QueueInvariantError("preparation_state_conflict");
     }
     return;
@@ -549,23 +576,36 @@ export function assertActiveCaptureState(value: unknown): asserts value is Activ
     throw new QueueInvariantError("invalid_active_capture_state");
   }
   assertLease(value.lease, value.sessionId);
-  if ([CONTINUATION_FLOW_RECORD_SCHEMA_VERSION, CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION].includes(value.schemaVersion as 4 | 5)) {
+  if ([CONTINUATION_FLOW_RECORD_SCHEMA_VERSION, CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION, SERVER_CONTINUATION_SCHEMA_VERSION].includes(value.schemaVersion as 4 | 5 | 7)) {
     const next = value.continuation;
     const continuous = isRecord(next) && next.continuous === true;
-    if (!isRecord(next) || Object.keys(next).sort().join(",") !==
+    const compound = isRecord(next) && next.windowRequest !== undefined;
+    if (!isRecord(next) || Object.keys(next).filter(key => !compound || key !== "windowRequest").sort().join(",") !==
         (continuous ? "continuous,firstSequenceNumber,prepared,previousLease,renewIdempotencyKey,reservationCount"
           : "firstSequenceNumber,prepared,previousLease,renewIdempotencyKey,reservationCount")
-      || continuous && (value.schemaVersion !== CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION || value.channel !== "mixed")
+      || continuous && (![CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION, SERVER_CONTINUATION_SCHEMA_VERSION].includes(value.schemaVersion as 5 | 7) || value.channel !== "mixed")
+      || compound && (value.schemaVersion !== SERVER_CONTINUATION_SCHEMA_VERSION || continuous || value.channel === "system_audio")
       || typeof next.prepared !== "boolean"
       || !Number.isSafeInteger(next.firstSequenceNumber) || (next.firstSequenceNumber as number) < 0
       || (next.firstSequenceNumber as number) > (value.recordedChunks as number)
-      || !Number.isSafeInteger(next.reservationCount) || (next.reservationCount as number) < 1
+      || !Number.isSafeInteger(next.reservationCount) || (next.reservationCount as number) < (compound ? 0 : 1)
       || (next.reservationCount as number) > 90
       || (next.firstSequenceNumber as number) + (next.reservationCount as number) > MAX_CHUNKS
       || typeof next.renewIdempotencyKey !== "string" || !isRecord(next.previousLease)) {
       throw new QueueInvariantError("invalid_active_capture_state");
     }
     assertIdempotencyKey(next.renewIdempotencyKey); assertLease(next.previousLease, value.sessionId);
+    if (compound) {
+      const request = next.windowRequest;
+      if (!isRecord(request) || Object.keys(request).sort().join(",") !== "idempotencyKey,reservationIdempotencyKey"
+        || typeof request.idempotencyKey !== "string" || typeof request.reservationIdempotencyKey !== "string"
+        || new Set([request.idempotencyKey, request.reservationIdempotencyKey, next.renewIdempotencyKey]).size !== 3
+        || next.reservationCount === 0 && (next.prepared !== false || value.phase !== "paused"
+          || value.lease.generation !== next.previousLease.generation)) {
+        throw new QueueInvariantError("invalid_active_capture_state");
+      }
+      assertIdempotencyKey(request.idempotencyKey); assertIdempotencyKey(request.reservationIdempotencyKey);
+    }
     if (next.previousLease.lease_id !== value.lease.lease_id
       || ![next.previousLease.generation, (next.previousLease.generation as number) + 1].includes(value.lease.generation)
       || !continuous && value.lease.generation === next.previousLease.generation && value.phase !== "paused"
@@ -594,7 +634,10 @@ export function assertActiveCaptureProgression(
       : existing.phase === "paused" && replacement.phase === "ready")
     && replacement.lease.generation === existing.continuation.previousLease.generation + 1
     && replacement.captureAuthorizedUntil === replacement.lease.expires_at;
-  const renewed = existing.continuation !== undefined && same(existing.continuation, replacement.continuation)
+  const serverCount = existing.continuation?.windowRequest !== undefined && existing.continuation.reservationCount === 0
+    && replacement.continuation !== undefined && replacement.continuation.reservationCount > 0
+    && same({ ...existing.continuation, reservationCount: replacement.continuation.reservationCount }, replacement.continuation);
+  const renewed = existing.continuation !== undefined && (same(existing.continuation, replacement.continuation) || serverCount)
     && same(existing.lease, existing.continuation.previousLease)
     && replacement.lease.lease_id === existing.lease.lease_id
     && replacement.lease.session_id === existing.sessionId
@@ -623,9 +666,10 @@ export function assertActiveCaptureProgression(
   }
   if (
     (!same(existing.lease, replacement.lease) && !renewed) ||
-    (!same(existing.continuation, replacement.continuation) && !begins && !prepared) ||
-    (existing.schemaVersion !== replacement.schemaVersion && !(begins && (replacement.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION && existing.schemaVersion !== CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION
-      || replacement.schemaVersion === CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION))) || existing.channel !== replacement.channel ||
+    (!same(existing.continuation, replacement.continuation) && !begins && !prepared && !(serverCount && renewed)) ||
+    (existing.schemaVersion !== replacement.schemaVersion && !(begins && existing.schemaVersion !== SERVER_CONTINUATION_SCHEMA_VERSION
+      && (replacement.schemaVersion === CONTINUATION_FLOW_RECORD_SCHEMA_VERSION && existing.schemaVersion !== CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION
+      || replacement.schemaVersion === CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION || replacement.schemaVersion === SERVER_CONTINUATION_SCHEMA_VERSION))) || existing.channel !== replacement.channel ||
     existing.reviewAfterUpload !== replacement.reviewAfterUpload ||
     existing.completeIdempotencyKey !== replacement.completeIdempotencyKey ||
     existing.startedAt !== replacement.startedAt ||

@@ -163,3 +163,17 @@ cosmaneura-capture .provider-native-capture .recording-duration span { font-size
     grid-template-columns: minmax(0, 1fr) auto;
   }
 }
+
+/* One patient, status and control group across the native recorder surfaces. */
+cosmaneura-capture .recording-patient { display: grid; gap: .2rem; min-width: 0; }
+cosmaneura-capture .recording-patient strong { color: #12372d; font-size: 1.1rem; overflow-wrap: anywhere; }
+cosmaneura-capture .recording-patient span { color: #536860; font-size: .85rem; }
+cosmaneura-capture .recording-recovery { font-size: .85rem; }
+cosmaneura-capture .provider-native-capture .record-actions,
+cosmaneura-capture .provider-desktop-capture .record-actions { gap: .5rem; }
+cosmaneura-capture .provider-native-capture .record-actions button,
+cosmaneura-capture .provider-desktop-capture .record-actions button { min-height: 44px; }
+cosmaneura-capture [data-testid="stop-button"] { background: #a52026; color: white; }
+cosmaneura-capture .provider-desktop-compact .recording-patient { gap: 2px; }
+cosmaneura-capture .provider-desktop-compact .recording-patient strong { font-size: 16px; }
+cosmaneura-capture .provider-desktop-compact .recording-patient span { font-size: 12px; }

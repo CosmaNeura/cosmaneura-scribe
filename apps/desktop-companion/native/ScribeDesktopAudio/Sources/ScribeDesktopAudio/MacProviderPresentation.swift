@@ -77,6 +77,17 @@ public final class MacProviderWindowPicker: NSObject, NSWindowDelegate {
         return selection
     }
 
+    /// A second request only reveals this same pending picker. It never reruns
+    /// discovery, selects a row, or creates a new capture request.
+    public func showWindowChooser() throws {
+        guard choosing, continuation != nil, requestID != nil, let panel else {
+            throw ProviderPresentationFailure.unavailable
+        }
+        panel.deminiaturize(nil)
+        panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        guard panel.isVisible else { throw ProviderPresentationFailure.unavailable }
+    }
+
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender === panel, let requestID { finish(.failure(ProviderPresentationFailure.cancelled), attempt: requestID) }
         return false

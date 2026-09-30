@@ -45,6 +45,10 @@ export interface DesktopCaptureAuthorization {
   readonly maximumOutputFrames: number;
   readonly hardMaximumOutputFrames: number;
 }
+export interface DesktopInputSignal {
+  readonly channel: "microphone" | "meetingAudio";
+  readonly level: number;
+}
 export interface DesktopPCMDriver {
   /** Permission/unlocked-session read only. Focus loss is not desktop lock. */
   getAvailability(): Promise<boolean>;
@@ -56,5 +60,6 @@ export interface DesktopPCMDriver {
     readonly authorization?: DesktopCaptureAuthorization }, sink: {
     readonly onPcmPacket: (packet: DesktopPCMPacket) => Promise<void>;
     readonly onFailure: (code: DesktopPCMFailure) => void;
+    readonly onInputSignal?: (signal: DesktopInputSignal) => void;
   }): DesktopPCMDriverSession;
 }

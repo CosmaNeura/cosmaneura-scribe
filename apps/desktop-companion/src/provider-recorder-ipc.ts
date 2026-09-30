@@ -50,6 +50,7 @@ export class DesktopProviderRecorderIpc {
           case "pause": await this.recorder.pauseRecording(); break;
           case "continue": await this.recorder.resumeRecording(); break;
           case "permissions": await this.recorder.refreshPermissions(); break;
+          case "show_chooser": await this.recorder.showWindowChooser(); break;
           case "resume": await this.recorder.resumePendingWork(); break;
           case "release": await this.recorder.releaseUploadedCapture(); break;
           case "deactivate": await this.recorder.deactivate(); break;

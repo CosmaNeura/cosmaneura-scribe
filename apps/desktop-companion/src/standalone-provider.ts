@@ -96,6 +96,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
             openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
             indicator: presentation, presentation, selectWindow: presentation.selectWindow,
+            showWindowChooser: presentation.showWindowChooser,
             ...(runtime.recordingWindow ? { recordingWindow: runtime.recordingWindow } : {}),
             native: { ...audioOptions, diagnostics, isSessionActive: () => !linked.aborted && native.isReady() },
           }, linked);

@@ -130,6 +130,15 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
     } finally { signal.removeEventListener("abort", cancel); }
   };
 
+  /** Raise only the exact choice already pending in this native process. */
+  readonly showWindowChooser = async (): Promise<void> => {
+    requireMain();
+    const choiceRequest = this.choice;
+    if (!this.isHealthy() || choiceRequest === null || this.cancellingChoice !== null
+      || this.active !== null || this.publishing) throw unavailable();
+    await this.request("focusChooser", "chooserFocused", { choiceRequest }).promise;
+  };
+
   async publish(snapshot: RecordingIndicatorSnapshot): Promise<void> {
     requireMain();
     snapshot = Object.freeze({ ...snapshot });

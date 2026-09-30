@@ -13,6 +13,8 @@ import type {
   CaptureLeaseReceipt,
   CaptureTranscriptionStatus,
   ChunkReservationBatchReceipt,
+  PrepareRecordingWindowRequest,
+  PrepareContinuationWindowRequest,
   ConsentCreate,
   Transcript,
 } from "../bff/contracts";
@@ -39,6 +41,8 @@ import {
   CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
   CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
   CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION,
+  WINDOW_PREPARATION_SCHEMA_VERSION,
+  SERVER_CONTINUATION_SCHEMA_VERSION,
   type ActiveCapturePhase,
   type ActiveCaptureState,
   type CaptureFlowState,
@@ -321,6 +325,7 @@ export class CaptureFlowController {
       const preparation: ConfiguredCapturePreparationState = {
         mode: "configured_core",
         ...this.#channelState(),
+        ...(this.#bff.prepareRecordingWindow ? { schemaVersion: WINDOW_PREPARATION_SCHEMA_VERSION, windowPreparation: null } : {}),
         sessionId,
         startedAt: this.#now().toISOString(),
         completeIdempotencyKey: this.#operationKey("complete"),
@@ -389,6 +394,9 @@ export class CaptureFlowController {
     this.#reviewAfterUpload = preparation.mode === "configured_core";
     this.#sessionId = sessionId;
     this.#setSnapshot({ sessionId });
+    if (preparation.mode === "configured_core" && preparation.schemaVersion === WINDOW_PREPARATION_SCHEMA_VERSION) {
+      await this.#prepareRecordingWindow(preparation); return;
+    }
 
     // Capabilities are a consent-scoped read that does not require the audio key.
     // Overlap that round trip with key binding, and settle both before advancing
@@ -599,7 +607,8 @@ export class CaptureFlowController {
       const count = Math.min(capabilities.max_reservations_per_batch, capabilities.max_chunks - first,
         unused + Math.floor(capabilities.remaining_aggregate_plaintext_bytes / capabilities.max_envelope_bytes));
       if (!Number.isSafeInteger(count) || count < 1) throw new QueueInvariantError("capture_budget_exhausted");
-      return { ...current, schemaVersion: CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION,
+      return { ...current, schemaVersion: current.schemaVersion === SERVER_CONTINUATION_SCHEMA_VERSION
+        ? SERVER_CONTINUATION_SCHEMA_VERSION : CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION,
         continuation: { continuous: true, prepared: false, firstSequenceNumber: first, reservationCount: count,
           previousLease: current.lease, renewIdempotencyKey: this.#operationKey("renew") } };
     });
@@ -657,10 +666,15 @@ export class CaptureFlowController {
     try {
       await this.#resolveContinuousLease();
       let active = this.#requireActiveState();
-      // An interrupted preparation reuses the same renewal/reservation intent.
-      if (!active.continuation || active.continuation.continuous || active.continuation.prepared
+      const needsNew = !active.continuation || active.continuation.continuous || active.continuation.prepared
         || active.lease.generation > active.continuation.previousLease.generation
-          && Date.parse(active.lease.expires_at) <= this.#now().getTime()) {
+          && Date.parse(active.lease.expires_at) <= this.#now().getTime();
+      if (active.continuation?.windowRequest && !active.continuation.prepared
+        || needsNew && this.#bff.prepareContinuationWindow && this.#channel !== "system_audio") {
+        await this.#prepareServerContinuation(active); return;
+      }
+      // An interrupted preparation reuses the same renewal/reservation intent.
+      if (needsNew) {
         this.#setCapabilities(await this.#bff.getCapabilities(active.sessionId));
         const capabilities = this.#requireCapabilities();
         const first = active.recordedChunks;
@@ -668,8 +682,9 @@ export class CaptureFlowController {
         const count = Math.min(capabilities.max_reservations_per_batch, capabilities.max_chunks - first,
           unused + Math.floor(capabilities.remaining_aggregate_plaintext_bytes / capabilities.max_envelope_bytes));
         if (!Number.isSafeInteger(count) || count < 1) throw new QueueInvariantError("capture_budget_exhausted");
-        active = { ...active, schemaVersion: active.schemaVersion === CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION
-          ? CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION : CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
+        active = { ...active, schemaVersion: active.schemaVersion === SERVER_CONTINUATION_SCHEMA_VERSION
+          ? SERVER_CONTINUATION_SCHEMA_VERSION : active.schemaVersion === CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION
+            ? CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION : CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
           continuation: { prepared: false, firstSequenceNumber: first, reservationCount: count, previousLease: active.lease,
             renewIdempotencyKey: this.#operationKey("renew") } };
         await this.#flowStore.putActiveCaptureState(active);
@@ -707,6 +722,67 @@ export class CaptureFlowController {
   public async resumeRecording(): Promise<void> {
     await this.prepareContinuation();
     await this.startRecording();
+  }
+
+  async #prepareServerContinuation(initial: ActiveCaptureState): Promise<void> {
+    if (!this.#bff.prepareContinuationWindow || this.#channel === "system_audio") {
+      throw new QueueInvariantError("continuation_window_receiver_required");
+    }
+    let active = initial;
+    if (!active.continuation?.windowRequest || active.continuation.prepared) {
+      active = { ...active, schemaVersion: SERVER_CONTINUATION_SCHEMA_VERSION,
+        continuation: { prepared: false, firstSequenceNumber: active.recordedChunks, reservationCount: 0,
+          previousLease: active.lease, renewIdempotencyKey: this.#operationKey("renew"), windowRequest: {
+            idempotencyKey: this.#operationKey("continue-window"), reservationIdempotencyKey: this.#operationKey("reserve"),
+          } } };
+      // The server decides and freezes the count. Zero is a pending sentinel,
+      // never capture authority, and is invalid for any ready/recording state.
+      await this.#flowStore.putActiveCaptureState(active); this.#activeState = active;
+    }
+    let continuation = active.continuation!;
+    const saved = continuation.windowRequest!;
+    if (continuation.reservationCount === 0) {
+      const request: PrepareContinuationWindowRequest = { schema_version: "1.0", channel: this.#channel,
+        first_sequence_number: continuation.firstSequenceNumber, previous_lease_id: continuation.previousLease.lease_id,
+        previous_lease_generation: continuation.previousLease.generation, renew_idempotency_key: continuation.renewIdempotencyKey,
+        reservation_idempotency_key: saved.reservationIdempotencyKey };
+      const result = await this.#bff.prepareContinuationWindow(active.sessionId, request, { idempotencyKey: saved.idempotencyKey });
+      const lease = result.lease, batch = result.reservations, count = batch.reservations.length;
+      const first = continuation.firstSequenceNumber;
+      if (result.schema_version !== "1.0" || lease.protocol_version !== PROTOCOL_VERSION || lease.session_id !== active.sessionId
+        || lease.lease_id !== continuation.previousLease.lease_id || lease.generation !== continuation.previousLease.generation + 1
+        || lease.receipt_id === continuation.previousLease.receipt_id
+        || !Number.isFinite(Date.parse(lease.expires_at)) || Date.parse(lease.expires_at) <= this.#now().getTime()
+        || batch.protocol_version !== PROTOCOL_VERSION || batch.session_id !== active.sessionId || batch.capture_authorized_until !== lease.expires_at
+        || count < 1 || count > this.#requireCapabilities().max_reservations_per_batch
+        || first + count > this.#requireCapabilities().max_chunks
+        || batch.reservations.some((row, index) => row.session_id !== active.sessionId || row.channel !== this.#channel
+          || row.sequence_number !== first + index)) throw new QueueInvariantError("invalid_continuation_window_receipt");
+      const reservation: ReservationIntent = { schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
+        intentId: `${active.sessionId}:${this.#channel}:${String(first)}:${String(count)}:${String(lease.generation)}`,
+        sessionId: active.sessionId, idempotencyKey: saved.reservationIdempotencyKey, createdAt: lease.issued_at,
+        request: { protocol_version: PROTOCOL_VERSION, capture_lease_id: lease.lease_id, capture_lease_generation: lease.generation,
+          channel: this.#channel, first_sequence_number: first, count } };
+      await this.#flowStore.putReservationIntent(reservation);
+      continuation = { ...continuation, reservationCount: count };
+      active = { ...active, lease, continuation, captureAuthorizedUntil: null };
+      await this.#flowStore.putActiveCaptureState(active);
+      this.#activeState = active; this.#lease = lease;
+      await this.#persistReservations(batch, reservation);
+      await this.#flowStore.deleteReservationIntent(reservation.intentId);
+    } else {
+      // A confirmed combined reply was persisted before a local queue failure.
+      // The original reserve key recovers the same canonical batch.
+      await this.#recoverReservationIntents();
+    }
+    if (!this.#hasActiveCaptureAuthority()) throw new QueueInvariantError("capture_authority_expired");
+    this.#authorityExpiryRequested = false;
+    const ready: ActiveCaptureState = { ...this.#requireActiveState(), phase: "ready",
+      continuation: { ...continuation, prepared: true } };
+    await this.#flowStore.putActiveCaptureState(ready); this.#activeState = ready;
+    this.#setSnapshot({ state: "ready", statusCode: "capture_continuation_ready",
+      remainingAuthoritySeconds: this.#remainingCaptureSeconds(active.recordedChunks) });
+    this.#armAuthorityDeadline();
   }
 
   public async stopRecording(): Promise<void> {
@@ -920,6 +996,82 @@ export class CaptureFlowController {
     await this.#saveActivePhase("processing");
     this.#setSnapshot({ state: "processing", statusCode: "synthetic_preview_processing" });
     await this.refreshTranscriptionStatus();
+  }
+
+  async #prepareRecordingWindow(initial: ConfiguredCapturePreparationState): Promise<void> {
+    if (!this.#bff.prepareRecordingWindow) throw new QueueInvariantError("recording_window_receiver_required");
+    const sessionId = initial.sessionId;
+    const pendingKey = async (): Promise<SessionKeyBindingState> => {
+      const retained = await this.#flowStore.getSessionKeyState(sessionId);
+      if (retained) return retained;
+      const candidate = await this.#createSessionKeyCandidate(sessionId);
+      await this.#flowStore.putSessionKeyCandidate(candidate.state, candidate.key);
+      return candidate.state;
+    };
+    const [keyResult, capabilitiesResult] = await Promise.allSettled([pendingKey(), this.#bff.getCapabilities(sessionId)]);
+    if (keyResult.status === "rejected") throw keyResult.reason;
+    if (capabilitiesResult.status === "rejected") throw capabilitiesResult.reason;
+    const key = keyResult.value;
+    this.#setCapabilities(capabilitiesResult.value);
+    let preparation = initial;
+    if (!preparation.windowPreparation) {
+      const capabilities = this.#requireCapabilities();
+      const count = Math.min(capabilities.max_reservations_per_batch, capabilities.max_chunks,
+        Math.floor(capabilities.remaining_aggregate_plaintext_bytes / capabilities.max_envelope_bytes));
+      if (!Number.isSafeInteger(count) || count < 1) throw new QueueInvariantError("capture_budget_exhausted");
+      preparation = { ...preparation, leaseIdempotencyKey: this.#operationKey("lease"),
+        leaseRequest: { protocol_version: PROTOCOL_VERSION }, windowPreparation: {
+          idempotencyKey: this.#operationKey("prepare-window"), bindIdempotencyKey: key.idempotencyKey,
+          reserveIdempotencyKey: this.#operationKey("reserve"), keyVersion: key.keyVersion, wrappedDek: key.wrappedDek,
+          reservationCount: count, aggregatePlaintextBudgetBytes: capabilities.remaining_aggregate_plaintext_bytes,
+        } };
+      // Every recipe/key is durable before any server mutation. Never replace
+      // this intent or fall back to individually generated keys after uncertainty.
+      await this.#flowStore.putPreparationState(preparation);
+    }
+    const intent = preparation.windowPreparation!;
+    if (!preparation.leaseIdempotencyKey || key.keyVersion !== intent.keyVersion || key.wrappedDek !== intent.wrappedDek
+      || key.idempotencyKey !== intent.bindIdempotencyKey) throw new CaptureDeviceCustodyError();
+    const request: PrepareRecordingWindowRequest = { schema_version: "1.0",
+      binding: { key_version: intent.keyVersion, wrapped_dek: intent.wrappedDek },
+      bind_idempotency_key: intent.bindIdempotencyKey, lease_idempotency_key: preparation.leaseIdempotencyKey,
+      reserve_idempotency_key: intent.reserveIdempotencyKey, channel: this.#channel, reservation_count: intent.reservationCount };
+    let result;
+    try { result = await this.#bff.prepareRecordingWindow(sessionId, request, { idempotencyKey: intent.idempotencyKey }); }
+    catch (error) {
+      if (error instanceof BffResponseError && error.status === 409) throw new CaptureDeviceCustodyError();
+      throw error;
+    }
+    const lease = result.lease, batch = result.reservations;
+    if (result.schema_version !== "1.0" || result.binding.session_id !== sessionId || result.binding.key_version !== key.keyVersion
+      || lease.session_id !== sessionId || lease.protocol_version !== PROTOCOL_VERSION || lease.generation !== 1
+      || !Number.isFinite(Date.parse(lease.expires_at)) || Date.parse(lease.expires_at) <= this.#now().getTime()
+      || batch.protocol_version !== PROTOCOL_VERSION || batch.session_id !== sessionId || batch.capture_authorized_until !== lease.expires_at
+      || batch.reservations.length !== intent.reservationCount
+      || batch.reservations.some((row, index) => row.sequence_number !== index || row.channel !== this.#channel || row.session_id !== sessionId)) {
+      throw new QueueInvariantError("invalid_recording_window_receipt");
+    }
+    // Persist the original reservation intent before publishing active state.
+    // A crash during local receipt application then reuses its exact server key.
+    const reservation: ReservationIntent = { schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
+      intentId: `${sessionId}:${this.#channel}:0:${String(intent.reservationCount)}:${String(lease.generation)}`,
+      sessionId, idempotencyKey: intent.reserveIdempotencyKey, createdAt: preparation.startedAt,
+      request: { protocol_version: PROTOCOL_VERSION, capture_lease_id: lease.lease_id,
+        capture_lease_generation: lease.generation, channel: this.#channel, first_sequence_number: 0, count: intent.reservationCount } };
+    await this.#flowStore.putReservationIntent(reservation);
+    await this.#flowStore.markSessionKeyBound(sessionId);
+    this.#lease = lease;
+    this.#activeState = { ...this.#channelState(), sessionId, lease, captureAuthorizedUntil: null,
+      aggregatePlaintextBudgetBytes: intent.aggregatePlaintextBudgetBytes, phase: "ready",
+      completeIdempotencyKey: preparation.completeIdempotencyKey, recordedChunks: 0, recordedPlaintextBytes: 0,
+      startedAt: preparation.startedAt, reviewAfterUpload: true };
+    await this.#flowStore.putActiveCaptureState(this.#activeState);
+    await this.#persistReservations(batch, reservation);
+    await this.#flowStore.deleteReservationIntent(reservation.intentId);
+    if (!this.#hasActiveCaptureAuthority()) throw new QueueInvariantError("capture_authority_expired");
+    this.#setSnapshot({ state: "ready", statusCode: "capture_ready", remainingBudgetSeconds: this.#remainingAggregateBudgetSeconds(0),
+      remainingAuthoritySeconds: this.#remainingCaptureSeconds(0) });
+    this.#armAuthorityDeadline();
   }
 
   async #bindSessionKey(sessionId: string): Promise<void> {
@@ -1197,7 +1349,7 @@ export class CaptureFlowController {
     if ((channel ?? "microphone") !== this.#channel) throw new QueueInvariantError("capture_channel_conflict");
   }
 
-  #channelState(): Pick<ConfiguredCapturePreparationState, "schemaVersion" | "channel"> {
+  #channelState(): { schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION; channel?: CaptureAudioChannel } {
     return this.#channel === "microphone" ? { schemaVersion: FLOW_RECORD_SCHEMA_VERSION }
       : { schemaVersion: CHANNEL_FLOW_RECORD_SCHEMA_VERSION, channel: this.#channel };
   }

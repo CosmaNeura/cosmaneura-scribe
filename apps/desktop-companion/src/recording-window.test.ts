@@ -14,7 +14,7 @@ function fixture() {
     destroy: () => { destroyed = true; }, id: (value: string) => { id = value; } };
 }
 async function responsive() { for (let i = 0; i < 5; i++) await Promise.resolve(); }
-function snapshot(phase: "ready" | "starting" | "recording" | "interrupted" | "stopped", state = "recording") {
+function snapshot(phase: "ready" | "starting" | "recording" | "interrupted" | "stopped" | "stop_unconfirmed", state = "recording") {
   return { state, desktop: { phase } } as ProviderRecorderSnapshot;
 }
 describe("trusted main recording window", () => {
@@ -37,6 +37,9 @@ describe("trusted main recording window", () => {
     f.controller.primaryWindowId();
     await responsive();
     expect(f.controller.primaryWindowId()).toBe(73);
+    f.controller.update(snapshot("stop_unconfirmed", "paused"));
+    expect(f.window.setAlwaysOnTop).toHaveBeenLastCalledWith(true, "status");
+    expect(f.controller.primaryWindowId()).toBeNull(); // retain visible retry, never claim a confirmed active owner
     f.controller.update(snapshot("stopped", "processing"));
     expect(f.window.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
     expect(f.window.setBounds).toHaveBeenLastCalledWith({ x: -1200, y: 40, width: 1100, height: 800 });
