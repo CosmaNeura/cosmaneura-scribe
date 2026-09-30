@@ -71,6 +71,14 @@
 .provider-setup [data-patient-search] label { flex: 1; min-width: 0; margin: 12px 0 8px; }
 .provider-setup [data-patient-search] input { width: 100%; }
 .provider-setup [data-patient-search] button { margin-right: 0; }
+.provider-setup .provider-recording-options { margin: 12px 0; padding: 0 12px; }
+.provider-setup [data-new-patient] label { margin: 12px 0; }
+.provider-new-patient-help { margin: 10px 0; font-size: .875rem; line-height: 1.4; }
+.provider-create-actions { padding: 8px 0; background: #fff; border-top: 1px solid #dce5e3; }
+.provider-create-actions button { width: 100%; margin: 0; }
+.provider-note-wait-time { color: #526d63; font-variant-numeric: tabular-nums; }
+.provider-note-options { margin-top: 20px; border-top: 1px solid #dce5e3; padding-top: 8px; }
+.provider-note-options summary { min-height: 44px; padding: 10px 0; cursor: pointer; }
 .provider-workspace[aria-busy="true"] button[data-workspace-action]:not([data-workspace-action="cancel-opening"]) { cursor: wait; opacity: .7; }
 
 /* Match the main process's compact recording window, including the app wrapper. */

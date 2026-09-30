@@ -509,20 +509,30 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const activeContext = context;
     // A lost prepare response can follow a committed draft. Recover by reads
     // only; replaying prepare could otherwise start another model operation.
-    show('<h1>Checking for your draft note…</h1><p data-note-readiness role="status">Preparation is not confirmed yet. We will check for the draft automatically.</p><button data-workspace-action="check-note">Check for note</button><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>');
+    show('<h1>Waiting for your draft note…</h1><p data-note-readiness role="status">Your draft will appear here automatically when it is ready.</p><p class="provider-note-wait-time" data-note-wait-time aria-live="off">Checking automatically · 0s</p><details class="provider-note-options"><summary>More options</summary><button data-workspace-action="check-note">Check for note</button><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button></details>');
     let closed = false, checking = false, expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reading: AbortController | null = null;
-    const expiresAt = Date.now() + 90_000;
+    const startedAt = Date.now(), expiresAt = startedAt + 90_000;
     const status = content.querySelector<HTMLElement>("[data-note-readiness]")!;
+    const waitTime = content.querySelector<HTMLElement>("[data-note-wait-time]")!;
+    const options = content.querySelector<HTMLDetailsElement>(".provider-note-options")!;
     const button = content.querySelector<HTMLButtonElement>('[data-workspace-action="check-note"]')!;
     const active = (): boolean => !closed && authorized(n) && context === activeContext
       && client === activeClient && currentSchema === schema;
+    const updateWaitTime = (): void => {
+      if (!active()) return;
+      waitTime.textContent = expired ? "Automatic checking paused."
+        : `Checking automatically · ${Math.floor((Date.now() - startedAt) / 1000)}s`;
+      if (expired) options.open = true;
+    };
+    const elapsedTimer = setInterval(updateWaitTime, 1000);
     const message = (): void => {
       if (!active()) return;
       status.textContent = expired
         ? "The draft is not confirmed yet. Choose Check for note to look again. Your saved work is retained."
-        : "The draft is not available yet. Checking automatically; preparation will not be submitted again.";
+        : "Your draft will appear here automatically when it is ready. You do not need to refresh.";
+      updateWaitTime();
     };
     const check = async (automatic = false): Promise<void> => {
       if (!active() || checking || document.visibilityState !== "visible") return;
@@ -552,6 +562,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         if (active() && document.visibilityState === "visible" && controller.signal.reason !== "note-check-hidden") {
           status.textContent = "The note check could not be confirmed. Check your connection, then choose Check for note or review the transcript. Your saved work is retained.";
           expired = true;
+          updateWaitTime();
         }
       } finally {
         clearTimeout(timeout); controller.abort();
@@ -573,7 +584,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     checkPreparedNote = manual;
     document.addEventListener("visibilitychange", visibility);
     disposeContent = () => {
-      closed = true; clearTimeout(timer); clearTimeout(deadline); reading?.abort();
+      closed = true; clearTimeout(timer); clearTimeout(deadline); clearInterval(elapsedTimer); reading?.abort();
       document.removeEventListener("visibilitychange", visibility);
       if (checkPreparedNote === manual) checkPreparedNote = null;
     };
