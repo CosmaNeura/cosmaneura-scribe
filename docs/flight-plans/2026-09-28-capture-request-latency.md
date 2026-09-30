@@ -54,3 +54,28 @@ replacement. Native packages, Core, schema, environment and stored formats need
 no changes. Reconcile deployed images/configuration before that rollout. Restore
 the previous approved receiver image to recover the extra-lookup behavior. Do not
 reset recordings, keys or journals. No deployment is part of this source change.
+
+## September 30 benchmark calibration — tools only, Tier 0
+
+The desktop readiness runner now distinguishes operation models from injected
+dependency delays. Its previous `dependency-sensitivity` behavior delayed even
+modern local source-authority consumption and empty-owner retirement. Those
+receipts remain valid sensitivity measurements, but are not modern Mac network
+latency measurements. No milliseconds are subtracted from historical results.
+
+The new default `modern-clean` exercises the real desktop backend's owner set:
+combined source preparation retains a one-use decision at the simulated native
+boundary; successful Pause retires and removes its owner; the subsequent Resume
+retirement issues no request. Separate interrupted and known-404 legacy models
+retain their required remote work. The recorder, flow, encrypted temporary store
+and cloned IPC are unchanged. No product, native package, endpoint, credential,
+authority lifetime or stored recording changes are part of this calibration.
+
+Run the invocation and model regressions in
+`apps/desktop-companion/test-tools/desktop-readiness-README.md`. Repeated moderate
+and slow profiles record source hashes before/after, classify simulated remote,
+local and no-op boundaries, and assert native readiness/ownership ordering.
+These results exclude live services, physical audio, native execution and screen
+paint; four-second product acceptance still needs those separate measurements.
+Recovery is to select `--model dependency-sensitivity` for historical comparisons
+or revert the tools-only change; no recording state or deployment is involved.

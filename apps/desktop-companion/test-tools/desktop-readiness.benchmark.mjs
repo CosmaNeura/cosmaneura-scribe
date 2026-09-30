@@ -14,6 +14,7 @@ import { DurableDesktopCoverage } from "../src/durable-provider-records.js";
 import { InMemoryRecordingIndicator } from "../src/recording-indicator.js";
 import { NativeProcessPCMDriver } from "../src/native-process-driver.js";
 import { nativePipeFixtureFence } from "../src/native-pipe-fixture.js";
+import { createReadinessNativeModel, readinessModels } from "./desktop-readiness-native-model.mjs";
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
 const cleanup = [];
 afterEach(async () => { for (const close of cleanup.reverse())
@@ -77,7 +78,7 @@ async function fixture() {
             getProcessFence: nativePipeFixtureFence,
             isSessionActive: () => !abort.signal.aborted },
         selectWindow, release, retireSource: vi.fn(async () => undefined) };
-    return { options, indicator, abort, authority, selectWindow, release, complete, session, nativeStart, nativeAvailability,
+    return { options, indicator, abort, authority, selectWindow, release, complete, session, consent, nativeStart, nativeAvailability,
         open: async (overrides = {}) => {
             const recorder = await DesktopProviderRecorder.open({ ...options, ...overrides });
             owned.push(recorder);
@@ -118,9 +119,10 @@ const profileOptions = [
 ];
 const runs = Number(process.env.SCRIBE_DESKTOP_TIMING_RUNS ?? "1");
 const selectedProfile = process.env.SCRIBE_DESKTOP_TIMING_PROFILE ?? "all";
+const modelName = process.env.SCRIBE_DESKTOP_TIMING_MODEL ?? "modern-clean";
 const output = process.env.SCRIBE_DESKTOP_TIMING_OUTPUT;
 if (!output || !Number.isInteger(runs) || runs < 1 || runs > 5
-    || !["all", ...profileOptions.map(value => value.name)].includes(selectedProfile))
+    || !["all", ...profileOptions.map(value => value.name)].includes(selectedProfile) || !readinessModels.includes(modelName))
     throw new Error("Run through test-tools/desktop-readiness-benchmark.mjs");
 const profiles = profileOptions.filter(value => selectedProfile === "all" || value.name === selectedProfile)
     .flatMap(value => Array.from({ length: runs }, (_, index) => ({ ...value, run: index + 1 })));
@@ -133,7 +135,7 @@ describe("isolated desktop readiness measurements", () => {
         const spans = [];
         const updates = [];
         const actions = {};
-        async function timed(label, delay, fn) {
+        async function timed(label, delay, fn, boundary = "dependency-sensitivity") {
             const began = performance.now(), action = phase;
             try {
                 if (delay)
@@ -141,33 +143,42 @@ describe("isolated desktop readiness measurements", () => {
                 return await fn();
             }
             finally {
-                spans.push({ phase: action, label, start_ms: began - origin, duration_ms: performance.now() - began });
+                spans.push({ phase: action, label, boundary, injected_delay_ms: delay, start_ms: began - origin, duration_ms: performance.now() - began });
             }
         }
         const bff = f.options.createBff(f.abort.signal);
         for (const name of ["getCapabilities", "getAudioEncryptionKey", "bindSessionAudioKey", "issueLease", "reserveChunks", "renewLease"]) {
             const method = bff[name];
             const original = vi.isMockFunction(method) ? method.getMockImplementation() : method;
-            vi.spyOn(bff, name).mockImplementation((...args) => timed(`bff.${name}`, profile.apiMs, () => Reflect.apply(original, bff, args)));
+            vi.spyOn(bff, name).mockImplementation((...args) => timed(`bff.${name}`, profile.apiMs, () => Reflect.apply(original, bff, args), "loopback-bff"));
         }
-        f.nativeAvailability.mockImplementation(() => timed("os.availability", profile.availabilityMs, async () => true));
-        const authorizePreparation = () => timed("trusted.prepare", profile.apiMs, async () => ({ sessionId: f.session.id, status: "created" }));
-        const authorizeMount = (value, signal) => timed("trusted.mount", profile.apiMs, () => f.options.authorizeMount(value, signal));
+        f.nativeAvailability.mockImplementation(() => timed("os.availability", profile.availabilityMs, async () => true, "simulated-os"));
+        const authorizePreparation = () => timed("trusted.prepare", profile.apiMs, async () => ({ sessionId: f.session.id, status: "created" }), "simulated-remote");
+        const nativeModel = modelName === "dependency-sensitivity" ? null : await createReadinessNativeModel({
+            model: modelName, sessionId: f.session.id, consentRecordId: f.consent.id, signal: f.abort.signal, timed, apiMs: profile.apiMs });
+        if (nativeModel) cleanup.push(() => nativeModel.close());
+        const authorizeMount = nativeModel ? nativeModel.mount.authorizeRecorder
+            : (value, signal) => timed("trusted.mount", profile.apiMs, () => f.options.authorizeMount(value, signal));
         const originalAuthority = f.authority.getMockImplementation();
         f.authority.mockImplementation(() => timed("trusted.start-authority", profile.apiMs, originalAuthority));
         const originalSelect = f.selectWindow.getMockImplementation();
         f.selectWindow.mockImplementation(() => timed("picker.synthetic-immediate-choice", 0, originalSelect));
         const originalRetire = f.options.retireSource;
-        const retireSource = () => timed("trusted.retire", profile.apiMs, originalRetire);
+        const retireSource = nativeModel ? nativeModel.retireSource : () => timed("trusted.retire", profile.apiMs, originalRetire);
+        const authority = nativeModel ? nativeModel.mount.authority : f.options.authority;
         let sink, frames = 0;
         const startMetadata = { hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" };
         f.nativeStart.mockImplementation((_configuration, value) => {
+            nativeModel?.assertNativeStartAllowed();
+            expect(f.indicator.current()?.visible).toBe(true);
+            spans.push({ phase, label: "native.start-simulated", boundary: "simulated-native", injected_delay_ms: 0, start_ms: performance.now() - origin, duration_ms: 0 });
             sink = value;
             frames = 0;
-            return { ready: timed("native.ready-simulated", profile.nativeReadyMs, async () => startMetadata),
-                activate: () => { spans.push({ phase, label: "native.activate-simulated", start_ms: performance.now() - origin, duration_ms: 0 }); },
-                stop: async ({ mode }) => mode === "discard" ? null : ({ start: startMetadata, endHostTimeNanoseconds: "1100000000", outputFrames: frames,
-                    microphoneTailNanoseconds: "0", systemTailNanoseconds: "0" }) };
+            return { ready: timed("native.ready-simulated", profile.nativeReadyMs, async () => startMetadata, "simulated-native"),
+                activate: () => { spans.push({ phase, label: "native.activate-simulated", boundary: "simulated-native", injected_delay_ms: 0, start_ms: performance.now() - origin, duration_ms: 0 }); },
+                stop: async ({ mode }) => timed("native.stop-simulated", 0, async () => mode === "discard" ? null : ({ start: startMetadata,
+                    endHostTimeNanoseconds: "1100000000", outputFrames: frames,
+                    microphoneTailNanoseconds: "0", systemTailNanoseconds: "0" }), "simulated-native") };
         });
         const emitSyntheticChunk = async () => { frames = 1600; await sink.onPcmPacket({ firstFrame: 0, pcmBytes: new Uint8Array(3200) }); };
         async function action(name, fn) {
@@ -184,11 +195,11 @@ describe("isolated desktop readiness measurements", () => {
             phase = "idle";
             return value;
         }
-        let recorder = await action("cold-open-fresh-store", () => f.open({ authorizePreparation, authorizeMount, retireSource }));
+        let recorder = await action("cold-open-fresh-store", () => f.open({ authorizePreparation, authorizeMount, retireSource, authority }));
         expect(recorder.snapshot.desktop?.phase).toBe("ready");
         await recorder.deactivate();
         const resources = await f.reopen();
-        recorder = await action("repeat-open-retained-ready", () => f.open({ ...resources, authorizePreparation, authorizeMount, retireSource }));
+        recorder = await action("repeat-open-retained-ready", () => f.open({ ...resources, authorizePreparation, authorizeMount, retireSource, authority }));
         const w = wire(recorder), view = await connectDesktopRecorderView(w.port, f.session.id, f.abort.signal);
         const unsubscribe = view.controller.subscribe(value => {
             const key = `${phase}:${value.state}:${value.desktop?.phase}:${value.statusCode}`;
@@ -201,13 +212,61 @@ describe("isolated desktop readiness measurements", () => {
             await action("start-to-simulated-capture-ready", () => view.controller.startRecording());
             expect(view.controller.snapshot.desktop?.phase).toBe("recording");
             await emitSyntheticChunk();
-            await action("pause-to-confirmed-simulated-stop", () => view.controller.pauseRecording());
+            if (modelName === "modern-interrupted") {
+                await action("native-interruption-to-paused", async () => {
+                    sink.onFailure("device_changed");
+                    await vi.waitFor(() => expect(view.controller.snapshot.state).toBe("paused"), { timeout: 3000 });
+                });
+                expect(nativeModel.ownerCount()).toBe(1);
+            } else {
+                await action("pause-to-confirmed-simulated-stop", () => view.controller.pauseRecording());
+                if (nativeModel) expect(nativeModel.ownerCount()).toBe(0);
+            }
             expect(view.controller.snapshot.state).toBe("paused");
             await action("resume-to-simulated-capture-ready", () => view.controller.resumeRecording());
             expect(view.controller.snapshot.desktop?.phase).toBe("recording");
+            const assertions = [];
+            if (nativeModel) {
+                for (const name of ["start-to-simulated-capture-ready", "resume-to-simulated-capture-ready"]) {
+                    const rows = spans.filter(row => row.phase === name);
+                    const index = label => rows.findIndex(row => row.label === label);
+                    const source = modelName === "legacy-clean" ? "remote.sourcePrepare" : "remote.sourcePrepareAndAuthorize";
+                    for (const label of ["picker.synthetic-immediate-choice", source, "local.sourceAuthorizeConsume",
+                        "native.start-simulated", "native.ready-simulated", "native.activate-simulated"])
+                        expect(index(label), `Missing required ${label} span in ${name}`).toBeGreaterThanOrEqual(0);
+                    expect(index(source)).toBeGreaterThan(index("picker.synthetic-immediate-choice"));
+                    expect(index("local.sourceAuthorizeConsume")).toBeGreaterThan(index(source));
+                    const probes = rows.filter(row => row.label === "os.availability");
+                    expect(probes.length).toBeGreaterThanOrEqual(2);
+                    expect(probes.at(-1).start_ms).toBeGreaterThanOrEqual(rows[index("local.sourceAuthorizeConsume")].start_ms);
+                    expect(index("native.start-simulated")).toBeGreaterThan(index("local.sourceAuthorizeConsume"));
+                    expect(index("native.activate-simulated")).toBeGreaterThan(index("native.ready-simulated"));
+                    expect(rows[index("native.start-simulated")].start_ms).toBeGreaterThanOrEqual(probes.at(-1).start_ms + probes.at(-1).duration_ms);
+                    expect(updates.find(row => row.phase === name && row.desktop === "recording").at_ms)
+                        .toBeGreaterThanOrEqual(rows[index("native.activate-simulated")].start_ms);
+                }
+                for (const stopped of spans.filter(row => row.label === "remote.sourceStopped")) {
+                    const started = spans.filter(row => row.label === "native.start-simulated" && row.start_ms < stopped.start_ms).at(-1);
+                    expect(spans.some(row => row.label === "native.stop-simulated"
+                        && row.start_ms >= started.start_ms && row.start_ms + row.duration_ms <= stopped.start_ms)).toBe(true);
+                }
+                const resumed = spans.filter(row => row.phase === "resume-to-simulated-capture-ready");
+                expect(resumed.filter(row => row.label === "remote.sourceStopped")).toHaveLength(modelName === "modern-interrupted" ? 1 : 0);
+                expect(resumed.filter(row => row.label === "noop.retireSource")).toHaveLength(modelName === "modern-interrupted" ? 0 : 1);
+                expect(resumed.filter(row => row.label === "remote.sourceAuthorize")).toHaveLength(modelName === "legacy-clean" ? 1 : 0);
+                if (modelName === "modern-interrupted") {
+                    const stopped = resumed.find(row => row.label === "remote.sourceStopped");
+                    expect(resumed.find(row => row.label === "bff.renewLease").start_ms).toBeGreaterThanOrEqual(stopped.start_ms + stopped.duration_ms);
+                }
+                assertions.push("actual backend owner removed only after confirmed retirement", "consumed local decision required before native start",
+                    "fresh source availability retained after authority", "picker before source preparation",
+                    "native ready before activation and Recording snapshot", "native stop before server retirement",
+                    modelName === "modern-interrupted" ? "retained owner retired before lease renewal" : "clean Resume retirement issues no native or remote request");
+            }
             await emitSyntheticChunk();
             await view.controller.pauseRecording();
-            const result = { profile, source: "actual recorder/controller/flow/encrypted SQLite and cloned IPC; loopback BFF; simulated OS/native readiness", actions, spans, updates,
+            const result = { profile, model: modelName, assertions, boundary_operations: nativeModel?.events ?? [],
+                source: "actual recorder/controller/flow/encrypted SQLite/cloned IPC; actual native backend except dependency-sensitivity; loopback BFF; simulated Swift/HTTP/OS/native readiness", actions, spans, updates,
                 human_picker_delay_ms: 0, microphone_or_native_executable_used: false, actual_app_startup_or_dom_paint_measured: false };
             await writeFile(join(output, `${profile.name}-run-${profile.run}.json`), JSON.stringify(result, null, 2) + "\n");
             console.log(JSON.stringify({ profile: profile.name, run: profile.run, actions }));
