@@ -851,7 +851,9 @@ def _validate_intent(
     else:
         _require(keys <= {"expected_session_id", "schema_ref", "action", "edit"})
         _uuid(body.get("expected_session_id"))
-        _require(body.get("action") in ("templates", "read", "prepare", "save", "resolve", "save_status"))
+        _require(
+            body.get("action") in ("templates", "read", "prepare", "save", "resolve", "save_status")
+        )
 
 
 def _require(condition: object) -> None:
