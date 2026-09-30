@@ -9,26 +9,31 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const workspace = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
-const options = { output: "", profile: "all", runs: 1 };
+const options = { output: "", profile: "all", model: "modern-clean", runs: 1 };
 for (let index = 0; index < args.length; index += 2) {
   const option = args[index], value = args[index + 1];
   if (!value) throw new Error("Expected --output PATH [--profile NAME] [--runs 1-5]");
   if (option === "--output") options.output = resolve(value);
   else if (option === "--profile") options.profile = value;
+  else if (option === "--model") options.model = value;
   else if (option === "--runs") options.runs = Number(value);
   else throw new Error("Unknown benchmark option");
 }
 const profiles = ["local-zero-delay", "moderate-dependencies", "slow-dependencies"];
+const models = ["modern-clean", "modern-interrupted", "legacy-clean", "dependency-sensitivity"];
 if (!options.output || !["all", ...profiles].includes(options.profile)
+  || !models.includes(options.model)
   || !Number.isInteger(options.runs) || options.runs < 1 || options.runs > 5
   || Number(process.versions.node.split(".")[0]) !== 24) {
-  throw new Error("Node 24 and --output PATH [--profile all|local-zero-delay|moderate-dependencies|slow-dependencies] [--runs 1-5] are required.");
+  throw new Error("Node 24, --output PATH, a known --profile/--model and --runs 1-5 are required.");
 }
 // A new directory prevents accidental replacement of earlier measurements.
 await mkdir(options.output, { mode: 0o700 });
 const inputs = ["src/provider-recorder.ts", "src/controller.ts", "src/pcm-capture-source.ts",
   "src/durable-record-store.ts", "src/durable-flow-store.ts", "src/provider-recorder-ipc.ts",
   "../capture/src/flow/controller.ts", "../capture/src/provider/desktop-recorder-view.ts",
+  "src/native-provider-backend.ts", "../../scripts/standalone-provider/NativeSourceStartOwner.swift",
+  "test-tools/desktop-readiness-native-model.mjs", "test-tools/desktop-readiness-native-model.test.mjs",
   "test-tools/desktop-readiness-benchmark.mjs", "test-tools/desktop-readiness.benchmark.mjs", "test-tools/readiness.vitest.config.mjs", "../../package-lock.json"];
 const hashes = {};
 for (const file of inputs) hashes[file] = createHash("sha256").update(await readFile(join(workspace, file))).digest("hex");
@@ -45,7 +50,8 @@ const temporaryRoot = await realpath(await mkdtemp(join(tmpdir(), "scribe-readin
 const ownProcessGroup = process.platform !== "win32";
 const child = spawn(process.execPath, command, { cwd: workspace, detached: ownProcessGroup, stdio: ["ignore", "pipe", "pipe"],
   env: { ...process.env, SCRIBE_DESKTOP_TIMING_OUTPUT: options.output, SCRIBE_DESKTOP_TIMING_TEMP_ROOT: temporaryRoot,
-    SCRIBE_DESKTOP_TIMING_PROFILE: options.profile, SCRIBE_DESKTOP_TIMING_RUNS: String(options.runs) } });
+    SCRIBE_DESKTOP_TIMING_PROFILE: options.profile, SCRIBE_DESKTOP_TIMING_MODEL: options.model,
+    SCRIBE_DESKTOP_TIMING_RUNS: String(options.runs) } });
 let log = "";
 for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => { log += String(chunk); });
 const terminate = signal => {
@@ -71,7 +77,7 @@ await writeFile(join(options.output, "benchmark.log"), log);
 const observations = [];
 for (const name of (await readdir(options.output)).filter(name => profiles.some(profile => name.startsWith(profile + "-run-")) && name.endsWith(".json"))) {
   const value = JSON.parse(await readFile(join(options.output, name), "utf8"));
-  observations.push({ file: name, profile: value.profile, actions: value.actions });
+  observations.push({ file: name, model: value.model, profile: value.profile, assertions: value.assertions, actions: value.actions });
 }
 const finalHashes = {}, changedInputs = [];
 for (const file of inputs) {
@@ -80,10 +86,10 @@ for (const file of inputs) {
   if (finalHashes[file] !== hashes[file]) changedInputs.push(file);
 }
 const success = exit.code === 0 && changedInputs.length === 0;
-const receipt = { schema: 1, source_commit: sourceCommit, source_dirty: sourceDirty, input_sha256: hashes,
+const receipt = { schema: 2, source_commit: sourceCommit, source_dirty: sourceDirty, input_sha256: hashes,
   final_input_sha256: finalHashes, changed_inputs: changedInputs, success,
   command: [process.execPath, ...command], options, exit, observations,
-  scope: "Controlled dependency sensitivity using real controller/flow/encrypted temporary SQLite/cloned IPC and loopback mock BFF. Native readiness, permission probes and picker are simulated; no microphone/native helper/installed app/DOM paint.",
+  scope: "Selected model with real controller/flow/encrypted temporary SQLite/cloned IPC and loopback mock BFF. Modern/legacy modes use the real backend with simulated Swift owner/HTTP; dependency-sensitivity retains the historical per-callback delays. No microphone/native helper/installed app/DOM paint.",
   cold_definition: "First recorder preparation in a fresh temporary store; excludes Node/Electron app startup and fixture consent setup." };
 await writeFile(join(options.output, "RESULT.json"), JSON.stringify(receipt, null, 2) + "\n");
 process.stdout.write(JSON.stringify({ output: options.output, success, exit, changed_inputs: changedInputs, observations }, null, 2) + "\n");
