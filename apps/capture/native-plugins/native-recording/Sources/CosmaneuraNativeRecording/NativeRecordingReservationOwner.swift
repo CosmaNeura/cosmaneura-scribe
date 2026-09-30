@@ -42,6 +42,23 @@ public actor NativeRecordingReservationOwner {
   public func reserve(lease: NativeRecordingLease, first: Int, count: Int) async throws
     -> NativeRecordingReservationBatch
   {
+    try await advance(lease: lease, first: first, count: count, prepared: nil)
+  }
+
+  public func adoptPrepared(
+    lease: NativeRecordingLease, batch: NativeRecordingReservationBatch, intent: UUID
+  ) async throws -> NativeRecordingReservationBatch {
+    guard let first = batch.reservations.first?.sequence else {
+      throw NativeRecordingBindingFailure.receiptMismatch
+    }
+    return try await advance(
+      lease: lease, first: first, count: batch.reservations.count, prepared: (intent, batch))
+  }
+
+  private func advance(
+    lease: NativeRecordingLease, first: Int, count: Int,
+    prepared: (UUID, NativeRecordingReservationBatch)?
+  ) async throws -> NativeRecordingReservationBatch {
     guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
     busy = true
     defer { busy = false }
@@ -59,15 +76,25 @@ public actor NativeRecordingReservationOwner {
     } else {
       journal = Journal(
         schemaVersion: 1, account: scope.keyAccount, recovery: recovery,
-        lease: lease, first: first, count: count, intent: UUID(), done: false)
+        lease: lease, first: first, count: count, intent: prepared?.0 ?? UUID(), done: false)
       try commit(journal, key: key, after: 0)
     }
     guard journal.lease == lease, journal.first == first, journal.count == count else {
       throw NativeRecordingBindingFailure.journalConflict
     }
+    if let prepared {
+      guard journal.intent == prepared.0, journal.batch == nil || journal.batch == prepared.1 else {
+        throw NativeRecordingBindingFailure.journalConflict
+      }
+    }
     if journal.batch == nil {
-      let batch = try await service.reserve(
-        lease: lease, first: first, count: count, intent: journal.intent)
+      let batch: NativeRecordingReservationBatch
+      if let prepared {
+        batch = prepared.1
+      } else {
+        batch = try await service.reserve(
+          lease: lease, first: first, count: count, intent: journal.intent)
+      }
       try await checkScope()
       try batch.validate(scope: scope, lease: lease, first: first, count: count)
       journal.batch = batch

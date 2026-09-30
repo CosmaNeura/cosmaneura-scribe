@@ -16,7 +16,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, default=TOOL.parents[3])
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--scenario", choices=("timing", "window-timing"), default="timing")
     args = parser.parse_args()
+    timing_fixture = TOOL / f"{args.scenario}.swift"
     repo, out = args.checkout.resolve(), args.output.resolve()
     if out == repo or repo in out.parents:
         parser.error("Keep generated performance artifacts outside the checkout.")
@@ -47,7 +49,7 @@ def main() -> None:
         "host": "macOS Swift; not physical iOS",
         "microphone": False,
         "network": False,
-        "fixture_sha256": hashlib.sha256((TOOL / "timing.swift").read_bytes()).hexdigest(),
+        "fixture_sha256": hashlib.sha256(timing_fixture.read_bytes()).hexdigest(),
     }
     (target / "SOURCE.json").write_text(json.dumps(provenance, indent=2) + "\n")
     results = []
@@ -88,7 +90,7 @@ def main() -> None:
         "-O", "-parse-as-library", "-D", "NATIVE_BINDING_CHECKS", "-L", str(target),
         *libraries, "-Xlinker", "-rpath", "-Xlinker", str(target), "-o", str(target / "timing"),
         *map(str, module.BRIDGE), str(native_provider), str(target / "host-fixture.swift"),
-        str(TOOL / "timing.swift"),
+        str(timing_fixture),
     ])
     for path in sources:
         if hashlib.sha256(path.read_bytes()).hexdigest() != inventory[str(path.relative_to(repo))]:

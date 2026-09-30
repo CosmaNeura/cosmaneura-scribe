@@ -257,9 +257,13 @@ import Security
           version: "synthetic-v1",
           modulusBase64URL: nativeBase64URL(data.subdata(in: 9..<393))))
     }
-    func host(now: @escaping @MainActor () -> Date = { Date() }) -> NativeProviderRecordingHost {
+    func host(
+      service override: (any NativeProviderRecordingHost.Service)? = nil,
+      now: @escaping @MainActor () -> Date = { Date() }
+    ) -> NativeProviderRecordingHost {
       NativeProviderRecordingHost(
-        scope: scope, recoveryScope: recovery, service: service, records: records, keys: keys,
+        scope: scope, recoveryScope: recovery, service: override ?? service, records: records,
+        keys: keys,
         requireCurrent: { if self.deny { throw NativeRecordingBindingFailure.authorityChanged } },
         recoverSources: {},
         makeSource: { lease, batch in
@@ -300,7 +304,10 @@ import Security
       var settled = false
       let start = Task {
         defer { settled = true }
-        do { try await host.start(); return true } catch { return false }
+        do {
+          try await host.start()
+          return true
+        } catch { return false }
       }
       try await wait { host.phase == .starting }
       try await host.pause()

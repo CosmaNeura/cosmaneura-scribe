@@ -51,6 +51,93 @@ private actor BindingWire: ProviderNativeWire {
         "key_version": fault == "key_version" ? "bad version" : "synthetic-v1",
         "algorithm": fault == "algorithm" ? "RSA1_5" : "RSA-OAEP-256", "public_jwk": jwk,
       ]
+    } else if kind == "prepare_recording_window" || kind == "prepare_continuation_window" {
+      let resumed = kind == "prepare_continuation_window"
+      try require(Set(operation.keys) == ["kind", "payload"])
+      let payload = operation["payload"] as! [String: Any]
+      let fields: Set<String> =
+        resumed
+        ? [
+          "schema_version", "channel", "first_sequence_number", "previous_lease_id",
+          "previous_lease_generation", "renew_idempotency_key", "reservation_idempotency_key",
+        ]
+        : [
+          "schema_version", "binding", "bind_idempotency_key", "lease_idempotency_key",
+          "reserve_idempotency_key", "channel", "reservation_count",
+        ]
+      try require(
+        Set(payload.keys) == fields && payload["schema_version"] as? String == "1.0"
+          && payload["channel"] as? String == "microphone")
+      let first = resumed ? payload["first_sequence_number"] as! Int : 0
+      let count = resumed ? 17 : payload["reservation_count"] as! Int
+      if resumed {
+        try require(
+          payload["previous_lease_id"] as? String == lease.uuidString.lowercased()
+            && payload["previous_lease_generation"] as? Int == 1)
+      } else {
+        try require(payload["bind_idempotency_key"] as? String == request.key && count == 30)
+        let binding = payload["binding"] as! [String: String]
+        try require(
+          Set(binding.keys) == ["key_version", "wrapped_dek"]
+            && binding["wrapped_dek"]?.count == 512)
+      }
+      for field in resumed
+        ? ["renew_idempotency_key", "reservation_idempotency_key"]
+        : ["bind_idempotency_key", "lease_idempotency_key", "reserve_idempotency_key"]
+      {
+        try require((payload[field] as? String).flatMap(UUID.init(uuidString:)) != nil)
+      }
+      let formatter = ISO8601DateFormatter()
+      let issued = Date()
+      let issuedAt = formatter.string(from: issued)
+      let expiresAt = formatter.string(from: issued.addingTimeInterval(900))
+      let leaseReceipt: [String: Any] = [
+        "protocol_version": "1.0", "receipt_id": UUID().uuidString.lowercased(),
+        "lease_id": fault == "aggregate_lease"
+          ? UUID().uuidString.lowercased() : lease.uuidString.lowercased(),
+        "session_id": session.uuidString.lowercased(),
+        "generation": fault == "aggregate_generation" ? 3 : resumed ? 2 : 1,
+        "issued_at": issuedAt, "expires_at": expiresAt,
+      ]
+      var rows: [[String: Any]] = []
+      for sequence in first..<(first + count) {
+        let object = UUID()
+        let aad = try JSONSerialization.data(
+          withJSONObject: [
+            "tenant_id": tenant.uuidString.lowercased(),
+            "session_id": session.uuidString.lowercased(),
+            "object_id": object.uuidString.lowercased(),
+            "channel": "microphone", "sequence_number": sequence,
+          ], options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        .base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(
+          of: "/", with: "_"
+        ).replacingOccurrences(of: "=", with: "")
+        rows.append([
+          "protocol_version": "1.0", "object_id": object.uuidString.lowercased(),
+          "session_id": session.uuidString.lowercased(), "channel": "microphone",
+          "sequence_number": fault == "aggregate_position" ? sequence + 1 : sequence,
+          "additional_authenticated_data": aad, "created_at": issuedAt,
+        ])
+      }
+      let reservations: [String: Any] = [
+        "protocol_version": "1.0", "batch_id": UUID().uuidString.lowercased(),
+        "session_id": session.uuidString.lowercased(), "capture_authorized_until": expiresAt,
+        "reservations": fault == "aggregate_count" ? [] : rows,
+      ]
+      receipt = [
+        "schema_version": fault == "aggregate_schema" ? "2.0" : "1.0", "lease": leaseReceipt,
+        "reservations": reservations,
+      ]
+      if !resumed {
+        receipt["binding"] = [
+          "session_id": fault == "aggregate_binding"
+            ? UUID().uuidString.lowercased() : session.uuidString.lowercased(),
+          "key_version": fault == "aggregate_key" ? "wrong-key" : "synthetic-v1",
+          "created_at": issuedAt,
+        ]
+      }
+      if fault == "aggregate_fields" { receipt["unexpected"] = true }
     } else if kind == "issue_lease" || kind == "renew_lease" {
       let renewing = kind == "renew_lease"
       try require(
@@ -351,6 +438,46 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
         }
         let requests = await wire.requests
         try require(driver.tokens == 2 && requests.count == 2)
+        connection.close()
+        checks += 1
+      }
+    }
+    for resumed in [false, true] {
+      for fault in envelopeFaults + [
+        "aggregate_count", "aggregate_position", "aggregate_generation", "aggregate_schema",
+        "aggregate_fields",
+      ] + (resumed ? ["aggregate_lease"] : ["aggregate_binding", "aggregate_key"]) {
+        let (_, driver, wire, connection, service) = try await make(modulus)
+        await wire.setFault(fault)
+        let task = Task {
+          if resumed {
+            let formatter = ISO8601DateFormatter()
+            let now = Date()
+            let previous = try NativeRecordingLease(
+              receiptID: UUID(), leaseID: wire.lease, sessionID: wire.session,
+              generation: 1, issuedAt: formatter.string(from: now.addingTimeInterval(-600)),
+              expiresAt: formatter.string(from: now.addingTimeInterval(300)))
+            let value = try await service.prepareResumeWindow(
+              NativeRecordingResumeWindowRequest(
+                previous: previous, first: 7, intent: UUID(), renewIntent: UUID(),
+                reserveIntent: UUID()))
+            try require(
+              value.lease.generation == 2 && value.batch.reservations.count == 17
+                && value.batch.reservations.first?.sequence == 7)
+          } else {
+            let value = try await service.prepareInitialWindow(
+              NativeRecordingWindowRequest(
+                keyVersion: "synthetic-v1", wrappedDEK: receipt.wrappedDEK, bindIntent: UUID(),
+                leaseIntent: UUID(), reserveIntent: UUID(), count: 30))
+            try require(value.lease.generation == 1 && value.batch.reservations.count == 30)
+          }
+        }
+        if fault == "none" {
+          try await task.value
+        } else {
+          try await CheckNativeProvider.rejected(task)
+        }
+        try require(await wire.requests.count == 2 && driver.tokens == 2)
         connection.close()
         checks += 1
       }
