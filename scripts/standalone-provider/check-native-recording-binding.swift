@@ -70,22 +70,38 @@ private actor BindingWire: ProviderNativeWire {
           && payload["channel"] as? String == "microphone")
       let first = resumed ? payload["first_sequence_number"] as! Int : 0
       let count = resumed ? 17 : payload["reservation_count"] as! Int
+      if !resumed, fault == "none",
+        let path = ProcessInfo.processInfo.environment["SCRIBE_NATIVE_WINDOW_FIXTURE_PATH"],
+        !FileManager.default.fileExists(atPath: path)
+      {
+        // Synthetic wire fixture for the actual Core boundary; no token or context.
+        try JSONSerialization.data(
+          withJSONObject: ["idempotency_key": request.key, "operation": operation],
+          options: [.sortedKeys]
+        ).write(to: URL(fileURLWithPath: path), options: .atomic)
+      }
+      let componentFields =
+        resumed
+        ? ["renew_idempotency_key", "reservation_idempotency_key"]
+        : ["bind_idempotency_key", "lease_idempotency_key", "reserve_idempotency_key"]
+      let componentKeys = try componentFields.map { field -> String in
+        guard let key = payload[field] as? String, UUID(uuidString: key) != nil else {
+          throw CheckFailure.failed
+        }
+        return key
+      }
+      // Match Core's actual contract: the outer request may not alias a component.
+      try require(Set(componentKeys + [request.key]).count == componentKeys.count + 1)
       if resumed {
         try require(
           payload["previous_lease_id"] as? String == lease.uuidString.lowercased()
             && payload["previous_lease_generation"] as? Int == 1)
       } else {
-        try require(payload["bind_idempotency_key"] as? String == request.key && count == 30)
+        try require(count == 30)
         let binding = payload["binding"] as! [String: String]
         try require(
           Set(binding.keys) == ["key_version", "wrapped_dek"]
             && binding["wrapped_dek"]?.count == 512)
-      }
-      for field in resumed
-        ? ["renew_idempotency_key", "reservation_idempotency_key"]
-        : ["bind_idempotency_key", "lease_idempotency_key", "reserve_idempotency_key"]
-      {
-        try require((payload[field] as? String).flatMap(UUID.init(uuidString:)) != nil)
       }
       let formatter = ISO8601DateFormatter()
       let issued = Date()
@@ -138,6 +154,7 @@ private actor BindingWire: ProviderNativeWire {
         ]
       }
       if fault == "aggregate_fields" { receipt["unexpected"] = true }
+      if fault == "lost_window" { throw ProviderNativeError.response }
     } else if kind == "issue_lease" || kind == "renew_lease" {
       let renewing = kind == "renew_lease"
       try require(
@@ -291,6 +308,7 @@ private final class BindingKeys: NativeRecordingKeyStorage, @unchecked Sendable 
 }
 
 private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRecordingRecordStore,
+  NativeRecordingLeaseRecordStore,
   @unchecked Sendable
 {
   private let lock = NSLock()
@@ -299,6 +317,11 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     lock.withLock { values[key] }
   }
   func createBinding(key: String, data: Data) throws { try write(key, data, 0) }
+  func readLease(key: String) throws -> NativeRecordingStoredRecord? { try readBinding(key: key) }
+  func createLease(key: String, data: Data) throws { try write(key, data, 0) }
+  func compareAndSwapLease(key: String, expectedRevision: UInt64, data: Data) throws {
+    try write(key, data, expectedRevision)
+  }
   func compareAndSwapBinding(key: String, expectedRevision: UInt64, data: Data) throws {
     try write(key, data, expectedRevision)
   }
@@ -481,6 +504,47 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
         connection.close()
         checks += 1
       }
+    }
+    do {
+      let (_, driver, wire, connection, service) = try await make(modulus)
+      let scope = try await service.recordingScope()
+      let records = BindingRecords()
+      let keys = BindingKeys()
+      let recovery = UUID()
+      let window = NativeRecordingWindowOwner(
+        scope: scope, recoveryScope: recovery, service: service, records: records)
+      try await window.initialize()
+      let binding = NativeRecordingBindingOwner(
+        scope: scope, service: window, records: records, keys: keys)
+      await wire.setFault("lost_window")
+      try await CheckNativeProvider.rejected(Task { try await binding.open() })
+      // Reconstruct owners from the same version-one journals after a lost reply.
+      // No new recipe or encryption key may replace the retained pending request.
+      let reopenedWindow = NativeRecordingWindowOwner(
+        scope: scope, recoveryScope: recovery, service: service, records: records)
+      try await reopenedWindow.initialize()
+      let reopenedBinding = NativeRecordingBindingOwner(
+        scope: scope, service: reopenedWindow, records: records, keys: keys)
+      await wire.setFault("none")
+      _ = try await reopenedBinding.open()
+      let requests = await wire.requests
+      let decoded = try requests.map { request -> (ProviderNativeRequest, [String: Any]) in
+        let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
+        return (request, body["operation"] as! [String: Any])
+      }
+      let windows = decoded.filter { $0.1["kind"] as? String == "prepare_recording_window" }
+      try require(windows.count == 2 && windows[0].0.key == windows[1].0.key)
+      try require(decoded.filter { $0.1["kind"] as? String == "encryption_key" }.count == 1)
+      try require(
+        JSONSerialization.data(withJSONObject: windows[0].1, options: [.sortedKeys])
+          == JSONSerialization.data(withJSONObject: windows[1].1, options: [.sortedKeys]))
+      let payload = windows[0].1["payload"] as! [String: Any]
+      try require(
+        windows[0].0.key == "native-initial-window-v1:"
+          + (payload["bind_idempotency_key"] as! String))
+      try require(driver.tokens == requests.count)
+      connection.close()
+      checks += 1
     }
     for renewing in [false, true] {
       for fault in envelopeFaults + [
