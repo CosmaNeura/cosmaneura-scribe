@@ -29,17 +29,21 @@ public final class MacProviderWindowPicker: NSObject, NSWindowDelegate {
         choosing = true
         defer { choosing = false; requestID = nil }
         try Task.checkCancellation()
-        let content: SCShareableContent
-        do { content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) }
-        catch { throw ProviderPresentationFailure.unavailable }
+        let rows: [(MeetingAudioSelection, String)]
+        do {
+            rows = try await ProviderWindowDiscovery<[(MeetingAudioSelection, String)]>().load {
+                let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+                try Task.checkCancellation()
+                return content.windows.compactMap { window -> (MeetingAudioSelection, String)? in
+                    guard let owner = window.owningApplication,
+                          let app = MeetingAudioSelection.Application(rawValue: owner.bundleIdentifier),
+                          let selection = try? MeetingAudioSelection(application: app, processID: owner.processID, windowID: window.windowID) else { return nil }
+                    let title = String((window.title ?? "Untitled window").prefix(256))
+                    return (selection, (app == .chrome ? "Chrome — " : "Zoom — ") + title)
+                }.sorted { $0.0.windowID < $1.0.windowID }
+            }
+        } catch { throw ProviderPresentationFailure.unavailable }
         try Task.checkCancellation()
-        let rows = content.windows.compactMap { window -> (MeetingAudioSelection, String)? in
-            guard let owner = window.owningApplication,
-                  let app = MeetingAudioSelection.Application(rawValue: owner.bundleIdentifier),
-                  let selection = try? MeetingAudioSelection(application: app, processID: owner.processID, windowID: window.windowID) else { return nil }
-            let title = String((window.title ?? "Untitled window").prefix(256))
-            return (selection, (app == .chrome ? "Chrome — " : "Zoom — ") + title)
-        }.sorted { $0.0.windowID < $1.0.windowID }
         guard !rows.isEmpty, rows.count <= 64 else { throw ProviderPresentationFailure.unavailable }
         let attempt = UUID()
         requestID = attempt

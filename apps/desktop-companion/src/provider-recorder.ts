@@ -196,7 +196,22 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           || !mayRestoreReady && active?.phase === "ready") throw unavailable();
         recorder.coverage = await options.coverage.load(); recorder.requireOpen();
         recorder.continuityUnconfirmed = active?.continuation !== undefined;
-        if (!await recorder.flow.restore()) await recorder.flow.prepareConfigured(options.sessionId);
+        const prepare = async (): Promise<void> => {
+          if (!await recorder.flow.restore()) await recorder.flow.prepareConfigured(options.sessionId);
+        };
+        let initialAvailability: "ready" | "permission_required" | undefined;
+        if (current.status === "created" && active === null && recorder.coverage === null) {
+          // This read-only probe cannot capture or prompt. Overlap it with fresh
+          // secure setup only after the trusted creator/session preflight. Wait
+          // for both branches, including on failure, before releasing ownership.
+          // The separate fresh check after window choice still runs at Start.
+          const [preparation, availability] = await Promise.allSettled([
+            prepare(), recorder.availability(recorder.signal),
+          ]);
+          if (preparation.status === "rejected") throw preparation.reason;
+          if (availability.status === "rejected") throw availability.reason;
+          initialAvailability = availability.value;
+        } else await prepare();
         recorder.requireOpen();
         if (recorder.flow.snapshot.sessionId !== options.sessionId) throw unavailable();
         if (recorder.flow.snapshot.state === "ready") {
@@ -208,7 +223,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           if (recorder.coverage !== null) throw unavailable(); // Never replay an attempt over retained coverage.
           if (!mayRestoreReady) throw unavailable();
           await recorder.preparedContext();
-          recorder.unmountedAvailability = await recorder.availability(recorder.signal);
+          recorder.unmountedAvailability = initialAvailability ?? await recorder.availability(recorder.signal);
         }
         if (active?.continuation) {
           recorder.continuityUnconfirmed = active.continuation.firstSequenceNumber > 0
@@ -415,6 +430,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     return this.flow.subscribe(snapshot => {
       if (!this.deactivated && ["paused", "error"].includes(snapshot.state)
         && (this.controller.snapshot().state === "recording" || this.action === "start")) {
+        // A human picker can outlive the prepared lease. Release that await as
+        // soon as setup is invalid, so "starting" cannot mask the expired or
+        // failed flow. Cancellation also discards any later native selection.
+        if (this.choosingWindow) this.attempt?.abort();
         for (const listener of this.adapterListeners) listener({ kind: "failed" });
       }
       this.publish();

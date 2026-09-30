@@ -30,6 +30,8 @@ export async function connectNativeProviderRecorder(options: {
   const { sessionId, port, signal } = options;
   uuid(sessionId);
   let state: NativeRecordingState | null = null, closed = false, accepted = false, starting = false;
+  let startAttempt = 0;
+  let confirmStartCancelled: (() => void) | undefined;
   let status: string | null = null, reading: Promise<void> | null = null, closing: Promise<void> | null = null;
   let uploading: Promise<void> | null = null;
   let uploadProgress: DrainProgress | undefined;
@@ -133,10 +135,36 @@ export async function connectNativeProviderRecorder(options: {
     }
   })().finally(() => { uploading = null; });
   const start = async (): Promise<void> => {
-    current(); starting = true; uploadProgress = undefined; status = null; publish();
-    try { await invoke("start"); }
-    catch (error) { await read().catch(() => { status = "capture_start_unconfirmed"; }); throw error; }
-    finally { starting = false; publish(); }
+    current();
+    const attempt = ++startAttempt;
+    starting = true; uploadProgress = undefined; status = null; publish();
+    const cancelled = new Promise<void>(resolve => { confirmStartCancelled = resolve; });
+    // Keep observing the original native command, but release the UI operation
+    // as soon as a separate native Pause positively confirms cancellation.
+    try { await Promise.race([invoke("start"), cancelled]); }
+    catch (error) {
+      if (startAttempt !== attempt) return;
+      await Promise.race([read().catch(() => {
+        if (startAttempt === attempt) status = "capture_start_unconfirmed";
+      }), cancelled]);
+      if (startAttempt !== attempt) return;
+      throw error;
+    }
+    finally {
+      if (startAttempt === attempt) { starting = false; confirmStartCancelled = undefined; publish(); }
+    }
+  };
+  const pause = async (): Promise<void> => {
+    const attempt = startAttempt;
+    status = null;
+    await invoke("pause");
+    // A confirmed native pause ends the visible Start immediately, even when
+    // its original bridge reply is late. Do not clear a newer Start attempt.
+    if (startAttempt === attempt) {
+      startAttempt += 1; starting = false;
+      confirmStartCancelled?.(); confirmStartCancelled = undefined;
+    }
+    publish();
   };
   const openingId = crypto.randomUUID();
   // Even an unsuccessful open returns its retained handle for explicit recovery
@@ -168,10 +196,8 @@ export async function connectNativeProviderRecorder(options: {
     resumePendingWork: upload, releaseUploadedCapture: () => accepted ? Promise.resolve() : Promise.reject(failure()),
     controller: { get snapshot() { return snapshot(); }, subscribe: listener => {
       current(); listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener);
-    }, startRecording: start, resumeRecording: start, pauseRecording: async () => {
-      status = null; await invoke("pause"); publish();
-    }, stopRecording: async () => {
-      if (starting && ["ready", "paused"].includes(state?.phase ?? "") || state?.phase === "starting") { status = null; await invoke("pause"); return; }
+    }, startRecording: start, resumeRecording: start, pauseRecording: pause, stopRecording: async () => {
+      if (starting && ["ready", "paused"].includes(state?.phase ?? "") || state?.phase === "starting") { await pause(); return; }
       await upload();
     }, selectMicrophoneInput: async input => { current(); if (state?.input !== input) await invoke("input", input); }, getCaptureSignal: async () => {
       await read(); return state!.signal;

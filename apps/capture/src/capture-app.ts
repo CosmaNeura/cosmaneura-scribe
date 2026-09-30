@@ -41,6 +41,9 @@ export class CaptureApp extends LitElement {
   #disposeReview: (() => void) | undefined;
   #busy = false;
   #stopping = false;
+  #startupStartedAt: number | undefined;
+  #startupTimer: ReturnType<typeof setInterval> | undefined;
+  #startupSeconds = 0;
   #microphoneInput: MicrophoneInput = "built_in";
   #microphoneError = false;
   #consented = false;
@@ -89,6 +92,7 @@ export class CaptureApp extends LitElement {
   }
 
   public override disconnectedCallback(): void {
+    this.#clearStartupProgress();
     if (this.#provider) this.#closeProvider();
     this.#unsubscribe?.();
     this.#flowStore?.close();
@@ -131,7 +135,30 @@ export class CaptureApp extends LitElement {
     });
   }
 
-  protected override updated(): void { this.#syncReview(); }
+  protected override updated(): void { this.#syncReview(); this.#syncStartupProgress(); }
+
+  #isStarting(): boolean {
+    return this.#snapshot.desktop?.phase === "starting" || this.#snapshot.native?.phase === "starting"
+      || this.#snapshot.statusCode === "capture_starting" || this.#busy && this.#snapshot.state === "ready"
+        && (!this.#snapshot.desktop || this.#snapshot.desktop.phase === "ready");
+  }
+
+  #clearStartupProgress(): void {
+    clearInterval(this.#startupTimer); this.#startupTimer = undefined;
+    this.#startupStartedAt = undefined; this.#startupSeconds = 0;
+  }
+
+  #syncStartupProgress(): void {
+    if (!this.#provider || this.#providerClosed || !this.#isStarting() || this.#stopping) {
+      this.#clearStartupProgress(); return;
+    }
+    if (this.#startupTimer !== undefined) return;
+    this.#startupStartedAt = performance.now();
+    this.#startupTimer = setInterval(() => {
+      this.#startupSeconds = Math.floor((performance.now() - this.#startupStartedAt!) / 1000);
+      this.requestUpdate();
+    }, 1000);
+  }
 
   #syncReview(): void {
     const binding = this.#provider;
@@ -154,6 +181,7 @@ export class CaptureApp extends LitElement {
   readonly #closeProvider = (): void => {
     if (this.#providerClosed) return;
     this.#providerClosed = true;
+    this.#clearStartupProgress();
     this.#unsubscribe?.();
     this.#disposeReview?.();
     this.#disposeReview = undefined;
@@ -286,7 +314,8 @@ export class CaptureApp extends LitElement {
                 ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && !this.#snapshot.native && this.#busy}
                 @click=${this.#stop}
               >
-                ${(this.#snapshot.desktop?.phase === "starting" || this.#snapshot.native?.phase === "starting") ? "Cancel start"
+                ${this.#stopping ? this.#isStarting() ? "Cancelling start…" : "Stopping…"
+                  : (this.#snapshot.desktop?.phase === "starting" || this.#snapshot.native?.phase === "starting") ? "Cancel start"
                   : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
                   : this.#snapshot.statusCode === "capture_recovery_pending" ? "Retry saving and upload"
                   : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
@@ -308,12 +337,14 @@ export class CaptureApp extends LitElement {
           </section>`}
 
           ${provider ? (captureFinished ? "" : html`<section class="flow-card" aria-label="Recording progress">
-            <p role="status" ?hidden=${nativeProvider && showInputMeter && this.#snapshot.statusCode === "capture_recording"}>${!this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
+            <p role="status" ?hidden=${nativeProvider && showInputMeter && this.#snapshot.statusCode === "capture_recording"}>${this.#stopping
+              ? this.#isStarting() ? "Cancelling start… Waiting for recording to stop." : "Stopping recording…"
+              : !this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
               || this.#busy && this.#snapshot.state === "ready") ? "Starting microphone… Recording is not confirmed yet."
               : this.#snapshot.desktop?.phase === "starting"
               ? this.#snapshot.statusCode === "capture_window_selection_pending"
                 ? "Choose a meeting window in the Scribe dialog. Recording has not started."
-                : "Starting microphone and meeting audio…"
+                : "Starting microphone and meeting audio… Recording is not confirmed yet."
               : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
               : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
               : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
@@ -347,6 +378,11 @@ export class CaptureApp extends LitElement {
                 ? "Recording has stopped. Retry confirmation before uploading."
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : "Ready to record"}</p>
+            ${this.#isStarting() && !this.#stopping ? html`<p data-testid="startup-progress" aria-live="off">
+              ${this.#snapshot.statusCode === "capture_window_selection_pending" ? "Waiting for window selection" : "Connecting"}
+              · ${this.#startupSeconds}s. Wait for Recording and an advancing timer before speaking.
+              ${this.#startupSeconds >= 12 && this.#canStop() ? "Taking longer than expected. Choose Cancel start to stop waiting safely." : ""}
+            </p>` : ""}
             ${uploadProgress && (this.#snapshot.state === "uploading" || this.#snapshot.statusCode === "capture_upload_settling") ? html`<label>
               Audio uploaded ${Math.floor(uploadProgress.registered * 100 / Math.max(1, uploadProgress.total))}%
               <progress aria-label="Audio upload" max=${uploadProgress.total || 1}
@@ -417,6 +453,10 @@ export class CaptureApp extends LitElement {
               ? "Recording coverage is incomplete. Review the retained audio and transcript for missing speech."
               : this.#snapshot.desktop.coverage === "aligned" ? "Microphone and meeting audio are aligned."
               : this.#snapshot.desktop.coverage === "complete" ? "Recording retained the interval covered by both microphone and meeting audio."
+              : this.#snapshot.desktop.phase === "starting" ? "Recording is not confirmed yet."
+              : ["stopping", "stop_unconfirmed", "interrupted"].includes(this.#snapshot.desktop.phase)
+                ? "Recording status is being confirmed."
+              : this.#snapshot.desktop.phase === "stopped" ? "No complete recording interval is confirmed."
               : "Recording has not started."}
             ${this.#snapshot.desktop.trimmedStartMs > 0 ? ` The first ${this.#snapshot.desktop.trimmedStartMs} ms before both sources were available was excluded.` : ""}
             ${(this.#snapshot.desktop.trimmedEndMs ?? 0) > 0 ? ` The final ${this.#snapshot.desktop.trimmedEndMs} ms without both sources was excluded.` : ""}

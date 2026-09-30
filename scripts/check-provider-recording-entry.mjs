@@ -101,8 +101,16 @@ for (const platform of ["desktop", "ios"]) {
       assert.equal(options.open, false); assert.equal(root.querySelector('[name="consent"]'), null);
       assert.equal(root.querySelector('[name="language"]').value, "en-US");
       assert.equal(root.querySelector('[name="modality"]').value, platform === "ios" ? "in_person" : "virtual");
-      assert.ok(options.querySelector("summary").textContent.includes("English"));
-      assert.ok(options.querySelector("summary").textContent.includes(platform === "ios" ? "iPhone microphone" : "Microphone + meeting audio"));
+      assert.equal(root.querySelector('[name="modality"]').closest("details"), null);
+      assert.equal(root.querySelector('[name="language"]').closest("details"), null);
+      assert.ok(options.querySelector("summary").textContent.includes(platform === "ios" ? "iPhone microphone" : "Microphone + selected application audio"));
+      if (platform === "desktop") {
+        const type = root.querySelector('[name="modality"]');
+        type.value = "in_person"; type.dispatchEvent(new window.Event("change", { bubbles: true }));
+        assert.ok(root.querySelector("[data-recording-guidance]").textContent.includes("requires a Zoom or Chrome window"));
+        assert.ok(options.textContent.includes("does not support microphone-only recording"));
+        type.value = "virtual"; type.dispatchEvent(new window.Event("change", { bubbles: true }));
+      }
       const start = root.querySelector('[data-workspace-action="prepare"]');
       assert.equal(start.textContent, "Confirm consent & record");
       assert.ok(window.document.getElementById(start.getAttribute("aria-describedby")).textContent.includes("everyone has agreed to recording and transcription"));
@@ -115,7 +123,8 @@ for (const platform of ["desktop", "ios"]) {
         const choose = (name, value) => { const field = root.querySelector(`[name="${name}"]`); field.value = value; field.dispatchEvent(new window.Event("change", { bubbles: true })); };
         choose("language", "en-US+es-US"); choose("modality", "phone");
         if (platform === "ios") choose("microphone", "external");
-        assert.ok(options.querySelector("summary").textContent.includes("English and Spanish · Phone call"));
+        assert.ok(root.querySelector("[data-recording-guidance]").textContent.includes(platform === "ios"
+          ? "Call audio is not captured directly" : "requires a Zoom or Chrome window"));
         assert.equal(starts, 0); assert.equal(admissions, 0); assert.equal(saved.progress, null);
       }
       start.click(); start.click(); // Double taps must not create another admission/start.
@@ -134,6 +143,7 @@ for (const platform of ["desktop", "ios"]) {
         assert.equal(starts, 0); checks++; continue;
       }
       await until(() => starts === 1 && root.textContent.includes("Starting microphone"));
+      assert.ok(root.querySelector('[data-testid="startup-progress"]').textContent.includes("Wait for Recording"));
       assert.equal(admissions, 1); assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
       assert.equal(saved.progress.sessionId, sessionId);
       if (platform === "ios") {

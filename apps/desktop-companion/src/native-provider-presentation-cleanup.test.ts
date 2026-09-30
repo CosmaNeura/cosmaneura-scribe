@@ -22,7 +22,7 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-async function fixture() {
+async function fixture(withholdChoice = false) {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const lifetime = new AbortController();
   const commands: Record<string, unknown>[] = [];
@@ -34,6 +34,7 @@ async function fixture() {
       const command = JSON.parse(frame.subarray(5).toString()) as Record<string, unknown>;
       commands.push(command);
       queueMicrotask(() => {
+        if (withholdChoice && ["choose", "cancel"].includes(command.type as string)) return;
         const type = command.type === "publish" ? "published" : command.type === "close" ? "closed" : "heartbeat";
         child.stdout.write(nativeCommand({ type, request: command.request }));
       });
@@ -64,8 +65,40 @@ async function fixture() {
     await presentation.publish(inactive).catch(() => undefined);
     await presentation.dispose();
   });
-  return { lifetime, presentation, controller, adapter, commands };
+  return { lifetime, presentation, controller, adapter, commands,
+    reply: (value: Record<string, unknown>) => child.stdout.write(nativeCommand(value)) };
 }
+
+it.each(["unavailable", "selected"])("waits for a cancelled picker acknowledgement (%s) before hiding inactive presentation", async type => {
+  const f = await fixture(true), abort = new AbortController();
+  const selection = f.presentation.selectWindow(abort.signal);
+  const rejected = expect(selection).rejects.toThrow();
+  abort.abort(); await rejected;
+  let stopped = false;
+  const stopping = f.controller.shutdownFromMain("cancelled-choice").then(() => { stopped = true; });
+  void stopping.catch(() => undefined);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(stopped).toBe(false);
+  expect(f.presentation.isHealthy()).toBe(true);
+  expect(f.commands.filter(command => command.type === "publish")).toHaveLength(1);
+  const request = f.commands.find(command => command.type === "choose")!.request;
+  f.reply({ type, request, ...(type === "selected" ? { application: "us.zoom.xos", processID: 41, windowID: 73 } : {}) });
+  await stopping;
+  expect(stopped).toBe(true); expect(f.presentation.isHealthy()).toBe(true);
+  expect(f.adapter.start).not.toHaveBeenCalled();
+  expect(f.commands.filter(command => command.type === "publish")).toHaveLength(2);
+});
+
+it("bounds a missing cancelled-picker acknowledgement and keeps capture disabled", async () => {
+  const f = await fixture(true), abort = new AbortController();
+  const selection = f.presentation.selectWindow(abort.signal);
+  const rejected = expect(selection).rejects.toThrow();
+  abort.abort(); await rejected;
+  const stopping = f.presentation.publish(inactive), failed = expect(stopping).rejects.toThrow();
+  await vi.advanceTimersByTimeAsync(3_000); await failed;
+  expect(f.presentation.isHealthy()).toBe(false);
+  expect(f.adapter.start).not.toHaveBeenCalled();
+});
 
 it("closes an already stopped owner on the first attempt while its session is active", async () => {
   const f = await fixture();

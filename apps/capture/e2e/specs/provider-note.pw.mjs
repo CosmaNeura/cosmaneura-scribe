@@ -24,9 +24,15 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       await test.step("note_open", async () => { await openVisit(page); await openNote(page); });
       const edited = "SYNTHETIC ACCEPTANCE — exact saved edit\nAvery’s fictional visit; no real patient.";
       await page.getByRole("textbox", { name: "Patient", exact: true }).fill(edited);
+      await expect(page.getByText("Unsaved edits", { exact: true })).toBeVisible();
+      // A reduced mobile viewport exercises the save bar while the clinician
+      // is editing farther down the note. Physical keyboard behavior is separate.
+      if (viewport.width === 390) await page.setViewportSize({ width: 390, height: 430 });
+      await page.getByRole("textbox", { name: "Plan", exact: true }).scrollIntoViewIfNeeded();
+      await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeInViewport();
       await test.step("note_save", async () => {
-        await page.getByRole("button", { name: "Save edits to Core", exact: true }).click();
-        await expect(page.getByText(loseSaveResponse ? "Confirm your previous save" : "Edits saved to Core. Clinical review is still required.", { exact: true })).toBeVisible();
+        await page.getByRole("button", { name: "Save draft", exact: true }).click();
+        await expect(page.getByText(loseSaveResponse ? "Confirm your previous save" : "Draft saved. Clinical review is still required.", { exact: true })).toBeVisible();
       });
       expect(server.calls.filter(call => call === "save")).toHaveLength(1);
       expect(await page.evaluate(() => globalThis.__noteLabMediaCalls)).toBe(0);
@@ -35,11 +41,11 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       await test.step("note_reopen", async () => {
         await openVisit(relaunched);
         if (loseSaveResponse) {
-          await expect(relaunched.getByRole("button", { name: "Recover note save", exact: true })).toBeVisible();
+          await expect(relaunched.getByRole("button", { name: "Check save status", exact: true })).toBeVisible();
           expect(server.calls.filter(call => call === "resolve")).toHaveLength(0);
           await test.step("note_recover", async () => {
-            await relaunched.getByRole("button", { name: "Recover note save", exact: true }).click();
-            await expect(relaunched.getByText("Previous save confirmed. The current Core draft is shown.", { exact: true })).toBeVisible();
+            await relaunched.getByRole("button", { name: "Check save status", exact: true }).click();
+            await expect(relaunched.getByText("Previous save confirmed. Your saved draft is shown.", { exact: true })).toBeVisible();
           });
         } else await openNote(relaunched);
         await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);

@@ -30,6 +30,12 @@ the first window, uses a title as authority or accepts a caller-supplied URL.
 Only the `.audio` stream output is registered. No screen frame is delivered or
 written. ScreenCaptureKit still requires its system screen-capture permission.
 
+The provider picker bounds macOS window discovery to ten seconds and can cancel
+that lookup without waiting for ScreenCaptureKit to return. Once the list is
+visible, the deliberate human choice has no extra picker deadline. Expiry of the
+existing recording setup closes the choice and exposes its ordinary recovery
+state. Late discovery or selection results cannot start capture.
+
 **Window selection does not prove tab-specific audio isolation.** In particular,
 Chrome audio may include other tabs/windows. The eventual native selection UI
 must disclose the actual capture extent, and physical qualification must verify

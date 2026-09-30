@@ -35,6 +35,11 @@
 .provider-recording-fields label, .provider-recording-fields select { min-width: 0; width: 100%; }
 .provider-preparation .provider-consent { padding: 12px; border-radius: 8px; background: #f2faf5; }
 .provider-draft-status, [data-workspace-notice]:not(:empty) { padding: 14px; border-left: 4px solid #477c68; background: #eff6f2; }
+.provider-save-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid #ccded7; border-radius: 10px; background: #fff; box-shadow: 0 3px 8px #17352f14; }
+.provider-save-bar p, .provider-save-bar button { margin: 0; }
+.provider-save-bar p { font-weight: 600; }
+[data-note-field] { scroll-margin-top: 88px; }
+[data-workspace-progress] { color: #526d63; font-variant-numeric: tabular-nums; }
 [data-workspace-notice]:empty { margin: 0; }
 .provider-workspace .shell { padding: 0; }
 .provider-workspace .shell > header { display: none; }
@@ -61,4 +66,4 @@
 .provider-setup [data-patient-search] label { flex: 1; min-width: 0; margin: 12px 0 8px; }
 .provider-setup [data-patient-search] input { width: 100%; }
 .provider-setup [data-patient-search] button { margin-right: 0; }
-.provider-workspace[aria-busy="true"] button { cursor: wait; opacity: .7; }
+.provider-workspace[aria-busy="true"] button[data-workspace-action]:not([data-workspace-action="cancel-opening"]) { cursor: wait; opacity: .7; }

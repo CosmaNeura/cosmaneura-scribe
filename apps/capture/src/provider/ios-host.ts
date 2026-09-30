@@ -98,8 +98,15 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
       databaseName: `scribe-provider-flow:v1:${mount.recoveryScope}:${mount.scope.workspaceId}`,
     });
     current();
-    const active = await flow.getActiveCaptureState();
-    const preparing = await flow.getPreparationState();
+    // These independent read-only checks share the same exclusive flow lock and
+    // fresh authorization. Join every read before releasing the store on failure;
+    // preserve the original validation order when inspecting their results.
+    const [activeRead, preparingRead, keyStateRead, legacyKeyRead] = await Promise.allSettled([
+      flow.getActiveCaptureState(), flow.getPreparationState(),
+      flow.getSessionKeyState(sessionId), flow.getSessionKey(sessionId),
+    ]);
+    const active = readResult(activeRead);
+    const preparing = readResult(preparingRead);
     current();
     if (active && (active.sessionId !== sessionId || active.reviewAfterUpload !== true)
       || preparing && (preparing.sessionId !== sessionId || preparing.mode !== "configured_core")) {
@@ -108,8 +115,8 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     const nativeQueue = scopedQueue(SecureQueue, mount.recoveryScope, mount.scope.workspaceId, sessionId);
     // Native key custody is selected only for new recordings. Existing browser
     // keys/intents stay with their original flow; never replace or rebind them.
-    const keyState = await flow.getSessionKeyState(sessionId);
-    const legacyKey = await flow.getSessionKey(sessionId);
+    const keyState = readResult(keyStateRead);
+    const legacyKey = readResult(legacyKeyRead);
     current();
     if (mount.nativeRecording && !active && !preparing && !keyState && !legacyKey) {
       const ownedFlow = flow;
@@ -190,6 +197,11 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     // failed acquisition's handles, including after cancellation during open().
     flow?.close(); await unlock(); throw error;
   }
+}
+
+function readResult<T>(result: PromiseSettledResult<T>): T {
+  if (result.status === "rejected") throw result.reason;
+  return result.value;
 }
 
 function reuseOpeningRead(storage: CaptureQueueStorage, records: readonly CaptureChunkMetadata[],
