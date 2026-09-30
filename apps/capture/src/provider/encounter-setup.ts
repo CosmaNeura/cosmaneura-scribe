@@ -3,10 +3,10 @@ import { isUuid } from "../../../review-ui/src/contracts";
 import { record, reference } from "./core-client";
 import type { ProviderEncounter } from "./workspace-contracts";
 
-export interface ProviderPatient { patientRef: string; name: string; dateOfBirth: string }
+export interface ProviderPatient { patientRef: string; name: string; dateOfBirth: string | null }
 export interface EncounterDraft {
   creationKey: string;
-  patient: { kind: "existing"; patientRef: string } | { kind: "new"; name: string; dateOfBirth: string };
+  patient: { kind: "existing"; patientRef: string } | { kind: "new"; name: string; dateOfBirth: string | null };
   appointmentAt: string;
   title: string;
 }
@@ -34,7 +34,7 @@ export function parseSetupState(value: unknown): EncounterSetupState {
   const patients = value.patients.map(raw => {
     if (!record(raw) || Object.keys(raw).sort().join(",") !== "dateOfBirth,name,patientRef"
       || !reference(raw.patientRef, "patient")) throw fail();
-    return { patientRef: raw.patientRef, name: text(raw.name), dateOfBirth: text(raw.dateOfBirth, 10) };
+    return { patientRef: raw.patientRef, name: text(raw.name), dateOfBirth: birthDate(raw.dateOfBirth) };
   });
   if (new Set(patients.map(p => p.patientRef)).size !== patients.length) throw fail();
   return { account: text(value.account, 320), patients, moreResults: value.moreResults,
@@ -47,6 +47,11 @@ const text = (value: unknown, max = 200): string => {
   if (typeof value !== "string" || !value.length || value.length > max || value.includes("\0")) throw fail();
   return value;
 };
+const birthDate = (value: unknown): string | null => {
+  if (value === null) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(text(value, 10))) throw fail();
+  return value as string;
+};
 
 export function parseEncounterDraft(value: unknown): EncounterDraft {
   if (!record(value) || Object.keys(value).sort().join(",") !== "appointmentAt,creationKey,patient,title"
@@ -56,14 +61,15 @@ export function parseEncounterDraft(value: unknown): EncounterDraft {
     if (Object.keys(patient).sort().join(",") !== "kind,patientRef" || !reference(patient.patientRef, "patient")) throw fail();
   } else if (patient.kind === "new") {
     if (Object.keys(patient).sort().join(",") !== "dateOfBirth,kind,name"
-      || !/^\d{4}-\d{2}-\d{2}$/u.test(text(patient.dateOfBirth, 10)) || text(patient.name).trim() !== patient.name) throw fail();
+      || text(patient.name).trim() !== patient.name) throw fail();
+    birthDate(patient.dateOfBirth);
   } else throw fail();
   const stamp = text(value.appointmentAt, 40);
   if (!Number.isFinite(Date.parse(stamp)) || !/(Z|[+-]\d{2}:\d{2})$/u.test(stamp)) throw fail();
   text(value.title);
   return { creationKey: value.creationKey, patient: patient.kind === "existing"
     ? { kind: "existing", patientRef: patient.patientRef as string }
-    : { kind: "new", name: patient.name as string, dateOfBirth: patient.dateOfBirth as string },
+    : { kind: "new", name: patient.name as string, dateOfBirth: birthDate(patient.dateOfBirth) },
     appointmentAt: stamp, title: value.title as string };
 }
 
@@ -133,7 +139,7 @@ export function createEncounterSetup(options: {
     if (!Array.isArray(value.patients) || value.patients.length > 100 || typeof value.more_results !== "boolean") throw fail();
     const patients = value.patients.map(raw => {
       if (!record(raw) || !reference(raw.patient_ref, "patient")) throw fail();
-      return { patientRef: raw.patient_ref, name: text(raw.name), dateOfBirth: text(raw.date_of_birth, 10) };
+      return { patientRef: raw.patient_ref, name: text(raw.name), dateOfBirth: birthDate(raw.date_of_birth) };
     });
     if (new Set(patients.map(p => p.patientRef)).size !== patients.length) throw fail();
     return { account: account!, patients, moreResults: value.more_results };
