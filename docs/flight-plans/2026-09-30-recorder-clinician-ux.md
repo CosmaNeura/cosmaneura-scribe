@@ -50,3 +50,19 @@ intentional WKWebView pinch zoom. Standalone packaging must apply and verify the
 same `ios.zoomEnabled` setting while preserving all other retained configuration.
 Verify the retained failed visit and form controls on the updated physical apps;
 local contract and layout tests alone do not establish recording acceptance.
+
+## Opening request latency
+
+Within one opening request, a successful authorization check after network I/O
+also serves as the check immediately before the next request, only when no await
+intervenes. Acquire the workload credential before that shared check. Keep all
+four Core operations and all checks across actual I/O, account/selection changes
+and revocation. Use the final checked display row synchronously; never retain
+credentials, selection authority or display data for another request.
+
+The receiver integration test must count five encounter lookups instead of ten.
+This reduces one mount from fourteen remote requests to nine. Other operations
+retain their existing checks. Emit only the fixed encounter-lookup timing label
+and milliseconds. Deploy the receiver with unchanged identity/configuration and
+no schema operation; rollback may restore its previous image. Physical opening
+and recording timing still require measurement after deployment.

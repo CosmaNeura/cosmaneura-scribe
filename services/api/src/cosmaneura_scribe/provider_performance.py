@@ -36,6 +36,9 @@ _PHASE_LOGGERS: dict[str, Callable[[float], None]] = {
     "core_mount": lambda ms: log_event(action="provider.core_mount", duration_ms=ms),
     "core_binding": lambda ms: log_event(action="provider.core_binding", duration_ms=ms),
     "core_operation": lambda ms: log_event(action="provider.core_operation", duration_ms=ms),
+    "core_encounter_lookup": lambda ms: log_event(
+        action="provider.core_encounter_lookup", duration_ms=ms,
+    ),
 }
 PROVIDER_ACTIONS = frozenset(_TOTAL_LOGGERS)
 

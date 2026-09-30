@@ -497,12 +497,16 @@ async def test_opening_cannot_reuse_setup_for_a_mutation(connection):
     assert wire.effects == []
 
 
-async def test_opening_is_cancelled_before_late_core_read(connection):
+@pytest.mark.parametrize("boundary", [
+    "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
+    ROOT + "capture-bindings/resolve", ROOT + "capture-operations",
+])
+async def test_opening_is_cancelled_before_late_core_read(connection, boundary):
     wire, client = connection
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def hold(path):
-        if path.endswith("capture-bindings/resolve"):
+        if path == boundary:
             entered.set()
             await release.wait()
 
@@ -1572,3 +1576,95 @@ async def test_closing_connection_during_final_authorization_withholds_reply():
     finally:
         release.set()
         await client.close()
+
+
+async def test_opening_coalesces_only_adjacent_fresh_boundaries(connection):
+    wire, client = connection
+    order = []
+    async def fresh():
+        order.append("fresh")
+        return await wire.context()
+    async def workload():
+        order.append("workload")
+        await asyncio.sleep(0)
+        return await wire.workload()
+    async def before(path):
+        order.append(path)
+        await asyncio.sleep(0)
+    client._fresh_context, client._workload_token, wire.before = fresh, workload, before
+    await client.open_with_review(uuid4(), "offline-coalesced-open")
+    assert order == [
+        "fresh", "/embed/v1/context-tokens/exchange", "workload", "fresh",
+        "/service/v1/agent/mount-context/resolve", "fresh",
+        ROOT + "capture-bindings/resolve", "fresh", ROOT + "capture-operations", "fresh",
+    ]
+    assert wire.context_calls == 5
+    assert len(wire.calls) == 4 and len(wire.effects) == 1
+
+
+@pytest.mark.parametrize("change", ["revoke", "account", "selection", "cancel"])
+async def test_opening_rechecks_after_workload_acquisition(connection, change):
+    wire, client = connection
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def workload():
+        entered.set()
+        await release.wait()
+        return await wire.workload()
+    client._workload_token = workload
+    task = asyncio.create_task(client.open_with_review(uuid4(), "offline-workload-boundary"))
+    await entered.wait()
+    if change == "cancel":
+        task.cancel()
+    elif change == "revoke":
+        wire.denied = True
+    else:
+        wire.selection = replace(SELECTION, **{
+            "recovery_scope" if change == "account" else "authorization_revision": uuid4(),
+        })
+    release.set()
+    with pytest.raises(asyncio.CancelledError if change == "cancel" else ProviderCoreUnavailable):
+        await task
+    assert [path for path, _ in wire.calls] == ["/embed/v1/context-tokens/exchange"]
+    assert not wire.effects
+
+
+@pytest.mark.parametrize("boundary", [
+    "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
+    ROOT + "capture-bindings/resolve", ROOT + "capture-operations",
+])
+async def test_opening_rejects_account_switch_after_each_core_response(connection, boundary):
+    wire, client = connection
+    def change_account(path):
+        if path == boundary:
+            wire.selection = replace(SELECTION, recovery_scope=uuid4())
+    wire.after = change_account
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.open_with_review(uuid4(), "offline-switched-account")
+    assert caught.value.status == 403 and wire.calls[-1][0] == boundary
+
+
+async def test_opening_boundary_is_single_use_even_for_another_read(connection):
+    wire, client = connection
+    current = await client._negotiate(None, opening=True)
+    assert current.opening is not None
+    await client._request(current.mount, ROOT + "capture-operations", body(
+        operation={"kind": "provider_encounter"}), "offline-once", _negotiated=current)
+    count = len(wire.calls)
+    assert current.opening.closed and current.opening.context is None
+    assert current.opening.workload_headers is None
+    with pytest.raises(ProviderCoreUnavailable):
+        await client._request(current.mount, ROOT + "capture-operations", body(
+            operation={"kind": "creator_review"}), "offline-again", _negotiated=current)
+    assert len(wire.calls) == count
+
+
+async def test_concurrent_openings_have_separate_request_local_boundaries(connection):
+    wire, client = connection
+    async def before(_path):
+        await asyncio.sleep(0)
+    wire.before = before
+    first, second = uuid4(), uuid4()
+    replies = await asyncio.gather(client.open_with_review(first, "offline-concurrent-one"),
+                                   client.open_with_review(second, "offline-concurrent-two"))
+    assert {reply[1]["request_nonce"] for reply in replies} == {str(first), str(second)}
+    assert wire.counter == 2 and wire.context_calls == 10 and len(wire.calls) == 8

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1095,3 +1096,77 @@ async def test_new_workflow_disabled_and_legacy_revocation_cannot_fall_through(h
         h.mutate(PatientLink, h.link, revoked_at=datetime.now(UTC))
         reply = await c.post("/provider/v1/mount", json={"workspace_id": h.workspace})
         assert reply.status_code == 403 and h.wire.calls == []
+
+
+def core_created_opening(h, after_lookup=None):
+    """Core-owned synthetic visit; real registry checks plus a counted Core wire."""
+    h.receiver.encounter_creation_enabled = True
+    workspace = uuid4()
+    h.wire.selection = replace(h.wire.selection, workspace_id=workspace)
+    lookups = []
+    async def handle(request):
+        if request.url.path != "/embed/v1/scribe/encounters":
+            return await h.wire.handle(request)
+        body = json.loads(request.content)
+        assert body["action"] == "lookup" and body["workspace_id"] == str(workspace)
+        lookups.append(body["action"])
+        value = {
+            "version": "1", "action": "lookup", "request_nonce": body["request_nonce"],
+            "account": {"actor_ref": h.wire.selection.actor_ref,
+                        "tenant_ref": h.wire.selection.tenant_ref},
+            "encounter": {"workspace_id": str(workspace), "appointment_ref": APPOINTMENT,
+                          "patient_name": f"Synthetic display {len(lookups)}", "title": "Visit",
+                          "appointment_at": "2026-09-30T12:00:00Z"},
+        }
+        if after_lookup:
+            after_lookup(len(lookups))
+        return httpx.Response(200, json=value, headers={
+            "Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "1"})
+    h.receiver.core_http = httpx.MockTransport(handle)
+    return workspace, lookups
+
+
+@pytest.mark.asyncio
+async def test_core_created_opening_uses_five_checks_and_final_checked_display(harness):
+    h = harness
+    workspace, lookups = core_created_opening(h)
+    async with client(h) as c:
+        result = await c.post("/provider/v1/mount", json={
+            "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
+    assert result.status_code == 200
+    assert len(lookups) == 5 and len(h.wire.calls) == 4
+    assert result.json()["encounter"]["title"] == "Synthetic display 5"
+    assert h.wire.operations == ["provider_encounter"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", range(1, 6))
+async def test_core_created_opening_cannot_publish_account_revoked_during_lookup(harness, boundary):
+    h = harness
+    def after_lookup(number):
+        if number == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+    workspace, lookups = core_created_opening(h, after_lookup)
+    async with client(h) as c:
+        result = await c.post("/provider/v1/mount", json={
+            "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
+    assert result.status_code == 403
+    assert len(lookups) == boundary and len(h.wire.calls) == boundary - 1
+    assert "Synthetic display" not in result.text
+
+
+@pytest.mark.asyncio
+async def test_opening_rechecks_real_account_after_workload_token_await(harness):
+    h = harness
+    workspace, lookups = core_created_opening(h)
+    async def workload():
+        await asyncio.sleep(0)
+        h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+        return SecretStr("offline-workload-only")
+    h.receiver.workload_token = workload
+    async with client(h) as c:
+        result = await c.post("/provider/v1/mount", json={
+            "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
+    assert result.status_code == 403 and len(lookups) == 1
+    assert h.wire.calls == ["/embed/v1/context-tokens/exchange"]
+    assert "Synthetic display" not in result.text

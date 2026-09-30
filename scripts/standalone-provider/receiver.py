@@ -293,10 +293,15 @@ class ProviderReceiver:
                 # capture operations pass that exact key through to existing Core.
                 _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key))
 
+                checked_selection = None
+
                 async def fresh() -> AuthorizedCoreProvider:
+                    nonlocal checked_selection
                     if not self.enabled:
                         raise AccessDenied()
-                    return (await self.selected_current(authorization, revision, workspace_id))[0]
+                    selected = await self.selected_current(authorization, revision, workspace_id)
+                    checked_selection = selected
+                    return selected[0]
 
                 transport = ProviderCoreTransport(
                     self.profile.core_origin,
@@ -318,10 +323,11 @@ class ProviderReceiver:
                         else:
                             _require(set(body) == {"workspace_id"})
                             mount = await transport.open()
-                        # Use a fresh authorized observation for the display row.
-                        context, encounter = await self.selected_current(
-                            authorization, revision, workspace_id
-                        )
+                        # The transport's final post-I/O check just supplied
+                        # this exact display. No await may intervene before it
+                        # is published; do not cache it for another request.
+                        _require(checked_selection is not None and self.enabled)
+                        context, encounter = checked_selection
                         _require(context.selection == mount.selection)
                         result = {
                             **mount.client_scope(),
@@ -403,7 +409,9 @@ class ProviderReceiver:
                             result = {"revision": str(revision), "session_id": session_id}
                         else:
                             result = await transport.request(mount, _CORE + action, body, key)
-                    if (await fresh()).selection != mount.selection:
+                    # Mount assembly has not yielded since its final checked
+                    # display. Other operations keep their publication recheck.
+                    if action != "mount" and (await fresh()).selection != mount.selection:
                         raise AccessDenied()
                     return _reply(200, result)
                 finally:
