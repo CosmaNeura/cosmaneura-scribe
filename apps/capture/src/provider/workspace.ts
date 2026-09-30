@@ -22,7 +22,7 @@ import { encounterSetupMarkup } from "./encounter-setup-view";
 import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
 import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./workflow-timing";
-import { encounterDetail } from "./workspace-display";
+import { encounterDetail, noteFieldLabel } from "./workspace-display";
 import { noteEditorPosition, restoreNoteEditorPosition, setNoteEditorPending, type NoteEditorPosition } from "./note-editor-state";
 import { settledRecorderVisitStatus } from "./recent-visit-state";
 
@@ -581,6 +581,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       let view: CreatorReviewView, value: unknown;
       if (prepare) {
         step = "note preparation";
+        show('<h1>Preparing your draft note…</h1><p role="status">Checking your transcript. Your recording and transcript are retained.</p>');
         view = await review.read();
         if (!authorized(n)) return;
         // Generation still waits for a fresh, ready transcript before any write.
@@ -600,7 +601,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (prepare && result.status === "not_prepared") awaitPreparedNote(n, activeClient, id, schema, fresh);
       else renderNote();
     } catch (error) {
-      if (!preparationSource) throw error;
+      if (!preparationSource) {
+        if (prepare && authorized(n)) renderNote();
+        throw error;
+      }
       if (authorized(n)) awaitPreparedNote(n, activeClient, id, schema, preparationSource);
     }
   };
@@ -701,10 +705,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ${draft.reviewed_source.capture_continuity ? '<p role="status">Recording continuity is unconfirmed. Review this note for missing speech; gap lengths are unknown.</p>' : ""}
       ${draft.status === "draft" ? `<div class="provider-save-bar"><p data-note-save-state role="status" aria-atomic="true">Saved · Not clinically reviewed</p><button data-workspace-action="save">Save draft</button></div>
       <div class="provider-note-tabs" aria-label="Note and conversation"><button data-workspace-action="note-view" aria-pressed="true">Note</button><button data-workspace-action="transcript-view" aria-pressed="false">Transcript</button></div>
-      <div class="provider-note-grid"><div class="provider-note-editor">${draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")}</div>
+      <div class="provider-note-grid"><div class="provider-note-editor">${draft.field_order!.map((key, index) => `<label>${escape(noteFieldLabel(key))}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")}</div>
       <aside class="provider-note-evidence">${noteTranscript ? renderNoteTranscript(noteTranscript) : ""}</aside></div>`
         : '<button data-workspace-action="generate">Prepare draft note</button><button data-workspace-action="check-note">Check for note</button>'}
       <div class="provider-note-actions"><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open patient chart in Core</button></div>
+      ${draft.field_order?.some(key => noteFieldLabel(key) !== key) ? `<details class="provider-note-guidance"><summary>Original template headings</summary><p>These headings come from your saved template. Dates and statements in headings do not confirm what happened in this visit.</p><ul>${draft.field_order.filter(key => noteFieldLabel(key) !== key).map(key => `<li>${escape(noteFieldLabel(key))}: ${escape(key)}</li>`).join("")}</ul></details>` : ""}
       <details class="provider-note-guidance"><summary>About this draft</summary><p>Check the note against the conversation and edit anything that is missing or incorrect. Saving preserves your edits; it does not mark the note clinically reviewed.</p></details></section>`);
     const transcriptDetails = content.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
     if (transcriptDetails && window.matchMedia("(min-width: 900px)").matches) transcriptDetails.open = true;
