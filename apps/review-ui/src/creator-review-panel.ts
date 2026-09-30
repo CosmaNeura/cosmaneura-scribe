@@ -10,16 +10,22 @@ import {
 } from "./creator-review-journal";
 import "./creator-review.css";
 import { isUuid } from "./contracts";
+import { bindTranscriptTools } from "./transcript-tools";
+export { bindTranscriptTools, renderTranscriptEvidenceLinks } from "./transcript-tools";
+import { currentSpeakerConfirmations, parsePendingCreatorEdit, type CreatorEditJournal, type PendingCreatorEdit } from "./creator-edit";
+import { creatorEditFromForm, renderCreatorEditDialog } from "./creator-edit-view";
 
-type Phase = "loading" | "ready" | "saving" | "retry" | "unavailable";
+type Phase = "loading" | "ready" | "saving" | "retry" | "edit-retry" | "unavailable";
 export interface CreatorReviewState {
   readonly phase: Phase;
   readonly view: CreatorReviewView | null;
   readonly notice: string;
+  readonly editable?: boolean;
 }
 
 export interface CreatorReviewOptions {
   readonly journal?: CreatorReviewJournal;
+  readonly editJournal?: CreatorEditJournal;
   /** Open the host's existing Core note flow with this action's fresh authorized read. */
   readonly continueToNote?: (view: CreatorReviewView) => Promise<void>;
   /** Coordinated fresh read, consumed only by this still-current explicit action. */
@@ -32,12 +38,15 @@ export function mountCreatorReview(
 ): () => void {
   let state: CreatorReviewState = { phase: "loading", view: null, notice: "" };
   let pending: PendingReviewDecision | null = null;
+  let pendingEdit: PendingCreatorEdit | null = null;
+  let editingSegment: string | null = null;
   let disposed = false;
   let generation = 0;
   let recovered = false;
   let continuing = false;
   let refreshing = false;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const disposeTranscriptTools = bindTranscriptTools(root);
   const clearRefresh = (): void => { clearTimeout(refreshTimer); refreshTimer = undefined; };
   const waitingForTranscript = (): boolean => state.phase === "ready" && pending === null && !continuing
     && state.view?.source === null && ["uploaded", "processing"].includes(state.view.status);
@@ -49,19 +58,25 @@ export function mountCreatorReview(
   };
   const render = (): void => {
     if (disposed) return;
-    root.innerHTML = renderCreatorReview(state);
+    root.innerHTML = renderCreatorReview({ ...state, editable: Boolean(api.edit && options.editJournal) });
+    if (editingSegment && state.view) {
+      root.insertAdjacentHTML("beforeend", renderCreatorEditDialog(state.view, editingSegment));
+      const dialog = root.querySelector<HTMLDialogElement>("[data-creator-edit-dialog]");
+      dialog?.showModal();
+      dialog?.addEventListener("cancel", event => { event.preventDefault(); editingSegment = null; render(); });
+    }
     if (state.phase === "ready" && state.view?.working?.note_ready && options.continueToNote) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.reviewAction = "continue";
       button.disabled = continuing;
-      button.textContent = continuing ? "Opening note…" : "Continue to note";
+      button.textContent = continuing ? "Opening note…" : "Review draft note";
       root.querySelector(".creator-status")?.append(button);
     }
   };
 
   const refresh = async (automatic = false): Promise<void> => {
-    if (disposed || pending !== null || refreshing
+    if (disposed || pending !== null || pendingEdit !== null || editingSegment !== null || refreshing
       || automatic && (document.visibilityState !== "visible" || !waitingForTranscript())) return;
     clearRefresh();
     refreshing = true;
@@ -79,7 +94,17 @@ export function mountCreatorReview(
         if (disposed || request !== generation) return;
         pending = saved === null ? null : parsePendingReviewDecision(saved);
       }
+      if (!recovered && options.editJournal) {
+        const saved = await options.editJournal.load();
+        if (disposed || request !== generation) return;
+        pendingEdit = saved === null ? null : parsePendingCreatorEdit(saved);
+      }
       recovered = true;
+      if (pendingEdit !== null) {
+        state = { phase: "edit-retry", view: null,
+          notice: "A transcript correction needs confirmation. Check that same save before making another change." };
+        return;
+      }
       if (pending !== null) {
         state = { phase: "retry", view: null,
           notice: "A previous decision needs confirmation. Retry that same decision to recover its result." };
@@ -138,8 +163,44 @@ export function mountCreatorReview(
     }
   };
 
+  const saveEdit = async (): Promise<void> => {
+    if (disposed || !api.edit || !options.editJournal || pendingEdit === null || state.phase === "saving") return;
+    clearRefresh();
+    const operation = pendingEdit;
+    editingSegment = null;
+    state = { phase: "saving", view: null, notice: "Saving transcript correction…" };
+    render();
+    try {
+      await options.editJournal.save(operation);
+      if (disposed) return;
+      const receipt = await api.edit(operation.request, operation.key);
+      if (disposed) return;
+      await options.editJournal.clear(operation.key);
+      if (disposed) return;
+      pendingEdit = null;
+      state = { phase: "ready", view: null,
+        notice: `Correction saved as transcript version ${receipt.working_transcript_version}. Review the draft note against this version.` };
+      await refresh();
+    } catch (error) {
+      if (disposed) return;
+      if (error instanceof CreatorReviewError && error.kind === "conflict") {
+        try {
+          await options.editJournal.clear(operation.key);
+          if (disposed) return;
+          pendingEdit = null;
+          state = { phase: "ready", view: null, notice: "The transcript changed. Reopen the current turn before correcting it." };
+          await refresh();
+          return;
+        } catch { /* Retain the exact operation if its encrypted journal cannot be cleared. */ }
+      }
+      state = { phase: "edit-retry", view: null,
+        notice: "The correction save is unconfirmed. Check the same save; a different correction will not be sent." };
+      render();
+    }
+  };
+
   const continueToNote = async (): Promise<void> => {
-    if (continuing || disposed || pending !== null || state.phase !== "ready" || !options.continueToNote) return;
+    if (continuing || disposed || pending !== null || pendingEdit !== null || editingSegment !== null || state.phase !== "ready" || !options.continueToNote) return;
     clearRefresh();
     const request = ++generation;
     continuing = true;
@@ -171,6 +232,28 @@ export function mountCreatorReview(
     const button = target.closest<HTMLButtonElement>("button[data-review-action]");
     if (button === null || !root.contains(button) || button.disabled) return;
     const action = button.dataset.reviewAction;
+    if (action === "retry-edit") { void saveEdit(); return; }
+    if (action === "cancel-edit") { editingSegment = null; render(); return; }
+    if (action === "save-edit") {
+      const form = root.querySelector<HTMLFormElement>("[data-creator-edit-form]");
+      if (!form || !state.view || pendingEdit !== null) return;
+      try {
+        pendingEdit = { key: `transcript-edit-${crypto.randomUUID()}`, request: creatorEditFromForm(state.view, form) };
+        void saveEdit();
+      } catch (error) {
+        const alert = form.querySelector<HTMLElement>("[data-edit-validation]");
+        if (alert) alert.textContent = error instanceof Error ? error.message : "Check the wording and speaker before saving.";
+      }
+      return;
+    }
+    if (action === "edit") {
+      if (state.phase !== "ready" || !api.edit || !options.editJournal || state.view?.editing_allowed !== true
+        || pending !== null || pendingEdit !== null || continuing) return;
+      const segment = state.view.source?.segments.find(item => item.source_segment_id === button.dataset.segment);
+      if (segment) { editingSegment = segment.source_segment_id; clearRefresh(); render(); }
+      return;
+    }
+    if (editingSegment !== null || pendingEdit !== null) return;
     if (action === "continue") { void continueToNote(); return; }
     if (action === "refresh") { void refresh(); return; }
     if (action === "retry") { void save(); return; }
@@ -199,7 +282,20 @@ export function mountCreatorReview(
     clearRefresh();
     if (document.visibilityState === "visible" && waitingForTranscript()) void refresh(true);
   };
+  const onChange = (event: Event): void => {
+    if (!(event.target instanceof HTMLSelectElement) || event.target.name !== "role") return;
+    const form = event.target.closest<HTMLFormElement>("[data-creator-edit-form]");
+    const name = form?.querySelector<HTMLInputElement>("[name=display_name]");
+    if (name) name.disabled = event.target.value === "unknown";
+  };
+  const onSubmit = (event: SubmitEvent): void => {
+    if (!(event.target instanceof HTMLFormElement) || !event.target.matches("[data-creator-edit-form]")) return;
+    event.preventDefault();
+    event.target.querySelector<HTMLButtonElement>('[data-review-action="save-edit"]')?.click();
+  };
   root.addEventListener("click", onClick);
+  root.addEventListener("change", onChange);
+  root.addEventListener("submit", onSubmit);
   document.addEventListener("visibilitychange", visibilityChanged);
   render();
   void refresh();
@@ -208,8 +304,13 @@ export function mountCreatorReview(
     clearRefresh();
     generation += 1;
     pending = null;
+    pendingEdit = null;
+    editingSegment = null;
     state = { phase: "unavailable", view: null, notice: "" };
     root.removeEventListener("click", onClick);
+    root.removeEventListener("change", onChange);
+    root.removeEventListener("submit", onSubmit);
+    disposeTranscriptTools();
     document.removeEventListener("visibilitychange", visibilityChanged);
     root.replaceChildren();
   };
@@ -228,15 +329,14 @@ export function renderCreatorReview(state: CreatorReviewState): string {
     : view === null ? "Your recording" : reviewStatusCopy(view);
   return `<section class="creator-review" aria-label="Your recording and transcript">
     <header class="creator-review-header">
-      <div><p class="creator-eyebrow">Cosmaneura Scribe</p><h1>Review your recording</h1>
-      <p>${languageLabel}Original speech preserved</p></div>
+      <div><h1>Transcript</h1><p>${languageLabel}Original retained</p></div>
       <button type="button" data-review-action="refresh"
-        ${["loading", "saving", "retry"].includes(state.phase) ? "disabled" : ""}>Refresh</button>
+        ${["loading", "saving", "retry", "edit-retry"].includes(state.phase) ? "disabled" : ""}>Refresh</button>
     </header>
     <div class="creator-status ${ready ? "creator-ready" : ""}" role="status">
       <strong>${escape(subtitle)}</strong>
       <p>${escape(state.notice || (ready
-        ? "Review is complete. Your transcript is ready for note preparation."
+        ? "Needs accuracy review. Check the wording and speakers before using the draft note."
         : view?.status === "uploaded" || view?.status === "processing"
           ? "Your transcript will appear here automatically when it is ready."
         : view?.status === "translation_pending"
@@ -245,8 +345,9 @@ export function renderCreatorReview(state: CreatorReviewState): string {
     </div>
     ${view?.capture_continuity ? '<p class="creator-blocker" role="status">Recording continuity is unconfirmed. Review for missing speech before using a note. Gap lengths are unknown.</p>' : ""}
     ${state.phase === "retry" ? `<button type="button" data-review-action="retry">Retry the same decision</button>` : ""}
+    ${state.phase === "edit-retry" ? `<button type="button" data-review-action="retry-edit">Check correction save</button>` : ""}
     ${state.phase === "loading" ? '<p aria-busy="true">Loading the current recording…</p>' : ""}
-    ${view?.source != null && view.working != null ? renderTranscript(view, state.phase) : ""}
+    ${view?.source != null && view.working != null ? renderTranscript(view, state.phase, false, state.editable) : ""}
   </section>`;
 }
 
@@ -257,7 +358,7 @@ export function renderNoteTranscript(view: CreatorReviewView): string {
     ${renderTranscript(view, "ready", true)}</details>`;
 }
 
-function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = false): string {
+function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = false, editable = false): string {
   const working = view.working;
   const source = view.source;
   if (working == null || source == null) return "";
@@ -266,16 +367,24 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
   const blockers = working.blockers ?? [];
   const hasSpanish = source.segments.some(segment => segment.source_locale === "es-US");
   const progress = new Map((view.translation_progress ?? []).map((item) => [item.source_segment_id, item.state]));
+  const confirmations = currentSpeakerConfirmations(view.review_edits ?? []);
+  const correctedIds = new Set((view.review_edits ?? []).flatMap(edit => (edit.request.corrections ?? []).map(item => item.source_segment_id)));
   const speakers = new Map<string, number>();
   for (const segment of source.segments) {
     if (isUuid(segment.speaker_id) && !speakers.has(segment.speaker_id)) speakers.set(segment.speaker_id, speakers.size + 1);
   }
-  return `<div class="creator-transcript-heading"><h2>Transcript</h2>
+  return `<div data-transcript-surface><div class="creator-transcript-heading"><h2>Transcript</h2>
     <span>Version ${working.working_transcript_version}</span></div>
-    <p class="creator-help">${hasSpanish ? "English speech stays in English. Spanish is shown beside its translation." : "Original speech is shown below."}
+    <p class="creator-help">${hasSpanish ? "Compare Spanish speech with the English translation." : "Review the wording and who is speaking."}
     ${readOnly ? "Compare the wording with your draft. Expanding this transcript keeps your unsaved edits in place."
-    : hasSpanish ? "Accept only a faithful translation; reject one that changes the meaning."
-      : "Review the transcript for accuracy before preparing your note."}</p>
+    : hasSpanish && reviews.size > 0 ? "Accept a faithful translation; reject one that changes the meaning." : ""}</p>
+    <div class="creator-transcript-search" role="search" aria-label="Search this transcript">
+      <label>Find in transcript<input type="search" data-transcript-search placeholder="Search words or a speaker" autocomplete="off"></label>
+      <div class="creator-search-navigation"><span data-transcript-search-status role="status">${source.segments.length} transcript ${source.segments.length === 1 ? "turn" : "turns"}</span>
+      <button type="button" data-transcript-match="previous" disabled aria-label="Previous matching turn">Previous</button>
+      <button type="button" data-transcript-match="next" disabled aria-label="Next matching turn">Next</button>
+      <button type="button" data-transcript-clear>Clear</button></div>
+    </div>
     <ol class="creator-segments">${source.segments.map((segment) => {
       const review = reviews.get(segment.source_segment_id);
       const english = resolved.get(segment.source_segment_id);
@@ -284,16 +393,22 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
       const englishText = review?.translated_content ?? english?.content;
       const spanish = segment.source_locale === "es-US";
       const speaker = speakers.get(segment.speaker_id);
-      return `<li class="creator-segment">
-        <div class="creator-segment-heading"><strong>${segment.speaker_role === "unknown" && speaker
-          ? `Speaker ${speaker} · not identified` : speakerCopy(segment.speaker_role)}</strong>
+      const confirmation = confirmations.get(segment.speaker_id);
+      const speakerLabel = confirmation ? `${confirmation.detail === "interpreter" ? "Interpreter" : speakerCopy(confirmation.role)}${confirmation.display_name ? ` · ${confirmation.display_name}` : ""}${confirmation.role === "unknown" ? "" : " · confirmed"}`
+        : segment.speaker_role === "unknown" && speaker ? `Speaker ${speaker} · not identified` : speakerCopy(segment.speaker_role);
+      const corrected = correctedIds.has(segment.source_segment_id);
+      const displayText = !spanish && corrected ? englishText ?? segment.content : segment.content;
+      return `<li class="creator-segment" data-transcript-segment="${escape(segment.source_segment_id)}" tabindex="-1">
+        <div class="creator-segment-heading"><strong>${escape(speakerLabel)}</strong>
           <span>${time(segment.start_ms)}–${time(segment.end_ms)}</span></div>
         <div class="creator-language-grid ${spanish ? "creator-bilingual" : ""}">
-          <div>${segment.source_locale === "en-US" ? "" : `<h3>${spanish ? "Spanish · original" : "Original · language unconfirmed"}</h3>`}
-            ${transcriptParagraphs(segment.content).map(part => `<p lang="${spanish ? "es" : segment.source_locale === "en-US" ? "en" : "und"}">${escape(part)}</p>`).join("")}</div>
-          ${spanish ? `<div><h3>English · ${review ? "proposed translation" : english?.resolution === "spanish_translation" ? "accepted translation" : "not ready"}</h3>
+          <div>${segment.source_locale === "en-US" ? (corrected ? "<h3>English · corrected</h3>" : "") : `<h3>${spanish ? "Spanish · original" : "Original · language unconfirmed"}</h3>`}
+            ${transcriptParagraphs(displayText).map(part => `<p lang="${spanish ? "es" : segment.source_locale === "en-US" ? "en" : "und"}">${escape(part)}</p>`).join("")}</div>
+          ${spanish ? `<div><h3>English · ${corrected ? "corrected translation" : review ? "proposed translation" : english?.resolution === "spanish_translation" ? "accepted translation" : "not ready"}</h3>
             ${transcriptParagraphs(englishText ?? "Translation is not ready for use.").map(part => `<p lang="en">${escape(part)}</p>`).join("")}</div>` : ""}
         </div>
+        ${corrected && !spanish ? `<details class="creator-original"><summary>Original wording</summary><p>${escape(segment.content)}</p></details>` : ""}
+        ${!readOnly && editable && view.editing_allowed === true ? `<button type="button" class="creator-edit-turn" data-review-action="edit" data-segment="${escape(segment.source_segment_id)}" ${phase !== "ready" ? "disabled" : ""}>Correct wording or speaker</button>` : ""}
         ${readOnly ? "" : review === undefined ? (pending === undefined
           ? issues.map((issue) => `<p class="creator-blocker">${escape(blockerCopy(issue.code))}</p>`).join("")
           : `<p class="creator-blocker">${escape(progressCopy(pending))}</p>`) : `
@@ -302,7 +417,20 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
             <button type="button" class="creator-reject" data-review-action="rejected" data-segment="${escape(segment.source_segment_id)}" ${phase === "saving" ? "disabled" : ""}>Reject translation</button>
           </div>`}
       </li>`;
-    }).join("")}</ol>`;
+    }).join("")}</ol>${renderEditHistory(view)}</div>`;
+}
+
+function renderEditHistory(view: CreatorReviewView): string {
+  if (!view.review_edits?.length) return "";
+  return `<details class="creator-edit-history"><summary>Correction history · ${view.review_edits.length} saved ${view.review_edits.length === 1 ? "change" : "changes"}</summary>
+    <p>Original speech is unchanged. These explicit corrections produced new transcript versions.</p>
+    ${[...view.review_edits].reverse().map(edit => `<article><h3>Version ${edit.working_transcript_version} · ${escape(new Date(edit.created_at).toLocaleString())}</h3>
+      ${(edit.request.corrections ?? []).map(item => {
+        const source = view.source?.segments.find(segment => segment.source_segment_id === item.source_segment_id);
+        return `<p><strong>${source ? time(source.start_ms) : "Turn"} · English correction</strong></p><p>${escape(item.content)}</p>`;
+      }).join("")}
+      ${(edit.request.speakers ?? []).map(item => `<p>Speaker confirmation: ${escape(item.detail === "interpreter" ? "Interpreter" : speakerCopy(item.role))}${item.display_name ? ` · ${escape(item.display_name)}` : ""}</p>`).join("")}
+    </article>`).join("")}</details>`;
 }
 
 /** Reading breaks only: every source character remains in its original order.

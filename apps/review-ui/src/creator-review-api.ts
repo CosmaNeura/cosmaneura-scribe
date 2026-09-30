@@ -3,6 +3,7 @@ import type { components } from "../../capture/src/generated/capture-api";
 import { readBoundedJson } from "./beta-api";
 import { isUuid } from "./contracts";
 import { MAX_CREATOR_REVIEW_BYTES } from "./capture-response-limits";
+import { parseCreatorEdit, parseCreatorEditRequest, type CreatorEditRequest, type CreatorEditReceipt } from "./creator-edit";
 
 export type CreatorReviewView = components["schemas"]["CreatorReviewViewV1"];
 export type ReviewItem = components["schemas"]["CreatorTranslationReviewItemV1"];
@@ -34,7 +35,7 @@ export function parseCaptureContinuity(value: unknown): CaptureContinuity {
 /** The existing authenticated shell/BFF supplies this. Never pass a workload token to a view. */
 export type AuthorizedReviewRequest = (
   path: string,
-  request: { readonly method: "GET" | "POST"; readonly body?: ReviewDecision; readonly key?: string },
+  request: { readonly method: "GET" | "POST"; readonly body?: ReviewDecision | CreatorEditRequest; readonly key?: string },
 ) => Promise<Response>;
 
 export class CreatorReviewError extends Error {
@@ -47,6 +48,7 @@ export class CreatorReviewError extends Error {
 export interface CreatorReviewApi {
   read(): Promise<CreatorReviewView>;
   decide(request: ReviewDecision, key: string): Promise<ReviewReceipt>;
+  edit?(request: CreatorEditRequest, key: string): Promise<CreatorEditReceipt>;
 }
 
 export class HttpCreatorReviewApi implements CreatorReviewApi {
@@ -73,10 +75,19 @@ export class HttpCreatorReviewApi implements CreatorReviewApi {
     return value as unknown as ReviewReceipt;
   }
 
-  private async send(request: Parameters<AuthorizedReviewRequest>[1]): Promise<unknown> {
+  public async edit(request: CreatorEditRequest, key: string): Promise<CreatorEditReceipt> {
+    if (!/^[A-Za-z0-9._-]{8,255}$/u.test(key)) throw new CreatorReviewError("unavailable");
+    const value = record(await this.send({ method: "POST", body: parseCreatorEditRequest(request), key }, `${this.path}/edit`));
+    requireValue(value.schema_version === "1.0" && value.session_id === this.sessionId && value.saved === true
+      && isUuid(value.edit_id) && value.working_transcript_id === request.expected_working_transcript_id
+      && value.working_transcript_version === request.expected_working_transcript_version + 1);
+    return value as unknown as CreatorEditReceipt;
+  }
+
+  private async send(request: Parameters<AuthorizedReviewRequest>[1], path = this.path): Promise<unknown> {
     let response: Response;
     try {
-      response = await this.authorizedRequest(this.path, request);
+      response = await this.authorizedRequest(path, request);
     } catch {
       throw new CreatorReviewError("unavailable");
     }
@@ -98,8 +109,10 @@ export function parseCreatorReview(value: unknown, sessionId: string): CreatorRe
   requireValue(typeof view.status === "string");
   if (Object.hasOwn(view, "capture_continuity")) parseCaptureContinuity(view.capture_continuity);
   const progress = view.translation_progress === undefined ? [] : array(view.translation_progress);
+  const edits = view.review_edits === undefined ? [] : array(view.review_edits).map(parseCreatorEdit);
+  requireValue(edits.length <= 1024 && (view.editing_allowed === undefined || typeof view.editing_allowed === "boolean"));
   if (view.source === null && view.working === null && view.review_queue === null) {
-    requireValue(progress.length === 0 && !Object.hasOwn(view, "capture_continuity"));
+    requireValue(progress.length === 0 && edits.length === 0 && view.editing_allowed !== true && !Object.hasOwn(view, "capture_continuity"));
     requireValue([
       "created", "capturing", "uploaded", "processing", "speech_failed", "speech_retryable", "handed_off",
     ].includes(view.status));
@@ -130,6 +143,23 @@ export function parseCreatorReview(value: unknown, sessionId: string): CreatorRe
     byId.set(segment.source_segment_id, segment);
   }
   const workingIds = new Set<string>();
+  let lastEditVersion = 0, editChars = 0;
+  const editIds = new Set<string>();
+  const sourceSpeakers = new Set(sources.map(item => record(item).speaker_id));
+  for (const edit of edits) {
+    requireValue(!editIds.has(edit.edit_id) && edit.working_transcript_version > lastEditVersion
+      && edit.working_transcript_version <= Number(working.working_transcript_version)
+      && edit.request.expected_source_transcript_version === source.source_transcript_version
+      && edit.request.expected_working_transcript_id === working.working_transcript_id);
+    lastEditVersion = edit.working_transcript_version; editIds.add(edit.edit_id);
+    for (const correction of edit.request.corrections ?? []) {
+      const original = byId.get(correction.source_segment_id);
+      requireValue(original?.source_segment_version === correction.expected_source_segment_version);
+      editChars += correction.content.length;
+    }
+    for (const speaker of edit.request.speakers ?? []) requireValue(sourceSpeakers.has(speaker.speaker_id));
+  }
+  requireValue(editChars <= 1000000);
   for (const item of segments) {
     const segment = record(item);
     requireValue(isUuid(segment.source_segment_id) && !workingIds.has(segment.source_segment_id));
@@ -138,6 +168,13 @@ export function parseCreatorReview(value: unknown, sessionId: string): CreatorRe
     requireValue(original !== undefined && segment.source_segment_version === original.source_segment_version);
     requireValue(["english_source", "spanish_translation", "unresolved"].includes(String(segment.resolution)));
     requireValue(segment.resolution === "unresolved" ? segment.content === null : content(segment.content));
+  }
+  const latestContent = new Map(edits.flatMap(edit => (edit.request.corrections ?? []).map(item => [item.source_segment_id, item.content] as const)));
+  const latestRoles = new Map(edits.flatMap(edit => (edit.request.speakers ?? []).map(item => [item.speaker_id, item.role] as const)));
+  for (const value of segments) {
+    const segment = record(value), original = byId.get(String(segment.source_segment_id));
+    if (latestContent.has(String(segment.source_segment_id))) requireValue(segment.content === latestContent.get(String(segment.source_segment_id)));
+    if (latestRoles.has(String(original?.speaker_id))) requireValue(segment.speaker_role === latestRoles.get(String(original?.speaker_id)));
   }
   const blockers = array(working.blockers);
   const unresolvedIds = new Set(segments.filter((item) => record(item).resolution === "unresolved")
