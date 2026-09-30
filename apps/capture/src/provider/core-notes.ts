@@ -105,6 +105,23 @@ export async function resolveNote(client: CoreCaptureClient, session: string, pe
   return value.status;
 }
 
+/** Read-only receipt check. A missing receipt never closes the pending save. */
+export async function checkNoteSave(client: CoreCaptureClient, session: string,
+  pending: PendingNoteSave): Promise<"saved" | "closed" | "pending"> {
+  const value = await client.note(session, "save_status", pending.schema, pending.edit, pending.edit.client_key);
+  requireValue(closed(value, "session_id,schema_ref,client_key,request_sha256,status,result_note_ref,result_sha256")
+    && value.session_id === session && value.schema_ref === pending.schema
+    && value.client_key === pending.edit.client_key
+    && value.request_sha256 === await sha256(canonical({ edit: pending.edit, schema: pending.schema,
+      session, workspace: client.scope.workspaceId })));
+  if (value.status === "saved") {
+    requireValue(reference(value.result_note_ref, "visit_note") && value.result_note_ref !== pending.edit.expected_note_ref
+      && value.result_sha256 === await sha256(JSON.stringify(pending.fieldOrder.map(key => [key, pending.edit.fields[key]]))));
+  } else requireValue((value.status === "pending" || value.status === "closed")
+    && value.result_note_ref === null && value.result_sha256 === null);
+  return value.status;
+}
+
 export function validPendingSave(value: unknown): value is PendingNoteSave {
   if (!closed(value, "schema,source,fieldOrder,edit") || !reference(value.schema, "doctor_note_schema")
     || !validSource(value.source) || !closed(value.edit, "client_key,expected_note_ref,expected_note_sha256,expected_source_sha256,fields")) return false;

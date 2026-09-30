@@ -1,3 +1,4 @@
+import { NativeCreatorEditJournal } from "../../review-ui/src/native-edit-journal";
 import type { DesktopRecordingWindow } from "./recording-window.js";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter } from "../../capture/src/provider/workspace-contracts";
 import { CoreCaptureBff, CoreCaptureClient, reference } from "../../capture/src/provider/core-client";
@@ -42,6 +43,7 @@ export interface DesktopProviderResources {
   readonly indicator: DesktopProviderRecorderOptions["indicator"];
   readonly native: DesktopProviderRecorderOptions["native"];
   readonly selectWindow: DesktopProviderRecorderOptions["selectWindow"];
+  readonly showWindowChooser?: () => Promise<void>;
   /** When using the native presentation transport, retain its lifecycle/events
    * with the connection. Existing injected fixture resources may omit it. */
   readonly presentation?: NativePresentationOwner;
@@ -182,6 +184,12 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           ...(selected.openingReview ? { openingReview: selected.openingReview } : {}),
           openInCore: noteRef => guarded(() => selected.openInCore(noteRef)),
           journal: { load: () => guarded(() => journal.load()), save: (previous, progress) => guarded(() => journal.save(previous, progress)) },
+          editJournal: sessionId => {
+            check(); uuid(sessionId);
+            const edit = new NativeCreatorEditJournal(records, selected.recoveryScope, sessionId);
+            return { load: () => guarded(() => edit.load()), save: value => guarded(() => edit.save(value)),
+              clear: key => guarded(() => edit.clear(key)) };
+          },
           reviewJournal: sessionId => {
             check(); uuid(sessionId);
             const review = new NativeCreatorReviewJournal(records, selected.recoveryScope, sessionId);
@@ -222,6 +230,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                 }, isSessionActive: () => !linked.aborted && resources.native.isSessionActive()
                   && (!resources.presentation || resources.presentation.isHealthy()) },
                 selectWindow: resources.selectWindow,
+                ...(resources.showWindowChooser ? { showWindowChooser: resources.showWindowChooser } : {}),
                 // Journals still use the encounter store after recorder release.
                 // closeMount owns its closure after every native stop is confirmed.
                 release: () => Promise.resolve(),

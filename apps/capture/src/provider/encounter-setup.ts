@@ -1,3 +1,4 @@
+import { parseEncounterDisplay } from "./encounter-display";
 import type { SecureQueuePlugin } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { isUuid } from "../../../review-ui/src/contracts";
 import { record, reference } from "./core-client";
@@ -20,6 +21,7 @@ export interface ProviderEncounterSetup {
   state(signal: AbortSignal): Promise<EncounterSetupState>;
   search(query: string, signal: AbortSignal): Promise<Omit<EncounterSetupState, "pending">>;
   submit(draft: EncounterDraft | null, signal: AbortSignal): Promise<ProviderEncounter>;
+  addDateOfBirth?(encounter: ProviderEncounter, dateOfBirth: string, key: string, signal: AbortSignal): Promise<ProviderEncounter>;
 }
 export type CreationRecords = Pick<SecureQueuePlugin, "get" | "create" | "compareAndSwap">;
 export interface ProviderAccount { email: string; environment: string }
@@ -75,8 +77,13 @@ export function parseEncounterDraft(value: unknown): EncounterDraft {
 
 export function parseCreatedEncounter(value: unknown): ProviderEncounter & { workspaceId: string } {
   if (!record(value) || !isUuid(value.workspace_id) || !reference(value.appointment_ref, "appointment")) throw fail();
-  return { workspaceId: value.workspace_id, appointmentRef: value.appointment_ref,
-    title: text(value.patient_name), detail: `${text(value.title)} · ${text(value.appointment_at, 40)}` };
+  const display = parseEncounterDisplay({ appointmentRef: value.appointment_ref,
+    title: text(value.patient_name), detail: `${text(value.title)} · ${text(value.appointment_at, 40)}`,
+    ...(value.patient_ref !== undefined ? { patientRef: value.patient_ref } : {}),
+    ...(value.date_of_birth !== undefined ? { dateOfBirth: value.date_of_birth } : {}),
+    ...(value.status !== undefined ? { status: value.status } : {}),
+  });
+  return { workspaceId: value.workspace_id, ...display };
 }
 
 /** Shared mobile/desktop retry owner. Every intent is encrypted durably before
@@ -166,8 +173,22 @@ export function createEncounterSetup(options: {
         const encounter = parseCreatedEncounter(value.encounter);
         options.created(encounter);
         await save(saved, null, signal);
-        return { appointmentRef: encounter.appointmentRef, title: encounter.title, detail: encounter.detail };
+        return parseEncounterDisplay(encounter);
       } finally { busy = false; }
+    },
+    addDateOfBirth: async (encounter, dateOfBirth, key, signal) => {
+      options.current(signal);
+      if (!reference(encounter.appointmentRef, "appointment") || !reference(encounter.patientRef, "patient")
+        || encounter.dateOfBirth != null || !isUuid(key) || birthDate(dateOfBirth) === null) throw fail();
+      const value = await options.request({ action: "add_birth_date", appointment_ref: encounter.appointmentRef,
+        patient_ref: encounter.patientRef, date_of_birth: dateOfBirth, change_key: key,
+        request_nonce: crypto.randomUUID() }, key, signal);
+      options.current(signal); accept(value);
+      const updated = parseCreatedEncounter(value.encounter);
+      if (value.change_key !== key || updated.appointmentRef !== encounter.appointmentRef
+        || updated.patientRef !== encounter.patientRef || updated.dateOfBirth !== dateOfBirth) throw fail();
+      options.created(updated);
+      return parseEncounterDisplay(updated);
     },
     dispose: async () => { const closing = storage; if (closing) await (await closing).close(); storage = null; },
   };

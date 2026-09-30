@@ -1,3 +1,4 @@
+import { parseEncounterDisplay } from "./encounter-display";
 import { openingReviewFromCore } from "./opening-review";
 import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
@@ -284,11 +285,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   };
 }
 
-function encounter(value: Record<string, unknown>): ProviderEncounter {
-  if (!reference(value.appointmentRef, "appointment") || typeof value.title !== "string" || value.title.length > 300
-    || typeof value.detail !== "string" || value.detail.length > 1000) throw unavailable();
-  return Object.freeze({ appointmentRef: value.appointmentRef, title: value.title, detail: value.detail });
-}
+const encounter = parseEncounterDisplay;
+
 function unavailable(): QueueInvariantError { return new QueueInvariantError("provider_native_connection_unavailable"); }
 
 function objectAccount(value: unknown): Record<string, unknown> {

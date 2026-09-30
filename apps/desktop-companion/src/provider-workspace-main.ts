@@ -1,3 +1,4 @@
+import { parsePendingCreatorEdit } from "../../review-ui/src/creator-edit";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type { NativeProviderSession, ProviderSessionState } from "../../capture/src/provider/native-plugin";
 import type { AuthorizedProviderEncounter, ProviderWorkspaceHost } from "../../capture/src/provider/workspace-contracts";
@@ -176,6 +177,14 @@ export class DesktopProviderWorkspaceMain {
       this.requireEncounter(connection, encounter, signal);
       let result: unknown;
       switch (request.method) {
+        case "add_birth_date": {
+          exact(payload, ["dateOfBirth", "key"]);
+          const setup = connection.value!.workspace.encounterSetup;
+          if (!setup?.addDateOfBirth || typeof payload.dateOfBirth !== "string") throw unavailable();
+          result = await setup.addDateOfBirth(encounter.value.encounter, payload.dateOfBirth, uuid(payload.key),
+            AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal]));
+          break;
+        }
         case "core": result = await this.core(encounter, payload, AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal])); break;
         case "journal_load": exact(payload, []); result = await encounter.value.journal.load(); break;
         case "journal_save": {
@@ -183,6 +192,20 @@ export class DesktopProviderWorkspaceMain {
           if (previous.revision !== null && (typeof previous.revision !== "string" || !/^[1-9][0-9]{0,15}$/u.test(previous.revision))) throw unavailable();
           if (previous.progress !== null) assertProgress(previous.progress); assertProgress(payload.progress);
           result = await encounter.value.journal.save(previous as unknown as JournalSnapshot, payload.progress); break;
+        }
+        case "edit_load": case "edit_save": case "edit_clear": {
+          exact(payload, request.method === "edit_load" ? ["sessionId"] : request.method === "edit_save" ? ["sessionId", "operation"] : ["sessionId", "key"]);
+          await this.requireSession(encounter, payload.sessionId);
+          this.requireEncounter(connection, encounter, signal);
+          const journal = encounter.value.editJournal?.(uuid(payload.sessionId));
+          if (!journal) throw unavailable();
+          if (request.method === "edit_load") result = await journal.load();
+          else if (request.method === "edit_save") { await journal.save(parsePendingCreatorEdit(payload.operation)); result = null; }
+          else {
+            if (typeof payload.key !== "string" || !/^[A-Za-z0-9._-]{8,255}$/u.test(payload.key)) throw unavailable();
+            await journal.clear(payload.key); result = null;
+          }
+          break;
         }
         case "review_load": case "review_save": case "review_clear": {
           exact(payload, request.method === "review_load" ? ["sessionId"] : request.method === "review_save" ? ["sessionId", "operation"] : ["sessionId", "key"]);
@@ -232,7 +255,7 @@ export class DesktopProviderWorkspaceMain {
     const path = payload.path;
     if (path === "/service/v1/agent/scribe/capture-operations") {
       const operation = object(body.operation);
-      if (typeof operation.kind !== "string" || !["provider_encounter", "creator_review", "decide_translation"].includes(operation.kind)) throw unavailable();
+      if (typeof operation.kind !== "string" || !["provider_encounter", "creator_review", "decide_translation", "edit_transcript"].includes(operation.kind)) throw unavailable();
     } else if (path === "/service/v1/agent/scribe/note-opening") {
       if (!encounter.value.noteOpeningSupported) throw unavailable();
       exact(body, ["workspace_id", "binding_ref", "request_nonce", "expected_session_id"]);

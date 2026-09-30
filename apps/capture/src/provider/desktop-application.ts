@@ -1,7 +1,9 @@
+import { parsePendingCreatorEdit } from "../../../review-ui/src/creator-edit";
+import { parseEncounterDisplay } from "./encounter-display";
 import { parseProviderAccount, parseSetupState, parseEncounterDraft, type ProviderEncounterSetup, type ProviderAccount } from "./encounter-setup";
 import { mountProviderApplication, type ProviderApplicationHost } from "./application";
 import type { ProviderSessionState } from "./native-plugin";
-import type { ProviderEncounter, ProviderWorkspaceHost } from "./workspace";
+import type { ProviderWorkspaceHost } from "./workspace";
 import { assertProgress, type JournalSnapshot } from "./workspace-journal";
 import { parsePendingReviewDecision } from "../../../review-ui/src/creator-review-journal";
 import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
@@ -124,7 +126,12 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         current(operationSignal); return request(method, payload, id, encounterId, AbortSignal.any([abort.signal, operationSignal]));
       };
       let creationEnabled = false, account: ProviderAccount | undefined;
+      let currentEncounter: { id: string; appointmentRef: string } | null = null;
       const setup: ProviderEncounterSetup = {
+        addDateOfBirth: async (selected, dateOfBirth, key, extra) => {
+          if (!currentEncounter || currentEncounter.appointmentRef !== selected.appointmentRef) throw unavailable();
+          return encounter(await send("add_birth_date", { dateOfBirth, key }, currentEncounter.id, extra));
+        },
         state: async extra => parseSetupState(await send("encounter_setup", { action: "state" }, null, extra)),
         search: async (query, extra) => {
           const result = object(await send("encounter_setup", { action: "search", query }, null, extra));
@@ -160,6 +167,8 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
           const encounterId = uuid(value.encounterId), displayed = encounter(value.encounter), scope = captureScope(value.scope);
           if (displayed.appointmentRef !== appointmentRef || scope.appointmentRef !== appointmentRef) throw unavailable();
           const local = new AbortController(); encounters.set(encounterId, local);
+          currentEncounter = { id: encounterId, appointmentRef };
+          local.signal.addEventListener("abort", () => { if (currentEncounter?.id === encounterId) currentEncounter = null; }, { once: true });
           const linked = AbortSignal.any([abort.signal, operationSignal, local.signal]);
           linked.addEventListener("abort", () => { encounters.delete(encounterId); }, { once: true });
           if (closedIds.has(encounterId) || linked.aborted) { local.abort(); throw unavailable(); }
@@ -177,6 +186,11 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
               load: async () => journal(await call("journal_load", {})),
               save: async (previous, progress) => journal(await call("journal_save", { previous, progress })),
             },
+            editJournal: sessionId => ({
+              load: async () => { const value = await call("edit_load", { sessionId }); return value === null ? null : parsePendingCreatorEdit(value); },
+              save: async operation => { await call("edit_save", { sessionId, operation }); },
+              clear: async key => { await call("edit_clear", { sessionId, key }); },
+            }),
             reviewJournal: sessionId => ({
               load: async () => {
                 const value = await call("review_load", { sessionId }); return value === null ? null : parsePendingReviewDecision(value);
@@ -214,12 +228,8 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
     closed = true; lifetime.abort(); unsubscribe(); sessionListeners.clear(); encounters.forEach(abort => abort.abort()); encounters.clear();
   } };
 }
-function encounter(value: unknown): ProviderEncounter {
-  const row = exact(value, ["appointmentRef", "title", "detail"]);
-  if (!reference(row.appointmentRef, "appointment") || typeof row.title !== "string" || row.title.length > 300
-    || typeof row.detail !== "string" || row.detail.length > 1000) throw unavailable();
-  return { appointmentRef: row.appointmentRef, title: row.title, detail: row.detail };
-}
+const encounter = parseEncounterDisplay;
+
 function captureScope(value: unknown): CoreCaptureScope {
   const scope = exact(value, ["workspaceId", "bindingRef", "appointmentRef"]);
   if (!reference(scope.bindingRef, "scribe_capture_binding") || !reference(scope.appointmentRef, "appointment")) throw unavailable();

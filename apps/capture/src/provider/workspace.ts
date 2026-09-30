@@ -8,10 +8,10 @@ import { CaptureDeviceCustodyError } from "../capture/device-custody";
 import { CaptureQueue } from "../queue/capture-queue";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import { HttpCreatorReviewApi, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
-import { mountCreatorReview, renderNoteTranscript } from "../../../review-ui/src/creator-review-panel";
+import { mountCreatorReview, renderNoteTranscript, bindTranscriptTools } from "../../../review-ui/src/creator-review-panel";
 import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
   type LanguageMode } from "./core-client";
-import { noteTemplates, parseDraft, pendingSave, resolveNote, reviewedSource, sameSource, saveNote,
+import { noteTemplates, parseDraft, pendingSave, resolveNote, checkNoteSave, reviewedSource, sameSource, saveNote,
   type CoreDraft, type CoreNoteTemplate, type ReviewedSource } from "./core-notes";
 import { assertProgress, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources } from "./workspace-contracts";
@@ -23,6 +23,8 @@ import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
 import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./workflow-timing";
 import { encounterDetail } from "./workspace-display";
+import { noteEditorPosition, restoreNoteEditorPosition, setNoteEditorPending, type NoteEditorPosition } from "./note-editor-state";
+import { settledRecorderVisitStatus } from "./recent-visit-state";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
@@ -44,12 +46,18 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let openingRef: string | null = null;
   let cancelOpening: (() => void) | null = null;
   let pendingNavigation: "encounters" | "review" | null = null;
+  let editorPosition: NoteEditorPosition | null = null;
+  let lastEditorField: HTMLTextAreaElement | null = null;
+  let setupQuery = "";
+  let pendingDateOfBirth: { date: string; key: string } | null = null;
+  let stopSaveCheck: (() => void) | null = null;
   let step = "request";
   let setupState: EncounterSetupState | null = null;
+  const recentStates = new Map<string, { sessionId: string; status: "paused" | "processing" | "recording_saved" | "draft_ready" }>();
   let preferredLanguage: LanguageMode = "en-US"; // This authorized workspace's lifetime only.
   let preferredModality: "in_person" | "virtual" | "phone" = isIOS ? "in_person" : "virtual";
   root.classList.add("provider-workspace");
-  root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p></div><button data-workspace-action="encounters">Your encounters</button></header>
+  root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p><p class="provider-patient-detail" data-provider-patient-detail></p></div><button data-workspace-action="encounters">Your encounters</button></header>
     <p data-workspace-notice role="status"></p><p data-workspace-progress hidden></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
   const content = root.querySelector<HTMLElement>("[data-workspace-content]")!;
   const notice = root.querySelector<HTMLElement>("[data-workspace-notice]")!;
@@ -58,10 +66,15 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const encounterLabel = root.querySelector<HTMLElement>("[data-provider-encounter]")!;
   const header = root.querySelector<HTMLElement>(".provider-header")!;
   const accountLabel = root.querySelector<HTMLElement>("[data-provider-account]")!;
+  const patientDetail = root.querySelector<HTMLElement>("[data-provider-patient-detail]")!;
+  const headerObserver = new ResizeObserver(() => root.style.setProperty("--provider-header-height", `${header.getBoundingClientRect().height}px`));
+  headerObserver.observe(header);
   const current = (n: number): boolean => !disposed && !host.signal.aborted && n === generation;
   const authorized = (n: number): boolean => current(n) && context !== null && !client?.signal.aborted;
-  const clearNavigation = (): void => { pendingNavigation = null; navigation.replaceChildren(); };
-  const show = (markup: string): void => { clearNavigation(); consentAction = null; disposeContent?.(); disposeContent = null; content.innerHTML = markup; };
+  const clearNavigation = (): void => {
+    pendingNavigation = null; navigation.querySelector<HTMLDialogElement>("dialog")?.close(); navigation.replaceChildren();
+  };
+  const show = (markup: string): void => { stopSaveCheck?.(); stopSaveCheck = null; clearNavigation(); consentAction = null; disposeContent?.(); disposeContent = null; content.innerHTML = markup; };
   const persist = async (progress: ProviderProgress): Promise<void> => {
     requireValue(context && !client?.signal.aborted);
     const activeContext = context, activeClient = client;
@@ -71,14 +84,23 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const progress = (): ProviderProgress => { requireValue(journal.progress); return journal.progress; };
   const session = (): string => { const id = progress().sessionId; requireValue(id); return id; };
+  const observeReview = (view: CreatorReviewView, n: number): void => {
+    if (!authorized(n) || view.session_id !== journal.progress?.sessionId) return;
+    const ref = context!.encounter.appointmentRef;
+    const status = ["uploaded", "processing"].includes(view.status) ? "processing"
+      : view.source !== null && view.working !== null ? "recording_saved" : undefined;
+    if (status) recentStates.set(ref, { sessionId: view.session_id, status });
+    else recentStates.delete(ref);
+  };
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    stopSaveCheck?.(); stopSaveCheck = null; pendingDateOfBirth = null;
     clearNavigation();
     encounterAbort?.abort(); encounterAbort = null;
     disposeContent?.(); disposeContent = null;
-    content.replaceChildren(); draft = null; source = null; templates = []; noteTranscript = null;
-    encounterLabel.textContent = "";
+    content.replaceChildren(); editorPosition = null; lastEditorField = null; draft = null; source = null; templates = []; noteTranscript = null;
+    encounterLabel.textContent = ""; patientDetail.replaceChildren();
     consentRenewalOffered = false;
     consentAction = null;
     openingRef = null;
@@ -113,13 +135,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     try { await action(); }
     catch (error) {
       outcome = "threw";
+      if (context) recentStates.delete(context.encounter.appointmentRef);
       if (!disposed && !host.signal.aborted) {
         notice.textContent = error instanceof RecorderStopUnconfirmed
           ? "Recording stop could not be confirmed. Stop it in the native app before continuing."
           : error instanceof CaptureDeviceCustodyError
             ? "This device could not confirm access to the recording key or saved recording state. Your saved work is retained."
             : context && journal.progress?.pendingSave
-              ? "Save confirmation is pending. Your exact edits are retained. Check save status to continue."
+              ? ""
             : step === "encounter setup" || step === "encounter creation"
               ? "Your encounter request could not be confirmed. Check your connection, then check its result. Pending work is retained securely on this device."
             : step === "encounter list"
@@ -157,10 +180,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(encounters.length <= 1000 && new Set(encounters.map(e => e.appointmentRef)).size === encounters.length);
     for (const e of encounters) requireValue(reference(e.appointmentRef, "appointment")
       && typeof e.title === "string" && e.title.length <= 300 && typeof e.detail === "string" && e.detail.length <= 1000);
+    const authorizedRefs = new Set(encounters.map(e => e.appointmentRef));
+    for (const ref of recentStates.keys()) if (!authorizedRefs.has(ref)) recentStates.delete(ref);
     show(`<div class="provider-list-heading"><h1>Your encounters</h1><button data-workspace-action="encounters" aria-label="Refresh encounters">Refresh</button></div>
-      ${host.encounterSetup ? '<button data-workspace-action="new-encounter">New encounter</button>' : ''}
-      <ul class="provider-encounters" aria-label="Authorized encounters">${encounters.map(e =>
-      `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span></button></li>`).join("")}</ul>
+      ${host.encounterSetup ? '<button data-workspace-action="new-encounter">New visit</button>' : ''}
+      <ul class="provider-encounters" aria-label="Authorized encounters">${encounters.map(e => {
+        const status = e.status === "draft_ready" ? e.status : recentStates.get(e.appointmentRef)?.status ?? e.status;
+        return `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span>${status ? `<span class="provider-visit-status">${{ draft_ready: "Draft ready", processing: "Processing", paused: "Paused", ready: "Ready to record", recording_saved: "Recording saved" }[status]}</span>` : ""}</button></li>`;
+      }).join("")}</ul>
       ${encounters.length ? "" : "<p>No encounters are available yet.</p>"}
       <details class="provider-encounter-help"${encounters.length ? "" : " open"}><summary>Missing an encounter?</summary><p>Ask your practice to assign the encounter in Core. The dashboard opens in your browser and may require a separate sign-in. It does not create an encounter. After assignment, return to Scribe and select Refresh.</p><button data-workspace-action="create">Open Core dashboard</button></details>`);
   };
@@ -168,7 +195,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(host.encounterSetup);
     await clearEncounter(); header.hidden = true; step = "encounter setup";
     const n = generation;
-    show('<h1>New encounter</h1><p>Loading your patients…</p>');
+    show('<h1>New visit</h1><p>Loading your patients…</p>');
     const state = await host.encounterSetup.state(host.signal);
     if (!current(n)) return;
     requireValue(!host.account || host.account.email === state.account);
@@ -191,9 +218,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     setupState = null;
     await open(created.appointmentRef);
   };
-  const showSetup = (query = ""): void => {
-    requireValue(setupState);
-    show(encounterSetupMarkup(setupState, query));
+  const showSetup = (query = "", creating = false): void => {
+    requireValue(setupState); setupQuery = query;
+    show(encounterSetupMarkup(setupState, query, creating));
     const search = content.querySelector<HTMLFormElement>("[data-patient-search]");
     const newPatient = content.querySelector<HTMLFormElement>("[data-new-patient]");
     const onSearch = (event: SubmitEvent): void => {
@@ -202,21 +229,74 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         requireValue(host.encounterSetup && setupState);
         step = "encounter setup";
         const n = generation, query = input("patient-query").trim();
+        if (!query) return;
         const result = await host.encounterSetup.search(query, host.signal);
         if (!current(n)) return;
         requireValue(result.account === setupState.account);
         setupState = { ...result, pending: setupState.pending }; showSetup(query);
+        content.querySelector<HTMLElement>(".provider-results-heading, .provider-create-choice")?.focus({ preventScroll: true });
       }, "patient-search");
     };
     const onNew = (event: SubmitEvent): void => {
       event.preventDefault();
-      if (!newPatient?.reportValidity()) return;
+      if (!newPatient?.reportValidity() || input("patient-query").trim() !== setupQuery) return;
       const name = input("new-patient-name").trim(), dateOfBirth = input("new-patient-dob") || null;
       if (!name) { notice.textContent = "Enter the patient's name."; return; }
       void run(() => create({ kind: "new", name, dateOfBirth }), "patient-create");
     };
-    search?.addEventListener("submit", onSearch); newPatient?.addEventListener("submit", onNew);
-    disposeContent = () => { search?.removeEventListener("submit", onSearch); newPatient?.removeEventListener("submit", onNew); };
+    const searchInput = search?.querySelector<HTMLInputElement>("input");
+    const updateResults = (): void => {
+      const changed = searchInput?.value.trim() !== setupQuery;
+      for (const button of content.querySelectorAll<HTMLButtonElement>('[data-workspace-action="select-patient"], [data-workspace-action="new-patient"], [data-new-patient] button[type="submit"]')) button.disabled = changed;
+    };
+    search?.addEventListener("submit", onSearch); searchInput?.addEventListener("input", updateResults); newPatient?.addEventListener("submit", onNew);
+    disposeContent = () => { search?.removeEventListener("submit", onSearch); searchInput?.removeEventListener("input", updateResults); newPatient?.removeEventListener("submit", onNew); };
+  };
+  const renderPatientDetails = (encounter: AuthorizedProviderEncounter["encounter"]): void => {
+    patientDetail.replaceChildren();
+    if (encounter.dateOfBirth === undefined) return;
+    const label = document.createElement("span");
+    label.textContent = encounter.dateOfBirth ? `DOB: ${encounter.dateOfBirth}` : "DOB not provided";
+    patientDetail.append(label);
+    if (encounter.dateOfBirth === null && encounter.patientRef && host.encounterSetup?.addDateOfBirth) {
+      const button = document.createElement("button"); button.dataset.workspaceAction = "add-dob"; button.textContent = "Add DOB";
+      patientDetail.append(button);
+    }
+  };
+  const addDateOfBirth = (): void => {
+    requireValue(client && context?.encounter.patientRef && typeof host.encounterSetup?.addDateOfBirth === "function");
+    const activeContext = context, activeClient = client, n = generation;
+    editorPosition = noteEditorPosition(content, lastEditorField);
+    clearNavigation();
+    navigation.innerHTML = `<dialog class="provider-unsaved-dialog" aria-labelledby="provider-dob-title"><h2 id="provider-dob-title">Add date of birth</h2><p>${escape(context.encounter.title)}</p><p>Confirm the date with the patient. Recording does not require it.</p><form data-add-dob-form><label>Date of birth<input name="add-dob" type="date" min="1900-01-01" required value="${pendingDateOfBirth?.date ?? ""}"></label><p data-dob-status role="status"></p><button type="submit">Save date of birth</button></form><button data-dob-close>Keep DOB optional</button></dialog>`;
+    const dialog = navigation.querySelector<HTMLDialogElement>("dialog")!;
+    const date = dialog.querySelector<HTMLInputElement>('input[name="add-dob"]')!;
+    const now = new Date(); date.max = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    date.readOnly = pendingDateOfBirth !== null;
+    const status = dialog.querySelector<HTMLElement>("[data-dob-status]")!;
+    const save = dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    const close = dialog.querySelector<HTMLButtonElement>("[data-dob-close]")!;
+    let writing = false;
+    const dismiss = (): void => { if (writing) return; clearNavigation(); restoreNoteEditorPosition(editorPosition); };
+    close.addEventListener("click", dismiss);
+    dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
+    dialog.querySelector("form")!.addEventListener("submit", event => {
+      event.preventDefault();
+      if (writing || !date.reportValidity()) return;
+      if (pendingDateOfBirth && pendingDateOfBirth.date !== date.value) { status.textContent = "Check the previous date before changing it. Your request is retained."; return; }
+      pendingDateOfBirth ??= { date: date.value, key: crypto.randomUUID() };
+      const pending = pendingDateOfBirth;
+      writing = true; save.disabled = true; close.disabled = true; date.readOnly = true; status.textContent = "Saving date of birth…";
+      void host.encounterSetup!.addDateOfBirth!(activeContext.encounter, pending.date, pending.key, activeClient.signal).then(updated => {
+        if (!authorized(n) || context !== activeContext) return;
+        requireValue(updated.appointmentRef === activeContext.encounter.appointmentRef && updated.patientRef === activeContext.encounter.patientRef && updated.dateOfBirth === pending.date);
+        pendingDateOfBirth = null; renderPatientDetails(updated); writing = false; dismiss();
+        notice.textContent = "Date of birth saved.";
+      }).catch(() => {
+        if (authorized(n) && context === activeContext) status.textContent = "Save is not confirmed. Check your connection and choose Save date of birth again to check the same request.";
+      }).finally(() => { writing = false; save.disabled = false; close.disabled = false; });
+    });
+    dialog.showModal();
   };
   const preparation = (): void => {
     requireValue(context);
@@ -231,8 +311,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ${isIOS ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
       ${isIOS ? "" : "<p>Scribe records your microphone and audio from the selected application. Other audio playing in that application may also be included. This Mac build does not support microphone-only recording.</p>"}
       </details>
-      <p class="provider-consent-explanation" id="provider-start-consent">By choosing “Confirm consent &amp; record,” you confirm that everyone has agreed to recording and transcription.</p>
       <button data-workspace-action="prepare" aria-describedby="provider-start-consent">Confirm consent &amp; record</button>
+      <p class="provider-consent-explanation" id="provider-start-consent">Everyone has agreed to recording and transcription.</p>
       </section>`);
     const options = content.querySelector<HTMLDetailsElement>(".provider-recording-options")!;
     const summarize = (): void => {
@@ -240,7 +320,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         ? content.querySelector<HTMLSelectElement>('[name="microphone"]')!.selectedOptions[0]!.textContent
         : "Microphone + selected application audio";
       content.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = isIOS
-        ? input("modality") === "in_person" ? "Records the selected iPhone microphone. Keep Scribe in the foreground."
+        ? input("modality") === "in_person" ? "Records the selected iPhone microphone. Check the sound bars when recording begins."
           : "Records the selected iPhone microphone. Call audio is not captured directly; use Scribe on a separate device where both voices can be heard."
         : input("modality") === "virtual" ? "Next, choose your Zoom or Chrome meeting window. Scribe records your microphone and that application's audio."
           : "This Mac build requires a Zoom or Chrome window and records microphone + application audio, including for this visit type. For an in-person microphone recording, use the iPhone app.";
@@ -262,16 +342,23 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const showReview = (openingView?: CreatorReviewView): void => {
     requireValue(client && context);
+    const n = generation, activeContext = context;
     show("");
     const api = new HttpCreatorReviewApi(session(), client.reviewRequest(session()));
     // recordOrReview just performed this authorized read for the same encounter.
     // Consume it once on mount; refresh/decisions/note handoff still read afresh.
     let first = openingView;
     const dispose = mountCreatorReview(content, {
-      read: async () => { const view = first; first = undefined; return view ?? api.read(); },
+      read: async () => {
+        const initial = first; first = undefined;
+        try { const view = initial ?? await api.read(); observeReview(view, n); return view; }
+        catch (error) { if (authorized(n) && context === activeContext) recentStates.delete(activeContext.encounter.appointmentRef); throw error; }
+      },
       decide: (request, key) => api.decide(request, key),
+      edit: (request, key) => api.edit(request, key),
     }, {
       journal: context.reviewJournal(session()), continueToNote: openNotes,
+      ...(context.editJournal ? { editJournal: context.editJournal(session()) } : {}),
       ...(context.noteOpeningSupported ? { prepareNoteOpening: noteOpeningPreparation() } : {}),
     });
     disposeContent = () => { first = undefined; dispose(); };
@@ -286,6 +373,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const view = openingView?.session_id === id ? openingView
       : await interruptibleRead(new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read(), openingSignal);
     if (!authorized(n)) return;
+    observeReview(view, n);
     endOpening(); // Recorder ownership or journal mutation starts after this boundary.
     if (!["created", "capturing"].includes(view.status)) {
       if (!progress().uploaded) await persist({ ...progress(), uploaded: true });
@@ -331,10 +419,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (!authorized(n)) { await close(); return; }
     show("");
     const app = document.createElement("cosmaneura-capture") as CaptureApp;
-    app.bindProvider({ sessionId: id, controller, sourceKind: native?.sourceKind ?? local!.source.kind,
+    app.bindProvider({ sessionId: id, controller, encounterLabel: activeContext.encounter.title,
+      visitLabel: { in_person: "In person", virtual: "Video visit", phone: "Phone call" }[recordingProgress.admission.attestation.modality],
+      sourceKind: native?.sourceKind ?? local!.source.kind,
       ...(native ? { captureMode: native.captureMode } : {}),
       languageMode: recordingProgress.admission.languageMode === "en-US" ? "english" : "english_spanish",
       authorizedRequest: activeClient.reviewRequest(id), journal: activeContext.reviewJournal(id),
+      ...(activeContext.editJournal ? { editJournal: activeContext.editJournal(id) } : {}),
       signal: activeClient.signal, deactivate: close, resumePendingUpload: () => lifecycle.resumePendingWork(),
       ...(activeContext.noteOpeningSupported ? { prepareNoteOpening: noteOpeningPreparation(async () => {
         await persist({ ...progress(), uploaded: true });
@@ -348,7 +439,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         if (authorized(n)) await openNotes(freshView);
       } });
     content.replaceChildren(app);
-    disposeContent = () => app.remove();
+    const stopObserving = controller.subscribe(snapshot => {
+      if (!authorized(n) || context !== activeContext || snapshot.sessionId !== id) return;
+      const status = settledRecorderVisitStatus(snapshot), ref = activeContext.encounter.appointmentRef;
+      if (status) recentStates.set(ref, { sessionId: id, status });
+      else recentStates.delete(ref); // Starting, errors and unresolved stops invalidate earlier labels.
+    });
+    disposeContent = () => { stopObserving(); app.remove(); };
     // Only the current explicit Start action carries this in-memory intent.
     // Reopening/recovering a journal never starts a microphone or meeting.
     if (startRequested !== undefined) {
@@ -388,11 +485,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       requireValue(opened.encounter.appointmentRef === ref && opened.scope.appointmentRef === ref && !opened.signal.aborted);
       context = opened;
       encounterLabel.textContent = opened.encounter.title;
+      renderPatientDetails(opened.encounter);
       forwardAbort(opened.signal, opening);
       const signal = opening.signal;
       client = new CoreCaptureClient(opened.scope, opened.request, signal);
       signal.addEventListener("abort", () => {
         if (!current(n) || cancelled) return;
+        recentStates.delete(ref);
         void clearEncounter().catch(() => { if (!disposed) notice.textContent = "Recording stop could not be confirmed. Stop it in the native app before continuing."; });
         notice.textContent = "Encounter access ended. Return to your encounters to continue.";
       }, { once: true });
@@ -400,6 +499,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       const loaded = await interruptibleRead(opened.journal.load(), opening.signal);
       if (!authorized(n)) return;
       journal = loaded;
+      if (recentStates.get(ref)?.sessionId !== loaded.progress?.sessionId) recentStates.delete(ref);
       const first = openingReviewView(opened.openingReview, opened.scope);
       if (loaded.progress) {
         assertProgress(loaded.progress);
@@ -445,6 +545,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   async function openNotes(view: CreatorReviewView, opening?: NoteOpening): Promise<void> {
     requireValue(client && context && !client.signal.aborted && view.session_id === session());
     const n = generation;
+    observeReview(view, n);
     const currentClient = client;
     requireValue(!opening || opening.view === view && opening.templates !== null);
     // This explicit action owns the fresh coordinated read, when supported.
@@ -513,7 +614,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     let closed = false, checking = false, expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reading: AbortController | null = null;
-    const startedAt = Date.now(), expiresAt = startedAt + 90_000;
+    const startedAt = Date.now(), expiresAt = startedAt + 300_000;
     const status = content.querySelector<HTMLElement>("[data-note-readiness]")!;
     const waitTime = content.querySelector<HTMLElement>("[data-note-wait-time]")!;
     const options = content.querySelector<HTMLDetailsElement>(".provider-note-options")!;
@@ -579,7 +680,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (document.visibilityState === "visible") void check(true);
       else reading?.abort("note-check-hidden");
     };
-    const deadline = setTimeout(() => { expired = true; clearTimeout(timer); reading?.abort(); message(); }, 90_000);
+    const deadline = setTimeout(() => { expired = true; clearTimeout(timer); reading?.abort(); message(); }, Math.max(0, expiresAt - Date.now()));
     const manual = (): Promise<void> => check();
     checkPreparedNote = manual;
     document.addEventListener("visibilitychange", visibility);
@@ -592,33 +693,147 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const renderNote = (): void => {
     requireValue(draft);
-    show(`<h1>${escape(draft.note_type)}</h1><p class="provider-draft-status">${draft.status === "draft" ? "Needs clinical review · Review and edit this draft before clinical use. Saving does not mark it reviewed." : "No note has been prepared for this reviewed transcript."}</p>
+    if (context && journal.progress?.sessionId && draft.status === "draft") {
+      recentStates.set(context.encounter.appointmentRef, { sessionId: journal.progress.sessionId, status: "draft_ready" });
+    }
+    show(`<section class="provider-note" data-note-view="note"><div class="provider-note-heading"><h1>${escape(draft.note_type)}</h1>
+      <p class="provider-draft-status">${draft.status === "draft" ? "Draft · Clinical review required" : "Your transcript is ready. Prepare a draft note."}</p></div>
       ${draft.reviewed_source.capture_continuity ? '<p role="status">Recording continuity is unconfirmed. Review this note for missing speech; gap lengths are unknown.</p>' : ""}
-      ${draft.status === "draft" ? '<div class="provider-save-bar"><p data-note-save-state role="status" aria-atomic="true">Saved</p><button data-workspace-action="save">Save draft</button></div>' : ""}
-      ${draft.status === "draft" && noteTranscript ? renderNoteTranscript(noteTranscript) : ""}
-      ${draft.status === "draft" ? draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")
+      ${draft.status === "draft" ? `<div class="provider-save-bar"><p data-note-save-state role="status" aria-atomic="true">Saved · Not clinically reviewed</p><button data-workspace-action="save">Save draft</button></div>
+      <div class="provider-note-tabs" aria-label="Note and conversation"><button data-workspace-action="note-view" aria-pressed="true">Note</button><button data-workspace-action="transcript-view" aria-pressed="false">Transcript</button></div>
+      <div class="provider-note-grid"><div class="provider-note-editor">${draft.field_order!.map((key, index) => `<label>${escape(key)}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")}</div>
+      <aside class="provider-note-evidence">${noteTranscript ? renderNoteTranscript(noteTranscript) : ""}</aside></div>`
         : '<button data-workspace-action="generate">Prepare draft note</button><button data-workspace-action="check-note">Check for note</button>'}
-      <button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open encounter in Core</button>`);
+      <div class="provider-note-actions"><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open patient chart in Core</button></div>
+      <details class="provider-note-guidance"><summary>About this draft</summary><p>Check the note against the conversation and edit anything that is missing or incorrect. Saving preserves your edits; it does not mark the note clinically reviewed.</p></details></section>`);
+    const transcriptDetails = content.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
+    if (transcriptDetails && window.matchMedia("(min-width: 900px)").matches) transcriptDetails.open = true;
+    const stopTranscriptTools = bindTranscriptTools(content);
     content.addEventListener("input", updateSaveState);
-    disposeContent = () => content.removeEventListener("input", updateSaveState);
+    content.addEventListener("focusin", rememberEditorField);
+    disposeContent = () => { stopTranscriptTools(); content.removeEventListener("input", updateSaveState); content.removeEventListener("focusin", rememberEditorField); };
+  };
+  const rememberEditorField = (event: FocusEvent): void => {
+    if (event.target instanceof HTMLTextAreaElement && event.target.hasAttribute("data-note-field")) lastEditorField = event.target;
   };
   const hasUnsavedEdits = (): boolean => [...content.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")]
     .some(field => field.value !== field.defaultValue);
   const updateSaveState = (): void => {
     const status = content.querySelector<HTMLElement>("[data-note-save-state]");
-    if (status) status.textContent = hasUnsavedEdits() ? "Unsaved edits" : "Saved";
+    if (status) status.textContent = journal.progress?.pendingSave ? "Save confirmation pending · Edits retained"
+      : hasUnsavedEdits() ? "Unsaved edits" : "Saved · Not clinically reviewed";
   };
-  const showSaveRecovery = (): void => show('<h1>Confirm your previous save</h1><p>Your exact edits are retained. Check whether the save completed before editing again.</p><button data-workspace-action="resolve">Check save status</button>');
+  const showSaveRecovery = (): void => {
+    if (content.querySelector("textarea[data-note-field]")) {
+      setNoteEditorPending(content, true); updateSaveState();
+      if (!content.querySelector('[data-workspace-action="resolve"]')) {
+        const recovery = document.createElement("div"); recovery.className = "provider-save-recovery";
+        recovery.innerHTML = '<button data-workspace-action="resolve">Check save status</button>';
+        content.querySelector(".provider-save-bar")?.append(recovery);
+      }
+      restoreNoteEditorPosition(editorPosition);
+    } else show('<h1>Confirm your previous save</h1><p>Your exact edits are retained. Checking the saved request automatically…</p><button data-workspace-action="resolve">Check save status</button>');
+    startSaveStatusCheck();
+  };
+  const startSaveStatusCheck = (): void => {
+    if (stopSaveCheck || !client || !context || !journal.progress?.pendingSave) return;
+    const activeClient = client, activeContext = context, n = generation, pending = journal.progress.pendingSave, id = session();
+    let stopped = false, checking = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let reading: AbortController | null = null;
+    const expiresAt = Date.now() + 30_000;
+    const active = (): boolean => !stopped && authorized(n) && client === activeClient && context === activeContext && journal.progress?.pendingSave === pending;
+    const stop = (): void => { stopped = true; clearTimeout(timer); reading?.abort(); document.removeEventListener("visibilitychange", visible); };
+    const check = async (): Promise<void> => {
+      if (!active() || checking || document.visibilityState !== "visible" || Date.now() >= expiresAt) return;
+      checking = true; reading = new AbortController(); forwardAbort(activeClient.signal, reading);
+      const readClient = new CoreCaptureClient(activeClient.scope, activeContext.request, reading.signal);
+      const timeout = setTimeout(() => reading?.abort(), Math.min(5000, expiresAt - Date.now()));
+      try {
+        const result = await interruptibleRead(checkNoteSave(readClient, id, pending), reading.signal);
+        if (!active() || reading.signal.aborted) return;
+        if (result === "saved") {
+          const [view, value] = await interruptibleRead(Promise.all([
+            new HttpCreatorReviewApi(id, readClient.reviewRequest(id)).read(), readClient.note(id, "read", pending.schema),
+          ]), reading.signal);
+          if (!active() || reading.signal.aborted) return;
+          const fresh = reviewedSource(view); requireValue(sameSource(fresh, pending.source));
+          const saved = await parseDraft(value, id, pending.schema, fresh);
+          requireValue(saved.status === "draft" && saved.note_ref !== pending.edit.expected_note_ref
+            && saved.source_sha256 === pending.edit.expected_source_sha256
+            && JSON.stringify(saved.field_order) === JSON.stringify(pending.fieldOrder)
+            && pending.fieldOrder.every(key => saved.fields?.[key] === pending.edit.fields[key]));
+          if (!active() || reading.signal.aborted) return;
+          await persist({ ...progress(), pendingSave: null });
+          if (!authorized(n) || client !== activeClient) return;
+          stop(); stopSaveCheck = null; draft = saved; source = fresh; noteTranscript = view; currentSchema = pending.schema;
+          notice.textContent = content.querySelector("textarea[data-note-field]") ? ""
+            : "Save confirmed. Your saved draft is shown; clinical review is still needed.";
+          if (content.querySelector("textarea[data-note-field]")) {
+            for (const [i, key] of saved.field_order!.entries()) {
+              const field = content.querySelector<HTMLTextAreaElement>(`[name="note-${i}"]`);
+              if (field) { field.defaultValue = saved.fields![key]!; field.value = saved.fields![key]!; }
+            }
+            content.querySelector(".provider-save-recovery")?.remove(); setNoteEditorPending(content, false); updateSaveState();
+            restoreNoteEditorPosition(editorPosition);
+          } else renderNote();
+        } else if (result === "closed") stop();
+      } catch { /* Uncertain reads retain the exact journal and never replay a save. */ }
+      finally {
+        clearTimeout(timeout); reading?.abort(); reading = null; checking = false;
+        if (active() && Date.now() < expiresAt && document.visibilityState === "visible") timer = setTimeout(() => { void check(); }, 2000);
+      }
+    };
+    const visible = (): void => { clearTimeout(timer); if (document.visibilityState === "visible") void check(); else reading?.abort(); };
+    document.addEventListener("visibilitychange", visible); stopSaveCheck = stop;
+    void check();
+  };
   const navigate = async (destination: "encounters" | "review"): Promise<void> => {
     if (destination === "encounters") await list(); else showReview();
   };
   const guardNavigation = async (destination: "encounters" | "review"): Promise<void> => {
-    // Keep the actual editor mounted. A navigation request never saves or
-    // journals note text, and forced access closure still clears it immediately.
-    const dirty = hasUnsavedEdits();
-    if (!dirty) { await navigate(destination); return; }
+    // The native dialog stays in the viewport while the actual editor remains mounted.
+    // Merely requesting navigation never saves or journals note text.
+    if (journal.progress?.pendingSave) {
+      if (destination === "encounters") await navigate(destination); else showSaveRecovery();
+      return;
+    }
+    if (!hasUnsavedEdits()) { await navigate(destination); return; }
+    editorPosition = noteEditorPosition(content, lastEditorField);
     pendingNavigation = destination;
-    navigation.innerHTML = '<p>Your note has unsaved edits. Save your draft before leaving, or discard the edits.</p><button data-workspace-action="keep-editing">Keep editing</button><button data-workspace-action="discard-edits">Discard edits and leave</button>';
+    navigation.innerHTML = '<dialog class="provider-unsaved-dialog" aria-labelledby="provider-unsaved-title" aria-describedby="provider-unsaved-help"><h2 id="provider-unsaved-title">Keep your note edits?</h2><p id="provider-unsaved-help">Your note has unsaved edits. Save before leaving, or discard these edits.</p><button autofocus data-workspace-action="keep-editing">Keep editing</button><button data-workspace-action="save-and-leave">Save &amp; continue</button><button data-workspace-action="discard-edits">Discard edits and leave</button></dialog>';
+    const dialog = navigation.querySelector<HTMLDialogElement>("dialog")!;
+    dialog.addEventListener("cancel", event => { event.preventDefault(); clearNavigation(); restoreNoteEditorPosition(editorPosition); });
+    dialog.showModal();
+  };
+  const saveCurrentNote = async (): Promise<boolean> => {
+    requireValue(client && draft && !progress().pendingSave);
+    editorPosition = noteEditorPosition(content, lastEditorField);
+    clearNavigation();
+    const n = generation;
+    const fields = Object.fromEntries(draft.field_order!.map((key, i) => [key, input(`note-${i}`)]));
+    const pending = pendingSave(draft, fields);
+    setNoteEditorPending(content, true);
+    const status = content.querySelector<HTMLElement>("[data-note-save-state]");
+    if (status) status.textContent = "Saving your edits…";
+    try {
+      await persist({ ...progress(), pendingSave: pending });
+      const saved = await saveNote(client, session(), pending);
+      if (!authorized(n)) return false;
+      await persist({ ...progress(), pendingSave: null });
+      if (!authorized(n)) return false;
+      draft = saved;
+      for (const [i, key] of saved.field_order!.entries()) {
+        const field = content.querySelector<HTMLTextAreaElement>(`[name="note-${i}"]`);
+        if (field) { field.defaultValue = saved.fields![key]!; field.value = saved.fields![key]!; }
+      }
+      setNoteEditorPending(content, false); updateSaveState();
+      restoreNoteEditorPosition(editorPosition);
+      return true;
+    } catch (error) {
+      if (authorized(n) && !journal.progress?.pendingSave) { setNoteEditorPending(content, false); updateSaveState(); }
+      throw error;
+    }
   };
   const click = (event: MouseEvent): void => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-workspace-action]") : null;
@@ -633,7 +848,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     void run(async () => {
       switch (button.dataset.workspaceAction) {
         case "encounters": await guardNavigation("encounters"); break;
-        case "keep-editing": clearNavigation(); content.querySelector<HTMLTextAreaElement>("textarea[data-note-field]")?.focus(); break;
+        case "keep-editing": clearNavigation(); restoreNoteEditorPosition(editorPosition); break;
         case "discard-edits": {
           const destination = pendingNavigation;
           clearNavigation();
@@ -642,6 +857,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
         case "create": await host.createEncounter(host.signal); await list(); break;
         case "new-encounter": await setup(); break;
+        case "add-dob": addDateOfBirth(); break;
+        case "new-patient": showSetup(setupQuery, true); break;
+        case "patient-results": showSetup(setupQuery); break;
         case "check-creation": await setup(true); break;
         case "retry-creation": await create(null); break;
         case "select-patient": {
@@ -684,45 +902,64 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "generate": await readNote(true); break;
         case "check-note": requireValue(client && source); awaitPreparedNote(generation, client, session(), currentSchema, source); break;
         case "review": await guardNavigation("review"); break;
+        case "note-view": case "transcript-view": {
+          const transcript = button.dataset.workspaceAction === "transcript-view";
+          const note = content.querySelector<HTMLElement>(".provider-note");
+          requireValue(note);
+          if (transcript) editorPosition = noteEditorPosition(content, lastEditorField);
+          note.dataset.noteView = transcript ? "transcript" : "note";
+          for (const tab of note.querySelectorAll<HTMLButtonElement>(".provider-note-tabs button")) tab.setAttribute("aria-pressed", String(tab === button));
+          if (transcript) {
+            const details = note.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
+            if (details) details.open = true;
+            note.querySelector<HTMLElement>('.provider-note-evidence input, .provider-note-evidence summary')?.focus({ preventScroll: true });
+          } else restoreNoteEditorPosition(editorPosition);
+          break;
+        }
         case "core": requireValue(context); await context.openInCore(draft?.note_ref ?? null); break;
-        case "save": {
-          requireValue(client && draft && !progress().pendingSave);
-          clearNavigation();
-          const n = generation;
-          const fields = Object.fromEntries(draft.field_order!.map((key, i) => [key, input(`note-${i}`)]));
-          const pending = pendingSave(draft, fields);
-          await persist({ ...progress(), pendingSave: pending });
-          show('<h1>Saving your edits…</h1><p>The original note version is retained.</p>');
-          const saved = await saveNote(client, session(), pending);
-          if (!authorized(n)) return;
-          await persist({ ...progress(), pendingSave: null });
-          if (!authorized(n)) return;
-          draft = saved; renderNote(); notice.textContent = "Draft saved. Clinical review is still required.";
+        case "save": await saveCurrentNote(); break;
+        case "save-and-leave": {
+          const destination = pendingNavigation;
+          if (await saveCurrentNote() && destination) await navigate(destination);
           break;
         }
         case "resolve": {
           requireValue(client && progress().pendingSave);
-          const n = generation, pending = progress().pendingSave!;
-          const result = await resolveNote(client, session(), pending);
+          stopSaveCheck?.(); stopSaveCheck = null;
+          editorPosition = noteEditorPosition(content, lastEditorField);
+          const n = generation, pending = progress().pendingSave!, activeClient = client, id = session();
+          const result = await resolveNote(activeClient, id, pending);
           if (!authorized(n)) return;
-          source = pending.source; currentSchema = pending.schema;
-          await readNote(false);
+          const [view, value] = await Promise.all([
+            new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read(), activeClient.note(id, "read", pending.schema),
+          ]);
           if (!authorized(n)) return;
+          const fresh = reviewedSource(view); requireValue(sameSource(fresh, pending.source));
+          const confirmed = await parseDraft(value, id, pending.schema, fresh);
+          if (!authorized(n)) return;
+          const unchanged = confirmed.note_ref === pending.edit.expected_note_ref
+            && confirmed.note_sha256 === pending.edit.expected_note_sha256
+            && confirmed.source_sha256 === pending.edit.expected_source_sha256;
+          const exactSaved = confirmed.status === "draft" && confirmed.note_ref !== pending.edit.expected_note_ref
+            && confirmed.source_sha256 === pending.edit.expected_source_sha256
+            && JSON.stringify(confirmed.field_order) === JSON.stringify(pending.fieldOrder)
+            && pending.fieldOrder.every(key => confirmed.fields?.[key] === pending.edit.fields[key]);
+          if (!(result === "saved" && exactSaved || result === "closed" && unchanged)) {
+            notice.textContent = "The chart now has a different draft. Your exact edits are still retained. Open the patient chart to compare before resolving this save.";
+            showSaveRecovery(); return;
+          }
           await persist({ ...progress(), pendingSave: null });
           if (!authorized(n)) return;
-          const unchanged = draft?.note_ref === pending.edit.expected_note_ref
-            && draft?.note_sha256 === pending.edit.expected_note_sha256
-            && draft?.source_sha256 === pending.edit.expected_source_sha256;
-          if (result === "closed" && unchanged) {
-            pending.fieldOrder.forEach((key, i) => {
-              const field = content.querySelector<HTMLTextAreaElement>(`[name="note-${i}"]`);
-              if (field) field.value = pending.edit.fields[key]!;
-            });
-          }
-          updateSaveState();
+          draft = confirmed; source = fresh; currentSchema = pending.schema; noteTranscript = view;
+          if (!content.querySelector("textarea[data-note-field]")) renderNote();
+          pending.fieldOrder.forEach((key, i) => {
+            const field = content.querySelector<HTMLTextAreaElement>(`[name="note-${i}"]`);
+            if (field) { field.defaultValue = confirmed.fields![key]!; field.value = pending.edit.fields[key]!; }
+          });
+          content.querySelector(".provider-save-recovery")?.remove(); setNoteEditorPending(content, false); updateSaveState();
+          restoreNoteEditorPosition(editorPosition);
           notice.textContent = result === "saved" ? "Previous save confirmed. Your saved draft is shown."
-            : unchanged ? "The previous save did not complete. Your edits are restored below; review and save again."
-              : "The previous save is closed. The Core draft changed; review its current version before editing again.";
+            : "The previous save did not complete. Your edits are restored; review and save again.";
           break;
         }
       }
@@ -736,7 +973,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const dispose = (): Promise<void> => {
     if (disposing) return disposing;
     if (!disposed) {
-      disposed = true; root.removeEventListener("click", click); host.signal.removeEventListener("abort", abort);
+      recentStates.clear();
+      disposed = true; headerObserver.disconnect(); root.removeEventListener("click", click); host.signal.removeEventListener("abort", abort);
       root.replaceChildren();
     }
     disposing = clearEncounter().then(() => { root.replaceChildren(); }).catch(error => {

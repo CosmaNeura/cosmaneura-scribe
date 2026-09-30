@@ -84,7 +84,7 @@ export class CoreCaptureClient {
     return receipt;
   }
 
-  async note(sessionId: string, action: "templates" | "read" | "prepare" | "save" | "resolve",
+  async note(sessionId: string, action: "templates" | "read" | "prepare" | "save" | "resolve" | "save_status",
     schema?: string, edit?: unknown, key: string = crypto.randomUUID()): Promise<unknown> {
     requireValue(isUuid(sessionId) && (action === "templates" || reference(schema, "doctor_note_schema")));
     const value = await this.send("capture-notes", { expected_session_id: sessionId, action,
@@ -105,12 +105,12 @@ export class CoreCaptureClient {
     requireValue(isUuid(sessionId));
     const expectedPath = `/v1/captured-sessions/${sessionId}/review`;
     return async (path, request) => {
-      requireValue(path === expectedPath && (request.method === "GET"
-        ? request.body === undefined && request.key === undefined
+      requireValue((path === expectedPath || path === expectedPath + "/edit") && (request.method === "GET"
+        ? path === expectedPath && request.body === undefined && request.key === undefined
         : request.body !== undefined && request.key !== undefined));
       try {
         const value = await this.operation(sessionId, request.method === "GET"
-          ? { kind: "creator_review" } : { kind: "decide_translation", payload: request.body }, request.key);
+          ? { kind: "creator_review" } : { kind: path === expectedPath + "/edit" ? "edit_transcript" : "decide_translation", payload: request.body }, request.key);
         return Response.json(value);
       } catch (error) {
         if (error instanceof BffResponseError && error.status === 409) return new Response(null, { status: 409 });
@@ -184,6 +184,12 @@ export class CoreCaptureBff implements Bff.CaptureBff {
       options && "idempotencyKey" in options ? options.idempotencyKey : undefined, options?.signal);
     requireValue(!options?.signal?.aborted);
     return result as T;
+  }
+  prepareRecordingWindow(id: string, payload: Bff.PrepareRecordingWindowRequest, options: Bff.MutationOptions) {
+    return this.send<Bff.PreparedRecordingWindow>({ kind: "prepare_recording_window", payload }, id, options);
+  }
+  prepareContinuationWindow(id: string, payload: Bff.PrepareContinuationWindowRequest, options: Bff.MutationOptions) {
+    return this.send<Bff.PreparedContinuationWindow>({ kind: "prepare_continuation_window", payload }, id, options);
   }
   getAudioEncryptionKey(options?: Bff.RequestOptions) {
     return this.send<Bff.AudioEncryptionPublicKey>({ kind: "encryption_key" }, this.sessionId, options);

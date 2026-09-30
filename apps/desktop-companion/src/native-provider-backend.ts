@@ -1,3 +1,4 @@
+import { parseEncounterDisplay } from "../../capture/src/provider/encounter-display";
 import { openingReviewFromCore } from "../../capture/src/provider/opening-review";
 import type { CiphertextUploadTarget } from "../../capture/src/bff/contracts";
 import type { ProviderEncounter } from "../../capture/src/provider/workspace-contracts";
@@ -201,11 +202,8 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   };
 }
 
-function parseEncounter(value: Record<string, unknown>): ProviderEncounter {
-  if (!reference(value.appointmentRef, "appointment") || typeof value.title !== "string"
-    || value.title.length > 300 || typeof value.detail !== "string" || value.detail.length > 1000) throw unavailable();
-  return Object.freeze({ appointmentRef: value.appointmentRef, title: value.title, detail: value.detail });
-}
+const parseEncounter = parseEncounterDisplay;
+
 function unavailable(): Error { return new Error("provider_native_connection_unavailable"); }
 
 function objectAccount(value: unknown): Record<string, unknown> {

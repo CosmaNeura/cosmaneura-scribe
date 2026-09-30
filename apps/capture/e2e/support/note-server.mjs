@@ -9,7 +9,8 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
     ? `{${Object.keys(value).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
       .map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
-export async function installNoteServer(context, { loseSaveResponse }) {
+export async function installNoteServer(context, { loseSaveResponse, origin = "http://127.0.0.1:5173", saveDelayMs = 0,
+  statusPending = false, draftPending = false, clockNow = () => new Date().toISOString() }) {
   const scope = { workspaceId: randomUUID(), appointmentRef: ref("appointment"), bindingRef: ref("scribe_capture_binding") };
   const session = randomUUID(), working = randomUUID(), segment = randomUUID();
   const source = { kind: "reviewed_english", source_version: 1, working_transcript_id: working, working_version: 1 };
@@ -29,10 +30,13 @@ export async function installNoteServer(context, { loseSaveResponse }) {
     note_sha256: digest(JSON.stringify(Object.entries(initialFields))), created_at: new Date().toISOString(),
     review_required: true, reviewed_source: source };
   const original = structuredClone(note), calls = [], failures = [], rejectedOrigins = [];
-  let savedEdit, savedKey;
+  let savedEdit, savedKey, pendingStatus = statusPending;
+  let pendingDraft = draftPending;
+  const visibleNote = () => pendingDraft ? { ...note, status: "not_prepared", note_ref: null,
+    fields: null, field_order: null, note_sha256: null, created_at: null } : note;
   await context.route("**/*", async route => {
     const url = new URL(route.request().url());
-    if (url.origin !== "http://127.0.0.1:5173") { rejectedOrigins.push(url.origin); await route.abort(); return; }
+    if (url.origin !== origin) { rejectedOrigins.push(url.origin); await route.abort(); return; }
     if (!url.pathname.startsWith("/note-lab/")) { await route.continue(); return; }
     try {
       if (url.pathname === "/note-lab/context") {
@@ -46,12 +50,12 @@ export async function installNoteServer(context, { loseSaveResponse }) {
       expect(body.workspace_id).toBe(scope.workspaceId); expect(body.binding_ref).toBe(scope.bindingRef);
       expect(body.request_nonce).toMatch(/^[a-f0-9-]{36}$/u);
       const envelope = { contract_version: "1", workspace_id: scope.workspaceId, binding_ref: scope.bindingRef,
-        request_nonce: body.request_nonce, checked_at: new Date().toISOString() };
+        request_nonce: body.request_nonce, checked_at: await clockNow() };
       calls.push(action === "capture-notes" ? body.action : action);
       if (action === "note-opening") {
         expect(body.expected_session_id).toBe(session);
         await route.fulfill({ json: { ...envelope, operation: "note_opening", receipt: {
-          session_id: session, review, templates: [template], note,
+          session_id: session, review, templates: [template], note: visibleNote(),
         } } }); return;
       }
       if (action === "capture-operations") {
@@ -70,17 +74,21 @@ export async function installNoteServer(context, { loseSaveResponse }) {
         expect(savedKey).toBe(savedEdit.client_key);
         note = { ...note, note_ref: ref("visit_note", "2"), fields: savedEdit.fields,
           note_sha256: digest(JSON.stringify(template.field_names.map(key => [key, savedEdit.fields[key]]))) };
+        if (saveDelayMs) await new Promise(resolve => setTimeout(resolve, saveDelayMs));
         if (loseSaveResponse) { await route.abort("failed"); return; }
         receipt = note;
-      } else if (body.action === "resolve") {
+      } else if (body.action === "resolve" || body.action === "save_status") {
         expect(body.edit).toEqual(savedEdit); expect(route.request().headers()["idempotency-key"]).toBe(savedKey);
         receipt = { session_id: session, schema_ref: template.schema_ref, client_key: savedKey,
           request_sha256: digest(canonical({ edit: savedEdit, schema: template.schema_ref, session, workspace: scope.workspaceId })),
-          status: "saved", result_note_ref: note.note_ref, result_sha256: note.note_sha256 };
-      } else { expect(body.action).toBe("read"); receipt = note; }
+          status: body.action === "save_status" && pendingStatus ? "pending" : "saved",
+          result_note_ref: body.action === "save_status" && pendingStatus ? null : note.note_ref,
+          result_sha256: body.action === "save_status" && pendingStatus ? null : note.note_sha256 };
+      } else { expect(["read", "prepare"]).toContain(body.action); receipt = visibleNote(); }
       await route.fulfill({ json: { ...envelope, action: body.action, receipt } });
     } catch (error) { failures.push(error); await route.abort(); }
   });
-  return { scope, calls, original, current: () => note,
+  return { scope, calls, original, current: () => note, releaseStatus: () => { pendingStatus = false; },
+    releaseDraft: () => { pendingDraft = false; },
     assertHealthy: () => { expect(failures).toEqual([]); expect(rejectedOrigins).toEqual([]); } };
 }
