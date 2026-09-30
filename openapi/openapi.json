@@ -1212,6 +1212,20 @@
               }
             ]
           },
+          "editing_allowed": {
+            "default": false,
+            "title": "Editing Allowed",
+            "type": "boolean"
+          },
+          "review_edits": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CreatorTranscriptEditV1"
+            },
+            "maxItems": 1024,
+            "title": "Review Edits",
+            "type": "array"
+          },
           "review_queue": {
             "anyOf": [
               {
@@ -1272,6 +1286,208 @@
           "status"
         ],
         "title": "CreatorReviewViewV1",
+        "type": "object"
+      },
+      "CreatorSpeakerConfirmationV1": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "enum": [
+                  "interpreter",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "role": {
+            "$ref": "#/components/schemas/SpeakerRole"
+          },
+          "speaker_id": {
+            "format": "uuid",
+            "title": "Speaker Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "speaker_id",
+          "role"
+        ],
+        "title": "CreatorSpeakerConfirmationV1",
+        "type": "object"
+      },
+      "CreatorTextCorrectionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_source_segment_version": {
+            "minimum": 1.0,
+            "title": "Expected Source Segment Version",
+            "type": "integer"
+          },
+          "source_segment_id": {
+            "format": "uuid",
+            "title": "Source Segment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_segment_id",
+          "expected_source_segment_version",
+          "content"
+        ],
+        "title": "CreatorTextCorrectionV1",
+        "type": "object"
+      },
+      "CreatorTranscriptEditBodyV1": {
+        "additionalProperties": false,
+        "properties": {
+          "corrections": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CreatorTextCorrectionV1"
+            },
+            "maxItems": 128,
+            "title": "Corrections",
+            "type": "array"
+          },
+          "expected_source_transcript_version": {
+            "minimum": 1.0,
+            "title": "Expected Source Transcript Version",
+            "type": "integer"
+          },
+          "expected_working_transcript_id": {
+            "format": "uuid",
+            "title": "Expected Working Transcript Id",
+            "type": "string"
+          },
+          "expected_working_transcript_version": {
+            "minimum": 1.0,
+            "title": "Expected Working Transcript Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "speakers": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CreatorSpeakerConfirmationV1"
+            },
+            "maxItems": 128,
+            "title": "Speakers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_source_transcript_version",
+          "expected_working_transcript_id",
+          "expected_working_transcript_version"
+        ],
+        "title": "CreatorTranscriptEditBodyV1",
+        "type": "object"
+      },
+      "CreatorTranscriptEditReceiptV1": {
+        "additionalProperties": false,
+        "properties": {
+          "edit_id": {
+            "format": "uuid",
+            "title": "Edit Id",
+            "type": "string"
+          },
+          "saved": {
+            "const": true,
+            "default": true,
+            "title": "Saved",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "working_transcript_id": {
+            "format": "uuid",
+            "title": "Working Transcript Id",
+            "type": "string"
+          },
+          "working_transcript_version": {
+            "minimum": 2.0,
+            "title": "Working Transcript Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "edit_id",
+          "working_transcript_id",
+          "working_transcript_version"
+        ],
+        "title": "CreatorTranscriptEditReceiptV1",
+        "type": "object"
+      },
+      "CreatorTranscriptEditV1": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "edit_id": {
+            "format": "uuid",
+            "title": "Edit Id",
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/CreatorTranscriptEditBodyV1"
+          },
+          "working_transcript_version": {
+            "minimum": 2.0,
+            "title": "Working Transcript Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "edit_id",
+          "working_transcript_version",
+          "created_at",
+          "request"
+        ],
+        "title": "CreatorTranscriptEditV1",
         "type": "object"
       },
       "CreatorTranslationDecisionBodyV1": {
@@ -3236,6 +3452,97 @@
           }
         ],
         "summary": "Decide Creator Review",
+        "tags": [
+          "creator-review"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/review/edit": {
+      "post": {
+        "operationId": "edit_creator_transcript_v1_captured_sessions__session_id__review_edit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatorTranscriptEditBodyV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorTranscriptEditReceiptV1"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Edit Creator Transcript",
         "tags": [
           "creator-review"
         ]
