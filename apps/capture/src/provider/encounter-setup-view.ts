@@ -19,7 +19,7 @@ export function encounterSetupMarkup(state: EncounterSetupState, query = ""): st
     <details class="provider-recording-options"${state.patients.length ? '' : ' open'}><summary>Add a new patient</summary>
       <form data-new-patient><label>Patient name<input name="new-patient-name" autocomplete="off" maxlength="200" required></label>
       <label>Date of birth (optional)<input name="new-patient-dob" type="date" min="1900-01-01" max="${new Date().toLocaleDateString('en-CA')}" aria-describedby="provider-dob-help"></label>
-      <small id="provider-dob-help">Ask at the start of the visit if needed. You can record without it.</small>
-      <p>Creates a new patient record. Choose an existing patient above if they already have one.</p>
-      <button type="submit">Create encounter</button></form></details></section>`;
+      <small id="provider-dob-help">You can record without it. Ask at the start of the visit.</small>
+      <p class="provider-new-patient-help">Creates a new patient record. Choose an existing patient above if they already have one.</p>
+      <div class="provider-create-actions"><button type="submit">Create encounter</button></div></form></details></section>`;
 }

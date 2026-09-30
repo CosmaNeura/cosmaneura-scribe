@@ -1,10 +1,16 @@
 // Actual native adapter and capture UI with an explicitly fake native port.
 // No PCM, credentials, real devices or live-service endpoints are used.
 /* global document, window */
-import "../../src/capture-app.ts";
+import "../../src/styles.css";
+import "../../src/provider/workspace.css";
 import { connectNativeProviderRecorder } from "../../src/provider/native-recorder.ts";
 import { recordingFixture, syntheticSession as sessionId } from "../../src/provider/native-recorder.fixture.ts";
 import { EncryptedIndexedDbQueueStorage } from "../../src/storage/encrypted-indexeddb.ts";
+
+if (new URL(window.location.href).searchParams.get("platform") === "ios") {
+  window.CapacitorCustomPlatform = { name: "ios" };
+}
+await import("../../src/capture-app.ts");
 
 const native = recordingFixture();
 const abort = new AbortController();
@@ -31,6 +37,7 @@ app.bindProvider({ sessionId, controller: prepared.controller, sourceKind: "micr
   captureMode: "native_microphone", languageMode: "english", signal: abort.signal,
   authorizedRequest: unused, journal: { load: unused, save: unused },
   deactivate: prepared.deactivate });
+document.querySelector("#provider").classList.add("provider-workspace");
 document.querySelector("#provider").append(app);
 window.startupLab = {
   get startCalls() { return startCalls; },

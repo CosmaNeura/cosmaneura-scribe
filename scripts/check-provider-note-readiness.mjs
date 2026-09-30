@@ -128,11 +128,18 @@ for (const scenario of ["lost-reply", "delayed", "expired", "hidden", "departed"
       await until(fieldsReady);
     } else {
       await until(() => readCount === 1 && !root.hasAttribute("aria-busy"));
+      if (["delayed", "expired"].includes(scenario)) {
+        assert.match(root.querySelector("[data-note-readiness]").textContent, /automatically/);
+        assert.equal(root.querySelector(".provider-note-options").open, false);
+        assert.match(root.querySelector("[data-note-wait-time]").textContent, /Checking automatically/);
+      }
       if (scenario === "delayed") { available = true; await advance(3000); await until(fieldsReady); }
       if (scenario === "expired") {
         await advance(90_000); assert.equal(readCount, 30);
         const count = readCount; await advance(120_000); await visibility(false); await visibility(true);
         assert.equal(readCount, count); assert.match(root.textContent, /Choose Check for note/);
+        assert.equal(root.querySelector(".provider-note-options").open, true);
+        assert.equal(root.querySelector("[data-note-wait-time]").textContent, "Automatic checking paused.");
         available = true; click("check-note"); await until(fieldsReady);
       }
       if (scenario === "hidden") {
@@ -158,11 +165,13 @@ for (const scenario of ["lost-reply", "delayed", "expired", "hidden", "departed"
       }
       if (["changed-source", "invalid-draft", "access-denied"].includes(scenario)) {
         await until(() => root.textContent.includes("note check could not be confirmed"));
+        assert.equal(root.querySelector(".provider-note-options").open, true);
         assert.equal(fieldsReady(), null); await advance(120_000); assert.equal(readCount, 1);
         if (scenario === "invalid-draft") { available = true; click("check-note"); await until(fieldsReady); }
       }
     }
     if (fieldsReady()) {
+      assert.equal(root.querySelector("[data-note-wait-time]"), null);
       assert.equal(fieldsReady().value, fields.Plan);
       fieldsReady().value += " Unsubmitted synthetic edit.";
       fieldsReady().dispatchEvent(new window.Event("input", { bubbles: true }));

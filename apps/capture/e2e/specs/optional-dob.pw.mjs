@@ -17,12 +17,13 @@ for (const platform of ["desktop", "ios"]) {
       const dob = page.getByLabel("Date of birth (optional)");
       await expect(dob).toBeVisible();
       await expect(dob).not.toHaveAttribute("required");
-      await expect(page.getByText("Ask at the start of the visit if needed. You can record without it.")).toBeVisible();
+      await expect(page.getByText("You can record without it. Ask at the start of the visit.")).toBeVisible();
       // Name is still required; an empty form must not silently create a patient.
       await page.getByRole("button", { name: "Create encounter", exact: true }).click();
       expect(await page.evaluate(() => window.dobLab.creates.length)).toBe(0);
       await page.getByLabel("Patient name").fill("Synthetic walk-in");
       if (dateOfBirth) await dob.fill(dateOfBirth);
+      await expect(page.getByRole("button", { name: "Create encounter", exact: true })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath("patient-setup.png"), fullPage: true });
       await page.getByRole("button", { name: "Create encounter", exact: true }).click();
       const consent = page.getByRole("button", { name: "Confirm consent & record", exact: true });
