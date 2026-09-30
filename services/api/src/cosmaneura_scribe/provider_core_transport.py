@@ -45,7 +45,10 @@ _OPERATIONS = frozenset(
         "creator_review",
         "provider_encounter",
         "native_recording_context",
+        "prepare_recording_window",
+        "prepare_continuation_window",
         "decide_translation",
+        "edit_transcript",
     }
 )
 _SCOPE_KEYS = {"binding_ref", "workspace_id", "request_nonce"}
@@ -848,7 +851,7 @@ def _validate_intent(
     else:
         _require(keys <= {"expected_session_id", "schema_ref", "action", "edit"})
         _uuid(body.get("expected_session_id"))
-        _require(body.get("action") in ("templates", "read", "prepare", "save", "resolve"))
+        _require(body.get("action") in ("templates", "read", "prepare", "save", "resolve", "save_status"))
 
 
 def _require(condition: object) -> None:

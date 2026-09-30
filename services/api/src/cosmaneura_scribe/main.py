@@ -45,6 +45,7 @@ from .capture_responses import (
 from .captured_admission_routes import router as captured_admission_router
 from .consent import ConsentError, ConsentPolicy
 from .consent_routes import build_consent_router
+from .creator_continuation_routes import router as creator_continuation_router
 from .creator_recording_routes import router as creator_recording_router
 from .creator_review_routes import router as creator_review_router
 from .delivery_reconciler import (
@@ -476,6 +477,14 @@ async def _capture_context_or_404(
     return context
 
 
+# Shared transaction-level gates for creator-authorized composite operations.
+# Keep legacy private spellings for existing route helpers and digest fixtures.
+capture_request_fingerprint = _fingerprint
+require_capture_protocol = _require_capture_protocol
+claim_capture_operation = _idempotent_entity
+capture_context_for_creator = _capture_context_or_404
+
+
 def _require_chunk_upload_session(session: CaptureSession) -> None:
     if session.ingest_mode != SessionIngestMode.CHUNK_UPLOAD:
         raise HTTPException(
@@ -494,6 +503,7 @@ app.include_router(creator_recording_router)
 app.include_router(captured_admission_router)
 app.include_router(source_start_router)
 app.include_router(source_extension_router)
+app.include_router(creator_continuation_router)
 
 
 @app.get(

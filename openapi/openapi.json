@@ -1156,6 +1156,86 @@
         "title": "ConsentRecord",
         "type": "object"
       },
+      "CreatorContinuationReceiptV1": {
+        "additionalProperties": false,
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/CaptureLeaseReceipt"
+          },
+          "reservations": {
+            "$ref": "#/components/schemas/ChunkReservationBatchReceipt"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease",
+          "reservations"
+        ],
+        "title": "CreatorContinuationReceiptV1",
+        "type": "object"
+      },
+      "CreatorContinuationRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "enum": [
+              "microphone",
+              "mixed"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "first_sequence_number": {
+            "exclusiveMaximum": 2048.0,
+            "minimum": 0.0,
+            "title": "First Sequence Number",
+            "type": "integer"
+          },
+          "previous_lease_generation": {
+            "minimum": 1.0,
+            "title": "Previous Lease Generation",
+            "type": "integer"
+          },
+          "previous_lease_id": {
+            "format": "uuid",
+            "title": "Previous Lease Id",
+            "type": "string"
+          },
+          "renew_idempotency_key": {
+            "maxLength": 255,
+            "minLength": 8,
+            "title": "Renew Idempotency Key",
+            "type": "string"
+          },
+          "reservation_idempotency_key": {
+            "maxLength": 255,
+            "minLength": 8,
+            "title": "Reservation Idempotency Key",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "channel",
+          "first_sequence_number",
+          "previous_lease_id",
+          "previous_lease_generation",
+          "renew_idempotency_key",
+          "reservation_idempotency_key"
+        ],
+        "title": "CreatorContinuationRequestV1",
+        "type": "object"
+      },
       "CreatorDecisionReceiptV1": {
         "additionalProperties": false,
         "properties": {
@@ -3293,6 +3373,97 @@
           }
         ],
         "summary": "Reserve Creator Audio Chunks",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/continuation-window": {
+      "post": {
+        "operationId": "prepare_creator_continuation_v1_captured_sessions__session_id__continuation_window_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatorContinuationRequestV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorContinuationReceiptV1"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Prepare Creator Continuation",
         "tags": [
           "configured-capture"
         ]
