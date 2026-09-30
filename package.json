@@ -29,6 +29,8 @@
   },
   "packageManager": "npm@11.5.2",
   "scripts": {
+    "lab:browser": "node scripts/run-operational-lab.mjs",
+    "lab:check": "node --test apps/capture/e2e/support/timing-reporter.test.mjs",
     "build": "npm run build --workspace @cosmaneura-scribe/capacitor-secure-queue --workspace @cosmaneura-scribe/capture",
     "build:capture-preview-api": "node apps/capture-preview-api/scripts/build-package.mjs",
     "cap:sync:check:android": "node scripts/check_capacitor_sync.mjs android",

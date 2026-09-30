@@ -29,11 +29,11 @@ test("records, survives process death, and completes one encrypted synthetic chu
   const uploadGate = await installSingleUploadGate(context);
   try {
     const initial = new CapturePage(page);
-    await initial.open("idle");
-    await initial.acceptConsentAndPrepare();
+    await test.step("open", () => initial.open("idle"));
+    await test.step("prepare", () => initial.acceptConsentAndPrepare());
     expect(await page.evaluate(() => globalThis.__captureE2eMediaRequests)).toEqual([]);
-    await initial.startRecording();
-    await initial.waitForDurableEncryptedChunk();
+    await test.step("start", () => initial.startRecording());
+    await test.step("durable_chunk", () => initial.waitForDurableEncryptedChunk());
 
     const mediaRequests = await page.evaluate(
       () => globalThis.__captureE2eMediaRequests,
@@ -57,16 +57,18 @@ test("records, survives process death, and completes one encrypted synthetic chu
     wire.endExpectedPageTermination();
     const relaunchedPage = await context.newPage();
     const relaunched = new CapturePage(relaunchedPage);
-    await relaunched.open("paused");
-    await relaunched.assertPausedRecovery();
+    await test.step("recover", async () => {
+      await relaunched.open("paused");
+      await relaunched.assertPausedRecovery();
+    });
     expect(wire.uploadCount).toBe(0);
     expect(wire.registrationCount).toBe(0);
     expect(wire.completionCount).toBe(0);
 
-    await relaunched.stopAtHeldUpload();
+    await test.step("stop_upload", () => relaunched.stopAtHeldUpload());
     await uploadGate.waitUntilHeld();
     uploadGate.release();
-    await relaunched.waitForCompletion();
+    await test.step("complete", () => relaunched.waitForCompletion());
 
     await expect.poll(() => wire.uploadCount).toBe(1);
     await expect.poll(() => wire.registrationCount).toBe(1);
