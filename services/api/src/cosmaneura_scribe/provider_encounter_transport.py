@@ -76,7 +76,8 @@ class ProviderEncounterTransport:
                 if (
                     not re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key)
                     or set(body) & {"expected_actor_ref", "expected_tenant_ref"}
-                    or body.get("action") not in {"patients", "list", "lookup", "create"}
+                    or body.get("action")
+                    not in {"patients", "list", "lookup", "create", "add_birth_date"}
                 ):
                     raise ValueError
                 payload = {

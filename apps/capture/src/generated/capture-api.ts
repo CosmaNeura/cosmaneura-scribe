@@ -123,6 +123,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/captured-sessions/{session_id}/continuation-window": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prepare Creator Continuation */
+        post: operations["prepare_creator_continuation_v1_captured_sessions__session_id__continuation_window_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/captured-sessions/{session_id}/review": {
         parameters: {
             query?: never;
@@ -1119,6 +1136,43 @@ export interface components {
             /** Revoked At */
             revoked_at?: string | null;
         };
+        /** CreatorContinuationReceiptV1 */
+        CreatorContinuationReceiptV1: {
+            lease: components["schemas"]["CaptureLeaseReceipt"];
+            reservations: components["schemas"]["ChunkReservationBatchReceipt"];
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+        };
+        /** CreatorContinuationRequestV1 */
+        CreatorContinuationRequestV1: {
+            /**
+             * Channel
+             * @enum {string}
+             */
+            channel: "microphone" | "mixed";
+            /** First Sequence Number */
+            first_sequence_number: number;
+            /** Previous Lease Generation */
+            previous_lease_generation: number;
+            /**
+             * Previous Lease Id
+             * Format: uuid
+             */
+            previous_lease_id: string;
+            /** Renew Idempotency Key */
+            renew_idempotency_key: string;
+            /** Reservation Idempotency Key */
+            reservation_idempotency_key: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "1.0";
+        };
         /** CreatorDecisionReceiptV1 */
         CreatorDecisionReceiptV1: {
             /**
@@ -2106,6 +2160,46 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChunkReservationBatchReceipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_creator_continuation_v1_captured_sessions__session_id__continuation_window_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatorContinuationRequestV1"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatorContinuationReceiptV1"];
                 };
             };
             /** @description Validation Error */

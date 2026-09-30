@@ -477,6 +477,9 @@ class ProviderReceiver:
             "appointmentRef": appointment,
             "title": value["patient_name"],
             "detail": value["title"] + " · " + value["appointment_at"],
+            **({"patientRef": value["patient_ref"]} if "patient_ref" in value else {}),
+            **({"dateOfBirth": value["date_of_birth"]} if "date_of_birth" in value else {}),
+            **({"status": value["status"]} if "status" in value else {}),
         }
 
     async def selected_current(self, authorization, revision, workspace_id):
