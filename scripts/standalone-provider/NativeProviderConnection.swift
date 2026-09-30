@@ -109,6 +109,15 @@ struct ProviderNativeRequestTiming: Sendable {
     let completed: Bool
 
     private static let logger = Logger(subsystem: "com.cosmaneura.scribe.performance", category: "provider")
+    private static let signposter = OSSignposter(logger: logger)
+
+    static func begin(_ phase: StaticString) -> OSSignpostIntervalState {
+        signposter.beginInterval(phase, id: signposter.makeSignpostID())
+    }
+
+    static func end(_ phase: StaticString, _ interval: OSSignpostIntervalState) {
+        signposter.endInterval(phase, interval)
+    }
 
     func log() {
         Self.logger.info("provider_request action=\(action.rawValue, privacy: .public) token_ms=\(tokenMilliseconds) receiver_ms=\(receiverMilliseconds ?? -1) total_ms=\(totalMilliseconds) status=\(status ?? 0) completed=\(completed)")
@@ -417,10 +426,16 @@ protocol ProviderNativeWire: Sendable {
         }
         let operation = Task { @MainActor [auth, wire, timingNow, requestTiming] in
             let started = timingNow()
+            let requestInterval = ProviderNativeRequestTiming.begin("Provider request")
+            var tokenInterval: OSSignpostIntervalState? = ProviderNativeRequestTiming.begin("Provider token")
+            var receiverInterval: OSSignpostIntervalState?
             var tokenEnd: ContinuousClock.Instant?, receiverStart: ContinuousClock.Instant?
             var receiverEnd: ContinuousClock.Instant?, status: Int?
             var completed = false
             defer {
+                if let tokenInterval { ProviderNativeRequestTiming.end("Provider token", tokenInterval) }
+                if let receiverInterval { ProviderNativeRequestTiming.end("Provider receiver", receiverInterval) }
+                ProviderNativeRequestTiming.end("Provider request", requestInterval)
                 let ended = timingNow()
                 requestTiming(ProviderNativeRequestTiming(action: request.action,
                     tokenMilliseconds: ProviderNativeRequestTiming.milliseconds(from: started, to: tokenEnd ?? ended),
@@ -433,11 +448,16 @@ protocol ProviderNativeWire: Sendable {
             let token = try await auth.token(expectedRevision: request.revision,
                                              nativeSessionWithoutOrigin: true)
             tokenEnd = timingNow()
+            if let interval = tokenInterval { ProviderNativeRequestTiming.end("Provider token", interval) }
+            tokenInterval = nil
             try self.current(request.revision)
             try Task.checkCancellation()
             receiverStart = timingNow()
+            receiverInterval = ProviderNativeRequestTiming.begin("Provider receiver")
             let reply = try await wire.send(request, token: token)
             receiverEnd = timingNow(); status = reply.status
+            if let interval = receiverInterval { ProviderNativeRequestTiming.end("Provider receiver", interval) }
+            receiverInterval = nil
             try Task.checkCancellation()
             try self.current(request.revision)
             guard request.action.acceptsResponseStatus(reply.status),

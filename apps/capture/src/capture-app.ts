@@ -11,6 +11,7 @@ import {
   type CaptureSource,
 } from "./capture";
 import { createCaptureSource } from "./capture-source-factory";
+import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./provider/workflow-timing";
 import {
   CaptureFlowController,
   EncryptedIndexedDbFlowStore,
@@ -458,32 +459,35 @@ export class CaptureApp extends LitElement {
       await this.#selectMicrophone();
       if (this.#providerClosed) return;
       await this.#requireController().startRecording();
-    });
+    }, "record");
   };
 
   readonly #stop = (): void => {
     if (this.#snapshot.desktop || this.#snapshot.native) {
       if (this.#stopping) return;
       this.#stopping = true; this.requestUpdate();
+      const finishTiming = beginWorkflowTiming("stop-upload");
+      let outcome: WorkflowTimingOutcome = "resolved";
       // Startup can be cancelled even while its Start promise is pending.
-      void this.#requireController().stopRecording().catch(() => undefined).finally(() => {
+      void this.#requireController().stopRecording().catch(() => { outcome = "threw"; }).finally(() => {
         this.#stopping = false; this.requestUpdate();
+        finishTiming(this.#providerClosed ? "cancelled" : outcome);
       });
       return;
     }
-    void this.#run(async () => this.#requireController().stopRecording());
+    void this.#run(async () => this.#requireController().stopRecording(), "stop-upload");
   };
 
   readonly #refreshPermissions = (): void => {
     void this.#run(async () => this.#requireController().refreshPermissions?.());
   };
 
-  readonly #pause = (): void => { void this.#run(async () => this.#requireController().pauseRecording?.()); };
+  readonly #pause = (): void => { void this.#run(async () => this.#requireController().pauseRecording?.(), "pause"); };
   readonly #resume = (): void => { void this.#run(async () => {
     await this.#selectMicrophone();
     if (this.#providerClosed) return;
     await this.#requireController().resumeRecording?.();
-  }); };
+  }, "resume"); };
 
   #isNativeIPhone(): boolean {
     return !this.#snapshot.desktop && this.#sourceKind === "microphone"
@@ -514,12 +518,12 @@ export class CaptureApp extends LitElement {
   }
 
   readonly #refreshStatus = (): void => {
-    void this.#run(async () => this.#requireController().refreshTranscriptionStatus());
+    void this.#run(async () => this.#requireController().refreshTranscriptionStatus(), "transcript-refresh");
   };
 
   readonly #retryUpload = (): void => {
     if (!this.#canRetryUpload() || this.#stopping) return;
-    void this.#run(async () => this.#provider!.resumePendingUpload!());
+    void this.#run(async () => this.#provider!.resumePendingUpload!(), "upload-retry");
   };
 
   async #getController(): Promise<CaptureFlowController> {
@@ -553,13 +557,16 @@ export class CaptureApp extends LitElement {
     return this.#controller;
   }
 
-  async #run(operation: () => Promise<void>): Promise<void> {
+  async #run(operation: () => Promise<void>, timingAction?: string): Promise<void> {
     if (this.#busy) return;
     this.#busy = true;
     this.requestUpdate();
+    const finishTiming = beginWorkflowTiming(timingAction);
+    let outcome: WorkflowTimingOutcome = "resolved";
     try {
       await operation();
     } catch {
+      outcome = "threw";
       // The controller exposes fixed metadata-only status codes. Raw failures stay suppressed.
       if (this.#snapshot.state === "idle") {
         this.#snapshot = {
@@ -571,6 +578,7 @@ export class CaptureApp extends LitElement {
     } finally {
       this.#busy = false;
       this.requestUpdate();
+      finishTiming(this.#providerClosed ? "cancelled" : outcome);
     }
   }
 
