@@ -33,7 +33,43 @@ export interface RequestOptions {
   readonly signal?: AbortSignal;
 }
 
+/** Closed Core sequence; its three original mutation identities stay stable on replay. */
+export interface PrepareRecordingWindowRequest {
+  readonly schema_version: "1.0";
+  readonly binding: SessionAudioKeyCreate;
+  readonly bind_idempotency_key: string;
+  readonly lease_idempotency_key: string;
+  readonly reserve_idempotency_key: string;
+  readonly channel: ChunkReservationBatchRequest["channel"];
+  readonly reservation_count: number;
+}
+export interface PreparedRecordingWindow {
+  readonly schema_version: "1.0";
+  readonly binding: SessionAudioKeyReceipt;
+  readonly lease: CaptureLeaseReceipt;
+  readonly reservations: ChunkReservationBatchReceipt;
+}
+/** Server chooses and durably retains the count within the current creator budget. */
+export interface PrepareContinuationWindowRequest {
+  readonly schema_version: "1.0";
+  readonly channel: "microphone" | "mixed";
+  readonly first_sequence_number: number;
+  readonly previous_lease_id: string;
+  readonly previous_lease_generation: number;
+  readonly renew_idempotency_key: string;
+  readonly reservation_idempotency_key: string;
+}
+export interface PreparedContinuationWindow {
+  readonly schema_version: "1.0";
+  readonly lease: CaptureLeaseReceipt;
+  readonly reservations: ChunkReservationBatchReceipt;
+}
 export interface CaptureBff {
+  /** Only fresh configured preparations use this optional receiver-first capability. */
+  prepareRecordingWindow?(sessionId: string, request: PrepareRecordingWindowRequest,
+    options: MutationOptions): Promise<PreparedRecordingWindow>;
+  prepareContinuationWindow?(sessionId: string, request: PrepareContinuationWindowRequest,
+    options: MutationOptions): Promise<PreparedContinuationWindow>;
   getAudioEncryptionKey(options?: RequestOptions): Promise<AudioEncryptionPublicKey>;
   createConsent(request: ConsentCreate, options: MutationOptions): Promise<ConsentRecord>;
   createSession(request: SessionCreate, options: MutationOptions): Promise<CaptureSession>;

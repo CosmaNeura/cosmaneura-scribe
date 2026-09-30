@@ -1,3 +1,4 @@
+import { NativeCreatorEditJournal } from "../../../review-ui/src/native-edit-journal";
 import { Capacitor } from "@capacitor/core";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { NativeCreatorReviewJournal } from "../../../review-ui/src/native-review-journal";
@@ -71,6 +72,13 @@ export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWork
         ...(mount.openingReview ? { openingReview: mount.openingReview } : {}),
         openInCore: noteRef => { current(); return mount.openInCore(noteRef); },
         journal,
+        editJournal: sessionId => {
+          current();
+          const edit = new NativeCreatorEditJournal(SecureQueue, mount.recoveryScope, sessionId);
+          const guarded = async <T>(run: () => Promise<T>): Promise<T> => { current(); const value = await run(); current(); return value; };
+          return { load: () => guarded(() => edit.load()), save: value => guarded(() => edit.save(value)),
+            clear: key => guarded(() => edit.clear(key)) };
+        },
         reviewJournal: sessionId => {
           current(); return new NativeCreatorReviewJournal(SecureQueue, mount.recoveryScope, sessionId);
         },

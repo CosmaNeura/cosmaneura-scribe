@@ -1,10 +1,15 @@
 import type { MicrophoneInput } from "./native/microphone-input";
 import type { CaptureFlowSnapshot } from "./flow";
 import type { AuthorizedReviewRequest, CreatorReviewView } from "../../review-ui/src/creator-review-api";
+import type { CreatorEditJournal } from "../../review-ui/src/creator-edit";
 import type { CreatorReviewJournal } from "../../review-ui/src/creator-review-journal";
 
 /** Plain recorder state/commands shared by native hosts and the provider view.
  * Desktop implementations keep the flow, keys, audio and storage in main. */
+export interface DesktopInputFeedback {
+  readonly microphone: { readonly level: number; readonly ageMs: number } | null;
+  readonly meetingAudio: { readonly level: number; readonly ageMs: number } | null;
+}
 export interface ProviderRecorderSnapshot extends CaptureFlowSnapshot {
   readonly native?: { readonly phase: string; readonly busy: boolean;
     readonly uploadProgress?: { readonly total: number; readonly registered: number } };
@@ -14,6 +19,7 @@ export interface ProviderRecorderSnapshot extends CaptureFlowSnapshot {
     readonly coverage: "not_started" | "aligned" | "complete" | "incomplete";
     readonly trimmedStartMs: number;
     readonly trimmedEndMs: number | null;
+    readonly inputSignal?: DesktopInputFeedback;
   };
 }
 export interface ProviderRecorderController {
@@ -25,6 +31,8 @@ export interface ProviderRecorderController {
   resumeRecording?(): Promise<void>;
   refreshTranscriptionStatus(): Promise<void>;
   refreshPermissions?(): Promise<void>;
+  /** Reveals the current native picker; never creates a choice or starts audio. */
+  showWindowChooser?(): Promise<void>;
   selectMicrophoneInput?(input: MicrophoneInput): Promise<void>;
   readonly getCaptureSignal?: () => Promise<unknown>;
 }
@@ -50,8 +58,12 @@ export interface ProviderCaptureBinding {
   readonly sourceKind: "synthetic" | "microphone";
   readonly captureMode?: "desktop_meeting" | "native_microphone";
   readonly languageMode: "english" | "english_spanish";
+  /** Verified encounter context, shown only in the authenticated app surface. */
+  readonly encounterLabel?: string;
+  readonly visitLabel?: string;
   readonly authorizedRequest: AuthorizedReviewRequest;
   readonly journal: CreatorReviewJournal;
+  readonly editJournal?: CreatorEditJournal;
   /** Abort on sign-out, revocation, encounter change or native host teardown. */
   readonly signal: AbortSignal;
   readonly deactivate: () => Promise<void>;
