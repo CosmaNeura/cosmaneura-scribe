@@ -13,6 +13,10 @@ export const CHANNEL_FLOW_RECORD_SCHEMA_VERSION = 3 as const;
 export const CONTINUATION_FLOW_RECORD_SCHEMA_VERSION = 4 as const;
 /** Continuous renewal cannot be interpreted by an older paused-resume writer. */
 export const CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION = 5 as const;
+/** A partially completed compound preparation cannot be replayed by older clients. */
+export const WINDOW_PREPARATION_SCHEMA_VERSION = 6 as const;
+/** A server-selected continuation recipe cannot be replayed by older clients. */
+export const SERVER_CONTINUATION_SCHEMA_VERSION = 7 as const;
 
 export interface CaptureContinuation {
   readonly continuous?: true;
@@ -21,6 +25,10 @@ export interface CaptureContinuation {
   readonly reservationCount: number;
   readonly previousLease: CaptureLeaseReceipt;
   readonly renewIdempotencyKey: string;
+  readonly windowRequest?: {
+    readonly idempotencyKey: string;
+    readonly reservationIdempotencyKey: string;
+  };
 }
 
 export type ActiveCapturePhase =
@@ -67,7 +75,8 @@ export interface PreparedCaptureSession {
 
 export interface ActiveCaptureState {
   readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION
-    | typeof CONTINUATION_FLOW_RECORD_SCHEMA_VERSION | typeof CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION;
+    | typeof CONTINUATION_FLOW_RECORD_SCHEMA_VERSION | typeof CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION
+    | typeof SERVER_CONTINUATION_SCHEMA_VERSION;
   readonly continuation?: CaptureContinuation;
   readonly channel?: ChunkReservationBatchRequest["channel"];
   readonly sessionId: string;
@@ -100,9 +109,19 @@ export interface DirectCapturePreparationState {
   readonly leaseRequest: CaptureLeaseIssueRequest | null;
 }
 
+export interface RecordingWindowIntent {
+  readonly idempotencyKey: string;
+  readonly bindIdempotencyKey: string;
+  readonly reserveIdempotencyKey: string;
+  readonly keyVersion: string;
+  readonly wrappedDek: string;
+  readonly reservationCount: number;
+  readonly aggregatePlaintextBudgetBytes: number;
+}
 export interface ConfiguredCapturePreparationState {
   readonly mode: "configured_core";
-  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION;
+  readonly schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION | typeof WINDOW_PREPARATION_SCHEMA_VERSION;
+  readonly windowPreparation?: RecordingWindowIntent | null;
   readonly channel?: ChunkReservationBatchRequest["channel"];
   readonly startedAt: string;
   readonly completeIdempotencyKey: string;

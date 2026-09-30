@@ -1,6 +1,7 @@
 import { LitElement, html, type TemplateResult } from "lit";
 import { Capacitor } from "@capacitor/core";
 import "./native/ios-input-meter";
+import "./native/desktop-input-meter";
 import { IOSPCM } from "./native/capacitor-pcm";
 import { isMicrophoneInput, microphoneInputs, type MicrophoneInput } from "./native/microphone-input";
 
@@ -42,6 +43,8 @@ export class CaptureApp extends LitElement {
   #busy = false;
   #stopping = false;
   #cancelledStart = false;
+  #showingChooser = false;
+  #chooserUnavailable = false;
   #startupStartedAt: number | undefined;
   #startupTimer: ReturnType<typeof setInterval> | undefined;
   #startupSeconds = 0;
@@ -173,6 +176,7 @@ export class CaptureApp extends LitElement {
       this.#disposeReview = mountCreatorReview(root,
         new HttpCreatorReviewApi(binding.sessionId, binding.authorizedRequest), {
           journal: binding.journal,
+          ...(binding.editJournal ? { editJournal: binding.editJournal } : {}),
           ...(binding.continueToNote ? { continueToNote: binding.continueToNote } : {}),
           ...(binding.prepareNoteOpening ? { prepareNoteOpening: binding.prepareNoteOpening } : {}),
         });
@@ -284,7 +288,13 @@ export class CaptureApp extends LitElement {
                 ${provider ? "" : "The initial server-authorized recording window is fixed and is not renewed in this preview."}
               </p>
             </div>
+            ${provider?.encounterLabel ? html`<div class="recording-patient" aria-label="Current visit">
+              <strong>${provider.encounterLabel}</strong>
+              <span>${provider.visitLabel ?? (desktopProvider ? "Video visit" : "In-person visit")}</span>
+            </div>` : ""}
             ${desktopProvider || nativeProvider ? this.#renderProviderProgress() : ""}
+            ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
+              ? html`<scribe-desktop-input-meter .signal=${this.#snapshot.desktop.inputSignal}></scribe-desktop-input-meter>` : ""}
             ${showInputMeter
               ? html`<scribe-ios-input-meter .readSignal=${provider?.controller.getCaptureSignal}></scribe-ios-input-meter>` : ""}
             ${this.#isNativeIPhone() && (!nativeProvider || ["ready", "paused"].includes(this.#snapshot.state)) ? html`<label>Microphone
@@ -297,6 +307,10 @@ export class CaptureApp extends LitElement {
             </label>` : ""}
             ${this.#microphoneError ? html`<p role="alert">Microphone choice could not be confirmed. Stop any other recording, then retry.</p>` : ""}
             <div class="record-actions">
+              ${desktopProvider && this.#snapshot.statusCode === "capture_window_selection_pending"
+                && provider.controller.showWindowChooser ? html`<button class="primary" data-testid="show-window-chooser"
+                ?disabled=${this.#showingChooser || this.#stopping} @click=${this.#showWindowChooser}>${this.#showingChooser
+                  ? "Showing chooser…" : "Show window chooser"}</button>` : ""}
               <button
                 data-testid="record-button"
                 class="record-button"
@@ -314,17 +328,18 @@ export class CaptureApp extends LitElement {
               ${provider?.controller.pauseRecording && this.#snapshot.state === "recording"
                 && (!this.#snapshot.desktop || this.#snapshot.desktop.phase === "recording") ? html`<button
                 class="secondary" data-testid="pause-recording" ?disabled=${this.#busy || this.#stopping}
-                @click=${this.#pause}>Pause recording</button>` : ""}
+                @click=${this.#pause}>Pause</button>` : ""}
               ${provider?.controller.resumeRecording && this.#snapshot.state === "paused"
+                && this.#snapshot.statusCode !== "capture_stop_acknowledgement_pending"
                 && (!this.#snapshot.desktop || ["ready", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase))
                 && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
                 class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
                 @click=${this.#resume}>${this.#snapshot.statusCode === "capture_recovery_pending"
-                  ? "Retry recovery and resume" : "Resume recording"}</button>` : ""}
+                  ? "Retry recovery and resume" : this.#isCancelledEmptyStart() ? "Start recording" : "Resume"}</button>` : ""}
               <button
                 data-testid="stop-button"
                 class="secondary"
-                ?hidden=${(desktopProvider || nativeProvider) && !this.#canStop() && !this.#stopping}
+                ?hidden=${(desktopProvider || nativeProvider) && (!this.#canStop() || this.#isCancelledEmptyStart()) && !this.#stopping}
                 ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && !this.#snapshot.native && this.#busy}
                 @click=${this.#stop}
               >
@@ -333,13 +348,15 @@ export class CaptureApp extends LitElement {
                   : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
                   : this.#snapshot.statusCode === "capture_recovery_pending" ? "Retry saving and upload"
                   : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
-                  ? "Retry stop and upload" : "Stop and upload"}
+                  ? "Retry finish recording" : provider ? "Finish recording" : "Stop and upload"}
               </button>
               ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
                 data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Set up recording access</button>` : ""}
               ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
                 ?disabled=${this.#busy || this.#stopping} @click=${this.#retryUpload}>Retry upload</button>` : ""}
             </div>
+            ${this.#chooserUnavailable && this.#snapshot.statusCode === "capture_window_selection_pending"
+              ? html`<p class="recording-recovery" role="alert">The chooser is still opening or could not come forward. Try Show window chooser again, or Cancel start.</p>` : ""}
             ${desktopProvider ? html`<details class="recording-source-help">
               <summary>Microphone + meeting audio</summary>
               <p>Choose your Zoom window or Meet window in Chrome. Scribe records your microphone and the selected application’s audio; other audio from that application may be included.</p>
@@ -388,7 +405,7 @@ export class CaptureApp extends LitElement {
             ${this.#snapshot.remainingAuthoritySeconds !== null &&
             this.#snapshot.remainingAuthoritySeconds <= 300
               ? html`<p class="budget-warning">
-                  The current recording authorization window expires soon. Stop and upload before
+                  The current recording authorization window expires soon. Finish recording before
                   it closes.
                 </p>`
               : ""}
@@ -434,8 +451,18 @@ export class CaptureApp extends LitElement {
   #isDesktopCompact(): boolean {
     const phase = this.#snapshot.desktop?.phase;
     return this.#provider?.captureMode === "desktop_meeting" && phase !== undefined
-      && (["starting", "recording", "stopping"].includes(phase)
+      && (["starting", "recording", "stopping", "stop_unconfirmed"].includes(phase)
         || this.#snapshot.state === "paused" && phase === "interrupted");
+  }
+
+  #isCancelledEmptyStart(): boolean {
+    // A confirmed native pause plus an empty initial attempt is distinct from
+    // pausing a visit. The retry uses the same retained recorder, not a new one.
+    return this.#cancelledStart && this.#snapshot.state === "paused"
+      && this.#snapshot.statusCode === "capture_paused" && this.#snapshot.recordedChunks === 0
+      && this.#snapshot.queuedChunks === 0 && this.#snapshot.elapsedSeconds === 0
+      && (this.#snapshot.native?.phase === "paused" || this.#snapshot.desktop?.phase === "ready"
+        && this.#snapshot.desktop.coverage === "not_started");
   }
 
   #renderProviderProgress(): TemplateResult {
@@ -453,10 +480,13 @@ export class CaptureApp extends LitElement {
                 : "Starting microphone… Recording is not confirmed yet."
               : this.#snapshot.desktop?.phase === "starting"
               ? this.#snapshot.statusCode === "capture_window_selection_pending"
-                ? "Choose your Zoom or Meet window in “Scribe · Choose a meeting window”. Recording has not started."
+                ? "Choose your meeting window. Recording has not started."
                 : "Starting microphone and meeting audio… Recording is not confirmed yet."
-              : this.#snapshot.desktop?.phase === "stopping" ? "Stopping recording…"
+              : this.#snapshot.desktop?.phase === "stopping" ? this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
+                ? "Confirming recording stopped…" : "Stopping recording…"
               : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
+              : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
+                ? "Recording has stopped. Retry confirmation before uploading."
               : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
               : this.#snapshot.statusCode === "capture_stopping" ? "Stopping recording…"
               : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
@@ -467,13 +497,13 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.statusCode === "capture_setup_expired" ? "Recording setup expired before any audio was saved. Select Resume recording to prepare again."
               : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
-              : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or stop and upload."
+              : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or finish recording."
               : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."
-              : this.#snapshot.statusCode === "capture_interrupted" ? "Recording was interrupted. Saved audio is retained. Check your microphone and connection, then resume or stop and upload. Speech during the interruption was not recorded."
+              : this.#snapshot.statusCode === "capture_interrupted" ? "Recording was interrupted. Saved audio is retained. Check your microphone and connection, then resume or finish recording. Speech during the interruption was not recorded."
               : this.#snapshot.statusCode === "capture_paused" ? this.#isDesktopCompact() || nativeProvider
-                ? html`<strong>Paused</strong><span class="recording-state-detail">${this.#cancelledStart
-                  ? "Start canceled. Resume when ready." : "No audio is being recorded."}</span>`
-                : "Recording is paused. Resume when ready, or stop and upload. Missing speech during the pause cannot be recovered."
+                ? html`<strong>${this.#isCancelledEmptyStart() ? "Start canceled" : "Paused"}</strong><span class="recording-state-detail">${this.#isCancelledEmptyStart()
+                  ? "Recording has not started. Start when ready." : "No audio is being recorded."}</span>`
+                : "Recording is paused. Resume when ready, or finish recording. Missing speech during the pause cannot be recovered."
               : this.#snapshot.statusCode === "capture_no_saved_audio" ? "No audio was saved from this recording. Resume recording when ready."
               : this.#snapshot.statusCode === "capture_reopen_required" ? "Recording is stopped. Return to Your encounters and reopen this encounter to recover saved work."
               : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
@@ -487,8 +517,6 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.state === "recording" ? "Recording"
               : this.#snapshot.statusCode === "audio_capture_native_stop_failed"
                 ? "Recording stop is unconfirmed. Retry stopping before continuing."
-              : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
-                ? "Recording has stopped. Retry confirmation before uploading."
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : "Ready to record"}</p>
             ${this.#isStarting() && !this.#stopping ? html`<p data-testid="startup-progress" aria-live="off">
@@ -504,7 +532,7 @@ export class CaptureApp extends LitElement {
             </label>` : ""}
             <p class="recording-duration"><span>${nativeProvider ? "Elapsed" : "Recorded"}</span> <strong>${formatDuration(this.#snapshot.elapsedSeconds)}</strong></p>
             ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
-              ? html`<p class="recording-control-hint">Use Pause for a break. Stop and upload when the visit is finished.</p>` : ""}
+              ? html`<p class="recording-control-hint">Use Pause for a break. Finish recording when the visit is finished.</p>` : ""}
             ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p
               ?hidden=${(this.#isDesktopCompact() || nativeProvider) && this.#snapshot.remainingAuthoritySeconds > 300}>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
@@ -537,7 +565,7 @@ export class CaptureApp extends LitElement {
   };
 
   readonly #record = (): Promise<void> => {
-    this.#cancelledStart = false;
+    this.#cancelledStart = false; this.#chooserUnavailable = false;
     return this.#run(async () => {
       await this.#selectMicrophone();
       if (this.#providerClosed) return;
@@ -560,6 +588,17 @@ export class CaptureApp extends LitElement {
       return;
     }
     void this.#run(async () => this.#requireController().stopRecording(), "stop-upload");
+  };
+
+  readonly #showWindowChooser = (): void => {
+    if (this.#showingChooser || this.#stopping || this.#snapshot.statusCode !== "capture_window_selection_pending") return;
+    const controller = this.#provider?.controller;
+    if (!controller?.showWindowChooser) return;
+    this.#showingChooser = true; this.#chooserUnavailable = false; this.requestUpdate();
+    // This must remain independent of the pending Start operation's busy guard.
+    void controller.showWindowChooser().catch(() => { this.#chooserUnavailable = true; }).finally(() => {
+      this.#showingChooser = false; this.requestUpdate();
+    });
   };
 
   readonly #refreshPermissions = (): void => {

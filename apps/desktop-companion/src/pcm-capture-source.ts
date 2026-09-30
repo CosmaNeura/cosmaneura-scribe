@@ -7,7 +7,7 @@ import { NativePcmCaptureSource } from "../../capture/src/native/native-pcm-sour
 import type { NativePcmBridge, NativePcmConfiguration, NativePcmPacket, NativePcmSession,
   NativePcmSink, NativePcmStopResult } from "../../capture/src/native/native-pcm-bridge";
 import type { DesktopPCMCoverage, DesktopPCMDriver, DesktopPCMDriverSession,
-  DesktopPCMFailure, DesktopPCMPacket, DesktopPCMStart, DesktopPCMCompletion } from "./native-pcm-driver.js";
+  DesktopPCMFailure, DesktopPCMPacket, DesktopPCMStart, DesktopPCMCompletion, DesktopInputSignal } from "./native-pcm-driver.js";
 
 /** Main-process source for the existing CaptureFlowController. The same WAV,
  * encryption, reservations and durable upload protocol handle the mixed audio.
@@ -15,9 +15,10 @@ import type { DesktopPCMCoverage, DesktopPCMDriver, DesktopPCMDriverSession,
  * not inferred from chunk counts. This constructor starts no source or service.
  */
 export class DesktopPcmCaptureSource extends NativePcmCaptureSource {
-  public constructor(driver: DesktopPCMDriver, persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>) {
+  public constructor(driver: DesktopPCMDriver, persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
+    inputSignal?: (value: DesktopInputSignal | null) => void) {
     requireMainProcess();
-    super(new DesktopChunkBridge(driver, persistCoverage), "mixed");
+    super(new DesktopChunkBridge(driver, persistCoverage, inputSignal), "mixed");
   }
 }
 
@@ -25,12 +26,14 @@ class DesktopChunkBridge implements NativePcmBridge {
   readonly deliversDuringDrain = true as const;
   readonly supportsRenewal = true as const;
   constructor(private readonly driver: DesktopPCMDriver,
-    private readonly persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>) {}
+    private readonly persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
+    private readonly inputSignal?: (value: DesktopInputSignal | null) => void) {}
 
   getAvailability(): Promise<boolean> { requireMainProcess(); return this.driver.getAvailability(); }
 
   start(configuration: NativePcmConfiguration, sink: NativePcmSink): NativePcmSession {
     requireMainProcess();
+    this.inputSignal?.(null);
     let maximumFrames = configuration.maximumChunks * configuration.targetFramesPerChunk;
     let window = configuration.window ? captureSourceWindow(configuration.window, configuration.maximumChunks) : undefined;
     if (!Number.isSafeInteger(maximumFrames) || maximumFrames < 1 || maximumFrames > 1_382_400_000
@@ -90,7 +93,9 @@ class DesktopChunkBridge implements NativePcmBridge {
       hardMaximumOutputFrames: value.hardMaximumChunks * configuration.targetFramesPerChunk });
     const native: DesktopPCMDriverSession = this.driver.start({ maximumOutputFrames: maximumFrames, sampleRateHz: 16_000,
       ...(window ? { authorization: authorization(window) } : {}) }, {
-      onPcmPacket: receive, onFailure: terminal,
+      onPcmPacket: receive, onFailure: terminal, onInputSignal: value => {
+        if (active && !closed && !discard && !stopping) this.inputSignal?.(value);
+      },
     });
 
     const ready = native.ready.then(async value => {
@@ -103,7 +108,7 @@ class DesktopChunkBridge implements NativePcmBridge {
     // ready. Observe rejection now while preserving it for every actual awaiter.
     void ready.catch(() => undefined);
     const stop = (options: { readonly mode: "drain" | "discard" }): Promise<NativePcmStopResult> => {
-      stopping = true;
+      stopping = true; this.inputSignal?.(null);
       if (closed) return Promise.resolve({ finalPcmPacket: null });
       if (options.mode === "discard") { discard = true; chunker.discard(); }
       // The shared native lifecycle coalesces normal stop and owns the one

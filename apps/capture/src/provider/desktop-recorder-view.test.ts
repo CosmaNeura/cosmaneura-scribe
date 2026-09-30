@@ -22,6 +22,19 @@ describe("desktop recorder command view", () => {
       expect(() => parseDesktopRecorderState(progress(invalid))).toThrow();
     }
   });
+  it("accepts only content-free bounded input activity", () => {
+    const signal = (inputSignal: unknown) => {
+      const original = state(0);
+      return { ...original, snapshot: { ...original.snapshot, desktop: { ...original.snapshot.desktop, inputSignal } } };
+    };
+    expect(parseDesktopRecorderState(signal({ microphone: { level: 0.1, ageMs: 0 }, meetingAudio: null })).snapshot.desktop?.inputSignal)
+      .toEqual({ microphone: { level: 0.1, ageMs: 0 }, meetingAudio: null });
+    for (const value of [{ level: NaN, ageMs: 0 }, { level: 1.1, ageMs: 0 }, { level: 0.1, ageMs: -1 },
+      { level: 0.1, ageMs: 0, device: "blocked" }]) {
+      expect(() => parseDesktopRecorderState(signal({ microphone: value, meetingAudio: null }))).toThrow();
+    }
+    expect(() => parseDesktopRecorderState(signal({ microphone: null, meetingAudio: null, transcript: "blocked" }))).toThrow();
+  });
   it("does not overwrite newer state with an older command response or accept another recorder", async () => {
     let observer: ((value: unknown) => void) | undefined;
     const delayed = deferred<unknown>(), commands: Parameters<DesktopRecorderPort["request"]>[0][] = [];
@@ -39,6 +52,20 @@ describe("desktop recorder command view", () => {
     await view.deactivate(); expect(() => view.controller.snapshot).toThrow();
     expect(commands.filter(command => command.kind === "deactivate")).toHaveLength(1);
     expect(commands.at(-1)!.recorderId).toBe(recorderId);
+  });
+  it("reveals the exact owned chooser without starting or replacing a recorder", async () => {
+    const commands: Parameters<DesktopRecorderPort["request"]>[0][] = [];
+    const port: DesktopRecorderPort = { subscribe: () => () => undefined, request: async command => {
+      commands.push(command);
+      return { requestId: command.requestId, ok: true, state: command.kind === "deactivate" ? null : state(0, "starting") };
+    } };
+    const view = await connectDesktopRecorderView(port, sessionId, new AbortController().signal);
+    await view.controller.showWindowChooser!();
+    expect(commands.map(command => command.kind)).toEqual(["read", "show_chooser"]);
+    expect(commands[1]!.recorderId).toBe(recorderId);
+    await view.deactivate();
+    await expect(view.controller.showWindowChooser!()).rejects.toThrow();
+    expect(commands).toHaveLength(3);
   });
   it("closes the exact late acquisition after cancellation and never exposes its snapshot", async () => {
     const read = deferred<unknown>(), abort = new AbortController(), commands: Parameters<DesktopRecorderPort["request"]>[0][] = [];

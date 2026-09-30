@@ -45,7 +45,7 @@ export function presentInputSignal(signal: IosInputSignal | null, responseAgeMs:
 } {
   if (!signal || responseAgeMs > 1_500) return { level: 0, route: "Microphone",
     title: "Checking microphone", attention: true,
-    message: "Waiting for microphone signal… Audio input is not confirmed yet." };
+    message: "Waiting for microphone signal. Say a few words and watch the bars. Audio input is not confirmed yet." };
   const route = ROUTES[signal.route];
   if (signal.inputMuted) return { level: 0, route,
     title: "Microphone muted", attention: true,
@@ -57,8 +57,8 @@ export function presentInputSignal(signal: IosInputSignal | null, responseAgeMs:
   }
   // Exact digital zero and conversational quiet are advisory states, never a stop or fatal error.
   if (signal.zeroInputMs >= 3_000) return { level: 0, route,
-    title: "No microphone input", attention: true,
-    message: "If you’re speaking, pause, stop phone screen sharing or other audio use, then resume. Check that the bars move before continuing." };
+    title: "No sound detected", attention: true,
+    message: "Say a few words and watch the bars. If they stay still, pause, stop phone screen sharing or other audio use, then resume." };
   if (signal.inputLevel >= 0.001 && !signal.convertedEverNonzero && signal.inputBuffers >= 10) {
     return { level: 0, route, title: "Check recording input", attention: true,
       message: "Audio has not reached the recording yet. If you’re speaking, pause and retry." };
@@ -68,7 +68,7 @@ export function presentInputSignal(signal: IosInputSignal | null, responseAgeMs:
   // An armed engine and advancing timer do not establish that audio reached the recorder.
   if (!signal.convertedEverNonzero) return { level: 0, route,
     title: "Checking microphone", attention: true,
-    message: "Speak briefly to check the microphone. Audio input is not confirmed yet." };
+    message: "Say a few words and watch the bars. Audio input is not confirmed yet." };
   return { level, route, title: "Recording", attention: false,
     message: level > 0 ? "Microphone activity" : "Quiet input" };
 }

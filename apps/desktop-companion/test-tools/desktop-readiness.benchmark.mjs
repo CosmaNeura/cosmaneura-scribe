@@ -120,9 +120,12 @@ const profileOptions = [
 const runs = Number(process.env.SCRIBE_DESKTOP_TIMING_RUNS ?? "1");
 const selectedProfile = process.env.SCRIBE_DESKTOP_TIMING_PROFILE ?? "all";
 const modelName = process.env.SCRIBE_DESKTOP_TIMING_MODEL ?? "modern-clean";
+const preparationName = process.env.SCRIBE_DESKTOP_TIMING_PREPARATION ?? "combined";
+const continuationName = process.env.SCRIBE_DESKTOP_TIMING_CONTINUATION ?? "combined";
 const output = process.env.SCRIBE_DESKTOP_TIMING_OUTPUT;
 if (!output || !Number.isInteger(runs) || runs < 1 || runs > 5
-    || !["all", ...profileOptions.map(value => value.name)].includes(selectedProfile) || !readinessModels.includes(modelName))
+    || !["all", ...profileOptions.map(value => value.name)].includes(selectedProfile) || !readinessModels.includes(modelName)
+    || !["combined", "legacy"].includes(preparationName) || !["combined", "legacy"].includes(continuationName))
     throw new Error("Run through test-tools/desktop-readiness-benchmark.mjs");
 const profiles = profileOptions.filter(value => selectedProfile === "all" || value.name === selectedProfile)
     .flatMap(value => Array.from({ length: runs }, (_, index) => ({ ...value, run: index + 1 })));
@@ -147,10 +150,54 @@ describe("isolated desktop readiness measurements", () => {
             }
         }
         const bff = f.options.createBff(f.abort.signal);
+        // The combined fixture models one public Core request. Its component
+        // mock operations have no additional network delay; actual service and
+        // database latency is not measured by this dependency model.
+        const primitives = Object.fromEntries(["bindSessionAudioKey", "issueLease", "reserveChunks", "renewLease", "getCapabilities"].map(name => {
+            const method = bff[name], original = vi.isMockFunction(method) ? method.getMockImplementation() : method;
+            return [name, (...args) => Reflect.apply(original, bff, args)];
+        }));
+        if (preparationName === "combined") {
+            bff.prepareRecordingWindow = (sessionId, request, options) => timed("bff.prepareRecordingWindow", profile.apiMs, async () => {
+                expect(new Set([options.idempotencyKey, request.bind_idempotency_key, request.lease_idempotency_key, request.reserve_idempotency_key]).size).toBe(4);
+                const binding = await timed("component.bindSessionAudioKey", 0, () => primitives.bindSessionAudioKey(sessionId,
+                    request.binding, { idempotencyKey: request.bind_idempotency_key }), "in-process-fixture");
+                const lease = await timed("component.issueLease", 0, () => primitives.issueLease(sessionId,
+                    { protocol_version: "1.0" }, { idempotencyKey: request.lease_idempotency_key }), "in-process-fixture");
+                const reservations = await timed("component.reserveChunks", 0, () => primitives.reserveChunks(sessionId,
+                    { protocol_version: "1.0", capture_lease_id: lease.lease_id, capture_lease_generation: lease.generation,
+                        channel: request.channel, first_sequence_number: 0, count: request.reservation_count },
+                    { idempotencyKey: request.reserve_idempotency_key }), "in-process-fixture");
+                return { schema_version: "1.0", binding, lease, reservations };
+            }, "loopback-bff");
+        }
         for (const name of ["getCapabilities", "getAudioEncryptionKey", "bindSessionAudioKey", "issueLease", "reserveChunks", "renewLease"]) {
             const method = bff[name];
             const original = vi.isMockFunction(method) ? method.getMockImplementation() : method;
             vi.spyOn(bff, name).mockImplementation((...args) => timed(`bff.${name}`, profile.apiMs, () => Reflect.apply(original, bff, args), "loopback-bff"));
+        }
+        if (continuationName === "combined") {
+            const retained = new Map();
+            bff.prepareContinuationWindow = (sessionId, request, options) => timed("bff.prepareContinuationWindow", profile.apiMs, async () => {
+                const previous = retained.get(options.idempotencyKey);
+                if (previous) { expect(request).toEqual(previous.request); return previous.receipt; }
+                expect(new Set([options.idempotencyKey, request.renew_idempotency_key, request.reservation_idempotency_key]).size).toBe(3);
+                const lease = await timed("component.renewLease", 0, () => primitives.renewLease(sessionId, request.previous_lease_id,
+                    { protocol_version: "1.0", expected_generation: request.previous_lease_generation },
+                    { idempotencyKey: request.renew_idempotency_key }), "in-process-fixture");
+                const capabilities = await primitives.getCapabilities(sessionId);
+                // This single-Resume fixture has 89 unused canonical positions
+                // after its one invented chunk. Backend count/replay policy is
+                // separately covered by transactional Scribe tests.
+                const count = Math.min(capabilities.max_reservations_per_batch, capabilities.max_chunks - request.first_sequence_number);
+                const reservations = await timed("component.reserveChunks", 0, () => primitives.reserveChunks(sessionId,
+                    { protocol_version: "1.0", capture_lease_id: lease.lease_id, capture_lease_generation: lease.generation,
+                        channel: request.channel, first_sequence_number: request.first_sequence_number, count },
+                    { idempotencyKey: request.reservation_idempotency_key }), "in-process-fixture");
+                const receipt = { schema_version: "1.0", lease, reservations };
+                retained.set(options.idempotencyKey, { request: structuredClone(request), receipt });
+                return receipt;
+            }, "loopback-bff");
         }
         f.nativeAvailability.mockImplementation(() => timed("os.availability", profile.availabilityMs, async () => true, "simulated-os"));
         const authorizePreparation = () => timed("trusted.prepare", profile.apiMs, async () => ({ sessionId: f.session.id, status: "created" }), "simulated-remote");
@@ -212,12 +259,16 @@ describe("isolated desktop readiness measurements", () => {
             await action("start-to-simulated-capture-ready", () => view.controller.startRecording());
             expect(view.controller.snapshot.desktop?.phase).toBe("recording");
             await emitSyntheticChunk();
+            let interruptedAt;
             if (modelName === "modern-interrupted") {
-                await action("native-interruption-to-paused", async () => {
+                await action("native-interruption-to-settled-pause", async () => {
+                    interruptedAt = performance.now();
                     sink.onFailure("device_changed");
-                    await vi.waitFor(() => expect(view.controller.snapshot.state).toBe("paused"), { timeout: 3000 });
+                    await expect(view.controller.resumeRecording()).rejects.toThrow();
+                    await vi.waitFor(() => expect(view.controller.snapshot).toMatchObject({ state: "paused",
+                        statusCode: "capture_paused", desktop: { phase: "interrupted" } }), { timeout: 6000, interval: 1 });
                 });
-                expect(nativeModel.ownerCount()).toBe(1);
+                expect(nativeModel.ownerCount()).toBe(0);
             } else {
                 await action("pause-to-confirmed-simulated-stop", () => view.controller.pauseRecording());
                 if (nativeModel) expect(nativeModel.ownerCount()).toBe(0);
@@ -225,7 +276,27 @@ describe("isolated desktop readiness measurements", () => {
             expect(view.controller.snapshot.state).toBe("paused");
             await action("resume-to-simulated-capture-ready", () => view.controller.resumeRecording());
             expect(view.controller.snapshot.desktop?.phase).toBe("recording");
+            if (interruptedAt !== undefined) actions["native-interruption-through-immediate-resume"] = {
+                duration_ms: performance.now() - interruptedAt,
+                automatic_settlement_ms: actions["native-interruption-to-settled-pause"].duration_ms,
+                resume_click_ms: actions["resume-to-simulated-capture-ready"].duration_ms,
+                user_wait_ms: 0,
+            };
             const assertions = [];
+            const opened = spans.filter(row => row.phase === "cold-open-fresh-store");
+            if (preparationName === "combined") {
+                expect(opened.filter(row => row.label === "bff.prepareRecordingWindow")).toHaveLength(1);
+                for (const name of ["bindSessionAudioKey", "issueLease", "reserveChunks"]) {
+                    expect(opened.filter(row => row.label === `bff.${name}`)).toHaveLength(0);
+                    expect(opened.filter(row => row.label === `component.${name}`)).toHaveLength(1);
+                }
+                assertions.push("fresh preparation uses one combined public request and exact component keys");
+            } else {
+                expect(opened.filter(row => row.label === "bff.prepareRecordingWindow")).toHaveLength(0);
+                for (const name of ["bindSessionAudioKey", "issueLease", "reserveChunks"])
+                    expect(opened.filter(row => row.label === `bff.${name}`)).toHaveLength(1);
+                assertions.push("legacy fresh preparation uses three public mutation requests");
+            }
             if (nativeModel) {
                 for (const name of ["start-to-simulated-capture-ready", "resume-to-simulated-capture-ready"]) {
                     const rows = spans.filter(row => row.phase === name);
@@ -251,21 +322,35 @@ describe("isolated desktop readiness measurements", () => {
                         && row.start_ms >= started.start_ms && row.start_ms + row.duration_ms <= stopped.start_ms)).toBe(true);
                 }
                 const resumed = spans.filter(row => row.phase === "resume-to-simulated-capture-ready");
-                expect(resumed.filter(row => row.label === "remote.sourceStopped")).toHaveLength(modelName === "modern-interrupted" ? 1 : 0);
-                expect(resumed.filter(row => row.label === "noop.retireSource")).toHaveLength(modelName === "modern-interrupted" ? 0 : 1);
+                expect(resumed.filter(row => row.label === "remote.sourceStopped")).toHaveLength(0);
+                expect(resumed.filter(row => row.label === "noop.retireSource")).toHaveLength(1);
                 expect(resumed.filter(row => row.label === "remote.sourceAuthorize")).toHaveLength(modelName === "legacy-clean" ? 1 : 0);
                 if (modelName === "modern-interrupted") {
-                    const stopped = resumed.find(row => row.label === "remote.sourceStopped");
-                    expect(resumed.find(row => row.label === "bff.renewLease").start_ms).toBeGreaterThanOrEqual(stopped.start_ms + stopped.duration_ms);
+                    const settlement = spans.filter(row => row.phase === "native-interruption-to-settled-pause");
+                    expect(settlement.filter(row => row.label === "remote.sourceStopped")).toHaveLength(1);
+                    const stopped = settlement.find(row => row.label === "remote.sourceStopped");
+                    expect(resumed.find(row => row.label === (continuationName === "combined" ? "bff.prepareContinuationWindow" : "bff.renewLease")).start_ms)
+                        .toBeGreaterThanOrEqual(stopped.start_ms + stopped.duration_ms);
                 }
                 assertions.push("actual backend owner removed only after confirmed retirement", "consumed local decision required before native start",
                     "fresh source availability retained after authority", "picker before source preparation",
                     "native ready before activation and Recording snapshot", "native stop before server retirement",
-                    modelName === "modern-interrupted" ? "retained owner retired before lease renewal" : "clean Resume retirement issues no native or remote request");
+                    modelName === "modern-interrupted" ? "interruption automatically retires its owner before Resume is enabled; immediate Resume does not spend authority"
+                        : "clean Resume retirement issues no native or remote request");
+            }
+            const continued = spans.filter(row => row.phase === "resume-to-simulated-capture-ready");
+            if (continuationName === "combined") {
+                expect(continued.filter(row => row.label === "bff.prepareContinuationWindow")).toHaveLength(1);
+                for (const name of ["getCapabilities", "renewLease", "reserveChunks"])
+                    expect(continued.filter(row => row.label === `bff.${name}`)).toHaveLength(0);
+                assertions.push("paused Resume uses one combined request with unchanged fresh native authority gates");
+            } else {
+                expect(continued.filter(row => row.label === "bff.prepareContinuationWindow")).toHaveLength(0);
             }
             await emitSyntheticChunk();
             await view.controller.pauseRecording();
-            const result = { profile, model: modelName, assertions, boundary_operations: nativeModel?.events ?? [],
+            const result = { profile, model: modelName, preparation: preparationName, continuation: continuationName,
+                assertions, boundary_operations: nativeModel?.events ?? [],
                 source: "actual recorder/controller/flow/encrypted SQLite/cloned IPC; actual native backend except dependency-sensitivity; loopback BFF; simulated Swift/HTTP/OS/native readiness", actions, spans, updates,
                 human_picker_delay_ms: 0, microphone_or_native_executable_used: false, actual_app_startup_or_dom_paint_measured: false };
             await writeFile(join(output, `${profile.name}-run-${profile.run}.json`), JSON.stringify(result, null, 2) + "\n");

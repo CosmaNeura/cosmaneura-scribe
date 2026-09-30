@@ -108,3 +108,54 @@ import Testing
     #expect(kinds == [1, 2, 2, 2, 2]); #expect(offset == data.count)
     sink.discard()
 }
+
+@Test func actualInputLevelsSeparateSourcesThrottleAndRetainNoSamples() throws {
+    let consent = (id: UUID(), allPartiesAgreed: true)
+    #expect(consent.allPartiesAgreed)
+    var meter = DesktopInputLevels(), now = ContinuousClock.now
+    let microphone = try DesktopAudioFrame(channel: .microphone, sampleRate: 16_000, channels: 1,
+        hostTimeNanoseconds: 1, samples: [0.25, -0.25])
+    let meeting = try DesktopAudioFrame(channel: .systemAudio, sampleRate: 16_000, channels: 1,
+        hostTimeNanoseconds: 1, samples: [0, 0])
+    let firstValue = meter.observe(microphone, now: now)
+    let first = try #require(firstValue)
+    #expect(first.channel == "microphone" && first.level == 0.25 && first.sequence == 1)
+    let secondValue = meter.observe(meeting, now: now)
+    let second = try #require(secondValue)
+    #expect(second.channel == "meetingAudio" && second.level == 0 && second.sequence == 2)
+    let throttled = meter.observe(microphone, now: now.advanced(by: .milliseconds(249)))
+    #expect(throttled == nil)
+    microphone.clear(); meeting.clear()
+    now = now.advanced(by: .milliseconds(250))
+    let thirdValue = meter.observe(microphone, now: now)
+    let third = try #require(thirdValue)
+    #expect(third.level == 0 && third.sequence == 3) // no retained prior PCM or synthetic movement
+}
+
+@Test func inputMetadataRequiresActivationAndStopsAfterDiscard() async throws {
+    let consent = (id: UUID(), allPartiesAgreed: true)
+    #expect(consent.allPartiesAgreed)
+    let pipe = Pipe(), output = ProcessOutput(pipe.fileHandleForWriting)
+    let sink = ProcessPCMSink(output: output, onFailure: { _ in })
+    let frame = try DesktopAudioFrame(channel: .microphone, sampleRate: 16_000, channels: 1,
+        hostTimeNanoseconds: 1, samples: [0.125, -0.125])
+    defer { frame.clear(); try? pipe.fileHandleForReading.close() }
+    sink.observeInput(frame) // no output before native and mixer readiness
+    #expect(sink.started(DesktopPCMStart(hostTimeNanoseconds: 1, microphonePrerollNanoseconds: 0, systemPrerollNanoseconds: 0)))
+    sink.nativeStarted(); #expect(sink.activate())
+    sink.observeInput(frame); sink.discard(); sink.observeInput(frame)
+    await output.drain(); try pipe.fileHandleForWriting.close()
+    let data = try #require(try pipe.fileHandleForReading.readToEnd())
+    var index = 0, messages: [[String: Any]] = []
+    while index < data.count {
+        let count = data[index..<index + 4].reduce(0) { $0 * 256 + Int($1) }
+        #expect(data[index + 4] == 1)
+        let message = try #require(try JSONSerialization.jsonObject(with: data[index + 5..<index + 4 + count]) as? [String: Any])
+        messages.append(message); index += count + 4
+    }
+    #expect(messages.count == 2)
+    #expect(messages[0]["type"] as? String == "ready")
+    #expect(messages[1]["type"] as? String == "inputSignal")
+    #expect(Set(messages[1].keys) == ["type", "sequence", "channel", "level"])
+    #expect(messages[1]["level"] as? Double == 0.125)
+}

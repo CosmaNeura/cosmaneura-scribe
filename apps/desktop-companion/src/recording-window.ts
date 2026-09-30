@@ -44,7 +44,7 @@ export class MainRecordingWindow implements DesktopRecordingWindow {
     const phase = snapshot?.desktop?.phase;
     this.active = phase !== undefined && ["starting", "recording", "stopping"].includes(phase);
     if (!this.active) this.responsiveness.invalidate();
-    const compact = this.active || snapshot?.state === "paused" && phase === "interrupted";
+    const compact = this.active || phase === "stop_unconfirmed" || snapshot?.state === "paused" && phase === "interrupted";
     const window = this.current();
     if (!window || window.isDestroyed() || compact === this.compact) return;
     // Repeated snapshots/timer ticks must not raise the window, switch Spaces,

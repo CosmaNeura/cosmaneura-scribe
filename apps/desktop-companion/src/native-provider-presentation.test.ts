@@ -26,7 +26,9 @@ describe.skipIf(!root)("native presentation with the actual Swift protocol and i
   it("selects privately and acknowledges presentation; active/failed ownership prevents replacement or disposal", async () => {
     const { owner } = await open();
     expect(await owner.selectWindow(new AbortController().signal)).toEqual({ application: "us.zoom.xos", processID: 41, windowID: 73 });
+    await expect(owner.showWindowChooser()).rejects.toThrow();
     await owner.publish(recording);
+    await expect(owner.showWindowChooser()).rejects.toThrow();
     await expect(owner.selectWindow(new AbortController().signal)).rejects.toThrow();
     await expect(owner.publish({ ...recording, captureSessionId: crypto.randomUUID() })).rejects.toThrow();
     await expect(owner.dispose()).rejects.toThrow();
@@ -34,6 +36,19 @@ describe.skipIf(!root)("native presentation with the actual Swift protocol and i
     await expect(owner.publish(recording)).rejects.toThrow();
     await owner.publish(inactive);
     await owner.dispose(); expect(owner.isHealthy()).toBe(false);
+  });
+  it("reveals one pending chooser without creating another selection or accepting a late canceled choice", async () => {
+    const { owner } = await open();
+    const abort = new AbortController();
+    const selected = owner.selectWindow(abort.signal);
+    await sleep(30);
+    await owner.showWindowChooser();
+    await owner.showWindowChooser();
+    expect(await selected).toEqual({ application: "us.zoom.xos", processID: 41, windowID: 73 });
+    await expect(owner.showWindowChooser()).rejects.toThrow();
+    const cancelled = owner.selectWindow(abort.signal); const rejected = expect(cancelled).rejects.toThrow();
+    abort.abort(); await rejected;
+    await expect(owner.showWindowChooser()).rejects.toThrow();
   });
   it("cancels a pending picker without accepting its late result or poisoning a subsequent choice", async () => {
     const { owner } = await open();

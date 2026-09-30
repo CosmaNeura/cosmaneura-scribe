@@ -115,7 +115,7 @@ private actor AudioProcessHost {
                 mixer = nextMixer
                 startTask = Task {
                     do {
-                        try await source.start(selection: selection, authorization: authorization, sink: nextMixer)
+                        try await source.start(selection: selection, authorization: authorization, sink: MeteredDesktopAudioSink(downstream: nextMixer, meter: nextSink))
                         guard !discarded, !stopped, !disconnected else { return }
                         guard window?.remaining(.now) ?? .zero > .zero else { throw DesktopAudioFailure.windowExpired }
                         nativeReady = true; nextSink.nativeStarted()
@@ -136,7 +136,7 @@ private actor AudioProcessHost {
                 mixer = nextMixer
                 startTask = Task {
                     do {
-                        try await source.start(selection: selection, maximumDurationSeconds: duration, sink: nextMixer)
+                        try await source.start(selection: selection, maximumDurationSeconds: duration, sink: MeteredDesktopAudioSink(downstream: nextMixer, meter: nextSink))
                         guard !discarded, !stopped, !disconnected else { return }
                         nativeReady = true; nextSink.nativeStarted()
                     } catch {

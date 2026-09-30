@@ -20,13 +20,14 @@ describe("iPhone microphone feedback", () => {
     }
     expect(presentInputSignal(signal, 1_600).level).toBe(0);
     expect(presentInputSignal(null, 0).level).toBe(0);
+    expect(presentInputSignal(null, 0).message).toContain("Say a few words and watch the bars");
   });
   it("distinguishes sustained zero from quiet speech without claiming a fatal failure", () => {
     expect(presentInputSignal({ ...signal, inputLevel: 0, convertedLevel: 0 }, 0).message).toBe("Quiet input");
     expect(presentInputSignal({ ...signal, inputLevel: 0, convertedLevel: 0, zeroInputMs: 3_000 }, 0).message)
       .toContain("stop phone screen sharing");
     expect(presentInputSignal({ ...signal, zeroInputMs: 3_000 }, 0))
-      .toMatchObject({ title: "No microphone input", attention: true, level: 0 });
+      .toMatchObject({ title: "No sound detected", attention: true, level: 0 });
     expect(presentInputSignal({ ...signal, inputLevel: 0.00001, convertedLevel: 0.00001 }, 0).message).toBe("Quiet input");
   });
   it("does not claim recording until converted audio arrives, and keeps genuine quiet nonfatal", () => {

@@ -31,30 +31,31 @@ for (const width of [1280, 390]) {
       await page.getByRole("button", { name: "Cancel start", exact: true }).click();
       // The first Start response remains deliberately unresolved. A confirmed
       // Pause must release the real adapter + UI's pending operation now.
-      await expect(page.getByRole("button", { name: "Resume recording", exact: true })).toBeEnabled({ timeout: 1500 });
+      await expect(page.getByRole("button", { name: "Start recording", exact: true })).toBeEnabled({ timeout: 1500 });
       await expect(page.getByRole("button", { name: "Cancel start", exact: true })).toHaveCount(0);
       expect(await page.evaluate(() => window.startupLab.startCalls)).toBe(1);
-      await expect(progress.getByRole("status")).toHaveText("PausedStart canceled. Resume when ready.");
-      await expect(controls.getByRole("button", { name: "Resume recording", exact: true })).toBeInViewport();
+      await expect(progress.getByRole("status")).toHaveText("Start canceledRecording has not started. Start when ready.");
+      await expect(controls.getByRole("button", { name: "Start recording", exact: true })).toBeInViewport();
+      await expect(controls.getByRole("button", { name: "Finish recording", exact: true })).toBeHidden();
       await page.screenshot({ path: testInfo.outputPath("native-start-cancelled.png"), fullPage: true });
     });
     await test.step("resume", async () => {
-      await page.getByRole("button", { name: "Resume recording", exact: true }).click();
-      await expect(page.getByRole("button", { name: "Pause recording", exact: true })).toBeEnabled();
+      await page.getByRole("button", { name: "Start recording", exact: true }).click();
+      await expect(page.getByRole("button", { name: "Pause", exact: true })).toBeEnabled();
       expect(await page.evaluate(() => window.startupLab.startCalls)).toBe(2);
       await page.evaluate(() => window.startupLab.releaseFirst());
-      await expect(page.getByRole("button", { name: "Pause recording", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Pause", exact: true })).toBeEnabled();
       await expect(page.getByRole("button", { name: "Cancel start", exact: true })).toHaveCount(0);
       if (width === 390) {
         await expect(controls.getByRole("heading", { name: "Checking microphone", exact: true })).toBeVisible();
-        await expect(controls.getByText("Waiting for microphone signal… Audio input is not confirmed yet.", { exact: true })).toBeVisible();
+        await expect(controls.getByText("Waiting for microphone signal. Say a few words and watch the bars. Audio input is not confirmed yet.", { exact: true })).toBeVisible();
         await expect(progress.locator('[role="status"]')).toBeHidden();
-        await expect(controls.getByRole("button", { name: "Stop and upload", exact: true })).toBeInViewport();
+        await expect(controls.getByRole("button", { name: "Finish recording", exact: true })).toBeInViewport();
         await page.screenshot({ path: testInfo.outputPath("native-armed-no-input.png"), fullPage: true });
       }
-      await page.getByRole("button", { name: "Pause recording", exact: true }).click();
+      await page.getByRole("button", { name: "Pause", exact: true }).click();
       await expect(progress.getByRole("status")).toHaveText("PausedNo audio is being recorded.");
-      await expect(controls.getByRole("button", { name: "Stop and upload", exact: true })).toBeInViewport();
+      await expect(controls.getByRole("button", { name: "Finish recording", exact: true })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath("native-paused.png"), fullPage: true });
     });
     expect(await page.evaluate(() => globalThis.__startupMediaCalls)).toBe(0);
