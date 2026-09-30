@@ -52,7 +52,8 @@ export interface DesktopProviderRecorderOptions {
   readonly uploadTarget: CiphertextUploadTarget;
   readonly coverage: { load(): Promise<DesktopPCMCoverage | null>; persist(value: DesktopPCMCoverage): Promise<void>;
     beginInterval?(receiptId: string, firstSequenceNumber: number): Promise<void>;
-    hasPriorCapture?(receiptId: string): Promise<boolean> };
+    hasPriorCapture?(receiptId: string): Promise<boolean>;
+    capturedAudioFrames?(recordedChunks: number): Promise<number | null> };
   readonly native: Omit<NativeProcessDriverOptions, "enabled" | "authorizeSelectedWindow">;
   /** Native picker, deliberate choice only; never a renderer PID or first window. */
   readonly selectWindow: (signal: AbortSignal) => Promise<Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil">>;
@@ -104,6 +105,8 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private deactivated = false;
   private closed = false;
   private captureMayBeActive = false;
+  private capturePriorAudioFrames = 0;
+  private capturedAudioFrames: number | null = null;
   private inputLevels: Partial<Record<"microphone" | "meetingAudio", { level: number; receivedAt: number }>> = {};
 
   private constructor(private readonly options: DesktopProviderRecorderOptions) {
@@ -130,6 +133,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       if (value === null) this.inputLevels = {};
       else this.inputLevels[value.channel] = { level: value.level, receivedAt: performance.now() };
       this.publish();
+    }, frames => {
+      const previous = Math.floor((this.capturedAudioFrames ?? 0) / 16_000);
+      this.capturedAudioFrames = this.capturePriorAudioFrames + frames;
+      if (Math.floor(this.capturedAudioFrames / 16_000) !== previous) this.publish();
     });
     const bff = options.createBff(this.signal);
     this.createFlow = () => new CaptureFlowController({ bff, flowStore: options.flowStore, createSessionKey: options.createSessionKey,
@@ -232,6 +239,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         } else await prepare();
         recorder.requireOpen();
         if (recorder.flow.snapshot.sessionId !== options.sessionId) throw unavailable();
+        if (active) {
+          recorder.capturedAudioFrames = await options.coverage.capturedAudioFrames?.(recorder.flow.snapshot.recordedChunks) ?? null;
+          recorder.requireOpen();
+        }
         if (recorder.flow.snapshot.state === "ready") {
           if (active?.continuation) {
             if (!options.coverage.beginInterval) throw unavailable();
@@ -274,6 +285,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : phase === "ready" && this.startFailed && flow.statusCode !== "capture_storage_low" ? "capture_start_failed"
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
+      elapsedSeconds: this.capturedAudioFrames === null ? flow.elapsedSeconds : Math.floor(this.capturedAudioFrames / 16_000),
       desktop: { phase, inputSignal: { microphone: this.inputLevel("microphone", phase),
         meetingAudio: this.inputLevel("meetingAudio", phase) }, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
         : this.coverage ? phase === "recording" ? "aligned" : "incomplete" : "not_started",
@@ -566,6 +578,11 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       || !Number.isFinite(Date.parse(active.captureAuthorizedUntil))
       || Date.parse(active.captureAuthorizedUntil) <= Date.now()
       || Date.parse(active.captureAuthorizedUntil) > Date.parse(active.lease.expires_at)) throw unavailable();
+    // Preserve the live accepted count across Pause/Resume. Reopened complete
+    // coverage supplies exact duration; unknown legacy history keeps its prior
+    // chunk estimate. The storage byte budget can include envelope overhead.
+    this.capturePriorAudioFrames = this.capturedAudioFrames ?? this.flow.snapshot.elapsedSeconds * 16_000;
+    this.capturedAudioFrames = this.capturePriorAudioFrames;
     return Object.freeze({ sessionId: active.sessionId, captureLeaseId: active.lease.lease_id,
       leaseReceiptId: active.lease.receipt_id, captureLeaseGeneration: active.lease.generation,
       captureAuthorizedUntil: active.captureAuthorizedUntil,

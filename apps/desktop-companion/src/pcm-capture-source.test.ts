@@ -72,11 +72,29 @@ class Driver implements DesktopPCMDriver {
 
 function fixture(persist?: (coverage: DesktopPCMCoverage) => Promise<void>) {
   const driver = new Driver(), coverage: DesktopPCMCoverage[] = [];
-  const source = new DesktopPcmCaptureSource(driver, persist ?? (async value => { coverage.push(value); }));
-  return { driver, coverage, source };
+  const captured: number[] = [];
+  const source = new DesktopPcmCaptureSource(driver, persist ?? (async value => { coverage.push(value); }),
+    undefined, frames => { captured.push(frames); });
+  return { driver, coverage, source, captured };
 }
 
 describe("trusted desktop PCM capture", () => {
+  it("reports accepted mixed frames before ten-second commits, freezes, and drains actual tail", async () => {
+    const { driver, source, captured } = fixture(), chunks = vi.fn(async () => undefined);
+    const long = { ...capabilities, target_chunk_duration_ms: 10_000, max_envelope_bytes: 321_000,
+      remaining_aggregate_plaintext_bytes: 3_210_000 };
+    await source.start({ capabilities: long, onChunk: chunks });
+    for (let i = 0; i < 4; i++) await driver.emit(Array<number>(4_000).fill(0));
+    expect(captured).toEqual([4_000, 8_000, 12_000, 16_000]);
+    expect(chunks).not.toHaveBeenCalled();
+    await Promise.resolve(); expect(captured.at(-1)).toBe(16_000);
+    driver.tail = [1, 2, 3]; await source.stop();
+    expect(captured.at(-1)).toBe(16_003); expect(chunks).toHaveBeenCalledOnce();
+    await source.start({ capabilities: long, onChunk: chunks });
+    await driver.emit([1, 2]); expect(captured.at(-1)).toBe(2);
+    await source.stop();
+  });
+
   it("does not report successful startup after a synchronous native activation failure", async () => {
     const { driver, source } = fixture(); driver.failActivation = true;
     await expect(source.start({ capabilities, onChunk: async () => undefined })).rejects.toThrow();
@@ -146,13 +164,14 @@ describe("trusted desktop PCM capture", () => {
   });
 
   it.each(["sequence", "alias", "oversize"])("rejects %s native packets and clears them", async kind => {
-    const { driver, source } = fixture(), failed = vi.fn();
+    const { driver, source, captured } = fixture(), failed = vi.fn();
     await source.start({ capabilities, onChunk: async () => undefined, onError: failed });
     const backing = new Uint8Array(kind === "oversize" ? 8194 : 8); backing.fill(11);
     const packet: DesktopPCMPacket = { firstFrame: kind === "sequence" ? 1 : 0,
       pcmBytes: kind === "alias" ? backing.subarray(2) : backing };
     await expect(driver.sink!.onPcmPacket(packet)).rejects.toThrow(); await source.stop();
     expect(backing.every(v => v === 0)).toBe(true); expect(failed).toHaveBeenCalledTimes(1);
+    expect(captured).toEqual([]);
     expect(driver.modes.every(mode => mode === "discard")).toBe(true);
   });
 

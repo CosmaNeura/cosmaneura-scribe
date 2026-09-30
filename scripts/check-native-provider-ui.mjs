@@ -27,7 +27,7 @@ await module.link(forbidden); await module.evaluate();
 const sessionId = webcrypto.randomUUID(), abort = new window.AbortController();
 let heldStart, hold = true;
 let state = { version: 1, revision: 1, recorderId: webcrypto.randomUUID(), sessionId, phase: "ready", failure: null, busy: false,
-  recordedChunks: 0, recordedPlaintextBytes: 0, maximumPlaintextBytes: 402653184, input: "built_in", completion: null,
+  recordedChunks: 0, recordedPlaintextBytes: 0, capturedAudioFrames: 0, maximumPlaintextBytes: 402653184, input: "built_in", completion: null,
   signal: { version: 2, signal: null } };
 const update = fields => { state = { ...state, ...fields, revision: state.revision + 1 }; };
 const response = requestId => ({ requestId, ok: true, recording: structuredClone(state) });
@@ -84,6 +84,12 @@ try {
   const meter = app.querySelector("scribe-ios-input-meter").shadowRoot;
   assert.ok(Number(meter.querySelector('[role="meter"]').getAttribute("aria-valuenow")) > 0);
   assert.ok(calls.includes("input")); assert.ok(calls.includes("read"));
+  for (const seconds of [1, 2]) {
+    update({ capturedAudioFrames: seconds * 16_000 });
+    await resources.controller.refreshTranscriptionStatus();
+    await until(() => app.querySelector(".recording-duration")?.textContent.includes(`0:0${seconds}`));
+    assert.equal(resources.controller.snapshot.recordedChunks, 0);
+  }
   // A suspended/hidden renderer does not close native recording.
   Object.defineProperty(window.document, "visibilityState", { configurable: true, value: "hidden" });
   window.document.dispatchEvent(new window.Event("visibilitychange"));
@@ -103,7 +109,7 @@ try {
   assert.equal(calls.filter(kind => kind === "start").length, startsBeforeInterruption + 1);
   update({ phase: "stopPending", failure: "stopPending" });
   await resources.controller.refreshTranscriptionStatus();
-  await until(() => button("stop-button").textContent.includes("Retry stop"));
+  await until(() => button("stop-button").textContent.includes("Retry finish recording"));
   assert.equal(button("resume-recording"), null);
   update({ phase: "paused", failure: "recoveryFailed", recordedChunks: 1, recordedPlaintextBytes: 204 });
   await resources.controller.refreshTranscriptionStatus();
@@ -111,6 +117,7 @@ try {
   assert.ok(button("stop-button").textContent.includes("Retry saving and upload"));
   assert.ok(app.textContent.includes("saving could not be confirmed"));
   button("stop-button").click();
+  await app.updateComplete;
   await until(() => calls.includes("seal") && resources.controller.snapshot.statusCode === "capture_recovery_pending"
     && !button("resume-recording").disabled && app.textContent.includes("saving could not be confirmed"));
   assert.ok(app.textContent.includes("saving could not be confirmed"));
@@ -127,22 +134,35 @@ try {
   const snapshot = { ...resources.controller.snapshot, state: "uploading", statusCode: "capture_uploading",
     recordedChunks: 1080, queuedChunks: 540, elapsedSeconds: 10800,
     native: { phase: "sealed", busy: false, uploadProgress: { total: 1080, registered: 540 } } };
-  let notify;
+  let notify, finish;
+  const recording = { ...snapshot, state: "recording", statusCode: "capture_recording", native: { phase: "recording", busy: false } };
   upload.bindProvider({ sessionId, controller: { ...resources.controller, snapshot,
-    subscribe: listener => { notify = listener; listener(snapshot); return () => {}; } },
+    stopRecording: () => new Promise(done => { finish = done; }),
+    subscribe: listener => { notify = listener; listener(recording); return () => {}; } },
   captureMode: "native_microphone", sourceKind: "microphone", languageMode: "english", signal: abort.signal,
   authorizedRequest: forbidden, journal: { load: async () => null, save: forbidden, clear: forbidden },
   deactivate: async () => {} });
   root.append(upload);
+  await until(() => upload.querySelector('[data-testid="stop-button"]'));
+  upload.querySelector('[data-testid="stop-button"]').click();
+  await until(() => upload.textContent.includes("Stopping recording…"));
+  notify({ ...snapshot, statusCode: "capture_sealing", native: { phase: "sealing", busy: true } });
+  await until(() => upload.textContent.includes("Saving recording before upload…"));
+  assert.equal(upload.textContent.includes("Stopping recording…"), false);
+  notify(snapshot);
   await until(() => upload.querySelector("progress"));
   assert.equal(upload.querySelector("progress").max, 1080);
   assert.equal(upload.querySelector("progress").value, 540);
   assert.ok(upload.textContent.includes("Audio uploaded 50%"));
+  assert.ok(upload.textContent.includes("Recording stopped. Uploading your saved audio…"));
+  assert.equal(upload.textContent.includes("Stopping…"), false);
+  assert.equal(upload.querySelector('[data-testid="stop-button"]').disabled, true);
   assert.ok(upload.textContent.includes("Elapsed 3:00:00"));
   notify({ ...snapshot, statusCode: "capture_upload_confirming", queuedChunks: 0,
     native: { ...snapshot.native, uploadProgress: { total: 1080, registered: 1080 } } });
   await until(() => upload.textContent.includes("Confirming receipt before transcription"));
   assert.equal(upload.querySelector("progress").value, 1080);
+  finish();
   upload.remove();
   console.log(JSON.stringify({ checks: 11, compiled_native_provider: true, source_and_core_fixtures: true,
     cancellable_start: true, native_meter_and_input: true, physical_recording: false }));

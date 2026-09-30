@@ -9,6 +9,7 @@ import Foundation
   var phase: NativeProviderRecordingRun.Phase { get }
   var isPhysicallyIdle: Bool { get }
   var captureState: NativeRecordingPCMState { get }
+  var capturedAudioFrames: Int { get }
   func captureSignal() -> PCMSignalMonitor.Snapshot
   func start() async throws
   func stop() async throws
@@ -63,6 +64,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   // The PCM sink counts only this interval. Retain its exact saved baseline
   // even after pause reconciliation, so progress can neither drop nor double.
   private(set) var capturePriorPlaintextBytes = 0
+  private var capturePriorAudioFrames = 0
   private var warming: (id: UUID, task: Task<Void, Never>)?
   private var opening: Task<Void, Error>?
   private var starting: Task<Void, Error>?
@@ -224,6 +226,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
           source!, cipher, checkpoint.committedPlaintextBytes, lease, batch, leases, reservations,
           input)
         capturePriorPlaintextBytes = checkpoint.committedPlaintextBytes
+        capturePriorAudioFrames = max(0, checkpoint.committedPlaintextBytes - checkpoint.committedChunks * 44) / 2
         run = next
         try await next.start()
         try current(ticket)
@@ -274,11 +277,11 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     }
     let task = Task { @MainActor [self] in
       try await stop(reconcile: false)
-      if let warming { await warming.task.value }
-      try current(generation)
-      guard let cipher else { throw ProviderNativeError.unavailable }
       phase = .sealing
       do {
+        if let warming { await warming.task.value }
+        try current(generation)
+        guard let cipher else { throw ProviderNativeError.unavailable }
         let lease = try await leases.open()
         try current(generation)
         saved = try await flow.sealForUpload(encryption: cipher, lease: lease)
@@ -309,6 +312,12 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
 
   var signal: PCMSignalMonitor.Snapshot? { run?.captureSignal() }
   var captureState: NativeRecordingPCMState? { run?.captureState }
+  var capturedAudioFrames: Int {
+    let retained = max(0, (saved?.committedPlaintextBytes ?? 0) - (saved?.committedChunks ?? 0) * 44) / 2
+    // The saved checkpoint may already include this run after reconciliation.
+    // Add its accepted frames only to the baseline taken before that run.
+    return max(retained, run.map { capturePriorAudioFrames + $0.capturedAudioFrames } ?? 0)
+  }
   var busy: Bool { opening != nil || starting != nil || stopping != nil || sealing != nil }
   var requiresReopen: Bool { retired }
   var microphoneInput: AppleMicrophoneInput { input.selected }

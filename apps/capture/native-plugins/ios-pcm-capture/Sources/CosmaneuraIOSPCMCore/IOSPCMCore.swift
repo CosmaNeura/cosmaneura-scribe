@@ -119,6 +119,17 @@ public final class IOSPCMSessionHandle: Sendable {
   public func stop(_ mode: PCMStopMode) async throws -> PCMStopResult {
     try await state.stop(mode)
   }
+
+  /// Actual 16 kHz mono frames accepted by this run, including its drain tail.
+  /// Feedback only: this does not assert encryption, retention or upload.
+  public var capturedAudioFrames: Int { state.acceptedFrames.value }
+}
+
+private final class AcceptedPCMFrames: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+  var value: Int { lock.withLock { count } }
+  func append(_ frames: Int) { lock.withLock { count += frames } }
 }
 
 private final class FrameAdmissionGate: @unchecked Sendable {
@@ -179,6 +190,7 @@ private final class FirstResult<Value: Sendable>: @unchecked Sendable {
 }
 
 private actor IOSPCMSessionState {
+  nonisolated let acceptedFrames = AcceptedPCMFrames()
   private enum Phase: Equatable {
     case owned
     case requestingPermission
@@ -559,6 +571,7 @@ private actor IOSPCMSessionState {
       let availableFrames = (accumulator.storage.count - accumulator.count) / 2
       let end = min(samples.count, offset + availableFrames)
       try accumulator.append(samples, range: offset..<end)
+      acceptedFrames.append(end - offset)
       offset = end
       if accumulator.isFull, inFlight == nil { try startDelivery() }
     }

@@ -143,6 +143,8 @@ describe("durable desktop capture", () => {
         expected_source_transcript_version: 1, expected_translation_version: 1 } };
       await review.save(decision);
       const coverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
+      expect(await coverage.capturedAudioFrames(0)).toBe(0);
+      expect(await coverage.capturedAudioFrames(1)).toBeNull();
       const start = { hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" };
       await coverage.persist({ phase: "started", value: start }); store.close();
       store = await DurableDesktopRecordStore.open(options);
@@ -152,6 +154,7 @@ describe("durable desktop capture", () => {
       await restored.clear(decision.key); expect(await restored.load()).toBeNull();
       const restoredCoverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
       expect(await restoredCoverage.load()).toEqual({ phase: "started", value: start });
+      expect(await restoredCoverage.capturedAudioFrames(0)).toBeNull();
       await expect(restoredCoverage.persist({ phase: "started", value: { ...start, hostTimeNanoseconds: "2" } })).rejects.toThrow();
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
   });
@@ -181,6 +184,7 @@ describe("durable desktop capture", () => {
       const coverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
       expect(await coverage.load()).toBeNull();
       expect(await coverage.hasPriorCapture(workspaceId)).toBe(true);
+      expect(await coverage.capturedAudioFrames(1080)).toBeNull();
       await coverage.beginInterval(workspaceId, 1080);
       await expect(coverage.beginInterval(recoveryScope, 2048)).rejects.toThrow();
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
@@ -202,11 +206,20 @@ describe("durable desktop capture", () => {
       store.close(); store = await DurableDesktopRecordStore.open(options);
       const restored = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
       expect((await restored.load())?.phase).toBe(phase);
+      expect(await restored.capturedAudioFrames(0)).toBe(phase === "stopped" ? 1600 : null);
       expect(await restored.hasPriorCapture(workspaceId)).toBe(false); // Current capture is not a prior gap.
       expect(await restored.hasPriorCapture(recoveryScope)).toBe(true); // Wrong receipt cannot clear a warning.
       await restored.beginInterval(recoveryScope, 0);
       expect(await restored.load()).toBeNull();
       expect(await restored.hasPriorCapture(recoveryScope)).toBe(true); // Even with zero saved chunks.
+      expect(await restored.capturedAudioFrames(0)).toBe(phase === "stopped" ? 1600 : null);
+      const secondStart = { ...start, hostTimeNanoseconds: "2000000000" };
+      await restored.persist({ phase: "started", value: secondStart });
+      expect(await restored.capturedAudioFrames(0)).toBeNull();
+      await restored.persist({ phase: "stopped", value: { start: secondStart,
+        endHostTimeNanoseconds: "2200000000", outputFrames: 3200,
+        microphoneTailNanoseconds: "0", systemTailNanoseconds: "0" } });
+      expect(await restored.capturedAudioFrames(0)).toBe(phase === "stopped" ? 4800 : null);
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
   });
 

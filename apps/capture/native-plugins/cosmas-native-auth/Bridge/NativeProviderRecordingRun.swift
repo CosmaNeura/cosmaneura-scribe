@@ -19,6 +19,7 @@ extension NativeSourceStartOwner: NativeProviderMicrophoneSource {}
 @MainActor protocol NativeProviderEncryptedRecorder: AnyObject {
   var isPhysicallyIdle: Bool { get }
   var captureState: NativeRecordingPCMState { get }
+  var capturedAudioFrames: Int { get }
   func start(
     runID: String, captureExpiresAtMilliseconds: Int64,
     lease: NativeRecordingLease, batch: NativeRecordingReservationBatch
@@ -124,6 +125,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
   }
 
   var captureState: NativeRecordingPCMState { recorder.captureState }
+  var capturedAudioFrames: Int { recorder.capturedAudioFrames }
   var isPhysicallyIdle: Bool { recorder.isPhysicallyIdle }
   func captureSignal() -> PCMSignalMonitor.Snapshot { recorder.captureSignal() }
   func continuationState() async -> NativeRecordingContinuationState? {

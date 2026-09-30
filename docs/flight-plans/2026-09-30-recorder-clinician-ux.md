@@ -66,3 +66,18 @@ retain their existing checks. Emit only the fixed encounter-lookup timing label
 and milliseconds. Deploy the receiver with unchanged identity/configuration and
 no schema operation; rollback may restore its previous image. Physical opening
 and recording timing still require measurement after deployment.
+
+## Recording feedback after device acceptance
+
+Display elapsed recording from accepted mixed PCM frames, including the exact
+retained baseline, so ten-second encrypted chunk commits do not freeze the timer.
+Count accepted frames once; do not extrapolate from wall time or treat them as
+proof of durable storage. Older native snapshots and incomplete desktop history
+keep their existing conservative duration fallback. The optional metadata field
+does not change journals, authority, consent or upload completion rules.
+
+After confirmed physical stop, show saving while sealing retained audio, then
+upload progress and final confirmation. Test held stop/seal/upload operations and
+pause/reopen baselines. Install same-identity Mac and iPhone updates only while
+idle, preserving keys and queues. Physical start and upload latency still require
+device measurement; local feedback tests do not establish the four-second goal.
