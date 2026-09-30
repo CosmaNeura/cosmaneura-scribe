@@ -958,7 +958,7 @@ describe("prepared desktop start", () => {
         return f.options.authorizeMount(prepared, signal);
       } });
       await expect(recorder.startRecording()).rejects.toThrow();
-      expect(f.nativeAvailability).toHaveBeenCalledTimes(1);
+      expect(f.nativeAvailability).toHaveBeenCalledTimes(2); // The parallel read-only check conveys no authority.
       expect(f.nativeStart).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });
@@ -991,7 +991,7 @@ describe("prepared desktop start", () => {
         ...await f.options.authorizeMount(prepared, signal), status: "capturing",
       }) });
       await expect(recorder.startRecording()).rejects.toThrow();
-      expect(f.nativeAvailability).toHaveBeenCalledTimes(1); expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.nativeAvailability).toHaveBeenCalledTimes(2); expect(f.nativeStart).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });
 
@@ -1171,4 +1171,159 @@ it("retains desktop custody through unconfirmed native stop and lost server stop
     expect(stopped).toHaveBeenCalledBefore(retireSource);
     expect(f.nativeStart).not.toHaveBeenCalled();
   } finally { stopped.mockResolvedValue(undefined); await f.close(); stopped.mockRestore(); }
+});
+
+
+describe("resume readiness overlap", () => {
+  it("overlaps the read-only probe only after retirement and keeps every fresh Start check", async () => {
+    const f = await fixture(true), driver = interruptedDriver(f), retired = vi.fn(async () => undefined);
+    const recorder = await f.open({ retireSource: retired });
+    const probeEntered = deferred(), releaseProbe = deferred(), renewEntered = deferred(), releaseRenew = deferred();
+    const bff = f.options.createBff(f.abort.signal), renew = bff.renewLease.bind(bff);
+    try {
+      await recorder.startRecording(); await driver.interrupt(true);
+      await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
+      retired.mockClear();
+      f.nativeAvailability!.mockClear();
+      f.nativeAvailability!.mockImplementation(async () => {
+        expect(retired).toHaveBeenCalled(); probeEntered.resolve(); await releaseProbe.promise; return true;
+      });
+      vi.spyOn(bff, "renewLease").mockImplementation(async (...args) => {
+        renewEntered.resolve(); await releaseRenew.promise; return renew(...args);
+      });
+      let settled = false;
+      const resuming = recorder.resumeRecording().then(() => { settled = true; });
+      await renewEntered.promise; await probeEntered.promise;
+      expect(f.authority).toHaveBeenCalledTimes(1); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+      releaseRenew.resolve();
+      await vi.waitFor(async () => expect((await f.options.flowStore.getActiveCaptureState())?.continuation?.prepared).toBe(true));
+      expect(settled).toBe(false);
+      releaseProbe.resolve(); await resuming;
+      expect(recorder.snapshot.desktop?.phase).toBe("recording");
+      expect(f.nativeAvailability).toHaveBeenCalledTimes(3);
+      expect(f.authority).toHaveBeenCalledTimes(2); expect(f.nativeStart).toHaveBeenCalledTimes(2);
+    } finally { releaseProbe.resolve(); releaseRenew.resolve(); await f.close(); }
+  });
+
+  it.each(["preparation_failure", "cancelled"] as const)("settles the overlapped probe before returning %s without another capture", async mode => {
+    const f = await fixture(true), driver = interruptedDriver(f), recorder = await f.open();
+    const probeEntered = deferred(), releaseProbe = deferred();
+    let resuming: Promise<void> | undefined, closing: Promise<void> | undefined;
+    try {
+      await recorder.startRecording(); await driver.interrupt(true);
+      await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
+      f.nativeAvailability!.mockImplementation(async () => { probeEntered.resolve(); await releaseProbe.promise; return true; });
+      if (mode === "preparation_failure") {
+        vi.spyOn(f.options.createBff(f.abort.signal), "getCapabilities").mockRejectedValue(new Error("invented preparation failure"));
+      }
+      let settled = false;
+      resuming = recorder.resumeRecording();
+      const rejected = expect(resuming).rejects.toThrow();
+      void resuming.finally(() => { settled = true; }).catch(() => undefined);
+      await probeEntered.promise;
+      if (mode === "cancelled") closing = recorder.deactivate();
+      await Promise.resolve(); await Promise.resolve();
+      expect(settled).toBe(false); expect(f.release).not.toHaveBeenCalled();
+      expect(f.authority).toHaveBeenCalledTimes(1); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+      releaseProbe.resolve(); await rejected; await closing;
+      expect(f.authority).toHaveBeenCalledTimes(1); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+    } finally { releaseProbe.resolve(); await resuming?.catch(() => undefined); await closing; await f.close(); }
+  });
+});
+
+
+describe("start readiness overlap", () => {
+  it("preserves the initialization deadline and ignores a late ready result", async () => {
+    const f = await fixture(true), recorder = await f.open(), entered = deferred(), reply = deferred();
+    const scheduled: (() => void)[] = [], original = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+      if (typeof callback === "function" && delay === 15_000) scheduled.push(() => callback(...args));
+      return original(callback, delay, ...args);
+    });
+    f.nativeAvailability!.mockImplementationOnce(async () => { entered.resolve(); await reply.promise; return true; });
+    const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+    try {
+      await entered.promise; timer.mockRestore();
+      expect(scheduled).toHaveLength(1); scheduled[0]!();
+      await rejected;
+      expect(recorder.snapshot.desktop?.phase).toBe("interrupted");
+      reply.resolve(); await Promise.resolve(); await Promise.resolve();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { timer.mockRestore(); reply.resolve(); await starting.catch(() => undefined); await f.close(); }
+  });
+
+  it("overlaps mount with a fresh probe after choice and retains the source probe and authority", async () => {
+    const f = await fixture(true); interruptedDriver(f);
+    const mountEntered = deferred(), releaseMount = deferred(), probeEntered = deferred(), releaseProbe = deferred();
+    const recorder = await f.open({ authorizeMount: async (prepared, signal) => {
+      mountEntered.resolve(); await releaseMount.promise; return f.options.authorizeMount(prepared, signal);
+    } });
+    f.nativeAvailability!.mockClear();
+    f.nativeAvailability!.mockImplementationOnce(async () => {
+      expect(f.selectWindow).toHaveBeenCalledOnce(); probeEntered.resolve(); await releaseProbe.promise; return true;
+    });
+    const starting = recorder.startRecording();
+    try {
+      await mountEntered.promise; await probeEntered.promise;
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      releaseProbe.resolve(); await Promise.resolve();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      releaseMount.resolve(); await starting;
+      expect(recorder.snapshot.desktop?.phase).toBe("recording");
+      expect(f.nativeAvailability).toHaveBeenCalledTimes(2);
+      expect(f.authority).toHaveBeenCalledOnce(); expect(f.nativeStart).toHaveBeenCalledOnce();
+    } finally { releaseMount.resolve(); releaseProbe.resolve(); await starting.catch(() => undefined); await f.close(); }
+  });
+
+  it("retires a cancelled attempt and never reuses its ready result for a later permission-required attempt", async () => {
+    const f = await fixture(true), probeEntered = deferred(), releaseProbe = deferred();
+    const mount = vi.fn(f.options.authorizeMount), retireSource = vi.fn(async () => undefined);
+    const recorder = await f.open({ authorizeMount: mount, retireSource });
+    f.nativeAvailability!.mockClear();
+    f.nativeAvailability!.mockImplementationOnce(async () => { probeEntered.resolve(); await releaseProbe.promise; return true; });
+    const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+    let stopping: Promise<void> | undefined;
+    try {
+      await probeEntered.promise;
+      stopping = recorder.stopRecording();
+      expect(retireSource).not.toHaveBeenCalled();
+      releaseProbe.resolve(); await rejected; await stopping;
+      expect(retireSource).toHaveBeenCalledOnce(); expect(recorder.snapshot.desktop?.phase).toBe("ready");
+      f.nativeAvailability!.mockResolvedValue(false);
+      await recorder.startRecording();
+      expect(recorder.snapshot.desktop?.phase).toBe("permission_required");
+      expect(f.nativeAvailability).toHaveBeenCalledTimes(3);
+      expect(mount).toHaveBeenCalledTimes(2); expect(retireSource).toHaveBeenCalledTimes(2);
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { releaseProbe.resolve(); await starting.catch(() => undefined); await stopping; await f.close(); }
+  });
+
+  it.each(["mount", "probe"] as const)("settles both branches after %s failure before allowing retirement", async failure => {
+    const f = await fixture(true), branchEntered = deferred(), releaseBranch = deferred();
+    const mount = vi.fn(async (prepared: PreparedDesktopCapture, signal: AbortSignal) => {
+      if (failure === "mount") throw new Error("invented mount failure");
+      branchEntered.resolve(); await releaseBranch.promise; return f.options.authorizeMount(prepared, signal);
+    });
+    const retireSource = vi.fn(async () => undefined), recorder = await f.open({ authorizeMount: mount, retireSource });
+    f.nativeAvailability!.mockImplementationOnce(async () => {
+      if (failure === "probe") throw new Error("invented probe failure");
+      branchEntered.resolve(); await releaseBranch.promise; return true;
+    });
+    let settled = false;
+    const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+    void starting.finally(() => { settled = true; }).catch(() => undefined);
+    try {
+      await branchEntered.promise; await Promise.resolve();
+      expect(settled).toBe(false); expect(retireSource).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      releaseBranch.resolve(); await rejected;
+      if (failure === "probe") {
+        expect(recorder.snapshot.desktop?.phase).toBe("interrupted");
+        await expect(recorder.startRecording()).rejects.toThrow();
+        expect(mount).toHaveBeenCalledOnce();
+      }
+      await recorder.stopRecording();
+      expect(retireSource).toHaveBeenCalledOnce(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { releaseBranch.resolve(); await starting.catch(() => undefined); await f.close(); }
+  });
 });

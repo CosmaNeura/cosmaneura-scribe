@@ -8,6 +8,7 @@ import type { CaptureBff, CiphertextUploadTarget } from "../../capture/src/bff/c
 import { BffCaptureQueueTransport } from "../../capture/src/bff/queue-transport";
 import type { ProviderRecorderController, ProviderRecorderSnapshot } from "../../capture/src/provider-binding";
 import { DesktopCaptureController, type DesktopCaptureControllerOptions } from "./controller.js";
+import { CAPTURE_OPERATION_TIMEOUT_MS } from "./config.js";
 import type { AdapterSignal, DesktopCaptureAdapter } from "./capture-adapter.js";
 import type { PersistentRecordingIndicator } from "./recording-indicator.js";
 import { parseBackendCaptureGrant, type OneTimeCaptureCapability } from "./protocol.js";
@@ -84,6 +85,8 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private continuityUnconfirmed = false;
   private capability: OneTimeCaptureCapability | null = null;
   private attempt: AbortController | null = null;
+  private initializationProbe: { readonly attempt: AbortController;
+    readonly result: PromiseSettledResult<"ready" | "permission_required"> } | null = null;
   private selectedWindow: Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil"> | null = null;
   private choosingWindow = false;
   private startFailed = false;
@@ -136,7 +139,14 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.availability = availability;
     this.requestPermissions = signal => driver.requestPermissions(signal);
     const adapter: DesktopCaptureAdapter = {
-      initialize: availability, refreshPermissions: availability,
+      initialize: signal => {
+        const probe = this.initializationProbe; this.initializationProbe = null;
+        this.requireOpen();
+        if (!probe || probe.attempt !== this.attempt || probe.attempt.signal.aborted || signal.aborted) throw unavailable();
+        if (probe.result.status === "rejected") throw probe.result.reason;
+        return Promise.resolve(probe.result.value);
+      },
+      refreshPermissions: availability,
       start: async (capability, signal) => {
         this.requireOpen(); if (!this.attempt || this.attempt.signal.aborted || signal.aborted) throw unavailable();
         this.capability = capability; this.captureMayBeActive = true;
@@ -287,15 +297,23 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           processID: selected.processID, windowID: selected.windowID });
         if (this.unmountedAvailability !== null) {
           const prepared = await this.preparedContext();
-          // A Stop waits for this bounded request so its returned native owner
-          // can be retired. Aborting the choice alone must not lose that owner.
-          const mount = await this.options.authorizeMount(prepared, this.signal); this.requireOpen();
+          // Start a new read-only OS probe alongside this attempt's server
+          // preparation. Stop waits for both so a returned native owner cannot
+          // be lost. The source performs another fresh probe before capture.
+          const [authorization, probe] = await Promise.allSettled([
+            this.options.authorizeMount(prepared, this.signal), this.probeForInitialization(),
+          ]);
+          if (authorization.status === "rejected") throw authorization.reason;
+          const mount = authorization.value; this.requireOpen();
           if (attempt.signal.aborted || this.attempt !== attempt) throw unavailable();
           const checked = await this.preparedContext();
           if (Object.keys(prepared).some(key => prepared[key as keyof PreparedDesktopCapture] !== checked[key as keyof PreparedDesktopCapture])) throw unavailable();
           const grant = parseBackendCaptureGrant(mount.grant);
           if (mount.status !== "created" || grant.captureSessionId !== this.options.sessionId) throw unavailable();
           this.unmountedAvailability = null;
+          // One use, tied to this main-owned attempt. A rejected probe reaches
+          // the controller's existing failed-initialization/retirement path.
+          this.initializationProbe = { attempt, result: probe };
           await this.controller.initializeFromBackend(grant, crypto.randomUUID());
           this.requireOpen();
           if (attempt.signal.aborted || this.attempt !== attempt) throw unavailable();
@@ -312,7 +330,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       } catch (error) {
         this.startFailed = !attempt.signal.aborted;
         throw error;
-      } finally { this.selectedWindow = null; }
+      } finally { this.selectedWindow = null; this.initializationProbe = null; }
     });
   }
   stopRecording(): Promise<void> { return this.stopCapture(true); }
@@ -365,7 +383,15 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       this.stopConfirmationPending = true; this.publish();
       await this.options.retireSource(); this.requireOpen();
       this.stopConfirmationPending = false;
-      await this.flow.prepareContinuation(); this.requireOpen();
+      // Prior native and server ownership is retired. This read-only OS probe
+      // is independent of continuation metadata; settle both before proceeding
+      // or releasing custody. Start still performs its separate fresh checks.
+      const [preparation, availability] = await Promise.allSettled([
+        this.flow.prepareContinuation(), this.availability(this.signal),
+      ]);
+      if (preparation.status === "rejected") throw preparation.reason;
+      if (availability.status === "rejected") throw availability.reason;
+      this.requireOpen();
       const active = await this.options.flowStore.getActiveCaptureState(); this.requireOpen();
       if (!active?.continuation?.prepared || !this.options.coverage.beginInterval) throw unavailable();
       await this.options.coverage.beginInterval(active.lease.receipt_id, active.continuation.firstSequenceNumber);
@@ -374,7 +400,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       this.coverage = await this.options.coverage.load(); this.requireOpen();
       this.unsubscribeController(); this.controller = this.createController();
       this.unsubscribeController = this.controller.subscribe(() => this.publish());
-      this.unmountedAvailability = await this.availability(this.signal);
+      this.unmountedAvailability = availability.value;
     }).catch(async error => {
       if (this.flow.snapshot.state === "ready") await this.flow.pauseRecording();
       throw error;
@@ -498,6 +524,17 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       leaseReceiptId: active.lease.receipt_id, captureLeaseGeneration: active.lease.generation,
       captureAuthorizedUntil: active.captureAuthorizedUntil,
       ...(active.continuation?.firstSequenceNumber ? { firstSequenceNumber: active.continuation.firstSequenceNumber } : {}) });
+  }
+  private probeForInitialization(): Promise<"ready" | "permission_required"> {
+    // Moving the probe ahead of controller initialization must not remove its
+    // existing adapter deadline. A late read-only reply cannot be consumed.
+    const abort = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => { abort.abort(); reject(unavailable()); }, CAPTURE_OPERATION_TIMEOUT_MS);
+    });
+    return Promise.race([this.availability(AbortSignal.any([this.signal, abort.signal])), deadline])
+      .finally(() => { if (timeout !== undefined) clearTimeout(timeout); });
   }
   private requireStart(): void {
     this.requireOpen();
