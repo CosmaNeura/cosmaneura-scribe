@@ -59,3 +59,36 @@ Use a short, approved synthetic request window when comparing server phases;
 events deliberately have no request identifiers. Keep the native token and wire
 timings alongside them. Neither query counts nor these server durations alone
 prove that Record-to-audio readiness has been halved.
+
+## Local workflow and Instruments timing
+
+The provider workspace and recorder also emit bounded User Timing measures
+named `scribe.ui.<fixed-action>.<resolved|threw|cancelled>`. They contain numeric
+times only. Names come from a closed action list; patient, encounter, session,
+query, note, error and request values never enter the measurements. Each fixed
+action/outcome keeps only its most recent observation. No telemetry destination,
+network exporter, persistence or new WebView inspection permission is added.
+
+`select-patient` and `patient-create` cover the normal new-visit action through
+opening its next view. `prepare` covers explicit consent/start handling, while
+the nested `record` covers the controller start operation. `open`, `read`,
+`generate`, `save`, `resolve`, `stop-upload` and `upload-retry` isolate the other
+long waits. Read these local measures through an already-authorized browser
+or renderer performance tool. Release iPhone WebViews may not be inspectable;
+native Appium accessibility observations remain a separate measurement path.
+
+`resolved` means the action promise returned, not that a clinical or recording
+operation succeeded. Controllers may return with an error/recovery state.
+Check the visible state and durable result independently. These intervals end
+at action settlement and exclude later browser paint; `record` does not prove
+first audio input. Compare it with native `firstInputBuffer` diagnostics.
+Overlapping/nested intervals must not be summed. Cancellation and exceptions
+remain distinguishable; diagnostic API failures do not change the product flow.
+
+The native provider connection adds Instruments signpost intervals named
+`Provider request`, `Provider token` and `Provider receiver` under the existing
+`com.cosmaneura.scribe.performance` / `provider` subsystem/category. Each request
+uses its own local signpost identity. Intervals close on success, rejection,
+exception or cancellation. Existing content-free request logs provide the fixed
+operation name and status alongside these intervals; authorization, wire data
+and response validation are unchanged. No raw text is supplied to signposts.

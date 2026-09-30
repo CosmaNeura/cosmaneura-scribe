@@ -33,6 +33,8 @@ test("records, survives process death, and completes one encrypted synthetic chu
     await test.step("prepare", () => initial.acceptConsentAndPrepare());
     expect(await page.evaluate(() => globalThis.__captureE2eMediaRequests)).toEqual([]);
     await test.step("start", () => initial.startRecording());
+    await expect.poll(() => page.evaluate(() =>
+      performance.getEntriesByName("scribe.ui.record.resolved").length)).toBe(1);
     await test.step("durable_chunk", () => initial.waitForDurableEncryptedChunk());
 
     const mediaRequests = await page.evaluate(
@@ -69,6 +71,8 @@ test("records, survives process death, and completes one encrypted synthetic chu
     await uploadGate.waitUntilHeld();
     uploadGate.release();
     await test.step("complete", () => relaunched.waitForCompletion());
+    await expect.poll(() => relaunchedPage.evaluate(() =>
+      performance.getEntriesByName("scribe.ui.stop-upload.resolved").length)).toBe(1);
 
     await expect.poll(() => wire.uploadCount).toBe(1);
     await expect.poll(() => wire.registrationCount).toBe(1);

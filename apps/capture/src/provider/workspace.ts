@@ -21,6 +21,7 @@ import { openingReviewView } from "./opening-review";
 import { encounterSetupMarkup } from "./encounter-setup-view";
 import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
+import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./workflow-timing";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
@@ -87,12 +88,15 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (closeRecorder === close) closeRecorder = null;
     }
   };
-  const run = async (action: () => Promise<void>): Promise<void> => {
+  const run = async (action: () => Promise<void>, timingAction?: string): Promise<void> => {
     if (disposed || busy || host.signal.aborted) return;
     busy = true; notice.textContent = ""; step = "request";
     root.setAttribute("aria-busy", "true");
+    const finishTiming = beginWorkflowTiming(timingAction);
+    let outcome: WorkflowTimingOutcome = "resolved";
     try { await action(); }
     catch (error) {
+      outcome = "threw";
       if (!disposed && !host.signal.aborted) {
         notice.textContent = error instanceof RecorderStopUnconfirmed
           ? "Recording stop could not be confirmed. Stop it in the native app before continuing."
@@ -115,7 +119,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           show('<h1>Your encounters</h1><button data-workspace-action="encounters">Retry loading encounters</button>');
         }
       }
-    } finally { busy = false; root.removeAttribute("aria-busy"); }
+    } finally {
+      busy = false; root.removeAttribute("aria-busy");
+      finishTiming(disposed || host.signal.aborted ? "cancelled" : outcome);
+    }
   };
   const list = async (): Promise<void> => {
     await clearEncounter();
@@ -180,14 +187,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         if (!current(n)) return;
         requireValue(result.account === setupState.account);
         setupState = { ...result, pending: setupState.pending }; showSetup(query);
-      });
+      }, "patient-search");
     };
     const onNew = (event: SubmitEvent): void => {
       event.preventDefault();
       if (!newPatient?.reportValidity()) return;
       const name = input("new-patient-name").trim(), dateOfBirth = input("new-patient-dob");
       if (!name) { notice.textContent = "Enter the patient's name."; return; }
-      void run(() => create({ kind: "new", name, dateOfBirth }));
+      void run(() => create({ kind: "new", name, dateOfBirth }), "patient-create");
     };
     search?.addEventListener("submit", onSearch); newPatient?.addEventListener("submit", onNew);
     disposeContent = () => { search?.removeEventListener("submit", onSearch); newPatient?.removeEventListener("submit", onNew); };
@@ -564,7 +571,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           break;
         }
       }
-    });
+    }, button.dataset.workspaceAction);
   };
   function input(name: string): string {
     return content.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${name}"]`)?.value ?? "";
@@ -585,7 +592,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     return disposing;
   };
   root.addEventListener("click", click); host.signal.addEventListener("abort", abort, { once: true });
-  if (host.signal.aborted) abort(); else void run(list);
+  if (host.signal.aborted) abort(); else void run(list, "startup");
   return dispose;
 }
 

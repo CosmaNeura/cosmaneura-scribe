@@ -81,6 +81,10 @@ for (const mode of ["workspace", "desktop"]) for (const scenario of scenarios) {
         case "session_read": result = { phase: "ready", revision }; break;
         case "connect": result = { connectionId, revision }; break;
         case "list": result = [encounter]; break;
+        case "encounter_setup":
+          assert.equal(request.payload.action, "info");
+          assert.deepEqual(Object.keys(request.payload), ["action"]);
+          result = { enabled: false, account: null }; break;
         case "open": result = { encounterId, encounter, scope, openingReview,
           ...(scenario !== "legacy" ? { noteOpeningSupported: true } : {}) }; break;
         case "journal_load": result = await journal.load(); break;
