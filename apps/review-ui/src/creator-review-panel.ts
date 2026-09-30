@@ -9,6 +9,7 @@ import {
   type PendingReviewDecision,
 } from "./creator-review-journal";
 import "./creator-review.css";
+import { isUuid } from "./contracts";
 
 type Phase = "loading" | "ready" | "saving" | "retry" | "unavailable";
 export interface CreatorReviewState {
@@ -265,6 +266,10 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
   const blockers = working.blockers ?? [];
   const hasSpanish = source.segments.some(segment => segment.source_locale === "es-US");
   const progress = new Map((view.translation_progress ?? []).map((item) => [item.source_segment_id, item.state]));
+  const speakers = new Map<string, number>();
+  for (const segment of source.segments) {
+    if (isUuid(segment.speaker_id) && !speakers.has(segment.speaker_id)) speakers.set(segment.speaker_id, speakers.size + 1);
+  }
   return `<div class="creator-transcript-heading"><h2>Transcript</h2>
     <span>Version ${working.working_transcript_version}</span></div>
     <p class="creator-help">${hasSpanish ? "English speech stays in English. Spanish is shown beside its translation." : "Original speech is shown below."}
@@ -278,14 +283,16 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
       const pending = progress.get(segment.source_segment_id);
       const englishText = review?.translated_content ?? english?.content;
       const spanish = segment.source_locale === "es-US";
+      const speaker = speakers.get(segment.speaker_id);
       return `<li class="creator-segment">
-        <div class="creator-segment-heading"><strong>${speakerCopy(segment.speaker_role)}</strong>
+        <div class="creator-segment-heading"><strong>${segment.speaker_role === "unknown" && speaker
+          ? `Speaker ${speaker} · not identified` : speakerCopy(segment.speaker_role)}</strong>
           <span>${time(segment.start_ms)}–${time(segment.end_ms)}</span></div>
         <div class="creator-language-grid ${spanish ? "creator-bilingual" : ""}">
-          <div><h3>${spanish ? "Spanish · original" : segment.source_locale === "en-US" ? "English · original" : "Original · language unconfirmed"}</h3>
-            <p lang="${spanish ? "es" : segment.source_locale === "en-US" ? "en" : "und"}">${escape(segment.content)}</p></div>
+          <div>${segment.source_locale === "en-US" ? "" : `<h3>${spanish ? "Spanish · original" : "Original · language unconfirmed"}</h3>`}
+            ${transcriptParagraphs(segment.content).map(part => `<p lang="${spanish ? "es" : segment.source_locale === "en-US" ? "en" : "und"}">${escape(part)}</p>`).join("")}</div>
           ${spanish ? `<div><h3>English · ${review ? "proposed translation" : english?.resolution === "spanish_translation" ? "accepted translation" : "not ready"}</h3>
-            <p lang="en">${englishText == null ? "Translation is not ready for use." : escape(englishText)}</p></div>` : ""}
+            ${transcriptParagraphs(englishText ?? "Translation is not ready for use.").map(part => `<p lang="en">${escape(part)}</p>`).join("")}</div>` : ""}
         </div>
         ${readOnly ? "" : review === undefined ? (pending === undefined
           ? issues.map((issue) => `<p class="creator-blocker">${escape(blockerCopy(issue.code))}</p>`).join("")
@@ -296,6 +303,27 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
           </div>`}
       </li>`;
     }).join("")}</ol>`;
+}
+
+/** Reading breaks only: every source character remains in its original order.
+ * A paragraph is not a new speaker turn or a stored transcript edit. */
+export function transcriptParagraphs(text: string): string[] {
+  const paragraphs: string[] = [];
+  let pending = "", count = 0;
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: "sentence" }).segment(text)) {
+    if (pending && (pending.length + segment.length > 400 || count >= 2)) {
+      paragraphs.push(pending); pending = ""; count = 0;
+    }
+    pending += segment; count += 1;
+    while (pending.length > 400) {
+      let split = pending.lastIndexOf(" ", 400);
+      if (split <= 0) split = pending.indexOf(" ", 400);
+      if (split < 0) break;
+      paragraphs.push(pending.slice(0, split + 1)); pending = pending.slice(split + 1); count = 0;
+    }
+  }
+  if (pending) paragraphs.push(pending);
+  return paragraphs;
 }
 
 function reviewStatusCopy(view: CreatorReviewView): string {
