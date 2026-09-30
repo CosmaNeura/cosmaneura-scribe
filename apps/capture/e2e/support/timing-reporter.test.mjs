@@ -16,6 +16,8 @@ test("timing evidence retains failure without leaking opaque test or request dat
     reporter.onTestBegin(item);
     reporter.onStepEnd(item, {}, { title: secret, category: secret, duration: 17,
       error: { message: secret }, location: { file: `/private/${secret}`, line: 1 } });
+    reporter.onStepEnd(item, {}, { title: "note_save", category: "test.step", duration: 23,
+      error: { message: secret }, location: { file: `/private/${secret}/provider-note.pw.mjs`, line: 24 } });
     reporter.onStdOut(secret); reporter.onStdErr(secret); reporter.onError(new Error(secret));
     reporter.onTestEnd(item, { status: "failed", retry: 0, duration: 19,
       error: { message: secret }, attachments: [{ body: secret }] });
@@ -26,6 +28,8 @@ test("timing evidence retains failure without leaking opaque test or request dat
     assert.equal(report.expected_tests, 1); assert.equal(report.tests[0].retry, 0);
     assert.equal(report.source_commit, null); assert.equal(report.steps[0].failed, true);
     assert.equal(report.steps[0].file, "framework"); assert.equal(report.steps[0].duration_ms, 17);
+    assert.equal(report.steps[1].phase, "note_save"); assert.equal(report.steps[1].file, "provider-note.pw.mjs");
+    assert.equal(report.steps[1].failed, true);
   } finally {
     for (const [name, value] of [["SCRIBE_TIMING_REPORT", previous.report], ["SCRIBE_TEST_COMMIT", previous.commit]]) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
