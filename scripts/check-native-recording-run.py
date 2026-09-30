@@ -52,6 +52,7 @@ BRIDGE = [
     for name in [
         "NativeProviderConnection",
         "ProviderNativeTransport",
+        "NativeProviderRecordingService",
         "NativeSourceStartOwner",
         "NativeSourceProofJournal",
         "NativeSourceRecovery",
@@ -178,6 +179,24 @@ def main() -> None:
                 ],
             )
             run("mac-run-checks", [executable])
+            binding_executable = str(target / "binding-checks")
+            run(
+                "mac-binding-build",
+                bridge_flags
+                + [
+                    "-O", "-parse-as-library", "-D", "NATIVE_BINDING_CHECKS",
+                    "-L", str(target), *libraries,
+                    "-Xlinker", "-rpath", "-Xlinker", str(target),
+                    "-o", binding_executable,
+                    *[str(AUTH / "Bridge" / name) for name in (
+                        "NativeProviderConnection.swift", "ProviderNativeTransport.swift",
+                        "NativeProviderRecordingService.swift",
+                    )],
+                    str(REPO / "scripts/standalone-provider/check-native-provider.swift"),
+                    str(REPO / "scripts/standalone-provider/check-native-recording-binding.swift"),
+                ],
+            )
+            run("mac-binding-checks", [binding_executable])
 
 
 if __name__ == "__main__":

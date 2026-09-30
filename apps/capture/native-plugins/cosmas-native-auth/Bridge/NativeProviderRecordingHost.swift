@@ -48,6 +48,8 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   let recoveryScope: UUID
   private let flow: NativeRecordingFlowOwner
   private let binding: NativeRecordingBindingOwner
+  private let initialWindow: NativeRecordingWindowOwner?
+  private let resumeWindow: NativeRecordingResumeWindowOwner?
   private let leases: NativeRecordingLeaseOwner
   private let reservations: NativeRecordingReservationOwner
   private let requireCurrent: @MainActor () throws -> Void
@@ -92,8 +94,24 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     self.now = now
     flow = NativeRecordingFlowOwner(
       scope: scope, recoveryScope: recoveryScope, service: service, records: records)
-    binding = NativeRecordingBindingOwner(
-      scope: scope, service: service, records: records, keys: keys)
+    if let aggregate = service as? any NativeRecordingWindowService {
+      let window = NativeRecordingWindowOwner(
+        scope: scope, recoveryScope: recoveryScope, service: aggregate, records: records)
+      initialWindow = window
+      binding = NativeRecordingBindingOwner(
+        scope: scope, service: window, records: records, keys: keys)
+    } else {
+      initialWindow = nil
+      binding = NativeRecordingBindingOwner(
+        scope: scope, service: service, records: records, keys: keys)
+    }
+    if let aggregate = service as? any NativeRecordingResumeWindowService {
+      resumeWindow = NativeRecordingResumeWindowOwner(
+        scope: scope, recoveryScope: recoveryScope,
+        service: aggregate, records: records)
+    } else {
+      resumeWindow = nil
+    }
     leases = NativeRecordingLeaseOwner(scope: scope, service: service, records: records)
     reservations = NativeRecordingReservationOwner(
       scope: scope, recoveryScope: recoveryScope, service: service, records: records)
@@ -128,7 +146,10 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
           phase = .sealed
           return
         }
+        try await initialWindow?.initialize()
         cipher = try await binding.open()
+        try current(ticket)
+        try await initialWindow?.adopt(leases: leases, reservations: reservations)
         try current(ticket)
         // A booted native host passed stop-only recovery before inspecting audio.
         saved = try await flow.reconcileAfterStop(encryption: cipher!)
@@ -368,20 +389,38 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private func prepareRecordingWindow(
     checkpoint: NativeRecordingFlowSnapshot, ticket: UUID, reportStartup: Bool
   ) async throws -> (NativeRecordingLease, NativeRecordingReservationBatch) {
+    // A retained aggregate may have adopted only its lease before termination.
+    // Complete that exact recipe before the legacy owner can issue anything.
+    var prepared = try await resumeWindow?.recover(
+      first: checkpoint.committedChunks,
+      leases: leases, reservations: reservations)
+    try current(ticket)
     var lease = try await leases.open()
     try current(ticket)
     // Expired/near-expiry receipts remain useful for upload recovery but
     // cannot prepare a new interval. Renew under the same durable intent.
     if try Self.expires(lease) <= now().addingTimeInterval(60) {
-      lease = try await leases.renew()
+      if let resumeWindow {
+        prepared = try await resumeWindow.prepare(
+          previous: lease, first: checkpoint.committedChunks,
+          leases: leases, reservations: reservations)
+        lease = prepared!.lease
+      } else {
+        lease = try await leases.renew()
+      }
       try current(ticket)
     }
     guard try Self.expires(lease) > now().addingTimeInterval(15) else {
       throw ProviderNativeError.unavailable
     }
     if reportStartup { PCMStartupDiagnostics.shared.record(.leaseReady) }
-    let retained = try await reservations.reuseForStart(
-      lease: lease, first: checkpoint.committedChunks)
+    let retained: NativeRecordingReservationBatch?
+    if let prepared, prepared.lease == lease {
+      retained = prepared.batch
+    } else {
+      retained = try await reservations.reuseForStart(
+        lease: lease, first: checkpoint.committedChunks)
+    }
     try current(ticket)
     let batch: NativeRecordingReservationBatch
     if let retained {
@@ -504,7 +543,10 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     self.cancelled = self.cancelled || cancelled
     guard let continuation else { return }
     self.continuation = nil
-    if self.cancelled { continuation.resume(throwing: CancellationError()) }
-    else { continuation.resume() }
+    if self.cancelled {
+      continuation.resume(throwing: CancellationError())
+    } else {
+      continuation.resume()
+    }
   }
 }
