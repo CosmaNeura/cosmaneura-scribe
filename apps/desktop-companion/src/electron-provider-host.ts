@@ -6,6 +6,7 @@ import { DesktopProviderWorkspaceIpc } from "./provider-workspace-ipc.js";
 import type { DesktopProviderMainHost } from "./provider-workspace-main.js";
 import { loadPackagedProvider, PROVIDER_ENTRY, type PackagedProvider } from "./packaged-provider.js";
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
+import { installApplicationClose, type ApplicationCloseMainPort } from "./application-close-ipc.js";
 
 interface Event { preventDefault(): void }
 type Renderer = ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[1] & ElectronWebContentsSecurityPort & {
@@ -38,7 +39,7 @@ export interface DesktopElectronRuntime<S extends Session = Session> {
   readonly screen: { getDisplayMatching(bounds: WindowBounds): { workArea: WindowBounds } };
   readonly protocol: { registerSchemesAsPrivileged(schemes: Array<typeof PACKAGED_APP_SCHEME>): void };
   readonly session: { fromPartition(partition: string, options: { cache: false }): S };
-  readonly ipcMain: ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[0];
+  readonly ipcMain: ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[0] & ApplicationCloseMainPort;
   readonly BrowserWindow: new (options: ReturnType<typeof createSecureBrowserWindowOptions> & {
     title: string; width: number; height: number; minWidth: number; minHeight: number;
     webPreferences: ReturnType<typeof createSecureBrowserWindowOptions>["webPreferences"] & { session: S };
@@ -82,6 +83,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
   session.protocol.handle("app", request => assets.respond(request));
   session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !assets.allows(details.url) }));
   let owner: DesktopProviderOwner | null = null, boundary: DesktopProviderWorkspaceIpc | null = null, appWindow: Window | null = null;
+  let removeApplicationClose: (() => void) | undefined;
   const recordingWindow = new MainRecordingWindow(() => appWindow,
     bounds => runtime.screen.getDisplayMatching(bounds).workArea,
     () => appWindow && !appWindow.isDestroyed()
@@ -99,6 +101,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
       await boundary?.dispose(); diagnostics("boundary_closed");
       await owner?.dispose(); diagnostics("owner_closed");
       ended = true;
+      removeApplicationClose?.(); removeApplicationClose = undefined;
       runtime.app.removeListener("before-quit", beforeQuit); runtime.app.removeListener("second-instance", focus);
       appWindow?.removeListener("close", windowClose);
       if (appWindow && !appWindow.isDestroyed()) appWindow.destroy();
@@ -132,6 +135,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
     appWindow = new runtime.BrowserWindow({ ...secure, title: "Cosmaneura Scribe Beta", width: 780, height: 760, minWidth: 520, minHeight: 520,
       webPreferences: { ...secure.webPreferences, session } });
     installElectronRendererSecurity(appWindow.webContents, PROVIDER_ENTRY);
+    removeApplicationClose = installApplicationClose(runtime.ipcMain, appWindow.webContents, requestClose);
     if (!owner) throw unavailable();
     boundary = new DesktopProviderWorkspaceIpc(runtime.ipcMain, appWindow.webContents, (owner as DesktopProviderOwner).host); boundary.install();
     appWindow.on("close", windowClose);
