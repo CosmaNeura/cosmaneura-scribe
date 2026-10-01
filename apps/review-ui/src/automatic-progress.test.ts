@@ -63,6 +63,138 @@ describe("pending progress observation", () => {
     expect(apply).not.toHaveBeenCalled(); expect(stopped).not.toHaveBeenCalled();
   });
 
+  it("counts settled request time toward the three-second cadence with a monotonic clock", async () => {
+    vi.useFakeTimers();
+    const starts: number[] = [], applied: number[] = [];
+    const read = vi.fn(async () => {
+      starts.push(performance.now());
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      return starts.length;
+    });
+    const observer = new AutomaticProgress({ active: () => true, visible: () => true,
+      pending: () => applied.length < 2, read, apply: value => applied.push(value), stopped: vi.fn() });
+    observer.schedule(true);
+    await vi.advanceTimersByTimeAsync(1200); expect(applied).toEqual([1]);
+    vi.setSystemTime(Date.now() + 86_400_000); // Wall-clock changes do not accelerate observation.
+    await vi.advanceTimersByTimeAsync(1799); expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); expect(starts[1]! - starts[0]!).toBe(3000);
+    await vi.advanceTimersByTimeAsync(1200); expect(applied).toEqual([1, 2]);
+    await vi.advanceTimersByTimeAsync(30_000); expect(read).toHaveBeenCalledTimes(2);
+    observer.dispose();
+  });
+
+  it("starts again only after a slow read settles, never overlapping even beyond the interval", async () => {
+    vi.useFakeTimers();
+    const starts: number[] = []; let inFlight = 0, maxInFlight = 0;
+    const read = vi.fn(async () => {
+      starts.push(performance.now()); maxInFlight = Math.max(maxInFlight, ++inFlight);
+      await new Promise(resolve => setTimeout(resolve, 4500)); inFlight -= 1;
+      return "pending";
+    });
+    const observer = new AutomaticProgress({ active: () => true, visible: () => true,
+      pending: () => true, read, apply: vi.fn(), stopped: vi.fn() });
+    observer.schedule(true);
+    await vi.advanceTimersByTimeAsync(4499); expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2); expect(read).toHaveBeenCalledTimes(2);
+    expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(4500);
+    expect(starts[1]! - starts[0]!).toBeLessThanOrEqual(4501);
+    expect(maxInFlight).toBe(1); observer.dispose();
+  });
+
+  it("keeps an aborted uncooperative request occupied until settlement without publishing stale scope", async () => {
+    vi.useFakeTimers();
+    let visible = true, active = true, resolve!: (value: string) => void;
+    const read = vi.fn(() => new Promise<string>(done => { resolve = done; }));
+    const apply = vi.fn(), stopped = vi.fn();
+    const observer = new AutomaticProgress({ active: () => active, visible: () => visible,
+      pending: () => true, read, apply, stopped });
+    observer.schedule(true); await vi.advanceTimersByTimeAsync(0);
+    visible = false; observer.pause(); await vi.advanceTimersByTimeAsync(3000);
+    visible = true; observer.schedule(true); await vi.advanceTimersByTimeAsync(1000);
+    expect(read).toHaveBeenCalledTimes(1);
+    resolve("stale hidden response"); await vi.advanceTimersByTimeAsync(1);
+    expect(apply).not.toHaveBeenCalled(); expect(read).toHaveBeenCalledTimes(2);
+    active = false; observer.pause(); resolve("stale navigated response");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(apply).not.toHaveBeenCalled(); expect(read).toHaveBeenCalledTimes(2);
+    expect(stopped).not.toHaveBeenCalled(); observer.dispose();
+  });
+
+  it("stops after an authorization failure without automatic retry or another action", async () => {
+    vi.useFakeTimers();
+    const read = vi.fn().mockRejectedValue({ status: 401 }), apply = vi.fn(), stopped = vi.fn();
+    const observer = new AutomaticProgress({ active: () => true, visible: () => true,
+      pending: () => true, read, apply, stopped });
+    observer.schedule(true); await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(read).toHaveBeenCalledTimes(1); expect(apply).not.toHaveBeenCalled();
+    expect(stopped).toHaveBeenCalledTimes(1); expect(stopped).toHaveBeenCalledWith("unavailable");
+    observer.dispose();
+  });
+
+  it("preserves the original five-minute budget across hidden pauses and clock changes", async () => {
+    vi.useFakeTimers();
+    let visible = true, active = true;
+    const read = vi.fn().mockResolvedValue("pending"), stopped = vi.fn();
+    const observer = new AutomaticProgress({ active: () => active, visible: () => visible,
+      pending: () => true, read, apply: vi.fn(), stopped });
+    observer.schedule(true); await vi.advanceTimersByTimeAsync(3000);
+    visible = false; observer.pause(); vi.setSystemTime(Date.now() - 86_400_000);
+    await vi.advanceTimersByTimeAsync(296_999);
+    const count = read.mock.calls.length;
+    visible = true; active = false; observer.schedule(true);
+    await vi.advanceTimersByTimeAsync(1); expect(read).toHaveBeenCalledTimes(count);
+    active = true; observer.schedule(true);
+    expect(stopped).toHaveBeenCalledWith("deadline");
+    await vi.advanceTimersByTimeAsync(30_000); expect(read).toHaveBeenCalledTimes(count);
+    observer.dispose();
+  });
+
+  it("disposal after deadline cannot publish an uncooperative response or free another read", async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: string) => void;
+    const read = vi.fn(() => new Promise<string>(done => { resolve = done; })), apply = vi.fn();
+    const observer = new AutomaticProgress({ active: () => true, visible: () => true,
+      pending: () => true, read, apply, stopped: vi.fn() });
+    observer.schedule(true); await vi.advanceTimersByTimeAsync(30_000);
+    observer.dispose(); resolve("late"); await vi.advanceTimersByTimeAsync(300_000);
+    expect(read).toHaveBeenCalledTimes(1); expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("aborts the last in-flight read at the five-minute budget rather than granting another thirty seconds", async () => {
+    vi.useFakeTimers();
+    let signal!: AbortSignal, resolve!: (value: string) => void;
+    const read = vi.fn((value: AbortSignal) => {
+      signal = value;
+      return read.mock.calls.length === 100 ? new Promise<string>(done => { resolve = done; }) : Promise.resolve("pending");
+    });
+    const apply = vi.fn(), stopped = vi.fn();
+    const observer = new AutomaticProgress({ active: () => true, visible: () => true,
+      pending: () => true, read, apply, stopped });
+    observer.schedule(true); await vi.advanceTimersByTimeAsync(297_000);
+    expect(read).toHaveBeenCalledTimes(100); expect(apply).toHaveBeenCalledTimes(99);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(signal.aborted).toBe(true); expect(stopped).toHaveBeenCalledWith("deadline");
+    resolve("late at deadline"); await vi.advanceTimersByTimeAsync(30_000);
+    expect(read).toHaveBeenCalledTimes(100); expect(apply).toHaveBeenCalledTimes(99);
+    observer.dispose();
+  });
+
+  it("explicit restart cannot dispatch while an aborted timed-out request is unsettled", async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: string) => void;
+    const read = vi.fn(() => new Promise<string>(done => { resolve = done; }));
+    const apply = vi.fn();
+    const observer = new AutomaticProgress({ active: () => true, visible: () => true,
+      pending: () => true, read, apply, stopped: vi.fn() });
+    observer.schedule(true); await vi.advanceTimersByTimeAsync(30_000);
+    observer.restart(true); await vi.advanceTimersByTimeAsync(3000);
+    expect(read).toHaveBeenCalledTimes(1);
+    resolve("stale failed read"); await vi.advanceTimersByTimeAsync(3001);
+    expect(read).toHaveBeenCalledTimes(2); expect(apply).not.toHaveBeenCalled();
+    observer.dispose();
+  });
+
   it("halts on failure or deadline and only explicit restart resumes checks", async () => {
     vi.useFakeTimers();
     const read = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue("pending");
