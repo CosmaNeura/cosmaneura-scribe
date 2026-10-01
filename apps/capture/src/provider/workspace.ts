@@ -689,7 +689,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     let closed = false, checking = false, expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reading: AbortController | null = null;
-    const startedAt = Date.now(), expiresAt = startedAt + 300_000;
+    const startedAt = performance.now(), expiresAt = startedAt + 300_000;
     const status = content.querySelector<HTMLElement>("[data-note-readiness]")!;
     const waitTime = content.querySelector<HTMLElement>("[data-note-wait-time]")!;
     const options = content.querySelector<HTMLDetailsElement>(".provider-note-options")!;
@@ -699,7 +699,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const updateWaitTime = (): void => {
       if (!active()) return;
       waitTime.textContent = expired ? "Automatic checking paused."
-        : `Checking automatically · ${Math.floor((Date.now() - startedAt) / 1000)}s`;
+        : `Checking automatically · ${Math.floor((performance.now() - startedAt) / 1000)}s`;
       if (expired) options.open = true;
     };
     const elapsedTimer = setInterval(updateWaitTime, 1000);
@@ -712,17 +712,32 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     };
     const check = async (automatic = false): Promise<void> => {
       if (!active() || checking || document.visibilityState !== "visible") return;
-      if (automatic && (expired || Date.now() >= expiresAt)) { expired = true; message(); return; }
+      if (automatic && (expired || performance.now() >= expiresAt)) { expired = true; message(); return; }
       clearTimeout(timer); checking = true; button.disabled = true;
+      const checkStartedAt = performance.now();
       const controller = new AbortController(); reading = controller;
       forwardAbort(activeClient.signal, controller);
       const readClient = new CoreCaptureClient(activeClient.scope, activeContext.request, controller.signal);
-      const timeout = setTimeout(() => controller.abort(), automatic ? Math.min(30_000, expiresAt - Date.now()) : 30_000);
+      const timeout = setTimeout(() => controller.abort(), automatic ? Math.min(30_000, expiresAt - performance.now()) : 30_000);
       status.textContent = "Checking for your prepared note…";
+      // Promise.all may reject while its other GET is still in flight. Abort
+      // the observation promptly, but retain the slot until BOTH reads settle.
+      let requestsSettled = false, observationSettled = false;
+      const release = (): void => {
+        if (!requestsSettled || !observationSettled || reading !== controller) return;
+        reading = null; checking = false;
+        if (active()) {
+          button.disabled = false;
+          if (!expired && document.visibilityState === "visible") {
+            timer = setTimeout(() => { void check(true); }, Math.max(0, 3000 - (performance.now() - checkStartedAt)));
+          }
+        }
+      };
+      const reviewRead = new Promise<CreatorReviewView>(resolve => { resolve(new HttpCreatorReviewApi(id, readClient.reviewRequest(id)).read()); });
+      const noteRead = new Promise<unknown>(resolve => { resolve(readClient.note(id, "read", schema)); });
+      void Promise.allSettled([reviewRead, noteRead]).then(() => { requestsSettled = true; release(); });
       try {
-        const [view, value] = await interruptibleRead(Promise.all([
-          new HttpCreatorReviewApi(id, readClient.reviewRequest(id)).read(), readClient.note(id, "read", schema),
-        ]), controller.signal);
+        const [view, value] = await interruptibleRead(Promise.all([reviewRead, noteRead]), controller.signal);
         if (!active() || controller.signal.aborted) return;
         const fresh = reviewedSource(view);
         requireValue(sameSource(fresh, expectedSource));
@@ -742,12 +757,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
       } finally {
         clearTimeout(timeout); controller.abort();
-        if (reading === controller) reading = null;
-        checking = false;
-        if (active()) {
-          button.disabled = false;
-          if (!expired && document.visibilityState === "visible") timer = setTimeout(() => { void check(true); }, 3000);
-        }
+        observationSettled = true; release();
       }
     };
     const visibility = (): void => {
@@ -755,7 +765,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (document.visibilityState === "visible") void check(true);
       else reading?.abort("note-check-hidden");
     };
-    const deadline = setTimeout(() => { expired = true; clearTimeout(timer); reading?.abort(); message(); }, Math.max(0, expiresAt - Date.now()));
+    const deadline = setTimeout(() => { expired = true; clearTimeout(timer); reading?.abort(); message(); }, Math.max(0, expiresAt - performance.now()));
     const manual = (): Promise<void> => check();
     checkPreparedNote = manual;
     document.addEventListener("visibilitychange", visibility);
