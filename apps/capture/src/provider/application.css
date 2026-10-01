@@ -18,3 +18,10 @@
 .provider-application:has(.provider-desktop-compact) .provider-brand { font-size: 17px; gap: 8px; }
 .provider-application:has(.provider-desktop-compact) .provider-brand-icon { width: 24px; height: 24px; border-radius: 6px; }
 .provider-application:has(.provider-desktop-compact) [data-session-actions] { display: none; }
+
+/* Only the desktop shell inserts this secondary app action. */
+.scribe-desktop-close { flex-shrink: 0; min-height: 44px; padding: 8px 12px; border: 1px solid currentColor; border-radius: 8px; background: transparent; color: inherit; font: 14px/1.4 system-ui, sans-serif; cursor: pointer; }
+.scribe-desktop-close:hover { background: #ffffff1f; }
+.scribe-desktop-close:focus-visible { outline: 3px solid #90b4ff; outline-offset: 2px; }
+.provider-session-header:has(.scribe-desktop-close) { gap: 12px; }
+.provider-session-header:has(.scribe-desktop-close) [data-session-actions] { margin-left: auto; }

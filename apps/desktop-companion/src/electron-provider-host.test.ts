@@ -115,6 +115,32 @@ describe("packaged desktop provider host", () => {
       expect(f.factory.open).toHaveBeenCalledOnce(); expect(f.window!.destroyed).toBe(true);
     } finally { f.refuseClose(false); await f.cleanup(); }
   });
+  it("defers a window close event until the existing owner confirms shutdown", async () => {
+    const f = await fixture(), gate = deferred();
+    try {
+      await startElectronProvider(f.runtime, f.factory);
+      f.dispose.mockImplementationOnce(async () => { await gate.promise; });
+      const preventDefault = vi.fn(); f.window!.emit("close", { preventDefault });
+      await vi.waitFor(() => expect(f.dispose).toHaveBeenCalledOnce());
+      expect(preventDefault).toHaveBeenCalledOnce(); expect(f.window!.destroyed).toBe(false);
+      expect(f.runtime.app.quit).not.toHaveBeenCalled();
+      gate.resolve(); await vi.waitFor(() => expect(f.runtime.app.quit).toHaveBeenCalledOnce());
+      expect(f.window!.destroyed).toBe(true);
+    } finally { gate.resolve(); await f.cleanup(); }
+  });
+  it("keeps an unconfirmed-stop window close retryable without replacing its owner", async () => {
+    const f = await fixture();
+    try {
+      await startElectronProvider(f.runtime, f.factory); f.refuseClose(true);
+      const preventDefault = vi.fn(); f.window!.emit("close", { preventDefault });
+      await vi.waitFor(() => expect(f.runtime.dialog.showMessageBox).toHaveBeenCalledOnce());
+      expect(preventDefault).toHaveBeenCalledOnce(); expect(f.window!.destroyed).toBe(false);
+      expect(f.runtime.app.quit).not.toHaveBeenCalled(); expect(f.factory.open).toHaveBeenCalledOnce();
+      f.refuseClose(false); f.window!.emit("close", { preventDefault });
+      await vi.waitFor(() => expect(f.runtime.app.quit).toHaveBeenCalledOnce());
+      expect(f.dispose).toHaveBeenCalledTimes(2); expect(f.factory.open).toHaveBeenCalledOnce();
+    } finally { f.refuseClose(false); await f.cleanup(); }
+  });
   it("stops an unresponsive renderer before allowing its window to disappear", async () => {
     const f = await fixture();
     try {

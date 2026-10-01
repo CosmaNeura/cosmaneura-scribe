@@ -46,7 +46,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let consentAction: HTMLButtonElement | null = null;
   let openingRef: string | null = null;
   let cancelOpening: (() => void) | null = null;
-  let pendingNavigation: "encounters" | "review" | null = null;
+  type NavigationDestination = "encounters" | "review" | (() => void);
+  let pendingNavigation: NavigationDestination | null = null;
   let editorPosition: NoteEditorPosition | null = null;
   let lastEditorField: HTMLTextAreaElement | null = null;
   let refreshNoteSources: (() => void) | null = null;
@@ -822,14 +823,15 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     document.addEventListener("visibilitychange", visible); stopSaveCheck = stop;
     void check();
   };
-  const navigate = async (destination: "encounters" | "review"): Promise<void> => {
-    if (destination === "encounters") await list(); else showReview();
+  const navigate = async (destination: NavigationDestination): Promise<void> => {
+    if (typeof destination === "function") destination();
+    else if (destination === "encounters") await list(); else showReview();
   };
-  const guardNavigation = async (destination: "encounters" | "review"): Promise<void> => {
+  const guardNavigation = async (destination: NavigationDestination): Promise<void> => {
     // The native dialog stays in the viewport while the actual editor remains mounted.
     // Merely requesting navigation never saves or journals note text.
     if (journal.progress?.pendingSave) {
-      if (destination === "encounters") await navigate(destination); else showSaveRecovery();
+      if (destination === "encounters" || typeof destination === "function") await navigate(destination); else showSaveRecovery();
       return;
     }
     if (!hasUnsavedEdits()) { await navigate(destination); return; }
@@ -839,6 +841,19 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const dialog = navigation.querySelector<HTMLDialogElement>("dialog")!;
     dialog.addEventListener("cancel", event => { event.preventDefault(); clearNavigation(); restoreNoteEditorPosition(editorPosition); });
     dialog.showModal();
+  };
+  const requestDesktopClose = (event: Event): void => {
+    if (!(event instanceof CustomEvent) || typeof event.detail !== "function" || disposed || host.signal.aborted) return;
+    event.preventDefault();
+    const close = event.detail as () => void;
+    // A pending save already retains the exact edits in the durable journal.
+    // While an unjournaled edit is being saved, leave its editor mounted.
+    if (busy && hasUnsavedEdits() && !journal.progress?.pendingSave) {
+      notice.textContent = "Your note edits are still being saved. Try Close Scribe again when this finishes.";
+      return;
+    }
+    if (!hasUnsavedEdits() || journal.progress?.pendingSave) close();
+    else void run(() => guardNavigation(close));
   };
   const saveCurrentNote = async (): Promise<boolean> => {
     requireValue(client && draft && !progress().pendingSave);
@@ -998,7 +1013,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (disposing) return disposing;
     if (!disposed) {
       recentStates.clear();
-      disposed = true; headerObserver.disconnect(); root.removeEventListener("click", click); host.signal.removeEventListener("abort", abort);
+      disposed = true; headerObserver.disconnect(); root.removeEventListener("click", click);
+      root.removeEventListener("scribe-desktop-close-request", requestDesktopClose); host.signal.removeEventListener("abort", abort);
       root.replaceChildren();
     }
     disposing = clearEncounter().then(() => { root.replaceChildren(); }).catch(error => {
@@ -1008,7 +1024,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     });
     return disposing;
   };
-  root.addEventListener("click", click); host.signal.addEventListener("abort", abort, { once: true });
+  root.addEventListener("click", click); root.addEventListener("scribe-desktop-close-request", requestDesktopClose);
+  host.signal.addEventListener("abort", abort, { once: true });
   if (host.signal.aborted) abort(); else void run(list, "startup");
   return dispose;
 }
