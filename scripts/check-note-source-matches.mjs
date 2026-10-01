@@ -39,9 +39,9 @@ for (const desktop of [false, true]) {
   const f = await sourceMatchFixture(), abort = new window.AbortController(), encounterAbort = new window.AbortController();
   let journal = { revision: "1", progress: { admission: null, sessionId: f.session, uploaded: true, pendingSave: null } };
   let currentNote = f.note, finishSave = null, holdSave = false;
-  const calls = [], writes = [];
+  const calls = [], writes = [], coreOpened = [];
   const selected = { scope: f.scope, encounter: f.encounter, signal: encounterAbort.signal, noteOpeningSupported: true,
-    openingReview: { scope: f.scope, receivedAt: Date.now(), view: f.review }, recorder: forbidden, openInCore: forbidden,
+    openingReview: { scope: f.scope, receivedAt: Date.now(), view: f.review }, recorder: forbidden, openInCore: async noteRef => { coreOpened.push(noteRef); },
     journal: { load: async () => journal, save: async (previous, progress) => {
       assert.equal(previous, journal); writes.push(structuredClone(progress));
       journal = { revision: String(Number(journal.revision) + 1), progress: structuredClone(progress) }; return journal;
@@ -70,7 +70,8 @@ for (const desktop of [false, true]) {
     await until(() => root.querySelectorAll("[data-note-source-match]").length === 2 && root.getAttribute("aria-busy") !== "true");
     const fields = [...root.querySelectorAll("[data-note-field]")], [subjective, assessment, plan] = fields;
     const initialButtons = [...root.querySelectorAll("[data-note-source-match]")];
-    assert.deepEqual(initialButtons.map(button => button.textContent), ["View matching source · 0:00", "View matching source · 3:50"]);
+    assert.deepEqual(initialButtons.map(button => button.textContent), ["Check in transcript · 0:00", "Check in transcript · 3:50"]);
+    assert.equal(root.querySelector(action("core")).textContent, "Open saved note in Core");
     assert.ok(initialButtons.every(button => button.closest("label") === null));
     assert.equal(root.querySelector("[data-transcript-evidence]"), null);
     assert.equal(calls.length, 1); assert.equal(writes.length, 0);
@@ -81,13 +82,23 @@ for (const desktop of [false, true]) {
     const search = root.querySelector("[data-transcript-search]"); search.value = "absent phrase";
     search.dispatchEvent(new window.Event("input", { bubbles: true }));
     const target = root.querySelector(`[data-transcript-segment="${f.review.source.segments.at(-1).source_segment_id}"]`);
+    const pane = root.querySelector("[data-note-transcript-scroll]"), editor = root.querySelector(".provider-note-editor");
+    Object.defineProperty(pane, "clientHeight", { value: 400 });
+    Object.defineProperty(editor, "clientHeight", { value: 500 });
+    pane.getBoundingClientRect = editor.getBoundingClientRect = () => ({ top: 200 });
+    target.getBoundingClientRect = () => ({ top: 2200, height: 100 });
+    plan.parentElement.getBoundingClientRect = () => ({ top: 800, height: 150 });
     assert.equal(target.hidden, true);
     initialButtons[1].click();
     assert.equal(root.querySelector(".provider-note").dataset.noteView, "transcript");
     assert.equal(root.querySelector(action("transcript-view")).getAttribute("aria-pressed"), "true");
     assert.equal(root.querySelector("[data-note-transcript]").open, true);
     assert.equal(search.value, ""); assert.equal(target.hidden, false); assert.equal(target.dataset.searchCurrent, "true");
-    assert.equal(window.document.activeElement, target); assert.equal(scrolled.at(-1), target);
+    assert.equal(window.document.activeElement, target);
+    assert.equal(scrolled.at(-1), root.querySelector(".provider-note-grid"));
+    assert.ok(!scrolled.includes(target), "Late transcript row must not scroll the entire page");
+    assert.equal(pane.scrollTop, 1850); assert.equal(editor.scrollTop, desktop ? 425 : 0);
+    assert.equal(root.querySelector("[data-note-source-back]").parentElement.className, "provider-note-source-toolbar");
     assert.deepEqual([...root.querySelectorAll("[data-note-field]")], fields);
     assert.equal(assessment.value, editedValue); assert.equal(assessment.defaultValue, savedValue);
     assert.equal(root.querySelector("[data-note-save-state]").textContent, "Unsaved edits");
@@ -98,7 +109,14 @@ for (const desktop of [false, true]) {
     assert.equal(window.document.activeElement, assessment);
     assert.deepEqual([assessment.selectionStart, assessment.selectionEnd, assessment.selectionDirection], [4, 16, "backward"]);
     assert.deepEqual([assessment.scrollTop, assessment.scrollLeft, assessment.parentElement.scrollTop, window.scrollX, window.scrollY], [31, 3, 18, 2, 123]);
+    assert.equal(editor.scrollTop, 0, "The original editor pane scroll is restored");
     assert.equal(assessment.value, editedValue); assert.equal(JSON.stringify(journal), beforeJournal);
+    root.querySelector(action("core")).click();
+    await until(() => coreOpened.length === 1 && root.getAttribute("aria-busy") !== "true");
+    assert.deepEqual(coreOpened, [f.note.note_ref], "Core opens the saved note reference, not unsaved editor contents");
+    assert.deepEqual([...root.querySelectorAll("[data-note-field]")], fields);
+    assert.equal(assessment.value, editedValue); assert.equal(JSON.stringify(journal), beforeJournal);
+    assert.equal(calls.length, 1); assert.equal(writes.length, 0);
     results.push({ desktop, check: "matched row, search, unchanged dirty editor/journal, caret and scroll return", passed: true });
 
     plan.value += " Edited."; plan.dispatchEvent(new window.Event("input", { bubbles: true }));
