@@ -185,6 +185,7 @@ public actor NativeRecordingContinuation {
     let task = Task { [session, sink, finalizeCapturedAudio] in
       let result = try await session.stop(sink.state.phase == .failed ? .discard : .drain)
       defer { result.finalPacket?.bytes.zeroize() }
+      if sink.hasStorageFailure { throw NativeRecordingFinalizationFailure.storageFailed }
       guard sink.state.phase != .failed && sink.state.phase != .closed else { return }
       do {
         try await finalizeCapturedAudio { _ = try sink.finish(result) }

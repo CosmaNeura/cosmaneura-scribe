@@ -127,6 +127,7 @@ import Foundation
       } else if let handle {
         let stopped = try await handle.stop(.drain)
         defer { stopped.finalPacket?.bytes.zeroize() }
+        if sink.hasStorageFailure { throw NativeRecordingFinalizationFailure.storageFailed }
         if sink.state.phase == .accepting || sink.state.phase == .draining {
           do { try await finalizeCapturedAudio { _ = try sink.finish(stopped) } }
           catch {

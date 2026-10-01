@@ -1,7 +1,7 @@
 import Foundation
 
 public struct NativeRecordingFlowSnapshot: Equatable, Sendable {
-  public enum Phase: String, Codable, Sendable { case open, sealed }
+  public enum Phase: String, Codable, Sendable { case open, incomplete, sealed }
   public let phase: Phase
   public let completionIntent: UUID
   public let committedChunks: Int
@@ -23,6 +23,7 @@ public actor NativeRecordingFlowOwner {
     var chunks: Int
     var plaintextBytes: Int
     var completionLease: NativeRecordingLease?
+    var sourceCheckpoint: UUID?
   }
   private let scope: NativeRecordingScope
   private let recovery: UUID
@@ -30,6 +31,12 @@ public actor NativeRecordingFlowOwner {
   private let records: any NativeRecordingFlowStore
   private let key: String
   private var busy = false
+  private struct Clearing {
+    let checkpoint: UUID
+    let journal: Journal
+    let revision: UInt64
+  }
+  private var clearing: Clearing?
 
   public init(
     scope: NativeRecordingScope, recoveryScope: UUID,
@@ -60,6 +67,58 @@ public actor NativeRecordingFlowOwner {
     return snapshot(journal)
   }
 
+  /// Persist before any audio admission. A crash or failed final write leaves
+  /// this checkpoint unresolved; reconstructing a prefix cannot silently seal it.
+  public func beginSource(checkpoint: UUID) async throws -> NativeRecordingFlowSnapshot {
+    try enter()
+    defer { busy = false }
+    try await checkScope()
+    let (saved, journal) = try load()
+    guard journal.completionLease == nil, clearing == nil,
+      journal.sourceCheckpoint == nil || journal.sourceCheckpoint == checkpoint
+    else { throw NativeRecordingBindingFailure.invalidJournal }
+    if journal.sourceCheckpoint == checkpoint { return snapshot(journal) }
+    var next = journal
+    next.sourceCheckpoint = checkpoint
+    try await checkScope()
+    try commit(next, after: saved.revision)
+    return snapshot(next)
+  }
+
+  /// Native host only, after confirmed physical/Core stop and successful durable
+  /// sink completion. The exact checkpoint and verified inventory must agree.
+  public func finishSource(checkpoint: UUID, encryption: NativeRecordingEncryption,
+    chunks: Int, plaintextBytes: Int) async throws -> NativeRecordingFlowSnapshot {
+    try enter()
+    defer { busy = false }
+    try await checkScope()
+    guard encryption.scope == scope else { throw NativeRecordingBindingFailure.authorityChanged }
+    if let clearing {
+      guard clearing.checkpoint == checkpoint, clearing.journal.chunks == chunks,
+        clearing.journal.plaintextBytes == plaintextBytes
+      else { throw NativeRecordingBindingFailure.invalidJournal }
+      // Retry the exact CAS recipe after a lost clear response. The existing
+      // commit helper accepts only its exact durable bytes and next revision.
+      try commit(clearing.journal, after: clearing.revision)
+      self.clearing = nil
+      return snapshot(clearing.journal)
+    }
+    let (saved, journal) = try load()
+    guard journal.sourceCheckpoint == checkpoint, journal.completionLease == nil else {
+      throw NativeRecordingBindingFailure.invalidJournal
+    }
+    var next = try reconcile(journal, encryption: encryption)
+    guard next.chunks == chunks, next.plaintextBytes == plaintextBytes else {
+      throw NativeRecordingBindingFailure.invalidJournal
+    }
+    next.sourceCheckpoint = nil
+    try await checkScope()
+    clearing = Clearing(checkpoint: checkpoint, journal: next, revision: saved.revision)
+    try commit(next, after: saved.revision)
+    clearing = nil
+    return snapshot(next)
+  }
+
   public func reconcileAfterStop(encryption: NativeRecordingEncryption) async throws
     -> NativeRecordingFlowSnapshot
   {
@@ -86,6 +145,9 @@ public actor NativeRecordingFlowOwner {
     try await checkScope()
     let (saved, journal) = try load()
     if journal.completionLease != nil { return snapshot(journal) }
+    guard journal.sourceCheckpoint == nil else {
+      throw NativeRecordingBindingFailure.invalidJournal
+    }
     guard lease.sessionID == scope.sessionID else {
       throw NativeRecordingBindingFailure.receiptMismatch
     }
@@ -131,7 +193,7 @@ public actor NativeRecordingFlowOwner {
   }
   private func snapshot(_ journal: Journal) -> NativeRecordingFlowSnapshot {
     NativeRecordingFlowSnapshot(
-      phase: journal.completionLease == nil ? .open : .sealed,
+      phase: journal.completionLease != nil ? .sealed : journal.sourceCheckpoint == nil ? .open : .incomplete,
       completionIntent: journal.completionIntent, committedChunks: journal.chunks,
       committedPlaintextBytes: journal.plaintextBytes, completionLease: journal.completionLease)
   }
@@ -143,6 +205,7 @@ public actor NativeRecordingFlowOwner {
       "schemaVersion", "account", "recovery", "completionIntent", "chunks", "plaintextBytes",
     ]
     if raw["completionLease"] != nil { keys.insert("completionLease") }
+    if raw["sourceCheckpoint"] != nil { keys.insert("sourceCheckpoint") }
     guard Set(raw.keys) == keys,
       let journal = try? JSONDecoder().decode(Journal.self, from: stored.data),
       journal.schemaVersion == 1, journal.account == scope.keyAccount, journal.recovery == recovery,
@@ -151,7 +214,9 @@ public actor NativeRecordingFlowOwner {
       (journal.chunks == 0) == (journal.plaintextBytes == 0),
       journal.plaintextBytes >= journal.chunks * 46,
       journal.plaintextBytes <= journal.chunks * 320_044,
-      (journal.completionLease != nil) == (raw["completionLease"] != nil)
+      (journal.completionLease != nil) == (raw["completionLease"] != nil),
+      (journal.sourceCheckpoint != nil) == (raw["sourceCheckpoint"] != nil),
+      journal.completionLease == nil || journal.sourceCheckpoint == nil
     else { throw NativeRecordingBindingFailure.invalidJournal }
     if let lease = journal.completionLease {
       guard journal.chunks > 0, lease.sessionID == scope.sessionID,

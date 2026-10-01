@@ -132,6 +132,30 @@ import XCTest
     XCTAssertEqual(f.records.encryptedCount, 1)
   }
 
+  func testAdmittedFullPacketStorageFailureCannotBecomeSuccessfulStop() async throws {
+    let f = try ContinuationFixture()
+    let system = EncryptedAudioSystem()
+    let recorder = try await startedRecorder(f, system)
+    for _ in 0..<9 { try await offerAndWait(32_000, system, recorder) }
+    XCTAssertEqual(f.records.encryptedCount, 1)
+    f.records.setCapacity(0)
+    let last = try system.offer(32_000)
+    system.emit(.routeChanged)
+    let state = try await terminalRecorder(recorder)
+    XCTAssertTrue(last.isZeroed)
+    XCTAssertEqual(state.reason, .storageFailed)
+    XCTAssertEqual(state.phase, .failed)
+    XCTAssertEqual(state.capture.committedChunks, 1)
+    f.records.setCapacity(2_000_000_000)
+    for _ in 0..<2 {
+      do { try await recorder.stop(); XCTFail("A failed full packet is incomplete") }
+      catch { XCTAssertTrue(error is NativeRecordingFinalizationFailure) }
+    }
+    XCTAssertTrue(recorder.isPhysicallyIdle)
+    XCTAssertEqual(f.records.encryptedCount, 1)
+    XCTAssertEqual(system.deactivations, 1)
+  }
+
   private func startedRecorder(_ f: ContinuationFixture, _ system: EncryptedAudioSystem)
     async throws -> NativeEncryptedPCMRecorder
   {

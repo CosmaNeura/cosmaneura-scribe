@@ -69,7 +69,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private var opening: Task<Void, Error>?
   private var starting: Task<Void, Error>?
   private var stopping: Task<Void, Error>?
-  private var closingSource: Task<Void, Error>?
+  private var closingSource: Task<Bool, Error>?
   private var sealing: Task<Void, Error>?
   private var generation = UUID()
   private var retired = false
@@ -77,6 +77,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private let input = AppleMicrophoneInputPreference()
   private(set) var phase: Phase = .unopened
   private(set) var failure: Failure?
+  private var sourceCheckpoint: UUID?
   private(set) var saved: NativeRecordingFlowSnapshot?
 
   init(
@@ -156,6 +157,11 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         // A booted native host passed stop-only recovery before inspecting audio.
         saved = try await flow.reconcileAfterStop(encryption: cipher!)
         try current(ticket)
+        if saved?.phase == .incomplete {
+          phase = .failed
+          failure = .recordingIncomplete
+          return
+        }
         phase = saved!.committedChunks == 0 ? .ready : .paused
         warmRecordingWindow()
       } catch {
@@ -218,6 +224,10 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         try current(ticket)
         let (lease, batch) = try await prepareRecordingWindow(
           checkpoint: checkpoint, ticket: ticket, reportStartup: true)
+        let checkpointID = UUID()
+        self.saved = try await flow.beginSource(checkpoint: checkpointID)
+        sourceCheckpoint = checkpointID
+        try current(ticket)
         // Retain the original source proof even if graph construction fails.
         // No discarded constructor error may orphan stop-only custody.
         source = try makeSource(lease, batch)
@@ -236,11 +246,14 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         if phase == .starting {
           failure = .startFailed
           do {
-            try await stopSource()
+            let reconciled = try await stopSource()
             try current(ticket)
-            self.saved = try await flow.reconcileAfterStop(encryption: cipher)
-            try current(ticket)
-            phase = .paused
+            if !reconciled {
+              self.saved = try await flow.reconcileAfterStop(encryption: cipher)
+              try current(ticket)
+            }
+            phase = self.saved?.phase == .incomplete ? .failed : .paused
+            if self.saved?.phase == .incomplete { failure = .recordingIncomplete }
           } catch {
             phase = .stopPending
             failure = .stopPending
@@ -270,7 +283,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       try requireCurrent()
       return
     }
-    guard !retired,
+    guard !retired, saved?.phase != .incomplete || sourceCheckpoint != nil,
       [.ready, .starting, .recording, .pausing, .paused, .stopPending].contains(phase)
     else {
       throw ProviderNativeError.unavailable
@@ -355,7 +368,14 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     opening?.cancel()
     starting?.cancel()
     sealing?.cancel()
-    try await stop(reconcile: false)
+    do { try await stop(reconcile: false) }
+    catch is NativeRecordingFinalizationFailure {
+      // An incomplete visit may close once physical/Core stop is proven. Its
+      // durable checkpoint remains and will block admission/upload on reopening.
+      guard run?.isPhysicallyIdle == true, run?.phase == .stopped else {
+        throw ProviderNativeError.unavailable
+      }
+    }
     if let warming { await warming.task.value }
     if let opening { _ = try? await opening.value }
     if let starting { _ = try? await starting.value }
@@ -463,10 +483,10 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     let ticket = generation
     let task = Task { @MainActor [self] in
       do {
-        try await stopSource()
+        let reconciled = try await stopSource()
         // Starting is already fenced. Late network/permission results cannot
         // open a source, but remain retained until they have actually settled.
-        if reconcile, let cipher {
+        if reconcile, !reconciled, let cipher {
           try current(ticket)
           saved = try await flow.reconcileAfterStop(encryption: cipher)
           try current(ticket)
@@ -485,7 +505,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     try await task.value
   }
 
-  private func stopSource() async throws {
+  private func stopSource() async throws -> Bool {
     if let closingSource { return try await closingSource.value }
     let task = Task { @MainActor [self] in
       if let run {
@@ -497,13 +517,31 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         source.retireForAuthenticationChange()
         try await NativeCaptureStartGate.recoverWhileIdle { try await source.confirmStopped() }
       }
+      let reconciled = sourceCheckpoint != nil
+      if let sourceCheckpoint {
+        guard let cipher else { throw ProviderNativeError.unavailable }
+        if let run {
+          let capture = run.captureState
+          guard capture.phase == .closed
+            || capture.phase == .accepting && run.capturedAudioFrames == 0 else {
+            throw NativeRecordingFinalizationFailure.storageFailed
+          }
+        }
+        let chunks = run?.captureState.nextSequence ?? saved?.committedChunks ?? 0
+        let bytes = run.map { capturePriorPlaintextBytes + $0.captureState.committedPlaintextBytes }
+          ?? saved?.committedPlaintextBytes ?? 0
+        saved = try await flow.finishSource(checkpoint: sourceCheckpoint, encryption: cipher,
+          chunks: chunks, plaintextBytes: bytes)
+        self.sourceCheckpoint = nil
+      }
       // A confirmed source owner has deliberately destroyed its start proof.
       // Do not ask that closed owner to confirm again on Pause/Close/retry.
       source = nil
+      return reconciled
     }
     closingSource = task
     defer { closingSource = nil }
-    try await task.value
+    return try await task.value
   }
 
   private func current(_ ticket: UUID) throws {

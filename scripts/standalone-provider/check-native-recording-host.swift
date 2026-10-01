@@ -28,6 +28,7 @@ import Security
   private final class Records: NativeProviderRecordingHost.Records, @unchecked Sendable {
     var rows: [String: NativeRecordingStoredRecord] = [:]
     var failSeal = false, failInventory = false, loseSealReply = false
+    var failCheckpoint = false
     func read(key: String) throws -> NativeRecordingStoredRecord {
       guard let row = rows[key] else { throw NativeRecordingFailure.storageUnavailable }
       return row
@@ -54,6 +55,9 @@ import Security
     func compareAndSwapBinding(key: String, expectedRevision: UInt64, data: Data) throws {
       let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
       let sealing = value?["completionLease"] != nil
+      if failCheckpoint && value?["sourceCheckpoint"] != nil {
+        throw NativeRecordingFailure.storageUnavailable
+      }
       if failSeal && sealing { throw NativeRecordingFailure.storageUnavailable }
       try compareAndSwap(key: key, expectedRevision: expectedRevision, data: data)
       if loseSealReply && sealing { throw NativeRecordingFailure.storageUnavailable }
@@ -467,7 +471,7 @@ import Security
       f.records.failSeal = true
       try await rejects { try await host.sealForUpload() }
       try check(host.phase == .paused && host.failure == .recoveryFailed)
-      try check(host.saved!.committedChunks == 0 && f.runs[0].captureState.committedChunks == 1)
+      try check(host.saved!.committedChunks == 1 && f.runs[0].captureState.committedChunks == 1)
       let retained = f.records.rows
       f.records.failSeal = false
       f.records.failInventory = true
@@ -659,7 +663,7 @@ import Security
       f.runs[0].failStop = true
       try await rejects { try await host.sealForUpload() }
       try check(
-        host.phase == .stopPending && host.saved!.phase == .open && f.runs[0].isPhysicallyIdle)
+        host.phase == .stopPending && host.saved!.phase == .incomplete && f.runs[0].isPhysicallyIdle)
       try await rejects { try await host.start() }
       f.runs[0].failStop = false
       try await host.sealForUpload()
@@ -709,13 +713,38 @@ import Security
       try check(host.failure == .recordingIncomplete && host.phase == .stopPending)
       for _ in 0..<2 { try await rejects { try await host.sealForUpload() } }
       try await rejects { try await host.start() }
-      try check(host.failure == .recordingIncomplete && host.saved!.phase == .open)
+      try check(host.failure == .recordingIncomplete && host.saved!.phase == .incomplete)
       try check(f.runs.count == 1 && f.runs[0].captureState.committedChunks == 1)
       for (key, row) in retained { try check(f.records.rows[key]?.data == row.data) }
-      // Release only the fixture's injected failure to clean up this synthetic
-      // host. Production latches a real finalization failure permanently.
-      f.runs[0].incomplete = false
       try await host.close()
+      let reopened = f.host()
+      try await reopened.open()
+      try check(reopened.failure == .recordingIncomplete && reopened.saved!.phase == .incomplete)
+      try check(reopened.saved!.committedChunks == 1)
+      try await rejects { try await reopened.start() }
+      try await rejects { try await reopened.sealForUpload() }
+      try check(f.runs.count == 1)
+      try await reopened.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture(), host = f.host()
+      try await host.open()
+      f.records.failCheckpoint = true
+      try await rejects { try await host.start() }
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      f.records.failCheckpoint = false
+      try await host.close()
+      let reopened = f.host()
+      try await reopened.open()
+      try await reopened.start()
+      try await reopened.pause()
+      try await reopened.close()
+      let successful = f.host()
+      try await successful.open()
+      try check(successful.failure == nil && successful.saved!.phase == .open)
+      try await successful.sealForUpload()
+      try await successful.close()
       checks += 1
     }
     for retryStop in [false, true] {

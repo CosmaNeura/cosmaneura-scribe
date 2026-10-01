@@ -42,9 +42,24 @@ If final persistence fails or its authority is denied, a latched completion erro
 survives retries. Physical closure can still confirm the original Core stop;
 that does not imply durable recording completion. The provider host blocks
 sealing/upload and shows that the last part could not be saved, earlier saved
-audio is retained, and the visit needs support. No automatic discard, replacement
-visit, reset, new key or silent partial-success upload is introduced. Explicit
-provider-reviewed partial recovery is a later product decision.
+audio is retained, and the visit needs support. Before every source admission, the existing flow journal CAS persists an optional
+`sourceCheckpoint` UUID. Only the same native host may clear that exact UUID after
+verified physical/Core stop, successful sink completion and matching authenticated
+ciphertext inventory. Full-packet storage failure and partial-write failure both
+leave it pending. Reopening can display/reconcile earlier audio but cannot start
+or seal an unresolved checkpoint. No automatic discard, replacement visit, reset,
+new key or silent partial-success upload is introduced. Explicit provider-reviewed
+partial recovery is a later product decision.
+
+The optional field retains schemaVersion 1 and accepts all prior absent-field
+journals. Current strict older decoders reject the field while unresolved; after
+successful clear, the original field set is restored. No server or database schema
+migration is involved. A crash after successful audio/Core stop but before clearing
+is conservatively blocked for support review. A lost clear response retries its
+exact CAS recipe; it never clears a different checkpoint. This may create a false
+positive interrupted-visit warning, but cannot turn known incomplete work into
+successful upload. Rollback must never remove the checkpoint to make an older
+binary accept that visit.
 
 ## Verification and release
 
