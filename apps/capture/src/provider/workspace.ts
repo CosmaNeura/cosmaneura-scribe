@@ -59,6 +59,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let step = "request";
   let setupState: EncounterSetupState | null = null;
   const recentStates = new Map<string, { sessionId: string; status: "paused" | "processing" | "recording_saved" | "draft_ready" }>();
+  const listedDraftRefs = new Set<string>();
   let preferredLanguage: LanguageMode = "en-US"; // This authorized workspace's lifetime only.
   let preferredModality: "in_person" | "virtual" | "phone" = isIOS ? "in_person" : "virtual";
   root.classList.add("provider-workspace");
@@ -100,6 +101,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    listedDraftRefs.clear();
     stopSaveCheck?.(); stopSaveCheck = null; pendingDateOfBirth = null;
     clearNavigation();
     encounterAbort?.abort(); encounterAbort = null;
@@ -189,6 +191,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         && (e.status === undefined || ["draft_ready", "processing", "paused", "ready", "recording_saved"].includes(e.status)));
     };
     validate(encounters);
+    for (const encounter of encounters) if (encounter.status === "draft_ready") listedDraftRefs.add(encounter.appointmentRef);
     const authorizedRefs = new Set(encounters.map(e => e.appointmentRef));
     for (const ref of recentStates.keys()) if (!authorizedRefs.has(ref)) recentStates.delete(ref);
     const pending = new Set<string>();
@@ -197,7 +200,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       <ul class="provider-encounters" aria-label="Authorized encounters">${encounters.map(e => {
         const status = e.status === "draft_ready" ? e.status : recentStates.get(e.appointmentRef)?.status ?? e.status;
         if (status === "processing") pending.add(e.appointmentRef);
-        return `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span>${status ? `<span class="provider-visit-status">${encounterStatusCopy(status)}</span>` : ""}</button></li>`;
+        return `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span>${status ? `<span class="provider-visit-status">${encounterStatusCopy(status)}</span>` : ""}</button><span data-draft-action>${e.status === "draft_ready" ? openDraftButton(e) : ""}</span></li>`;
       }).join("")}</ul>
       ${encounters.length ? "" : "<p>No encounters are available yet.</p>"}
       <p data-encounter-progress role="status">${pending.size ? "Checking your processing visits automatically." : ""}</p>
@@ -216,9 +219,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       apply: fresh => {
         validate(fresh);
         const { updates, removed } = pendingEncounterUpdates(pending, fresh);
-        const buttons = [...listElement.querySelectorAll<HTMLButtonElement>("[data-appointment]")];
+        const buttons = [...listElement.querySelectorAll<HTMLButtonElement>('[data-workspace-action="open"]')];
         for (const ref of removed) {
-          pending.delete(ref); recentStates.delete(ref);
+          pending.delete(ref); recentStates.delete(ref); listedDraftRefs.delete(ref);
           buttons.find(button => button.dataset.appointment === ref)?.closest("li")?.remove();
         }
         for (const e of updates) {
@@ -227,6 +230,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           // Core catalog currently reports saved transcript/draft evidence only.
           // Absent status is not proof that the observed processing has ended.
           if (e.status === undefined) continue;
+          if (e.status === "draft_ready") listedDraftRefs.add(e.appointmentRef); else listedDraftRefs.delete(e.appointmentRef);
+          const draftAction = button.closest("li")?.querySelector<HTMLElement>("[data-draft-action]");
+          if (draftAction) draftAction.innerHTML = e.status === "draft_ready" ? openDraftButton(e) : "";
           const status = button.querySelector<HTMLElement>(".provider-visit-status");
           if (status) status.textContent = encounterStatusCopy(e.status);
           if (e.status !== "processing") { pending.delete(e.appointmentRef); recentStates.delete(e.appointmentRef); }
@@ -394,7 +400,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       <label class="provider-consent"><input name="consent" type="checkbox">All parties still agree to recording and transcription.</label>
       <button data-workspace-action="renew-consent">Prepare secure recording</button>`);
   };
-  const showReview = (openingView?: CreatorReviewView): void => {
+  const showReview = (openingView?: CreatorReviewView, initialAction?: "open-draft"): void => {
     requireValue(client && context);
     const n = generation, activeContext = context;
     show("");
@@ -411,6 +417,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       decide: (request, key) => api.decide(request, key),
       edit: (request, key) => api.edit(request, key),
     }, {
+      ...(initialAction ? { initialAction } : {}),
       journal: context.reviewJournal(session()), continueToNote: openNotes,
       speakerNameSuggestions: { patient: activeContext.encounter.patientName, clinician: host.providerDisplayName },
       ...(context.editJournal ? { editJournal: context.editJournal(session()) } : {}),
@@ -421,7 +428,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const endOpening = (): void => {
     cancelOpening = null; content.querySelector('[data-workspace-action="cancel-opening"]')?.remove();
   };
-  const recordOrReview = async (startRequested?: MicrophoneInput, openingView?: CreatorReviewView, openingSignal?: AbortSignal): Promise<void> => {
+  const recordOrReview = async (startRequested?: MicrophoneInput, openingView?: CreatorReviewView, openingSignal?: AbortSignal, initialAction?: "open-draft"): Promise<void> => {
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
     step = "recording status check";
@@ -432,7 +439,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     endOpening(); // Recorder ownership or journal mutation starts after this boundary.
     if (!["created", "capturing"].includes(view.status)) {
       if (!progress().uploaded) await persist({ ...progress(), uploaded: true });
-      if (authorized(n)) showReview(view);
+      if (authorized(n)) showReview(view, initialAction);
+      return;
+    }
+    if (initialAction) {
+      showReview(view);
+      notice.textContent = "A saved draft is not available. Return to Your encounters to open the recording.";
       return;
     }
     const recordingProgress = progress();
@@ -524,7 +536,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (progress().sessionId === null) await persist({ ...progress(), sessionId: id });
     if (authorized(n)) await recordOrReview(startRequested);
   };
-  const open = async (ref: string): Promise<void> => {
+  const open = async (ref: string, initialAction?: "open-draft"): Promise<void> => {
     await clearEncounter(); const n = generation;
     header.hidden = false;
     openingRef = ref; step = "encounter connection";
@@ -561,17 +573,20 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         assertProgress(loaded.progress);
         if (loaded.progress.pendingSave) {
           endOpening(); showSaveRecovery();
-        } else if (loaded.progress.sessionId) await recordOrReview(undefined, first ?? undefined, opening.signal);
+        } else if (loaded.progress.sessionId) await recordOrReview(undefined, first ?? undefined, opening.signal, initialAction);
         else { endOpening(); show(`<h1>Recover recording preparation</h1><p>Confirm the original request before starting another recording.</p><button data-workspace-action="admit">Retry preparation</button>`); }
       } else {
         const recovered = first === undefined ? await interruptibleRead(client.discoverEncounter(), opening.signal) : first;
         if (!authorized(n)) return;
         endOpening();
-        if (recovered === null) preparation();
+        if (recovered === null) {
+          if (initialAction) show('<h1>Draft not available</h1><p>Return to Your encounters to open this visit. Recording has not started.</p>');
+          else preparation();
+        }
         else {
           if (recovered.status === "created" || recovered.status === "capturing") throw new CaptureDeviceCustodyError();
           await persist({ admission: null, sessionId: recovered.session_id, uploaded: true, pendingSave: null });
-          if (authorized(n)) showReview(recovered);
+          if (authorized(n)) showReview(recovered, initialAction);
         }
       }
       if (current(n)) openingRef = null;
@@ -968,6 +983,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           requireValue(patient); await create({ kind: "existing", patientRef: patient.patientRef }); break;
         }
         case "open": await open(button.dataset.appointment!); break;
+        case "open-draft": {
+          const ref = button.dataset.appointment;
+          if (ref && listedDraftRefs.has(ref)) await open(ref, "open-draft");
+          break;
+        }
         case "prepare": {
           // Only this currently displayed, explicit attestation can initiate a
           // new recording. Reopening or recovering never replays the action.
@@ -1079,6 +1099,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   host.signal.addEventListener("abort", abort, { once: true });
   if (host.signal.aborted) abort(); else void run(list, "startup");
   return dispose;
+}
+
+function openDraftButton(encounter: ProviderEncounter): string {
+  return `<button class="provider-open-draft" data-workspace-action="open-draft" data-appointment="${escape(encounter.appointmentRef)}" aria-label="Open draft for ${escape(encounter.title)}">Open draft</button>`;
 }
 
 function escape(value: string): string {
