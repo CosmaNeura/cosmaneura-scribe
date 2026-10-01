@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { HttpCreatorReviewApi, parseCreatorReview, parseCaptureContinuity } from "./creator-review-api";
-import { renderCreatorReview, renderNoteTranscript, transcriptParagraphs } from "./creator-review-panel";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HttpCreatorReviewApi, parseCreatorReview, parseCaptureContinuity, type AuthorizedReviewRequest } from "./creator-review-api";
+import { mountCreatorReview, renderCreatorReview, renderNoteTranscript, transcriptParagraphs } from "./creator-review-panel";
+import { renderCreatorEditDialog } from "./creator-edit-view";
 import { longReviewFixture } from "./long-review.fixture";
 import { MAX_CREATOR_REVIEW_BYTES } from "./capture-response-limits";
 
@@ -30,6 +31,7 @@ const view = {
 };
 
 describe("creator review surface", () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
   it("breaks long speech into readable paragraphs without changing characters or assigning voices", () => {
     for (const text of [
       "Dr. Avery described a fictional test. No medication was discussed. ".repeat(20),
@@ -128,9 +130,68 @@ describe("creator review surface", () => {
       working: { ...view.working, blockers: [{ source_segment_id: segment, code: "translation_retry_required" }] },
     };
     expect(renderCreatorReview({ phase: "ready", view: parseCreatorReview(rejected, session), notice: "" }))
-      .toContain("Translation needs a new attempt");
+      .toContain("English translation needs help");
     expect(renderCreatorReview({ phase: "ready", view: parseCreatorReview(rejected, session), notice: "" }))
       .not.toContain("Checking translation automatically");
+  });
+
+  it.each(["translation_failed", "translation_retry_required"])("keeps %s blocked while repeated Check status only reads", async code => {
+    const failed = { ...view, status: "translation_pending", editing_allowed: true,
+      review_queue: { ...view.review_queue, status: "not_ready", items: [] },
+      working: { ...view.working, blockers: [{ source_segment_id: segment, code }] },
+    };
+    const parsed = parseCreatorReview(failed, session), original = JSON.stringify(parsed);
+    const afterDecision = renderCreatorReview({ phase: "ready", view: parsed, notice: "Decision saved." });
+    expect(afterDecision).toContain("Decision saved.");
+    expect(afterDecision).toContain("Check status only looks for updates; it does not retry translation.");
+    const edit = renderCreatorEditDialog(parsed, segment);
+    expect(edit).toContain("English wording is unavailable for this turn.");
+    expect(edit).toContain("Your original Spanish transcript is retained.");
+    expect(edit).not.toContain("Finish translation review");
+    expect(edit).not.toContain('textarea name="content"');
+
+    // Minimal event surface only; the actual mounted controller and HTTP adapter run.
+    // This exercises read/mutation boundaries without a browser or simulated provider success.
+    class Surface extends EventTarget {
+      innerHTML = "";
+      disabled = false;
+      dataset = { reviewAction: "refresh" };
+      closest(selector: string): Surface | null { return selector === "button[data-review-action]" ? this : null; }
+      contains(element: unknown): boolean { return element === button; }
+      replaceChildren(): void { this.innerHTML = ""; }
+    }
+    const root = new Surface(), button = new Surface();
+    vi.stubGlobal("Element", Surface);
+    vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
+    vi.useFakeTimers();
+    const request = vi.fn<AuthorizedReviewRequest>(async () => new Response(JSON.stringify(failed), { headers: { "content-type": "application/json" } }));
+    const api = new HttpCreatorReviewApi(session, request), decide = vi.spyOn(api, "decide"), openNote = vi.fn();
+    const dispose = mountCreatorReview(root as unknown as HTMLElement, api, { continueToNote: openNote });
+    try {
+      await vi.waitFor(() => expect(root.innerHTML).toContain("English translation needs help"));
+      for (let index = 0; index < 2; index += 1) {
+        expect(root.innerHTML).toContain("Check status</button>");
+        const click = new Event("click");
+        Object.defineProperty(click, "target", { value: button });
+        root.dispatchEvent(click);
+        await vi.waitFor(() => expect(root.innerHTML).toContain("English translation needs help"));
+      }
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(3);
+      for (const [url, options] of request.mock.calls) {
+        expect(url).toBe(`/v1/captured-sessions/${session}/review`);
+        expect(options.method).toBe("GET");
+      }
+      expect(decide).not.toHaveBeenCalled();
+      expect(openNote).not.toHaveBeenCalled();
+      expect(root.innerHTML).toContain("Your original Spanish transcript is retained.");
+      expect(root.innerHTML).toContain("Keep this visit and contact your practice administrator for help.");
+      expect(root.innerHTML).toContain("Check status only looks for updates; it does not retry translation.");
+      expect(root.innerHTML).toContain("A note cannot be prepared yet.");
+      expect(root.innerHTML).toContain("No tengo fiebre.");
+      expect(root.innerHTML).not.toMatch(/data-review-action="(?:accepted|rejected|continue|retry)"/u);
+      expect(JSON.stringify(parsed)).toBe(original);
+    } finally { dispose(); }
   });
 
   it("shows the actual bilingual review contract, explicit decisions and unassigned speakers", () => {
