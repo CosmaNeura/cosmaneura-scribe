@@ -35,7 +35,7 @@ export function parseCaptureContinuity(value: unknown): CaptureContinuity {
 /** The existing authenticated shell/BFF supplies this. Never pass a workload token to a view. */
 export type AuthorizedReviewRequest = (
   path: string,
-  request: { readonly method: "GET" | "POST"; readonly body?: ReviewDecision | CreatorEditRequest; readonly key?: string },
+  request: { readonly method: "GET" | "POST"; readonly body?: ReviewDecision | CreatorEditRequest; readonly key?: string; readonly signal?: AbortSignal },
 ) => Promise<Response>;
 
 export class CreatorReviewError extends Error {
@@ -46,7 +46,7 @@ export class CreatorReviewError extends Error {
 }
 
 export interface CreatorReviewApi {
-  read(): Promise<CreatorReviewView>;
+  read(signal?: AbortSignal): Promise<CreatorReviewView>;
   decide(request: ReviewDecision, key: string): Promise<ReviewReceipt>;
   edit?(request: CreatorEditRequest, key: string): Promise<CreatorEditReceipt>;
 }
@@ -62,8 +62,9 @@ export class HttpCreatorReviewApi implements CreatorReviewApi {
     this.path = `/v1/captured-sessions/${encodeURIComponent(sessionId)}/review`;
   }
 
-  public async read(): Promise<CreatorReviewView> {
-    const value = await this.send({ method: "GET" });
+  public async read(signal?: AbortSignal): Promise<CreatorReviewView> {
+    const value = await this.send({ method: "GET", ...(signal ? { signal } : {}) });
+    if (signal?.aborted) throw new CreatorReviewError("unavailable");
     return parseCreatorReview(value, this.sessionId);
   }
 
@@ -85,12 +86,14 @@ export class HttpCreatorReviewApi implements CreatorReviewApi {
   }
 
   private async send(request: Parameters<AuthorizedReviewRequest>[1], path = this.path): Promise<unknown> {
+    if (request.signal?.aborted) throw new CreatorReviewError("unavailable");
     let response: Response;
     try {
       response = await this.authorizedRequest(path, request);
     } catch {
       throw new CreatorReviewError("unavailable");
     }
+    if (request.signal?.aborted) throw new CreatorReviewError("unavailable");
     if (!response.ok) {
       throw new CreatorReviewError(response.status === 409 ? "conflict" : "unavailable");
     }

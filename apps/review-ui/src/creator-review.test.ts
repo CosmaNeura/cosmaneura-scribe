@@ -112,6 +112,8 @@ describe("creator review surface", () => {
       expect(html).toContain(copy);
       expect(html).not.toContain('data-review-action="accepted"');
       expect(html).not.toContain("English transcript ready");
+      expect(html).toContain("Check status</button>");
+      expect(html).toContain(state === "unconfirmed" ? "Choose Check status later" : "Checking translation automatically");
     }
   });
 
@@ -127,6 +129,8 @@ describe("creator review surface", () => {
     };
     expect(renderCreatorReview({ phase: "ready", view: parseCreatorReview(rejected, session), notice: "" }))
       .toContain("Translation needs a new attempt");
+    expect(renderCreatorReview({ phase: "ready", view: parseCreatorReview(rejected, session), notice: "" }))
+      .not.toContain("Checking translation automatically");
   });
 
   it("shows the actual bilingual review contract, explicit decisions and unassigned speakers", () => {

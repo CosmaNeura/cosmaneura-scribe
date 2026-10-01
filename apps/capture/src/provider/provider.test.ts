@@ -28,6 +28,19 @@ async function base(): Promise<CoreDraft> {
 }
 
 describe("configured Core provider boundary", () => {
+  it("cancels a background review read without aborting encounter access or sending a mutation", async () => {
+    const encounter = new AbortController(), observation = new AbortController();
+    let transportSignal!: AbortSignal;
+    const send = vi.fn<AuthorizedCoreRequest>((_path, body, _key, signal) => {
+      expect(body.operation).toEqual({ kind: "creator_review" }); transportSignal = signal;
+      return new Promise((_resolve, reject) => { signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }); });
+    });
+    const client = new CoreCaptureClient(scope, send, encounter.signal);
+    const read = new HttpCreatorReviewApi(uuid, client.reviewRequest(uuid)).read(observation.signal);
+    observation.abort();
+    await expect(read).rejects.toMatchObject({ kind: "unavailable" });
+    expect(transportSignal.aborted).toBe(true); expect(encounter.signal.aborted).toBe(false); expect(send).toHaveBeenCalledTimes(1);
+  });
   it("discovers the admitted session without inventing consent or selecting a session", async () => {
     const view = { schema_version: "1.0", session_id: uuid, status: "processing", source: null, working: null, review_queue: null };
     const send = vi.fn(wire({ schema_version: "1.0", status: "available", review: view }));
