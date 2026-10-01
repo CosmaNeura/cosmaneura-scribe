@@ -30,6 +30,10 @@ from cosmaneura_scribe.provider_encounter_transport import (
     ProviderEncounterAccount,
     ProviderEncounterTransport,
 )
+from cosmaneura_scribe.provider_native_core_transport import (
+    NATIVE_READ_OPERATIONS,
+    ProviderNativeCoreTransport,
+)
 from cosmaneura_scribe.provider_performance import provider_phase_timing, provider_request_timing
 from cosmas_os.api.auth import (
     CORE_STAGING_PERSONAL,
@@ -293,6 +297,27 @@ class ProviderReceiver:
                 # capture operations pass that exact key through to existing Core.
                 _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key))
 
+                # Read-only compositions can check this receiver's registry on
+                # both sides of one Core call. Mutations retain every existing
+                # intermediate registry check; a final denial cannot undo them.
+                operation = body.get("operation")
+                composed_read = action in {"mount", "recorder"} or (
+                    action == "capture-operations"
+                    and isinstance(operation, dict)
+                    and isinstance(operation.get("kind"), str)
+                    and operation["kind"] in NATIVE_READ_OPERATIONS
+                )
+                if (
+                    self.encounter_creation_enabled
+                    and composed_read
+                    and not await self.registry_read(
+                        lambda bind: self.legacy_workspace_exists(workspace_id, bind)
+                    )
+                ):
+                    return _reply(
+                        200, await self.native_core_read(authorization, revision, action, body, key)
+                    )
+
                 checked_selection = None
 
                 async def fresh() -> AuthorizedCoreProvider:
@@ -462,6 +487,68 @@ class ProviderReceiver:
         )
         try:
             return await transport.request(body, key)
+        finally:
+            await transport.close()
+
+    @staticmethod
+    def legacy_workspace_exists(workspace_id, bind):
+        with Session(bind) as session:
+            return (
+                session.scalar(
+                    select(EncounterWorkspace.id).where(EncounterWorkspace.id == str(workspace_id))
+                )
+                is not None
+            )
+
+    async def native_core_read(self, authorization, revision, action, body, key):
+        async def fresh_account():
+            try:
+                if not self.enabled or not self.encounter_creation_enabled:
+                    raise AccessDenied()
+                return await self.registry_read(
+                    lambda bind: self.encounter_account(authorization, bind=bind)
+                )
+            except AuthenticationFailed:
+                raise ProviderCoreUnavailable("core_provider_access_unavailable", 401) from None
+            except (AccessDenied, ws.WorkspaceError):
+                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403) from None
+
+        transport = ProviderNativeCoreTransport(
+            self.profile.core_origin,
+            fresh_account,
+            self.workload_token,
+            transport=self.core_http,
+            connections=self.core_connections,
+        )
+        try:
+            account, value = await transport.request(action, body, key)
+            if not self.enabled:
+                raise AccessDenied()
+            if action == "recorder":
+                return {"revision": str(revision), "session_id": body["session_id"]}
+            if action != "mount":
+                return value
+            row = self.core_entry(value["encounter"])
+            _require(
+                row["workspaceId"] == str(_uuid(body["workspace_id"]))
+                and row["appointmentRef"] == value["appointment_ref"]
+            )
+            result = {
+                "revision": str(revision),
+                "recoveryScope": str(account.recovery_scope),
+                "workspaceId": row["workspaceId"],
+                "appointmentRef": row["appointmentRef"],
+                "bindingRef": value["binding_ref"],
+                "encounter": {
+                    "appointmentRef": row["appointmentRef"],
+                    "title": row["title"],
+                    "detail": row["detail"],
+                    "patientName": row["patientName"],
+                },
+            }
+            if "opening_review" in value:
+                result["openingReview"] = value["opening_review"]
+            return result
         finally:
             await transport.close()
 
