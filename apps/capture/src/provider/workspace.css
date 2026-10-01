@@ -21,9 +21,11 @@
 .provider-list-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .provider-list-heading h1, .provider-list-heading button { margin: 0; }
 .provider-encounters { display: grid; gap: 12px; list-style: none; padding: 0; margin: 16px 0; }
-.provider-encounters li { min-width: 0; }
+.provider-encounters li { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
 .provider-encounters button { display: grid; gap: 4px; width: 100%; margin: 0; text-align: left; padding: 18px; overflow-wrap: anywhere; }
 .provider-encounters span { font-size: .95rem; color: #526d63; }
+.provider-encounters [data-draft-action]:empty { display: none; }
+.provider-encounters .provider-open-draft { width: auto; padding: 12px; text-align: center; }
 .provider-encounter-help { margin-top: 20px; border-top: 1px solid #dce5e3; padding-top: 8px; color: #526d63; }
 .provider-encounter-help summary { box-sizing: border-box; min-height: 44px; padding: 10px 0; cursor: pointer; }
 .provider-encounter-help p { margin-top: 4px; }

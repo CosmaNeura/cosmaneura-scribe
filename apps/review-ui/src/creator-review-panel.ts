@@ -25,6 +25,8 @@ export interface CreatorReviewState {
 }
 
 export interface CreatorReviewOptions {
+  /** One explicit catalog click, consumed by the first load even if recovery wins. Never persist. */
+  readonly initialAction?: "open-draft";
   /** Current authorized encounter/profile display values; assignment still needs confirmation. */
   readonly speakerNameSuggestions?: SpeakerNameSuggestions;
   readonly journal?: CreatorReviewJournal;
@@ -48,6 +50,7 @@ export function mountCreatorReview(
   let recovered = false;
   let continuing = false;
   let refreshing = false;
+  let initialAction = options.initialAction;
   const disposeTranscriptTools = bindTranscriptTools(root);
   const waitingForTranscript = (): boolean => state.phase === "ready" && pending === null && pendingEdit === null
     && editingSegment === null && !continuing && !refreshing && hasPendingReviewProgress(state.view);
@@ -112,6 +115,8 @@ export function mountCreatorReview(
 
   const refresh = async (): Promise<void> => {
     if (disposed || pending !== null || pendingEdit !== null || editingSegment !== null || refreshing) return;
+    const openDraft = initialAction === "open-draft";
+    initialAction = undefined;
     clearRefresh();
     refreshing = true;
     const request = ++generation;
@@ -143,6 +148,9 @@ export function mountCreatorReview(
         return;
       }
       state = { ...state, phase: "ready", view };
+      if (openDraft && view.working?.note_ready !== true) {
+        state = { ...state, notice: "The saved draft is not available yet. Review this recording’s current status." };
+      }
     } catch {
       if (disposed || request !== generation) return;
       state = {
@@ -152,6 +160,9 @@ export function mountCreatorReview(
     } finally {
       refreshing = false;
       if (!disposed && request === generation) { render(); progress.restart(); }
+    }
+    if (openDraft && !disposed && request === generation && state.phase === "ready" && state.view?.working?.note_ready) {
+      await continueToNote();
     }
   };
 
@@ -236,11 +247,13 @@ export function mountCreatorReview(
     clearRefresh();
     const request = ++generation;
     continuing = true;
+    const previous = state.view;
     render();
     try {
       const opening = options.prepareNoteOpening ? await options.prepareNoteOpening() : undefined;
       const view = opening?.view ?? await api.read();
       if (disposed || request !== generation) return;
+      if (!canApplyReviewProgress(previous, view)) throw new CreatorReviewError("invalid_response");
       state = { ...state, view };
       if (view.working?.note_ready !== true) {
         state = { ...state, notice: "The transcript changed. Complete its current review before preparing a note." };
