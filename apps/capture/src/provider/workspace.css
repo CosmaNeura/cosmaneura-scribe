@@ -121,6 +121,10 @@
 .provider-draft-status { margin: 4px 0; color: #526d63; font-size: .875rem; }
 .provider-note-grid > * { min-width: 0; }
 .provider-note-evidence { padding-top: 16px; }
+.provider-note-source-matches { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: -12px; }
+.provider-note-source-matches[hidden] { display: none; }
+.provider-note-source-matches button { margin: 0; padding: 6px 10px; font-size: .85rem; }
+.provider-note-evidence [data-note-source-back] { position: sticky; top: calc(var(--provider-header-height, 76px) + 84px); z-index: 1; box-shadow: 0 2px 6px #17352f24; }
 .provider-note-guidance { margin-top: 12px; font-size: .875rem; color: #526d63; }
 .provider-note-guidance summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
 .provider-save-bar:has(.provider-save-recovery) { background: #fff9ea; border-color: #c49640; }

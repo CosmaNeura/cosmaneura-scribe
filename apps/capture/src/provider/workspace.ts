@@ -25,6 +25,7 @@ import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./workflow-timi
 import { encounterDetail, noteFieldLabel } from "./workspace-display";
 import { noteEditorPosition, restoreNoteEditorPosition, setNoteEditorPending, type NoteEditorPosition } from "./note-editor-state";
 import { settledRecorderVisitStatus } from "./recent-visit-state";
+import { bindNoteSourceNavigation } from "./note-source-navigation";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
@@ -48,6 +49,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let pendingNavigation: "encounters" | "review" | null = null;
   let editorPosition: NoteEditorPosition | null = null;
   let lastEditorField: HTMLTextAreaElement | null = null;
+  let refreshNoteSources: (() => void) | null = null;
   let setupQuery = "";
   let pendingDateOfBirth: { date: string; key: string } | null = null;
   let stopSaveCheck: (() => void) | null = null;
@@ -714,9 +716,33 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const transcriptDetails = content.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
     if (transcriptDetails && window.matchMedia("(min-width: 900px)").matches) transcriptDetails.open = true;
     const stopTranscriptTools = bindTranscriptTools(content);
+    const n = generation, activeContext = context;
+    const sourceNavigation = bindNoteSourceNavigation(content, {
+      current: () => authorized(n) && context === activeContext && draft && noteTranscript ? { draft, view: noteTranscript } : null,
+      revealTranscript: remember => setNoteView(true, remember), returnToNote: () => setNoteView(false),
+    });
+    refreshNoteSources = sourceNavigation.refresh;
     content.addEventListener("input", updateSaveState);
     content.addEventListener("focusin", rememberEditorField);
-    disposeContent = () => { stopTranscriptTools(); content.removeEventListener("input", updateSaveState); content.removeEventListener("focusin", rememberEditorField); };
+    disposeContent = () => {
+      sourceNavigation.dispose();
+      if (refreshNoteSources === sourceNavigation.refresh) refreshNoteSources = null;
+      stopTranscriptTools(); content.removeEventListener("input", updateSaveState); content.removeEventListener("focusin", rememberEditorField);
+    };
+  };
+  const setNoteView = (transcript: boolean, rememberPosition = true): void => {
+    const note = content.querySelector<HTMLElement>(".provider-note");
+    requireValue(note);
+    if (transcript && rememberPosition) editorPosition = noteEditorPosition(content, lastEditorField);
+    note.dataset.noteView = transcript ? "transcript" : "note";
+    for (const tab of note.querySelectorAll<HTMLButtonElement>(".provider-note-tabs button")) {
+      tab.setAttribute("aria-pressed", String(tab.dataset.workspaceAction === (transcript ? "transcript-view" : "note-view")));
+    }
+    if (transcript) {
+      const details = note.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
+      if (details) details.open = true;
+      note.querySelector<HTMLElement>('.provider-note-evidence input, .provider-note-evidence summary')?.focus({ preventScroll: true });
+    } else restoreNoteEditorPosition(editorPosition);
   };
   const rememberEditorField = (event: FocusEvent): void => {
     if (event.target instanceof HTMLTextAreaElement && event.target.hasAttribute("data-note-field")) lastEditorField = event.target;
@@ -724,6 +750,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const hasUnsavedEdits = (): boolean => [...content.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")]
     .some(field => field.value !== field.defaultValue);
   const updateSaveState = (): void => {
+    refreshNoteSources?.();
     const status = content.querySelector<HTMLElement>("[data-note-save-state]");
     if (status) status.textContent = journal.progress?.pendingSave ? "Save confirmation pending · Edits retained"
       : hasUnsavedEdits() ? "Unsaved edits" : "Saved · Not clinically reviewed";
@@ -908,17 +935,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "check-note": requireValue(client && source); awaitPreparedNote(generation, client, session(), currentSchema, source); break;
         case "review": await guardNavigation("review"); break;
         case "note-view": case "transcript-view": {
-          const transcript = button.dataset.workspaceAction === "transcript-view";
-          const note = content.querySelector<HTMLElement>(".provider-note");
-          requireValue(note);
-          if (transcript) editorPosition = noteEditorPosition(content, lastEditorField);
-          note.dataset.noteView = transcript ? "transcript" : "note";
-          for (const tab of note.querySelectorAll<HTMLButtonElement>(".provider-note-tabs button")) tab.setAttribute("aria-pressed", String(tab === button));
-          if (transcript) {
-            const details = note.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
-            if (details) details.open = true;
-            note.querySelector<HTMLElement>('.provider-note-evidence input, .provider-note-evidence summary')?.focus({ preventScroll: true });
-          } else restoreNoteEditorPosition(editorPosition);
+          setNoteView(button.dataset.workspaceAction === "transcript-view");
           break;
         }
         case "core": requireValue(context); await context.openInCore(draft?.note_ref ?? null); break;
