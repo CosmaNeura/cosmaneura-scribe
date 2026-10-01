@@ -1,8 +1,11 @@
-// INERT PROPOSAL: not part of any selected app or source package.
-// Callers must bind a fixed private directory and persist the anchor in the
-// native-only Keychain. This file never accesses Keychain or captures audio.
-import Darwin
+// Shared serialized source-fence identities and desktop process ownership.
+// macOS callers bind a fixed private directory and persist the anchor in the
+// native-only Keychain. iOS compiles only the shared value types. This file
+// itself never accesses Keychain or captures audio.
 import Foundation
+#if os(macOS)
+import Darwin
+#endif
 
 enum NativeFenceError: Error { case unavailable }
 
@@ -16,6 +19,9 @@ struct NativeFenceAnchor: Codable, Equatable, Sendable {
     let capture: NativeFenceFileIdentity
 }
 
+#if os(macOS)
+// Cross-process filesystem custody is desktop-only. iOS owns capture through
+// NativeCaptureStartGate and must not link unused filesystem metadata APIs.
 private final class NativeFenceFile {
     private let directory: Int32
     private let descriptor: Int32
@@ -149,6 +155,7 @@ final class NativeCaptureProcessLease {
         }
     }
 }
+#endif
 
 struct NativeFenceTicket: Sendable {
     let anchor: NativeFenceAnchor
@@ -176,6 +183,7 @@ struct NativeFenceTicket: Sendable {
 
 /// Open every component without following symlinks, including ancestors. The
 /// final directory's private ownership/mode is checked by NativeFenceFile.
+#if os(macOS)
 private func nativeFenceDirectory(_ path: String) throws -> Int32 {
     guard path.hasPrefix("/") else { throw NativeFenceError.unavailable }
     var fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
@@ -216,3 +224,4 @@ func nativeDesktopFenceDirectory() throws -> String {
     }
     return path
 }
+#endif
