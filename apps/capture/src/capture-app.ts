@@ -525,7 +525,7 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
               : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or finish recording."
               : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."
-              : this.#snapshot.statusCode === "capture_interrupted" ? "Recording was interrupted. Saved audio is retained. Check your microphone and connection, then resume or finish recording. Speech during the interruption was not recorded."
+              : this.#snapshot.statusCode === "capture_interrupted" ? "Recording was interrupted. Saved audio is retained, but some audio just before the interruption may be missing. Speech during the interruption was not recorded. Check your microphone, then resume and repeat the last part, or finish recording."
               : this.#snapshot.statusCode === "capture_paused" ? this.#isDesktopCompact() || nativeProvider
                 ? html`<strong>${this.#isCancelledEmptyStart() ? "Start canceled" : "Paused"}</strong><span class="recording-state-detail">${this.#isCancelledEmptyStart()
                   ? "Recording has not started. Start when ready." : "No audio is being recorded."}</span>`
