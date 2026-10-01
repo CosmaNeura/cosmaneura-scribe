@@ -145,7 +145,7 @@ describe("creator review surface", () => {
     expect(afterDecision).toContain("Decision saved.");
     expect(afterDecision).toContain("Check status only looks for updates; it does not retry translation.");
     const edit = renderCreatorEditDialog(parsed, segment);
-    expect(edit).toContain("English wording is unavailable for this turn.");
+    expect(edit).toContain("English wording is unavailable for this passage.");
     expect(edit).toContain("Your original Spanish transcript is retained.");
     expect(edit).not.toContain("Finish translation review");
     expect(edit).not.toContain('textarea name="content"');
@@ -196,7 +196,20 @@ describe("creator review surface", () => {
 
   it("shows the actual bilingual review contract, explicit decisions and unassigned speakers", () => {
     const parsed = parseCreatorReview(view, session);
+    const original = JSON.stringify(parsed);
     const html = renderCreatorReview({ phase: "ready", view: parsed, notice: "" });
+    const disclosure = html.match(/<details class="creator-transcript-details">.*?<\/details>/su)?.[0];
+    expect(disclosure).toBe('<details class="creator-transcript-details"><summary>Transcript details</summary><p>Version 2</p></details>');
+    const visibleReview = html.replace(disclosure!, "");
+    expect(visibleReview).toContain("Your translation review is needed");
+    expect(visibleReview).toContain("Spanish · original");
+    expect(visibleReview).toContain("English · proposed translation");
+    expect(visibleReview).toContain("Accept English translation");
+    expect(visibleReview).toContain("Speaker not assigned");
+    expect(html).toContain("1 transcript passage");
+    expect(html).toContain('aria-label="Next matching passage"');
+    expect(html).toContain(`data-transcript-segment="${segment}"`);
+    expect(JSON.stringify(parsed)).toBe(original);
     expect(html).toContain("Spanish · original");
     expect(html).toContain("English · proposed translation");
     expect(html).toContain("I do not have a fever.");

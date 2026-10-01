@@ -9,7 +9,7 @@ for (const width of [390, 900]) {
     await expect(page.getByText("Review is complete", { exact: false })).toHaveCount(0);
     await page.getByLabel("Find in transcript").fill("sintoma");
     await expect(page.locator("[data-transcript-segment]:visible")).toHaveCount(1);
-    await expect(page.getByText("1 matching turn", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 matching passage", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Clear", exact: true }).click();
     await expect(page.locator("[data-transcript-segment]:visible")).toHaveCount(2);
     await page.getByRole("button", { name: "Correct wording or speaker" }).first().click();
