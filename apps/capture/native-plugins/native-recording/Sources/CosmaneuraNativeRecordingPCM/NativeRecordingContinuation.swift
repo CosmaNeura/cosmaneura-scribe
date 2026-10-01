@@ -128,6 +128,12 @@ public actor NativeRecordingContinuation {
       guard phase == .ready else { throw NativeRecordingBindingFailure.authorityChanged }
       phase = .recording
       guard automatic else { return }
+      // Capture failure/window closure is independent of the five-second
+      // authority heartbeat and any suspended network renewal. This signal
+      // only requests the existing physical stop; it never confirms closure.
+      sink.observeClosure { [weak self] in
+        Task { await self?.captureClosed() }
+      }
       let clock = sourceClock
       heartbeatTask = Task { [weak self] in
         while !Task.isCancelled {
@@ -153,6 +159,7 @@ public actor NativeRecordingContinuation {
     if phase == .stopped { return }
     if let stopTask { return try await stopTask.value }
     phase = .stopping
+    sink.clearClosureObserver()
     heartbeatTask?.cancel()
     renewalTask?.cancel()
     heartbeatTask = nil
@@ -180,6 +187,13 @@ public actor NativeRecordingContinuation {
   }
 
   private var active: Bool { phase == .recording || phase == .renewalDelayed }
+
+  private func captureClosed() async {
+    guard active else { return }
+    let capture = sink.state
+    guard capture.phase != .accepting else { return }
+    await end(capture.phase == .draining ? .authorityExpired : .captureFailed)
+  }
 
   // Internal deterministic seams exercise the production maintenance operations
   // with an accelerated clock. Production callers use startMaintenance/stop only.

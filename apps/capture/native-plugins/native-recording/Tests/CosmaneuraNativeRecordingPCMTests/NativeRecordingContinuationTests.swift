@@ -8,6 +8,112 @@ import XCTest
 @testable import CosmaneuraNativeRecordingPCM
 
 @MainActor final class NativeRecordingContinuationTests: XCTestCase {
+  func testAutomaticRouteFailureReachesTerminalStateWithinFourSeconds() async throws {
+    for sample in 1...3 {
+      let f = try ContinuationFixture()
+      let system = EncryptedAudioSystem()
+      let recorder = try f.recorder(system: system)
+      let lease = try await f.leases.open()
+      let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 30)
+      try recorder.start(
+        runID: UUID().uuidString.lowercased(),
+        captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+        lease: lease, batch: batch)
+      try await recorder.ready()
+      // Let the first heartbeat finish, so this cannot pass by racing it.
+      try await Task.sleep(for: .milliseconds(100))
+      let start = ContinuousClock.now
+      system.emit(.routeChanged)
+      var terminal: NativeRecordingContinuationState?
+      while start.duration(to: .now) < .seconds(4) {
+        if let state = await recorder.snapshot(), state.phase == .stopped || state.phase == .failed {
+          terminal = state
+          break
+        }
+        try await Task.sleep(for: .milliseconds(2))
+      }
+      let elapsed = start.duration(to: .now)
+      XCTAssertNotNil(terminal, "Sink failure must not wait for the five-second heartbeat")
+      XCTAssertLessThan(elapsed, .seconds(4))
+      assertEqual(recorder.captureState.phase, .failed)
+      try await recorder.stop()
+      assertTrue(recorder.isPhysicallyIdle)
+      assertEqual(system.deactivations, 1)
+      assertEqual((await f.service.counts).leases, 1)
+      let parts = elapsed.components
+      let milliseconds = Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1e15
+      print("NATIVE_TERMINAL_METRIC sample=\(sample) milliseconds=\(milliseconds)")
+    }
+  }
+
+  func testAutomaticSinkClosureDoesNotWaitForSuspendedRenewal() async throws {
+    let f = try ContinuationFixture()
+    let owner = try await f.open(start: false)
+    let pause = ContinuationPause()
+    await f.service.pauseRenewal(pause)
+    f.clock.advance(780)
+    try await owner.startMaintenance()
+    await pause.entered()
+    f.sink.terminated(.captureFailed)
+    let state = try await terminalState(owner)
+    await pause.release()
+    assertEqual(state.phase, .stopped)
+    assertEqual(state.reason, .captureFailed)
+    assertEqual(state.sourceGeneration, 1)
+    assertEqual(await f.driver.starts, 1)
+    assertEqual(await f.driver.releases, 1)
+  }
+
+  func testAutomaticSinkClosureFailureRemainsUnconfirmedUntilExplicitRetry() async throws {
+    let f = try ContinuationFixture()
+    let owner = try await f.open(start: false)
+    try await owner.startMaintenance()
+    try await f.driver.offer(800)
+    await f.driver.failNextFreeze()
+    f.sink.terminated(.captureFailed)
+    let state = try await terminalState(owner)
+    assertEqual(state.phase, .failed)
+    assertEqual(state.reason, .closureUnconfirmed)
+    assertEqual(await f.driver.releases, 0)
+    // A duplicate notification cannot silently retry unconfirmed physical close.
+    f.sink.terminated(.captureFailed)
+    try await Task.sleep(for: .milliseconds(20))
+    assertEqual((await owner.state).phase, .failed)
+    try await owner.stop()
+    assertEqual((await owner.state).phase, .stopped)
+    assertEqual(await f.driver.releases, 1)
+    assertEqual(f.sink.state.committedChunks, 0)
+  }
+
+  func testAutomaticWindowClosureUsesExistingConfirmedDrain() async throws {
+    let f = try ContinuationFixture()
+    let owner = try await f.open(start: false)
+    try await owner.startMaintenance()
+    try await f.driver.offer(800)
+    f.sink.windowClosed(.authorityExpired)
+    let state = try await terminalState(owner)
+    assertEqual(state.phase, .stopped)
+    assertEqual(state.reason, .authorityExpired)
+    assertEqual(state.capture.phase, .closed)
+    assertEqual(state.capture.committedChunks, 1)
+    try await owner.stop()
+    assertEqual(await f.driver.releases, 1)
+  }
+
+  private func terminalState(_ owner: NativeRecordingContinuation) async throws
+    -> NativeRecordingContinuationState
+  {
+    let start = ContinuousClock.now
+    while start.duration(to: .now) < .seconds(4) {
+      let state = await owner.state
+      if state.phase == .stopped || state.phase == .failed { return state }
+      try await Task.sleep(for: .milliseconds(2))
+    }
+    XCTFail("Terminal sink must be observed within four seconds")
+    try await owner.stop()
+    return await owner.state
+  }
+
   func testShortResumedWindowRefillsBeforeReservedAudioRunsOut() async throws {
     let f = try ContinuationFixture()
     let owner = try await f.open(initialCount: 13)
