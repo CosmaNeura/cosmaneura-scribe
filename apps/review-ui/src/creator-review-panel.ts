@@ -12,8 +12,8 @@ import "./creator-review.css";
 import { isUuid } from "./contracts";
 import { bindTranscriptTools } from "./transcript-tools";
 export { bindTranscriptTools, renderTranscriptEvidenceLinks } from "./transcript-tools";
-import { currentSpeakerConfirmations, parsePendingCreatorEdit, type CreatorEditJournal, type PendingCreatorEdit } from "./creator-edit";
-import { creatorEditFromForm, renderCreatorEditDialog } from "./creator-edit-view";
+import { currentSpeakerConfirmations, parsePendingCreatorEdit, speakerNameSuggestion, type CreatorEditJournal, type PendingCreatorEdit } from "./creator-edit";
+import { creatorEditFromForm, renderCreatorEditDialog, type SpeakerNameSuggestions } from "./creator-edit-view";
 
 type Phase = "loading" | "ready" | "saving" | "retry" | "edit-retry" | "unavailable";
 export interface CreatorReviewState {
@@ -24,6 +24,8 @@ export interface CreatorReviewState {
 }
 
 export interface CreatorReviewOptions {
+  /** Current authorized encounter/profile display values; assignment still needs confirmation. */
+  readonly speakerNameSuggestions?: SpeakerNameSuggestions;
   readonly journal?: CreatorReviewJournal;
   readonly editJournal?: CreatorEditJournal;
   /** Open the host's existing Core note flow with this action's fresh authorized read. */
@@ -60,7 +62,7 @@ export function mountCreatorReview(
     if (disposed) return;
     root.innerHTML = renderCreatorReview({ ...state, editable: Boolean(api.edit && options.editJournal) });
     if (editingSegment && state.view) {
-      root.insertAdjacentHTML("beforeend", renderCreatorEditDialog(state.view, editingSegment));
+      root.insertAdjacentHTML("beforeend", renderCreatorEditDialog(state.view, editingSegment, options.speakerNameSuggestions));
       const dialog = root.querySelector<HTMLDialogElement>("[data-creator-edit-dialog]");
       dialog?.showModal();
       dialog?.addEventListener("cancel", event => { event.preventDefault(); editingSegment = null; render(); });
@@ -232,6 +234,20 @@ export function mountCreatorReview(
     const button = target.closest<HTMLButtonElement>("button[data-review-action]");
     if (button === null || !root.contains(button) || button.disabled) return;
     const action = button.dataset.reviewAction;
+    if (action === "use-speaker-name") {
+      if (disposed || state.phase !== "ready" || editingSegment === null || pendingEdit !== null) return;
+      const selectedRole = button.dataset.speakerRole;
+      if (selectedRole !== "patient" && selectedRole !== "clinician") return;
+      const suggested = speakerNameSuggestion(options.speakerNameSuggestions?.[selectedRole]);
+      const form = button.closest<HTMLFormElement>("[data-creator-edit-form]");
+      const role = form?.querySelector<HTMLSelectElement>('[name="role"]');
+      const name = form?.querySelector<HTMLInputElement>('[name="display_name"]');
+      if (suggested === undefined || !role || !name) return;
+      role.value = selectedRole; name.disabled = false; name.value = suggested;
+      // This explicit choice only edits the form. The existing Save correction
+      // action owns its version checks, encrypted journal and server mutation.
+      name.focus(); return;
+    }
     if (action === "retry-edit") { void saveEdit(); return; }
     if (action === "cancel-edit") { editingSegment = null; render(); return; }
     if (action === "save-edit") {

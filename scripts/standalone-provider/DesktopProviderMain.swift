@@ -48,7 +48,7 @@ import Foundation
             guard let self else { return }
             self.connection.authChanged(state)
             self.sources.retireForAuthenticationChange()
-            Self.write(["event": "authStateChanged", "state": Self.state(state)])
+            Self.write(["event": "authStateChanged", "state": self.state(state)])
         }
     }
 
@@ -82,10 +82,10 @@ import Foundation
             if method == "signIn" {
                 window.makeKeyAndOrderFront(nil); NSApplication.shared.activate(ignoringOtherApps: true)
                 defer { window.orderOut(nil) }
-                return Self.state(try await auth.signIn())
+                return self.state(try await auth.signIn())
             }
-            if method == "signOut" { return Self.state(try await auth.signOut()) }
-            return Self.state(auth.state())
+            if method == "signOut" { return self.state(try await auth.signOut()) }
+            return self.state(auth.state())
         case "providerRequest":
             guard Set(payload.keys) == ["revision", "action", "key", "body"],
                   let revision = payload["revision"] as? String,
@@ -178,8 +178,12 @@ import Foundation
               id.uuidString.lowercased() == string else { throw ProviderNativeError.invalidRequest }
         return id
     }
-    private static func state(_ value: NativeAuthState) -> [String: Any] {
-        ["phase": value.phase.rawValue, "revision": value.revision]
+    private func state(_ value: NativeAuthState) -> [String: Any] {
+        var payload: [String: Any] = ["phase": value.phase.rawValue, "revision": value.revision]
+        if let name = auth.providerDisplayName(expectedRevision: value.revision) {
+            payload["providerDisplayName"] = name
+        }
+        return payload
     }
     private static func write(_ value: [String: Any]) {
         do {

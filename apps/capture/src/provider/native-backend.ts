@@ -1,4 +1,5 @@
 import { parseEncounterDisplay } from "./encounter-display";
+import { speakerNameSuggestion } from "../../../review-ui/src/creator-edit";
 import { openingReviewFromCore } from "./opening-review";
 import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
@@ -47,6 +48,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
   let openingReviewSupported = false, noteOpeningSupported = false, creationSupported = false;
   let account: ProviderAccount | undefined;
+  let providerDisplayName: string | undefined;
   const owners: { setup?: ReturnType<typeof createEncounterSetup> } = {};
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const inheritedAbort = (): void => abort.abort();
@@ -68,6 +70,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     if (timer !== undefined) clearInterval(timer);
     options.signal.removeEventListener("abort", inheritedAbort);
     encounters.clear();
+    providerDisplayName = undefined;
     await listener?.remove();
     await owners.setup?.dispose();
   })();
@@ -77,7 +80,11 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       try {
         const state = await plugin.getProviderState();
         if (state.providerReady !== true) abort.abort();
-        else accept(state);
+        else {
+          accept(state);
+          providerDisplayName = !abort.signal.aborted && state.phase === "ready"
+            ? speakerNameSuggestion(state.providerDisplayName) : undefined;
+        }
       } catch { abort.abort(); }
       finally { checking = null; }
     })();
@@ -103,6 +110,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     if (!record(state) || state.phase !== "ready" || state.providerReady !== true || !isUuid(state.revision)
       || duringRead && (duringRead.phase !== state.phase || duringRead.revision !== state.revision)) throw unavailable();
     revision = state.revision;
+    providerDisplayName = speakerNameSuggestion(state.providerDisplayName);
     nativeRecording = [1, 2].includes(state.nativeRecordingVersion ?? 0) && typeof plugin.openProviderRecording === "function"
       && typeof plugin.providerRecordingCommand === "function";
     nativeContextReuse = nativeRecording && state.nativeRecordingVersion === 2;
@@ -173,6 +181,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     },
   });
   return {
+    get providerDisplayName() { return !abort.signal.aborted && !options.signal.aborted ? providerDisplayName : undefined; },
     get encounterSetup() { return creationSupported ? encounterSetup : undefined; },
     get account() { return account; },
     signal: abort.signal, dispose,
