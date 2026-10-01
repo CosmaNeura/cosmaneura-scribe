@@ -10,7 +10,7 @@ import type { DesktopPCMDriver, DesktopPCMDriverSession, DesktopPCMFailure,
   DesktopPCMStart, DesktopPCMCompletion, DesktopCaptureAuthorization } from "./native-pcm-driver.js";
 import { parseDesktopPCMStart, parseDesktopPCMCompletion } from "./pcm-capture-source.js";
 import { NativeProcessDecoder, nativeCommand, nativeMetadata, exactKeys } from "./native-process-wire.js";
-import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
+import type { RuntimeDiagnostic, RuntimeTimingEvent } from "./runtime-diagnostics.js";
 
 export interface AuthorizedDesktopSelection {
   readonly application: "com.google.Chrome" | "us.zoom.xos";
@@ -49,9 +49,10 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
     requireMain();
     try {
       if (!this.options.enabled || !this.options.isSessionActive()) return false;
-      await verifyNativeHelper(this.options);
+      await timed(this.options, "audio_availability_helper_check", () => verifyNativeHelper(this.options));
       if (!this.options.isSessionActive()) return false;
-      return await probe(this.options.helperPath) && this.options.isSessionActive();
+      return await timed(this.options, "audio_availability_probe", () => probe(this.options.helperPath))
+        && this.options.isSessionActive();
     } catch { return false; }
   }
   /** Explicit provider setup only. This helper mode cannot start an audio source. */
@@ -59,9 +60,10 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
     requireMain();
     try {
       if (!this.options.enabled || signal.aborted || !this.options.isSessionActive()) return false;
-      await verifyNativeHelper(this.options);
+      await timed(this.options, "audio_permission_helper_check", () => verifyNativeHelper(this.options));
       if (signal.aborted || !this.options.isSessionActive()) return false;
-      return await probe(this.options.helperPath, signal) && !signal.aborted && this.options.isSessionActive();
+      return await timed(this.options, "audio_permission_probe", () => probe(this.options.helperPath, signal))
+        && !signal.aborted && this.options.isSessionActive();
     } catch { return false; }
   }
   start(configuration: Parameters<DesktopPCMDriver["start"]>[0], sink: Sink): DesktopPCMDriverSession {
@@ -118,7 +120,7 @@ class ProcessSession implements DesktopPCMDriverSession {
   private async prepare(): Promise<void> {
     const selection = Object.freeze({ ...await this.options.authorizeSelectedWindow() });
     if (this.cancelled) return;
-    await verifyNativeHelper(this.options);
+    await timed(this.options, "audio_capture_helper_check", () => verifyNativeHelper(this.options));
     if (this.cancelled) return;
     const duration = Math.floor((selection.captureAuthorizedUntil - Date.now()) / 1000);
     if (!this.options.isSessionActive() || !exactKeys({ ...selection },
@@ -315,6 +317,19 @@ class ProcessSession implements DesktopPCMDriverSession {
     // Retain pending discards until close observes actual child exit. Callers
     // still have their bounded deadline if the helper has not exited.
     this.child?.stdin.end();
+  }
+}
+
+/** Observe an existing await, including failure, without changing its result. */
+async function timed<T>(options: NativeProcessDriverOptions, event: RuntimeTimingEvent, operation: () => Promise<T>): Promise<T> {
+  const started = process.hrtime.bigint();
+  try { return await operation(); }
+  finally {
+    const duration = Number(process.hrtime.bigint() - started) / 1_000_000;
+    if (Number.isFinite(duration) && duration >= 0 && duration <= 3_600_000) {
+      try { options.diagnostics?.(event, Math.round(duration * 1000) / 1000); }
+      catch { /* Diagnostics cannot affect availability, capture or cleanup. */ }
+    }
   }
 }
 

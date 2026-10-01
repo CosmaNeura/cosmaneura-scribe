@@ -33,4 +33,30 @@ describe("local runtime diagnostics", () => {
       expect((await stat(path)).size).toBe(65_536);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+  it("accepts bounded numeric phase durations only for fixed timing events", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-timing-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (const value of [undefined, NaN, Infinity, -1, 3_600_001, "private text" as unknown as number]) {
+        record("audio_availability_probe", value);
+      }
+      record("host_open", 1);
+      record("invented private timing" as Parameters<RuntimeDiagnostic>[0], 12);
+      record("audio_availability_helper_check", 0);
+      record("audio_availability_probe", 12.34567);
+      record("audio_permission_helper_check", 1);
+      record("audio_permission_probe", 3_600_000);
+      record("audio_capture_helper_check", 2);
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(5));
+      const expected = [
+        ["audio_availability_helper_check", 0], ["audio_availability_probe", 12.346],
+        ["audio_permission_helper_check", 1], ["audio_permission_probe", 3_600_000], ["audio_capture_helper_check", 2],
+      ];
+      (await readFile(path, "utf8")).trim().split("\n").forEach((line, index) => {
+        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid,
+          event: expected[index]![0], duration_ms: expected[index]![1] });
+      });
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
 });
