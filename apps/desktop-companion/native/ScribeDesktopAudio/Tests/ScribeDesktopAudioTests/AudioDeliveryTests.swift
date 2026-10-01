@@ -184,6 +184,21 @@ private final class WindowValidity: @unchecked Sendable {
 }
 
 @available(macOS 14.2, *)
+@Test func deniedPermissionPreventsNativeSourceSetupWithoutProbeProcess() async throws {
+    let source = MacMeetingAudio(enabled: true, checkPermissions: { false })
+    let selection = try MeetingAudioSelection(application: .zoom, processID: 123, windowID: 456)
+    // Permission denial precedes SCShareableContent, window lookup and audio
+    // setup. This exact public start path must perform no OS capture work.
+    await #expect(throws: DesktopAudioFailure.permissionRequired) {
+        try await source.start(selection: selection, maximumDurationSeconds: 30, sink: Sink())
+    }
+    try await source.stop()
+    await #expect(throws: DesktopAudioFailure.unavailable) {
+        try await source.start(selection: selection, maximumDurationSeconds: 30, sink: Sink())
+    }
+}
+
+@available(macOS 14.2, *)
 @Test func stopBeforeStartPreventsAnyLateCapture() async throws {
     let source = MacMeetingAudio(enabled: true)
     try await source.stop()

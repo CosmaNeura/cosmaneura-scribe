@@ -36,6 +36,9 @@ private actor InventedSource: DesktopProcessSource {
     func start(selection: MeetingAudioSelection, maximumDurationSeconds: Int, sink: any DesktopAudioSink) async throws {
         precondition(!consentID.isEmpty && maximumDurationSeconds > 0)
         guard !stopped else { throw DesktopAudioFailure.cancelled }
+        // The real producer checks current macOS permission before source setup.
+        // This denial substitutes only that OS result, never opens an OS source.
+        if selection.processID == 9 { throw DesktopAudioFailure.permissionRequired }
         // Model a native child dying before readiness, without generating a
         // real OS crash report or ever constructing a physical audio source.
         if selection.processID == 7 { _exit(70) }

@@ -29,10 +29,21 @@ public enum DesktopAudioStopMode: Sendable { case drain, discard }
 public actor MacMeetingAudio {
     private enum Phase { case idle, starting, recording, stopping, stopped, failed }
     private let enabled: Bool
+    private let checkPermissions: @Sendable () -> Bool
     private var phase: Phase = .idle
     private var active: CaptureSession?
 
-    public init(enabled: Bool = false) { self.enabled = enabled }
+    public init(enabled: Bool = false) {
+        self.enabled = enabled
+        checkPermissions = Self.permissionsGranted
+    }
+
+    // Internal injection for denial-only tests; the public/native helper entry
+    // always uses the actual macOS permission check above.
+    init(enabled: Bool, checkPermissions: @escaping @Sendable () -> Bool) {
+        self.enabled = enabled
+        self.checkPermissions = checkPermissions
+    }
 
     /// Read-only. Permission prompts belong to an explicit reviewed native UI.
     public static func permissionsGranted() -> Bool {
@@ -65,7 +76,7 @@ public actor MacMeetingAudio {
                        window: DesktopCaptureWindowOwner?, sink: any DesktopAudioSink) async throws {
         guard enabled, phase == .idle, !Task.isCancelled else { throw DesktopAudioFailure.unavailable }
         guard (1...86_400).contains(maximumDurationSeconds) else { throw DesktopAudioFailure.unavailable }
-        guard Self.permissionsGranted() else { throw DesktopAudioFailure.permissionRequired }
+        guard checkPermissions() else { throw DesktopAudioFailure.permissionRequired }
         phase = .starting
         do {
             // A caller-selected window is re-resolved against current PID/bundle.

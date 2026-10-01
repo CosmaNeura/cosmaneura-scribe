@@ -183,6 +183,16 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
         return { application: "com.google.Chrome", processID: pid, windowID: 1, captureAuthorizedUntil: expiresAt ?? Date.now() + 60_000 };
       } });
   }
+  it("rejects native permission denial after authorization without a disposable probe or activation", async () => {
+    const native = await driver(9), availability = vi.spyOn(native, "getAvailability");
+    const coverage: DesktopPCMCoverage[] = [], chunks = vi.fn(async () => undefined);
+    const source = new DesktopPcmCaptureSource(native, async value => { coverage.push(value); });
+    try {
+      await expect(source.start({ capabilities: renewableCapabilities(), onChunk: chunks })).rejects.toThrow();
+      expect(availability).not.toHaveBeenCalled(); expect(coverage).toEqual([]);
+      expect(chunks).not.toHaveBeenCalled();
+    } finally { await source.stop(); }
+  });
   it("carries a renewable window through every adapter and preserves partial WAV boundaries", async () => {
     const expiresAt = Date.now() + 60_000, waves: Uint8Array[] = [], sequences: number[] = [], coverage: DesktopPCMCoverage[] = [];
     const source = new DesktopPcmCaptureSource(await driver(1, undefined, undefined, nativePipeFixtureFence, expiresAt),

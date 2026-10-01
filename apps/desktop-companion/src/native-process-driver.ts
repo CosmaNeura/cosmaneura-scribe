@@ -43,6 +43,7 @@ const CODES: readonly DesktopPCMFailure[] = ["permission_required", "device_chan
 /** Main process only. The packaged helper path/hash are release inputs, never an
  * IPC argument. This source preparation does not establish signing acceptance. */
 export class NativeProcessPCMDriver implements DesktopPCMDriver {
+  readonly checksAvailabilityOnStart = true as const;
   private readonly options: NativeProcessDriverOptions;
   constructor(options: NativeProcessDriverOptions) { requireMain(); this.options = Object.freeze({ ...options }); }
   async getAvailability(): Promise<boolean> {

@@ -42,6 +42,9 @@ export interface NativePcmSession {
 export interface NativePcmBridge {
   /** Platform policy stays here: iOS foreground; desktop unlocked session/permission. */
   getAvailability(): Promise<boolean>;
+  /** Trusted native start rechecks availability before any source setup and
+   * rejects ready on denial. Other bridges keep the separate preflight. */
+  readonly checksAvailabilityOnStart?: true;
   /** Only desktop delivery opts in to draining accepted full packets during stop. */
   readonly deliversDuringDrain?: true;
   readonly supportsRenewal?: true;

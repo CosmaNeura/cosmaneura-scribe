@@ -34,6 +34,9 @@ if (!options.output || !["all", ...profiles].includes(options.profile)
 // A new directory prevents accidental replacement of earlier measurements.
 await mkdir(options.output, { mode: 0o700 });
 const inputs = ["src/provider-recorder.ts", "src/controller.ts", "src/pcm-capture-source.ts",
+  "src/native-process-driver.ts", "src/native-pcm-driver.ts",
+  "../capture/src/native/native-pcm-source.ts", "../capture/src/native/native-pcm-bridge.ts",
+  "native/ScribeDesktopAudio/Sources/ScribeDesktopAudio/MacMeetingAudio.swift",
   "src/durable-record-store.ts", "src/durable-flow-store.ts", "src/provider-recorder-ipc.ts",
   "../capture/src/flow/controller.ts", "../capture/src/flow/types.ts", "../capture/src/flow/encrypted-store.ts",
   "../capture/src/bff/contracts.ts", "../capture/src/provider/desktop-recorder-view.ts",
@@ -94,7 +97,7 @@ for (const file of inputs) {
   if (finalHashes[file] !== hashes[file]) changedInputs.push(file);
 }
 const success = exit.code === 0 && changedInputs.length === 0;
-const receipt = { schema: 5, source_commit: sourceCommit, source_dirty: sourceDirty, input_sha256: hashes,
+const receipt = { schema: 6, source_commit: sourceCommit, source_dirty: sourceDirty, input_sha256: hashes,
   final_input_sha256: finalHashes, changed_inputs: changedInputs, success,
   command: [process.execPath, ...command], options, exit, observations,
   scope: "Selected model with real controller/flow/encrypted temporary SQLite/cloned IPC and loopback mock BFF. Modern/legacy modes use the real backend with simulated Swift owner/HTTP; dependency-sensitivity retains the historical per-callback delays. No microphone/native helper/installed app/DOM paint.",

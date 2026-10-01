@@ -28,6 +28,10 @@ const capabilities: CaptureCapabilities = {
 
 /** Explicit offline native driver. It never invokes a source, permission or app. */
 class Driver implements DesktopPCMDriver {
+  readonly checksAvailabilityOnStart?: true;
+  constructor(checksAvailabilityOnStart = false) {
+    if (checksAvailabilityOnStart) this.checksAvailabilityOnStart = true;
+  }
   startCalls = 0;
   active = false;
   frames = 0;
@@ -70,8 +74,8 @@ class Driver implements DesktopPCMDriver {
   }
 }
 
-function fixture(persist?: (coverage: DesktopPCMCoverage) => Promise<void>) {
-  const driver = new Driver(), coverage: DesktopPCMCoverage[] = [];
+function fixture(persist?: (coverage: DesktopPCMCoverage) => Promise<void>, nativeAvailability = false) {
+  const driver = new Driver(nativeAvailability), coverage: DesktopPCMCoverage[] = [];
   const captured: number[] = [];
   const source = new DesktopPcmCaptureSource(driver, persist ?? (async value => { coverage.push(value); }),
     undefined, frames => { captured.push(frames); });
@@ -79,6 +83,37 @@ function fixture(persist?: (coverage: DesktopPCMCoverage) => Promise<void>) {
 }
 
 describe("trusted desktop PCM capture", () => {
+  it("keeps separate permission denial before start for drivers without a native guard", async () => {
+    const f = fixture(), availability = vi.spyOn(f.driver, "getAvailability").mockResolvedValue(false);
+    await expect(f.source.start({ capabilities, onChunk: async () => undefined })).rejects.toThrow();
+    expect(availability).toHaveBeenCalledOnce(); expect(f.driver.startCalls).toBe(0);
+    expect(f.coverage).toEqual([]);
+  });
+
+  it("owns native permission denial through readiness without activation, coverage or packets", async () => {
+    const f = fixture(undefined, true), gate = deferred<DesktopPCMStart>();
+    const availability = vi.spyOn(f.driver, "getAvailability"), chunks = vi.fn(async () => undefined);
+    f.driver.ready = gate.promise;
+    const starting = f.source.start({ capabilities, onChunk: chunks });
+    const rejected = expect(starting).rejects.toThrow();
+    gate.reject(new Error("synthetic native permission denied")); await rejected;
+    expect(availability).not.toHaveBeenCalled(); expect(f.driver.startCalls).toBe(1);
+    expect(f.driver.active).toBe(false); expect(f.driver.modes).toEqual(["discard"]);
+    expect(f.coverage).toEqual([]); expect(chunks).not.toHaveBeenCalled();
+  });
+
+  it("cancels an owned native availability wait and never activates its late ready result", async () => {
+    const f = fixture(undefined, true), gate = deferred<DesktopPCMStart>();
+    const chunks = vi.fn(async () => undefined), abort = new AbortController();
+    f.driver.ready = gate.promise;
+    const starting = f.source.start({ capabilities, signal: abort.signal, onChunk: chunks });
+    const rejected = expect(starting).rejects.toThrow();
+    abort.abort(); await rejected;
+    gate.resolve(START); await Promise.resolve(); await f.source.stop();
+    expect(f.driver.active).toBe(false); expect(f.driver.modes).toContain("discard");
+    expect(f.coverage).toEqual([]); expect(chunks).not.toHaveBeenCalled();
+  });
+
   it("reports accepted mixed frames before ten-second commits, freezes, and drains actual tail", async () => {
     const { driver, source, captured } = fixture(), chunks = vi.fn(async () => undefined);
     const long = { ...capabilities, target_chunk_duration_ms: 10_000, max_envelope_bytes: 321_000,
