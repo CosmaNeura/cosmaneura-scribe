@@ -15,7 +15,8 @@ def events(monkeypatch):
 def test_accumulates_only_fixed_labels_and_monotonic_durations(events, monkeypatch):
     clock = iter([0, 1, 3, 4, 8, 10])
     monkeypatch.setattr(performance, "perf_counter_ns", lambda: next(clock) * 1_000_000)
-    with performance.provider_request_timing("mount"):
+    with performance.provider_request_timing("mount") as timing:
+        assert timing.server_timing() is None
         with performance.provider_phase_timing("registry"):
             pass
         with performance.provider_phase_timing("registry"):
@@ -24,6 +25,12 @@ def test_accumulates_only_fixed_labels_and_monotonic_durations(events, monkeypat
         {"action": "provider.registry", "duration_ms": 6},
         {"action": "provider.mount.total", "duration_ms": 10},
     ]
+    assert timing.server_timing() == (
+        "scribe_registry;dur=6.000, scribe_workload_token;dur=0.000, "
+        "scribe_core_exchange;dur=0.000, scribe_core_mount;dur=0.000, "
+        "scribe_core_binding;dur=0.000, scribe_core_operation;dur=0.000, "
+        "scribe_core_encounter_lookup;dur=0.000, scribe_total;dur=10.000"
+    )
     with performance.provider_phase_timing("core_operation"):
         pass
     assert len(events) == 2
@@ -91,10 +98,50 @@ async def test_late_child_cannot_append_to_finished_request(events):
         with performance.provider_phase_timing("registry"):
             entered.set()
             await finish.wait()
-    with performance.provider_request_timing("mount"):
+    with performance.provider_request_timing("mount") as timing:
         pending = asyncio.create_task(child())
         await entered.wait()
     assert len(events) == 1 and events[0]["action"] == "provider.mount.total"
+    header = timing.server_timing()
     finish.set()
     await pending
     assert len(events) == 1
+    assert timing.server_timing() == header
+
+
+@pytest.mark.parametrize(
+    "duration", [True, -1, float("nan"), float("inf"), "private", 3_600_000_000_001],
+)
+def test_invalid_diagnostic_duration_is_omitted(duration):
+    timing = performance._Timing(durations={"total": duration}, closed=True)
+    assert timing.server_timing() is None
+
+
+def test_unknown_diagnostic_field_is_omitted():
+    timing = performance._Timing(durations={"total": 1, "private_identity": 1}, closed=True)
+    assert timing.server_timing() is None
+
+
+@pytest.mark.asyncio
+async def test_headers_are_isolated_between_concurrent_requests(events):
+    ready, finish = asyncio.Event(), asyncio.Event()
+
+    async def first():
+        with performance.provider_request_timing("mount") as timing:
+            with performance.provider_phase_timing("registry"):
+                ready.set()
+                await finish.wait()
+        return timing.server_timing()
+
+    async def second():
+        await ready.wait()
+        with performance.provider_request_timing("catalog") as timing:
+            with performance.provider_phase_timing("core_operation"):
+                await asyncio.sleep(0.001)
+        finish.set()
+        return timing.server_timing()
+
+    a, b = await asyncio.gather(first(), second())
+    assert "scribe_core_operation;dur=0.000" in a
+    assert "scribe_registry;dur=0.000" in b
+    assert a != b

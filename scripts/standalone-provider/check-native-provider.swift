@@ -173,6 +173,22 @@ struct CheckNativeProvider {
             try require(count == 1)
             connection.close(); checks += 1
         }
+        // A response's typed timing remains local to its request; absent
+        // metadata cannot inherit the preceding response's diagnostic values.
+        do {
+            var timings: [ProviderNativeRequestTiming] = []
+            let (auth, _, wire, connection) = try make(requestTiming: { timings.append($0) })
+            let header = ProviderServerTiming.Phase.allCases.map { "scribe_\($0.rawValue);dur=12.345" }.joined(separator: ", ")
+            let measured = ProviderServerTiming.parse([header])
+            try require(measured != nil)
+            for metadata in [measured, nil] {
+                await wire.setResponse(ProviderNativeReply(status: 200, body: Data("{}".utf8), serverTiming: metadata))
+                _ = try await connection.send(request(auth))
+                try require(timings.last?.serverTiming == metadata)
+            }
+            try require(timings.count == 2 && timings.allSatisfy { $0.completed })
+            connection.close(); checks += 1
+        }
         for outcome in ["success", "denied", "token-failure", "invalid-reply", "cancelled"] {
             var instant = ContinuousClock.now
             var timings: [ProviderNativeRequestTiming] = []

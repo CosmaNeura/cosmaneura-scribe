@@ -449,8 +449,43 @@ async def test_request_phase_timings_cover_real_receiver_without_private_values(
     }
     assert all(set(event) == {"action", "duration_ms"} for event in events)
     assert all(event["duration_ms"] >= 0 for event in events)
+    header = result.headers["server-timing"]
+    metrics = dict(part.split(";dur=") for part in header.split(", "))
+    assert set(metrics) == {
+        "scribe_registry", "scribe_workload_token", "scribe_core_exchange",
+        "scribe_core_mount", "scribe_core_binding", "scribe_core_operation",
+        "scribe_core_encounter_lookup", "scribe_total",
+    }
+    for event in events:
+        phase = "total" if event["action"].endswith(".total") else event["action"].split(".")[1]
+        assert float(metrics["scribe_" + phase]) == round(event["duration_ms"], 3)
     for private in (h.headers["Authorization"], h.workspace, h.revision, APPOINTMENT, BINDING):
         assert private not in repr(events)
+        assert private not in header
+
+
+@pytest.mark.asyncio
+async def test_server_timing_replaces_downstream_header_without_changing_reply(
+    harness, monkeypatch,
+):
+    original = receiver._reply
+
+    def with_untrusted_timing(*args, **kwargs):
+        response = original(*args, **kwargs)
+        response.headers.append("Server-Timing", "private_forbidden;desc=private")
+        response.headers.append("Server-Timing", "other_forbidden;dur=1")
+        return response
+
+    monkeypatch.setattr(receiver, "_reply", with_untrusted_timing)
+    async with client(harness) as connection:
+        result = await connection.post(
+            "/provider/v1/mount", json={"workspace_id": harness.workspace},
+        )
+    assert result.status_code == 200
+    assert len(result.headers.get_list("server-timing")) == 1
+    assert "private" not in result.headers["server-timing"]
+    assert "forbidden" not in result.headers["server-timing"]
+    assert result.headers["cache-control"] == "no-store"
 
 
 @pytest.mark.asyncio
