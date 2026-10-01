@@ -197,7 +197,8 @@ try {
   try {
     button("record-button").click(); await until(() => /audio are aligned/u.test(root.textContent));
     assert.match(root.textContent, /first 4 ms/u); g.failStop(); button("stop-button").click();
-    await until(() => /stop is unconfirmed/u.test(root.textContent));
+    await until(() => /Recording may still be active/u.test(root.textContent));
+    assert.match(button("stop-button").textContent, /Retry finish recording/u);
     assert.equal(button("record-button").disabled, true); assert.equal(button("stop-button").disabled, false);
     assert.equal(button("retry-upload"), null);
     button("stop-button").click(); await until(() => /Recording uploaded/u.test(root.textContent));
@@ -211,6 +212,8 @@ try {
     button("record-button").click(); await until(() => /audio are aligned/u.test(root.textContent));
     button("stop-button").click(); await until(() => button("retry-upload") && !button("retry-upload").disabled);
     assert.match(root.textContent, /saved recording is waiting for upload confirmation/u);
+    assert.match(root.textContent, /Recording has stopped/u);
+    assert.doesNotMatch(root.textContent, /Recording may still be active/u);
     assert.equal(button("record-button").disabled, true); assert.equal(button("stop-button").disabled, true);
     button("retry-upload").click();
     await until(() => retry.calls.filter(v => v === "resume").length === 1 && button("retry-upload").disabled);

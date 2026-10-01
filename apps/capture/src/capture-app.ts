@@ -508,7 +508,7 @@ export class CaptureApp extends LitElement {
                 : "Starting microphone and meeting audio… Recording is not confirmed yet."
               : this.#snapshot.desktop?.phase === "stopping" ? this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
                 ? "Confirming recording stopped…" : "Stopping recording…"
-              : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording stop is unconfirmed. Retry stopping before continuing."
+              : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording may still be active. Choose Retry finish recording to confirm it has stopped."
               : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
                 ? "Recording has stopped. Retry confirmation before uploading."
               : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
@@ -542,7 +542,7 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.desktop?.phase === "interrupted" ? "Recording interrupted. Confirm stop before uploading."
               : this.#snapshot.state === "recording" ? "Recording"
               : this.#snapshot.statusCode === "audio_capture_native_stop_failed"
-                ? "Recording stop is unconfirmed. Retry stopping before continuing."
+                ? "Recording may still be active. Choose Retry finish recording to confirm it has stopped."
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
               : "Ready to record"}</p>
             ${this.#isStarting() && !this.#stopping ? html`<p data-testid="startup-progress" aria-live="off">

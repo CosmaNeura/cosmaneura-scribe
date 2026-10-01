@@ -65,12 +65,12 @@ export function bindNoteSourceNavigation(root: HTMLElement, options: Options): {
         const working = pair.view.working!.segments.find(segment => segment.source_segment_id === match.source_segment_id)!;
         const seconds = Math.floor(match.startMs / 1000), button = document.createElement("button");
         button.type = "button"; button.dataset.noteSourceMatch = "";
-        button.textContent = `View matching source · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+        button.textContent = `Check in transcript · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
         buttons.set(button, { field: item, match, wording: working.content!, resolution: working.resolution, role: working.speaker_role }); container.append(button);
       }
       fields.push(item); label.after(container); syncField(item);
     }
-    if (fields.length) root.querySelector(".provider-note-evidence")?.prepend(back);
+    if (fields.length) root.querySelector(".provider-note-source-toolbar")?.append(back);
   };
   const onInput = (event: Event): void => {
     const item = fields.find(value => value.field === event.target);
@@ -111,7 +111,18 @@ export function bindNoteSourceNavigation(root: HTMLElement, options: Options): {
     if (details) details.open = true;
     for (const other of root.querySelectorAll("[data-search-current]")) other.removeAttribute("data-search-current");
     row.dataset.searchCurrent = "true";
-    row.scrollIntoView({ block: "center", behavior: "auto" }); row.focus({ preventScroll: true });
+    const pane = row.closest<HTMLElement>("[data-note-transcript-scroll]");
+    if (pane) {
+      // Reveal the bounded comparison, then scroll only its panes. A late
+      // transcript match must not move the note offscreen with the whole page.
+      root.querySelector(".provider-note-grid")?.scrollIntoView({ block: "nearest", behavior: "auto" });
+      if (window.matchMedia("(min-width: 900px)").matches) {
+        const editor = item.field.field.closest<HTMLElement>(".provider-note-editor");
+        if (editor) centerWithin(editor, item.field.field.closest("label") ?? item.field.field);
+      }
+      centerWithin(pane, row);
+    } else row.scrollIntoView({ block: "center", behavior: "auto" });
+    row.focus({ preventScroll: true });
   };
   root.addEventListener("input", onInput); root.addEventListener("focusin", onFocus); root.addEventListener("click", onClick);
   refresh();
@@ -119,4 +130,9 @@ export function bindNoteSourceNavigation(root: HTMLElement, options: Options): {
     disposed = true; clear(); bound = null;
     root.removeEventListener("input", onInput); root.removeEventListener("focusin", onFocus); root.removeEventListener("click", onClick);
   } };
+}
+
+function centerWithin(pane: HTMLElement, target: Element): void {
+  const item = target.getBoundingClientRect(), viewport = pane.getBoundingClientRect();
+  pane.scrollTop += item.top - viewport.top - Math.max(0, (pane.clientHeight - item.height) / 2);
 }
