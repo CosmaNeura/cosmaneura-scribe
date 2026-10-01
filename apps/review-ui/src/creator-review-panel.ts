@@ -366,6 +366,10 @@ export function renderCreatorReview(state: CreatorReviewState): string {
   const view = state.view;
   const ready = view?.working?.note_ready === true;
   const sourceSegments = view?.source?.segments ?? [];
+  const translationNeedsHelp = view !== null && needsTranslationHelp(view);
+  const retainedOriginal = sourceSegments.some(segment => segment.source_locale === "es-US")
+    ? "Your original Spanish transcript is retained." : "Your original transcript is retained.";
+  const translationHelp = `${retainedOriginal} Keep this visit and contact your practice administrator for help. Check status only looks for updates; it does not retry translation. A note cannot be prepared yet.`;
   const languageLabel = sourceSegments.some(segment => segment.source_locale === "es-US")
     ? "Spanish → English · "
     : sourceSegments.length > 0 && sourceSegments.every(segment => segment.source_locale === "en-US")
@@ -383,12 +387,15 @@ export function renderCreatorReview(state: CreatorReviewState): string {
       <strong>${escape(subtitle)}</strong>
       <p>${escape(state.notice || (ready
         ? "Needs accuracy review. Check the wording and speakers before using the draft note."
+        : translationNeedsHelp
+          ? translationHelp
         : view?.status === "uploaded" || view?.status === "processing"
           ? "Your transcript will appear here automatically when it is ready."
         : view?.status === "translation_pending"
           ? hasPendingReviewProgress(view) ? "Checking translation automatically. The transcript is not ready for a note yet."
             : "The transcript is not ready for a note. Check the messages below for what is still needed."
           : "Review the proposed English before it is used for a note."))}</p>
+      ${translationNeedsHelp && state.notice ? `<p>${escape(translationHelp)}</p>` : ""}
     </div>
     ${view?.capture_continuity ? '<p class="creator-blocker" role="status">Recording continuity is unconfirmed. Review for missing speech before using a note. Gap lengths are unknown.</p>' : ""}
     ${state.phase === "retry" ? `<button type="button" data-review-action="retry">Retry the same decision</button>` : ""}
@@ -501,15 +508,17 @@ export function transcriptParagraphs(text: string): string[] {
   return paragraphs;
 }
 
+function needsTranslationHelp(view: CreatorReviewView): boolean {
+  const progressing = new Set((view.translation_progress ?? []).map(item => item.source_segment_id));
+  return view.working?.blockers.some(item => !progressing.has(item.source_segment_id)
+    && ["translation_retry_required", "translation_failed"].includes(item.code)) === true;
+}
+
 function reviewStatusCopy(view: CreatorReviewView): string {
   if (view.status === "quality_blocked") return statusCopy(view.status);
   const progress = view.translation_progress ?? [];
   if (progress.some((item) => item.state === "unconfirmed")) return "Translation result unconfirmed";
-  const progressing = new Set(progress.map((item) => item.source_segment_id));
-  if (view.working?.blockers.some((item) => !progressing.has(item.source_segment_id)
-    && ["translation_retry_required", "translation_failed"].includes(item.code))) {
-    return "Translation needs a new attempt";
-  }
+  if (needsTranslationHelp(view)) return "English translation needs help";
   if (progress.length > 0 && progress.every((item) => item.state === "result_saved")) {
     return "Preparing translation review";
   }
@@ -539,8 +548,8 @@ function blockerCopy(code: string): string {
     source_overlap: "Overlapping speech needs attention before note preparation.",
     translation_missing: "Waiting for the English translation. Choose Check status if progress is not confirmed.",
     translation_review_required: "An English translation is waiting for your review.",
-    translation_retry_required: "The translation was rejected. A new translation attempt is required; it will not retry automatically.",
-    translation_failed: "Translation could not complete. This recording is not ready for a note.",
+    translation_retry_required: "The English translation for this turn was rejected. It cannot be used for a note.",
+    translation_failed: "English translation could not complete for this turn. It cannot be used for a note.",
   } as Record<string, string>)[code] ?? "This segment needs attention before note preparation.";
 }
 function speakerCopy(role: string): string {

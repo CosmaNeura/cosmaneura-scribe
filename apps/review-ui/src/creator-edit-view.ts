@@ -13,6 +13,9 @@ export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: stri
   const source = view.source?.segments.find(item => item.source_segment_id === segmentId);
   const working = view.working?.segments.find(item => item.source_segment_id === segmentId);
   if (!source || !working || !view.working) return "";
+  const translationNeedsHelp = view.working.blockers.some(item => item.source_segment_id === segmentId
+    && ["translation_retry_required", "translation_failed"].includes(item.code))
+    && !(view.translation_progress ?? []).some(item => item.source_segment_id === segmentId);
   const confirmed = currentSpeakerConfirmations(view.review_edits ?? []).get(source.speaker_id);
   const role = confirmed?.detail === "interpreter" ? "interpreter" : confirmed?.role ?? "unknown";
   const name = confirmed?.display_name ?? "";
@@ -24,7 +27,9 @@ export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: stri
       <details><summary>${source.source_locale === "es-US" ? "Spanish original" : "Original wording"}</summary>
         <p lang="${source.source_locale === "es-US" ? "es" : "en"}">${escapeReviewText(source.content)}</p></details>
       ${working.content != null ? `<label>English wording<textarea name="content" rows="6" maxlength="100000">${escapeReviewText(working.content)}</textarea></label>`
-        : `<p>Finish translation review before correcting the English wording.</p>`}
+        : translationNeedsHelp
+          ? `<p>English wording is unavailable for this turn. Your original ${source.source_locale === "es-US" ? "Spanish " : ""}transcript is retained. Keep this visit and contact your practice administrator for help.</p>`
+          : `<p>Finish translation review before correcting the English wording.</p>`}
       <fieldset><legend>Confirm who is speaking</legend>
       <p>This applies to all turns with this detected voice. Choose “Not sure” if the voice cannot be identified.</p>
       <div class="creator-speaker-suggestions">${([ ["clinician", "Provider"], ["patient", "Patient"] ] as const).map(([value, label]) => {
