@@ -20,10 +20,12 @@ import Foundation
   private let reservations: NativeRecordingReservationOwner
   private let sourceClock: any PCMSourceClock
   private let validateActiveSource: @Sendable () async throws -> Void
+  private let finalizeCapturedAudio: NativeRecordingFinalizer
   private let signal: PCMSignalMonitor
   private var claimed = false
   private var handle: IOSPCMSessionHandle?
   private var continuation: NativeRecordingContinuation?
+  private var finalizationFailure: NativeRecordingFinalizationFailure?
   private var readiness: Task<Void, Error>?
   private var physicalClosureConfirmed = true
   private var stopping: Task<Void, Error>?
@@ -37,7 +39,8 @@ import Foundation
     system: any AppleAudioSystem, foreground: any AppleApplicationForegroundProviding,
     signal: PCMSignalMonitor,
     sourceClock: any PCMSourceClock = ContinuousPCMSourceClock(),
-    validateActiveSource: @escaping @Sendable () async throws -> Void
+    validateActiveSource: @escaping @Sendable () async throws -> Void,
+    finalizeCapturedAudio: @escaping NativeRecordingFinalizer
   ) throws {
     self.records = records
     self.firstSequence = firstSequence
@@ -46,6 +49,7 @@ import Foundation
     self.reservations = reservations
     self.sourceClock = sourceClock
     self.validateActiveSource = validateActiveSource
+    self.finalizeCapturedAudio = finalizeCapturedAudio
     self.signal = signal
     sink = try NativeRecordingPCMSink(
       encryption: encryption, recoveryScope: recoveryScope, records: records,
@@ -76,7 +80,7 @@ import Foundation
     let configuration = try PCMConfiguration(
       targetFramesPerChunk: 160_000, maximumChunks: batch.reservations.count,
       maximumInputFramesPerBuffer: PCMConfiguration.maximumFramesPerInputBuffer,
-      authority: authority)
+      authority: authority, preserveInterruptedTail: true)
     claimed = true
     signal.reset()
     // Retain the handle before constructing continuation. Even a validation or
@@ -87,7 +91,8 @@ import Foundation
     continuation = try NativeRecordingContinuation(
       session: started, sink: sink, leases: leases, reservations: reservations,
       initialLease: lease, initialAuthority: authority, initialBatch: batch,
-      sourceClock: sourceClock, validateActiveSource: validateActiveSource)
+      sourceClock: sourceClock, validateActiveSource: validateActiveSource,
+      finalizeCapturedAudio: finalizeCapturedAudio)
   }
 
   public func ready() async throws {
@@ -106,18 +111,32 @@ import Foundation
   public var capturedAudioFrames: Int { handle?.capturedAudioFrames ?? 0 }
   public var isPhysicallyIdle: Bool { physicalClosureConfirmed }
 
+  /// Synchronous auth fence, serialized with every sink write, including an
+  /// already admitted full packet. Physical closure still follows through stop.
+  public func invalidatePendingAudio() { sink.terminated(.captureFailed) }
+
   public func stop() async throws {
+    if let finalizationFailure { throw finalizationFailure }
     if let stopping { return try await stopping.value }
     if physicalClosureConfirmed && claimed { return }
     claimed = true  // A stopped preparation cannot later become a new start.
     readiness?.cancel()
-    let task = Task { [continuation, handle, sink] in
+    let task = Task { [continuation, handle, sink, finalizeCapturedAudio] in
       if let continuation {
         try await continuation.stop()
       } else if let handle {
         let stopped = try await handle.stop(.drain)
+        defer { stopped.finalPacket?.bytes.zeroize() }
+        if sink.hasStorageFailure { throw NativeRecordingFinalizationFailure.storageFailed }
         if sink.state.phase == .accepting || sink.state.phase == .draining {
-          try sink.finish(stopped)
+          do { try await finalizeCapturedAudio { _ = try sink.finish(stopped) } }
+          catch {
+            let failure: NativeRecordingFinalizationFailure =
+              error as? NativeRecordingBindingFailure == .authorityChanged
+                ? .authorityChanged : .storageFailed
+            sink.terminated(.captureFailed)
+            throw failure
+          }
         } else {
           stopped.finalPacket?.bytes.zeroize()
         }
@@ -129,6 +148,10 @@ import Foundation
       physicalClosureConfirmed = true
       stopping = nil
     } catch {
+      if let failure = error as? NativeRecordingFinalizationFailure {
+        physicalClosureConfirmed = true
+        finalizationFailure = failure
+      }
       stopping = nil
       throw error
     }

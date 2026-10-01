@@ -88,6 +88,7 @@ struct NativeSourceDecision: Sendable {
     private var closed = false
     private var issued = false
     private var retiring = false
+    private var authenticationRetired = false
     private var microphoneRunID: String?
 
     var recordingPreparation: NativeSourcePreparation { preparation }
@@ -240,6 +241,20 @@ struct NativeSourceDecision: Sendable {
         }
     }
 
+    /// Saving already captured PCM does not renew capture authority. This check
+    /// and the final write run together on MainActor before stop proof removal.
+    func requireMicrophoneFinalization(runID: String) throws {
+        try journal.requireUsable()
+        guard preparation.source == .ios, issued, !closed, !authenticationRetired,
+              !proof.isEmpty, microphoneRunID == runID, grant?.sourceLeaseID == runID,
+              try connection.stopRevision(userID: record.userID,
+                  organizationID: record.organizationID) == revision else {
+            throw ProviderNativeError.authorityChanged
+        }
+    }
+
+    func retireForStop() { retiring = true }
+
     func cancelPreparation() async throws {
         try enter(); defer { busy = false }
         guard !issued else { throw ProviderNativeError.unavailable }
@@ -268,7 +283,7 @@ struct NativeSourceDecision: Sendable {
 
     /// Authentication loss irrevocably disables preparation/authorization for
     /// this owner. Its original proof remains usable only for confirmed stop.
-    func retireForAuthenticationChange() { retiring = true }
+    func retireForAuthenticationChange() { authenticationRetired = true; retiring = true }
 
     func close() { closed = true; proof = ""; grant = nil; microphoneRunID = nil }
 

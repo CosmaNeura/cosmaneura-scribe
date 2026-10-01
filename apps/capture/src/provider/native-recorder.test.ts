@@ -91,6 +91,18 @@ describe("native provider controller", () => {
     } finally { await view.deactivate(); h.storage.close(); }
   });
 
+  it("keeps an incomplete native tail visible on repeated reads", async () => {
+    const h = await fixture();
+    h.f.set({ phase: "stopPending", failure: "recordingIncomplete", recordedChunks: 1, recordedPlaintextBytes: 204 });
+    const view = await h.open();
+    try {
+      expect(view.controller.snapshot).toMatchObject({ statusCode: "capture_tail_not_saved", recordedChunks: 1 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_tail_not_saved");
+      expect(h.commands.map(c => c.kind)).toEqual(["read"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
   it.each([0, 1])("keeps failed sealing distinct from an ordinary pause with %i saved chunks", async recordedChunks => {
     const h = await fixture(), command = h.port.command;
     h.f.set({ phase: "recording", recordedChunks, recordedPlaintextBytes: recordedChunks * 204 });

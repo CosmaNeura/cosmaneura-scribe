@@ -69,7 +69,7 @@
               if permission.currentPermission() == .granted { return true }
               return await permission.requestPermission() == .granted
             },
-            makeRecorder: { validate in
+            makeRecorder: { validate, finalize in
               try NativeEncryptedPCMRecorder(
                 encryption: encryption, recoveryScope: mount.recoveryScope, records: records,
                 firstSequence: source.recordingPreparation.firstSequenceNumber,
@@ -77,7 +77,14 @@
                 permission: AVFoundationMicrophonePermissionAdapter(provider: permission),
                 system: LiveAppleAudioSystem(signalMonitor: signal, microphoneInput: input),
                 foreground: LiveAppleApplicationForegroundProvider(), signal: signal,
-                validateActiveSource: validate)
+                validateActiveSource: validate, finalizeCapturedAudio: { write in
+                  try await finalize {
+                    guard permission.currentPermission() == .granted else {
+                      throw NativeRecordingBindingFailure.authorityChanged
+                    }
+                    try write()
+                  }
+                })
             })
         })
     }
