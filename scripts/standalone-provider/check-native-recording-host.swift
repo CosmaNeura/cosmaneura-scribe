@@ -172,6 +172,8 @@ import Security
     func prepare() throws -> NativeSourceGrant { throw Failed(line: #line) }
     func consumeForMicrophone() throws -> NativeCapturePermit { throw Failed(line: #line) }
     func requireActiveMicrophone(runID: String) throws { throw Failed(line: #line) }
+    func requireMicrophoneFinalization(runID: String) throws { throw Failed(line: #line) }
+    func retireForStop() {}
     func retireForAuthenticationChange() {}
     func confirmStopped() throws {
       if confirmed { throw Failed(line: #line) }
@@ -186,6 +188,7 @@ import Security
     let first: Int, prior: Int
     var phase: NativeProviderRecordingRun.Phase = .ready
     var isPhysicallyIdle = true, failStop = false, empty = false, committed = false
+    var incomplete = false
     var stopCalls = 0
     let meter = PCMSignalMonitor()
     init(
@@ -219,6 +222,11 @@ import Security
     }
     func stop() throws {
       stopCalls += 1
+      if incomplete {
+        isPhysicallyIdle = true
+        phase = .stopped
+        throw NativeRecordingFinalizationFailure.storageFailed
+      }
       if phase == .stopped { return }
       isPhysicallyIdle = true
       if !committed && !empty {
@@ -687,6 +695,27 @@ import Security
       try await rejects { try await start.value }
       try await host.close()
       try check(f.sources.isEmpty && f.runs.isEmpty)
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      try await host.open()
+      try await host.start()
+      try f.runs[0].emit()
+      let retained = f.records.rows
+      f.runs[0].incomplete = true
+      try await rejects { try await host.pause() }
+      try check(host.failure == .recordingIncomplete && host.phase == .stopPending)
+      for _ in 0..<2 { try await rejects { try await host.sealForUpload() } }
+      try await rejects { try await host.start() }
+      try check(host.failure == .recordingIncomplete && host.saved!.phase == .open)
+      try check(f.runs.count == 1 && f.runs[0].captureState.committedChunks == 1)
+      for (key, row) in retained { try check(f.records.rows[key]?.data == row.data) }
+      // Release only the fixture's injected failure to clean up this synthetic
+      // host. Production latches a real finalization failure permanently.
+      f.runs[0].incomplete = false
+      try await host.close()
       checks += 1
     }
     for retryStop in [false, true] {

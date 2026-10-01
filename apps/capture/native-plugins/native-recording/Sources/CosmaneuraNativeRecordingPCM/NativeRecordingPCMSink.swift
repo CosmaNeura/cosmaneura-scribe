@@ -23,6 +23,8 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
   private var committedBytes = 0
   private var reservations: [Int: NativeRecordingReservation] = [:]
   private var phase: NativeRecordingPCMState.Phase = .accepting
+  private var closeReason: PCMWindowCloseReason?
+  var windowCloseReason: PCMWindowCloseReason? { lock.withLock { closeReason } }
   private var closureObserver: (@Sendable () -> Void)?
 
   public init(
@@ -148,7 +150,7 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
   }
 
   public func windowClosed(_ reason: PCMWindowCloseReason) {
-    lock.withLock { if phase == .accepting { phase = .draining } }
+    lock.withLock { if phase == .accepting { phase = .draining; closeReason = reason } }
     notifyClosure()
   }
 

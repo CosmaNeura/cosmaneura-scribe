@@ -26,7 +26,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       sealed, failed, closed
   }
   enum Failure: String {
-    case preparationFailed, startFailed, stopPending, recoveryFailed, captureInterrupted
+    case preparationFailed, startFailed, stopPending, recoveryFailed, captureInterrupted, recordingIncomplete
   }
   typealias Service = NativeRecordingBindingService & NativeRecordingLeaseService
     & NativeRecordingReservationService
@@ -476,7 +476,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         if failure == nil && interruptionObserved { failure = .captureInterrupted }
       } catch {
         phase = .stopPending
-        failure = .stopPending
+        failure = error is NativeRecordingFinalizationFailure ? .recordingIncomplete : .stopPending
         throw error
       }
     }

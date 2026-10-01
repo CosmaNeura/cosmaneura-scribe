@@ -104,6 +104,14 @@ public struct NativeCapturePermit: Sendable {
         }
     }
 
+    /// Original encrypted owner only, after new capture has been fenced. This
+    /// grants no Start/renewal; the source must separately verify current account
+    /// and retained stop custody before a synchronous final queue write.
+    public static func requireEncryptedFinalizationOwner(_ expected: UUID) throws {
+        guard owner == expected, consumer == .nativeEncryptedMicrophone, consumed,
+              !closureConfirmed else { throw NativeAuthError.unavailable }
+    }
+
     /// Native boot recovery must hold idle for the entire authenticated stop.
     /// A missing PCM idle probe is not evidence of physical cessation.
     public static func recoverWhileIdle(_ operation: @MainActor () async throws -> Void) async throws {

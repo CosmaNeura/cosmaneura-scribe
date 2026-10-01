@@ -297,6 +297,19 @@ private actor IOSPCMSessionState {
     }
 
     phase = .starting
+    let invalidate: (@Sendable (PCMAudioEvent) -> Void)?
+    if configuration.preserveInterruptedTail {
+      invalidate = { [sink] event in
+        // The sink serializes this fence with its durable write. A later hard
+        // event must beat any uncommitted tail, even while actor delivery waits.
+        switch event {
+        case .permissionRevoked: sink.terminated(.permissionRevoked)
+        case .captureFailed: sink.terminated(.captureFailed)
+        case .backgrounded: sink.terminated(.backgrounded)
+        case .interruption, .routeChanged: break
+        }
+      }
+    } else { invalidate = nil }
     let callbacks = PCMAudioCallbacks(
       frames: { [weak self, frameAdmission] frames in
         switch frameAdmission.claim() {
@@ -322,7 +335,8 @@ private actor IOSPCMSessionState {
           )
         }
       },
-      event: { [weak self] event in await self?.receive(event) }
+      event: { [weak self] event in await self?.receive(event) },
+      invalidate: invalidate
     )
     switch await raceAudioStart(callbacks: callbacks) {
     case .cancelled:
@@ -524,14 +538,33 @@ private actor IOSPCMSessionState {
   }
 
   private func receive(_ event: PCMAudioEvent) {
+    if phase == .closed && configuration.preserveInterruptedTail {
+      switch event {
+      case .permissionRevoked, .captureFailed, .backgrounded:
+        windowFinalPacket?.bytes.zeroize()
+        windowFinalPacket = nil
+      case .interruption, .routeChanged: break
+      }
+      return
+    }
     guard
       phase == .active || phase == .starting
         || (phase == .closing && requestedStopMode == .drain)
         || (phase == .closeFailed && requestedStopMode == .drain)
     else { return }
     switch event {
-    case .interruption: beginTerminal(.interruption)
-    case .routeChanged: beginTerminal(.routeChanged)
+    case .interruption:
+      if configuration.preserveInterruptedTail && phase == .active {
+        beginWindowClose(.interruption)
+      } else if !configuration.preserveInterruptedTail || requestedStopMode != .drain {
+        beginTerminal(.interruption)
+      }
+    case .routeChanged:
+      if configuration.preserveInterruptedTail && phase == .active {
+        beginWindowClose(.routeChanged)
+      } else if !configuration.preserveInterruptedTail || requestedStopMode != .drain {
+        beginTerminal(.routeChanged)
+      }
     case .backgrounded: beginTerminal(.backgrounded)
     case .permissionRevoked: beginTerminal(.permissionRevoked)
     case .captureFailed: beginTerminal(.captureFailed)

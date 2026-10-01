@@ -14,6 +14,13 @@ private func runRequire(_ value: Bool, line: UInt = #line) throws {
 
 // Synthetic consent/source metadata and fake audio only. No microphone, meeting,
 // Keychain, user session or service is accessed by this executable.
+private final class FinalizationWrites: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = 0
+  var count: Int { lock.withLock { value } }
+  func increment() { lock.withLock { value += 1 } }
+}
+
 @MainActor private final class Idle {
   var value = true
 }
@@ -22,7 +29,7 @@ private func runRequire(_ value: Bool, line: UInt = #line) throws {
   let recordingPreparation: NativeSourcePreparation
   let runID = UUID().uuidString.lowercased()
   var prepared = 0, issued = 0, stopped = 0
-  var retired = false, stopFails = false
+  var retired = false, hardRetired = false, stopFails = false
   var holdPrepare = false, holdAuthorize = false
   var prepareWait: CheckedContinuation<Void, Never>?
   var authorizeWait: CheckedContinuation<Void, Never>?
@@ -54,7 +61,13 @@ private func runRequire(_ value: Bool, line: UInt = #line) throws {
       throw ProviderNativeError.authorityChanged
     }
   }
-  func retireForAuthenticationChange() { retired = true }
+  func requireMicrophoneFinalization(runID: String) throws {
+    guard issued == 1, !hardRetired, runID == self.runID else {
+      throw ProviderNativeError.authorityChanged
+    }
+  }
+  func retireForStop() { retired = true }
+  func retireForAuthenticationChange() { retired = true; hardRetired = true }
   func confirmStopped() async throws {
     stopped += 1
     if stopFails || prepareWait != nil { throw ProviderNativeError.unavailable }
@@ -67,7 +80,11 @@ private func runRequire(_ value: Bool, line: UInt = #line) throws {
   var starts = 0, stops = 0, readyCalls = 0
   var holdReady = false, stopFails = false, terminal = false, startFails = false
   var readyWait: CheckedContinuation<Void, Never>?
+  var invalidations = 0
+  var incomplete = false
   var validate: (@Sendable () async throws -> Void)?
+  var finalize: NativeRecordingFinalizer?
+  var finalizationWrites = 0
   let signal = PCMSignalMonitor()
   var captureState: NativeRecordingPCMState {
     NativeRecordingPCMState(
@@ -91,7 +108,9 @@ private func runRequire(_ value: Bool, line: UInt = #line) throws {
     stops += 1
     if stopFails { throw ProviderNativeError.unavailable }
     isPhysicallyIdle = true
+    if incomplete { throw NativeRecordingFinalizationFailure.storageFailed }
   }
+  func invalidatePendingAudio() { invalidations += 1 }
   func snapshot() async -> NativeRecordingContinuationState? {
     NativeRecordingContinuationState(
       phase: terminal ? .failed : .recording, reason: nil,
@@ -136,8 +155,9 @@ private func runRequire(_ value: Bool, line: UInt = #line) throws {
   {
     try NativeProviderRecordingRun(
       source: source, lease: lease, batch: batch, requestPermission: permission
-    ) { validate in
+    ) { validate, finalize in
       recorder.validate = validate
+      recorder.finalize = finalize
       return recorder
     }
   }
@@ -290,8 +310,9 @@ private actor SourceWire: ProviderNativeWire {
   {
     try NativeProviderRecordingRun(
       source: source, lease: fixture.lease, batch: fixture.batch, requestPermission: permission
-    ) { validate in
+    ) { validate, finalize in
       fixture.recorder.validate = validate
+      fixture.recorder.finalize = finalize
       return fixture.recorder
     }
   }
@@ -384,6 +405,33 @@ private actor SourceWire: ProviderNativeWire {
       try await replacement.start()
       try await replacement.stop()
       checks += 3
+    }
+    do {
+      let fixture = try Fixture()
+      let run = try fixture.run()
+      try await run.start()
+      fixture.recorder.incomplete = true
+      for _ in 0..<2 { try await rejects { try await run.stop() } }
+      try runRequire(run.phase == .stopped && run.isPhysicallyIdle)
+      try runRequire(run.failure == .recordingIncomplete && fixture.source.stopped == 1)
+      try await rejects { try await run.start() }
+      try await NativeCaptureStartGate.recoverWhileIdle {}
+      checks += 1
+    }
+    do {
+      let fixture = try Fixture()
+      let run = try fixture.run()
+      try await run.start()
+      let finalize = fixture.recorder.finalize!
+      let writes = FinalizationWrites()
+      try await finalize { writes.increment() }
+      try runRequire(writes.count == 1)
+      run.retire()
+      try runRequire(fixture.recorder.invalidations == 1)
+      try await rejects { try await finalize { writes.increment() } }
+      try await run.stop()
+      try runRequire(writes.count == 1)
+      checks += 1
     }
     do {
       let fixture = try Fixture()
@@ -502,7 +550,7 @@ private actor SourceWire: ProviderNativeWire {
       try await rejects {
         _ = try NativeProviderRecordingRun(
           source: fixture.source, lease: other.lease, batch: other.batch,
-          requestPermission: { true }, makeRecorder: { _ in fixture.recorder })
+          requestPermission: { true }, makeRecorder: { _, _ in fixture.recorder })
       }
       // A source whose construction persisted proof still retires if never started.
       let run = try fixture.run()
@@ -535,7 +583,7 @@ private actor SourceWire: ProviderNativeWire {
       let run = try NativeProviderRecordingRun(
         source: source, lease: fixture.lease, batch: fixture.batch,
         requestPermission: { true },
-        makeRecorder: { validate in
+        makeRecorder: { validate, _ in
           fixture.recorder.validate = validate
           return fixture.recorder
         })
@@ -679,6 +727,45 @@ private actor SourceWire: ProviderNativeWire {
       f.driver.identity = identity
       _ = f.auth.state()
       try await f.source.confirmStopped()
+      checks += 1
+    }
+    do {
+      let f = try BoundSource()
+      let run = try f.run()
+      try await run.start()
+      let finalize = f.fixture.recorder.finalize!, writes = FinalizationWrites()
+      // Ordinary stopping fences any new capture but may retain already captured
+      // PCM under this exact source. A real auth revision change still wins.
+      f.source.retireForStop()
+      try await finalize { writes.increment() }
+      let identity = f.driver.identity
+      f.driver.identity = nil
+      _ = f.auth.state()
+      try await rejects { try await finalize { writes.increment() } }
+      f.driver.identity = identity
+      _ = f.auth.state()
+      try await rejects { try await finalize { writes.increment() } }
+      try runRequire(writes.count == 1 && f.journal.pending.count == 1)
+      try await run.stop()
+      try runRequire(f.journal.pending.isEmpty)
+      checks += 1
+    }
+    do {
+      let f = try BoundSource()
+      let runID = await f.wire.sourceID
+      try await rejects { try f.source.requireMicrophoneFinalization(runID: runID) }
+      let run = try f.run()
+      try await run.start()
+      try await rejects {
+        try f.source.requireMicrophoneFinalization(runID: UUID().uuidString.lowercased())
+      }
+      f.source.retireForStop()
+      try f.source.requireMicrophoneFinalization(runID: runID)
+      f.source.retireForAuthenticationChange()
+      try await rejects { try f.source.requireMicrophoneFinalization(runID: runID) }
+      try await run.stop()
+      try runRequire(f.journal.pending.isEmpty)
+      try await rejects { try f.source.requireMicrophoneFinalization(runID: runID) }
       checks += 1
     }
     do {

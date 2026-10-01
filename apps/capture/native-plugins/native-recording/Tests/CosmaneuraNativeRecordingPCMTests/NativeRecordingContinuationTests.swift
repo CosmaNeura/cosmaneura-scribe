@@ -8,7 +8,177 @@ import XCTest
 @testable import CosmaneuraNativeRecordingPCM
 
 @MainActor final class NativeRecordingContinuationTests: XCTestCase {
-  func testAutomaticRouteFailureReachesTerminalStateWithinFourSeconds() async throws {
+  func testNativeInterruptionKeepsNearFullTailAndPendingCallbackExactlyOnce() async throws {
+    for event in [AppleAudioSystemEvent.routeChanged, .interruptionBegan] {
+      let f = try ContinuationFixture()
+      let system = EncryptedAudioSystem()
+      let recorder = try await startedRecorder(f, system)
+      for _ in 0..<4 { try await offerAndWait(32_000, system, recorder) }
+      // Deliberately do not await the last admitted callback. The driver must
+      // close new admission, then settle this callback before benign closure.
+      let late = try system.frameHandler()
+      let partial = try system.offer(31_999)
+      system.emit(event)
+      let state = try await terminalRecorder(recorder)
+      XCTAssertTrue(partial.isZeroed)
+      XCTAssertEqual(recorder.capturedAudioFrames, 159_999)
+      XCTAssertEqual(state.capture.phase, .closed)
+      XCTAssertEqual(state.capture.committedChunks, 1)
+      XCTAssertEqual(state.capture.committedPlaintextBytes, 320_042)
+      XCTAssertEqual(f.records.encryptedCount, 1)
+      let rejected = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0.25]])
+      late(rejected)
+      XCTAssertTrue(rejected.isZeroed)
+      system.emit(event)
+      try await recorder.stop()
+      try await recorder.stop()
+      XCTAssertTrue(recorder.isPhysicallyIdle)
+      XCTAssertEqual(f.records.encryptedCount, 1)
+      XCTAssertEqual(system.activations, 1)
+      XCTAssertEqual(system.deactivations, 1)
+      let lease = try await f.leases.open()
+      let batch = try await f.reservations.reserve(lease: lease, first: 1, count: 1)
+      XCTAssertThrowsError(try recorder.start(runID: UUID().uuidString.lowercased(),
+        captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+        lease: lease, batch: batch))
+    }
+  }
+
+  func testHardEventOverridesBenignRouteBeforeTailCommit() async throws {
+    for hard in [AppleAudioSystemEvent.permissionRevoked, .captureFailed, .configurationChanged] {
+      let f = try ContinuationFixture()
+      let system = EncryptedAudioSystem()
+      let recorder = try await startedRecorder(f, system)
+      try await offerAndWait(8_000, system, recorder)
+      // The hard event arrives after the route event closed admission, while
+      // physical freeze is in progress and before the retained tail can save.
+      system.eventOnFreeze = hard
+      system.emit(.routeChanged)
+      let state = try await terminalRecorder(recorder)
+      XCTAssertEqual(state.capture.phase, .failed)
+      XCTAssertEqual(state.capture.committedChunks, 0)
+      XCTAssertEqual(f.records.encryptedCount, 0)
+      try await recorder.stop()
+      XCTAssertTrue(recorder.isPhysicallyIdle)
+      XCTAssertEqual(system.deactivations, 1)
+    }
+  }
+
+  func testAccountRevocationWinsWhileRouteFinalizationWaits() async throws {
+    let f = try ContinuationFixture()
+    let system = EncryptedAudioSystem()
+    let recorder = try await startedRecorder(f, system)
+    for _ in 0..<5 { try await offerAndWait(32_000, system, recorder) }
+    XCTAssertEqual(f.records.encryptedCount, 1)
+    try await offerAndWait(8_000, system, recorder)
+    let pause = ContinuationPause()
+    await f.fence.pauseFinalization(pause)
+    system.emit(.routeChanged)
+    await pause.entered()
+    recorder.invalidatePendingAudio()
+    await f.fence.retire()
+    await pause.release()
+    let state = try await terminalRecorder(recorder)
+    XCTAssertEqual(state.reason, .sourceRetired)
+    XCTAssertEqual(state.capture.phase, .failed)
+    // The earlier durable full packet survives; no second envelope was written.
+    XCTAssertEqual(state.capture.committedChunks, 1)
+    XCTAssertEqual(state.capture.committedPlaintextBytes, 320_044)
+    XCTAssertEqual(f.records.encryptedCount, 1)
+    for _ in 0..<2 {
+      do { try await recorder.stop(); XCTFail("Denied finalization must remain failed") }
+      catch { XCTAssertTrue(error is NativeRecordingFinalizationFailure) }
+    }
+    XCTAssertTrue(recorder.isPhysicallyIdle)
+    XCTAssertEqual(f.records.encryptedCount, 1)
+    XCTAssertEqual(system.activations, 1)
+    XCTAssertEqual(system.deactivations, 1)
+  }
+
+  func testPartialStorageFailureStaysFailedAfterPhysicalStopAndRetry() async throws {
+    let f = try ContinuationFixture()
+    let system = EncryptedAudioSystem()
+    let recorder = try await startedRecorder(f, system)
+    for _ in 0..<5 { try await offerAndWait(32_000, system, recorder) }
+    try await offerAndWait(8_000, system, recorder)
+    f.records.setCapacity(0)
+    system.emit(.routeChanged)
+    let state = try await terminalRecorder(recorder)
+    XCTAssertEqual(state.reason, .storageFailed)
+    XCTAssertEqual(state.phase, .failed)
+    XCTAssertEqual(state.capture.committedChunks, 1)
+    f.records.setCapacity(2_000_000_000)
+    for _ in 0..<2 {
+      do { try await recorder.stop(); XCTFail("Lost partial cannot become success") }
+      catch { XCTAssertTrue(error is NativeRecordingFinalizationFailure) }
+    }
+    XCTAssertTrue(recorder.isPhysicallyIdle)
+    XCTAssertEqual(f.records.encryptedCount, 1)
+    XCTAssertEqual(system.deactivations, 1)
+  }
+
+  func testRoutineStopRetirementRacingHeartbeatRetainsAuthorizedTail() async throws {
+    let f = try ContinuationFixture()
+    let owner = try await f.open()
+    try await f.driver.offer(8_000)
+    await f.fence.retireForStop()
+    assertFalse(await owner.heartbeatAndObserve())
+    let state = await owner.state
+    XCTAssertEqual(state.phase, .stopped)
+    XCTAssertEqual(state.capture.phase, .closed)
+    XCTAssertEqual(state.capture.committedChunks, 1)
+    XCTAssertEqual(state.capture.committedPlaintextBytes, 16_044)
+    try await owner.stop()
+    XCTAssertEqual(f.records.encryptedCount, 1)
+  }
+
+  private func startedRecorder(_ f: ContinuationFixture, _ system: EncryptedAudioSystem)
+    async throws -> NativeEncryptedPCMRecorder
+  {
+    let recorder = try f.recorder(system: system)
+    let lease = try await f.leases.open()
+    let batch = try await f.reservations.reserve(lease: lease, first: 0, count: 30)
+    try recorder.start(runID: UUID().uuidString.lowercased(),
+      captureExpiresAtMilliseconds: f.clock.now().epochMilliseconds + 900_000,
+      lease: lease, batch: batch)
+    try await recorder.ready()
+    return recorder
+  }
+
+  private func offerAndWait(_ count: Int, _ system: EncryptedAudioSystem,
+    _ recorder: NativeEncryptedPCMRecorder) async throws
+  {
+    let expected = recorder.capturedAudioFrames + count
+    let frames = try system.offer(count)
+    let start = ContinuousClock.now
+    while !frames.isZeroed || recorder.capturedAudioFrames < expected
+      || recorder.captureState.committedChunks < expected / 160_000 {
+      guard start.duration(to: .now) < .seconds(4) else {
+        XCTFail("Synthetic callback did not settle"); throw PCMFailure(.sinkFailed)
+      }
+      try await Task.sleep(for: .milliseconds(1))
+    }
+    // Driver admission settles after the core clears the transferred frame.
+    try await Task.sleep(for: .milliseconds(100))
+  }
+
+  private func terminalRecorder(_ recorder: NativeEncryptedPCMRecorder) async throws
+    -> NativeRecordingContinuationState
+  {
+    let start = ContinuousClock.now
+    while start.duration(to: .now) < .seconds(4) {
+      if let value = await recorder.snapshot(), value.phase == .stopped || value.phase == .failed {
+        return value
+      }
+      try await Task.sleep(for: .milliseconds(2))
+    }
+    XCTFail("Native closure exceeded four seconds")
+    try await recorder.stop()
+    let final = await recorder.snapshot()
+    return try XCTUnwrap(final)
+  }
+
+  func testAutomaticRouteCloseReachesTerminalStateWithinFourSeconds() async throws {
     for sample in 1...3 {
       let f = try ContinuationFixture()
       let system = EncryptedAudioSystem()
@@ -35,7 +205,7 @@ import XCTest
       let elapsed = start.duration(to: .now)
       XCTAssertNotNil(terminal, "Sink failure must not wait for the five-second heartbeat")
       XCTAssertLessThan(elapsed, .seconds(4))
-      assertEqual(recorder.captureState.phase, .failed)
+      assertEqual(recorder.captureState.phase, .closed)
       try await recorder.stop()
       assertTrue(recorder.isPhysicallyIdle)
       assertEqual(system.deactivations, 1)
@@ -233,7 +403,8 @@ import XCTest
     assertEqual(state.phase, .stopped)
     assertEqual(state.reason, .sourceRetired)
     assertEqual(state.sourceGeneration, 1)
-    assertEqual(state.capture.committedChunks, 1)
+    assertEqual(state.capture.committedChunks, 0)
+    assertEqual(f.records.encryptedCount, 0)
     assertEqual(await f.driver.releases, 1)
   }
 
@@ -472,10 +643,10 @@ import XCTest
     system.emit(.backgrounded)
     system.emit(.routeChanged)
     for _ in 0..<1_000 {
-      if recorder.captureState.phase == .failed { break }
+      if recorder.captureState.phase == .closed { break }
       try await Task.sleep(for: .milliseconds(1))
     }
-    assertEqual(recorder.captureState.phase, .failed)
+    assertEqual(recorder.captureState.phase, .closed)
     try await recorder.stop()
     assertTrue(recorder.isPhysicallyIdle)
   }
@@ -541,9 +712,18 @@ private actor ContinuationPause {
 
 private actor ContinuationFence {
   private var retired = false
+  private var captureRetired = false
+  func retireForStop() { captureRetired = true }
+  private var finalizationPause: ContinuationPause?
+  func pauseFinalization(_ pause: ContinuationPause) { finalizationPause = pause }
   func retire() { retired = true }
   func validate() throws {
+    if retired || captureRetired { throw NativeRecordingBindingFailure.authorityChanged }
+  }
+  func finalize(_ write: @Sendable () throws -> Void) async throws {
+    if let finalizationPause { await finalizationPause.block() }
     if retired { throw NativeRecordingBindingFailure.authorityChanged }
+    try write()
   }
 }
 
@@ -768,7 +948,8 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
       firstSequence: 0, priorPlaintextBytes: 0, leases: leases, reservations: reservations,
       permission: ContinuationConsent(), system: system,
       foreground: EncryptedForeground(active: foreground), signal: PCMSignalMonitor(),
-      sourceClock: clock, validateActiveSource: { [fence] in try await fence.validate() })
+      sourceClock: clock, validateActiveSource: { [fence] in try await fence.validate() },
+      finalizeCapturedAudio: { [fence] write in try await fence.finalize(write) })
   }
   func open(start: Bool = true, wrongRun: Bool = false, initialCount: Int = 90) async throws
     -> NativeRecordingContinuation
@@ -785,14 +966,15 @@ private struct ContinuationConsent: MicrophonePermissionAuthorizing {
       configuration: PCMConfiguration(
         targetFramesPerChunk: 160_000, maximumChunks: initialCount,
         maximumInputFramesPerBuffer: 32_000,
-        authority: authority))
+        authority: authority, preserveInterruptedTail: true))
     let supplied = try PCMSourceAuthority(
       runID: wrongRun ? UUID().uuidString.lowercased() : authority.runID, generation: 1,
       expiresAtMilliseconds: authority.expiresAtMilliseconds, hardMaximumChunks: 2_048)
     let owner = try NativeRecordingContinuation(
       session: handle, sink: sink, leases: leases, reservations: reservations,
       initialLease: lease, initialAuthority: supplied, initialBatch: batch, sourceClock: clock,
-      validateActiveSource: { [fence] in try await fence.validate() })
+      validateActiveSource: { [fence] in try await fence.validate() },
+      finalizeCapturedAudio: { [fence] write in try await fence.finalize(write) })
     if start { try await owner.beginMaintenance(automatic: false) }
     return owner
   }
@@ -815,6 +997,7 @@ private final class EncryptedAudioSystem: AppleAudioSystem, @unchecked Sendable 
   private var selectedProfile: AppleAudioSessionProfile?
   private var activated = 0
   private var deactivated = 0
+  var eventOnFreeze: AppleAudioSystemEvent?
   var profile: AppleAudioSessionProfile? { lock.withLock { selectedProfile } }
   var activations: Int { lock.withLock { activated } }
   var deactivations: Int { lock.withLock { deactivated } }
@@ -835,9 +1018,15 @@ private final class EncryptedAudioSystem: AppleAudioSystem, @unchecked Sendable 
     lock.withLock { frames = handler }
   }
   func startEngine() throws {}
-  func freezeInput() throws { lock.withLock { frames = nil } }
+  func freezeInput() throws {
+    lock.withLock { frames = nil }
+    if let eventOnFreeze { emit(eventOnFreeze) }
+  }
   func deactivate() throws { lock.withLock { deactivated += 1 } }
   func emit(_ event: AppleAudioSystemEvent) { lock.withLock { events }?(event) }
+  func frameHandler() throws -> @Sendable (OwnedAudioFrames) -> Void {
+    try XCTUnwrap(lock.withLock { frames })
+  }
   func offer(_ count: Int) throws -> OwnedAudioFrames {
     let value = OwnedAudioFrames(
       sampleRateHz: 16_000, channels: [Array(repeating: 0.125, count: count)])

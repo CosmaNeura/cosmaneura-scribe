@@ -2,6 +2,19 @@ import CosmaneuraIOSPCMCore
 import CosmaneuraNativeRecording
 import Foundation
 
+/// The native host checks its original source/account and executes the write in
+/// the same synchronous isolation turn. Validation followed by an await is not
+/// sufficient: auth retirement must not interleave before durable persistence.
+public typealias NativeRecordingFinalizer = @Sendable (
+  @escaping @Sendable () throws -> Void
+) async throws -> Void
+
+/// Physical audio closure succeeded, but the final audio could not be retained.
+/// This error is latched: another stop must not turn incomplete work into success.
+public enum NativeRecordingFinalizationFailure: Error, Sendable {
+  case authorityChanged, storageFailed
+}
+
 public struct NativeRecordingContinuationState: Equatable, Sendable {
   public enum Phase: Sendable { case ready, recording, renewalDelayed, stopping, stopped, failed }
   public enum Reason: Sendable {
@@ -38,6 +51,7 @@ public actor NativeRecordingContinuation {
   // Must inspect the same native source owner and current authenticated mount;
   // never a renderer value or a fresh grant for a different source.
   private let validateActiveSource: @Sendable () async throws -> Void
+  private let finalizeCapturedAudio: NativeRecordingFinalizer
   private var lease: NativeRecordingLease
   private var generation: Int
   private var reservedEnd: Int
@@ -51,6 +65,7 @@ public actor NativeRecordingContinuation {
   private var heartbeatTask: Task<Void, Never>?
   private var renewalTask: Task<Void, Never>?
   private var stopTask: Task<Void, Error>?
+  private var finalizationFailure: NativeRecordingFinalizationFailure?
 
   public init(
     session: IOSPCMSessionHandle, sink: NativeRecordingPCMSink,
@@ -58,7 +73,8 @@ public actor NativeRecordingContinuation {
     initialLease: NativeRecordingLease, initialAuthority: PCMSourceAuthority,
     initialBatch: NativeRecordingReservationBatch,
     sourceClock: any PCMSourceClock = ContinuousPCMSourceClock(),
-    validateActiveSource: @escaping @Sendable () async throws -> Void
+    validateActiveSource: @escaping @Sendable () async throws -> Void,
+    finalizeCapturedAudio: @escaping NativeRecordingFinalizer
   ) throws {
     let state = sink.state
     guard state.phase == .accepting, state.committedChunks == 0,
@@ -80,6 +96,7 @@ public actor NativeRecordingContinuation {
     self.reservations = reservations
     self.sourceClock = sourceClock
     self.validateActiveSource = validateActiveSource
+    self.finalizeCapturedAudio = finalizeCapturedAudio
     lease = initialLease
     runID = initialAuthority.runID
     self.initialAuthority = initialAuthority
@@ -156,6 +173,7 @@ public actor NativeRecordingContinuation {
   /// Idempotent physical closure. Failed closure remains retryable and must not
   /// be reported to Core as stopped. A successful drain commits its partial once.
   public func stop() async throws {
+    if let finalizationFailure { throw finalizationFailure }
     if phase == .stopped { return }
     if let stopTask { return try await stopTask.value }
     phase = .stopping
@@ -164,12 +182,18 @@ public actor NativeRecordingContinuation {
     renewalTask?.cancel()
     heartbeatTask = nil
     renewalTask = nil
-    let task = Task { [session, sink] in
+    let task = Task { [session, sink, finalizeCapturedAudio] in
       let result = try await session.stop(sink.state.phase == .failed ? .discard : .drain)
-      if sink.state.phase != .failed && sink.state.phase != .closed {
-        try sink.finish(result)
-      } else {
-        result.finalPacket?.bytes.zeroize()
+      defer { result.finalPacket?.bytes.zeroize() }
+      guard sink.state.phase != .failed && sink.state.phase != .closed else { return }
+      do {
+        try await finalizeCapturedAudio { _ = try sink.finish(result) }
+      } catch {
+        let failure: NativeRecordingFinalizationFailure =
+          error as? NativeRecordingBindingFailure == .authorityChanged
+            ? .authorityChanged : .storageFailed
+        sink.terminated(.captureFailed)
+        throw failure
       }
     }
     stopTask = task
@@ -180,7 +204,10 @@ public actor NativeRecordingContinuation {
       stopTask = nil
     } catch {
       phase = .failed
-      reason = .closureUnconfirmed
+      if let failure = error as? NativeRecordingFinalizationFailure {
+        finalizationFailure = failure
+        reason = failure == .storageFailed ? .storageFailed : .sourceRetired
+      } else { reason = .closureUnconfirmed }
       stopTask = nil
       throw error
     }
@@ -192,7 +219,17 @@ public actor NativeRecordingContinuation {
     guard active else { return }
     let capture = sink.state
     guard capture.phase != .accepting else { return }
-    await end(capture.phase == .draining ? .authorityExpired : .captureFailed)
+    await end(closureReason)
+  }
+
+  private var closureReason: NativeRecordingContinuationState.Reason {
+    if sink.state.phase == .draining {
+      switch sink.windowCloseReason {
+      case .authorityExpired, .frameLimit: return .authorityExpired
+      default: break
+      }
+    }
+    return .captureFailed
   }
 
   // Internal deterministic seams exercise the production maintenance operations
@@ -200,12 +237,12 @@ public actor NativeRecordingContinuation {
   func heartbeatAndObserve() async -> Bool {
     guard active else { return false }
     do { try await validateActiveSource() } catch {
-      await end(.sourceRetired)
+      await end(.sourceRetired, checkStopRetirement: true)
       return false
     }
     guard active else { return false }
     guard sink.state.phase == .accepting else {
-      await end(sink.state.phase == .draining ? .authorityExpired : .captureFailed)
+      await end(closureReason)
       return false
     }
     guard remainingNanoseconds() > 0 else {
@@ -230,7 +267,7 @@ public actor NativeRecordingContinuation {
     defer { renewing = false }
     do {
       do { try await validateActiveSource() } catch {
-        await end(.sourceRetired)
+        await end(.sourceRetired, checkStopRetirement: true)
         return
       }
       try requireLive()
@@ -259,7 +296,7 @@ public actor NativeRecordingContinuation {
         try sink.stage(batch)
       }
       do { try await validateActiveSource() } catch {
-        await end(.sourceRetired)
+        await end(.sourceRetired, checkStopRetirement: true)
         return
       }
       try requireLive()
@@ -300,9 +337,23 @@ public actor NativeRecordingContinuation {
     }
   }
 
-  private func end(_ value: NativeRecordingContinuationState.Reason) async {
+  private func end(_ value: NativeRecordingContinuationState.Reason,
+    checkStopRetirement: Bool = false) async {
     guard active || phase == .ready else { return }
     reason = value
+    if value == .renewalRejected || value == .sourceRetired && !checkStopRetirement {
+      sink.terminated(.captureFailed)
+    } else if value == .sourceRetired {
+      // A normal Pause retires capture before this actor receives stop. Resolve
+      // that race with the original finalization guard, never by reauthorizing
+      // capture. Real auth/custody loss fails here; the actual write checks again.
+      do { try await finalizeCapturedAudio {} }
+      catch {
+        // Stop cancels maintenance; that cancellation is not auth retirement.
+        // An already-started stop performs its own final write authority check.
+        if active || phase == .ready { sink.terminated(.captureFailed) }
+      }
+    }
     try? await stop()
   }
 
