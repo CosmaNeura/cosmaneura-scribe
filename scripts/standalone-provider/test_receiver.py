@@ -1128,19 +1128,82 @@ def core_created_opening(h, after_lookup=None):
     workspace = uuid4()
     h.wire.selection = replace(h.wire.selection, workspace_id=workspace)
     lookups = []
+
     async def handle(request):
+        if request.url.path == "/service/v1/agent/scribe/native-capture":
+            body = json.loads(request.content)
+            assert request.headers["authorization"].startswith("Bearer ey")
+            assert (
+                request.headers["x-cosmaneura-workload-authorization"]
+                == "Bearer offline-workload-only"
+            )
+            assert body["workspace_id"] == str(workspace)
+            assert body["expected_actor_ref"] == h.wire.selection.actor_ref
+            assert body["expected_tenant_ref"] == h.wire.selection.tenant_ref
+            h.wire.calls.append(request.url.path)
+            value = {
+                "contract_version": "1",
+                "workspace_id": str(workspace),
+                "binding_ref": BINDING,
+                "request_nonce": body["request_nonce"],
+                "checked_at": datetime.now(UTC).isoformat(),
+            }
+            kind = body.get("operation", {}).get("kind", "provider_encounter")
+            h.wire.operations.append(kind)
+            receipt = {"schema_version": "1.0", "status": "not_prepared", "review": None}
+            if body["action"] == "mount":
+                value.update(
+                    appointment_ref=APPOINTMENT,
+                    encounter={
+                        "workspace_id": str(workspace),
+                        "appointment_ref": APPOINTMENT,
+                        "patient_name": "Synthetic checked display",
+                        "title": "Visit",
+                        "appointment_at": "2026-09-30T12:00:00Z",
+                    },
+                )
+                if "opening_nonce" in body:
+                    value["opening_review"] = {
+                        k: v for k, v in value.items() if k not in {"encounter", "appointment_ref"}
+                    }
+                    value["opening_review"].update(
+                        request_nonce=body["opening_nonce"], operation=kind, receipt=receipt
+                    )
+            else:
+                value.update(operation=kind, receipt=receipt)
+            if after_lookup:
+                after_lookup(1)
+            return httpx.Response(
+                200,
+                json={
+                    "version": "1",
+                    "action": body["action"],
+                    "actor_ref": h.wire.selection.actor_ref,
+                    "tenant_ref": h.wire.selection.tenant_ref,
+                    "result": value,
+                },
+                headers={"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"},
+            )
         if request.url.path != "/embed/v1/scribe/encounters":
             return await h.wire.handle(request)
         body = json.loads(request.content)
         assert body["action"] == "lookup" and body["workspace_id"] == str(workspace)
         lookups.append(body["action"])
         value = {
-            "version": "1", "action": "lookup", "request_nonce": body["request_nonce"],
-            "account": {"actor_ref": h.wire.selection.actor_ref,
-                        "tenant_ref": h.wire.selection.tenant_ref},
-            "encounter": {"workspace_id": str(workspace), "appointment_ref": APPOINTMENT,
-                          "patient_name": f"Synthetic display {len(lookups)}", "title": "Visit",
-                          "appointment_at": "2026-09-30T12:00:00Z"},
+            "version": "1",
+            "action": "lookup",
+            "request_nonce": body["request_nonce"],
+            "account": {
+                "actor_ref": h.wire.selection.actor_ref,
+                "tenant_ref": h.wire.selection.tenant_ref,
+            },
+            "encounter": {
+                "workspace_id": str(workspace),
+                "appointment_ref": APPOINTMENT,
+                "patient_name": f"Synthetic display {len(lookups)}",
+                "title": "Visit",
+                "appointment_at": "2026-09-30T12:00:00Z",
+            },
         }
         if after_lookup:
             after_lookup(len(lookups))
@@ -1151,22 +1214,22 @@ def core_created_opening(h, after_lookup=None):
 
 
 @pytest.mark.asyncio
-async def test_core_created_opening_uses_five_checks_and_final_checked_display(harness):
+async def test_core_created_opening_uses_one_facade_and_keeps_checked_display(harness):
     h = harness
     workspace, lookups = core_created_opening(h)
     async with client(h) as c:
         result = await c.post("/provider/v1/mount", json={
             "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
     assert result.status_code == 200
-    assert len(lookups) == 5 and len(h.wire.calls) == 4
-    assert result.json()["encounter"]["title"] == "Synthetic display 5"
-    assert result.json()["encounter"]["patientName"] == "Synthetic display 5"
+    assert lookups == [] and len(h.wire.calls) == 1
+    assert result.json()["encounter"]["title"] == "Synthetic checked display"
+    assert result.json()["encounter"]["patientName"] == "Synthetic checked display"
     assert h.wire.operations == ["provider_encounter"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("boundary", range(1, 6))
-async def test_core_created_opening_cannot_publish_account_revoked_during_lookup(harness, boundary):
+async def test_core_created_opening_cannot_publish_account_revoked_during_facade(harness):
+    boundary = 1
     h = harness
     def after_lookup(number):
         if number == boundary:
@@ -1176,7 +1239,7 @@ async def test_core_created_opening_cannot_publish_account_revoked_during_lookup
         result = await c.post("/provider/v1/mount", json={
             "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
     assert result.status_code == 403
-    assert len(lookups) == boundary and len(h.wire.calls) == boundary - 1
+    assert lookups == [] and len(h.wire.calls) == 1
     assert "Synthetic display" not in result.text
 
 
@@ -1192,8 +1255,8 @@ async def test_opening_rechecks_real_account_after_workload_token_await(harness)
     async with client(h) as c:
         result = await c.post("/provider/v1/mount", json={
             "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
-    assert result.status_code == 403 and len(lookups) == 1
-    assert h.wire.calls == ["/embed/v1/context-tokens/exchange"]
+    assert result.status_code == 403 and lookups == []
+    assert h.wire.calls == []
     assert "Synthetic display" not in result.text
 
 
@@ -1216,7 +1279,10 @@ async def test_core_created_capture_uses_six_checks_and_keeps_outer_boundaries(h
     async with client(h) as c:
         result = await c.post("/provider/v1/" + route, json=body)
     assert result.status_code == 200
-    assert len(lookups) == 6 and len(h.wire.calls) == 3
+    if kind in {"creator_review", "native_recording_context"}:
+        assert lookups == [] and len(h.wire.calls) == 1
+    else:
+        assert len(lookups) == 6 and len(h.wire.calls) == 3
     assert h.wire.operations == ["source_start_sequence" if kind == "source-start-ready" else kind]
     assert result.headers["cache-control"] == "no-store"
 
@@ -1242,6 +1308,7 @@ async def test_capture_lookup_revocation_blocks_initial_adjacent_and_final_publi
     assert result.status_code == 403 and len(lookups) == boundary
     assert len(h.wire.calls) == [0, 0, 1, 2, 3, 3][boundary - 1]
     assert "receipt" not in result.json() and "authorization" not in result.json()
+    assert len(h.wire.operations) == (1 if boundary >= 5 else 0)
     if boundary == 6:
         # The operation already returned before this final receiver check.
         # Its durable remote effect must not make a revoked reply publishable.

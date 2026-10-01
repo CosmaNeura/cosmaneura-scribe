@@ -984,3 +984,11 @@ def _snapshot(body: Mapping[str, object], maximum: int) -> dict[str, object]:
         return _decode(data)
     except (ValueError, TypeError, RecursionError):
         raise ProviderCoreUnavailable() from None
+
+
+# The native read facade shares these exact closed wire validators.
+core_wire_object = _object
+core_wire_require = _require
+core_wire_secret = _secret
+core_wire_snapshot = _snapshot
+core_wire_uuid = _uuid
