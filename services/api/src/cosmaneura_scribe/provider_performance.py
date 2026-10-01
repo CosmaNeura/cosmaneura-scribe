@@ -48,12 +48,26 @@ class _Timing:
     durations: dict[str, int] = field(default_factory=lambda: dict[str, int]())
     closed: bool = False
 
+    def server_timing(self) -> str | None:
+        """Closed numeric snapshot of this request; never an authority receipt.
+
+        Zero means no measured work in that phase. No identifiers, arbitrary
+        labels or errors are admitted, and malformed diagnostics are omitted.
+        """
+        phases = (*_PHASE_LOGGERS, "total")
+        if not self.closed or "total" not in self.durations or set(self.durations) - set(phases):
+            return None
+        values = {phase: self.durations.get(phase, 0) for phase in phases}
+        if any(type(ns) is not int or not 0 <= ns <= 3_600_000_000_000 for ns in values.values()):
+            return None
+        return ", ".join(f"scribe_{phase};dur={ns / 1_000_000:.3f}" for phase, ns in values.items())
+
 
 _CURRENT: ContextVar[_Timing | None] = ContextVar("provider_performance", default=None)
 
 
 @contextmanager
-def provider_request_timing(action: str) -> Generator[None, None, None]:
+def provider_request_timing(action: str) -> Generator[_Timing, None, None]:
     """Only fixed action/phase labels and cumulative milliseconds are emitted.
 
     This measures handler time through response headers, including failed or
@@ -66,7 +80,7 @@ def provider_request_timing(action: str) -> Generator[None, None, None]:
     token = _CURRENT.set(timing)
     started = perf_counter_ns()
     try:
-        yield
+        yield timing
     finally:
         timing.closed = True
         _CURRENT.reset(token)

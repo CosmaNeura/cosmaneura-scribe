@@ -93,9 +93,58 @@ struct ProviderNativeRequest: Sendable {
     }
 }
 
+/// Only our complete, bounded Server-Timing vocabulary can enter diagnostics.
+/// Missing or malformed metadata is discarded without changing the response.
+struct ProviderServerTiming: Sendable, Equatable {
+    enum Phase: String, CaseIterable, Sendable {
+        case registry, workload_token, core_exchange, core_mount, core_binding
+        case core_operation, core_encounter_lookup, total
+    }
+    private let values: [Phase: Double]
+
+    func milliseconds(_ phase: Phase) -> Double { values[phase]! }
+
+    static func parse(_ fields: [String]) -> ProviderServerTiming? {
+        guard fields.count == 1, let field = fields.first, field.utf8.count <= 512,
+              field.unicodeScalars.allSatisfy({ (32...126).contains($0.value) }) else { return nil }
+        let metrics = field.split(separator: ",", omittingEmptySubsequences: false)
+        guard metrics.count == Phase.allCases.count else { return nil }
+        var values: [Phase: Double] = [:]
+        for metric in metrics {
+            let parts = metric.trimmingCharacters(in: .whitespaces)
+                .split(separator: ";", omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0].hasPrefix("scribe_"),
+                  let phase = Phase(rawValue: String(parts[0].dropFirst(7))), values[phase] == nil,
+                  parts[1].hasPrefix("dur=") else { return nil }
+            let decimal = String(parts[1].dropFirst(4))
+            guard decimal.range(of: "^[0-9]{1,7}(?:\\.[0-9]{1,3})?$", options: .regularExpression) != nil,
+                  let duration = Double(decimal), duration.isFinite, (0...3_600_000).contains(duration)
+            else { return nil }
+            values[phase] = duration
+        }
+        guard values.count == Phase.allCases.count else { return nil }
+        return ProviderServerTiming(values: values)
+    }
+
+    static func from(_ response: HTTPURLResponse) -> ProviderServerTiming? {
+        // Foundation may coalesce repeated header lines. Repeated metrics in a
+        // combined value and multiple case variants are rejected by parse().
+        let fields = response.allHeaderFields.filter {
+            ($0.key as? String)?.lowercased() == "server-timing"
+        }
+        guard fields.count == 1, let value = fields.first?.value as? String else { return nil }
+        return parse([value])
+    }
+}
+
 struct ProviderNativeReply: Sendable {
     let status: Int
     let body: Data
+    let serverTiming: ProviderServerTiming?
+
+    init(status: Int, body: Data, serverTiming: ProviderServerTiming? = nil) {
+        self.status = status; self.body = body; self.serverTiming = serverTiming
+    }
 }
 
 /// Local performance data only. Never accept request/reply bytes, identifiers,
@@ -107,6 +156,7 @@ struct ProviderNativeRequestTiming: Sendable {
     let totalMilliseconds: Int
     let status: Int?
     let completed: Bool
+    let serverTiming: ProviderServerTiming?
 
     private static let logger = Logger(subsystem: "com.cosmaneura.scribe.performance", category: "provider")
     private static let signposter = OSSignposter(logger: logger)
@@ -120,7 +170,7 @@ struct ProviderNativeRequestTiming: Sendable {
     }
 
     func log() {
-        Self.logger.info("provider_request action=\(action.rawValue, privacy: .public) token_ms=\(tokenMilliseconds) receiver_ms=\(receiverMilliseconds ?? -1) total_ms=\(totalMilliseconds) status=\(status ?? 0) completed=\(completed)")
+        Self.logger.info("provider_request action=\(action.rawValue, privacy: .public) token_ms=\(tokenMilliseconds) receiver_ms=\(receiverMilliseconds ?? -1) total_ms=\(totalMilliseconds) status=\(status ?? 0) completed=\(completed) server_registry_ms=\(serverTiming?.milliseconds(.registry) ?? -1) server_workload_token_ms=\(serverTiming?.milliseconds(.workload_token) ?? -1) server_core_exchange_ms=\(serverTiming?.milliseconds(.core_exchange) ?? -1) server_core_mount_ms=\(serverTiming?.milliseconds(.core_mount) ?? -1) server_core_binding_ms=\(serverTiming?.milliseconds(.core_binding) ?? -1) server_core_operation_ms=\(serverTiming?.milliseconds(.core_operation) ?? -1) server_core_encounter_lookup_ms=\(serverTiming?.milliseconds(.core_encounter_lookup) ?? -1) server_total_ms=\(serverTiming?.milliseconds(.total) ?? -1)")
     }
 
     static func milliseconds(from start: ContinuousClock.Instant, to end: ContinuousClock.Instant) -> Int {
@@ -432,6 +482,7 @@ protocol ProviderNativeWire: Sendable {
             var tokenEnd: ContinuousClock.Instant?, receiverStart: ContinuousClock.Instant?
             var receiverEnd: ContinuousClock.Instant?, status: Int?
             var completed = false
+            var serverTiming: ProviderServerTiming?
             defer {
                 if let tokenInterval { ProviderNativeRequestTiming.end("Provider token", tokenInterval) }
                 if let receiverInterval { ProviderNativeRequestTiming.end("Provider receiver", receiverInterval) }
@@ -442,7 +493,7 @@ protocol ProviderNativeWire: Sendable {
                     receiverMilliseconds: receiverStart.map {
                         ProviderNativeRequestTiming.milliseconds(from: $0, to: receiverEnd ?? ended)
                     }, totalMilliseconds: ProviderNativeRequestTiming.milliseconds(from: started, to: ended),
-                    status: status, completed: completed))
+                    status: status, completed: completed, serverTiming: serverTiming))
             }
             try Task.checkCancellation()
             let token = try await auth.token(expectedRevision: request.revision,
@@ -455,7 +506,7 @@ protocol ProviderNativeWire: Sendable {
             receiverStart = timingNow()
             receiverInterval = ProviderNativeRequestTiming.begin("Provider receiver")
             let reply = try await wire.send(request, token: token)
-            receiverEnd = timingNow(); status = reply.status
+            receiverEnd = timingNow(); status = reply.status; serverTiming = reply.serverTiming
             if let interval = receiverInterval { ProviderNativeRequestTiming.end("Provider receiver", interval) }
             receiverInterval = nil
             try Task.checkCancellation()

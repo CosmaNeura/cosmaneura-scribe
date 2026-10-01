@@ -227,8 +227,15 @@ class ProviderReceiver:
             ):
                 return _reply(404, {"detail": "provider_unavailable"})
             try:
-                with provider_request_timing(action):
-                    return await call_next(request)
+                with provider_request_timing(action) as timing:
+                    response = await call_next(request)
+                # Same completed handler snapshot as safe logging. Never forward
+                # another layer's arbitrary Server-Timing value or add DB work.
+                if "server-timing" in response.headers:
+                    del response.headers["server-timing"]
+                if header := timing.server_timing():
+                    response.headers["Server-Timing"] = header
+                return response
             except Exception:
                 # Framework/SQL/credential exceptions must not echo request data.
                 return _reply(503, {"detail": "provider_unavailable"})

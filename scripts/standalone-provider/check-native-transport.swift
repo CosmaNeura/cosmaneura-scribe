@@ -16,12 +16,13 @@ private final class Fixture: URLProtocol, @unchecked Sendable {
     Self.seen.append(request)
     if key.contains("hold") { Self.held[key] = self }
     Self.lock.unlock()
+    var headers = ["Content-Type": "application/json",
+                   "Cache-Control": key.contains("invalid") ? "public" : "no-store"]
+    if key.contains("timing-good") { headers["Server-Timing"] = timingHeader }
+    if key.contains("timing-malformed") { headers["Server-Timing"] = "private-forbidden-header" }
     let response = HTTPURLResponse(
       url: request.url!, statusCode: key.contains("not-found") ? 404 : 200, httpVersion: "HTTP/1.1",
-      headerFields: [
-        "Content-Type": "application/json",
-        "Cache-Control": key.contains("invalid") ? "public" : "no-store",
-      ])!
+      headerFields: headers)!
     client!.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
     if key.contains("opening-long") {
       let data = Data(("{\"padding\":\"" + String(repeating: "x", count: 9000) + "\"}").utf8)
@@ -100,6 +101,32 @@ private func rejected(_ operation: Task<ProviderNativeReply, Error>) async throw
   } catch is ProviderNativeError {}
 }
 
+private let timingHeader = ProviderServerTiming.Phase.allCases.map {
+  "scribe_\($0.rawValue);dur=123.456"
+}.joined(separator: ", ")
+
+private func checkTimingMetadata() throws {
+  let expected = ProviderServerTiming.parse([timingHeader])
+  try require(expected?.milliseconds(.registry) == 123.456, "fixed numeric header")
+  try require(expected?.milliseconds(.total) == 123.456, "total retained")
+  for invalid in [
+    [], [timingHeader, timingHeader], [timingHeader + ", " + timingHeader],
+    [timingHeader.replacingOccurrences(of: "scribe_core_mount", with: "private_identity")],
+    [timingHeader.replacingOccurrences(of: "scribe_core_mount", with: "scribe_registry")],
+    [String(timingHeader.split(separator: ",").dropLast().joined(separator: ","))],
+    [timingHeader + ";desc=private"], [String(repeating: "x", count: 513)],
+  ] {
+    try require(ProviderServerTiming.parse(invalid) == nil, "closed header vocabulary")
+  }
+  for invalid in ["-1", "NaN", "inf", "1e3", "3600000.001", "123.4567", "+1", "private", "", "1\n"] {
+    try require(ProviderServerTiming.parse([timingHeader.replacingOccurrences(of: "123.456", with: invalid)]) == nil,
+                "invalid duration discarded")
+  }
+  let response = HTTPURLResponse(url: URL(string: "https://synthetic.invalid")!, statusCode: 200,
+    httpVersion: "HTTP/1.1", headerFields: ["Server-Timing":timingHeader,"Unrelated":"private-forbidden"])!
+  try require(ProviderServerTiming.from(response) == expected, "only fixed header extracted")
+}
+
 @main struct CheckNativeTransport {
   static func main() async throws {
     let factory = Factory()
@@ -110,6 +137,7 @@ private func rejected(_ operation: Task<ProviderNativeReply, Error>) async throw
       ], sessionFactory: factory.make)
     let retainedTransport = WeakTransport(transport!)
     var checks = 0
+    try checkTimingMetadata(); checks += 1
 
     for action in ["catalog", "mount", "recorder", "capture-operations", "catalog"] {
       let reply = try await transport!.send(request(action), token: "offline-token-\(action)")
@@ -213,6 +241,14 @@ private func rejected(_ operation: Task<ProviderNativeReply, Error>) async throw
       Fixture.finish("offline-hold-second")
       let result = try await second.value
       try require(result.body == Data("{}".utf8), "other request completes")
+    }
+    checks += 1
+
+    for key in ["offline-timing-good", "offline-timing-malformed", "offline-timing-missing"] {
+      let reply = try await transport!.send(request(key: key), token: "offline-timing-token")
+      try require(reply.status == 200 && reply.body == Data("{}".utf8), "diagnostics never change response")
+      try require(reply.serverTiming == (key.contains("good") ? ProviderServerTiming.parse([timingHeader]) : nil),
+                  "actual URLProtocol header reaches only its own reply")
     }
     checks += 1
 
