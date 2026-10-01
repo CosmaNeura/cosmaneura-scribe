@@ -137,11 +137,11 @@ class CoreProviderMount:
 
 @dataclass(repr=False)
 class _OpeningSequence:
-    """Single opening only; a post-I/O check is the next adjacent pre-I/O check.
+    """One composed request; a post-I/O check is the next adjacent pre-I/O check.
 
     All workload credential I/O precedes the shared boundary. Taking the context
     is synchronous, and dispatch must follow without any intervening await.
-    The final read closes this object; it cannot authorize another operation.
+    The final operation closes this object; it cannot authorize another request.
     """
 
     context: AuthorizedCoreProvider | None = None
@@ -600,7 +600,10 @@ class ProviderCoreTransport:
         opening: bool = False,
     ) -> _NegotiatedMount:
         _require(not opening or capture_mount is None and expected is None)
-        sequence = _OpeningSequence() if opening else None
+        # Opening and capture operations both dispatch a fixed sequence. Reuse
+        # only adjacent post/pre-I/O checks within this invocation; receiver
+        # selection/publication and all later requests still check afresh.
+        sequence = _OpeningSequence() if opening or capture_mount is not None else None
         if capture_mount is not None:
             _checked(capture_mount, CoreProviderMount)
             _require(
@@ -660,7 +663,7 @@ class ProviderCoreTransport:
             # any downstream work, then recheck it before publishing. Reuse the
             # identifier only; token/interaction and registry checks stay fresh
             # for every request. Opening, admission and notes still resolve it.
-            return _NegotiatedMount(capture_mount, token, interaction, turn)
+            return _NegotiatedMount(capture_mount, token, interaction, turn, sequence)
         headers = {
             "X-Cosmaneura-Mount-Context": _secret(token),
             "X-Cosmaneura-Client-Turn-ID": str(turn),

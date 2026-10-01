@@ -1170,3 +1170,54 @@ async def test_opening_rechecks_real_account_after_workload_token_await(harness)
     assert result.status_code == 403 and len(lookups) == 1
     assert h.wire.calls == ["/embed/v1/context-tokens/exchange"]
     assert "Synthetic display" not in result.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [
+    "creator_review", "native_recording_context", "encryption_key", "prepare_recording_window",
+    "authorize_upload", "register_chunk", "complete", "source-start-ready",
+])
+async def test_core_created_capture_uses_six_checks_and_keeps_outer_boundaries(harness, kind):
+    h = harness
+    workspace, lookups = core_created_opening(h)
+    body = (
+        {**source_sequence_payload(h), "workspace_id": str(workspace)}
+        if kind == "source-start-ready" else {
+            "workspace_id": str(workspace), "binding_ref": BINDING, "request_nonce": str(uuid4()),
+            "operation": {"kind": kind},
+        }
+    )
+    route = kind if kind == "source-start-ready" else "capture-operations"
+    async with client(h) as c:
+        result = await c.post("/provider/v1/" + route, json=body)
+    assert result.status_code == 200
+    assert len(lookups) == 6 and len(h.wire.calls) == 3
+    assert h.wire.operations == ["source_start_sequence" if kind == "source-start-ready" else kind]
+    assert result.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", range(1, 7))
+@pytest.mark.parametrize("source_sequence", [False, True])
+async def test_capture_lookup_revocation_blocks_initial_adjacent_and_final_publication(
+    harness, boundary, source_sequence,
+):
+    h = harness
+    def after_lookup(number):
+        if number == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+    workspace, lookups = core_created_opening(h, after_lookup)
+    body = {**source_sequence_payload(h), "workspace_id": str(workspace)} if source_sequence else {
+        "workspace_id": str(workspace), "binding_ref": BINDING, "request_nonce": str(uuid4()),
+        "operation": {"kind": "complete"},
+    }
+    route = "source-start-ready" if source_sequence else "capture-operations"
+    async with client(h) as c:
+        result = await c.post("/provider/v1/" + route, json=body)
+    assert result.status_code == 403 and len(lookups) == boundary
+    assert len(h.wire.calls) == [0, 0, 1, 2, 3, 3][boundary - 1]
+    assert "receipt" not in result.json() and "authorization" not in result.json()
+    if boundary == 6:
+        # The operation already returned before this final receiver check.
+        # Its durable remote effect must not make a revoked reply publishable.
+        assert len(h.wire.operations) == 1
