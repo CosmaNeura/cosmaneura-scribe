@@ -618,7 +618,7 @@ async def test_source_sequence_reuses_one_request_local_setup_and_preserves_inte
     wire.calls.clear()
     wire.context_calls = 0
     result = await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
-    assert len(wire.calls) == 3 and wire.context_calls == 6 and wire.counter == 2
+    assert len(wire.calls) == 3 and wire.context_calls == 4 and wire.counter == 2
     assert len(wire.effects) == 1
     _, sent, prepare_key = wire.effects[0]
     assert prepare_key == "offline-prepare-key"
@@ -669,9 +669,9 @@ async def test_source_sequence_rejects_invalid_pair_before_core(connection, fail
     assert wire.calls == [] and wire.effects == []
 
 
-@pytest.mark.parametrize("boundary", range(1, 7))
+@pytest.mark.parametrize("boundary", range(1, 5))
 @pytest.mark.parametrize("change", ["revoke", "selection"])
-async def test_source_sequence_checks_current_access_at_all_six_boundaries(
+async def test_source_sequence_checks_current_access_before_and_after_all_io(
     connection, boundary, change,
 ):
     wire, client = connection
@@ -691,8 +691,8 @@ async def test_source_sequence_checks_current_access_at_all_six_boundaries(
     client._fresh_context = fresh
     with pytest.raises(ProviderCoreUnavailable) as error:
         await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
-    assert error.value.status == 403 and len(wire.calls) == boundary // 2
-    assert len(wire.effects) == max(0, boundary // 2 - 2)
+    assert error.value.status == 403 and len(wire.calls) == boundary - 1
+    assert len(wire.effects) == (1 if boundary == 4 else 0)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -890,12 +890,12 @@ async def test_capture_start_and_stop_keep_fresh_authority_without_duplicate_bin
             assert len(wire.calls) == 12
     # First four steps start capture; stop uses its original proof and key.
     assert len(wire.calls) == 15 and wire.counter == 6
-    assert wire.context_calls == 2 * len(wire.calls)
+    assert wire.context_calls == 4 * len(startup_operations(source))
     assert len(wire.turns) == 6  # Opening and every action have distinct interactions.
     assert [effect[2] for effect in wire.effects] == [f"offline-start-step-{i}" for i in range(5)]
 
 
-@pytest.mark.parametrize("checkpoint", range(1, 7))
+@pytest.mark.parametrize("checkpoint", range(1, 5))
 @pytest.mark.parametrize("change", ["revoke", "selection"])
 async def test_start_context_checked_before_and_after_each_core_request(
     connection, checkpoint, change,
@@ -922,8 +922,8 @@ async def test_start_context_checked_before_and_after_each_core_request(
             "offline-context-start", native_start=True,
         )
     assert caught.value.status == 403 and checks == checkpoint
-    assert len(wire.calls) == checkpoint // 2
-    assert len(wire.effects) == (1 if checkpoint == 6 else 0)
+    assert len(wire.calls) == checkpoint - 1
+    assert len(wire.effects) == (1 if checkpoint == 4 else 0)
 
 
 async def test_open_exchange_uses_the_immediately_checked_identity(connection):
@@ -1668,3 +1668,90 @@ async def test_concurrent_openings_have_separate_request_local_boundaries(connec
                                    client.open_with_review(second, "offline-concurrent-two"))
     assert {reply[1]["request_nonce"] for reply in replies} == {str(first), str(second)}
     assert wire.counter == 2 and wire.context_calls == 10 and len(wire.calls) == 8
+
+
+@pytest.mark.parametrize("kind", [
+    "creator_review", "native_recording_context", "encryption_key", "prepare_recording_window",
+    "authorize_upload", "register_chunk", "complete",
+])
+async def test_capture_operation_shares_only_adjacent_checks_and_renegotiates(connection, kind):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    wire.context_calls = 0
+    order = []
+    async def fresh():
+        order.append("fresh")
+        return await wire.context()
+    async def workload():
+        order.append("workload")
+        await asyncio.sleep(0)
+        return await wire.workload()
+    async def before(path):
+        order.append(path)
+        await asyncio.sleep(0)
+    client._fresh_context, client._workload_token, wire.before = fresh, workload, before
+    payload = body(operation={"kind": kind})
+    expected = [
+        "fresh", "/embed/v1/context-tokens/exchange", "workload", "fresh",
+        "/service/v1/agent/mount-context/resolve", "fresh", ROOT + "capture-operations", "fresh",
+    ]
+    for attempt in range(2):
+        await client.request(mount, ROOT + "capture-operations", payload, "offline-capture-key")
+        assert order == expected * (attempt + 1)
+    assert wire.context_calls == 8 and len(wire.calls) == 6
+    assert wire.counter == 3 and len(wire.effects) == 2
+    assert wire.effects[0] == wire.effects[1]  # Exact explicit replay, fresh authority.
+
+
+@pytest.mark.parametrize("source_sequence", [False, True])
+@pytest.mark.parametrize("change", ["revoke", "account", "selection", "cancel"])
+async def test_capture_sequence_rechecks_after_workload_await(connection, source_sequence, change):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def workload():
+        entered.set()
+        await release.wait()
+        return await wire.workload()
+    client._workload_token = workload
+    operation = (
+        client.prepare_and_authorize_source(mount, source_sequence_case(wire), "offline-source-key")
+        if source_sequence else client.request(
+            mount, ROOT + "capture-operations", body(operation={"kind": "complete"}),
+            "offline-complete-key",
+        )
+    )
+    task = asyncio.create_task(operation)
+    await entered.wait()
+    if change == "cancel":
+        task.cancel()
+    elif change == "revoke":
+        wire.denied = True
+    else:
+        wire.selection = replace(SELECTION, **{
+            "recovery_scope" if change == "account" else "authorization_revision": uuid4(),
+        })
+    release.set()
+    with pytest.raises(asyncio.CancelledError if change == "cancel" else ProviderCoreUnavailable):
+        await task
+    assert [path for path, _ in wire.calls] == ["/embed/v1/context-tokens/exchange"]
+    assert not wire.effects
+
+
+async def test_capture_adjacent_checks_are_consumed_and_cannot_authorize_later_request(connection):
+    wire, client = connection
+    mount = await client.open()
+    negotiated = await client._negotiate(mount.selection, capture_mount=mount)
+    assert negotiated.opening is not None
+    payload = body(operation={"kind": "creator_review"})
+    await client._request(mount, ROOT + "capture-operations", payload,
+                          "offline-first", _negotiated=negotiated)
+    count = len(wire.calls)
+    assert negotiated.opening.closed and negotiated.opening.context is None
+    assert negotiated.opening.workload_headers is None
+    with pytest.raises(ProviderCoreUnavailable):
+        await client._request(mount, ROOT + "capture-operations", payload,
+                              "offline-reused", _negotiated=negotiated)
+    assert len(wire.calls) == count
