@@ -13,6 +13,12 @@ import CosmasNativeAuth
     var loaded = true
     var identity: NativeAuthIdentity? = try! .init(userID: "user_offline", sessionID: "sess_offline", organizationID: "org_offline")
     var tokens = 0, expired = false, holdToken = false
+    var displayName: String?
+    var beforeNameRead: (() -> Void)?
+    var providerDisplayName: String? {
+        let before = beforeNameRead; beforeNameRead = nil; before?()
+        return displayName
+    }
     var tokenWait: CheckedContinuation<String?, Never>?
     func signIn() async throws { throw NativeAuthError.signInFailed }
     func signOut() async throws { identity = nil }
@@ -97,6 +103,50 @@ struct CheckNativeProvider {
     }
     @MainActor static func main() async throws {
         var checks = 0
+        // Profile suggestions never request credentials or change custody/authority.
+        do {
+            let (auth, driver, _, connection) = try make()
+            let state = auth.state(), digest = try auth.recordingAccountDigest(expectedRevision: state.revision)
+            driver.displayName = NativeProviderDisplayName.joined(firstName: " Fictional Lucía ", lastName: " Rivera ")
+            try require(auth.providerDisplayName(expectedRevision: state.revision) == "Fictional Lucía Rivera")
+            driver.displayName = "Fictional edited profile"
+            try require(auth.providerDisplayName(expectedRevision: state.revision) == driver.displayName)
+            try require(auth.state() == state && driver.tokens == 0)
+            try require(try auth.recordingAccountDigest(expectedRevision: state.revision) == digest)
+            try require(auth.providerDisplayName(expectedRevision: UUID().uuidString.lowercased()) == nil)
+            for invalid in [nil, "", " ", "bad\0name", "bad\nname", String(repeating: "x", count: 121), String(repeating: "🩺", count: 61)] as [String?] {
+                driver.displayName = invalid
+                try require(auth.providerDisplayName(expectedRevision: state.revision) == nil)
+                try require(auth.state() == state && driver.tokens == 0)
+            }
+            try require(NativeProviderDisplayName.joined(firstName: nil, lastName: "Fictional River") == "Fictional River")
+            try require(NativeProviderDisplayName.joined(firstName: nil, lastName: nil) == nil)
+            driver.displayName = "Fictional Avery"
+            _ = try await auth.signOut()
+            try require(auth.providerDisplayName(expectedRevision: state.revision) == nil && driver.tokens == 0)
+            connection.close(); checks += 1
+        }
+        do {
+            let driver = Driver(), block = Block()
+            let policy = try NativeTokenPolicy(issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider")
+            let auth = NativeWorkspaceAuth(enabled: true, organizationID: "org_offline", tokenPolicy: policy,
+                driver: { driver }, accessBlock: { block })
+            let revision = auth.state().revision
+            driver.displayName = "Fictional Avery"
+            block.blocked = true
+            try require(auth.providerDisplayName(expectedRevision: revision) == nil)
+            block.blocked = false; driver.loaded = false
+            try require(auth.providerDisplayName(expectedRevision: revision) == nil)
+            driver.loaded = true
+            let ready = auth.state()
+            driver.beforeNameRead = { driver.identity = try! .init(userID: "user_other", sessionID: "sess_other", organizationID: "org_offline") }
+            try require(auth.providerDisplayName(expectedRevision: ready.revision) == nil)
+            try require(auth.state().revision != ready.revision && driver.tokens == 0)
+            let current = auth.state()
+            driver.identity = try! .init(userID: "user_other", sessionID: "sess_other", organizationID: "org_other")
+            try require(auth.providerDisplayName(expectedRevision: current.revision) == nil)
+            checks += 1
+        }
         // Exercise the actual iPhone bridge parser, not a JavaScript RPC mock.
         // Both patient discovery and creation must reach the existing wire.
         for operation in ["patients", "create"] {

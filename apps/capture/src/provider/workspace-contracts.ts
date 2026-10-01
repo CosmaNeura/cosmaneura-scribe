@@ -15,6 +15,7 @@ import type { ProviderEncounterSetup, ProviderAccount } from "./encounter-setup"
 export interface ProviderEncounter {
   readonly appointmentRef: string; readonly title: string; readonly detail: string;
   readonly patientRef?: string;
+  readonly patientName?: string;
   readonly dateOfBirth?: string | null;
   readonly status?: "draft_ready" | "processing" | "paused" | "ready" | "recording_saved";
 }
@@ -42,6 +43,8 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
+  /** Ephemeral name from the current native authenticated profile, not an identity. */
+  readonly providerDisplayName?: string | undefined;
   readonly encounterSetup?: ProviderEncounterSetup | undefined;
   readonly account?: ProviderAccount | undefined;
   readonly signal: AbortSignal;

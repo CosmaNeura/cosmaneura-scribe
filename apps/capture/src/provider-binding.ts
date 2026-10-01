@@ -2,6 +2,7 @@ import type { MicrophoneInput } from "./native/microphone-input";
 import type { CaptureFlowSnapshot } from "./flow";
 import type { AuthorizedReviewRequest, CreatorReviewView } from "../../review-ui/src/creator-review-api";
 import type { CreatorEditJournal } from "../../review-ui/src/creator-edit";
+import type { SpeakerNameSuggestions } from "../../review-ui/src/creator-edit-view";
 import type { CreatorReviewJournal } from "../../review-ui/src/creator-review-journal";
 
 /** Plain recorder state/commands shared by native hosts and the provider view.
@@ -64,6 +65,7 @@ export interface ProviderCaptureBinding {
   readonly authorizedRequest: AuthorizedReviewRequest;
   readonly journal: CreatorReviewJournal;
   readonly editJournal?: CreatorEditJournal;
+  readonly speakerNameSuggestions?: SpeakerNameSuggestions;
   /** Abort on sign-out, revocation, encounter change or native host teardown. */
   readonly signal: AbortSignal;
   readonly deactivate: () => Promise<void>;

@@ -39,6 +39,11 @@ import Foundation
         return try? NativeAuthIdentity(coreUserID: user.id, sessionID: session.id)
     }
 
+    public var providerDisplayName: String? {
+        guard let current = identity, let user = clerk.user, user.id == current.userID else { return nil }
+        return NativeProviderDisplayName.joined(firstName: user.firstName, lastName: user.lastName)
+    }
+
     public func signIn() async throws {
         let session = try await clerk.auth.startHostedAuth(
             redirectUrl: configuration.callbackURL, prefersEphemeralWebBrowserSession: true

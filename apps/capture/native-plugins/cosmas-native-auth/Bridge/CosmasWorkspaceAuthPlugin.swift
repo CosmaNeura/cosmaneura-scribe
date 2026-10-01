@@ -190,7 +190,11 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             guard call.options.isEmpty else { return Self.rejectProvider(call) }
             self.initializeAuth()
             guard let auth = self.auth else { return Self.rejectProvider(call) }
-            var value = Self.payload(auth.state())
+            let state = auth.state()
+            var value = Self.payload(state)
+            if let name = auth.providerDisplayName(expectedRevision: state.revision) {
+                value["providerDisplayName"] = name
+            }
             value["providerReady"] = self.providerRequestsAvailable
             if self.nativeRecordingAvailable { value["nativeRecordingVersion"] = 2 }
             call.resolve(value)

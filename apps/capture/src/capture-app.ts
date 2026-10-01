@@ -176,6 +176,7 @@ export class CaptureApp extends LitElement {
       this.#disposeReview = mountCreatorReview(root,
         new HttpCreatorReviewApi(binding.sessionId, binding.authorizedRequest), {
           journal: binding.journal,
+          ...(binding.speakerNameSuggestions ? { speakerNameSuggestions: binding.speakerNameSuggestions } : {}),
           ...(binding.editJournal ? { editJournal: binding.editJournal } : {}),
           ...(binding.continueToNote ? { continueToNote: binding.continueToNote } : {}),
           ...(binding.prepareNoteOpening ? { prepareNoteOpening: binding.prepareNoteOpening } : {}),

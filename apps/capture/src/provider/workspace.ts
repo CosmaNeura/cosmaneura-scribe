@@ -360,6 +360,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       edit: (request, key) => api.edit(request, key),
     }, {
       journal: context.reviewJournal(session()), continueToNote: openNotes,
+      speakerNameSuggestions: { patient: activeContext.encounter.patientName, clinician: host.providerDisplayName },
       ...(context.editJournal ? { editJournal: context.editJournal(session()) } : {}),
       ...(context.noteOpeningSupported ? { prepareNoteOpening: noteOpeningPreparation() } : {}),
     });
@@ -427,6 +428,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ...(native ? { captureMode: native.captureMode } : {}),
       languageMode: recordingProgress.admission.languageMode === "en-US" ? "english" : "english_spanish",
       authorizedRequest: activeClient.reviewRequest(id), journal: activeContext.reviewJournal(id),
+      speakerNameSuggestions: { patient: activeContext.encounter.patientName, clinician: host.providerDisplayName },
       ...(activeContext.editJournal ? { editJournal: activeContext.editJournal(id) } : {}),
       signal: activeClient.signal, deactivate: close, resumePendingUpload: () => lifecycle.resumePendingWork(),
       ...(activeContext.noteOpeningSupported ? { prepareNoteOpening: noteOpeningPreparation(async () => {

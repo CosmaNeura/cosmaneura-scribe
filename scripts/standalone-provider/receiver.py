@@ -484,6 +484,7 @@ class ProviderReceiver:
             "workspaceId": workspace,
             "appointmentRef": appointment,
             "title": value["patient_name"],
+            "patientName": value["patient_name"],
             "detail": value["title"] + " · " + value["appointment_at"],
             **({"patientRef": value["patient_ref"]} if "patient_ref" in value else {}),
             **({"dateOfBirth": value["date_of_birth"]} if "date_of_birth" in value else {}),
@@ -534,6 +535,7 @@ class ProviderReceiver:
         return AuthorizedCoreProvider(selection, account.user_token), {
             "appointmentRef": row["appointmentRef"],
             "title": row["title"],
+            "patientName": row["patientName"],
             "detail": row["detail"],
         }
 
