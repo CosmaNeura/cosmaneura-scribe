@@ -37,6 +37,13 @@ function validText(value: string): boolean {
   return true;
 }
 
+/** Optional display evidence, never a speaker assignment or authority claim. */
+export function speakerNameSuggestion(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 120
+    && validText(value) && [...value].every(character => character.charCodeAt(0) >= 32
+      && character.charCodeAt(0) !== 127) ? value : undefined;
+}
+
 export function parseCreatorEditRequest(value: unknown): CreatorEditRequest {
   const request = object(value);
   keys(request, ["schema_version", "expected_source_transcript_version", "expected_working_transcript_id",

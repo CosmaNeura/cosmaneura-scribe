@@ -78,7 +78,7 @@ export function parseEncounterDraft(value: unknown): EncounterDraft {
 export function parseCreatedEncounter(value: unknown): ProviderEncounter & { workspaceId: string } {
   if (!record(value) || !isUuid(value.workspace_id) || !reference(value.appointment_ref, "appointment")) throw fail();
   const display = parseEncounterDisplay({ appointmentRef: value.appointment_ref,
-    title: text(value.patient_name), detail: `${text(value.title)} · ${text(value.appointment_at, 40)}`,
+    title: text(value.patient_name), patientName: text(value.patient_name), detail: `${text(value.title)} · ${text(value.appointment_at, 40)}`,
     ...(value.patient_ref !== undefined ? { patientRef: value.patient_ref } : {}),
     ...(value.date_of_birth !== undefined ? { dateOfBirth: value.date_of_birth } : {}),
     ...(value.status !== undefined ? { status: value.status } : {}),

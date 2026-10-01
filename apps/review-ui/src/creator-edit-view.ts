@@ -1,10 +1,15 @@
 import type { CreatorReviewView } from "./creator-review-api";
-import { currentSpeakerConfirmations, parseCreatorEditRequest, type CreatorEditRequest } from "./creator-edit";
+import { currentSpeakerConfirmations, parseCreatorEditRequest, speakerNameSuggestion, type CreatorEditRequest } from "./creator-edit";
+
+export interface SpeakerNameSuggestions {
+  readonly patient?: string | undefined;
+  readonly clinician?: string | undefined;
+}
 
 export function escapeReviewText(value: string): string {
   return value.replace(/[&<>"']/gu, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 }
-export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: string): string {
+export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: string, suggestions: SpeakerNameSuggestions = {}): string {
   const source = view.source?.segments.find(item => item.source_segment_id === segmentId);
   const working = view.working?.segments.find(item => item.source_segment_id === segmentId);
   if (!source || !working || !view.working) return "";
@@ -22,6 +27,10 @@ export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: stri
         : `<p>Finish translation review before correcting the English wording.</p>`}
       <fieldset><legend>Confirm who is speaking</legend>
       <p>This applies to all turns with this detected voice. Choose “Not sure” if the voice cannot be identified.</p>
+      <div class="creator-speaker-suggestions">${([ ["clinician", "Provider"], ["patient", "Patient"] ] as const).map(([value, label]) => {
+        const suggested = speakerNameSuggestion(suggestions[value]);
+        return suggested === undefined ? "" : `<button type="button" data-review-action="use-speaker-name" data-speaker-role="${value}">This is the ${label.toLowerCase()}: ${escapeReviewText(suggested)}</button>`;
+      }).join("")}</div>
       <label>Speaker<select name="role">${[["unknown", "Not sure"], ["clinician", "Provider"], ["patient", "Patient"], ["interpreter", "Interpreter"], ["other", "Other speaker"]]
         .map(([value, label]) => `<option value="${value}" ${role === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
       <label>Name (optional)<input name="display_name" maxlength="120" autocomplete="off" value="${escapeReviewText(name)}" ${role === "unknown" ? "disabled" : ""}></label>

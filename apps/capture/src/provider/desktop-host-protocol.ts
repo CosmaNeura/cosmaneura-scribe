@@ -1,3 +1,4 @@
+import { speakerNameSuggestion } from "../../../review-ui/src/creator-edit";
 import { isUuid } from "../../../review-ui/src/contracts";
 import { MAX_PROVIDER_RESPONSE_BYTES } from "../../../review-ui/src/capture-response-limits";
 import type { ProviderSessionState } from "./native-plugin";
@@ -42,7 +43,9 @@ export function parseDesktopProviderEvent(value: unknown): DesktopProviderEvent 
 export function sessionState(value: unknown): ProviderSessionState {
   const state = object(value);
   if (typeof state.phase !== "string" || !["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(state.phase)) throw unavailable();
-  return { phase: state.phase as ProviderSessionState["phase"], revision: uuid(state.revision) };
+  const name = state.phase === "ready" ? speakerNameSuggestion(state.providerDisplayName) : undefined;
+  return { phase: state.phase as ProviderSessionState["phase"], revision: uuid(state.revision),
+    ...(name !== undefined ? { providerDisplayName: name } : {}) };
 }
 export function exact(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const data = object(value);

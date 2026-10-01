@@ -74,6 +74,45 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it.each(["signedOut", "ready"])("drops current profile suggestions on %s identity transition without a request", async phase => {
+    const f = fixture();
+    f.setState({ ...f.state, providerDisplayName: "Fictional Lucía Rivera" }, false);
+    const backend = await f.connect();
+    try {
+      expect(backend.providerDisplayName).toBe("Fictional Lucía Rivera");
+      expect(f.plugin.providerRequest).not.toHaveBeenCalled();
+      expect(f.plugin.getToken).not.toHaveBeenCalled();
+      f.setState({ ...f.state, phase, revision: crypto.randomUUID(), providerDisplayName: "Another fictional person" });
+      expect(backend.signal.aborted).toBe(true);
+      expect(backend.providerDisplayName).toBeUndefined();
+    } finally { await backend.dispose(); }
+  });
+
+  it.each([undefined, "", "\u0000", "bad\ud800name", "x".repeat(121)])("withholds invalid/missing optional profile metadata without blocking access", async name => {
+    const f = fixture();
+    f.setState({ ...f.state, ...(name !== undefined ? { providerDisplayName: name } : {}) }, false);
+    const backend = await f.connect();
+    try {
+      expect(backend.providerDisplayName).toBeUndefined();
+      expect(backend.signal.aborted).toBe(false);
+      expect(f.plugin.providerRequest).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+
+  it("uses the patient's fresh authorized mount metadata, not a catalog title or earlier name", async () => {
+    const f = fixture(), backend = await f.connect();
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const value = JSON.parse(f.reply(request).body);
+      if (request.action === "catalog") value.encounters[0].patientName = "Synthetic earlier name";
+      if (request.action === "mount") Object.assign(value.encounter, { title: "Arbitrary appointment title", patientName: "Synthetic current name" });
+      return f.reply(request, value);
+    });
+    try {
+      expect((await backend.listEncounters(backend.signal))[0]!.patientName).toBe("Synthetic earlier name");
+      expect((await backend.openEncounter(appointment, backend.signal)).encounter.patientName).toBe("Synthetic current name");
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount"]);
+    } finally { await backend.dispose(); }
+  });
   it("opens with a complete long transcript without a second Core request", async () => {
     const f = fixture(), backend = await f.connect(), view = longReviewFixture(session);
     f.plugin.providerRequest.mockImplementation(async request => {

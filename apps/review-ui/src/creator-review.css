@@ -51,6 +51,9 @@
 .creator-edit-dialog textarea { resize: vertical; }
 .creator-edit-dialog :is(input, select, textarea, button):focus-visible { outline: 3px solid #917321; outline-offset: 2px; }
 .creator-edit-dialog fieldset { border: 1px solid #d9e2db; border-radius: 10px; padding: 12px; }
+.creator-speaker-suggestions { display: grid; gap: 8px; margin: 8px 0; }
+.creator-speaker-suggestions:empty { display: none; }
+.creator-speaker-suggestions button { min-height: 44px; padding: 10px; border: 1px solid #839d90; border-radius: 8px; background: #fff; color: #245e49; font: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .creator-edit-actions { display: flex; flex-shrink: 0; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin: 0; padding: 12px 20px; border-top: 1px solid #d9e2db; background: #fafbf8; }
 .creator-edit-actions button { min-height: 44px; padding: 10px 16px; border: 1px solid #245e49; border-radius: 8px; background: #245e49; color: #fff; font: inherit; }
 .creator-edit-actions button:first-child { color: #245e49; background: #fff; }

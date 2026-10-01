@@ -25,7 +25,17 @@ from pydantic import SecretStr
 from sqlalchemy import create_engine, inspect, text, update
 from sqlalchemy.orm import Session
 
-ROOT = Path(os.environ["SCRIBE_PROVIDER_TEST_ROOT"]).resolve()
+
+def required_test_variable(name):
+    value = os.getenv(name)
+    if not value:
+        # An environ.__getitem__ KeyError may expose the ambient environment in
+        # a pytest traceback. Only the missing harness key belongs in this error.
+        raise RuntimeError(f"Synthetic receiver test setup requires {name}")
+    return value
+
+
+ROOT = Path(required_test_variable("SCRIBE_PROVIDER_TEST_ROOT")).resolve()
 REPO = Path(__file__).resolve().parents[2]
 manifest = json.loads((ROOT / "identity-source-manifest.json").read_text())
 for relative, digest in manifest["files"].items():
@@ -959,7 +969,7 @@ async def test_fixed_boundary_and_bounded_bodies(harness):
 @pytest.mark.asyncio
 async def test_current_typescript_client_runs_through_receiver(harness):
     h = harness
-    node = os.environ["SCRIBE_PROVIDER_NODE"]
+    node = required_test_variable("SCRIBE_PROVIDER_NODE")
     scope = {"workspaceId": h.workspace, "appointmentRef": APPOINTMENT, "bindingRef": BINDING}
     process = await asyncio.create_subprocess_exec(
         node,
@@ -997,6 +1007,14 @@ async def test_current_typescript_client_runs_through_receiver(harness):
                 await process.wait()
     assert len(h.wire.saved) == 2 and h.wire.saved[0] == h.wire.saved[1]
     assert h.wire.saved[0][1]["fields"] == {"Plan": "Invented follow-up plan"}
+
+
+def test_missing_node_configuration_reports_only_the_required_key(monkeypatch):
+    monkeypatch.delenv("SCRIBE_PROVIDER_NODE", raising=False)
+    with pytest.raises(RuntimeError) as failure:
+        required_test_variable("SCRIBE_PROVIDER_NODE")
+    assert str(failure.value) == "Synthetic receiver test setup requires SCRIBE_PROVIDER_NODE"
+    assert failure.value.__context__ is None
 
 
 @pytest.mark.asyncio
@@ -1078,6 +1096,12 @@ async def test_core_owned_encounters_join_legacy_catalog_without_registry_writes
             assert selected.selection.appointment_ref == entry["appointment_ref"]
             assert selected.selection.recovery_scope == h.wire.selection.recovery_scope
             assert display["title"] == "Synthetic Patient"
+            assert display["patientName"] == entry["patient_name"]
+            catalog_entry = next(
+                e for e in catalog.json()["encounters"]
+                if e["appointmentRef"] == entry["appointment_ref"]
+            )
+            assert catalog_entry["patientName"] == entry["patient_name"]
         legacy, _ = await h.receiver.selected_current(
             h.headers["Authorization"], UUID(h.revision), UUID(h.workspace)
         )
@@ -1136,6 +1160,7 @@ async def test_core_created_opening_uses_five_checks_and_final_checked_display(h
     assert result.status_code == 200
     assert len(lookups) == 5 and len(h.wire.calls) == 4
     assert result.json()["encounter"]["title"] == "Synthetic display 5"
+    assert result.json()["encounter"]["patientName"] == "Synthetic display 5"
     assert h.wire.operations == ["provider_encounter"]
 
 

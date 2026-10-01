@@ -143,6 +143,10 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         }, null, extra)),
       };
       const workspace: ProviderWorkspaceHost = {
+        get providerDisplayName() {
+          return !abort.signal.aborted && !signal.aborted && state?.phase === "ready"
+            && state.revision === expected.revision ? state.providerDisplayName : undefined;
+        },
         get account() { return account; },
         get encounterSetup() { return creationEnabled ? setup : undefined; },
         signal: abort.signal,
