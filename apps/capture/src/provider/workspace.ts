@@ -14,7 +14,7 @@ import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
 import { noteTemplates, parseDraft, pendingSave, resolveNote, checkNoteSave, reviewedSource, sameSource, saveNote,
   type CoreDraft, type CoreNoteTemplate, type ReviewedSource } from "./core-notes";
 import { assertProgress, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
-import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources } from "./workspace-contracts";
+import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
 import { openingReviewView } from "./opening-review";
@@ -26,6 +26,8 @@ import { encounterDetail, noteFieldLabel } from "./workspace-display";
 import { noteEditorPosition, restoreNoteEditorPosition, setNoteEditorPending, type NoteEditorPosition } from "./note-editor-state";
 import { settledRecorderVisitStatus } from "./recent-visit-state";
 import { bindNoteSourceNavigation } from "./note-source-navigation";
+import { AutomaticProgress } from "../../../review-ui/src/automatic-progress";
+import { encounterStatusCopy, pendingEncounterUpdates } from "./encounter-progress";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
@@ -180,19 +182,68 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const account = host.account;
     accountLabel.hidden = !account;
     accountLabel.textContent = account ? `${account.environment} · Signed in as ${account.email}` : "";
-    requireValue(encounters.length <= 1000 && new Set(encounters.map(e => e.appointmentRef)).size === encounters.length);
-    for (const e of encounters) requireValue(reference(e.appointmentRef, "appointment")
-      && typeof e.title === "string" && e.title.length <= 300 && typeof e.detail === "string" && e.detail.length <= 1000);
+    const validate = (values: readonly ProviderEncounter[]): void => {
+      requireValue(values.length <= 1000 && new Set(values.map(e => e.appointmentRef)).size === values.length);
+      for (const e of values) requireValue(reference(e.appointmentRef, "appointment")
+        && typeof e.title === "string" && e.title.length <= 300 && typeof e.detail === "string" && e.detail.length <= 1000
+        && (e.status === undefined || ["draft_ready", "processing", "paused", "ready", "recording_saved"].includes(e.status)));
+    };
+    validate(encounters);
     const authorizedRefs = new Set(encounters.map(e => e.appointmentRef));
     for (const ref of recentStates.keys()) if (!authorizedRefs.has(ref)) recentStates.delete(ref);
+    const pending = new Set<string>();
     show(`<div class="provider-list-heading"><h1>Your encounters</h1><button data-workspace-action="encounters" aria-label="Refresh encounters">Refresh</button></div>
       ${host.encounterSetup ? '<button data-workspace-action="new-encounter">New visit</button>' : ''}
       <ul class="provider-encounters" aria-label="Authorized encounters">${encounters.map(e => {
         const status = e.status === "draft_ready" ? e.status : recentStates.get(e.appointmentRef)?.status ?? e.status;
-        return `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span>${status ? `<span class="provider-visit-status">${{ draft_ready: "Draft ready", processing: "Processing", paused: "Paused", ready: "Ready to record", recording_saved: "Recording saved" }[status]}</span>` : ""}</button></li>`;
+        if (status === "processing") pending.add(e.appointmentRef);
+        return `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span>${status ? `<span class="provider-visit-status">${encounterStatusCopy(status)}</span>` : ""}</button></li>`;
       }).join("")}</ul>
       ${encounters.length ? "" : "<p>No encounters are available yet.</p>"}
+      <p data-encounter-progress role="status">${pending.size ? "Checking your processing visits automatically." : ""}</p>
       <details class="provider-encounter-help"${encounters.length ? "" : " open"}><summary>Missing an encounter?</summary><p>Ask your practice to assign the encounter in Core. The dashboard opens in your browser and may require a separate sign-in. It does not create an encounter. After assignment, return to Scribe and select Refresh.</p><button data-workspace-action="create">Open Core dashboard</button></details>`);
+    const controller = new AbortController(); forwardAbort(host.signal, controller);
+    const listElement = content.querySelector(".provider-encounters")!;
+    const progressLabel = content.querySelector<HTMLElement>("[data-encounter-progress]")!;
+    const observer = new AutomaticProgress({
+      active: () => current(n) && !controller.signal.aborted && listElement.isConnected,
+      pending: () => pending.size > 0,
+      visible: () => document.visibilityState === "visible",
+      read: async signal => {
+        const reading = new AbortController(); forwardAbort(controller.signal, reading); forwardAbort(signal, reading);
+        try { return await interruptibleRead(host.listEncounters(reading.signal), reading.signal); } finally { reading.abort(); }
+      },
+      apply: fresh => {
+        validate(fresh);
+        const { updates, removed } = pendingEncounterUpdates(pending, fresh);
+        const buttons = [...listElement.querySelectorAll<HTMLButtonElement>("[data-appointment]")];
+        for (const ref of removed) {
+          pending.delete(ref); recentStates.delete(ref);
+          buttons.find(button => button.dataset.appointment === ref)?.closest("li")?.remove();
+        }
+        for (const e of updates) {
+          const button = buttons.find(item => item.dataset.appointment === e.appointmentRef);
+          if (!button) { pending.delete(e.appointmentRef); continue; }
+          // Core catalog currently reports saved transcript/draft evidence only.
+          // Absent status is not proof that the observed processing has ended.
+          if (e.status === undefined) continue;
+          const status = button.querySelector<HTMLElement>(".provider-visit-status");
+          if (status) status.textContent = encounterStatusCopy(e.status);
+          if (e.status !== "processing") { pending.delete(e.appointmentRef); recentStates.delete(e.appointmentRef); }
+        }
+        progressLabel.textContent = pending.size ? "Checking your processing visits automatically." : "Visit status updated.";
+      },
+      stopped: reason => { progressLabel.textContent = reason === "deadline"
+        ? "Automatic checking paused. Select Refresh to check your visits again."
+        : "Visit status could not be confirmed. Check your connection, then select Refresh."; },
+    });
+    const visibility = (): void => {
+      observer.pause(); if (document.visibilityState === "visible") observer.schedule(true);
+    };
+    controller.signal.addEventListener("abort", () => observer.dispose(), { once: true });
+    document.addEventListener("visibilitychange", visibility);
+    disposeContent = () => { observer.dispose(); controller.abort(); document.removeEventListener("visibilitychange", visibility); };
+    observer.schedule();
   };
   const setup = async (checkPending = false): Promise<void> => {
     requireValue(host.encounterSetup);
@@ -352,9 +403,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     // Consume it once on mount; refresh/decisions/note handoff still read afresh.
     let first = openingView;
     const dispose = mountCreatorReview(content, {
-      read: async () => {
+      read: async signal => {
         const initial = first; first = undefined;
-        try { const view = initial ?? await api.read(); observeReview(view, n); return view; }
+        try { const view = initial ?? await api.read(signal); observeReview(view, n); return view; }
         catch (error) { if (authorized(n) && context === activeContext) recentStates.delete(activeContext.encounter.appointmentRef); throw error; }
       },
       decide: (request, key) => api.decide(request, key),

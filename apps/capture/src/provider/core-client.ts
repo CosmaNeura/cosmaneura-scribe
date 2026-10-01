@@ -110,7 +110,7 @@ export class CoreCaptureClient {
         : request.body !== undefined && request.key !== undefined));
       try {
         const value = await this.operation(sessionId, request.method === "GET"
-          ? { kind: "creator_review" } : { kind: path === expectedPath + "/edit" ? "edit_transcript" : "decide_translation", payload: request.body }, request.key);
+          ? { kind: "creator_review" } : { kind: path === expectedPath + "/edit" ? "edit_transcript" : "decide_translation", payload: request.body }, request.key, request.signal);
         return Response.json(value);
       } catch (error) {
         if (error instanceof BffResponseError && error.status === 409) return new Response(null, { status: 409 });
