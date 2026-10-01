@@ -46,7 +46,7 @@ export function bindTranscriptTools(root: HTMLElement): () => void {
     }
     activeRows.delete(surface);
     const status = surface.querySelector<HTMLElement>("[data-transcript-search-status]");
-    if (status) status.textContent = query ? `${count} matching ${count === 1 ? "turn" : "turns"}` : `${count} transcript ${count === 1 ? "turn" : "turns"}`;
+    if (status) status.textContent = query ? `${count} matching ${count === 1 ? "passage" : "passages"}` : `${count} transcript ${count === 1 ? "passage" : "passages"}`;
     for (const button of surface.querySelectorAll<HTMLButtonElement>("[data-transcript-match]")) button.disabled = !query || count === 0;
   };
   const move = (surface: Element, direction: number): void => {

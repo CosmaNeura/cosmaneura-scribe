@@ -20,7 +20,7 @@ export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: stri
   const role = confirmed?.detail === "interpreter" ? "interpreter" : confirmed?.role ?? "unknown";
   const name = confirmed?.display_name ?? "";
   return `<dialog class="creator-edit-dialog" data-creator-edit-dialog aria-labelledby="creator-edit-title">
-    <h2 id="creator-edit-title">Correct this transcript turn</h2>
+    <h2 id="creator-edit-title">Correct this passage</h2>
     <p>Save a new transcript version. The original wording and previous corrections stay available.</p>
     <form data-creator-edit-form data-segment="${escapeReviewText(segmentId)}">
       <div class="creator-edit-fields">
@@ -28,10 +28,10 @@ export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: stri
         <p lang="${source.source_locale === "es-US" ? "es" : "en"}">${escapeReviewText(source.content)}</p></details>
       ${working.content != null ? `<label>English wording<textarea name="content" rows="6" maxlength="100000">${escapeReviewText(working.content)}</textarea></label>`
         : translationNeedsHelp
-          ? `<p>English wording is unavailable for this turn. Your original ${source.source_locale === "es-US" ? "Spanish " : ""}transcript is retained. Keep this visit and contact your practice administrator for help.</p>`
+          ? `<p>English wording is unavailable for this passage. Your original ${source.source_locale === "es-US" ? "Spanish " : ""}transcript is retained. Keep this visit and contact your practice administrator for help.</p>`
           : `<p>Finish translation review before correcting the English wording.</p>`}
       <fieldset><legend>Confirm who is speaking</legend>
-      <p>This applies to all turns with this detected voice. Choose “Not sure” if the voice cannot be identified.</p>
+      <p>This applies to every passage with this detected voice. Choose “Not sure” if the voice cannot be identified.</p>
       <div class="creator-speaker-suggestions">${([ ["clinician", "Provider"], ["patient", "Patient"] ] as const).map(([value, label]) => {
         const suggested = speakerNameSuggestion(suggestions[value]);
         return suggested === undefined ? "" : `<button type="button" data-review-action="use-speaker-name" data-speaker-role="${value}">This is the ${label.toLowerCase()}: ${escapeReviewText(suggested)}</button>`;

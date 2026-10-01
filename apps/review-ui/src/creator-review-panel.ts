@@ -220,7 +220,7 @@ export function mountCreatorReview(
           await options.editJournal.clear(operation.key);
           if (disposed) return;
           pendingEdit = null;
-          state = { phase: "ready", view: null, notice: "The transcript changed. Reopen the current turn before correcting it." };
+          state = { phase: "ready", view: null, notice: "The transcript changed. Reopen the current passage before correcting it." };
           await refresh();
           return;
         } catch { /* Retain the exact operation if its encrypted journal cannot be cleared. */ }
@@ -428,15 +428,15 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
     if (isUuid(segment.speaker_id) && !speakers.has(segment.speaker_id)) speakers.set(segment.speaker_id, speakers.size + 1);
   }
   return `<div data-transcript-surface><div class="creator-transcript-heading"><h2>Transcript</h2>
-    <span>Version ${working.working_transcript_version}</span></div>
+    <details class="creator-transcript-details"><summary>Transcript details</summary><p>Version ${working.working_transcript_version}</p></details></div>
     <p class="creator-help">${hasSpanish ? "Compare Spanish speech with the English translation." : "Review the wording and who is speaking."}
     ${readOnly ? "Compare the wording with your draft. Expanding this transcript keeps your unsaved edits in place."
     : hasSpanish && reviews.size > 0 ? "Accept a faithful translation; reject one that changes the meaning." : ""}</p>
     <div class="creator-transcript-search" role="search" aria-label="Search this transcript">
       <label>Find in transcript<input type="search" data-transcript-search placeholder="Search words or a speaker" autocomplete="off"></label>
-      <div class="creator-search-navigation"><span data-transcript-search-status role="status">${source.segments.length} transcript ${source.segments.length === 1 ? "turn" : "turns"}</span>
-      <button type="button" data-transcript-match="previous" disabled aria-label="Previous matching turn">Previous</button>
-      <button type="button" data-transcript-match="next" disabled aria-label="Next matching turn">Next</button>
+      <div class="creator-search-navigation"><span data-transcript-search-status role="status">${source.segments.length} transcript ${source.segments.length === 1 ? "passage" : "passages"}</span>
+      <button type="button" data-transcript-match="previous" disabled aria-label="Previous matching passage">Previous</button>
+      <button type="button" data-transcript-match="next" disabled aria-label="Next matching passage">Next</button>
       <button type="button" data-transcript-clear>Clear</button></div>
     </div>
     <ol class="creator-segments">${source.segments.map((segment) => {
@@ -481,7 +481,7 @@ function renderEditHistory(view: CreatorReviewView): string {
     ${[...view.review_edits].reverse().map(edit => `<article><h3>Version ${edit.working_transcript_version} · ${escape(new Date(edit.created_at).toLocaleString())}</h3>
       ${(edit.request.corrections ?? []).map(item => {
         const source = view.source?.segments.find(segment => segment.source_segment_id === item.source_segment_id);
-        return `<p><strong>${source ? time(source.start_ms) : "Turn"} · English correction</strong></p><p>${escape(item.content)}</p>`;
+        return `<p><strong>${source ? time(source.start_ms) : "Passage"} · English correction</strong></p><p>${escape(item.content)}</p>`;
       }).join("")}
       ${(edit.request.speakers ?? []).map(item => `<p>Speaker confirmation: ${escape(item.detail === "interpreter" ? "Interpreter" : speakerCopy(item.role))}${item.display_name ? ` · ${escape(item.display_name)}` : ""}</p>`).join("")}
     </article>`).join("")}</details>`;
@@ -548,8 +548,8 @@ function blockerCopy(code: string): string {
     source_overlap: "Overlapping speech needs attention before note preparation.",
     translation_missing: "Waiting for the English translation. Choose Check status if progress is not confirmed.",
     translation_review_required: "An English translation is waiting for your review.",
-    translation_retry_required: "The English translation for this turn was rejected. It cannot be used for a note.",
-    translation_failed: "English translation could not complete for this turn. It cannot be used for a note.",
+    translation_retry_required: "The English translation for this passage was rejected. It cannot be used for a note.",
+    translation_failed: "English translation could not complete for this passage. It cannot be used for a note.",
   } as Record<string, string>)[code] ?? "This segment needs attention before note preparation.";
 }
 function speakerCopy(role: string): string {
