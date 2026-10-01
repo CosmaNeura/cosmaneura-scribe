@@ -50,6 +50,9 @@ export interface DesktopInputSignal {
   readonly level: number;
 }
 export interface DesktopPCMDriver {
+  /** The trusted capture helper checks current permission/session before source
+   * setup; ready rejects on denial. Never inferred from a prior probe result. */
+  readonly checksAvailabilityOnStart?: true;
   /** Permission/unlocked-session read only. Focus loss is not desktop lock. */
   getAvailability(): Promise<boolean>;
   /** The owner already holds fresh capability/consent, selection and indicator.

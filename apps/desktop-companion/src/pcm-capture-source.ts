@@ -25,10 +25,13 @@ export class DesktopPcmCaptureSource extends NativePcmCaptureSource {
 class DesktopChunkBridge implements NativePcmBridge {
   readonly deliversDuringDrain = true as const;
   readonly supportsRenewal = true as const;
+  readonly checksAvailabilityOnStart?: true;
   constructor(private readonly driver: DesktopPCMDriver,
     private readonly persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
     private readonly inputSignal?: (value: DesktopInputSignal | null) => void,
-    private readonly capturedFrames?: (frames: number) => void) {}
+    private readonly capturedFrames?: (frames: number) => void) {
+    if (driver.checksAvailabilityOnStart === true) this.checksAvailabilityOnStart = true;
+  }
 
   getAvailability(): Promise<boolean> { requireMainProcess(); return this.driver.getAvailability(); }
 

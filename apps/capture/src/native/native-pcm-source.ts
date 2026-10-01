@@ -111,7 +111,10 @@ export class NativePcmCaptureSource implements CaptureSource {
     let availability: unknown;
     try {
       this.#assertStartingRun(run, "checking_availability");
-      availability = await Promise.race([
+      // The desktop capture helper performs this same permission check inside
+      // its owned start, after fresh authority and before any source setup.
+      // Avoid launching a second disposable helper just to repeat that check.
+      availability = this.#bridge.checksAvailabilityOnStart === true ? true : await Promise.race([
         this.#bridge.getAvailability(),
         run.startupCancellation.promise,
       ]);

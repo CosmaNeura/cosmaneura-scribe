@@ -1414,7 +1414,7 @@ describe("resume readiness overlap", () => {
       expect(settled).toBe(false);
       releaseProbe.resolve(); await resuming;
       expect(recorder.snapshot.desktop?.phase).toBe("recording");
-      expect(f.nativeAvailability).toHaveBeenCalledTimes(3);
+      expect(f.nativeAvailability).toHaveBeenCalledTimes(2); // Native start owns the final fresh permission check.
       expect(f.authority).toHaveBeenCalledTimes(2); expect(f.nativeStart).toHaveBeenCalledTimes(2);
     } finally { releaseProbe.resolve(); releaseRenew.resolve(); await f.close(); }
   });
@@ -1466,7 +1466,7 @@ describe("start readiness overlap", () => {
     } finally { timer.mockRestore(); reply.resolve(); await starting.catch(() => undefined); await f.close(); }
   });
 
-  it("overlaps mount with a fresh probe after choice and retains the source probe and authority", async () => {
+  it("overlaps mount with a fresh probe after choice and retains native start authority", async () => {
     const f = await fixture(true); interruptedDriver(f);
     const mountEntered = deferred(), releaseMount = deferred(), probeEntered = deferred(), releaseProbe = deferred();
     const recorder = await f.open({ authorizeMount: async (prepared, signal) => {
@@ -1484,7 +1484,7 @@ describe("start readiness overlap", () => {
       expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
       releaseMount.resolve(); await starting;
       expect(recorder.snapshot.desktop?.phase).toBe("recording");
-      expect(f.nativeAvailability).toHaveBeenCalledTimes(2);
+      expect(f.nativeAvailability).toHaveBeenCalledOnce(); // No disposable probe before guarded native start.
       expect(f.authority).toHaveBeenCalledOnce(); expect(f.nativeStart).toHaveBeenCalledOnce();
     } finally { releaseMount.resolve(); releaseProbe.resolve(); await starting.catch(() => undefined); await f.close(); }
   });

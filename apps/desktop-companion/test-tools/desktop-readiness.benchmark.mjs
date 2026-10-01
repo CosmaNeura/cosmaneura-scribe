@@ -221,7 +221,11 @@ describe("isolated desktop readiness measurements", () => {
             spans.push({ phase, label: "native.start-simulated", boundary: "simulated-native", injected_delay_ms: 0, start_ms: performance.now() - origin, duration_ms: 0 });
             sink = value;
             frames = 0;
-            return { ready: timed("native.ready-simulated", profile.nativeReadyMs, async () => startMetadata, "simulated-native"),
+            return { ready: timed("native.ready-simulated", profile.nativeReadyMs, async () => {
+                    spans.push({ phase, label: "native.permission-check-simulated", boundary: "simulated-native",
+                        injected_delay_ms: 0, start_ms: performance.now() - origin, duration_ms: 0 });
+                    return startMetadata;
+                }, "simulated-native"),
                 activate: () => { spans.push({ phase, label: "native.activate-simulated", boundary: "simulated-native", injected_delay_ms: 0, start_ms: performance.now() - origin, duration_ms: 0 }); },
                 stop: async ({ mode }) => timed("native.stop-simulated", 0, async () => mode === "discard" ? null : ({ start: startMetadata,
                     endHostTimeNanoseconds: "1100000000", outputFrames: frames,
@@ -282,6 +286,9 @@ describe("isolated desktop readiness measurements", () => {
                 resume_click_ms: actions["resume-to-simulated-capture-ready"].duration_ms,
                 user_wait_ms: 0,
             };
+            if (modelName === "modern-interrupted") {
+                expect(actions["native-interruption-through-immediate-resume"].duration_ms).toBeLessThan(4000);
+            }
             const assertions = [];
             const opened = spans.filter(row => row.phase === "cold-open-fresh-store");
             if (preparationName === "combined") {
@@ -303,15 +310,17 @@ describe("isolated desktop readiness measurements", () => {
                     const index = label => rows.findIndex(row => row.label === label);
                     const source = modelName === "legacy-clean" ? "remote.sourcePrepare" : "remote.sourcePrepareAndAuthorize";
                     for (const label of ["picker.synthetic-immediate-choice", source, "local.sourceAuthorizeConsume",
-                        "native.start-simulated", "native.ready-simulated", "native.activate-simulated"])
+                        "native.start-simulated", "native.ready-simulated", "native.permission-check-simulated", "native.activate-simulated"])
                         expect(index(label), `Missing required ${label} span in ${name}`).toBeGreaterThanOrEqual(0);
                     expect(index(source)).toBeGreaterThan(index("picker.synthetic-immediate-choice"));
                     expect(index("local.sourceAuthorizeConsume")).toBeGreaterThan(index(source));
                     const probes = rows.filter(row => row.label === "os.availability");
-                    expect(probes.length).toBeGreaterThanOrEqual(2);
-                    expect(probes.at(-1).start_ms).toBeGreaterThanOrEqual(rows[index("local.sourceAuthorizeConsume")].start_ms);
+                    expect(probes.length).toBe(name === "start-to-simulated-capture-ready" ? 1 : 2);
+                    const nativePermission = rows[index("native.permission-check-simulated")];
+                    expect(nativePermission.start_ms).toBeGreaterThanOrEqual(rows[index("local.sourceAuthorizeConsume")].start_ms);
                     expect(index("native.start-simulated")).toBeGreaterThan(index("local.sourceAuthorizeConsume"));
                     expect(index("native.activate-simulated")).toBeGreaterThan(index("native.ready-simulated"));
+                    expect(rows[index("native.activate-simulated")].start_ms).toBeGreaterThanOrEqual(nativePermission.start_ms);
                     expect(rows[index("native.start-simulated")].start_ms).toBeGreaterThanOrEqual(probes.at(-1).start_ms + probes.at(-1).duration_ms);
                     expect(updates.find(row => row.phase === name && row.desktop === "recording").at_ms)
                         .toBeGreaterThanOrEqual(rows[index("native.activate-simulated")].start_ms);
@@ -333,7 +342,7 @@ describe("isolated desktop readiness measurements", () => {
                         .toBeGreaterThanOrEqual(stopped.start_ms + stopped.duration_ms);
                 }
                 assertions.push("actual backend owner removed only after confirmed retirement", "consumed local decision required before native start",
-                    "fresh source availability retained after authority", "picker before source preparation",
+                    "native startup checks current permission after authority", "picker before source preparation",
                     "native ready before activation and Recording snapshot", "native stop before server retirement",
                     modelName === "modern-interrupted" ? "interruption automatically retires its owner before Resume is enabled; immediate Resume does not spend authority"
                         : "clean Resume retirement issues no native or remote request");
