@@ -81,3 +81,21 @@ upload progress and final confirmation. Test held stop/seal/upload operations an
 pause/reopen baselines. Install same-identity Mac and iPhone updates only while
 idle, preserving keys and queues. Physical start and upload latency still require
 device measurement; local feedback tests do not establish the four-second goal.
+
+## Empty expired setup
+
+Only a desktop `capture_setup_expired` snapshot with paused/interrupted state,
+`not_started` coverage, zero recorded chunks and zero elapsed audio presents
+“Recording has not started.” The main recorder issues that code only after
+physical capture is stopped and no coverage or uncertain prior history exists.
+Reserved queue slots are not proof of audio: preparation publishes the reservation
+count, while restore counts non-reserved records separately as recorded chunks.
+An unused prepared window may therefore have a nonzero queue count.
+
+“Start recording” calls the same retained Resume operation. Hide Finish and the
+expired authorization countdown only in this proven empty state. “Your encounters”
+uses the workspace's existing delegated navigation and awaited recorder closure;
+closure failure still blocks listing. No new session, reset, consent, authority or
+custody behavior is introduced. Validate reserved-empty and saved/uncertain states,
+held Resume, successful closure and failed closure in the compiled provider UI.
+Native packaging and physical acceptance follow the separately pinned release.

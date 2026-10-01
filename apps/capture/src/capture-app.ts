@@ -335,11 +335,15 @@ export class CaptureApp extends LitElement {
                 && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
                 class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
                 @click=${this.#resume}>${this.#snapshot.statusCode === "capture_recovery_pending"
-                  ? "Retry recovery and resume" : this.#isCancelledEmptyStart() ? "Start recording" : "Resume"}</button>` : ""}
+                  ? "Retry recovery and resume" : this.#isCancelledEmptyStart() || this.#isExpiredEmptyStart()
+                    ? "Start recording" : "Resume"}</button>` : ""}
+              ${this.#isExpiredEmptyStart() ? html`<button class="secondary" data-testid="empty-setup-encounters"
+                data-workspace-action="encounters" ?disabled=${this.#busy || this.#stopping}>Your encounters</button>` : ""}
               <button
                 data-testid="stop-button"
                 class="secondary"
-                ?hidden=${(desktopProvider || nativeProvider) && (!this.#canStop() || this.#isCancelledEmptyStart()) && !this.#stopping}
+                ?hidden=${(desktopProvider || nativeProvider) && (!this.#canStop() || this.#isCancelledEmptyStart()
+                  || this.#isExpiredEmptyStart()) && !this.#stopping}
                 ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && !this.#snapshot.native && this.#busy}
                 @click=${this.#stop}
               >
@@ -467,6 +471,15 @@ export class CaptureApp extends LitElement {
         && this.#snapshot.desktop.coverage === "not_started");
   }
 
+  #isExpiredEmptyStart(): boolean {
+    // This status is issued only after confirmed physical stop with no capture
+    // coverage/history. queuedChunks can include unused reserved slots, not audio.
+    return this.#provider?.captureMode === "desktop_meeting" && this.#snapshot.state === "paused"
+      && this.#snapshot.statusCode === "capture_setup_expired" && this.#snapshot.recordedChunks === 0
+      && this.#snapshot.elapsedSeconds === 0 && this.#snapshot.desktop?.phase === "interrupted"
+      && this.#snapshot.desktop.coverage === "not_started";
+  }
+
   #uploadAfterStop(): boolean {
     // Native sealed means physical stop plus durable completion intent. Desktop
     // only enters this copy after its native stop and retained-flow transition.
@@ -504,7 +517,9 @@ export class CaptureApp extends LitElement {
                 ? "Recording did not start. Your saved audio is retained. Choose Start recording to try again."
                 : "Recording could not start. Check your microphone and connection, then retry Resume."
               : this.#snapshot.statusCode === "capture_preparation_failed" ? "Recording preparation could not finish. Reopen this encounter to retry. Saved work is retained."
-              : this.#snapshot.statusCode === "capture_setup_expired" ? "Recording setup expired before any audio was saved. Select Resume recording to prepare again."
+              : this.#snapshot.statusCode === "capture_setup_expired" ? this.#isExpiredEmptyStart()
+                ? html`<strong>Recording has not started</strong><span class="recording-state-detail">Start recording when you’re ready. Your visit is still here.</span>`
+                : "Recording setup expired. Confirm recording status before continuing."
               : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
               : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or finish recording."
@@ -543,7 +558,7 @@ export class CaptureApp extends LitElement {
             <p class="recording-duration"><span>${nativeProvider ? "Elapsed" : "Recorded"}</span> <strong>${formatDuration(this.#snapshot.elapsedSeconds)}</strong></p>
             ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
               ? html`<p class="recording-control-hint">Use Pause for a break. Finish recording when the visit is finished.</p>` : ""}
-            ${this.#snapshot.remainingAuthoritySeconds === null ? "" : html`<p
+            ${this.#snapshot.remainingAuthoritySeconds === null || this.#isExpiredEmptyStart() ? "" : html`<p
               ?hidden=${(this.#isDesktopCompact() || nativeProvider) && this.#snapshot.remainingAuthoritySeconds > 300}>
               Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`;

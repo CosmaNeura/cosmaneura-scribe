@@ -836,8 +836,12 @@ describe("window choice before server start authority", () => {
       vi.setSystemTime(Date.parse(before!.captureAuthorizedUntil!) + 1);
       expiry!.fire();
       await vi.waitFor(() => expect(recorder.snapshot.state).toBe("paused"));
-      expect(recorder.snapshot).toMatchObject({ statusCode: "capture_setup_expired", recordedChunks: 0,
+      expect(recorder.snapshot).toMatchObject({ statusCode: "capture_setup_expired", recordedChunks: 0, elapsedSeconds: 0,
         desktop: { phase: "interrupted", coverage: "not_started" } });
+      const reserved = await f.options.queueStorage.listMetadata();
+      expect(reserved.length).toBeGreaterThan(0);
+      expect(reserved.every(row => row.state === "reserved")).toBe(true);
+      expect(recorder.snapshot.queuedChunks).toBe(reserved.length);
       expect(choiceSignal?.aborted).toBe(true);
       await rejected;
       chosen.resolve(); await Promise.resolve();
@@ -1319,7 +1323,11 @@ describe("cancelled preparation recovery", () => {
       vi.setSystemTime(Date.parse(before!.lease.expires_at) + 1_000);
       await recorder.stopRecording(); await rejected;
       expect(recorder.snapshot).toMatchObject({ state: "paused", statusCode: "capture_setup_expired",
-        recordedChunks: 0, desktop: { phase: "interrupted", coverage: "not_started" } });
+        recordedChunks: 0, elapsedSeconds: 0, desktop: { phase: "interrupted", coverage: "not_started" } });
+      const reserved = await f.options.queueStorage.listMetadata();
+      expect(reserved.length).toBeGreaterThan(0);
+      expect(reserved.every(row => row.state === "reserved")).toBe(true);
+      expect(recorder.snapshot.queuedChunks).toBe(reserved.length);
       expect((await f.options.flowStore.getActiveCaptureState())!.lease).toEqual(before!.lease);
       await expect(recorder.startRecording()).rejects.toThrow();
       expect(issue).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled();
