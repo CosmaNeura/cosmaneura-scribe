@@ -38,6 +38,7 @@ export class AutomaticProgress<T> {
   private haltReason: "deadline" | "unavailable" | null = null;
   private haltAnnounced = false;
   private generation = 0;
+  private lastReadStarted: number | undefined;
   constructor(private readonly options: AutomaticProgressOptions<T>) {}
 
   schedule(immediate = false): void {
@@ -47,12 +48,14 @@ export class AutomaticProgress<T> {
     this.deadline ??= setTimeout(() => {
       this.halted = true; this.haltReason = "deadline"; this.pause(); this.announceHalt();
     }, 300_000);
-    if (!this.reading) this.timer = setTimeout(() => { void this.check(); }, immediate ? 0 : 3000);
+    const delay = this.lastReadStarted === undefined ? 3000 : Math.max(0, 3000 - (performance.now() - this.lastReadStarted));
+    if (!this.reading) this.timer = setTimeout(() => { void this.check(); }, immediate ? 0 : delay);
   }
 
   /** Explicit status checking can resume observation after its bounded stop. */
   restart(immediate = false): void {
     clearTimeout(this.deadline); this.deadline = undefined; this.halted = false; this.haltReason = null; this.haltAnnounced = false;
+    this.lastReadStarted = undefined;
     this.schedule(immediate);
   }
 
@@ -74,6 +77,7 @@ export class AutomaticProgress<T> {
   private async check(): Promise<void> {
     if (this.closed || this.halted || this.reading || !this.options.active() || !this.options.pending() || !this.options.visible()) return;
     const n = this.generation, controller = new AbortController(); this.reading = controller;
+    this.lastReadStarted = performance.now();
     const current = (): boolean => !this.closed && !this.halted && !controller.signal.aborted
       && n === this.generation && this.options.active() && this.options.visible();
     const timeout = setTimeout(() => {
@@ -86,16 +90,27 @@ export class AutomaticProgress<T> {
       abort = () => reject(new Error("Progress observation cancelled"));
       controller.signal.addEventListener("abort", abort, { once: true });
     });
+    // Aborting observation discards its response promptly, but does not prove
+    // that an uncooperative read settled. Retain its slot until both settle so
+    // showing the window or an explicit restart cannot overlap wire requests.
+    let requestSettled = false, observationSettled = false;
+    const release = (): void => {
+      if (requestSettled && observationSettled && this.reading === controller) {
+        this.reading = null; this.schedule();
+      }
+    };
+    const request = new Promise<T>(resolve => { resolve(this.options.read(controller.signal)); });
+    const settled = (): void => { requestSettled = true; release(); };
+    void request.then(settled, settled);
     try {
-      const value = await Promise.race([this.options.read(controller.signal), cancelled]);
+      const value = await Promise.race([request, cancelled]);
       if (current()) this.options.apply(value);
     } catch {
       if (current()) { this.halted = true; this.haltReason = "unavailable"; this.announceHalt(); }
     } finally {
       clearTimeout(timeout);
       controller.signal.removeEventListener("abort", abort);
-      if (this.reading === controller) this.reading = null;
-      this.schedule();
+      observationSettled = true; release();
     }
   }
 }
