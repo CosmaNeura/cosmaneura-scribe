@@ -34,7 +34,11 @@ from cosmaneura_scribe.provider_native_core_transport import (
     NATIVE_READ_OPERATIONS,
     ProviderNativeCoreTransport,
 )
-from cosmaneura_scribe.provider_performance import provider_phase_timing, provider_request_timing
+from cosmaneura_scribe.provider_performance import (
+    provider_diagnostic_timing,
+    provider_phase_timing,
+    provider_request_timing,
+)
 from cosmas_os.api.auth import (
     CORE_STAGING_PERSONAL,
     AccessDenied,
@@ -127,6 +131,16 @@ class ReceiverProfile:
         ):
             raise ValueError("provider_profile_invalid")
 
+    def allows_provider_trace(self) -> bool:
+        return (
+            self.identity_profile == CORE_STAGING_PERSONAL
+            and self.core_origin == "https://staging-app.cosmaneura.com"
+            and self.origin == (
+                "https://cosmaneura-staging-scribe-native."
+                "politesmoke-7989878f.northcentralus.azurecontainerapps.io"
+            )
+        )
+
 
 class ProviderReceiver:
     """Bind real normalized identity and reviewed Core correspondence per request.
@@ -150,6 +164,7 @@ class ProviderReceiver:
         core_http: httpx.AsyncBaseTransport | None = None,
         core_connections: ProviderCoreConnections | None = None,
         encounter_creation_enabled: bool = False,
+        provider_trace_enabled: bool = False,
     ) -> None:
         authentication_valid = not settings.workspace_authentication_errors()
         if profile.identity_profile == CORE_STAGING_PERSONAL:
@@ -174,6 +189,12 @@ class ProviderReceiver:
         self.enabled, self.core_http = enabled is True, core_http
         self.core_connections = core_connections
         self.encounter_creation_enabled = encounter_creation_enabled is True
+        # This host-only switch is off for general receivers. The personal
+        # staging profile above already pins both exact HTTPS origins; caller
+        # headers/body can neither enable this trace nor select another host.
+        self._provider_trace_enabled = (
+            provider_trace_enabled is True and profile.allows_provider_trace()
+        )
 
     async def registry_read[T](self, operation: Callable[[Engine | Connection], T]) -> T:
         with provider_phase_timing("registry"):
@@ -227,7 +248,9 @@ class ProviderReceiver:
             ):
                 return _reply(404, {"detail": "provider_unavailable"})
             try:
-                with provider_request_timing(action) as timing:
+                with provider_request_timing(
+                    action, trace_enabled=self._provider_trace_enabled,
+                ) as timing:
                     response = await call_next(request)
                 # Same completed handler snapshot as safe logging. Never forward
                 # another layer's arbitrary Server-Timing value or add DB work.
@@ -235,6 +258,10 @@ class ProviderReceiver:
                     del response.headers["server-timing"]
                 if header := timing.server_timing():
                     response.headers["Server-Timing"] = header
+                if "x-scribe-provider-trace" in response.headers:
+                    del response.headers["x-scribe-provider-trace"]
+                if trace := timing.trace_header():
+                    response.headers["X-Scribe-Provider-Trace"] = trace
                 return response
             except Exception:
                 # Framework/SQL/credential exceptions must not echo request data.
@@ -586,6 +613,10 @@ class ProviderReceiver:
         }
 
     async def selected_current(self, authorization, revision, workspace_id):
+        with provider_diagnostic_timing("selection_check"):
+            return await self._selected_current(authorization, revision, workspace_id)
+
+    async def _selected_current(self, authorization, revision, workspace_id):
         # Keep the legacy path and its exact recovery IDs. A revoked/tampered
         # legacy workspace must never fall through to another source.
         def legacy_exists(bind):
@@ -634,6 +665,12 @@ class ProviderReceiver:
         }
 
     def identity(
+        self, session: Session, authorization: str
+    ) -> RequestIdentity | CoreProviderIdentity:
+        with provider_diagnostic_timing("identity_check"):
+            return self._identity(session, authorization)
+
+    def _identity(
         self, session: Session, authorization: str
     ) -> RequestIdentity | CoreProviderIdentity:
         if self.profile.identity_profile == CORE_STAGING_PERSONAL:
