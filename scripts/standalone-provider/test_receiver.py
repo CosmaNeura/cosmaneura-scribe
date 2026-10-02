@@ -23,6 +23,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import SecretStr
 from sqlalchemy import create_engine, inspect, text, update
+from sqlalchemy import event as sql_event
 from sqlalchemy.orm import Session
 
 
@@ -486,6 +487,60 @@ async def test_server_timing_replaces_downstream_header_without_changing_reply(
     assert "private" not in result.headers["server-timing"]
     assert "forbidden" not in result.headers["server-timing"]
     assert result.headers["cache-control"] == "no-store"
+
+
+def test_provider_trace_gate_is_off_by_default_and_requires_exact_staging_profile(harness):
+    h = harness
+    assert h.receiver._provider_trace_enabled is False
+    general = receiver.ProviderReceiver(
+        h.profile, h.receiver.engine, h.settings, h.receiver.verifier, h.receiver.workload_token,
+        enabled=True, provider_trace_enabled=True,
+    )
+    assert general._provider_trace_enabled is False
+    staging = receiver.ReceiverProfile(
+        "https://cosmaneura-staging-scribe-native."
+        "politesmoke-7989878f.northcentralus.azurecontainerapps.io",
+        "https://staging-app.cosmaneura.com", uuid4(), frozenset({"app://cosmas"}),
+        receiver.CORE_STAGING_PERSONAL,
+    )
+    assert staging.allows_provider_trace()
+    assert not replace(staging, identity_profile="clerk-organization-v1").allows_provider_trace()
+    for field in ("origin", "core_origin"):
+        with pytest.raises(ValueError, match="provider_profile_invalid"):
+            replace(staging, **{field: "https://production.synthetic.invalid"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_trace_cannot_be_spoofed_by_downstream_or_request_headers(
+    harness, monkeypatch, enabled,
+):
+    h = harness
+    # Diagnostic-only seam: retain this fixture's actual organization identity
+    # verifier and synthetic hosts. Production gate is tested separately above.
+    h.receiver._provider_trace_enabled = enabled
+    original = receiver._reply
+    def with_untrusted_trace(*args, **kwargs):
+        response = original(*args, **kwargs)
+        response.headers.append("X-Scribe-Provider-Trace", "private-first")
+        response.headers.append("X-Scribe-Provider-Trace", "private-second")
+        return response
+    with monkeypatch.context() as patch:
+        patch.setattr(receiver, "_reply", with_untrusted_trace)
+        async with client(h) as connection:
+            result = await connection.post(
+                "/provider/v1/mount", json={"workspace_id": h.workspace},
+            )
+    assert result.status_code == 200
+    headers = result.headers.get_list("x-scribe-provider-trace")
+    assert len(headers) == int(enabled) and "private" not in repr(headers)
+    assert result.headers["cache-control"] == "no-store"
+    async with client(h) as connection:
+        denied = await connection.post(
+            "/provider/v1/mount", json={"workspace_id": h.workspace},
+            headers={"X-Scribe-Provider-Trace": "enable"},
+        )
+    assert denied.status_code == 404 and "x-scribe-provider-trace" not in denied.headers
 
 
 @pytest.mark.asyncio
@@ -1323,12 +1378,65 @@ async def test_core_created_capture_uses_six_checks_and_keeps_outer_boundaries(h
 
 
 @pytest.mark.asyncio
+async def test_source_start_trace_proves_order_counts_and_no_added_sql_or_core_requests(harness):
+    from cosmaneura_scribe.provider_performance import TRACE_PHASES
+
+    h = harness
+    workspace, lookups = core_created_opening(h)
+    select_counts = []
+    def count_select(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT "):
+            select_counts[-1] += 1
+    sql_event.listen(h.receiver.engine, "before_cursor_execute", count_select)
+    try:
+        async with client(h) as connection:
+            for enabled in (False, True):
+                # Counts start after all fixture/identity/driver setup and reset
+                # before each request; no SQL text or parameters are retained.
+                select_counts.append(0)
+                h.wire.calls.clear()
+                lookups.clear()
+                h.receiver._provider_trace_enabled = enabled
+                result = await connection.post("/provider/v1/source-start-ready", json={
+                    **source_sequence_payload(h), "workspace_id": str(workspace),
+                })
+                assert result.status_code == 200
+                assert len(lookups) == 6 and len(h.wire.calls) == 3
+                assert ("x-scribe-provider-trace" in result.headers) is enabled
+    finally:
+        sql_event.remove(h.receiver.engine, "before_cursor_execute", count_select)
+    assert select_counts[0] == select_counts[1] > 0
+    trace = result.json()  # Response contract remains source-start receipts only.
+    assert set(trace) == {"preparation", "authorization"}
+    value = json.loads(result.headers["x-scribe-provider-trace"])
+    assert set(value) == {"v", "total_us", "counts", "spans"} and value["v"] == 1
+    assert set(value["counts"]) == set(TRACE_PHASES)
+    assert value["counts"]["selection_check"] == 6
+    assert value["counts"]["identity_check"] == 24
+    assert value["counts"]["registry"] == 30
+    assert [span["phase"] for span in value["spans"] if span["phase"].startswith("core_")] == [
+        "core_encounter_lookup", "core_encounter_lookup", "core_exchange",
+        "core_encounter_lookup", "core_mount", "core_encounter_lookup",
+        "core_operation", "core_encounter_lookup", "core_encounter_lookup",
+    ]
+    for span in value["spans"]:
+        assert set(span) == {"phase", "start_us", "duration_us"}
+        assert span["start_us"] + span["duration_us"] <= value["total_us"]
+    for private in (
+        h.headers["Authorization"], str(workspace), h.revision, APPOINTMENT, BINDING,
+        h.wire.selection.actor_ref, h.wire.selection.tenant_ref, "Synthetic display",
+    ):
+        assert private not in result.headers["x-scribe-provider-trace"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", range(1, 7))
 @pytest.mark.parametrize("source_sequence", [False, True])
 async def test_capture_lookup_revocation_blocks_initial_adjacent_and_final_publication(
     harness, boundary, source_sequence,
 ):
     h = harness
+    h.receiver._provider_trace_enabled = True
     def after_lookup(number):
         if number == boundary:
             h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
@@ -1344,6 +1452,12 @@ async def test_capture_lookup_revocation_blocks_initial_adjacent_and_final_publi
     assert len(h.wire.calls) == [0, 0, 1, 2, 3, 3][boundary - 1]
     assert "receipt" not in result.json() and "authorization" not in result.json()
     assert len(h.wire.operations) == (1 if boundary >= 5 else 0)
+    trace = json.loads(result.headers["x-scribe-provider-trace"])
+    assert trace["counts"]["core_encounter_lookup"] == boundary
+    assert trace["counts"]["selection_check"] == boundary
+    assert sum(n for phase, n in trace["counts"].items() if phase.startswith("core_")) == (
+        boundary + len(h.wire.calls)
+    )
     if boundary == 6:
         # The operation already returned before this final receiver check.
         # Its durable remote effect must not make a revoked reply publishable.

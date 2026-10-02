@@ -323,6 +323,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 profile, engine, settings, verifier, workload_token, enabled=True,
                 core_connections=core_connections,
                 encounter_creation_enabled=config.encounter_creation_enabled,
+                provider_trace_enabled=True,
             ).app()
         return ReceiverResources(
             AzureIngress(OriginReceivers(apps), profile=ACA_PROFILE), close

@@ -1,5 +1,6 @@
 """Current-row authorization with real read-only PostgreSQL snapshots, no audio."""
 
+import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -17,6 +18,7 @@ from test_receiver import (
     PatientLink,
     Principal,
     client,
+    core_created_opening,
     receiver,
     source_sequence_payload,
 )
@@ -29,7 +31,7 @@ from test_receiver import (
 
 
 @pytest_asyncio.fixture
-async def async_receiver(harness, engine):
+async def async_receiver(harness, engine):  # noqa: F811 - imported pytest fixtures
     h = harness
     h.legacy_engine = engine
     h.async_engine = create_async_engine(
@@ -54,6 +56,23 @@ async def selected(h):
     return await h.receiver.registry_read(lambda bind: h.receiver.selected(
         h.headers["Authorization"], UUID(h.revision), UUID(h.workspace), bind=bind,
     ))
+
+
+@pytest.mark.asyncio
+async def test_trace_identity_spans_survive_actual_async_registry_handoff(async_receiver):
+    h = async_receiver
+    h.receiver._provider_trace_enabled = True
+    workspace, lookups = core_created_opening(h)
+    async with client(h) as connection:
+        result = await connection.post("/provider/v1/source-start-ready", json={
+            **source_sequence_payload(h), "workspace_id": str(workspace),
+        })
+    assert result.status_code == 200
+    trace = json.loads(result.headers["x-scribe-provider-trace"])
+    assert trace["counts"]["selection_check"] == len(lookups) == 6
+    assert trace["counts"]["identity_check"] == 24
+    assert trace["counts"]["registry"] == 30
+    assert len(h.wire.calls) == 3
 
 
 @pytest.mark.asyncio
