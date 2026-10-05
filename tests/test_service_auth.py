@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from http.client import IncompleteRead
+from io import BytesIO
 from types import SimpleNamespace
+from urllib.request import Request
 from uuid import UUID, uuid4
 
 import jwt
@@ -455,3 +458,201 @@ def test_validation_errors_do_not_echo_request_data(client: TestClient) -> None:
     assert response.status_code == 422
     assert response.json() == {"detail": "Request validation failed."}
     assert sensitive_value not in response.text
+
+
+@pytest.fixture
+def jwks_auth(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Keep real JWKS parsing/cache/signature checks; replace only HTTP I/O."""
+    settings = auth_settings()
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    decoder = EntraTokenDecoder(settings)
+    keys = [
+        {
+            **json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key())),
+            "kid": "test-key",
+            "use": "sig",
+            "alg": "RS256",
+        }
+    ]
+    fetches: list[str] = []
+
+    def open_jwks(request: Request, *, timeout: float, context: object = None) -> BytesIO:
+        assert timeout > 0
+        fetches.append(request.full_url)
+        return BytesIO(json.dumps({"keys": keys}).encode())
+
+    monkeypatch.setattr(
+        "jwt.jwks_client.urllib.request.build_opener",
+        lambda *handlers: SimpleNamespace(open=open_jwks),
+    )
+    # Older PyJWT uses urlopen directly; keep the old-version control offline too.
+    monkeypatch.setattr("jwt.jwks_client.urllib.request.urlopen", open_jwks)
+    return SimpleNamespace(
+        settings=settings,
+        private_key=private_key,
+        decoder=decoder,
+        authenticator=EntraWorkflowAuthenticator(settings, decoder=decoder),
+        keys=keys,
+        fetches=fetches,
+    )
+
+
+def test_real_jwks_accepts_signed_http_request_and_reuses_cached_key(
+    jwks_auth: SimpleNamespace, app_client: TestClient
+) -> None:
+    app.dependency_overrides[get_workflow_authenticator] = lambda: jwks_auth.authenticator
+    token = signed_token(jwks_auth.settings, jwks_auth.private_key)
+    response = consent_request(app_client, tenant_id=uuid4(), token=token, key="real-jwks-0001")
+    assert response.status_code == 201
+    jwks_auth.authenticator(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token))
+    assert jwks_auth.fetches == [jwks_auth.decoder.jwks_client.uri]
+
+
+@pytest.mark.parametrize("claim", ["exp", "iat", "nbf"])
+@pytest.mark.parametrize("value", [None, [], {}])
+def test_malformed_lifetime_claims_return_sanitized_401(
+    jwks_auth: SimpleNamespace,
+    app_client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    claim: str,
+    value: object,
+) -> None:
+    app.dependency_overrides[get_workflow_authenticator] = lambda: jwks_auth.authenticator
+    caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+    token = signed_token(jwks_auth.settings, jwks_auth.private_key, overrides={claim: value})
+    response = consent_request(app_client, tenant_id=uuid4(), token=token, key="bad-lifetime-0001")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Service authentication failed."}
+    assert response.headers["WWW-Authenticate"] == (
+        'Bearer error="invalid_token", error_description="token_invalid"'
+    )
+    records = [record for record in caplog.records if record.name == LOGGER_NAME]
+    assert records
+    for record in records:
+        assert set(json.loads(record.getMessage())) == LOG_FIELD_ALLOWLIST
+        assert token not in record.getMessage()
+    assert token not in response.text
+
+
+@pytest.mark.parametrize("claim", ["exp", "iat", "sub"])
+def test_real_jwks_still_requires_core_claims(jwks_auth: SimpleNamespace, claim: str) -> None:
+    token = signed_token(jwks_auth.settings, jwks_auth.private_key, remove=(claim,))
+    assert_http_error(
+        401,
+        lambda: jwks_auth.authenticator(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        ),
+    )
+
+
+@pytest.mark.parametrize("failure", ["expired", "future", "wrong-key", "algorithm", "unsigned"])
+def test_real_jwks_rejects_invalid_signed_and_unsigned_tokens(
+    jwks_auth: SimpleNamespace, failure: str
+) -> None:
+    overrides: dict[str, object] = {}
+    key = jwks_auth.private_key
+    if failure == "expired":
+        overrides["exp"] = datetime.now(UTC) - timedelta(minutes=1)
+    elif failure == "future":
+        overrides["nbf"] = datetime.now(UTC) + timedelta(minutes=5)
+    elif failure == "wrong-key":
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = signed_token(jwks_auth.settings, key, overrides=overrides)
+    if failure in {"algorithm", "unsigned"}:
+        claims = jwt.decode(token, options={"verify_signature": False})
+        token = jwt.encode(
+            claims,
+            key if failure == "algorithm" else None,
+            algorithm="RS384" if failure == "algorithm" else "none",
+            headers={"kid": "test-key"},
+        )
+    assert_http_error(
+        401,
+        lambda: jwks_auth.authenticator(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        ),
+    )
+
+
+def test_deep_payload_is_401_instead_of_uncaught_recursion(
+    jwks_auth: SimpleNamespace, app_client: TestClient
+) -> None:
+    payload = b'{"nested":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+    token = jwt.PyJWS().encode(
+        payload, jwks_auth.private_key, algorithm="RS256", headers={"kid": "test-key"}
+    )
+    app.dependency_overrides[get_workflow_authenticator] = lambda: jwks_auth.authenticator
+    response = consent_request(app_client, tenant_id=uuid4(), token=token, key="deep-payload-0001")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Service authentication failed."}
+
+
+def test_jwks_skips_malformed_members_without_rejecting_valid_signer(
+    jwks_auth: SimpleNamespace,
+) -> None:
+    jwks_auth.keys[:0] = [None, {"kty": "RSA", "n": [], "e": "AQAB"}]
+    token = signed_token(jwks_auth.settings, jwks_auth.private_key)
+    principal = jwks_auth.authenticator(
+        HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    )
+    assert principal.client_id == jwks_auth.settings.trusted_platform_client_id
+
+
+def test_unknown_kids_are_throttled_and_rotation_recovers_after_cooldown(
+    jwks_auth: SimpleNamespace,
+) -> None:
+    old_token = signed_token(jwks_auth.settings, jwks_auth.private_key)
+    jwks_auth.authenticator(HTTPAuthorizationCredentials(scheme="Bearer", credentials=old_token))
+    new_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    new_token = jwt.encode(
+        jwt.decode(old_token, options={"verify_signature": False}),
+        new_key,
+        algorithm="RS256",
+        headers={"kid": "rotated-key"},
+    )
+    jwks_auth.keys.append(
+        {
+            **json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(new_key.public_key())),
+            "kid": "rotated-key",
+            "use": "sig",
+            "alg": "RS256",
+        }
+    )
+    for _ in range(3):
+        assert_http_error(
+            503,
+            lambda: jwks_auth.authenticator(
+                HTTPAuthorizationCredentials(scheme="Bearer", credentials=new_token)
+            ),
+        )
+    assert len(jwks_auth.fetches) == 1
+    client = jwks_auth.decoder.jwks_client
+    # Model elapsed cooldown without sleeping or disabling the production guard.
+    client._last_successful_fetch -= client.cooldown_duration + 1
+    principal = jwks_auth.authenticator(
+        HTTPAuthorizationCredentials(scheme="Bearer", credentials=new_token)
+    )
+    assert principal.client_id == jwks_auth.settings.trusted_platform_client_id
+    assert len(jwks_auth.fetches) == 2
+    jwks_auth.authenticator(HTTPAuthorizationCredentials(scheme="Bearer", credentials=old_token))
+    assert len(jwks_auth.fetches) == 2
+
+
+def test_truncated_jwks_response_becomes_503_not_server_error(
+    jwks_auth: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def truncated(*args: object, **kwargs: object) -> None:
+        raise IncompleteRead(b"synthetic partial response")
+
+    monkeypatch.setattr(
+        "jwt.jwks_client.urllib.request.build_opener",
+        lambda *handlers: SimpleNamespace(open=truncated),
+    )
+    monkeypatch.setattr("jwt.jwks_client.urllib.request.urlopen", truncated)
+    token = signed_token(jwks_auth.settings, jwks_auth.private_key)
+    assert_http_error(
+        503,
+        lambda: jwks_auth.authenticator(
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        ),
+    )
