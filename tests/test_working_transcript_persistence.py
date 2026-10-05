@@ -146,9 +146,12 @@ def test_publish_replay_rollback_expiry_and_purge_are_backend_equivalent(
     async def scenario() -> None:
         await _seed_configured_session(repository_backend.provider, tenant_id, consent, draft)
         async with repository_backend.provider.transaction(tenant_id) as store:
-            assert await store.accept_normalized_source_transcript(
-                tenant_id, draft.id, idempotency_key="working-source-0001", request=_request()
-            ) is not None
+            assert (
+                await store.accept_normalized_source_transcript(
+                    tenant_id, draft.id, idempotency_key="working-source-0001", request=_request()
+                )
+                is not None
+            )
         with pytest.raises(RuntimeError, match="synthetic rollback"):
             async with repository_backend.provider.transaction(tenant_id) as store:
                 assert await store.publish_current_working_transcript(tenant_id, draft.id)
@@ -200,9 +203,12 @@ def test_memory_projects_all_evidence_and_preserves_identity_across_correction()
     async def scenario() -> None:
         await _seed_configured_session(provider, tenant_id, consent, draft)
         async with provider.transaction(tenant_id) as store:
-            assert await store.accept_normalized_source_transcript(
-                tenant_id, draft.id, idempotency_key="memory-source-0001", request=_request()
-            ) is not None
+            assert (
+                await store.accept_normalized_source_transcript(
+                    tenant_id, draft.id, idempotency_key="memory-source-0001", request=_request()
+                )
+                is not None
+            )
             pending = await store.publish_current_working_transcript(tenant_id, draft.id)
         assert pending is not None
         source = provider.normalized_source_transcripts[(tenant_id, draft.id, 1)]
@@ -603,15 +609,11 @@ async def test_postgres_midflight_expiry_is_bounded_and_rolls_back(
     engine = create_async_engine(admin_url, connect_args={"ssl": False})
     tenant_id = uuid4()
     async with engine.begin() as connection:
-        session_id, _ = await _seed_source(
-            connection, tenant_id, lifetime=timedelta(seconds=3)
-        )
+        session_id, _ = await _seed_source(connection, tenant_id, lifetime=timedelta(seconds=3))
     reached_child_write = False
     original = PostgresRepository._insert_working_children
 
-    async def delayed_children(
-        self: PostgresRepository, *args: object, **kwargs: object
-    ) -> None:
+    async def delayed_children(self: PostgresRepository, *args: object, **kwargs: object) -> None:
         nonlocal reached_child_write
         reached_child_write = True
         await _sleep_past_expiry(self, args[0], args[1])  # type: ignore[arg-type]
@@ -642,16 +644,12 @@ async def test_postgres_commit_fence_rechecks_expiry_after_publish_returns(
     provider = build_postgres_provider(postgres_settings(admin_url))
     tenant_id = uuid4()
     async with engine.begin() as connection:
-        session_id, _ = await _seed_source(
-            connection, tenant_id, lifetime=timedelta(seconds=3)
-        )
+        session_id, _ = await _seed_source(connection, tenant_id, lifetime=timedelta(seconds=3))
     published_before_expiry = False
     try:
         with pytest.raises(DBAPIError) as commit_failure:
             async with provider.transaction(tenant_id) as store:
-                result = await store.publish_current_working_transcript(
-                    tenant_id, session_id
-                )
+                result = await store.publish_current_working_transcript(tenant_id, session_id)
                 assert isinstance(store, PostgresRepository) and result is not None
                 published_before_expiry = True
                 await _sleep_past_expiry(store, tenant_id, session_id)

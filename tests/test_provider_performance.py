@@ -63,6 +63,7 @@ def test_failures_remain_unchanged_and_never_enter_events(events, error):
 def test_logging_failure_does_not_replace_request_result(monkeypatch):
     def failed_logger(**_):
         raise RuntimeError("logging unavailable")
+
     monkeypatch.setattr(performance, "log_event", failed_logger)
     with performance.provider_request_timing("catalog"):
         with performance.provider_phase_timing("registry"):
@@ -75,30 +76,37 @@ async def test_concurrent_requests_keep_their_own_phases(events, monkeypatch):
     clock = count(step=1_000_000)
     monkeypatch.setattr(performance, "perf_counter_ns", lambda: next(clock))
     arrived = asyncio.Event()
+
     async def one():
         with performance.provider_request_timing("mount"):
             with performance.provider_phase_timing("registry"):
                 arrived.set()
                 await asyncio.sleep(0)
+
     async def two():
         await arrived.wait()
         with performance.provider_request_timing("note-opening"):
             with performance.provider_phase_timing("workload_token"):
                 await asyncio.sleep(0)
+
     await asyncio.gather(one(), two())
     assert {e["action"] for e in events} == {
-        "provider.registry", "provider.mount.total",
-        "provider.workload_token", "provider.note-opening.total",
+        "provider.registry",
+        "provider.mount.total",
+        "provider.workload_token",
+        "provider.note-opening.total",
     }
 
 
 @pytest.mark.asyncio
 async def test_late_child_cannot_append_to_finished_request(events):
     entered, finish = asyncio.Event(), asyncio.Event()
+
     async def child():
         with performance.provider_phase_timing("registry"):
             entered.set()
             await finish.wait()
+
     with performance.provider_request_timing("mount") as timing:
         pending = asyncio.create_task(child())
         await entered.wait()
@@ -111,7 +119,8 @@ async def test_late_child_cannot_append_to_finished_request(events):
 
 
 @pytest.mark.parametrize(
-    "duration", [True, -1, float("nan"), float("inf"), "private", 3_600_000_000_001],
+    "duration",
+    [True, -1, float("nan"), float("inf"), "private", 3_600_000_000_001],
 )
 def test_invalid_diagnostic_duration_is_omitted(duration):
     timing = performance._Timing(durations={"total": duration}, closed=True)
@@ -173,9 +182,14 @@ def test_trace_nested_entry_order_counts_and_same_clock_without_extra_logs(event
                     pass
     value = json.loads(timing.trace_header())
     assert value == {
-        "v": 1, "total_us": 7000,
-        "counts": {**dict.fromkeys(performance.TRACE_PHASES, 0),
-                   "selection_check": 1, "registry": 1, "identity_check": 1},
+        "v": 1,
+        "total_us": 7000,
+        "counts": {
+            **dict.fromkeys(performance.TRACE_PHASES, 0),
+            "selection_check": 1,
+            "registry": 1,
+            "identity_check": 1,
+        },
         "spans": [
             {"phase": "selection_check", "start_us": 1000, "duration_us": 5000},
             {"phase": "registry", "start_us": 2000, "duration_us": 3000},
@@ -194,7 +208,8 @@ def test_trace_nested_entry_order_counts_and_same_clock_without_extra_logs(event
 def test_trace_retains_failed_call_without_exception_text_or_changing_failure(events, error):
     with pytest.raises(type(error)) as caught:
         with performance.provider_request_timing(
-            "source-start-ready", trace_enabled=True,
+            "source-start-ready",
+            trace_enabled=True,
         ) as timing:
             with performance.provider_diagnostic_timing("identity_check"):
                 raise error
@@ -219,17 +234,30 @@ def test_trace_accepts_exact_limit_but_never_publishes_partial_overflow(events):
     assert overflow.server_timing() is not None
 
 
-@pytest.mark.parametrize("field,value", [
-    ("phase", "private identity"), ("start_ns", True), ("start_ns", -1),
-    ("duration_ns", None), ("duration_ns", "private"), ("duration_ns", float("nan")),
-    ("duration_ns", float("inf")), ("duration_ns", True), ("duration_ns", -1),
-    ("duration_ns", 3_600_000_000_001), ("start_ns", 3_600_000_000_001),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("phase", "private identity"),
+        ("start_ns", True),
+        ("start_ns", -1),
+        ("duration_ns", None),
+        ("duration_ns", "private"),
+        ("duration_ns", float("nan")),
+        ("duration_ns", float("inf")),
+        ("duration_ns", True),
+        ("duration_ns", -1),
+        ("duration_ns", 3_600_000_000_001),
+        ("start_ns", 3_600_000_000_001),
+    ],
+)
 def test_trace_omits_malformed_span_in_full(field, value):
     span = performance._Span("registry", 0, 1000)
     setattr(span, field, value)
     timing = performance._Timing(
-        durations={"total": 1000}, closed=True, trace_enabled=True, spans=[span],
+        durations={"total": 1000},
+        closed=True,
+        trace_enabled=True,
+        spans=[span],
     )
     assert timing.trace_header() is None
 
@@ -240,10 +268,12 @@ async def test_trace_thread_handoff_and_concurrent_requests_remain_isolated(even
         def threaded():
             with performance.provider_diagnostic_timing("identity_check"):
                 pass
+
         with performance.provider_request_timing("mount", trace_enabled=True) as timing:
             with performance.provider_phase_timing(phase):
                 await asyncio.to_thread(threaded)
         return json.loads(timing.trace_header())
+
     first, second = await asyncio.gather(run("registry"), run("core_operation"))
     assert first["counts"]["registry"] == 1 and first["counts"]["core_operation"] == 0
     assert second["counts"]["registry"] == 0 and second["counts"]["core_operation"] == 1
@@ -255,10 +285,12 @@ async def test_trace_thread_handoff_and_concurrent_requests_remain_isolated(even
 @pytest.mark.asyncio
 async def test_unfinished_child_omits_trace_without_late_mutation(events):
     entered, finish = asyncio.Event(), asyncio.Event()
+
     async def child():
         with performance.provider_diagnostic_timing("identity_check"):
             entered.set()
             await finish.wait()
+
     with performance.provider_request_timing("mount", trace_enabled=True) as timing:
         pending = asyncio.create_task(child())
         await entered.wait()

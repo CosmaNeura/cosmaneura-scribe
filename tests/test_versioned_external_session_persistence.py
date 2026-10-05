@@ -159,9 +159,9 @@ def test_configured_session_round_trip_lock_and_legacy_firewall(
                 repository_backend.provider.transcription_jobs[(tenant_id, memory_job.id)] = (
                     memory_job
                 )
-                repository_backend.provider.transcription_job_by_session[
-                    (tenant_id, draft.id)
-                ] = memory_job.id
+                repository_backend.provider.transcription_job_by_session[(tenant_id, draft.id)] = (
+                    memory_job.id
+                )
 
         async with repository_backend.provider.transaction(tenant_id) as store:
             configured = await store.get_versioned_external_session(tenant_id, draft.id)
@@ -226,8 +226,7 @@ def test_configured_session_creation_requires_current_exact_tenant_consent(
         async with repository_backend.provider.transaction(other_tenant_id) as store:
             cross_tenant = _draft(current)
             assert (
-                await store.create_versioned_external_session(other_tenant_id, cross_tenant)
-                is None
+                await store.create_versioned_external_session(other_tenant_id, cross_tenant) is None
             )
 
         async with repository_backend.provider.transaction(tenant_id) as store:
@@ -317,24 +316,33 @@ async def test_postgres_legacy_delivery_rejects_configured_session(
         async with provider.transaction(tenant_id) as store:
             assert await store.get_delivery(tenant_id, delivery.id) is None
             assert await store.delivery_for(tenant_id, draft.id) is None
-            assert await store.claim_delivery_attempt(
-                tenant_id,
-                policy=DeliveryClaimPolicy(),
-                delivery_id=delivery.id,
-            ) is None
-            assert await store.complete_delivery_failure(
-                tenant_id,
-                delivery.id,
-                expected_attempt_count=0,
-                failure_status=DeliveryStatus.RETRYABLE,
-                error_code="synthetic_failure",
-            ) is None
-            assert await store.complete_delivery_success(
-                tenant_id,
-                delivery.id,
-                expected_payload_sha256=delivery.payload_sha256,
-                platform_transcript_id="synthetic-platform-transcript",
-            ) is None
+            assert (
+                await store.claim_delivery_attempt(
+                    tenant_id,
+                    policy=DeliveryClaimPolicy(),
+                    delivery_id=delivery.id,
+                )
+                is None
+            )
+            assert (
+                await store.complete_delivery_failure(
+                    tenant_id,
+                    delivery.id,
+                    expected_attempt_count=0,
+                    failure_status=DeliveryStatus.RETRYABLE,
+                    error_code="synthetic_failure",
+                )
+                is None
+            )
+            assert (
+                await store.complete_delivery_success(
+                    tenant_id,
+                    delivery.id,
+                    expected_payload_sha256=delivery.payload_sha256,
+                    platform_transcript_id="synthetic-platform-transcript",
+                )
+                is None
+            )
 
         async with provider.engine.begin() as connection:
             await connection.execute(

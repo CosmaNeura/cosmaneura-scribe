@@ -16,12 +16,8 @@ RUNBOOK = ROOT / "docs" / "CAPTURE_PREVIEW.md"
 PREVIEW_FUNCTION = ROOT / "infra" / "preview" / "function.tf"
 PREVIEW_MAIN = ROOT / "infra" / "preview" / "main.tf"
 PREVIEW_VARIABLES = ROOT / "infra" / "preview" / "variables.tf"
-PREVIEW_API_BUILDER = (
-    ROOT / "apps" / "capture-preview-api" / "scripts" / "build-package.mjs"
-)
-PREVIEW_SCOPE_CLASSIFIER = (
-    ROOT / ".github" / "scripts" / "classify-capture-preview-scope.sh"
-)
+PREVIEW_API_BUILDER = ROOT / "apps" / "capture-preview-api" / "scripts" / "build-package.mjs"
+PREVIEW_SCOPE_CLASSIFIER = ROOT / ".github" / "scripts" / "classify-capture-preview-scope.sh"
 
 
 def classify_preview_scope(*paths: str) -> dict[str, str]:
@@ -63,8 +59,7 @@ def test_capture_preview_deployment_scope_is_narrow_and_fail_open() -> None:
     assert classify_preview_scope("apps/capture/android/app/build.gradle")["deploy"] == "false"
     assert classify_preview_scope(".github/workflows/change-budget.yml")["deploy"] == "false"
     assert (
-        classify_preview_scope(".github/workflows/core-image-provenance.yml")["deploy"]
-        == "false"
+        classify_preview_scope(".github/workflows/core-image-provenance.yml")["deploy"] == "false"
     )
 
     for preview_input in (
@@ -188,7 +183,7 @@ def test_live_deploy_is_bound_to_successful_current_main_and_oidc_environment() 
 
     accept_job = workflow.split("\n  accept:\n", 1)[1]
     assert "actions/checkout@" in accept_job
-    assert 'ref: ${{ env.DEPLOY_SHA }}' in accept_job
+    assert "ref: ${{ env.DEPLOY_SHA }}" in accept_job
     assert 'test "${current_main}" = "${DEPLOY_SHA}"' in accept_job
     assert "CAPTURE_PREVIEW_ACCEPTANCE_AUTHORIZED: synthetic-only" in accept_job
     assert (
@@ -196,14 +191,11 @@ def test_live_deploy_is_bound_to_successful_current_main_and_oidc_environment() 
         "https://${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}.azurewebsites.net"
     ) in accept_job
     assert (
-        "CAPTURE_PREVIEW_EXPECTED_SWA_ORIGIN: "
-        "https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}"
+        "CAPTURE_PREVIEW_EXPECTED_SWA_ORIGIN: https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}"
     ) in accept_job
     assert "id-token: write" not in accept_job
     assert 'test "${direct_status}" = "401"' in accept_job
-    assert accept_job.index("exact AuthV2 401 denial") < accept_job.index(
-        "--execute-live"
-    )
+    assert accept_job.index("exact AuthV2 401 denial") < accept_job.index("--execute-live")
     assert "401|403" not in accept_job
 
 
@@ -225,8 +217,7 @@ def test_manual_acceptance_is_dormant_protected_and_has_no_cloud_identity() -> N
         "CAPTURE_PREVIEW_ACCEPTANCE_AUTHORIZED: synthetic-only",
         "CAPTURE_PREVIEW_EXPECTED_FUNCTION_ORIGIN: "
         "https://${{ vars.CAPTURE_PREVIEW_FUNCTION_APP_NAME }}.azurewebsites.net",
-        "CAPTURE_PREVIEW_EXPECTED_SWA_ORIGIN: "
-        "https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}",
+        "CAPTURE_PREVIEW_EXPECTED_SWA_ORIGIN: https://${{ vars.CAPTURE_PREVIEW_SWA_HOSTNAME }}",
         "npm ci --ignore-scripts --no-audit --no-fund",
         "apps/capture-preview-api/scripts/acceptance.mjs --dry-run",
         '--expected-sha "${DEPLOY_SHA}"',
@@ -257,8 +248,7 @@ def test_preview_oidc_subject_uses_github_immutable_repository_ids() -> None:
 
     assert (
         'subject                   = "repo:${var.github_oidc_repository_subject}'
-        ':environment:${var.github_environment}"'
-        in main
+        ':environment:${var.github_environment}"' in main
     )
     assert f'default     = "{immutable_prefix}"' in variables
     assert "var.github_repository}" not in main
@@ -295,9 +285,9 @@ def test_hosted_demo_policy_is_synthetic_and_microphone_disabled() -> None:
     assert '"route": "/capture-preview-deployment.json"' in static_config
     assert '"Cache-Control": "no-store"' in static_config
     assert 'globIgnores: ["**/*.map", DEPLOYMENT_ATTESTATION_PATH]' in vite_config
-    assert 'schema_version: 1' in vite_config
+    assert "schema_version: 1" in vite_config
     assert 'mode: "synthetic"' in vite_config
-    assert 'microphone_enabled: false' in vite_config
+    assert "microphone_enabled: false" in vite_config
 
 
 def test_deployment_attestation_is_exact_and_build_injected() -> None:
@@ -345,9 +335,7 @@ def test_preview_function_authv2_fails_closed_on_direct_requests() -> None:
     ):
         assert required in auth
 
-    lifecycle_match = re.search(
-        r"lifecycle\s*\{(?P<body>.*?)\n\s*\}", function, re.DOTALL
-    )
+    lifecycle_match = re.search(r"lifecycle\s*\{(?P<body>.*?)\n\s*\}", function, re.DOTALL)
     assert lifecycle_match is not None
     lifecycle = lifecycle_match.group("body")
     assert "auth_settings_v2" not in lifecycle

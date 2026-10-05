@@ -197,18 +197,26 @@ def _streaming_fixture(tmp_path: Path, count: int = 3, frames: int = 40):
         pcm = struct.pack("<h", i + 1) * frames
         envelope = _encrypt(request, chunk, _wave_bytes(pcm), key, i.to_bytes(12, "big"))
         objects[chunk.object_id] = envelope
-        complete.append(chunk.model_copy(update={
-            "sha256": hashlib.sha256(envelope).hexdigest(), "ciphertext_size_bytes": len(envelope),
-        }))
-    request = AudioAssemblyRequest(request.tenant_id, session_id, tuple(complete),
-                                   request.job_id, request.lease_token)
+        complete.append(
+            chunk.model_copy(
+                update={
+                    "sha256": hashlib.sha256(envelope).hexdigest(),
+                    "ciphertext_size_bytes": len(envelope),
+                }
+            )
+        )
+    request = AudioAssemblyRequest(
+        request.tenant_id, session_id, tuple(complete), request.job_id, request.lease_token
+    )
     unwrapper = StaticKeyUnwrapper(key)
     blobs = MemoryBlobReader(objects)
     assembler = EncryptedBlobAudioTrackAssembler(
         manifests=StaticManifestProvider(
             AudioAssemblyManifest(_audio_key(session_id), tuple(complete)),
         ),
-        reader=blobs, key_unwrapper=unwrapper, temporary_directory=tmp_path,
+        reader=blobs,
+        key_unwrapper=unwrapper,
+        temporary_directory=tmp_path,
     )
     return assembler, request, blobs
 
@@ -263,15 +271,19 @@ async def test_streaming_wave_rejects_changed_encrypted_data(tmp_path: Path, dam
             else:
                 # Same-length envelope from another position is not accepted.
                 first, second = reader.chunks[:2]
-                data[:first.envelope_size] = data[second.envelope_offset:
-                                                second.envelope_offset + second.envelope_size]
+                data[: first.envelope_size] = data[
+                    second.envelope_offset : second.envelope_offset + second.envelope_size
+                ]
             track.local_path.write_bytes(data)
         elif damage == "wrong_key":
             reader.key[0] ^= 1
         else:
             from dataclasses import replace
-            reader.chunks = (replace(reader.chunks[0], additional_data=b"other-scope"),
-                             *reader.chunks[1:])
+
+            reader.chunks = (
+                replace(reader.chunks[0], additional_data=b"other-scope"),
+                *reader.chunks[1:],
+            )
         with pytest.raises(OSError, match="encrypted audio track unavailable"):
             with track.open() as stream:
                 stream.seek(44)
@@ -280,10 +292,12 @@ async def test_streaming_wave_rejects_changed_encrypted_data(tmp_path: Path, dam
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", [AudioAssemblyError("audio_blob_unavailable"),
-                                     asyncio.CancelledError()])
+@pytest.mark.parametrize(
+    "failure", [AudioAssemblyError("audio_blob_unavailable"), asyncio.CancelledError()]
+)
 async def test_streaming_assembly_clears_partial_files(
-    tmp_path: Path, failure: BaseException,
+    tmp_path: Path,
+    failure: BaseException,
 ) -> None:
     assembler, request, blobs = _streaming_fixture(tmp_path)
     read = blobs.read
@@ -322,9 +336,17 @@ def test_three_hour_stream_capacity_has_bounded_read_memory(
             nonce = i.to_bytes(12, "big")
             pcm = struct.pack("<h", i) * frames_per_chunk
             envelope = _encrypt(request, chunk, _wave_bytes(pcm), key, nonce)
-            index.append(EncryptedWaveChunk(destination.tell(), len(envelope),
-                hashlib.sha256(envelope).hexdigest(), nonce, chunk_additional_data(request, chunk),
-                44, len(pcm)))
+            index.append(
+                EncryptedWaveChunk(
+                    destination.tell(),
+                    len(envelope),
+                    hashlib.sha256(envelope).hexdigest(),
+                    nonce,
+                    chunk_additional_data(request, chunk),
+                    44,
+                    len(pcm),
+                )
+            )
             destination.write(envelope)
     reader = EncryptedAudioTrackReader(path, bytearray(key), tuple(index))
     tracemalloc.start()
@@ -386,6 +408,7 @@ async def test_installed_speech_sdk_streams_encrypted_wave_as_multipart(tmp_path
 
         async def send(self, request, **kwargs):
             from urllib.parse import urlsplit
+
             url = urlsplit(request.url)
             assert url.hostname == "synthetic.invalid"
             assert url.path.endswith("/transcriptions:transcribe")
@@ -402,12 +425,18 @@ async def test_installed_speech_sdk_streams_encrypted_wave_as_multipart(tmp_path
     async with assembler.assemble(request) as (track,):
         with track.open() as source:
             async with TranscriptionClient(
-                "https://synthetic.invalid", StaticCredential(), transport=OfflineTransport(),
+                "https://synthetic.invalid",
+                StaticCredential(),
+                transport=OfflineTransport(),
             ) as client:
                 with pytest.raises(UploadInspected):
-                    await client.transcribe(TranscriptionContent(
-                        definition=TranscriptionOptions(locales=["en-US"]), audio=source,
-                    ), logging_enable=False)
+                    await client.transcribe(
+                        TranscriptionContent(
+                            definition=TranscriptionOptions(locales=["en-US"]),
+                            audio=source,
+                        ),
+                        logging_enable=False,
+                    )
     expected = _wave_bytes(b"".join(struct.pack("<h", i) * 160_000 for i in (1, 2, 3)))
     assert expected in sink.body
     assert sink.body.count(b'; name="audio"') == 1

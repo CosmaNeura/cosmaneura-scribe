@@ -49,10 +49,16 @@ class Guard:
 def body() -> dict:
     return {
         "model": "gpt-4.1-2025-04-14",
-        "choices": [{"index": 0, "finish_reason": "stop", "message": {
-            "role": "assistant",
-            "content": json.dumps({"status": "translated", "translation": ENGLISH}),
-        }}],
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({"status": "translated", "translation": ENGLISH}),
+                },
+            }
+        ],
     }
 
 
@@ -60,7 +66,8 @@ def adapter(handler, *, guard=None, credential=None):
     return AzureGPT41TranslationAdapter(
         AzureTranslationProfile(ENDPOINT, "gpt-4.1"),
         credential=cast(AsyncTokenCredential, credential or Credential()),
-        endpoint_guard=guard or Guard(), transport=httpx.MockTransport(handler),
+        endpoint_guard=guard or Guard(),
+        transport=httpx.MockTransport(handler),
     )
 
 
@@ -80,7 +87,9 @@ async def test_actual_http_contract_preserves_fixed_direction_and_minimal_payloa
         assert len(payload["messages"]) == 2
         assert SOURCE not in payload["messages"][0]["content"]
         assert json.loads(payload["messages"][1]["content"]) == {
-            "source_locale": "es-US", "target_locale": "en-US", "transcript_segment": SOURCE,
+            "source_locale": "es-US",
+            "target_locale": "en-US",
+            "transcript_segment": SOURCE,
         }
         assert payload["response_format"]["json_schema"]["strict"] is True
         return httpx.Response(200, json=body())
@@ -110,23 +119,34 @@ async def test_http_failure_never_retries_redirects_or_exposes_provider_body(sta
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", [
-    lambda b: b.update(model="different-model"),
-    lambda b: b["choices"].append(b["choices"][0]),
-    lambda b: b["choices"][0].update(index=False),
-    lambda b: b["choices"][0].update(finish_reason="length"),
-    lambda b: b["choices"][0]["message"].update(refusal="refused"),
-    lambda b: b["choices"][0]["message"].update(tool_calls=[{"name": "send"}]),
-    lambda b: b["choices"][0]["message"].update(role="user"),
-    lambda b: b["choices"][0]["message"].update(content="not JSON"),
-    lambda b: b["choices"][0]["message"].update(content='{"status":"translated","translation":""}'),
-    lambda b: b["choices"][0]["message"].update(content=json.dumps({
-        "status": "translated", "translation": ENGLISH, "note_ready": True,
-    })),
-    lambda b: b["choices"][0]["message"].update(content=(
-        '{"status":"translated","translation":"one","translation":"two"}'
-    )),
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda b: b.update(model="different-model"),
+        lambda b: b["choices"].append(b["choices"][0]),
+        lambda b: b["choices"][0].update(index=False),
+        lambda b: b["choices"][0].update(finish_reason="length"),
+        lambda b: b["choices"][0]["message"].update(refusal="refused"),
+        lambda b: b["choices"][0]["message"].update(tool_calls=[{"name": "send"}]),
+        lambda b: b["choices"][0]["message"].update(role="user"),
+        lambda b: b["choices"][0]["message"].update(content="not JSON"),
+        lambda b: b["choices"][0]["message"].update(
+            content='{"status":"translated","translation":""}'
+        ),
+        lambda b: b["choices"][0]["message"].update(
+            content=json.dumps(
+                {
+                    "status": "translated",
+                    "translation": ENGLISH,
+                    "note_ready": True,
+                }
+            )
+        ),
+        lambda b: b["choices"][0]["message"].update(
+            content=('{"status":"translated","translation":"one","translation":"two"}')
+        ),
+    ],
+)
 async def test_invalid_provider_result_cannot_enter_working_transcript(mutation) -> None:
     response = body()
     mutation(response)
@@ -142,10 +162,11 @@ async def test_guard_failure_precedes_credential_and_network_access() -> None:
     credential = Credential()
     requests = []
     with pytest.raises(TranslationAdapterError):
-        await adapter(lambda r: requests.append(r), credential=credential,
-                      guard=Guard(RuntimeError("private endpoint unavailable"))).translate(
-            SpanishToEnglishTranslationRequest(SOURCE)
-        )
+        await adapter(
+            lambda r: requests.append(r),
+            credential=credential,
+            guard=Guard(RuntimeError("private endpoint unavailable")),
+        ).translate(SpanishToEnglishTranslationRequest(SOURCE))
     assert not requests and credential.calls == 0
 
 
@@ -153,29 +174,38 @@ async def test_guard_failure_precedes_credential_and_network_access() -> None:
 @pytest.mark.parametrize("kind", ["content_type", "oversized", "unable"])
 async def test_bounded_response_and_declared_inability(kind) -> None:
     response = body()
-    response["choices"][0]["message"]["content"] = json.dumps({
-        "status": "unable_to_translate", "translation": None,
-    })
+    response["choices"][0]["message"]["content"] = json.dumps(
+        {
+            "status": "unable_to_translate",
+            "translation": None,
+        }
+    )
     replies = {
         "content_type": httpx.Response(200, text=json.dumps(body())),
-        "oversized": httpx.Response(200, content=b" " * 128_001,
-                                    headers={"Content-Type": "application/json"}),
+        "oversized": httpx.Response(
+            200, content=b" " * 128_001, headers={"Content-Type": "application/json"}
+        ),
         "unable": httpx.Response(200, json=response),
     }
     with pytest.raises(TranslationAdapterError) as caught:
         await adapter(lambda _: replies[kind]).translate(SpanishToEnglishTranslationRequest(SOURCE))
     assert caught.value.code == (
-        TranslationAdapterFailureCode.PROVIDER_REJECTED if kind == "unable"
+        TranslationAdapterFailureCode.PROVIDER_REJECTED
+        if kind == "unable"
         else TranslationAdapterFailureCode.RESPONSE_INVALID
     )
 
 
 @pytest.mark.asyncio
 async def test_timeout_is_bounded_and_cancellation_propagates() -> None:
-    for error, expected in [(httpx.ReadTimeout("sensitive"), TranslationAdapterError),
-                            (asyncio.CancelledError(), asyncio.CancelledError)]:
+    for error, expected in [
+        (httpx.ReadTimeout("sensitive"), TranslationAdapterError),
+        (asyncio.CancelledError(), asyncio.CancelledError),
+    ]:
+
         def handler(_, failure=error):
             raise failure
+
         with pytest.raises(expected) as caught:
             await adapter(handler).translate(SpanishToEnglishTranslationRequest(SOURCE))
         if isinstance(caught.value, TranslationAdapterError):
@@ -192,12 +222,17 @@ async def test_provider_output_uses_existing_immutable_attempt_contract() -> Non
     assert not hasattr(attempt, "note_ready")
 
 
-@pytest.mark.parametrize("endpoint", [
-    "http://synthetic-model.openai.azure.com/openai/v1",
-    "https://synthetic-model.openai.azure.com.evil.test/openai/v1",
-    "https://user@synthetic-model.openai.azure.com/openai/v1",
-    ENDPOINT + "?redirect=other", ENDPOINT + "/", ENDPOINT + "#fragment",
-])
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://synthetic-model.openai.azure.com/openai/v1",
+        "https://synthetic-model.openai.azure.com.evil.test/openai/v1",
+        "https://user@synthetic-model.openai.azure.com/openai/v1",
+        ENDPOINT + "?redirect=other",
+        ENDPOINT + "/",
+        ENDPOINT + "#fragment",
+    ],
+)
 def test_profile_rejects_alternate_destinations(endpoint) -> None:
     with pytest.raises(ValueError, match="translation_profile_invalid"):
         AzureTranslationProfile(endpoint, "gpt-4.1")

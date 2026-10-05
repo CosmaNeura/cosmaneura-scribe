@@ -24,9 +24,14 @@ pytestmark = pytest.mark.postgres
 async def _reserve(provider, tenant, session, lease, drafts):
     async with provider.transaction(tenant) as store:
         return await store.create_chunk_reservation_batch(
-            tenant, session.id, batch_id=uuid4(), lease_id=lease,
-            lease_generation=1, requested_protocol_version=PROTOCOL_VERSION,
-            drafts=tuple(drafts), maximum_batch_size=MAX_RESERVATIONS_PER_BATCH,
+            tenant,
+            session.id,
+            batch_id=uuid4(),
+            lease_id=lease,
+            lease_generation=1,
+            requested_protocol_version=PROTOCOL_VERSION,
+            drafts=tuple(drafts),
+            maximum_batch_size=MAX_RESERVATIONS_PER_BATCH,
             maximum_chunks=MAX_CHUNKS,
             maximum_plaintext_bytes=MAX_AGGREGATE_PLAINTEXT_BYTES,
         )
@@ -37,7 +42,10 @@ async def _capture(provider):
     lease = uuid4()
     async with provider.transaction(tenant) as store:
         assert await store.issue_capture_lease(
-            tenant, session.id, lease_id=lease, receipt_id=uuid4(),
+            tenant,
+            session.id,
+            lease_id=lease,
+            receipt_id=uuid4(),
             duration=timedelta(minutes=15),
         )
     return tenant, session, lease
@@ -45,7 +53,9 @@ async def _capture(provider):
 
 @pytest.mark.parametrize("count", [1, 90])
 def test_reservation_round_trips_are_bounded_and_recovery_keeps_canonical_order(
-    postgres_urls, count, record_property,
+    postgres_urls,
+    count,
+    record_property,
 ):
     async def scenario():
         provider = build_postgres_provider(postgres_settings(postgres_urls[1]))
@@ -58,6 +68,7 @@ def test_reservation_round_trips_are_bounded_and_recovery_keeps_canonical_order(
         event.listen(provider.engine.sync_engine, "before_cursor_execute", observe)
         try:
             tenant, session, lease = await _capture(provider)
+
             # Mixed channels deliberately share sequence numbers; canonical
             # lookup must use both fields and preserve the requested order.
             def drafts(first):
@@ -65,7 +76,8 @@ def test_reservation_round_trips_are_bounded_and_recovery_keeps_canonical_order(
                     _draft(
                         sequence_number=(first + i) // 2,
                         channel=CaptureChannel.MICROPHONE
-                        if (first + i) % 2 == 0 else CaptureChannel.SYSTEM_AUDIO,
+                        if (first + i) % 2 == 0
+                        else CaptureChannel.SYSTEM_AUDIO,
                     )
                     for i in range(count)
                 ]
