@@ -223,7 +223,9 @@ class CoreWire:
                         }
                     elif kind == "provider_encounter":
                         receipt = {
-                            "schema_version": "1.0", "status": "not_prepared", "review": None,
+                            "schema_version": "1.0",
+                            "status": "not_prepared",
+                            "review": None,
                         }
                     else:
                         receipt = {"session_id": SESSION_ID}
@@ -430,7 +432,8 @@ def client(h):
 
 @pytest.mark.asyncio
 async def test_request_phase_timings_cover_real_receiver_without_private_values(
-    harness, monkeypatch,
+    harness,
+    monkeypatch,
 ):
     from cosmaneura_scribe import provider_performance
 
@@ -439,23 +442,36 @@ async def test_request_phase_timings_cover_real_receiver_without_private_values(
     monkeypatch.setattr(provider_performance, "log_event", lambda **event: events.append(event))
     assert set(receiver._LIMITS) == provider_performance.PROVIDER_ACTIONS
     async with client(h) as c:
-        result = await c.post("/provider/v1/mount", json={
-            "workspace_id": h.workspace, "opening_nonce": str(uuid4()),
-        })
+        result = await c.post(
+            "/provider/v1/mount",
+            json={
+                "workspace_id": h.workspace,
+                "opening_nonce": str(uuid4()),
+            },
+        )
     assert result.status_code == 200
     assert {event["action"] for event in events} == {
-        "provider.registry", "provider.workload_token", "provider.mount.total",
-        "provider.core_exchange", "provider.core_mount",
-        "provider.core_binding", "provider.core_operation",
+        "provider.registry",
+        "provider.workload_token",
+        "provider.mount.total",
+        "provider.core_exchange",
+        "provider.core_mount",
+        "provider.core_binding",
+        "provider.core_operation",
     }
     assert all(set(event) == {"action", "duration_ms"} for event in events)
     assert all(event["duration_ms"] >= 0 for event in events)
     header = result.headers["server-timing"]
     metrics = dict(part.split(";dur=") for part in header.split(", "))
     assert set(metrics) == {
-        "scribe_registry", "scribe_workload_token", "scribe_core_exchange",
-        "scribe_core_mount", "scribe_core_binding", "scribe_core_operation",
-        "scribe_core_encounter_lookup", "scribe_total",
+        "scribe_registry",
+        "scribe_workload_token",
+        "scribe_core_exchange",
+        "scribe_core_mount",
+        "scribe_core_binding",
+        "scribe_core_operation",
+        "scribe_core_encounter_lookup",
+        "scribe_total",
     }
     for event in events:
         phase = "total" if event["action"].endswith(".total") else event["action"].split(".")[1]
@@ -467,7 +483,8 @@ async def test_request_phase_timings_cover_real_receiver_without_private_values(
 
 @pytest.mark.asyncio
 async def test_server_timing_replaces_downstream_header_without_changing_reply(
-    harness, monkeypatch,
+    harness,
+    monkeypatch,
 ):
     original = receiver._reply
 
@@ -480,7 +497,8 @@ async def test_server_timing_replaces_downstream_header_without_changing_reply(
     monkeypatch.setattr(receiver, "_reply", with_untrusted_timing)
     async with client(harness) as connection:
         result = await connection.post(
-            "/provider/v1/mount", json={"workspace_id": harness.workspace},
+            "/provider/v1/mount",
+            json={"workspace_id": harness.workspace},
         )
     assert result.status_code == 200
     assert len(result.headers.get_list("server-timing")) == 1
@@ -493,14 +511,21 @@ def test_provider_trace_gate_is_off_by_default_and_requires_exact_staging_profil
     h = harness
     assert h.receiver._provider_trace_enabled is False
     general = receiver.ProviderReceiver(
-        h.profile, h.receiver.engine, h.settings, h.receiver.verifier, h.receiver.workload_token,
-        enabled=True, provider_trace_enabled=True,
+        h.profile,
+        h.receiver.engine,
+        h.settings,
+        h.receiver.verifier,
+        h.receiver.workload_token,
+        enabled=True,
+        provider_trace_enabled=True,
     )
     assert general._provider_trace_enabled is False
     staging = receiver.ReceiverProfile(
         "https://cosmaneura-staging-scribe-native."
         "politesmoke-7989878f.northcentralus.azurecontainerapps.io",
-        "https://staging-app.cosmaneura.com", uuid4(), frozenset({"app://cosmas"}),
+        "https://staging-app.cosmaneura.com",
+        uuid4(),
+        frozenset({"app://cosmas"}),
         receiver.CORE_STAGING_PERSONAL,
     )
     assert staging.allows_provider_trace()
@@ -513,23 +538,28 @@ def test_provider_trace_gate_is_off_by_default_and_requires_exact_staging_profil
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_trace_cannot_be_spoofed_by_downstream_or_request_headers(
-    harness, monkeypatch, enabled,
+    harness,
+    monkeypatch,
+    enabled,
 ):
     h = harness
     # Diagnostic-only seam: retain this fixture's actual organization identity
     # verifier and synthetic hosts. Production gate is tested separately above.
     h.receiver._provider_trace_enabled = enabled
     original = receiver._reply
+
     def with_untrusted_trace(*args, **kwargs):
         response = original(*args, **kwargs)
         response.headers.append("X-Scribe-Provider-Trace", "private-first")
         response.headers.append("X-Scribe-Provider-Trace", "private-second")
         return response
+
     with monkeypatch.context() as patch:
         patch.setattr(receiver, "_reply", with_untrusted_trace)
         async with client(h) as connection:
             result = await connection.post(
-                "/provider/v1/mount", json={"workspace_id": h.workspace},
+                "/provider/v1/mount",
+                json={"workspace_id": h.workspace},
             )
     assert result.status_code == 200
     headers = result.headers.get_list("x-scribe-provider-trace")
@@ -537,7 +567,8 @@ async def test_trace_cannot_be_spoofed_by_downstream_or_request_headers(
     assert result.headers["cache-control"] == "no-store"
     async with client(h) as connection:
         denied = await connection.post(
-            "/provider/v1/mount", json={"workspace_id": h.workspace},
+            "/provider/v1/mount",
+            json={"workspace_id": h.workspace},
             headers={"X-Scribe-Provider-Trace": "enable"},
         )
     assert denied.status_code == 404 and "x-scribe-provider-trace" not in denied.headers
@@ -599,16 +630,22 @@ async def test_optional_opening_read_reuses_setup_and_keeps_legacy_mount(harness
     h = harness
     nonce = str(uuid4())
     async with client(h) as c:
-        reply = await c.post("/provider/v1/mount", json={
-            "workspace_id": h.workspace, "opening_nonce": nonce,
-        })
+        reply = await c.post(
+            "/provider/v1/mount",
+            json={
+                "workspace_id": h.workspace,
+                "opening_nonce": nonce,
+            },
+        )
         assert reply.status_code == 200 and reply.headers["cache-control"] == "no-store"
         value = reply.json()
         assert value["bindingRef"] == BINDING
         assert value["openingReview"]["request_nonce"] == nonce
         assert value["openingReview"]["operation"] == "provider_encounter"
         assert value["openingReview"]["receipt"] == {
-            "schema_version": "1.0", "status": "not_prepared", "review": None,
+            "schema_version": "1.0",
+            "status": "not_prepared",
+            "review": None,
         }
         assert len(h.wire.calls) == 4 and h.wire.operations == ["provider_encounter"]
         for secret in (h.token(), "offline-workload-only", "offline-core-mount-token", h.subject):
@@ -623,32 +660,50 @@ async def test_optional_opening_read_reuses_setup_and_keeps_legacy_mount(harness
 async def test_invalid_opening_nonce_does_not_reach_core(harness, nonce):
     h = harness
     async with client(h) as c:
-        reply = await c.post("/provider/v1/mount", json={
-            "workspace_id": h.workspace, "opening_nonce": nonce,
-        })
+        reply = await c.post(
+            "/provider/v1/mount",
+            json={
+                "workspace_id": h.workspace,
+                "opening_nonce": nonce,
+            },
+        )
     assert reply.status_code == 422 and h.wire.calls == []
 
 
 def note_opening_body(h):
-    return {"workspace_id": h.workspace, "binding_ref": BINDING,
-            "expected_session_id": SESSION_ID, "request_nonce": str(uuid4())}
+    return {
+        "workspace_id": h.workspace,
+        "binding_ref": BINDING,
+        "expected_session_id": SESSION_ID,
+        "request_nonce": str(uuid4()),
+    }
 
 
 def ready_note(h):
     """Only metadata for the receiver boundary; full UI parsing has its own fixtures."""
-    source = {"kind": "reviewed_english", "source_version": 1,
-              "working_transcript_id": str(uuid4()), "working_version": 1}
+    source = {
+        "kind": "reviewed_english",
+        "source_version": 1,
+        "working_transcript_id": str(uuid4()),
+        "working_version": 1,
+    }
     schema = "doctor_note_schema_" + SUFFIX
 
     def alter(path, data, result):
         if data and data.get("operation") == {"kind": "creator_review"}:
-            result["receipt"].update(status="transcript_ready",
+            result["receipt"].update(
+                status="transcript_ready",
                 source={"source_transcript_version": 1},
-                working={"working_transcript_id": source["working_transcript_id"],
-                         "working_transcript_version": 1, "note_ready": True})
+                working={
+                    "working_transcript_id": source["working_transcript_id"],
+                    "working_transcript_version": 1,
+                    "note_ready": True,
+                },
+            )
         elif path.endswith("capture-notes") and data["action"] == "templates":
-            result["receipt"]["templates"] = [{"schema_ref": schema,
-                "note_type": "Synthetic SOAP", "field_names": ["Subjective"]}]
+            result["receipt"]["templates"] = [
+                {"schema_ref": schema, "note_type": "Synthetic SOAP", "field_names": ["Subjective"]}
+            ]
         elif path.endswith("capture-notes") and data["action"] == "read":
             result["receipt"].update(schema_ref=schema, reviewed_source=source)
         return result
@@ -711,11 +766,15 @@ async def test_note_opening_hides_every_reply_after_committed_revocation(harness
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("boundary", [
-    "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
-    "/service/v1/agent/scribe/capture-bindings/resolve",
-    "/service/v1/agent/scribe/capture-operations",
-])
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "/embed/v1/context-tokens/exchange",
+        "/service/v1/agent/mount-context/resolve",
+        "/service/v1/agent/scribe/capture-bindings/resolve",
+        "/service/v1/agent/scribe/capture-operations",
+    ],
+)
 async def test_opening_hides_reply_after_committed_registry_revocation(harness, boundary):
     h = harness
 
@@ -725,9 +784,13 @@ async def test_opening_hides_reply_after_committed_registry_revocation(harness, 
 
     h.wire.after = after
     async with client(h) as c:
-        reply = await c.post("/provider/v1/mount", json={
-            "workspace_id": h.workspace, "opening_nonce": str(uuid4()),
-        })
+        reply = await c.post(
+            "/provider/v1/mount",
+            json={
+                "workspace_id": h.workspace,
+                "opening_nonce": str(uuid4()),
+            },
+        )
     assert reply.status_code == 403 and "openingReview" not in reply.text
     assert h.wire.calls[-1] == boundary
 
@@ -785,13 +848,23 @@ async def test_recorder_does_not_publish_denied_or_revoked_session(harness, fail
 
 def source_payload(h, action):
     return {
-        "workspace_id": h.workspace, "binding_ref": BINDING, "request_nonce": str(uuid4()),
-        "operation": {"kind": "source_start", "action": action, "payload": {
-            "schema_version": "1.0", "attempt_id": str(uuid4()), "source": "ios_microphone",
-            "owner_proof": "d" * 64, "lease_id": str(uuid4()), "lease_receipt_id": str(uuid4()),
-            "lease_generation": 1,
-            "capture_authorized_until": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
-        }},
+        "workspace_id": h.workspace,
+        "binding_ref": BINDING,
+        "request_nonce": str(uuid4()),
+        "operation": {
+            "kind": "source_start",
+            "action": action,
+            "payload": {
+                "schema_version": "1.0",
+                "attempt_id": str(uuid4()),
+                "source": "ios_microphone",
+                "owner_proof": "d" * 64,
+                "lease_id": str(uuid4()),
+                "lease_receipt_id": str(uuid4()),
+                "lease_generation": 1,
+                "capture_authorized_until": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
+            },
+        },
     }
 
 
@@ -803,18 +876,27 @@ def source_sequence_payload(h):
         now = datetime.now(UTC)
         common = {
             **{key: value for key, value in intent.items() if key != "owner_proof"},
-            "session_id": SESSION_ID, "source_start_id": intent["attempt_id"],
+            "session_id": SESSION_ID,
+            "source_start_id": intent["attempt_id"],
             "creator_actor_id": h.wire.selection.actor_ref,
-            "consent_record_id": str(uuid4()), "capability_id": str(uuid4()),
+            "consent_record_id": str(uuid4()),
+            "capability_id": str(uuid4()),
             "preparation_expires_at": (now + timedelta(seconds=30)).isoformat(),
         }
         prepared = {**common, "state": "prepared", "issued_at": None, "expires_at": None}
-        issued = {**common, "state": "issued", "issued_at": now.isoformat(),
-                  "expires_at": (now + timedelta(seconds=15)).isoformat()}
-        return {**response, "receipt": {
-            "preparation": prepared,
-            "authorization": {"receipt": issued, "secret": intent["owner_proof"]},
-        }}
+        issued = {
+            **common,
+            "state": "issued",
+            "issued_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=15)).isoformat(),
+        }
+        return {
+            **response,
+            "receipt": {
+                "preparation": prepared,
+                "authorization": {"receipt": issued, "secret": intent["owner_proof"]},
+            },
+        }
 
     h.wire.alter = alter
     return {
@@ -836,7 +918,8 @@ async def test_native_source_sequence_reuses_core_setup_and_rejects_generic_rout
     assert result.json()["preparation"]["request_nonce"] == payload["request_nonce"]
     assert result.json()["authorization"]["request_nonce"] == payload["authorize_request_nonce"]
     assert h.wire.calls == [
-        "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
+        "/embed/v1/context-tokens/exchange",
+        "/service/v1/agent/mount-context/resolve",
         "/service/v1/agent/scribe/capture-operations",
     ]
     assert h.wire.operations == ["source_start_sequence"]
@@ -849,7 +932,8 @@ async def test_receiver_rejects_direct_core_sequence_operation(harness, route):
     payload = source_sequence_payload(h)
     direct = {key: value for key, value in payload.items() if not key.startswith("authorize_")}
     direct["operation"] = {
-        "kind": "source_start_sequence", "payload": payload["operation"]["payload"],
+        "kind": "source_start_sequence",
+        "payload": payload["operation"]["payload"],
         "authorize_idempotency_key": payload["authorize_idempotency_key"],
     }
     async with client(h) as c:
@@ -860,7 +944,8 @@ async def test_receiver_rejects_direct_core_sequence_operation(harness, route):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", [1, 2, 3])
 async def test_native_source_sequence_rechecks_frozen_account_after_each_core_request(
-    harness, boundary,
+    harness,
+    boundary,
 ):
     h = harness
     payload = source_sequence_payload(h)
@@ -900,7 +985,8 @@ async def test_native_source_route_keeps_scope_and_generic_route_cannot_start(ha
     assert result.json()["binding_ref"] == BINDING
     assert result.json()["request_nonce"] == payload["request_nonce"]
     assert h.wire.calls == [
-        "/embed/v1/context-tokens/exchange", "/service/v1/agent/mount-context/resolve",
+        "/embed/v1/context-tokens/exchange",
+        "/service/v1/agent/mount-context/resolve",
         "/service/v1/agent/scribe/capture-operations",
     ]
     assert h.wire.operations == ["source_start"]
@@ -910,7 +996,9 @@ async def test_native_source_route_keeps_scope_and_generic_route_cannot_start(ha
 @pytest.mark.parametrize("action", ["prepare", "authorize"])
 @pytest.mark.parametrize("boundary", [1, 2, 3])
 async def test_native_source_request_rechecks_frozen_account_at_each_core_boundary(
-    harness, action, boundary,
+    harness,
+    action,
+    boundary,
 ):
     h = harness
 
@@ -1188,7 +1276,8 @@ async def test_core_owned_encounters_join_legacy_catalog_without_registry_writes
             assert display["title"] == "Synthetic Patient"
             assert display["patientName"] == entry["patient_name"]
             catalog_entry = next(
-                e for e in catalog.json()["encounters"]
+                e
+                for e in catalog.json()["encounters"]
                 if e["appointmentRef"] == entry["appointment_ref"]
             )
             assert catalog_entry["patientName"] == entry["patient_name"]
@@ -1297,8 +1386,12 @@ def core_created_opening(h, after_lookup=None):
         }
         if after_lookup:
             after_lookup(len(lookups))
-        return httpx.Response(200, json=value, headers={
-            "Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "1"})
+        return httpx.Response(
+            200,
+            json=value,
+            headers={"Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "1"},
+        )
+
     h.receiver.core_http = httpx.MockTransport(handle)
     return workspace, lookups
 
@@ -1308,8 +1401,10 @@ async def test_core_created_opening_uses_one_facade_and_keeps_checked_display(ha
     h = harness
     workspace, lookups = core_created_opening(h)
     async with client(h) as c:
-        result = await c.post("/provider/v1/mount", json={
-            "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
+        result = await c.post(
+            "/provider/v1/mount",
+            json={"workspace_id": str(workspace), "opening_nonce": str(uuid4())},
+        )
     assert result.status_code == 200
     assert lookups == [] and len(h.wire.calls) == 1
     assert result.json()["encounter"]["title"] == "Synthetic checked display"
@@ -1321,13 +1416,17 @@ async def test_core_created_opening_uses_one_facade_and_keeps_checked_display(ha
 async def test_core_created_opening_cannot_publish_account_revoked_during_facade(harness):
     boundary = 1
     h = harness
+
     def after_lookup(number):
         if number == boundary:
             h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+
     workspace, lookups = core_created_opening(h, after_lookup)
     async with client(h) as c:
-        result = await c.post("/provider/v1/mount", json={
-            "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
+        result = await c.post(
+            "/provider/v1/mount",
+            json={"workspace_id": str(workspace), "opening_nonce": str(uuid4())},
+        )
     assert result.status_code == 403
     assert lookups == [] and len(h.wire.calls) == 1
     assert "Synthetic display" not in result.text
@@ -1337,31 +1436,47 @@ async def test_core_created_opening_cannot_publish_account_revoked_during_facade
 async def test_opening_rechecks_real_account_after_workload_token_await(harness):
     h = harness
     workspace, lookups = core_created_opening(h)
+
     async def workload():
         await asyncio.sleep(0)
         h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
         return SecretStr("offline-workload-only")
+
     h.receiver.workload_token = workload
     async with client(h) as c:
-        result = await c.post("/provider/v1/mount", json={
-            "workspace_id": str(workspace), "opening_nonce": str(uuid4())})
+        result = await c.post(
+            "/provider/v1/mount",
+            json={"workspace_id": str(workspace), "opening_nonce": str(uuid4())},
+        )
     assert result.status_code == 403 and lookups == []
     assert h.wire.calls == []
     assert "Synthetic display" not in result.text
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", [
-    "creator_review", "native_recording_context", "encryption_key", "prepare_recording_window",
-    "authorize_upload", "register_chunk", "complete", "source-start-ready",
-])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "creator_review",
+        "native_recording_context",
+        "encryption_key",
+        "prepare_recording_window",
+        "authorize_upload",
+        "register_chunk",
+        "complete",
+        "source-start-ready",
+    ],
+)
 async def test_core_created_capture_uses_six_checks_and_keeps_outer_boundaries(harness, kind):
     h = harness
     workspace, lookups = core_created_opening(h)
     body = (
         {**source_sequence_payload(h), "workspace_id": str(workspace)}
-        if kind == "source-start-ready" else {
-            "workspace_id": str(workspace), "binding_ref": BINDING, "request_nonce": str(uuid4()),
+        if kind == "source-start-ready"
+        else {
+            "workspace_id": str(workspace),
+            "binding_ref": BINDING,
+            "request_nonce": str(uuid4()),
             "operation": {"kind": kind},
         }
     )
@@ -1384,9 +1499,11 @@ async def test_source_start_trace_proves_order_counts_and_no_added_sql_or_core_r
     h = harness
     workspace, lookups = core_created_opening(h)
     select_counts = []
+
     def count_select(_connection, _cursor, statement, _parameters, _context, _many):
         if statement.lstrip().upper().startswith("SELECT "):
             select_counts[-1] += 1
+
     sql_event.listen(h.receiver.engine, "before_cursor_execute", count_select)
     try:
         async with client(h) as connection:
@@ -1397,9 +1514,13 @@ async def test_source_start_trace_proves_order_counts_and_no_added_sql_or_core_r
                 h.wire.calls.clear()
                 lookups.clear()
                 h.receiver._provider_trace_enabled = enabled
-                result = await connection.post("/provider/v1/source-start-ready", json={
-                    **source_sequence_payload(h), "workspace_id": str(workspace),
-                })
+                result = await connection.post(
+                    "/provider/v1/source-start-ready",
+                    json={
+                        **source_sequence_payload(h),
+                        "workspace_id": str(workspace),
+                    },
+                )
                 assert result.status_code == 200
                 assert len(lookups) == 6 and len(h.wire.calls) == 3
                 assert ("x-scribe-provider-trace" in result.headers) is enabled
@@ -1415,16 +1536,28 @@ async def test_source_start_trace_proves_order_counts_and_no_added_sql_or_core_r
     assert value["counts"]["identity_check"] == 24
     assert value["counts"]["registry"] == 30
     assert [span["phase"] for span in value["spans"] if span["phase"].startswith("core_")] == [
-        "core_encounter_lookup", "core_encounter_lookup", "core_exchange",
-        "core_encounter_lookup", "core_mount", "core_encounter_lookup",
-        "core_operation", "core_encounter_lookup", "core_encounter_lookup",
+        "core_encounter_lookup",
+        "core_encounter_lookup",
+        "core_exchange",
+        "core_encounter_lookup",
+        "core_mount",
+        "core_encounter_lookup",
+        "core_operation",
+        "core_encounter_lookup",
+        "core_encounter_lookup",
     ]
     for span in value["spans"]:
         assert set(span) == {"phase", "start_us", "duration_us"}
         assert span["start_us"] + span["duration_us"] <= value["total_us"]
     for private in (
-        h.headers["Authorization"], str(workspace), h.revision, APPOINTMENT, BINDING,
-        h.wire.selection.actor_ref, h.wire.selection.tenant_ref, "Synthetic display",
+        h.headers["Authorization"],
+        str(workspace),
+        h.revision,
+        APPOINTMENT,
+        BINDING,
+        h.wire.selection.actor_ref,
+        h.wire.selection.tenant_ref,
+        "Synthetic display",
     ):
         assert private not in result.headers["x-scribe-provider-trace"]
 
@@ -1433,18 +1566,28 @@ async def test_source_start_trace_proves_order_counts_and_no_added_sql_or_core_r
 @pytest.mark.parametrize("boundary", range(1, 7))
 @pytest.mark.parametrize("source_sequence", [False, True])
 async def test_capture_lookup_revocation_blocks_initial_adjacent_and_final_publication(
-    harness, boundary, source_sequence,
+    harness,
+    boundary,
+    source_sequence,
 ):
     h = harness
     h.receiver._provider_trace_enabled = True
+
     def after_lookup(number):
         if number == boundary:
             h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+
     workspace, lookups = core_created_opening(h, after_lookup)
-    body = {**source_sequence_payload(h), "workspace_id": str(workspace)} if source_sequence else {
-        "workspace_id": str(workspace), "binding_ref": BINDING, "request_nonce": str(uuid4()),
-        "operation": {"kind": "complete"},
-    }
+    body = (
+        {**source_sequence_payload(h), "workspace_id": str(workspace)}
+        if source_sequence
+        else {
+            "workspace_id": str(workspace),
+            "binding_ref": BINDING,
+            "request_nonce": str(uuid4()),
+            "operation": {"kind": "complete"},
+        }
+    )
     route = "source-start-ready" if source_sequence else "capture-operations"
     async with client(h) as c:
         result = await c.post("/provider/v1/" + route, json=body)

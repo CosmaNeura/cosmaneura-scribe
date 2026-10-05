@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build/run the actual native recording host with offline synthetic fixtures."""
+
 from __future__ import annotations
 
 import argparse
@@ -66,32 +67,76 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 exit_code, timed_out = 124, True
                 stream.write(f"\nSynthetic lab command exceeded {timeout} seconds.\n")
-        results.append({"name": name, "command": command, "exit_code": exit_code,
-                        "timeout_seconds": timeout, "timed_out": timed_out})
+        results.append(
+            {
+                "name": name,
+                "command": command,
+                "exit_code": exit_code,
+                "timeout_seconds": timeout,
+                "timed_out": timed_out,
+            }
+        )
         (target / "CHECKS.json").write_text(json.dumps(results, indent=2) + "\n")
         print(name, exit_code, flush=True)
         if exit_code:
             raise SystemExit(exit_code)
 
     common = [
-        "xcrun", "swiftc", "-swift-version", "6", "-module-cache-path",
-        str(target / "cache"), "-I", str(target),
+        "xcrun",
+        "swiftc",
+        "-swift-version",
+        "6",
+        "-module-cache-path",
+        str(target / "cache"),
+        "-I",
+        str(target),
     ]
     libraries: list[str] = []
     for name, paths in module.MODULES:
-        run(name, common + [
-            "-emit-module", "-module-name", name, "-emit-module-path",
-            str(target / f"{name}.swiftmodule"), "-O", "-enable-testing",
-            "-emit-library", "-o", str(target / f"lib{name}.dylib"),
-            "-L", str(target), *libraries, *map(str, paths),
-        ])
+        run(
+            name,
+            common
+            + [
+                "-emit-module",
+                "-module-name",
+                name,
+                "-emit-module-path",
+                str(target / f"{name}.swiftmodule"),
+                "-O",
+                "-enable-testing",
+                "-emit-library",
+                "-o",
+                str(target / f"lib{name}.dylib"),
+                "-L",
+                str(target),
+                *libraries,
+                *map(str, paths),
+            ],
+        )
         libraries.append(f"-l{name}")
-    run("build", common + [
-        "-O", "-parse-as-library", "-D", "NATIVE_BINDING_CHECKS", "-L", str(target),
-        *libraries, "-Xlinker", "-rpath", "-Xlinker", str(target), "-o", str(target / "timing"),
-        *map(str, module.BRIDGE), str(native_provider), str(target / "host-fixture.swift"),
-        str(timing_fixture),
-    ])
+    run(
+        "build",
+        common
+        + [
+            "-O",
+            "-parse-as-library",
+            "-D",
+            "NATIVE_BINDING_CHECKS",
+            "-L",
+            str(target),
+            *libraries,
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            str(target),
+            "-o",
+            str(target / "timing"),
+            *map(str, module.BRIDGE),
+            str(native_provider),
+            str(target / "host-fixture.swift"),
+            str(timing_fixture),
+        ],
+    )
     for path in sources:
         if hashlib.sha256(path.read_bytes()).hexdigest() != inventory[str(path.relative_to(repo))]:
             raise RuntimeError("Native source changed during the build; discard this measurement.")
