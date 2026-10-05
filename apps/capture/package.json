@@ -22,7 +22,8 @@
     "generate:api": "openapi-typescript ../../openapi/openapi.json -o src/generated/capture-api.ts",
     "lint": "eslint . --max-warnings 0",
     "mock:bff": "tsx src/mock-bff/server.ts",
-    "test": "vitest run",
+    "test": "npm run test:apple-release-metadata && vitest run",
+    "test:apple-release-metadata": "node --test scripts/check-apple-release-metadata.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
