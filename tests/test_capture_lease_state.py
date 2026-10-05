@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from cosmaneura_scribe.configured_capture_service import (
     bind_configured_capture_service,
     unbind_configured_capture_service,
@@ -138,10 +139,16 @@ def test_configured_binding_and_expand_recovery(postgres_urls):
         finally:
             await engine.dispose()
 
-    before = asyncio.run(retained_state())
-    assert before[0] == "b0d93127cafe" and before[2] == (True, True)
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", postgres_urls[0])
-    with pytest.raises(RuntimeError, match="retains dormant native extension history"):
+    before = asyncio.run(retained_state())
+    assert before[0] == ScriptDirectory.from_config(config).get_current_head()
+    assert before[2] == (True, True)
+    # The latest expand guard stops traversal before older recovery guards run.
+    with pytest.raises(RuntimeError, match="expand recovery retains"):
         command.downgrade(config, "611c583b362a")
     assert asyncio.run(retained_state()) == before
+    native_revision = ScriptDirectory.from_config(config).get_revision("b0d93127cafe")
+    assert native_revision is not None
+    with pytest.raises(RuntimeError, match="retains dormant native extension history"):
+        native_revision.module.downgrade()

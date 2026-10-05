@@ -110,7 +110,8 @@ def run(output: Path, node: Path) -> int:
                            "SCRIBE_DESKTOP_PIPE_FENCE": json.dumps(ticket)}
             command = [str(node.resolve()), str(repo / "node_modules/vitest/vitest.mjs"),
                        "run", "src/native-process-driver.test.ts", "src/provider-recorder.test.ts",
-                       "src/durable-store.test.ts", "src/native-renewal-pipe.test.ts", "--reporter=verbose"]
+                       "src/durable-store.test.ts", "src/native-renewal-pipe.test.ts",
+                       "--reporter=verbose"]
             with (output / "tests.log").open("w") as log:
                 result = subprocess.run(
                     command, cwd=repo / "apps/desktop-companion", env=environment,
