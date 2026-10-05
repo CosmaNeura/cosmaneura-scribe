@@ -37,7 +37,8 @@ async def async_receiver(harness, engine):  # noqa: F811 - imported pytest fixtu
     h.async_engine = create_async_engine(
         "postgresql+asyncpg:///" + engine.url.database,
         connect_args={
-            "host": str(ROOT / "socket"), "port": 55483,
+            "host": str(ROOT / "socket"),
+            "port": 55483,
             "server_settings": {"statement_timeout": "5000", "lock_timeout": "2000"},
         },
         hide_parameters=True,
@@ -53,9 +54,14 @@ async def async_receiver(harness, engine):  # noqa: F811 - imported pytest fixtu
 
 
 async def selected(h):
-    return await h.receiver.registry_read(lambda bind: h.receiver.selected(
-        h.headers["Authorization"], UUID(h.revision), UUID(h.workspace), bind=bind,
-    ))
+    return await h.receiver.registry_read(
+        lambda bind: h.receiver.selected(
+            h.headers["Authorization"],
+            UUID(h.revision),
+            UUID(h.workspace),
+            bind=bind,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -64,9 +70,13 @@ async def test_trace_identity_spans_survive_actual_async_registry_handoff(async_
     h.receiver._provider_trace_enabled = True
     workspace, lookups = core_created_opening(h)
     async with client(h) as connection:
-        result = await connection.post("/provider/v1/source-start-ready", json={
-            **source_sequence_payload(h), "workspace_id": str(workspace),
-        })
+        result = await connection.post(
+            "/provider/v1/source-start-ready",
+            json={
+                **source_sequence_payload(h),
+                "workspace_id": str(workspace),
+            },
+        )
     assert result.status_code == 200
     trace = json.loads(result.headers["x-scribe-provider-trace"])
     assert trace["counts"]["selection_check"] == len(lookups) == 6
@@ -84,6 +94,7 @@ async def test_same_authorized_selection_uses_four_queries_instead_of_nine(async
         def count(_connection, _cursor, statement, _parameters, _context, _many):
             if statement.lstrip().upper().startswith("SELECT "):
                 counts[label] += 1
+
         return count
 
     legacy_counter, current_counter = counter("legacy"), counter("current")
@@ -92,7 +103,9 @@ async def test_same_authorized_selection_uses_four_queries_instead_of_nine(async
     try:
         h.receiver.engine = h.legacy_engine
         expected = h.receiver.selected(
-            h.headers["Authorization"], UUID(h.revision), UUID(h.workspace),
+            h.headers["Authorization"],
+            UUID(h.revision),
+            UUID(h.workspace),
         )
         h.receiver.engine = h.async_engine
         assert await selected(h) == expected
@@ -106,14 +119,18 @@ async def test_same_authorized_selection_uses_four_queries_instead_of_nine(async
 @pytest.mark.asyncio
 async def test_actual_transaction_is_read_only_repeatable_read(async_receiver):
     h = async_receiver
-    observed = await h.receiver.registry_read(lambda bind: (
-        bind.scalar(text("SHOW transaction_read_only")),
-        bind.scalar(text("SHOW transaction_isolation")),
-    ))
+    observed = await h.receiver.registry_read(
+        lambda bind: (
+            bind.scalar(text("SHOW transaction_read_only")),
+            bind.scalar(text("SHOW transaction_isolation")),
+        )
+    )
     assert observed == ("on", "repeatable read")
+
     def read_identity(bind):
         with Session(bind) as session:
             return h.receiver.identity(session, h.headers["Authorization"])
+
     identity = await h.receiver.registry_read(read_identity)
     with Session(h.legacy_engine) as session:
         with pytest.raises(receiver.InvalidRequest):
@@ -127,10 +144,15 @@ def revoke(h, kind):
     if kind == "workspace_owner":
         actor = str(uuid4())
         with Session(h.legacy_engine) as session:
-            session.add(Principal(
-                id=actor, box_id=h.box, principal_type="human", state="active",
-                display_name="Invented replacement owner",
-            ))
+            session.add(
+                Principal(
+                    id=actor,
+                    box_id=h.box,
+                    principal_type="human",
+                    state="active",
+                    display_name="Invented replacement owner",
+                )
+            )
             session.commit()
         h.mutate(EncounterWorkspace, h.workspace, owner_id=actor)
         return
@@ -148,10 +170,19 @@ def revoke(h, kind):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", [
-    "account", "principal_state", "principal_type", "principal_deleted", "workspace_owner",
-    "appointment_source", "link_state", "link_revoked",
-])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "account",
+        "principal_state",
+        "principal_type",
+        "principal_deleted",
+        "workspace_owner",
+        "appointment_source",
+        "link_state",
+        "link_revoked",
+    ],
+)
 async def test_joined_selection_denies_invalid_current_rows_before_core(async_receiver, kind):
     h = async_receiver
     payload = source_sequence_payload(h)
@@ -169,32 +200,56 @@ async def test_read_only_route_denies_foreign_or_missing_workspace(async_receive
     wid = str(uuid4())
     with Session(h.legacy_engine) as session:
         if target == "other_owner":
-            wid = session.scalar(select(EncounterWorkspace.id).where(
-                EncounterWorkspace.owner_id == h.other,
-            ))
+            wid = session.scalar(
+                select(EncounterWorkspace.id).where(
+                    EncounterWorkspace.owner_id == h.other,
+                )
+            )
         elif target == "other_box":
             box, actor, link, appointment = (str(uuid4()) for _ in range(4))
             session.add(BoxContext(id=box, display_name="Invented other box"))
             session.flush()
-            session.add(Principal(
-                id=actor, box_id=box, principal_type="human", state="active",
-                display_name="Invented other owner",
-            ))
-            session.add(PatientLink(
-                id=link, box_id=box, source_pair_key=str(uuid4()), label="Invented other visit",
-                state="confirmed",
-            ))
+            session.add(
+                Principal(
+                    id=actor,
+                    box_id=box,
+                    principal_type="human",
+                    state="active",
+                    display_name="Invented other owner",
+                )
+            )
+            session.add(
+                PatientLink(
+                    id=link,
+                    box_id=box,
+                    source_pair_key=str(uuid4()),
+                    label="Invented other visit",
+                    state="confirmed",
+                )
+            )
             session.flush()
-            session.add(AppointmentObservation(
-                id=appointment, box_id=box, external_id="appointment_01j00000000000000000000000",
-                source="cosmaneura_core", start_at=datetime.now(UTC),
-                patient_label="Invented other visit", patient_link_id=link,
-            ))
+            session.add(
+                AppointmentObservation(
+                    id=appointment,
+                    box_id=box,
+                    external_id="appointment_01j00000000000000000000000",
+                    source="cosmaneura_core",
+                    start_at=datetime.now(UTC),
+                    patient_label="Invented other visit",
+                    patient_link_id=link,
+                )
+            )
             session.flush()
-            session.add(EncounterWorkspace(
-                id=wid, box_id=box, owner_id=actor, appointment_id=appointment,
-                patient_link_id=link, create_key=str(uuid4()),
-            ))
+            session.add(
+                EncounterWorkspace(
+                    id=wid,
+                    box_id=box,
+                    owner_id=actor,
+                    appointment_id=appointment,
+                    patient_link_id=link,
+                    create_key=str(uuid4()),
+                )
+            )
             session.commit()
     payload = {**source_sequence_payload(h), "workspace_id": wid}
     async with client(h) as c:
@@ -206,7 +261,9 @@ async def test_read_only_route_denies_foreign_or_missing_workspace(async_receive
 @pytest.mark.parametrize("boundary", [1, 2, 3])
 @pytest.mark.parametrize("kind", ["account", "workspace_owner", "link_revoked"])
 async def test_new_snapshot_observes_committed_revocation_after_each_core_io(
-    async_receiver, boundary, kind,
+    async_receiver,
+    boundary,
+    kind,
 ):
     h = async_receiver
     payload = source_sequence_payload(h)

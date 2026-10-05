@@ -184,14 +184,27 @@ def main() -> None:
                 "mac-binding-build",
                 bridge_flags
                 + [
-                    "-O", "-parse-as-library", "-D", "NATIVE_BINDING_CHECKS",
-                    "-L", str(target), *libraries,
-                    "-Xlinker", "-rpath", "-Xlinker", str(target),
-                    "-o", binding_executable,
-                    *[str(AUTH / "Bridge" / name) for name in (
-                        "NativeProviderConnection.swift", "ProviderNativeTransport.swift",
-                        "NativeProviderRecordingService.swift",
-                    )],
+                    "-O",
+                    "-parse-as-library",
+                    "-D",
+                    "NATIVE_BINDING_CHECKS",
+                    "-L",
+                    str(target),
+                    *libraries,
+                    "-Xlinker",
+                    "-rpath",
+                    "-Xlinker",
+                    str(target),
+                    "-o",
+                    binding_executable,
+                    *[
+                        str(AUTH / "Bridge" / name)
+                        for name in (
+                            "NativeProviderConnection.swift",
+                            "ProviderNativeTransport.swift",
+                            "NativeProviderRecordingService.swift",
+                        )
+                    ],
                     str(REPO / "scripts/standalone-provider/check-native-provider.swift"),
                     str(REPO / "scripts/standalone-provider/check-native-recording-binding.swift"),
                 ],

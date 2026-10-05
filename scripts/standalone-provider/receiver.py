@@ -135,7 +135,8 @@ class ReceiverProfile:
         return (
             self.identity_profile == CORE_STAGING_PERSONAL
             and self.core_origin == "https://staging-app.cosmaneura.com"
-            and self.origin == (
+            and self.origin
+            == (
                 "https://cosmaneura-staging-scribe-native."
                 "politesmoke-7989878f.northcentralus.azurecontainerapps.io"
             )
@@ -249,7 +250,8 @@ class ProviderReceiver:
                 return _reply(404, {"detail": "provider_unavailable"})
             try:
                 with provider_request_timing(
-                    action, trace_enabled=self._provider_trace_enabled,
+                    action,
+                    trace_enabled=self._provider_trace_enabled,
                 ) as timing:
                     response = await call_next(request)
                 # Same completed handler snapshot as safe logging. Never forward
