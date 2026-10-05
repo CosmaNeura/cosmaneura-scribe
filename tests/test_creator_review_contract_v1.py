@@ -71,9 +71,7 @@ def _bundle(
         (
             _bundle(
                 translations=(_translation(),),
-                reviews=(
-                    _review(decision=TranslationReviewDecision.REJECTED),
-                ),
+                reviews=(_review(decision=TranslationReviewDecision.REJECTED),),
             ),
             CreatorReviewQueueStatus.NOT_READY,
         ),

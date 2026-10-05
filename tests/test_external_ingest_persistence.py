@@ -179,9 +179,7 @@ def test_repositories_round_trip_external_mode_and_enforce_immutability(
             with pytest.raises(ValueError, match="ingest mode is immutable"):
                 await store.update_session(
                     tenant_id,
-                    persisted.model_copy(
-                        update={"ingest_mode": SessionIngestMode.CHUNK_UPLOAD}
-                    ),
+                    persisted.model_copy(update={"ingest_mode": SessionIngestMode.CHUNK_UPLOAD}),
                 )
 
         async with repository_backend.provider.transaction(other_tenant_id) as store:
@@ -235,6 +233,7 @@ def test_repository_audio_mutations_reject_external_sessions(
             additional_data=b"synthetic-external-ingest-aad",
             plaintext_budget_bytes=RESERVATION_PLAINTEXT_BUDGET_BYTES,
         )
+
         def ingest_mode_error() -> pytest.RaisesExc[CaptureIngestModeError]:
             return pytest.raises(
                 CaptureIngestModeError,
@@ -316,19 +315,10 @@ def test_repository_audio_mutations_reject_external_sessions(
 
             assert await store.get_session_audio_key(tenant_id, session.id) is None
             assert await store.get_capture_lease(tenant_id, session.id) is None
-            assert (
-                await store.get_capture_lease_receipt(tenant_id, lease_receipt_id)
-                is None
-            )
-            assert (
-                await store.get_capture_lease_receipt(tenant_id, renewal_receipt_id)
-                is None
-            )
+            assert await store.get_capture_lease_receipt(tenant_id, lease_receipt_id) is None
+            assert await store.get_capture_lease_receipt(tenant_id, renewal_receipt_id) is None
             assert await store.get_chunk_reservation_batch(tenant_id, batch_id) is None
-            assert (
-                await store.get_chunk_reservation(tenant_id, session.id, object_id)
-                is None
-            )
+            assert await store.get_chunk_reservation(tenant_id, session.id, object_id) is None
             assert (
                 await store.get_upload_authorization_receipt(
                     tenant_id,

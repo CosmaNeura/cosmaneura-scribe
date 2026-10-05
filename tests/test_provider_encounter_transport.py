@@ -175,33 +175,48 @@ async def test_renderer_cannot_supply_account_authority(extra):
 @pytest.mark.parametrize("failed", [False, True])
 async def test_lookup_timing_has_only_fixed_phase_and_no_request_data(monkeypatch, action, failed):
     from cosmaneura_scribe import provider_performance as performance
+
     recorded = []
     monkeypatch.setattr(performance, "log_event", lambda **value: recorded.append(value))
     account = ProviderEncounterAccount(
-        "private-account", uuid4(), "actor", "tenant", SecretStr("private-token"))
+        "private-account", uuid4(), "actor", "tenant", SecretStr("private-token")
+    )
+
     async def fresh():
         return account
+
     async def handle(request):
         if failed:
             raise httpx.ReadError("private-response-detail")
-        return httpx.Response(200, json={**json.loads(request.content), "version": "1",
-            "account": {"actor_ref": "actor", "tenant_ref": "tenant"}}, headers={
-                "Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "1"})
-    client = ProviderEncounterTransport("https://core.synthetic.invalid", fresh,
-                                        transport=httpx.MockTransport(handle))
+        return httpx.Response(
+            200,
+            json={
+                **json.loads(request.content),
+                "version": "1",
+                "account": {"actor_ref": "actor", "tenant_ref": "tenant"},
+            },
+            headers={"Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "1"},
+        )
+
+    client = ProviderEncounterTransport(
+        "https://core.synthetic.invalid", fresh, transport=httpx.MockTransport(handle)
+    )
     try:
         with performance.provider_request_timing("mount"):
             if failed:
                 with pytest.raises(ProviderCoreUnavailable):
                     await client.request(
-                        {"action": action, "request_nonce": "private-nonce"}, "offline-key")
+                        {"action": action, "request_nonce": "private-nonce"}, "offline-key"
+                    )
             else:
                 await client.request(
-                        {"action": action, "request_nonce": "private-nonce"}, "offline-key")
+                    {"action": action, "request_nonce": "private-nonce"}, "offline-key"
+                )
     finally:
         await client.close()
     expected = ["provider.core_encounter_lookup"] if action == "lookup" else []
     assert [event["action"] for event in recorded] == expected + ["provider.mount.total"]
-    assert all(set(event) == {"action", "duration_ms"}
-               and event["duration_ms"] >= 0 for event in recorded)
+    assert all(
+        set(event) == {"action", "duration_ms"} and event["duration_ms"] >= 0 for event in recorded
+    )
     assert "private" not in repr(recorded)

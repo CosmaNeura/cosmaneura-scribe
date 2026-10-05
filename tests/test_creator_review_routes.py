@@ -207,9 +207,9 @@ async def test_read_only_progress_tracks_current_jobs_without_replaying_calls(re
         # The published attempt is authoritative even when its job marker lags.
         assert await progress() == []
         assert len(flow.translator.calls) == 1 and await flow.counts() == (1, 1, 0)
-        assert (await client.get(path, headers=_headers(
-            flow, **{"X-Scribe-Creator-Actor-ID": "other"}
-        ))).status_code == 404
+        assert (
+            await client.get(path, headers=_headers(flow, **{"X-Scribe-Creator-Actor-ID": "other"}))
+        ).status_code == 404
     finally:
         if not task.done():
             task.cancel()

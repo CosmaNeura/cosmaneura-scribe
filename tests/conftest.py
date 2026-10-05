@@ -230,8 +230,10 @@ def postgres_urls() -> Iterator[tuple[str, str]]:
     command.upgrade(config, "head")
     with pytest.raises(
         RuntimeError,
-        match=(r"expand recovery retains (larger (capture positions|transcript capacity)"
-               r"|dormant native extension history|native resume history)"),
+        match=(
+            r"expand recovery retains (larger (capture positions|transcript capacity)"
+            r"|dormant native extension history|native resume history)"
+        ),
     ):
         command.downgrade(config, "0019")
 
@@ -264,8 +266,8 @@ def historical_postgres_url(postgres_urls: tuple[str, str]) -> str:
             await engine.dispose()
 
     asyncio.run(create_database())
-    historical_url = make_url(admin_url).set(database=database_name).render_as_string(
-        hide_password=False
+    historical_url = (
+        make_url(admin_url).set(database=database_name).render_as_string(hide_password=False)
     )
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", historical_url.replace("%", "%%"))

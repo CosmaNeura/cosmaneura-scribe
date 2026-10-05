@@ -144,9 +144,7 @@ async def _publish(
         )
     segment_filter = "AND false" if corruption == "missing_segment" else ""
     bad_content = (
-        "'Synthetic altered working content.'"
-        if corruption == "bad_content"
-        else "source.content"
+        "'Synthetic altered working content.'" if corruption == "bad_content" else "source.content"
     )
     await connection.execute(
         text(
@@ -373,9 +371,11 @@ async def test_ready_projection_preserves_exact_selected_and_complete_input_line
     with pytest.raises(DBAPIError, match="current working projection|live session fence"):
         async with engine.begin() as connection:
             await connection.execute(
-                text("UPDATE scribe_sessions SET current_source_transcript_version = NULL, "
-                     "content_purged_at = clock_timestamp() "
-                     "WHERE tenant_id = :tenant AND id = :session"),
+                text(
+                    "UPDATE scribe_sessions SET current_source_transcript_version = NULL, "
+                    "content_purged_at = clock_timestamp() "
+                    "WHERE tenant_id = :tenant AND id = :session"
+                ),
                 {"tenant": tenant_id, "session": session_id},
             )
     await engine.dispose()
@@ -579,8 +579,10 @@ async def test_database_clock_and_purge_remove_every_working_artifact(
         async with engine.begin() as connection:
             await connection.execute(text("SELECT pg_sleep(2.1)"))
             await connection.execute(
-                text("UPDATE scribe_sessions SET status = status "
-                     "WHERE tenant_id = :tenant AND id = :session"),
+                text(
+                    "UPDATE scribe_sessions SET status = status "
+                    "WHERE tenant_id = :tenant AND id = :session"
+                ),
                 {"tenant": late_tenant, "session": late_session},
             )
 
@@ -628,10 +630,13 @@ async def test_database_clock_and_purge_remove_every_working_artifact(
         )
     async with engine.begin() as connection:
         for table in WORKING_TABLES:
-            assert await connection.scalar(
-                text(f"SELECT count(*) FROM {table} WHERE tenant_id = :tenant"),
-                {"tenant": tenant_id},
-            ) == 0
+            assert (
+                await connection.scalar(
+                    text(f"SELECT count(*) FROM {table} WHERE tenant_id = :tenant"),
+                    {"tenant": tenant_id},
+                )
+                == 0
+            )
         assert (
             await connection.execute(
                 text(

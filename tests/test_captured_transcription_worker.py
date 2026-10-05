@@ -308,7 +308,8 @@ async def test_protocol_encrypted_wave_worker_and_completed_recovery(capture: Ca
 
 
 async def test_scheduled_pickup_discovers_later_upload_and_uses_encrypted_worker(
-    capture: CaptureHarness, monkeypatch: pytest.MonkeyPatch,
+    capture: CaptureHarness,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     settings = CapturedWorkerSettings(captured_worker_stage="speech", captured_worker_batch_size=1)
     clock = SimpleNamespace(now=0.0)
@@ -322,8 +323,9 @@ async def test_scheduled_pickup_discovers_later_upload_and_uses_encrypted_worker
 
     # Replace only this module's sleeper; the real database/HTTP stack keeps its clock.
     monkeypatch.setattr(worker_runner, "asyncio", SimpleNamespace(sleep=upload_between_scans))
-    await worker_runner._dispatch(capture.trial.provider, settings,
-                                  capture.trial.tenant, None, capture.worker())
+    await worker_runner._dispatch(
+        capture.trial.provider, settings, capture.trial.tenant, None, capture.worker()
+    )
     assert clock.now == 5
     assert capture.speech.calls == 1 and len(capture.reader.calls) == 2
     assert await capture.trial.counts() == (1, 1, 1)
@@ -409,7 +411,8 @@ async def test_retryable_provider_error_then_success(capture: CaptureHarness):
 
 
 async def test_publication_failure_is_distinct_and_retryable(
-    capture: CaptureHarness, monkeypatch: pytest.MonkeyPatch,
+    capture: CaptureHarness,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     await capture.record()
     worker = capture.worker()
