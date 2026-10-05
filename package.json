@@ -41,7 +41,8 @@
     "generate:api": "npm run generate:api --workspace @cosmaneura-scribe/capture",
     "lint": "eslint . --max-warnings 0",
     "mock:bff": "npm run mock:bff --workspace @cosmaneura-scribe/capture",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:tooling && npm run test --workspaces --if-present",
+    "test:tooling": "node --test scripts/xcode-uuid.test.mjs",
     "test:golden": "npm run test:golden --workspace @cosmaneura-scribe/capture-protocol",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
@@ -64,6 +65,7 @@
     "brace-expansion": "2.1.7",
     "eslint": { "brace-expansion": "5.0.12" },
     "fast-uri": "3.1.8",
-    "js-yaml": "4.3.2"
+    "js-yaml": "4.3.2",
+    "xcode": { "uuid": "11.1.1" }
   }
 }
