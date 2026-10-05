@@ -27,7 +27,7 @@ from test_derived_translation_evidence_migration import (
 )
 from test_external_transcript_v1 import _segment, _source, _translation
 from test_normalized_source_persistence import _consent, _draft, _seed_configured_session
-from test_working_transcript_migration import _set_status
+from test_working_transcript_migration import _publish, _set_status
 from test_working_transcript_persistence import _working_counts
 
 from alembic import command
@@ -254,17 +254,21 @@ def test_upgrade_preserves_existing_source_and_working_rows(historical_postgres_
 
     async def snapshot(*, seed=False):
         engine = create_async_engine(historical_postgres_url, connect_args={"ssl": False})
-        provider = build_postgres_provider(postgres_settings(historical_postgres_url))
         try:
             if seed:
                 async with engine.begin() as connection:
                     session, _ = await _seed_source(connection, tenant, locale="en-US")
-                async with provider.transaction(tenant) as store:
-                    assert (
-                        await store.publish_current_working_transcript(tenant, session) is not None
-                    )
+                async with engine.begin() as connection:
+                    # Seed the historical projection without invoking newer-schema writers.
+                    await _publish(connection, tenant, session, uuid4(), 1, "transcript_ready")
             result = {}
             async with engine.connect() as connection:
+                assert (
+                    await connection.scalar(
+                        text("SELECT to_regclass('public.creator_transcript_edits')")
+                    )
+                    is None
+                )
                 for table in (
                     "scribe_sessions",
                     "normalized_source_transcripts",
@@ -289,7 +293,6 @@ def test_upgrade_preserves_existing_source_and_working_rows(historical_postgres_
                     result[table] = rows
             return result
         finally:
-            await provider.close()
             await engine.dispose()
 
     before = asyncio.run(snapshot(seed=True))
