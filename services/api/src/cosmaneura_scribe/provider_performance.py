@@ -19,16 +19,19 @@ _TOTAL_LOGGERS: dict[str, Callable[[float], None]] = {
     "mount": lambda ms: log_event(action="provider.mount.total", duration_ms=ms),
     "recorder": lambda ms: log_event(action="provider.recorder.total", duration_ms=ms),
     "capture-admissions": lambda ms: log_event(
-        action="provider.capture-admissions.total", duration_ms=ms,
+        action="provider.capture-admissions.total",
+        duration_ms=ms,
     ),
     "capture-operations": lambda ms: log_event(
-        action="provider.capture-operations.total", duration_ms=ms,
+        action="provider.capture-operations.total",
+        duration_ms=ms,
     ),
     "capture-notes": lambda ms: log_event(action="provider.capture-notes.total", duration_ms=ms),
     "note-opening": lambda ms: log_event(action="provider.note-opening.total", duration_ms=ms),
     "source-start": lambda ms: log_event(action="provider.source-start.total", duration_ms=ms),
     "source-start-ready": lambda ms: log_event(
-        action="provider.source-start-ready.total", duration_ms=ms,
+        action="provider.source-start-ready.total",
+        duration_ms=ms,
     ),
 }
 _PHASE_LOGGERS: dict[str, Callable[[float], None]] = {
@@ -39,7 +42,8 @@ _PHASE_LOGGERS: dict[str, Callable[[float], None]] = {
     "core_binding": lambda ms: log_event(action="provider.core_binding", duration_ms=ms),
     "core_operation": lambda ms: log_event(action="provider.core_operation", duration_ms=ms),
     "core_encounter_lookup": lambda ms: log_event(
-        action="provider.core_encounter_lookup", duration_ms=ms,
+        action="provider.core_encounter_lookup",
+        duration_ms=ms,
     ),
 }
 PROVIDER_ACTIONS = frozenset(_TOTAL_LOGGERS)
@@ -91,8 +95,11 @@ class _Timing:
         with self.lock:
             total = self.durations.get("total")
             if (
-                not self.trace_enabled or not self.closed or self.trace_invalid
-                or type(total) is not int or not 0 <= total <= _MAX_NS
+                not self.trace_enabled
+                or not self.closed
+                or self.trace_invalid
+                or type(total) is not int
+                or not 0 <= total <= _MAX_NS
                 or len(self.spans) > TRACE_MAX_SPANS
             ):
                 return None
@@ -100,21 +107,32 @@ class _Timing:
             spans: list[dict[str, str | int]] = []
             for span in self.spans:
                 if (
-                    type(span) is not _Span or span.phase not in counts
-                    or type(span.start_ns) is not int or type(span.duration_ns) is not int
+                    type(span) is not _Span
+                    or span.phase not in counts
+                    or type(span.start_ns) is not int
+                    or type(span.duration_ns) is not int
                     or not 0 <= span.start_ns <= total
                     or not 0 <= span.duration_ns <= total - span.start_ns
                 ):
                     return None
                 counts[span.phase] += 1
-                spans.append({
-                    "phase": span.phase,
-                    "start_us": span.start_ns // 1000,
-                    "duration_us": span.duration_ns // 1000,
-                })
-            value = json.dumps({
-                "v": 1, "total_us": total // 1000, "counts": counts, "spans": spans,
-            }, separators=(",", ":"), ensure_ascii=True)
+                spans.append(
+                    {
+                        "phase": span.phase,
+                        "start_us": span.start_ns // 1000,
+                        "duration_us": span.duration_ns // 1000,
+                    }
+                )
+            value = json.dumps(
+                {
+                    "v": 1,
+                    "total_us": total // 1000,
+                    "counts": counts,
+                    "spans": spans,
+                },
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
             return value if len(value) <= TRACE_MAX_BYTES else None
 
     def server_timing(self) -> str | None:
@@ -137,7 +155,9 @@ _CURRENT: ContextVar[_Timing | None] = ContextVar("provider_performance", defaul
 
 @contextmanager
 def provider_request_timing(
-    action: str, *, trace_enabled: bool = False,
+    action: str,
+    *,
+    trace_enabled: bool = False,
 ) -> Generator[_Timing, None, None]:
     """Only fixed action/phase labels and cumulative milliseconds are emitted.
 

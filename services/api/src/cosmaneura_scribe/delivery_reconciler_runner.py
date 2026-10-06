@@ -15,9 +15,7 @@ from .repository import DeliveryClaimPolicy
 from .safe_logging import configure_standalone_logging, log_event
 from .settings import Settings, get_settings
 
-DELIVERY_RECONCILER_JOB_ENABLED_ENV = (
-    "COSMANEURA_SCRIBE_DELIVERY_RECONCILER_JOB_ENABLED"
-)
+DELIVERY_RECONCILER_JOB_ENABLED_ENV = "COSMANEURA_SCRIBE_DELIVERY_RECONCILER_JOB_ENABLED"
 
 SettingsFactory = Callable[[], Settings]
 JobExecution = Callable[[Settings, UUID], Awaitable[None]]
@@ -82,9 +80,7 @@ async def run_delivery_reconciler_job(
             tenant_id=tenant_id,
             error_class="DeliveryReconcilerExecutionError",
         )
-        raise DeliveryReconcilerRunnerError(
-            "delivery_reconciler_job_execution_failed"
-        ) from None
+        raise DeliveryReconcilerRunnerError("delivery_reconciler_job_execution_failed") from None
 
 
 def _parse_target_arguments(arguments: Sequence[str]) -> UUID:
@@ -93,9 +89,7 @@ def _parse_target_arguments(arguments: Sequence[str]) -> UUID:
     try:
         return UUID(arguments[0])
     except (AttributeError, ValueError):
-        raise DeliveryReconcilerRunnerError(
-            "delivery_reconciler_job_target_invalid"
-        ) from None
+        raise DeliveryReconcilerRunnerError("delivery_reconciler_job_target_invalid") from None
 
 
 async def _execute_delivery_reconciler_job(settings: Settings, tenant_id: UUID) -> None:
@@ -108,9 +102,7 @@ async def _execute_delivery_reconciler_job(settings: Settings, tenant_id: UUID) 
             repositories=repositories,
             handoff=handoff,
             claim_policy=DeliveryClaimPolicy(
-                pending_timeout=timedelta(
-                    seconds=settings.delivery_pending_timeout_seconds
-                ),
+                pending_timeout=timedelta(seconds=settings.delivery_pending_timeout_seconds),
                 retry_delay=timedelta(seconds=settings.delivery_retry_delay_seconds),
             ),
             maximum_deliveries=settings.delivery_reconciler_max_deliveries,

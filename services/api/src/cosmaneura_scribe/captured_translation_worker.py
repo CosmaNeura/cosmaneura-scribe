@@ -19,9 +19,13 @@ from .translation_job_encryption import TranslationJobCipher
 
 class CapturedTranslationWorker:
     def __init__(
-        self, *, repositories: CapturedSourceRepositoryProvider,
-        translator: SpanishToEnglishTranslationAdapter, job_cipher: TranslationJobCipher,
-        enabled: bool = False, limit: int = 8,
+        self,
+        *,
+        repositories: CapturedSourceRepositoryProvider,
+        translator: SpanishToEnglishTranslationAdapter,
+        job_cipher: TranslationJobCipher,
+        enabled: bool = False,
+        limit: int = 8,
     ) -> None:
         if type(limit) is not int or not 1 <= limit <= 32:
             raise ValueError("captured_translation_limit_invalid")
@@ -56,8 +60,12 @@ class CapturedTranslationWorker:
             if translation_adapter_profile(self._translator) != self._profile:
                 raise CapturedSourceUnavailable()
             await execute_reserved_translation_job(
-                store=self._jobs, adapter=self._translator, committer=self._committer,
-                tenant_id=tenant_id, session_id=session_id, translation_id=job_id,
+                store=self._jobs,
+                adapter=self._translator,
+                committer=self._committer,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                translation_id=job_id,
                 provider_call_token=uuid4(),
             )
         current = await self._jobs.prepare_dispatch(

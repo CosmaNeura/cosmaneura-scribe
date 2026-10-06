@@ -44,7 +44,9 @@ class CapturedWorkerError(RuntimeError):
 
 
 async def run_captured_worker(
-    *, arguments: Sequence[str] | None = None, environ: Mapping[str, str] | None = None,
+    *,
+    arguments: Sequence[str] | None = None,
+    environ: Mapping[str, str] | None = None,
     settings_factory: Callable[[], CapturedWorkerSettings] | None = None,
     execute: WorkerExecution | None = None,
 ) -> bool:
@@ -74,14 +76,17 @@ async def run_captured_worker(
         raise
     except Exception:
         pass
-    log_event(action="captured_worker.failed", tenant_id=tenant_id,
-              error_class="CapturedWorkerError")
+    log_event(
+        action="captured_worker.failed", tenant_id=tenant_id, error_class="CapturedWorkerError"
+    )
     raise CapturedWorkerError("captured_worker_execution_failed") from None
 
 
 async def _targets(
-    repositories: CapturedSourceRepositoryProvider, settings: CapturedWorkerSettings,
-    tenant_id: UUID, session_id: UUID | None,
+    repositories: CapturedSourceRepositoryProvider,
+    settings: CapturedWorkerSettings,
+    tenant_id: UUID,
+    session_id: UUID | None,
 ) -> tuple[UUID, ...]:
     if session_id is not None:
         return (session_id,)
@@ -96,9 +101,11 @@ async def _targets(
     # claims and a maximum of three attempts still gate each selected session.
     async with repositories.engine.begin() as connection:
         await connection.execute(text("SET LOCAL statement_timeout = '60s'"))
-        await connection.execute(text("SELECT set_config('app.tenant_id', :tenant, true)"),
-                                 {"tenant": str(tenant_id)})
-        rows = await connection.execute(text("""
+        await connection.execute(
+            text("SELECT set_config('app.tenant_id', :tenant, true)"), {"tenant": str(tenant_id)}
+        )
+        rows = await connection.execute(
+            text("""
             SELECT s.id FROM scribe_sessions s
             JOIN consent_records c ON c.tenant_id=s.tenant_id AND c.id=s.consent_record_id
             LEFT JOIN transcription_jobs j ON j.tenant_id=s.tenant_id AND j.session_id=s.id
@@ -111,7 +118,9 @@ async def _targets(
               AND (j.id IS NULL OR j.status='retryable'
                    OR (j.status='processing' AND j.lease_until<=clock_timestamp()))
             ORDER BY s.id LIMIT :maximum
-        """), {"tenant": tenant_id, "maximum": settings.captured_worker_batch_size})
+        """),
+            {"tenant": tenant_id, "maximum": settings.captured_worker_batch_size},
+        )
         return tuple(rows.scalars())
 
 
@@ -127,8 +136,10 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
             transcriber = build_speech_to_text_provider(settings)
             closers.insert(0, transcriber.close)
             worker = CapturedTranscriptionWorker(
-                repositories=repositories, assembler=assembler,
-                transcriber=transcriber, enabled=True,
+                repositories=repositories,
+                assembler=assembler,
+                transcriber=transcriber,
+                enabled=True,
             )
         else:
             if (
@@ -152,16 +163,20 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
             )
             closers.insert(0, unwrapper.close)
             translator = AzureGPT41TranslationAdapter(
-                AzureTranslationProfile(settings.azure_translation_endpoint,
-                                        settings.azure_translation_deployment),
-                credential=credential, endpoint_guard=PrivateSpeechEndpointGuard(
+                AzureTranslationProfile(
+                    settings.azure_translation_endpoint, settings.azure_translation_deployment
+                ),
+                credential=credential,
+                endpoint_guard=PrivateSpeechEndpointGuard(
                     urlsplit(settings.azure_translation_endpoint).hostname or "",
                     settings.azure_translation_private_endpoint_cidrs,
                 ),
             )
             worker = CapturedTranslationWorker(
-                repositories=repositories, translator=translator,
-                job_cipher=TranslationJobCipher(keys, unwrapper), enabled=True,
+                repositories=repositories,
+                translator=translator,
+                job_cipher=TranslationJobCipher(keys, unwrapper),
+                enabled=True,
                 limit=settings.captured_worker_batch_size,
             )
         await _dispatch(repositories, settings, tenant, session, worker)
@@ -170,8 +185,10 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
 
 
 async def _dispatch(
-    repositories: CapturedSourceRepositoryProvider, settings: CapturedWorkerSettings,
-    tenant: UUID, session: UUID | None,
+    repositories: CapturedSourceRepositoryProvider,
+    settings: CapturedWorkerSettings,
+    tenant: UUID,
+    session: UUID | None,
     worker: CapturedTranscriptionWorker | CapturedTranslationWorker,
 ) -> None:
     deadline = time.monotonic() + PENDING_PICKUP_SECONDS

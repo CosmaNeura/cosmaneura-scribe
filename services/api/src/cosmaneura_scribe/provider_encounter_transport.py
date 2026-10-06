@@ -94,7 +94,8 @@ class ProviderEncounterTransport:
                 # checks remain outside this HTTP/decode timing interval.
                 with (
                     provider_phase_timing("core_encounter_lookup")
-                    if body["action"] == "lookup" else nullcontext()
+                    if body["action"] == "lookup"
+                    else nullcontext()
                 ):
                     async with self.client.stream(
                         "POST",

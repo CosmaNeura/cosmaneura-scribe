@@ -26,12 +26,12 @@ AZURE_SOURCE_NORMALIZATION_PROFILE = "azure_phrase_en_es_evidence_v1"
 def normalize_azure_source(result: SttResult) -> NormalizedSourceTranscriptRequestV1:
     """Retain exact source text/times/locale without inferring who or what was said.
 
-Azure supplies recognition confidence but no phrase-language confidence in the
-selected SDK contract. Leave locale_confidence unset. Unexpected/missing locale
-evidence stays unknown and the existing working projection blocks note readiness.
-Speaker IDs are scoped to tracks; the same provider ID on two tracks is not proof
-that the two people are the same. Only explicit later review can assign roles.
-"""
+    Azure supplies recognition confidence but no phrase-language confidence in the
+    selected SDK contract. Leave locale_confidence unset. Unexpected/missing locale
+    evidence stays unknown and the existing working projection blocks note readiness.
+    Speaker IDs are scoped to tracks; the same provider ID on two tracks is not proof
+    that the two people are the same. Only explicit later review can assign roles.
+    """
     if result.provider != "azure_ai_speech" or result.language_code not in {
         TranscriptLanguageMode.ENGLISH,
         TranscriptLanguageMode.ENGLISH_SPANISH,
@@ -48,17 +48,21 @@ that the two people are the same. Only explicit later review can assign roles.
         for segment in result.segments:
             key = (segment.channel, segment.provider_speaker_id)
             slot = slots.setdefault(key, len(slots))
-            segments.append(NormalizedSourceTranscriptSegmentV1(
-                speaker_slot=slot,
-                speaker_role=SpeakerRole.UNKNOWN,
-                source_locale=segment.source_locale,
-                content=segment.content,
-                start_ms=segment.start_ms,
-                end_ms=segment.end_ms,
-                locale_confidence=None,
-            ))
+            segments.append(
+                NormalizedSourceTranscriptSegmentV1(
+                    speaker_slot=slot,
+                    speaker_role=SpeakerRole.UNKNOWN,
+                    source_locale=segment.source_locale,
+                    content=segment.content,
+                    start_ms=segment.start_ms,
+                    end_ms=segment.end_ms,
+                    locale_confidence=None,
+                )
+            )
         return NormalizedSourceTranscriptRequestV1(
-            schema_version="1.0", duration_ms=result.duration_ms, segments=tuple(segments),
+            schema_version="1.0",
+            duration_ms=result.duration_ms,
+            segments=tuple(segments),
         )
     except ValidationError:
         raise TranscriptionInputError("speech_source_result_invalid") from None
