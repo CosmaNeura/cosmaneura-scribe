@@ -27,3 +27,14 @@ Split the work if it exceeds 2,000 changed lines or 50 files. Each final push
 requires independent agent review. Recovery is reverting the relevant source
 commit before promotion; there is no deployed state or schema to undo. Actions
 remains disabled and this work does not authorize merging or deployment.
+
+## JavaScript test runners
+
+Keep the timing reporter and iPhone performance CLI regressions in the standard
+capture test command, but run them with Node's test runner rather than Vitest.
+Exclude only these two exact files from Vitest; retain the Vitest-based MJS
+distribution tests and the no-tests failure gate. Run both test groups in order
+and propagate either failure. This is a separate Tier 1 test-tooling change;
+clinical, consent and storage behavior remain unchanged. Qualify whole web lint,
+types, workspace tests and a synthetic build with the exact committed source
+SHA. Recovery is reverting the test-runner commit before promotion.
