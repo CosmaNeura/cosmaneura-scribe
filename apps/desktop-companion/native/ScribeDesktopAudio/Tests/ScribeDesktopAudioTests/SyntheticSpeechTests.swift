@@ -73,6 +73,93 @@ func generatedSpeechSurvivesNativeMeetingMix(systemRate: Int) async throws {
     mixed.allSatisfy { abs(Int($0)) < 32_767 }, "Speech must retain headroom without clipping")
 }
 
+@Test(
+  .enabled(
+    if: ProcessInfo.processInfo.environment["SCRIBE_SYNTHETIC_SPEECH_DIRECTORY"] != nil,
+    "Run scripts/check-desktop-synthetic-voices.py for generated speech qualification"),
+  arguments: [44_100, 48_000]
+)
+func generatedSpeechSurvivesNativeMicrophoneOnlyMix(microphoneRate: Int) async throws {
+  let path = try #require(ProcessInfo.processInfo.environment["SCRIBE_SYNTHETIC_SPEECH_DIRECTORY"])
+  let root = URL(fileURLWithPath: path, isDirectory: true)
+  let decoder = JSONDecoder()
+  decoder.keyDecodingStrategy = .convertFromSnakeCase
+  let consent = try decoder.decode(
+    SpeechConsent.self,
+    from: Data(contentsOf: root.appendingPathComponent("synthetic-consent.json")))
+  try #require(
+    consent.schema == 1 && consent.generator == "macos-say-synthetic-v1"
+      && consent.syntheticOnly && consent.allPartiesConsented)
+  let providerName = microphoneRate == 44_100 ? "provider.caf" : "provider-48000.caf"
+  let patientName = "patient-\(microphoneRate).caf"
+  let provider = try speech(root, providerName, rate: microphoneRate, consent: consent)
+  let patient = try speech(root, patientName, rate: microphoneRate, consent: consent)
+  try #require(consent.files[providerName]?.voice != consent.files[patientName]?.voice)
+  let slot = Int(ceil(Double(max(provider.count, patient.count)) / Double(microphoneRate))) + 1
+  try #require((2...16).contains(slot))
+  // Both people reach one microphone during a room or speakerphone visit.
+  // Leave headroom for overlap and exercise silence between the spoken turns.
+  let local = timeline(provider, rate: microphoneRate, slot: slot, starts: [0, 2])
+  let remote = timeline(patient, rate: microphoneRate, slot: slot, starts: [1, 2])
+  let room = zip(local, remote).map { ($0 + $1) / 2 }
+  let samples = try await microphoneMix(room, rate: microphoneRate)
+  let renewed = try await microphoneMix(room, rate: microphoneRate, renewEveryTicks: 50)
+  let reference = microphoneReference(room, rate: microphoneRate)
+  #expect(samples == renewed, "Renewal must preserve every spoken sample in microphone-only mode")
+  #expect(samples.count == slot * 3 * 16_000)
+  // Independent nominal-rate integration uses sample positions, with no native
+  // mixer, source clock spans, system channel or delivery queue in the oracle.
+  // Permit one quantization unit for floating-point accumulation order.
+  #expect(zip(samples, reference).allSatisfy { abs(Int($0) - Int($1)) <= 1 })
+  for turn in 0..<3 {
+    #expect(energy(samples[(turn * slot * 16_000)..<((turn + 1) * slot * 16_000)]) > 0.00001)
+  }
+  #expect(samples.allSatisfy { abs(Int($0)) < 32_767 })
+}
+
+private func microphoneMix(_ samples: [Float], rate: Int, renewEveryTicks: Int? = nil) async throws -> [Int16] {
+  let sink = SpeechSink()
+  let expected = samples.count * 16_000 / rate
+  let initialLimit = renewEveryTicks.map { min(expected, $0 * 2 * 160) } ?? expected
+  let mixer = try AlignedMeetingPCM(
+    maximumOutputFrames: initialLimit, hardMaximumOutputFrames: expected,
+    microphoneOnly: true, sink: sink)
+  let delivery = AudioDelivery(sink: mixer, onFailure: { _ in })
+  let callbackFrames = rate / 100
+  for tick in 0..<(samples.count / callbackFrames) {
+    if let interval = renewEveryTicks, tick > 0, tick.isMultiple(of: interval) {
+      try mixer.extend(maximumOutputFrames: min(expected, (tick + interval * 2) * 160))
+    }
+    let time = CMTime(value: Int64(1_000_000_000 + tick * 10_000_000), timescale: 1_000_000_000)
+    let input = try frame(
+      samples, at: tick * callbackFrames, rate: rate, channels: 1, channel: .microphone, time: time)
+    delivery.offer(input)
+    await delivery.drain()
+    try #require(input.isClear)
+  }
+  delivery.seal()
+  await delivery.drain()
+  let finished = try mixer.finish()
+  #expect(finished.outputFrames == expected)
+  #expect(finished.start.hostTimeNanoseconds == 1_000_000_000)
+  #expect(finished.start.microphonePrerollNanoseconds == 0 && finished.start.systemPrerollNanoseconds == 0)
+  #expect(finished.microphoneTailNanoseconds == 0 && finished.systemTailNanoseconds == 0)
+  return try sink.result()
+}
+
+private func microphoneReference(_ samples: [Float], rate: Int) -> [Int16] {
+  (0..<(samples.count * 16_000 / rate)).map { output in
+    let low = output * rate, high = (output + 1) * rate
+    var area = 0.0
+    for input in (low / 16_000)..<((high + 15_999) / 16_000) {
+      let weight = min(high, (input + 1) * 16_000) - max(low, input * 16_000)
+      area += Double(samples[input]) * Double(weight)
+    }
+    let mean = area / Double(rate)
+    return Int16(floor(mean * (mean < 0 ? 32_768 : 32_767) + 0.5))
+  }
+}
+
 private struct SpeechConsent: Decodable {
   let schema: Int
   let generator: String
