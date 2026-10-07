@@ -95,8 +95,8 @@ describe("configured first-window sequence", () => {
         reservations: fault && failure === "malformed" ? { ...reservations, capture_authorized_until: new Date(0).toISOString() } : reservations };
     });
     const combined = Object.assign(bff, { prepareRecordingWindow: composite });
-    const create = () => createControllerWithSource({ bff: combined, flowStore, queueStorage, origin, source });
-    const initial = create(); let recovered: CaptureFlowController | undefined;
+    const create = (initialReservationCount: number) => createControllerWithSource({ bff: combined, flowStore, queueStorage, origin, source, initialReservationCount });
+    const initial = create(30); let recovered: CaptureFlowController | undefined;
     try {
       const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId };
       const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
@@ -107,9 +107,11 @@ describe("configured first-window sequence", () => {
       await expect(initial.prepareConfigured(session.id)).rejects.toThrow();
       const pending = await flowStore.getPreparationState(), retainedKey = await flowStore.getSessionKeyState(session.id);
       expect(pending).toMatchObject({ schemaVersion: 6 });
+      expect(requests[0]!.payload.reservation_count).toBe(30);
       expect(source.startCalls).toBe(0);
       await initial.deactivate();
-      recovered = create(); expect(await recovered.restore()).toBe(true);
+      // A newer/older host's preferred count must not rewrite the saved recipe.
+      recovered = create(90); expect(await recovered.restore()).toBe(true);
       expect(recovered.snapshot).toMatchObject({ state: "ready", recordedChunks: 0 });
       expect(await flowStore.getPreparationState()).toEqual(pending);
       expect(await flowStore.getSessionKeyState(session.id)).toEqual({ ...retainedKey, state: "bound" });
@@ -1388,6 +1390,7 @@ interface ControllerWithSourceOptions {
   readonly origin: string;
   readonly source: CaptureSource;
   readonly now?: () => Date;
+  readonly initialReservationCount?: number;
   readonly scheduleTimeout?: (callback: () => void, delayMs: number) => unknown;
   readonly cancelTimeout?: (handle: unknown) => void;
 }
@@ -1408,6 +1411,7 @@ function createControllerWithSource(
       new HttpCiphertextUploadTarget([options.origin]),
     ),
     source: options.source,
+    ...(options.initialReservationCount === undefined ? {} : { initialReservationCount: options.initialReservationCount }),
     ...(options.storageCapacity ? { storageCapacity: options.storageCapacity } : {}),
     ...(options.pauseForStorage ? { pauseForStorage: options.pauseForStorage } : {}),
     crypto: TEST_CRYPTO,

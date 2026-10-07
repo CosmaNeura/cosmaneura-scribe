@@ -144,6 +144,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     });
     const bff = options.createBff(this.signal);
     this.createFlow = () => new CaptureFlowController({ bff, flowStore: options.flowStore, createSessionKey: options.createSessionKey,
+      initialReservationCount: 30,
       source: this.source, storageCapacity: options.storageCapacity, queue: new CaptureQueue(options.queueStorage),
       uploadWhileRecording: options.uploadWhileRecording === true,
       pauseForStorage: () => this.pauseRecording(),
