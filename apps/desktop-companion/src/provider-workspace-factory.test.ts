@@ -218,3 +218,35 @@ it("reauthorizes passage review, refuses a foreign session or segment, and suppr
   f.request.mockImplementationOnce(async (...args) => { const value = await original(...args); f.authorized.abort(); return value; });
   await expect(opened.playPassage!(sessionId, segment, operation)).rejects.toThrow();
 });
+
+it.each(["opening", "ready"])("suppresses a delayed passage when a recorder becomes %s", async phase => {
+  const f = await fixture(), opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  await opened.journal.save(await opened.journal.load(), { ...progress, uploaded: true });
+  const response = deferred<void>(), reviewing = deferred<void>(), opening = deferred<void>(), prepared = deferred<void>();
+  const original = f.request.getMockImplementation()!;
+  f.request.mockImplementationOnce(async (...args) => { reviewing.resolve(); await response.promise; return original(...args); });
+  vi.spyOn(DesktopProviderRecorder, "open").mockImplementation(async () => {
+    opening.resolve(); if (phase === "opening") await prepared.promise;
+    return { availableForView: true, snapshot: { desktop: { phase: "ready" } }, deactivate: async () => undefined } as unknown as DesktopProviderRecorder;
+  });
+  const playback = opened.playPassage!(sessionId, crypto.randomUUID(), new AbortController().signal);
+  const rejected = expect(playback).rejects.toThrow(); await reviewing.promise;
+  const recorder = opened.recorder(sessionId, new AbortController().signal);
+  await opening.promise; if (phase === "ready") await recorder;
+  response.resolve(); await rejected; prepared.resolve(); await recorder;
+  expect(f.authorizeStart).not.toHaveBeenCalled();
+});
+
+it("suppresses a delayed passage if the existing ready recorder starts capturing", async () => {
+  const f = await fixture(), opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  await opened.journal.save(await opened.journal.load(), { ...progress, uploaded: true });
+  const snapshot = { desktop: { phase: "ready" } };
+  vi.spyOn(DesktopProviderRecorder, "open").mockResolvedValue({ availableForView: true, snapshot,
+    deactivate: async () => undefined } as unknown as DesktopProviderRecorder);
+  await opened.recorder(sessionId, new AbortController().signal);
+  const response = deferred<void>(), reviewing = deferred<void>(), original = f.request.getMockImplementation()!;
+  f.request.mockImplementationOnce(async (...args) => { reviewing.resolve(); await response.promise; return original(...args); });
+  const playback = opened.playPassage!(sessionId, crypto.randomUUID(), new AbortController().signal);
+  const rejected = expect(playback).rejects.toThrow(); await reviewing.promise;
+  snapshot.desktop.phase = "recording"; response.resolve(); await rejected;
+});

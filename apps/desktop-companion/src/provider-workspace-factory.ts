@@ -187,19 +187,25 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           ...(selected.openingReview ? { openingReview: selected.openingReview } : {}),
           playPassage: (sessionId, segmentId, operation) => guarded(async () => {
             uuid(sessionId); uuid(segmentId);
-            if (owned.recorderOpening || (owned.recorder && !["ready", "stopped"].includes(owned.recorder.snapshot.desktop?.phase ?? "")) || operation.aborted) throw unavailable();
-            const saved = await journal.load(); check();
+            const recorder = owned.recorder;
+            const playbackCurrent = (): void => {
+              check();
+              if (operation.aborted || owned.recorderOpening || owned.recorder !== recorder
+                || recorder && !["ready", "stopped"].includes(recorder.snapshot.desktop?.phase ?? "")) throw unavailable();
+            };
+            playbackCurrent();
+            const saved = await journal.load(); playbackCurrent();
             if (saved.progress?.sessionId !== sessionId) throw unavailable();
             const client = new CoreCaptureClient(selected.scope, request, AbortSignal.any([mountSignal, operation]));
-            const view = parseCreatorReview(await client.operation(sessionId, { kind: "creator_review" }), sessionId); check();
+            const view = parseCreatorReview(await client.operation(sessionId, { kind: "creator_review" }), sessionId); playbackCurrent();
             const segment = view.source?.segments.find(item => item.source_segment_id === segmentId);
             if (!segment || view.capture_continuity) return null;
             const archive = owned.store!.namespace(`playback:${sessionId}`);
-            const key = await new DurableDesktopFlowStore(owned.store!.namespace("flow")).playbackKey(sessionId, owned.store!.namespace(`playback-key:${sessionId}`)); check();
+            const key = await new DurableDesktopFlowStore(owned.store!.namespace("flow")).playbackKey(sessionId, owned.store!.namespace(`playback-key:${sessionId}`)); playbackCurrent();
             if (!key) return null;
-            const wav = await passageWav(archive, sessionId, key, segment.start_ms, Math.min(segment.end_ms, segment.start_ms + 30_000), () => { check(); if (operation.aborted) throw unavailable(); });
+            const wav = await passageWav(archive, sessionId, key, segment.start_ms, Math.min(segment.end_ms, segment.start_ms + 30_000), playbackCurrent);
             if (!wav) return null;
-            try { check(); if (operation.aborted) throw unavailable(); return { wavBase64: Buffer.from(wav).toString("base64") }; }
+            try { playbackCurrent(); return { wavBase64: Buffer.from(wav).toString("base64") }; }
             finally { wav.fill(0); }
           }),
           openInCore: noteRef => guarded(() => selected.openInCore(noteRef)),
