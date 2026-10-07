@@ -81,6 +81,13 @@ bounded Zoom/Chrome labels in the recording screen. Only current opaque row IDs
 cross renderer IPC; main retains app/PID/window and native capture revalidates
 them after the existing fresh server decision. No default or remembered choice,
 new permissions, screenshots, title logging/storage, or capture on row selection.
+
+Installed build 52 confirms the inline selected label remains visible, Start fits
+the existing window, and Refresh clears selection and disables Start. No source
+was started. The same walkthrough found the list's Show dropdown unresponsive;
+replace it with visible local filter buttons, including Hidden visits. A compiled
+UI regression checks local filtering, hide, remount, restore and zero recorder
+commands. Physical audio and service startup latency remain separately open.
 Refresh invalidates IDs. Meeting consent opens inline selection without starting
 audio; its main Start button is the deliberate capture action. Old v1/v2 native
 contracts remain available for older hosts. Stop indicators and ownership remain

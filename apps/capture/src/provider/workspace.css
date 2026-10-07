@@ -203,8 +203,11 @@
 @media (min-width: 900px) { .provider-note-tabs { display: none; } }
 
 /* Compact visit browsing and one page scroll for the clinical note. */
-.provider-list-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, .5fr); gap: 12px; }
+.provider-list-filters { display: grid; gap: 8px; }
 .provider-list-filters label { margin: 12px 0 0; }
+.provider-visit-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.provider-visit-filters button { margin: 0; padding: 8px 12px; }
+.provider-visit-filters button[aria-pressed="true"] { background: #17352f; color: #fff; border-color: #17352f; }
 .provider-encounters { gap: 8px; }
 .provider-encounters li { grid-template-columns: minmax(0, 1fr) auto auto; }
 .provider-encounters li[hidden] { display: none; }
