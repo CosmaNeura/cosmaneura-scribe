@@ -121,3 +121,11 @@ priority; an obsolete Listen request refuses without delaying recording. Verify
 late recorder opening, ready replacement and active phase changes using deferred
 synthetic review responses. Preserve fresh server review, key custody, original
 audio, buffer clearing and playback disposal on navigation.
+
+Qualify generated speech through the real microphone-only mixer in addition to
+the existing meeting mixer. Two fictional voices share one 44.1 or 48 kHz input;
+compare each resampled PCM value with an independent nominal-rate integration,
+verify full gain, silence, overlap, renewal continuity, zero trimmed coverage and
+sample clearing. The script must require both audio modes to pass. This is a
+test-only delivery; no native binary, app build, source permission or capture
+contract changes. It does not qualify physical room, phone or meeting audio.
