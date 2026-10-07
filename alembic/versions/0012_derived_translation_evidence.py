@@ -595,9 +595,7 @@ def downgrade() -> None:
         """
     )
     for table in reversed(DERIVED_TABLES):
-        op.execute(
-            f"DROP POLICY IF EXISTS {table}_tenant_isolation ON public.{table}"
-        )
+        op.execute(f"DROP POLICY IF EXISTS {table}_tenant_isolation ON public.{table}")
         op.execute(f"ALTER TABLE public.{table} DISABLE ROW LEVEL SECURITY")
         op.execute(f"DROP TRIGGER IF EXISTS {table}_delete_fence ON public.{table}")
         op.execute(f"DROP TRIGGER IF EXISTS {table}_immutable ON public.{table}")

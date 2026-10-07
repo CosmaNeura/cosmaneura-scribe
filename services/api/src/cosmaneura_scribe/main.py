@@ -171,9 +171,7 @@ app = FastAPI(
 )
 consent_policy = ConsentPolicy()
 _EXTERNAL_TRANSCRIPT_SESSION_CREATE_OPERATION = "session.external_transcript.create"
-_EXTERNAL_TRANSCRIPT_SESSION_UNAVAILABLE = (
-    "External transcript session creation is unavailable."
-)
+_EXTERNAL_TRANSCRIPT_SESSION_UNAVAILABLE = "External transcript session creation is unavailable."
 
 
 @app.middleware("http")
@@ -303,7 +301,10 @@ Repository = Annotated[RepositoryContract, Depends(get_repository)]
 
 
 async def get_capture_protocol_provider(
-    session_id: UUID, tenant_id: TenantId, provider: Provider, settings: RuntimeSettings,
+    session_id: UUID,
+    tenant_id: TenantId,
+    provider: Provider,
+    settings: RuntimeSettings,
 ) -> RepositoryProvider:
     from .configured_capture_service import select_capture_protocol_provider
 
@@ -314,7 +315,8 @@ CaptureProvider = Annotated[RepositoryProvider, Depends(get_capture_protocol_pro
 
 
 async def get_capture_protocol_repository(
-    tenant_id: TenantId, provider: CaptureProvider,
+    tenant_id: TenantId,
+    provider: CaptureProvider,
 ) -> AsyncIterator[RepositoryContract]:
     async with provider.transaction(tenant_id) as transaction:
         yield transaction
@@ -626,10 +628,7 @@ async def create_external_transcript_session(
     )
     if previous_id is not None:
         previous = await store.get_session(tenant_id, previous_id)
-        if (
-            previous is None
-            or previous.ingest_mode != SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT
-        ):
+        if previous is None or previous.ingest_mode != SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT:
             raise HTTPException(
                 status_code=500,
                 detail="Idempotent external transcript session is unavailable.",
@@ -1465,9 +1464,9 @@ async def _complete_capture_protocol_session(
         raise HTTPException(status_code=409, detail="Capture lease fence does not match.")
     if context.session.status == SessionStatus.UPLOADED:
         existing = await store.capture_finalizations_for(tenant_id, session_id)
-        if {
-            item.channel: item.last_sequence_number for item in existing
-        } != {item.channel: item.last_sequence_number for item in declarations}:
+        if {item.channel: item.last_sequence_number for item in existing} != {
+            item.channel: item.last_sequence_number for item in declarations
+        }:
             raise HTTPException(status_code=409, detail="Capture completion is immutable.")
         return context.session
     if context.session.status != SessionStatus.CAPTURING:
@@ -1724,8 +1723,7 @@ async def deliver_transcript_to_master_platform(
             if previous_delivery.status == DeliveryStatus.DELIVERED:
                 if (
                     previous_delivery.session_id != session_id
-                    or previous_idempotency.request_fingerprint
-                    != previous_delivery.payload_sha256
+                    or previous_idempotency.request_fingerprint != previous_delivery.payload_sha256
                 ):
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,

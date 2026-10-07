@@ -15,11 +15,15 @@ depends_on = None
 
 
 def _replace_precommit_function(*, insert_fast_path: bool) -> None:
-    insert_guard = """
+    insert_guard = (
+        """
             IF TG_OP = 'INSERT' THEN
                 RETURN NULL;
             END IF;
-    """ if insert_fast_path else ""
+    """
+        if insert_fast_path
+        else ""
+    )
     declaration = (
         "session_purged_at timestamptz; session_expiry timestamptz;"
         if insert_fast_path

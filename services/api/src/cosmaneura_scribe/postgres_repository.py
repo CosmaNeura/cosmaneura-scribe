@@ -395,7 +395,10 @@ class PostgresRepository:
         if row is None:
             return None
         if self._configured_capture and row["status"] in {
-            "source_received", "translation_pending", "review_required", "quality_blocked"
+            "source_received",
+            "translation_pending",
+            "review_required",
+            "quality_blocked",
         }:
             # Recorder phase only. The creator review service exposes actual source state.
             row = {**row, "status": SessionStatus.PROCESSING.value}
@@ -420,9 +423,8 @@ class PostgresRepository:
             row is not None
             and (
                 SessionIngestMode(row["ingest_mode"]) != SessionIngestMode.CHUNK_UPLOAD
-                or row["transcript_contract_version"] != (
-                    "1.0" if self._configured_capture else None
-                )
+                or row["transcript_contract_version"]
+                != ("1.0" if self._configured_capture else None)
             )
         ) or (row is None and self._configured_capture):
             raise CaptureIngestModeError("session does not accept audio chunk capture")
@@ -689,7 +691,9 @@ class PostgresRepository:
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         if self._configured_capture and session.status not in {
-            SessionStatus.CAPTURING, SessionStatus.UPLOADED, SessionStatus.PROCESSING
+            SessionStatus.CAPTURING,
+            SessionStatus.UPLOADED,
+            SessionStatus.PROCESSING,
         }:
             raise CaptureIngestModeError("configured capture requires its source writer")
         await self.lock_consent(tenant_id, session.consent_record_id)
@@ -1194,8 +1198,12 @@ class PostgresRepository:
         return await self._read_locked_working_transcript(tenant_id, *locked, creator_read=False)
 
     async def _read_locked_working_transcript(
-        self, tenant_id: UUID, session: VersionedExternalSessionRecord, database_now: datetime,
-        *, creator_read: bool,
+        self,
+        tenant_id: UUID,
+        session: VersionedExternalSessionRecord,
+        database_now: datetime,
+        *,
+        creator_read: bool,
     ) -> WorkingTranscriptDerivation | None:
         session_id = session.id
         self._require_live_working_session(session, database_now)
@@ -1229,7 +1237,8 @@ class PostgresRepository:
             raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         await self.audit(
             tenant_id=tenant_id,
-            action="normalized_working_transcript.creator_read" if creator_read
+            action="normalized_working_transcript.creator_read"
+            if creator_read
             else "normalized_working_transcript.worker_read",
             entity_type="normalized_working_transcript",
             entity_id=working_id,
@@ -4790,7 +4799,8 @@ class PostgresRepository:
         expected_lease_token: UUID,
     ) -> bool:
         if self._configured_capture and job.status not in {
-            TranscriptionJobStatus.RETRYABLE, TranscriptionJobStatus.TERMINAL
+            TranscriptionJobStatus.RETRYABLE,
+            TranscriptionJobStatus.TERMINAL,
         }:
             raise CaptureIngestModeError("configured capture completion requires its source writer")
         updated = await self._session.execute(

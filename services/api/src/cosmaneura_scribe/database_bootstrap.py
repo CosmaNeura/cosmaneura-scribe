@@ -132,8 +132,7 @@ async def _ensure_database_principals(settings: Settings) -> None:
                     raise RuntimeError("Database application role was not created")
                 if unsafe_role:
                     raise RuntimeError(
-                        "Database application role has unsafe privileges, memberships, "
-                        "or ownership"
+                        "Database application role has unsafe privileges, memberships, or ownership"
                     )
     finally:
         await provider.close()
@@ -447,16 +446,10 @@ async def _grant_working_transcript_permissions(
         "content, translation_id, translation_version, translation_review_id"
     )
     await connection.execute(
-        text(
-            f"GRANT SELECT ({working_segment_columns}) "
-            f"ON normalized_working_segments TO {role}"
-        )
+        text(f"GRANT SELECT ({working_segment_columns}) ON normalized_working_segments TO {role}")
     )
     await connection.execute(
-        text(
-            f"GRANT INSERT ({working_segment_columns}) "
-            f"ON normalized_working_segments TO {role}"
-        )
+        text(f"GRANT INSERT ({working_segment_columns}) ON normalized_working_segments TO {role}")
     )
     await connection.execute(
         text(
@@ -611,9 +604,9 @@ async def _grant_runtime_permissions(settings: Settings) -> None:
                     )
                 )
                 await _grant_working_transcript_permissions(connection, role)
-                await connection.execute(text(
-                    f"GRANT INSERT ON creator_transcript_edits TO {role}"
-                ))
+                await connection.execute(
+                    text(f"GRANT INSERT ON creator_transcript_edits TO {role}")
+                )
     finally:
         await provider.close()
 
@@ -658,9 +651,7 @@ async def _grant_transcription_permissions(settings: Settings) -> None:
                     f"transcript_contract_version) ON scribe_sessions TO {role}"
                 )
             )
-            await connection.execute(
-                text(f"GRANT UPDATE (status) ON scribe_sessions TO {role}")
-            )
+            await connection.execute(text(f"GRANT UPDATE (status) ON scribe_sessions TO {role}"))
             await connection.execute(
                 text(f"GRANT SELECT, INSERT, UPDATE ON transcription_jobs TO {role}")
             )
@@ -773,10 +764,7 @@ async def _grant_translation_permissions(settings: Settings) -> None:
                 "decision, reviewer_actor_id, reviewed_at"
             )
             await connection.execute(
-                text(
-                    f"GRANT SELECT ({review_columns}) "
-                    f"ON normalized_translation_reviews TO {role}"
-                )
+                text(f"GRANT SELECT ({review_columns}) ON normalized_translation_reviews TO {role}")
             )
             await _grant_working_transcript_permissions(connection, role)
             await connection.execute(
@@ -804,8 +792,11 @@ async def _grant_configured_worker_permissions(settings: Settings) -> None:
     translation_id = settings.database_translation_principal_object_id
     runtime_name = settings.database_runtime_principal_name
     if (
-        speech_name is None or speech_id is None or translation_name is None
-        or translation_id is None or runtime_name is None
+        speech_name is None
+        or speech_id is None
+        or translation_name is None
+        or translation_id is None
+        or runtime_name is None
     ):
         raise RuntimeError("configured_worker_principals_unavailable")
     tenant = next(iter(settings.configured_capture_tenant_ids))
@@ -817,47 +808,62 @@ async def _grant_configured_worker_permissions(settings: Settings) -> None:
             speech = _quoted_identifier(connection, speech_name)
             translation = _quoted_identifier(connection, translation_name)
             runtime = _quoted_identifier(connection, runtime_name)
-            await connection.execute(text(
-                f"GRANT SELECT ON capture_channel_finalizations TO {speech}"
-            ))
-            await connection.execute(text(
-                "GRANT SELECT, INSERT ON normalized_source_transcripts, "
-                f"normalized_source_segments, normalized_source_receipt_keys TO {speech}"
-            ))
-            await connection.execute(text(
-                "GRANT SELECT (creator_actor_id, language_mode, transcription_adapter_id, "
-                "transcription_model_profile_id, normalization_profile_id, source_received_at, "
-                "transcript_content_expires_at, content_purged_at, "
-                "current_source_transcript_version, working_transcript_id, "
-                f"current_working_transcript_version) ON scribe_sessions TO {speech}"
-            ))
-            await connection.execute(text(
-                "GRANT UPDATE (source_received_at, transcript_content_expires_at, "
-                "current_source_transcript_version, working_transcript_id, "
-                f"current_working_transcript_version) ON scribe_sessions TO {speech}"
-            ))
-            await connection.execute(text(
-                "GRANT SELECT ON normalized_translation_attempts, "
-                f"normalized_translation_reviews TO {speech}"
-            ))
+            await connection.execute(
+                text(f"GRANT SELECT ON capture_channel_finalizations TO {speech}")
+            )
+            await connection.execute(
+                text(
+                    "GRANT SELECT, INSERT ON normalized_source_transcripts, "
+                    f"normalized_source_segments, normalized_source_receipt_keys TO {speech}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT SELECT (creator_actor_id, language_mode, transcription_adapter_id, "
+                    "transcription_model_profile_id, normalization_profile_id, source_received_at, "
+                    "transcript_content_expires_at, content_purged_at, "
+                    "current_source_transcript_version, working_transcript_id, "
+                    f"current_working_transcript_version) ON scribe_sessions TO {speech}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT UPDATE (source_received_at, transcript_content_expires_at, "
+                    "current_source_transcript_version, working_transcript_id, "
+                    f"current_working_transcript_version) ON scribe_sessions TO {speech}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT SELECT ON normalized_translation_attempts, "
+                    f"normalized_translation_reviews TO {speech}"
+                )
+            )
             await _grant_working_transcript_permissions(connection, speech)
-            await connection.execute(text(
-                "GRANT SELECT ON normalized_source_receipt_keys, "
-                f"transcription_jobs TO {translation}"
-            ))
-            await connection.execute(text(
-                f"GRANT SELECT, INSERT ON encrypted_translation_jobs TO {translation}"
-            ))
-            await connection.execute(text(
-                "GRANT UPDATE (status, provider_call_started_at, provider_result_stored_at, "
-                "attempt_committed_at, key_version, wrapped_dek, nonce, ciphertext) "
-                f"ON encrypted_translation_jobs TO {translation}"
-            ))
-            await connection.execute(text(
-                "GRANT SELECT (tenant_id, session_id, translation_id, source_transcript_version, "
-                "source_segment_id, source_segment_version, previous_translation_version, status) "
-                f"ON encrypted_translation_jobs TO {runtime}"
-            ))
+            await connection.execute(
+                text(
+                    "GRANT SELECT ON normalized_source_receipt_keys, "
+                    f"transcription_jobs TO {translation}"
+                )
+            )
+            await connection.execute(
+                text(f"GRANT SELECT, INSERT ON encrypted_translation_jobs TO {translation}")
+            )
+            await connection.execute(
+                text(
+                    "GRANT UPDATE (status, provider_call_started_at, provider_result_stored_at, "
+                    "attempt_committed_at, key_version, wrapped_dek, nonce, ciphertext) "
+                    f"ON encrypted_translation_jobs TO {translation}"
+                )
+            )
+            await connection.execute(
+                text(
+                    "GRANT SELECT (tenant_id, session_id, translation_id, "
+                    "source_transcript_version, source_segment_id, source_segment_version, "
+                    "previous_translation_version, status) "
+                    f"ON encrypted_translation_jobs TO {runtime}"
+                )
+            )
             # Replace the earlier external-transcript restriction with its exact
             # configured-capture counterpart. Tenant RLS remains in force.
             policy = _quoted_identifier(
@@ -869,50 +875,72 @@ async def _grant_configured_worker_permissions(settings: Settings) -> None:
                 "status IN ('translation_pending','review_required',"
                 "'transcript_ready','quality_blocked'))"
             )
-            await connection.execute(text(
-                f"CREATE POLICY {policy} ON scribe_sessions AS RESTRICTIVE FOR ALL "
-                f"TO {translation} USING {scope} WITH CHECK {scope}"
-            ))
+            await connection.execute(
+                text(
+                    f"CREATE POLICY {policy} ON scribe_sessions AS RESTRICTIVE FOR ALL "
+                    f"TO {translation} USING {scope} WITH CHECK {scope}"
+                )
+            )
             policy = _quoted_identifier(connection, f"scribe_speech_mode_{speech_id.hex}")
             await connection.execute(text(f"DROP POLICY IF EXISTS {policy} ON scribe_sessions"))
             scope = "(ingest_mode='chunk_upload' AND transcript_contract_version='1.0')"
-            await connection.execute(text(
-                f"CREATE POLICY {policy} ON scribe_sessions "
-                f"AS RESTRICTIVE FOR ALL TO {speech} USING {scope} WITH CHECK {scope}"
-            ))
+            await connection.execute(
+                text(
+                    f"CREATE POLICY {policy} ON scribe_sessions "
+                    f"AS RESTRICTIVE FOR ALL TO {speech} USING {scope} WITH CHECK {scope}"
+                )
+            )
             policy = _quoted_identifier(connection, f"scribe_completed_speech_{translation_id.hex}")
             await connection.execute(text(f"DROP POLICY IF EXISTS {policy} ON transcription_jobs"))
-            await connection.execute(text(
-                f"CREATE POLICY {policy} ON transcription_jobs "
-                f"AS RESTRICTIVE FOR SELECT TO {translation} USING (status='completed')"
-            ))
+            await connection.execute(
+                text(
+                    f"CREATE POLICY {policy} ON transcription_jobs "
+                    f"AS RESTRICTIVE FOR SELECT TO {translation} USING (status='completed')"
+                )
+            )
             common = (
-                "consent_records", "scribe_sessions", "transcription_jobs",
-                "normalized_source_transcripts", "normalized_source_segments",
-                "normalized_source_receipt_keys", "normalized_translation_attempts",
-                "normalized_translation_reviews", "normalized_working_transcripts",
-                "normalized_working_translation_inputs", "normalized_working_review_inputs",
-                "normalized_working_segments", "normalized_working_blockers", "audit_events",
+                "consent_records",
+                "scribe_sessions",
+                "transcription_jobs",
+                "normalized_source_transcripts",
+                "normalized_source_segments",
+                "normalized_source_receipt_keys",
+                "normalized_translation_attempts",
+                "normalized_translation_reviews",
+                "normalized_working_transcripts",
+                "normalized_working_translation_inputs",
+                "normalized_working_review_inputs",
+                "normalized_working_segments",
+                "normalized_working_blockers",
+                "audit_events",
             )
             scopes = {
-                speech_id.hex: (speech, common + (
-                    "audio_chunks", "session_audio_keys", "transcripts",
-                    "capture_channel_finalizations",
-                )),
+                speech_id.hex: (
+                    speech,
+                    common
+                    + (
+                        "audio_chunks",
+                        "session_audio_keys",
+                        "transcripts",
+                        "capture_channel_finalizations",
+                    ),
+                ),
                 translation_id.hex: (translation, common + ("encrypted_translation_jobs",)),
             }
             for stage, (role, tables) in scopes.items():
                 for table in tables:
                     table_sql = _quoted_identifier(connection, table)
                     policy_sql = _quoted_identifier(connection, f"scribe_configured_{stage}_cohort")
-                    await connection.execute(text(
-                        f"DROP POLICY IF EXISTS {policy_sql} ON {table_sql}"
-                    ))
-                    await connection.execute(text(
-                        f"CREATE POLICY {policy_sql} ON {table_sql} AS RESTRICTIVE FOR ALL "
-                        f"TO {role} USING (tenant_id='{tenant}'::uuid) "
-                        f"WITH CHECK (tenant_id='{tenant}'::uuid)"
-                    ))
+                    await connection.execute(
+                        text(f"DROP POLICY IF EXISTS {policy_sql} ON {table_sql}")
+                    )
+                    await connection.execute(
+                        text(
+                            f"CREATE POLICY {policy_sql} ON {table_sql} AS RESTRICTIVE FOR ALL "
+                            f"TO {role} USING (tenant_id='{tenant}'::uuid) "
+                            f"WITH CHECK (tenant_id='{tenant}'::uuid)"
+                        )
+                    )
     finally:
         await provider.close()
 
@@ -973,9 +1001,7 @@ async def _grant_delivery_reconciler_permissions(settings: Settings) -> None:
                     f"last_error_code, updated_at) ON transcript_deliveries TO {role}"
                 )
             )
-            await connection.execute(
-                text(f"GRANT UPDATE (status) ON scribe_sessions TO {role}")
-            )
+            await connection.execute(text(f"GRANT UPDATE (status) ON scribe_sessions TO {role}"))
             await connection.execute(
                 text(
                     "GRANT INSERT (id, tenant_id, action, entity_type, entity_id) "

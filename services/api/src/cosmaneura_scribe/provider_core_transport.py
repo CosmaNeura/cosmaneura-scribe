@@ -286,7 +286,10 @@ class ProviderCoreTransport:
             raise ProviderCoreUnavailable("core_provider_request_timeout") from None
 
     async def prepare_and_authorize_source(
-        self, mount: CoreProviderMount, body: Mapping[str, object], key: str,
+        self,
+        mount: CoreProviderMount,
+        body: Mapping[str, object],
+        key: str,
     ) -> dict[str, object]:
         """One Core request composes two existing decisions with distinct intents.
 
@@ -307,17 +310,29 @@ class ProviderCoreTransport:
         sequence = {
             **payload,
             "operation": {
-                "kind": "source_start_sequence", "payload": operation["payload"],
+                "kind": "source_start_sequence",
+                "payload": operation["payload"],
                 "authorize_idempotency_key": authorize_key,
             },
         }
         current = await self._negotiate(mount.selection, capture_mount=mount)
         combined = await self._dispatch(
-            mount, "capture-operations", sequence, key, current,
+            mount,
+            "capture-operations",
+            sequence,
+            key,
+            current,
         )
-        _require(set(combined) == _SCOPE_KEYS | {
-            "contract_version", "checked_at", "operation", "receipt",
-        })
+        _require(
+            set(combined)
+            == _SCOPE_KEYS
+            | {
+                "contract_version",
+                "checked_at",
+                "operation",
+                "receipt",
+            }
+        )
         pair = _object(combined.get("receipt"))
         _require(set(pair) == {"preparation", "authorization"})
         try:
@@ -330,16 +345,26 @@ class ProviderCoreTransport:
         _require(
             receipt.state == "prepared"
             and receipt.creator_actor_id == mount.selection.actor_ref
-            and receipt.issued_at is None and receipt.expires_at is None
+            and receipt.issued_at is None
+            and receipt.expires_at is None
             and now < receipt.preparation_expires_at <= intent.capture_authorized_until
-            and all(getattr(receipt, field) == getattr(intent, field) for field in (
-                "attempt_id", "source", "lease_id", "lease_receipt_id", "lease_generation",
-                "capture_authorized_until", "first_sequence_number",
-            ))
+            and all(
+                getattr(receipt, field) == getattr(intent, field)
+                for field in (
+                    "attempt_id",
+                    "source",
+                    "lease_id",
+                    "lease_receipt_id",
+                    "lease_generation",
+                    "capture_authorized_until",
+                    "first_sequence_number",
+                )
+            )
             and receipt.model_dump(exclude={"state", "issued_at", "expires_at"})
             == issued.model_dump(exclude={"state", "issued_at", "expires_at"})
             and issued.state == "issued"
-            and issued.issued_at is not None and issued.expires_at is not None
+            and issued.issued_at is not None
+            and issued.expires_at is not None
             and issued.issued_at <= now + timedelta(seconds=5)
             and issued.issued_at < issued.preparation_expires_at
             and now < issued.expires_at <= issued.capture_authorized_until
@@ -357,7 +382,9 @@ class ProviderCoreTransport:
         return {
             "preparation": {**envelope, "receipt": pair["preparation"]},
             "authorization": {
-                **envelope, "request_nonce": authorize_nonce, "receipt": pair["authorization"],
+                **envelope,
+                "request_nonce": authorize_nonce,
+                "receipt": pair["authorization"],
             },
         }
 
@@ -510,8 +537,12 @@ class ProviderCoreTransport:
         return await self._dispatch(mount, action, payload, key, current)
 
     async def _dispatch(
-        self, mount: CoreProviderMount, action: str, payload: dict[str, object],
-        key: str, current: _NegotiatedMount,
+        self,
+        mount: CoreProviderMount,
+        action: str,
+        payload: dict[str, object],
+        key: str,
+        current: _NegotiatedMount,
     ) -> dict[str, object]:
         # Callers validate complete intents before reaching this helper. A
         # combined native start shares negotiation only within its one request;
@@ -717,8 +748,15 @@ class ProviderCoreTransport:
         context = opening.take() if opening else await self._context(selection)
         _require(context.selection == selection)
         return await self._send_in_context(
-            context, path, payload, headers, status=status, version=version,
-            max_bytes=max_bytes, request_timeout=request_timeout, opening=opening,
+            context,
+            path,
+            payload,
+            headers,
+            status=status,
+            version=version,
+            max_bytes=max_bytes,
+            request_timeout=request_timeout,
+            opening=opening,
         )
 
     async def _send_in_context(
@@ -841,13 +879,16 @@ def _negotiated_read(action: str, body: dict[str, object]) -> bool:
     keys = set(body) - _SCOPE_KEYS
     if action == "capture-operations":
         return keys == {"operation"} and body.get("operation") in (
-            {"kind": "provider_encounter"}, {"kind": "creator_review"},
+            {"kind": "provider_encounter"},
+            {"kind": "creator_review"},
         )
     if action != "capture-notes":
         return False
     return (
-        body.get("action") == "templates" and keys == {"expected_session_id", "action"}
-        or body.get("action") == "read" and keys == {"expected_session_id", "action", "schema_ref"}
+        body.get("action") == "templates"
+        and keys == {"expected_session_id", "action"}
+        or body.get("action") == "read"
+        and keys == {"expected_session_id", "action", "schema_ref"}
         and _reference(body.get("schema_ref"), "doctor_note_schema")
     )
 
@@ -859,7 +900,8 @@ def _note_source(review: dict[str, object]) -> dict[str, object]:
     _require(type(source_version) is int and source_version > 0)
     _require(type(working_version) is int and working_version > 0)
     result: dict[str, object] = {
-        "kind": "reviewed_english", "source_version": source_version,
+        "kind": "reviewed_english",
+        "source_version": source_version,
         "working_transcript_id": _uuid(working.get("working_transcript_id")),
         "working_version": working_version,
     }
