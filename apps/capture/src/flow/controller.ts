@@ -84,6 +84,9 @@ export interface CaptureFlowControllerOptions {
   readonly source: CaptureSource;
   /** Trusted desktop host only; reuse the encrypted queue while acquisition runs. */
   readonly uploadWhileRecording?: boolean;
+  /** Host-selected upper bound for a fresh compound window; retained recipes
+   * always keep their exact count. Does not change the server's capture budget. */
+  readonly initialReservationCount?: number;
   readonly storageCapacity?: CaptureStorageCapacity;
   /** Host pause includes its physical-stop and server-retirement barriers. */
   readonly pauseForStorage?: () => Promise<void>;
@@ -108,6 +111,7 @@ export class CaptureFlowController {
   readonly #queueTransport: CaptureQueueTransport;
   readonly #source: CaptureSource;
   readonly #uploadWhileRecording: boolean;
+  readonly #initialReservationCount: number;
   #backgroundUpload: Promise<void> | null = null;
   #backgroundUploadCancellation: AbortController | null = null;
   #backgroundUploadQueued = false;
@@ -168,6 +172,10 @@ export class CaptureFlowController {
     this.#pauseForStorage = options.pauseForStorage ?? (() => this.pauseRecording());
     this.#channel = options.source.channel ?? "microphone";
     this.#uploadWhileRecording = options.uploadWhileRecording === true && this.#channel === "mixed";
+    this.#initialReservationCount = options.initialReservationCount ?? 90;
+    if (!Number.isSafeInteger(this.#initialReservationCount) || this.#initialReservationCount < 1 || this.#initialReservationCount > 90) {
+      throw new QueueInvariantError("initial_reservation_count_invalid");
+    }
     if (!["microphone", "mixed", "system_audio"].includes(this.#channel)) {
       throw new QueueInvariantError("capture_channel_invalid");
     }
@@ -1016,7 +1024,7 @@ export class CaptureFlowController {
     let preparation = initial;
     if (!preparation.windowPreparation) {
       const capabilities = this.#requireCapabilities();
-      const count = Math.min(capabilities.max_reservations_per_batch, capabilities.max_chunks,
+      const count = Math.min(this.#initialReservationCount, capabilities.max_reservations_per_batch, capabilities.max_chunks,
         Math.floor(capabilities.remaining_aggregate_plaintext_bytes / capabilities.max_envelope_bytes));
       if (!Number.isSafeInteger(count) || count < 1) throw new QueueInvariantError("capture_budget_exhausted");
       preparation = { ...preparation, leaseIdempotencyKey: this.#operationKey("lease"),

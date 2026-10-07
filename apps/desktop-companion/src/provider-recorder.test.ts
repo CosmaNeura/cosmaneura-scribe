@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockBffServer } from "../../capture/src/mock-bff/server";
 import { HttpCaptureBff } from "../../capture/src/bff/http-client";
+import type { PrepareRecordingWindowRequest } from "../../capture/src/bff/contracts";
 import { HttpCiphertextUploadTarget } from "../../capture/src/bff/upload-target";
 import { connectDesktopRecorderView, parseDesktopRecorderState,
   type DesktopRecorderPort } from "../../capture/src/provider/desktop-recorder-view";
@@ -1447,6 +1448,29 @@ describe("resume readiness overlap", () => {
 
 
 describe("start readiness overlap", () => {
+  it("prepares the mobile-sized first window without acquiring audio or changing continuation batches", async () => {
+    const f = await fixture(true), bff = f.options.createBff(f.abort.signal), driver = interruptedDriver(f);
+    const reserve = vi.spyOn(bff, "reserveChunks");
+    const prepare = vi.fn(async (id: string, request: PrepareRecordingWindowRequest) => {
+      const binding = await bff.bindSessionAudioKey(id, request.binding, { idempotencyKey: request.bind_idempotency_key });
+      const lease = await bff.issueLease(id, { protocol_version: "1.0" }, { idempotencyKey: request.lease_idempotency_key });
+      const reservations = await bff.reserveChunks(id, { protocol_version: "1.0", capture_lease_id: lease.lease_id,
+        capture_lease_generation: lease.generation, channel: request.channel, first_sequence_number: 0, count: request.reservation_count },
+      { idempotencyKey: request.reserve_idempotency_key });
+      return { schema_version: "1.0" as const, binding, lease, reservations };
+    });
+    try {
+      const recorder = await f.open({ createBff: () => Object.assign(bff, { prepareRecordingWindow: prepare }) });
+      expect(prepare.mock.calls[0]![1].reservation_count).toBe(30);
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      await recorder.startRecording(); await driver.interrupt(true);
+      await vi.waitFor(() => expect(recorder.snapshot.desktop?.phase).toBe("interrupted"));
+      await recorder.resumeRecording();
+      expect(reserve.mock.calls.map(call => call[1].count)).toEqual([30, 90]);
+      expect(f.authority).toHaveBeenCalledTimes(2);
+    } finally { await f.close(); }
+  });
+
   it("preserves the initialization deadline and ignores a late ready result", async () => {
     const f = await fixture(true), recorder = await f.open(), entered = deferred(), reply = deferred();
     const scheduled: (() => void)[] = [], original = globalThis.setTimeout;

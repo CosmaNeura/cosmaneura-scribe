@@ -62,3 +62,11 @@ journal required by the real UI, the current translation blocker, close preload
 and save wording. Both normal and uploaded-recovery checks pass, including
 revocation and explicit unsaved-edit decisions. These checks use an invented
 backend and do not substitute for installed or physical audio qualification.
+
+Build 49 measured about 25.2 seconds from fresh recording preparation to the
+source picker: admission 6.7s, trusted review 3.7s, parallel capabilities/key setup
+6.8s, then compound window preparation 7.9s. Audio readiness was 95ms. Bring the
+iOS initial reservation count (30 rather than 90) to fresh desktop compound
+windows. Keep retained requests byte-for-byte and continuation batches unchanged;
+do not change consent, lease duration, source admission or total capture budget.
+Measure a fresh visit in signed build 50 before attributing a latency improvement.
