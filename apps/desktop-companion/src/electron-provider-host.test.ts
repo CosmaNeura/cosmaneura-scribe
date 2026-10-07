@@ -97,7 +97,7 @@ describe("packaged desktop provider host", () => {
     const f = await fixture();
     try {
       const application = await startElectronProvider(f.runtime, f.factory); expect(application).not.toBeNull();
-      expect(f.window!.options.webPreferences).toMatchObject({ sandbox: true, contextIsolation: true, nodeIntegration: false });
+      expect(f.window!.options.webPreferences).toMatchObject({ sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false });
       expect(f.events).toEqual(["window", "load", "show"]);
       await application!.close();
       expect(f.events.slice(-3)).toEqual(["stop", "destroy", "quit"]);
