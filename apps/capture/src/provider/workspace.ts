@@ -208,7 +208,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const pending = new Set<string>();
     show(`<div class="provider-list-heading"><h1>Your encounters</h1><button data-workspace-action="encounters" aria-label="Refresh encounters">Refresh</button></div>
       ${host.encounterSetup ? '<button data-workspace-action="new-encounter">New visit</button>' : ''}
-      <div class="provider-list-filters"><label>Find a visit<input data-visit-search type="search" placeholder="Patient or visit" value="${escape(listQuery)}" autocomplete="off"></label><label>Show<select data-visit-filter><option value="all">All visits</option><option value="today">Today</option><option value="draft_ready">Drafts ready</option><option value="paused">Paused recordings</option><option value="processing">Processing</option><option value="hidden">Hidden visits</option></select></label></div><p data-visit-count role="status"></p>
+      <div class="provider-list-filters"><label>Find a visit<input data-visit-search type="search" placeholder="Patient or visit" value="${escape(listQuery)}" autocomplete="off"></label>
+      <div class="provider-visit-filters" role="group" aria-label="Show visits">${([
+        ["all", "All visits"], ["today", "Today"], ["draft_ready", "Drafts ready"], ["paused", "Paused"], ["processing", "Processing"], ["hidden", "Hidden visits"],
+      ] as const).map(([filter, label]) => `<button type="button" data-visit-filter="${filter}" aria-pressed="${listFilter === filter}">${label}</button>`).join("")}</div></div><p data-visit-count role="status"></p>
       <ul class="provider-encounters" aria-label="Authorized encounters">${ordered.map(e => {
         const status = e.status === "draft_ready" ? e.status : recentStates.get(e.appointmentRef)?.status ?? e.status;
         if (status === "processing") pending.add(e.appointmentRef);
@@ -221,9 +224,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const listElement = content.querySelector(".provider-encounters")!;
     const progressLabel = content.querySelector<HTMLElement>("[data-encounter-progress]")!;
     const searchInput = content.querySelector<HTMLInputElement>("[data-visit-search]");
-    const filterInput = content.querySelector<HTMLSelectElement>("[data-visit-filter]");
+    const filterGroup = content.querySelector<HTMLElement>(".provider-visit-filters");
     const filterVisits = (): void => {
-      listQuery = searchInput?.value ?? listQuery; listFilter = filterInput?.value ?? listFilter;
+      listQuery = searchInput?.value ?? listQuery;
+      for (const button of filterGroup?.querySelectorAll<HTMLButtonElement>("[data-visit-filter]") ?? []) {
+        button.setAttribute("aria-pressed", String(button.dataset.visitFilter === listFilter));
+      }
       const query = listQuery.trim().toLocaleLowerCase(), today = new Date(); let visible = 0;
       for (const row of listElement.querySelectorAll<HTMLElement>("[data-visit-ref]")) {
         const ref = row.dataset.visitRef!, entry = entries.get(ref);
@@ -240,8 +246,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       const count = content.querySelector<HTMLElement>("[data-visit-count]");
       if (count) count.textContent = visible ? `${visible} visit${visible === 1 ? "" : "s"}` : "No visits match. Change your search or filter.";
     };
-    if (filterInput) filterInput.value = listFilter;
-    searchInput?.addEventListener("input", filterVisits); filterInput?.addEventListener("change", filterVisits); filterVisits();
+    const selectFilter = (event: MouseEvent): void => {
+      const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-visit-filter]") : null;
+      if (!button || !filterGroup?.contains(button) || !["all", "today", "draft_ready", "paused", "processing", "hidden"].includes(button.dataset.visitFilter ?? "")) return;
+      listFilter = button.dataset.visitFilter!; filterVisits();
+    };
+    searchInput?.addEventListener("input", filterVisits); filterGroup?.addEventListener("click", selectFilter); filterVisits();
     const observer = new AutomaticProgress({
       active: () => current(n) && !controller.signal.aborted && listElement.isConnected,
       pending: () => pending.size > 0,
@@ -284,7 +294,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     };
     controller.signal.addEventListener("abort", () => observer.dispose(), { once: true });
     document.addEventListener("visibilitychange", visibility);
-    disposeContent = () => { observer.dispose(); controller.abort(); document.removeEventListener("visibilitychange", visibility); searchInput?.removeEventListener("input", filterVisits); filterInput?.removeEventListener("change", filterVisits); };
+    disposeContent = () => { observer.dispose(); controller.abort(); document.removeEventListener("visibilitychange", visibility); searchInput?.removeEventListener("input", filterVisits); filterGroup?.removeEventListener("click", selectFilter); };
     observer.schedule();
   };
   const setup = async (checkPending = false): Promise<void> => {

@@ -117,6 +117,45 @@ async function open(f) {
   await until(() => button("record-button")); return dispose;
 }
 try {
+  const visits = fixture(), hidden = new Set(), hiddenRef = "appointment_01j00000000000000000000001";
+  let listed = 0;
+  visits.host.listEncounters = async () => {
+    listed++;
+    return [
+      { appointmentRef: scope.appointmentRef, title: "Invented draft visit", detail: new Date().toISOString(), status: "draft_ready" },
+      { appointmentRef: hiddenRef, title: "Invented empty visit", detail: new Date().toISOString() },
+    ];
+  };
+  visits.host.encounterSetup = {
+    async hidden() { return [...hidden]; },
+    async setHidden(ref, value) { if (value) hidden.add(ref); else hidden.delete(ref); },
+  };
+  let visitDispose = module.namespace.mountProviderWorkspace(root, visits.host);
+  try {
+    await until(() => root.querySelector('[data-visit-filter="hidden"]'));
+    const filter = value => root.querySelector(`[data-visit-filter="${value}"]`);
+    filter("draft_ready").click();
+    assert.equal(root.querySelector("[data-visit-count]").textContent, "1 visit");
+    assert.equal(filter("draft_ready").getAttribute("aria-pressed"), "true");
+    assert.equal(listed, 1, "Changing a filter is local and never reopens a recording");
+    filter("all").click();
+    root.querySelector(`[data-visit-ref="${hiddenRef}"] [data-workspace-action="hide-visit"]`).click();
+    await until(() => root.textContent.includes("Visit hidden."));
+    filter("hidden").click();
+    assert.equal(root.querySelector("[data-visit-count]").textContent, "1 visit");
+    assert.equal(root.querySelector(`[data-visit-ref="${hiddenRef}"]`).hidden, false);
+    assert.equal(root.querySelector(`[data-visit-ref="${scope.appointmentRef}"]`).hidden, true);
+    await visitDispose();
+    visitDispose = module.namespace.mountProviderWorkspace(root, visits.host);
+    await until(() => root.querySelector('[data-visit-filter="hidden"]'));
+    assert.equal(root.querySelector("[data-visit-count]").textContent, "1 visit");
+    filter("hidden").click();
+    root.querySelector(`[data-visit-ref="${hiddenRef}"] [data-workspace-action="hide-visit"]`).click();
+    await until(() => root.textContent.includes("Visit restored."));
+    filter("all").click();
+    assert.equal(root.querySelector("[data-visit-count]").textContent, "2 visits");
+    assert.equal(hidden.size, 0); assert.deepEqual(visits.calls, []); checks++;
+  } finally { await visitDispose(); }
   const inline = fixture();
   const windowId = webcrypto.randomUUID();
   inline.change({}, { audioMode: "meeting", meetingWindows: { state: "ready", selectedId: null,
