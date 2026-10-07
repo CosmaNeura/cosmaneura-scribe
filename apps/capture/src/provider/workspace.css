@@ -168,6 +168,27 @@
   .provider-save-recovery button { max-width: 136px; padding: 8px 10px; font-size: .85rem; }
 }
 .provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-header { display: none; }
+
+/* Keep source choice and Start visible together in the normal desktop window. */
+.provider-workspace:has(.provider-desktop-capture) .provider-header [data-provider-encounter] { display: none; }
+.provider-workspace:has(.provider-desktop-capture) .provider-header { margin-bottom: 8px; padding-bottom: 8px; }
+.provider-workspace:has(.provider-desktop-capture) .provider-account { margin-bottom: 8px; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture { padding: 8px 0 16px; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture h1 { font-size: 1.5rem; line-height: 1.2; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .recorder { padding: 16px; gap: 12px; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-progress { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-progress > :not([role="status"]):not(.recording-duration) { grid-column: 1 / -1; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-duration { grid-column: 2; grid-row: 1; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-duration strong { font-size: 2rem; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-duration span { font-size: .75rem; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture label { margin: 0; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .meeting-window-selection { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .meeting-window-selection small { grid-column: 1 / -1; font-size: .8rem; line-height: 1.4; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .meeting-window-selection button { margin: 0; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture .record-button { min-height: 44px; padding: 10px 16px; }
+@media (max-width: 540px) {
+  .provider-workspace cosmaneura-capture .provider-desktop-capture .meeting-window-selection { grid-template-columns: minmax(0, 1fr); }
+}
 .provider-patient-detail { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 0; font-size: .8rem; font-weight: 400; color: #526d63; }
 .provider-workspace .provider-patient-detail button { min-height: 44px; margin: 0; padding: 4px 8px; font-size: .8rem; }
 .provider-visit-status { width: fit-content; padding: 2px 8px; border-radius: 6px; background: #e3f1e9; font-weight: 600; }
