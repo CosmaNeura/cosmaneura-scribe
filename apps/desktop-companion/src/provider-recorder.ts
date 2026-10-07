@@ -14,6 +14,7 @@ import type { PersistentRecordingIndicator } from "./recording-indicator.js";
 import { parseBackendCaptureGrant, type OneTimeCaptureCapability } from "./protocol.js";
 import { DesktopPcmCaptureSource } from "./pcm-capture-source.js";
 import type { DesktopPCMCoverage } from "./native-pcm-driver.js";
+import type { NativeMeetingWindow } from "./native-provider-presentation.js";
 import { NativeProcessPCMDriver, type AuthorizedDesktopSelection, type NativeProcessDriverOptions } from "./native-process-driver.js";
 
 /** Saved server receipts, supplied to the backend for verification, not authority. */
@@ -59,6 +60,7 @@ export interface DesktopProviderRecorderOptions {
   readonly native: Omit<NativeProcessDriverOptions, "enabled" | "authorizeSelectedWindow">;
   /** Native picker, deliberate choice only; never a renderer PID or first window. */
   readonly selectWindow: (signal: AbortSignal) => Promise<Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil">>;
+  readonly listMeetingWindows?: (signal: AbortSignal) => Promise<readonly NativeMeetingWindow[]>;
   /** Reveal only the current native chooser; never select or start another request. */
   readonly showWindowChooser?: () => Promise<void>;
   /** Retire backend ownership only after the physical native stop barrier. */
@@ -93,6 +95,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private initializationProbe: { readonly attempt: AbortController;
     readonly result: PromiseSettledResult<"ready" | "permission_required"> } | null = null;
   private selectedWindow: Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil"> | null = null;
+  private meetingWindows: { id: string; value: NativeMeetingWindow }[] = [];
+  private meetingWindowId: string | null = null;
+  private meetingWindowsUnavailable = false;
   private choosingWindow = false;
   private startFailed = false;
   private operation: Promise<void> | null = null;
@@ -268,6 +273,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           recorder.requireOpen();
         }
       });
+      if (options.listMeetingWindows && recorder.audioMode === "meeting") await recorder.refreshMeetingWindows();
       return recorder;
     } catch (error) { await recorder.deactivate(); throw error; }
   }
@@ -294,7 +300,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
       elapsedSeconds: this.capturedAudioFrames === null ? flow.elapsedSeconds : Math.floor(this.capturedAudioFrames / 16_000),
-      desktop: { phase, audioMode: this.audioMode, inputSignal: { microphone: this.inputLevel("microphone", phase),
+      desktop: { phase, audioMode: this.audioMode,
+      ...(this.options.listMeetingWindows ? { meetingWindows: { state: this.meetingWindowsUnavailable ? "unavailable" as const : "ready" as const,
+        selectedId: this.meetingWindowId, windows: this.meetingWindows.map(row => ({ id: row.id, title: row.value.title })) } } : {}),
+      inputSignal: { microphone: this.inputLevel("microphone", phase),
         meetingAudio: this.inputLevel("meetingAudio", phase) }, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
         : this.coverage ? phase === "recording" ? "aligned" : "incomplete" : "not_started",
       trimmedStartMs: start ? milliseconds(start.microphonePrerollNanoseconds, start.systemPrerollNanoseconds) : 0,
@@ -320,6 +329,28 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       this.audioMode = mode;
       this.unmountedAvailability = await this.availability(this.signal); this.requireOpen();
     });
+    if (mode === "meeting" && this.options.listMeetingWindows) await this.refreshMeetingWindows();
+  }
+  refreshMeetingWindows(): Promise<void> {
+    this.requireOpen();
+    if (!this.options.listMeetingWindows || this.audioMode !== "meeting" || this.captureMayBeActive || this.stopping
+      || !["ready", "permission_required", "interrupted", "stopped"].includes(this.snapshot.desktop!.phase)) throw unavailable();
+    return this.run("other", async () => {
+      this.meetingWindowId = null; this.meetingWindows = []; this.meetingWindowsUnavailable = false; this.publish();
+      try {
+        const rows = await this.options.listMeetingWindows!(this.signal); this.requireOpen();
+        if (rows.length > 64) throw unavailable();
+        this.meetingWindows = rows.map(value => ({ id: crypto.randomUUID(), value: Object.freeze({ ...value }) }));
+      } catch { this.requireOpen(); this.meetingWindowsUnavailable = true; }
+    });
+  }
+  selectMeetingWindow(id: string): Promise<void> {
+    try {
+      this.requireOpen();
+      if (!this.options.listMeetingWindows || this.audioMode !== "meeting" || this.operation || this.captureMayBeActive || this.stopping
+        || !this.meetingWindows.some(row => row.id === id)) throw unavailable();
+      this.meetingWindowId = id; this.publish(); return Promise.resolve();
+    } catch { return Promise.reject(unavailable()); }
   }
   startRecording(): Promise<void> {
     this.requireOpen();
@@ -333,9 +364,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       // for a person to choose. The native source still revalidates the window.
       try {
         await this.flow.checkStorageCapacity(); this.requireOpen();
-        this.choosingWindow = this.audioMode === "meeting"; this.publish();
+        this.choosingWindow = this.audioMode === "meeting" && !this.options.listMeetingWindows; this.publish();
         let selected: Awaited<ReturnType<DesktopProviderRecorderOptions["selectWindow"]>>;
         try { selected = this.audioMode === "microphone" ? { application: "microphone", processID: 0, windowID: 0 }
+          : this.options.listMeetingWindows ? this.selectedInlineWindow()
           : await chooseWindow(this.options.selectWindow, attempt.signal); }
         finally { this.choosingWindow = false; this.publish(); }
         this.requireOpen();
@@ -379,6 +411,13 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         throw error;
       } finally { this.selectedWindow = null; this.initializationProbe = null; }
     });
+  }
+  private selectedInlineWindow(): NativeMeetingWindow {
+    const row = this.meetingWindows.find(row => row.id === this.meetingWindowId);
+    if (!row || this.meetingWindowsUnavailable) throw unavailable();
+    // Only an opaque current-list ID crosses IPC. The native source still
+    // revalidates this exact app/PID/window after fresh server Start authority.
+    return row.value;
   }
   stopRecording(): Promise<void> { return this.stopCapture(true); }
   pauseRecording(): Promise<void> { return this.stopCapture(false); }
@@ -476,6 +515,8 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       }
       if (this.unmountedAvailability !== null) this.unmountedAvailability = await this.availability(this.signal);
       else await this.controller.handleRendererCommand({ schemaVersion: 1, kind: "refresh_permissions", requestId: crypto.randomUUID() });
+    }).then(async () => {
+      if (this.audioMode === "meeting" && this.options.listMeetingWindows) await this.refreshMeetingWindows();
     });
   }
   refreshTranscriptionStatus(): Promise<void> { return this.run("other", () => this.flow.refreshTranscriptionStatus()); }

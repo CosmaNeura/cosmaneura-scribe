@@ -22,7 +22,7 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-async function fixture(withholdChoice = false) {
+async function fixture(withholdChoice = false, inlineMeetingSelection = false) {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const lifetime = new AbortController();
   const commands: Record<string, unknown>[] = [];
@@ -34,7 +34,13 @@ async function fixture(withholdChoice = false) {
       const command = JSON.parse(frame.subarray(5).toString()) as Record<string, unknown>;
       commands.push(command);
       queueMicrotask(() => {
-        if (withholdChoice && ["choose", "cancel"].includes(command.type as string)) return;
+        if (withholdChoice && ["choose", "cancel", "windows"].includes(command.type as string)) return;
+        if (command.type === "windows") {
+          child.stdout.write(nativeCommand({ type: "window", request: command.request,
+            application: "us.zoom.xos", processID: 42, windowID: 74, title: "Zoom — Synthetic visit" }));
+          child.stdout.write(nativeCommand({ type: "windows", request: command.request, count: 1 }));
+          return;
+        }
         const type = command.type === "publish" ? "published" : command.type === "close" ? "closed" : "heartbeat";
         child.stdout.write(nativeCommand({ type, request: command.request }));
       });
@@ -43,11 +49,12 @@ async function fixture(withholdChoice = false) {
     final(done) { done(); queueMicrotask(() => child.emit("close", 0)); },
   });
   vi.mocked(spawn).mockImplementation(() => {
-    queueMicrotask(() => child.stdout.write(nativeCommand({ type: "ready", version: 1 })));
+    queueMicrotask(() => child.stdout.write(nativeCommand({ type: "ready", version: inlineMeetingSelection ? 3 : 1 })));
     return child as unknown as ReturnType<typeof spawn>;
   });
   const presentation = await NativeProviderPresentation.open({ enabled: true,
     helperPath: "/never-executed-presentation-fixture", helperSha256: "0".repeat(64),
+    inlineMeetingSelection,
     isSessionActive: () => !lifetime.signal.aborted });
   const adapter = {
     initialize: vi.fn(async () => "ready" as const), refreshPermissions: vi.fn(async () => "ready" as const),
@@ -68,6 +75,31 @@ async function fixture(withholdChoice = false) {
   return { lifetime, presentation, controller, adapter, commands,
     reply: (value: Record<string, unknown>) => child.stdout.write(nativeCommand(value)) };
 }
+
+it("lists bounded inline metadata without choosing a window, publishing recording, or starting audio", async () => {
+  const f = await fixture(false, true);
+  expect(await f.presentation.listMeetingWindows(new AbortController().signal)).toEqual([
+    { application: "us.zoom.xos", processID: 42, windowID: 74, title: "Zoom — Synthetic visit" },
+  ]);
+  expect(f.commands.filter(command => command.type === "choose")).toHaveLength(0);
+  expect(f.adapter.start).not.toHaveBeenCalled();
+  await f.presentation.publish({ visibility: "persistent", visible: true, phase: "recording", captureSessionId: "30000000-0000-4000-8000-000000000003" });
+  await expect(f.presentation.listMeetingWindows(new AbortController().signal)).rejects.toThrow();
+  await f.presentation.publish(inactive);
+});
+
+it("rejects a late inline list after cancellation and waits for its acknowledgement before cleanup", async () => {
+  const f = await fixture(true, true), abort = new AbortController();
+  const listing = f.presentation.listMeetingWindows(abort.signal), rejected = expect(listing).rejects.toThrow();
+  abort.abort();
+  const request = f.commands.find(command => command.type === "windows")!.request;
+  f.reply({ type: "window", request, application: "us.zoom.xos", processID: 42, windowID: 74, title: "Zoom — Synthetic visit" });
+  f.reply({ type: "windows", request, count: 1 });
+  await rejected;
+  expect(f.presentation.isHealthy()).toBe(true);
+  await f.presentation.publish(inactive);
+  expect(f.adapter.start).not.toHaveBeenCalled();
+});
 
 it.each(["unavailable", "selected"])("waits for a cancelled picker acknowledgement (%s) before hiding inactive presentation", async type => {
   const f = await fixture(true), abort = new AbortController();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectDesktopRecorderView, parseDesktopRecorderState, type DesktopRecorderPort } from "./desktop-recorder-view";
+import { connectDesktopRecorderView, parseDesktopRecorderRequest, parseDesktopRecorderState, type DesktopRecorderPort } from "./desktop-recorder-view";
 
 const sessionId = "10000000-0000-4000-8000-000000000001", recorderId = "20000000-0000-4000-8000-000000000002";
 const state = (revision: number, phase = "ready") => ({ recorderId, revision,
@@ -11,6 +11,21 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve };
 }
 describe("desktop recorder command view", () => {
+  it("accepts bounded inline labels and opaque IDs, never renderer process/window metadata", () => {
+    const id = crypto.randomUUID(), original = state(0);
+    const choices = { state: "ready", selectedId: id, windows: [{ id, title: "Zoom — Synthetic visit" }] };
+    const snapshot = (meetingWindows: unknown) => ({ ...original, snapshot: { ...original.snapshot,
+      desktop: { ...original.snapshot.desktop, meetingWindows } } });
+    expect(parseDesktopRecorderState(snapshot(choices)).snapshot.desktop?.meetingWindows).toEqual(choices);
+    for (const invalid of [{ ...choices, selectedId: crypto.randomUUID() }, { ...choices, windows: [...choices.windows, ...choices.windows] },
+      { ...choices, windows: [{ id, title: "blocked\u0000" }] }, { ...choices, windows: [{ id, title: "Test", processID: 42 }] }]) {
+      expect(() => parseDesktopRecorderState(snapshot(invalid))).toThrow();
+    }
+    const command = { kind: "meeting_window", requestId: crypto.randomUUID(), recorderId, windowId: id };
+    expect(parseDesktopRecorderRequest(command)).toEqual(command);
+    expect(() => parseDesktopRecorderRequest({ ...command, processID: 42 })).toThrow();
+    expect(() => parseDesktopRecorderRequest({ ...command, kind: "start" })).toThrow();
+  });
   it("accepts existing snapshots and only bounded receipt-count progress", () => {
     const original = state(2);
     expect(parseDesktopRecorderState(original)).toEqual(original);

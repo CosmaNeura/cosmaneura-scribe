@@ -1568,6 +1568,31 @@ describe("start readiness overlap", () => {
 
 
 describe("deliberate desktop input selection", () => {
+  it("uses only an explicit current inline choice, refresh invalidates it, and selection never captures", async () => {
+    const f = await fixture(true); interruptedDriver(f);
+    const list = vi.fn(async () => [{ application: "us.zoom.xos" as const, processID: 42, windowID: 74, title: "Zoom — Synthetic visit" }]);
+    const recorder = await f.open({ listMeetingWindows: list });
+    try {
+      expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      const id = recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id;
+      await recorder.selectMeetingWindow(id);
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      await recorder.refreshMeetingWindows();
+      await expect(recorder.selectMeetingWindow(id)).rejects.toThrow();
+      expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
+      const wireId = recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id;
+      const ipc = wire(recorder), view = await connectDesktopRecorderView(ipc.port, f.session.id, f.abort.signal);
+      await view.controller.selectMeetingWindow!(wireId);
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      await view.controller.startRecording();
+      expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.authority).toHaveBeenCalledOnce();
+      expect(f.nativeStart).toHaveBeenCalledOnce();
+      await view.deactivate(); await ipc.boundary.dispose();
+    } finally { await f.close(); }
+  });
+
   it("starts microphone-only without a picker and keeps the current backend start decision", async () => {
     const f = await fixture(true), driver = interruptedDriver(f);
     const saveAudioMode = vi.fn(async () => undefined);

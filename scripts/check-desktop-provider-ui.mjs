@@ -40,10 +40,15 @@ function fixture() {
   const port = {
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async request(command) {
-      assert.deepEqual(Object.keys(command).sort(), ["kind", "recorderId", "requestId"]);
+      assert.deepEqual(Object.keys(command).sort(), ["kind", "recorderId", "requestId", ...(command.kind === "meeting_window" ? ["windowId"] : [])]);
       calls.push(command.kind); let ok = true;
       if (command.kind !== "read") assert.equal(command.recorderId, recorderId);
-      if (command.kind === "start") {
+      if (command.kind === "meeting_window") {
+        assert.ok(snapshot.desktop.meetingWindows.windows.some(row => row.id === command.windowId));
+        change({}, { meetingWindows: { ...snapshot.desktop.meetingWindows, selectedId: command.windowId } });
+      } else if (command.kind === "meeting_windows") {
+        change({}, { meetingWindows: { ...snapshot.desktop.meetingWindows, selectedId: null } });
+      } else if (command.kind === "start") {
         change({ state: "recording" }, { phase: "starting" });
         if (holdStart) await holdStart.promise;
         else change({ recordedChunks: 2 }, { phase: "recording", coverage: "aligned", trimmedStartMs: 4 });
@@ -112,6 +117,28 @@ async function open(f) {
   await until(() => button("record-button")); return dispose;
 }
 try {
+  const inline = fixture();
+  const windowId = webcrypto.randomUUID();
+  inline.change({}, { audioMode: "meeting", meetingWindows: { state: "ready", selectedId: null,
+    windows: [{ id: windowId, title: "Zoom — Invented visit" }] } });
+  let inlineDispose = await open(inline);
+  try {
+    assert.equal(button("record-button").disabled, true);
+    assert.equal(button("show-window-chooser"), null);
+    const choice = button("meeting-window");
+    assert.equal(choice.value, ""); choice.value = windowId;
+    choice.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await until(() => !button("record-button").disabled);
+    assert.deepEqual(inline.calls, ["read", "meeting_window"]);
+    button("refresh-meeting-windows").click(); await until(() => button("record-button").disabled && !button("meeting-window").disabled);
+    assert.equal(button("meeting-window").value, "");
+    button("meeting-window").value = windowId;
+    button("meeting-window").dispatchEvent(new window.Event("change", { bubbles: true }));
+    await until(() => !button("record-button").disabled);
+    button("record-button").click(); await until(() => /audio are aligned/u.test(root.textContent));
+    assert.equal(inline.calls.filter(kind => kind === "start").length, 1);
+    assert.equal(button("meeting-window"), null); checks++;
+  } finally { await inlineDispose(); }
   const f = fixture(); f.hold(); let dispose = await open(f);
   try {
     assert.match(root.textContent, /selected application’s audio/u); assert.doesNotMatch(root.textContent, /Keep this app in the foreground/u);

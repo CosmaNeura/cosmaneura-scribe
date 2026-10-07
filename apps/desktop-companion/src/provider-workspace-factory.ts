@@ -44,6 +44,7 @@ export interface DesktopProviderResources {
   readonly indicator: DesktopProviderRecorderOptions["indicator"];
   readonly native: DesktopProviderRecorderOptions["native"];
   readonly selectWindow: DesktopProviderRecorderOptions["selectWindow"];
+  readonly listMeetingWindows?: DesktopProviderRecorderOptions["listMeetingWindows"];
   readonly showWindowChooser?: () => Promise<void>;
   /** When using the native presentation transport, retain its lifecycle/events
    * with the connection. Existing injected fixture resources may omit it. */
@@ -274,6 +275,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                 }, isSessionActive: () => !linked.aborted && resources.native.isSessionActive()
                   && (!resources.presentation || resources.presentation.isHealthy()) },
                 selectWindow: resources.selectWindow,
+                ...(resources.listMeetingWindows ? { listMeetingWindows: resources.listMeetingWindows } : {}),
                 ...(resources.showWindowChooser ? { showWindowChooser: resources.showWindowChooser } : {}),
                 // Journals still use the encounter store after recorder release.
                 // closeMount owns its closure after every native stop is confirmed.

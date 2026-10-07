@@ -315,6 +315,22 @@ export class CaptureApp extends LitElement {
                 .value=${this.#snapshot.desktop?.audioMode ?? "meeting"} ?disabled=${this.#busy || this.#stopping}
                 @change=${this.#changeDesktopAudio}><option value="microphone">Microphone only · in the room or speakerphone</option>
                 <option value="meeting">Microphone + Zoom or Chrome audio</option></select></label>` : ""}
+            ${desktopProvider && this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows
+              && !this.#isStarting() && ["ready", "permission_required", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase)
+              ? html`<div class="meeting-window-selection">
+                <label>Meeting window<select data-testid="meeting-window" .value=${this.#snapshot.desktop.meetingWindows.selectedId ?? ""}
+                  ?disabled=${this.#busy || this.#stopping} @change=${this.#changeMeetingWindow}>
+                  <option value="">Choose the window for this visit</option>
+                  ${this.#snapshot.desktop.meetingWindows.windows.map(row => html`<option value=${row.id}>${row.title}</option>`)}
+                </select></label>
+                <button class="secondary" data-testid="refresh-meeting-windows" ?disabled=${this.#busy || this.#stopping}
+                  @click=${this.#refreshMeetingWindows}>Refresh windows</button>
+                <small>${this.#snapshot.desktop.meetingWindows.state === "unavailable"
+                  ? "Windows could not be loaded. Check recording access, then refresh."
+                  : this.#snapshot.desktop.meetingWindows.windows.length === 0
+                    ? "Open your visit in Zoom or Chrome, then refresh."
+                    : "Records your microphone and all audio from the selected application. Close unrelated audio in Chrome."}</small>
+              </div>` : ""}
             <div class="record-actions">
               ${desktopProvider && this.#snapshot.statusCode === "capture_window_selection_pending"
                 && provider.controller.showWindowChooser ? html`<button class="primary" data-testid="show-window-chooser"
@@ -328,11 +344,13 @@ export class CaptureApp extends LitElement {
                   ? "Start foreground microphone test recording"
                   : "Start silent synthetic recording"}
                 ?disabled=${this.#snapshot.state !== "ready" || this.#busy || this.#stopping
-                  || this.#snapshot.desktop !== undefined && this.#snapshot.desktop.phase !== "ready"}
+                  || this.#snapshot.desktop !== undefined && this.#snapshot.desktop.phase !== "ready"
+                  || this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows !== undefined
+                    && this.#snapshot.desktop.meetingWindows.selectedId === null}
                 @click=${this.#record}
               >
                 <span aria-hidden="true"></span>
-                ${this.#busy && this.#snapshot.state === "ready" || this.#snapshot.statusCode === "capture_starting" ? "Starting…" : "Record"}
+                ${this.#busy && this.#snapshot.state === "ready" || this.#snapshot.statusCode === "capture_starting" ? "Starting…" : desktopProvider ? "Start recording" : "Record"}
               </button>
               ${provider?.controller.pauseRecording && this.#snapshot.state === "recording"
                 && (!this.#snapshot.desktop || this.#snapshot.desktop.phase === "recording") ? html`<button
@@ -342,7 +360,9 @@ export class CaptureApp extends LitElement {
                 && this.#snapshot.statusCode !== "capture_stop_acknowledgement_pending"
                 && (!this.#snapshot.desktop || ["ready", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase))
                 && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
-                class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping}
+                class="primary" data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping
+                  || this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows !== undefined
+                    && this.#snapshot.desktop.meetingWindows.selectedId === null}
                 @click=${this.#resume}>${this.#snapshot.statusCode === "capture_recovery_pending"
                   ? "Retry recovery and resume" : this.#isCancelledEmptyStart() || this.#isExpiredEmptyStart()
                     ? "Start recording" : "Resume"}</button>` : ""}
@@ -641,6 +661,15 @@ export class CaptureApp extends LitElement {
     const mode = (event.target as HTMLSelectElement).value;
     if (mode !== "microphone" && mode !== "meeting") return;
     void this.#run(async () => this.#requireController().selectDesktopAudio?.(mode));
+  };
+
+  readonly #changeMeetingWindow = (event: Event): void => {
+    const id = (event.target as HTMLSelectElement).value;
+    if (!isUuid(id)) return;
+    void this.#run(async () => this.#requireController().selectMeetingWindow?.(id));
+  };
+  readonly #refreshMeetingWindows = (): void => {
+    void this.#run(async () => this.#requireController().refreshMeetingWindows?.());
   };
 
   readonly #refreshPermissions = (): void => {
