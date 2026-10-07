@@ -100,3 +100,15 @@ audio; its main Start button is the deliberate capture action. Old v1/v2 native
 contracts remain available for older hosts. Stop indicators and ownership remain
 unchanged. Verify compiled IPC/UI, actual native metadata pipes, cancellation and
 signed installed layout; roll back to signed build 50 with existing stores intact.
+
+Reuse mobile's visible preparation in the trusted standalone desktop composition:
+main owns the same fresh preparation task while the admitted recorder exposes a
+fixed preparing state. Audio/window controls stay disabled until metadata and
+read-only window discovery finish. The current consent-screen microphone Start
+waits in memory for that exact attached view; meeting visits still need explicit
+window choice and Start. Navigation/revocation discards the intent and joins late
+metadata before releasing keys/stores. Failures show a fixed recovery message,
+retain encrypted work and cannot start. Diagnostic compositions continue waiting.
+This improves time to visible controls; service readiness still requires timing
+measurement, and no physical audio result is implied. No server route, lease,
+consent, permissions, capture grant, native source or cloud configuration changes.

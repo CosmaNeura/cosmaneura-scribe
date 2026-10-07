@@ -15,7 +15,7 @@ export interface ProviderRecorderSnapshot extends CaptureFlowSnapshot {
   readonly native?: { readonly phase: string; readonly busy: boolean;
     readonly uploadProgress?: { readonly total: number; readonly registered: number } };
   readonly desktop?: {
-    readonly phase: "ready" | "permission_required" | "starting" | "recording" | "stopping"
+    readonly phase: "preparing" | "ready" | "permission_required" | "starting" | "recording" | "stopping"
       | "interrupted" | "stop_unconfirmed" | "stopped";
     readonly coverage: "not_started" | "aligned" | "complete" | "incomplete";
     readonly trimmedStartMs: number;
@@ -46,7 +46,7 @@ export interface ProviderRecorderController {
   selectMicrophoneInput?(input: MicrophoneInput): Promise<void>;
   readonly getCaptureSignal?: () => Promise<unknown>;
 }
-/** Already authorized, restored/prepared and exclusively owned by a native host. */
+/** Admitted and exclusively owned by a native host; preparation may still be pending. */
 export interface PreparedProviderRecorder {
   readonly controller: ProviderRecorderController;
   readonly sourceKind: "microphone";

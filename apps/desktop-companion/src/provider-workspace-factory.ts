@@ -33,6 +33,7 @@ export interface DesktopProviderBackend extends Pick<ProviderWorkspaceHost, "sig
 }
 export interface DesktopProviderResources {
   readonly enabled?: boolean;
+  readonly prepareInBackground?: boolean;
   /** Explicit app-owned directory, separate from every existing app namespace. */
   readonly directory: string;
   /** The native owner supplies a stable device-protected key after authorization.
@@ -248,7 +249,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
               };
               if (!storedInput) await saveAudioMode(audioMode);
               const flow = new DurableDesktopFlowStore(owned.store!.namespace("flow"));
-              owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, sessionId, audioMode, saveAudioMode, signal: linked,
+              owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, prepareInBackground: resources.prepareInBackground === true, sessionId, audioMode, saveAudioMode, signal: linked,
                 createBff: captureSignal => new CoreCaptureBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId),
                 authorizePreparation: async captureSignal => {
                   const client = new CoreCaptureClient(selected.scope, request, captureSignal);
