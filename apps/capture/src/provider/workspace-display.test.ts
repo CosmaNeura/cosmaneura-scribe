@@ -25,3 +25,13 @@ it("sorts only explicit encounter dates and puts clinical sections ahead of char
   expect(result.details).toEqual(["Patient name", "Date of birth"]);
   expect(keys[0]).toBe("Patient name"); // Template identity/order remains unchanged.
 });
+
+it("puts the installed telehealth template's prefixed SOAP sections before administrative headings", () => {
+  const keys = ["MRN / DOB", "Payer", "Sites", "Place of service", "Telehealth attestation", "S - SUBJECTIVE",
+    "PMH / PSH", "Medications", "O - OBJECTIVE", "A - ASSESSMENT", "P - PLAN", "CODING, ATTESTATION, SIGNATURE"];
+  const original = [...keys], result = orderedNoteFields(keys);
+  expect(result.clinical).toEqual(["S - SUBJECTIVE", "O - OBJECTIVE", "A - ASSESSMENT", "P - PLAN", "PMH / PSH", "Medications"]);
+  expect(result.details).toEqual(["MRN / DOB", "Payer", "Sites", "Place of service", "Telehealth attestation", "CODING, ATTESTATION, SIGNATURE"]);
+  expect(keys).toEqual(original);
+  expect(orderedNoteFields(["Assessment score", "Plan of care options"]).clinical).toEqual(["Assessment score", "Plan of care options"]);
+});

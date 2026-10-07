@@ -220,6 +220,10 @@
 .provider-template-details summary { min-height: 44px; padding: 10px 0; cursor: pointer; font-weight: 600; }
 .provider-note-grid { height: auto; }
 .provider-note-editor { overflow: visible; }
+@media (max-width: 899px) {
+  .provider-note-evidence { height: auto; }
+  [data-note-transcript-scroll] { overflow: visible; }
+}
 .provider-note-editor label { margin: 12px 0; }
 .provider-note-editor textarea { overflow: hidden; min-height: 68px; }
 .provider-save-bar { flex-wrap: wrap; }

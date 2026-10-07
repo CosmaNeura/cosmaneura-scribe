@@ -88,6 +88,13 @@ was started. The same walkthrough found the list's Show dropdown unresponsive;
 replace it with visible local filter buttons, including Hidden visits. A compiled
 UI regression checks local filtering, hide, remount, restore and zero recorder
 commands. Physical audio and service startup latency remain separately open.
+
+Build 53 verifies persistent hide/restore and directly accessible draft filters.
+The installed telehealth template uses prefixed SOAP headings and MRN/payer/site
+administrative fields. Recognize those exact headings so clinical sections lead
+and administrative fields remain collapsed, without changing template keys or
+save order. At narrow window widths the transcript uses the page scrollbar;
+the optional wide comparison panel retains its separate bounded view.
 Refresh invalidates IDs. Meeting consent opens inline selection without starting
 audio; its main Start button is the deliberate capture action. Old v1/v2 native
 contracts remain available for older hosts. Stop indicators and ownership remain
