@@ -26,11 +26,9 @@ export class MainRecordingWindow implements DesktopRecordingWindow {
   private compact = false;
   private usable = true;
   private active = false;
-  private previous: WindowBounds | null = null;
-  private previousMinimum: [number, number] | null = null;
   private readonly responsiveness: RendererResponsiveness;
   constructor(private readonly current: () => RecordingWindowPort | null,
-    private readonly workArea: (bounds: WindowBounds) => WindowBounds,
+    _workArea: (bounds: WindowBounds) => WindowBounds,
     probe: () => Promise<unknown>, clock?: () => number) {
     this.responsiveness = new RendererResponsiveness(probe, clock);
   }
@@ -50,11 +48,8 @@ export class MainRecordingWindow implements DesktopRecordingWindow {
     // Repeated snapshots/timer ticks must not raise the window, switch Spaces,
     // or repeat Electron's process-type transformation.
     if (compact) {
-      this.previous = window.getBounds(); this.previousMinimum = window.getMinimumSize();
-      const area = this.workArea(this.previous), width = 480, height = 360;
-      window.setMinimumSize(width, height);
-      window.setBounds({ x: Math.max(area.x, area.x + area.width - width - 16),
-        y: Math.max(area.y, area.y + 16), width, height });
+      // Keep the provider's chosen size and position throughout preparation and
+      // recording. A stable window keeps Start, Cancel, Pause and Finish visible.
       // Status level stays above Dock overlays and below OS popup menus.
       window.setAlwaysOnTop(true, "status");
       window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -62,9 +57,6 @@ export class MainRecordingWindow implements DesktopRecordingWindow {
     } else {
       window.setAlwaysOnTop(false);
       window.setVisibleOnAllWorkspaces(false);
-      if (this.previousMinimum) window.setMinimumSize(...this.previousMinimum);
-      if (this.previous) window.setBounds(this.previous);
-      this.previous = null; this.previousMinimum = null;
     }
     this.compact = compact;
     if (this.active && this.usable) this.responsiveness.isResponsive();

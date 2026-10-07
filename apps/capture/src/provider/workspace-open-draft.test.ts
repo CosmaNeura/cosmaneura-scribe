@@ -55,7 +55,7 @@ class Surface extends EventTarget {
     if (value.includes('class="provider-header"')) this.nodes.set(".provider-header", new Surface());
     if (value.includes('class="provider-encounters"')) {
       const list = new Surface(); this.nodes.set(".provider-encounters", list);
-      for (const match of value.matchAll(/<li><button data-workspace-action="open" data-appointment="([^"]+)"/gu)) {
+      for (const match of value.matchAll(/<li[^>]*><button data-workspace-action="open" data-appointment="([^"]+)"/gu)) {
         const button = new Surface(), row = new Surface(); button.dataset.appointment = match[1]!;
         button.dataset.workspaceAction = "open"; button.parent = row; row.nodes.set("[data-draft-action]", new Surface());
         button.nodes.set(".provider-visit-status", new Surface()); list.buttons.push(button);

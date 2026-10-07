@@ -22,7 +22,7 @@ import { encounterSetupMarkup } from "./encounter-setup-view";
 import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
 import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./workflow-timing";
-import { encounterDetail, noteFieldLabel } from "./workspace-display";
+import { encounterDetail, encounterTimestamp, orderedNoteFields, noteFieldLabel } from "./workspace-display";
 import { noteEditorPosition, restoreNoteEditorPosition, setNoteEditorPending, type NoteEditorPosition } from "./note-editor-state";
 import { settledRecorderVisitStatus } from "./recent-visit-state";
 import { bindNoteSourceNavigation } from "./note-source-navigation";
@@ -60,8 +60,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let setupState: EncounterSetupState | null = null;
   const recentStates = new Map<string, { sessionId: string; status: "paused" | "processing" | "recording_saved" | "draft_ready" }>();
   const listedDraftRefs = new Set<string>();
+  const hiddenVisits = new Set<string>();
+  let listQuery = "", listFilter = "all";
+  let selectedCreationPatient: EncounterDraft["patient"] | null = null;
+  let preferredDesktopAudio: "microphone" | "meeting" = "microphone";
   let preferredLanguage: LanguageMode = "en-US"; // This authorized workspace's lifetime only.
-  let preferredModality: "in_person" | "virtual" | "phone" = isIOS ? "in_person" : "virtual";
+  let preferredModality: "in_person" | "virtual" | "phone" = "in_person";
   root.classList.add("provider-workspace");
   root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p><p class="provider-patient-detail" data-provider-patient-detail></p></div><button data-workspace-action="encounters">Your encounters</button></header>
     <p data-workspace-notice role="status"></p><p data-workspace-progress hidden></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
@@ -181,6 +185,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     show("<h1>Your encounters</h1><p>Loading your authorized encounters…</p>");
     const encounters = await host.listEncounters(host.signal);
     if (!current(n)) return;
+    if (host.encounterSetup?.hidden) {
+      const savedHidden = await host.encounterSetup.hidden(host.signal);
+      if (!current(n)) return;
+      hiddenVisits.clear(); for (const ref of savedHidden) hiddenVisits.add(ref);
+    }
     const account = host.account;
     accountLabel.hidden = !account;
     accountLabel.textContent = account ? `${account.environment} · Signed in as ${account.email}` : "";
@@ -191,16 +200,19 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         && (e.status === undefined || ["draft_ready", "processing", "paused", "ready", "recording_saved"].includes(e.status)));
     };
     validate(encounters);
+    const entries = new Map(encounters.map(entry => [entry.appointmentRef, entry]));
+    const ordered = [...encounters].sort((a, b) => (encounterTimestamp(b.detail) ?? -Infinity) - (encounterTimestamp(a.detail) ?? -Infinity));
     for (const encounter of encounters) if (encounter.status === "draft_ready") listedDraftRefs.add(encounter.appointmentRef);
     const authorizedRefs = new Set(encounters.map(e => e.appointmentRef));
     for (const ref of recentStates.keys()) if (!authorizedRefs.has(ref)) recentStates.delete(ref);
     const pending = new Set<string>();
     show(`<div class="provider-list-heading"><h1>Your encounters</h1><button data-workspace-action="encounters" aria-label="Refresh encounters">Refresh</button></div>
       ${host.encounterSetup ? '<button data-workspace-action="new-encounter">New visit</button>' : ''}
-      <ul class="provider-encounters" aria-label="Authorized encounters">${encounters.map(e => {
+      <div class="provider-list-filters"><label>Find a visit<input data-visit-search type="search" placeholder="Patient or visit" value="${escape(listQuery)}" autocomplete="off"></label><label>Show<select data-visit-filter><option value="all">All visits</option><option value="today">Today</option><option value="draft_ready">Drafts ready</option><option value="paused">Paused recordings</option><option value="processing">Processing</option><option value="hidden">Hidden visits</option></select></label></div><p data-visit-count role="status"></p>
+      <ul class="provider-encounters" aria-label="Authorized encounters">${ordered.map(e => {
         const status = e.status === "draft_ready" ? e.status : recentStates.get(e.appointmentRef)?.status ?? e.status;
         if (status === "processing") pending.add(e.appointmentRef);
-        return `<li><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span>${status ? `<span class="provider-visit-status">${encounterStatusCopy(status)}</span>` : ""}</button><span data-draft-action>${e.status === "draft_ready" ? openDraftButton(e) : ""}</span></li>`;
+        return `<li data-visit-ref="${escape(e.appointmentRef)}" data-visit-time="${encounterTimestamp(e.detail) ?? ""}"><button data-workspace-action="open" data-appointment="${escape(e.appointmentRef)}"><strong>${escape(e.title)}</strong><span>${escape(encounterDetail(e.detail))}</span>${status ? `<span class="provider-visit-status">${encounterStatusCopy(status)}</span>` : ""}</button><span data-draft-action>${e.status === "draft_ready" ? openDraftButton(e) : ""}</span>${status === undefined || status === "ready" ? `<button class="provider-hide-visit" data-workspace-action="hide-visit" data-appointment="${escape(e.appointmentRef)}">${hiddenVisits.has(e.appointmentRef) ? "Restore" : "Hide"}</button>` : ""}</li>`;
       }).join("")}</ul>
       ${encounters.length ? "" : "<p>No encounters are available yet.</p>"}
       <p data-encounter-progress role="status">${pending.size ? "Checking your processing visits automatically." : ""}</p>
@@ -208,6 +220,28 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const controller = new AbortController(); forwardAbort(host.signal, controller);
     const listElement = content.querySelector(".provider-encounters")!;
     const progressLabel = content.querySelector<HTMLElement>("[data-encounter-progress]")!;
+    const searchInput = content.querySelector<HTMLInputElement>("[data-visit-search]");
+    const filterInput = content.querySelector<HTMLSelectElement>("[data-visit-filter]");
+    const filterVisits = (): void => {
+      listQuery = searchInput?.value ?? listQuery; listFilter = filterInput?.value ?? listFilter;
+      const query = listQuery.trim().toLocaleLowerCase(), today = new Date(); let visible = 0;
+      for (const row of listElement.querySelectorAll<HTMLElement>("[data-visit-ref]")) {
+        const ref = row.dataset.visitRef!, entry = entries.get(ref);
+        if (!entry) continue;
+        const status = entry.status === "draft_ready" ? entry.status : recentStates.get(ref)?.status ?? entry.status;
+        const stamp = encounterTimestamp(entry.detail), date = stamp === null ? null : new Date(stamp);
+        const isToday = date !== null && date.toDateString() === today.toDateString();
+        row.hidden = !(listFilter === "hidden" ? hiddenVisits.has(ref) : !hiddenVisits.has(ref))
+          || !!query && !`${entry.title} ${entry.detail}`.toLocaleLowerCase().includes(query)
+          || listFilter === "today" && !isToday
+          || !["all", "today", "hidden"].includes(listFilter) && status !== listFilter;
+        if (!row.hidden) visible += 1;
+      }
+      const count = content.querySelector<HTMLElement>("[data-visit-count]");
+      if (count) count.textContent = visible ? `${visible} visit${visible === 1 ? "" : "s"}` : "No visits match. Change your search or filter.";
+    };
+    if (filterInput) filterInput.value = listFilter;
+    searchInput?.addEventListener("input", filterVisits); filterInput?.addEventListener("change", filterVisits); filterVisits();
     const observer = new AutomaticProgress({
       active: () => current(n) && !controller.signal.aborted && listElement.isConnected,
       pending: () => pending.size > 0,
@@ -225,6 +259,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           buttons.find(button => button.dataset.appointment === ref)?.closest("li")?.remove();
         }
         for (const e of updates) {
+          entries.set(e.appointmentRef, e);
           const button = buttons.find(item => item.dataset.appointment === e.appointmentRef);
           if (!button) { pending.delete(e.appointmentRef); continue; }
           // Core catalog currently reports saved transcript/draft evidence only.
@@ -237,6 +272,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           if (status) status.textContent = encounterStatusCopy(e.status);
           if (e.status !== "processing") { pending.delete(e.appointmentRef); recentStates.delete(e.appointmentRef); }
         }
+        filterVisits();
         progressLabel.textContent = pending.size ? "Checking your processing visits automatically." : "Visit status updated.";
       },
       stopped: reason => { progressLabel.textContent = reason === "deadline"
@@ -248,7 +284,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     };
     controller.signal.addEventListener("abort", () => observer.dispose(), { once: true });
     document.addEventListener("visibilitychange", visibility);
-    disposeContent = () => { observer.dispose(); controller.abort(); document.removeEventListener("visibilitychange", visibility); };
+    disposeContent = () => { observer.dispose(); controller.abort(); document.removeEventListener("visibilitychange", visibility); searchInput?.removeEventListener("input", filterVisits); filterInput?.removeEventListener("change", filterVisits); };
     observer.schedule();
   };
   const setup = async (checkPending = false): Promise<void> => {
@@ -302,7 +338,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (!newPatient?.reportValidity() || input("patient-query").trim() !== setupQuery) return;
       const name = input("new-patient-name").trim(), dateOfBirth = input("new-patient-dob") || null;
       if (!name) { notice.textContent = "Enter the patient's name."; return; }
-      void run(() => create({ kind: "new", name, dateOfBirth }), "patient-create");
+      selectedCreationPatient = { kind: "new", name, dateOfBirth }; confirmCreation(name);
     };
     const searchInput = search?.querySelector<HTMLInputElement>("input");
     const updateResults = (): void => {
@@ -311,6 +347,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     };
     search?.addEventListener("submit", onSearch); searchInput?.addEventListener("input", updateResults); newPatient?.addEventListener("submit", onNew);
     disposeContent = () => { search?.removeEventListener("submit", onSearch); searchInput?.removeEventListener("input", updateResults); newPatient?.removeEventListener("submit", onNew); };
+  };
+  const confirmCreation = (name: string): void => {
+    show(`<section class="provider-setup"><h1>Start a visit for ${escape(name)}</h1><p>This will create a visit in the patient chart. Recording starts after you confirm consent on the next screen.</p><button data-workspace-action="confirm-create">Create visit &amp; continue</button><button data-workspace-action="patient-results">Back</button><button data-workspace-action="encounters">Cancel</button></section>`);
   };
   const renderPatientDetails = (encounter: AuthorizedProviderEncounter["encounter"]): void => {
     patientDetail.replaceChildren();
@@ -367,9 +406,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       <label>Spoken language<select name="language"><option value="en-US"${preferredLanguage === "en-US" ? " selected" : ""}>English</option><option value="en-US+es-US"${preferredLanguage === "en-US+es-US" ? " selected" : ""}>English and Spanish</option></select></label>
       </div>
       <p class="provider-start-help" data-recording-guidance role="status"></p>
-      <details class="provider-recording-options"><summary>Audio details<small data-recording-summary></small></summary>
+      <details class="provider-recording-options"${isIOS ? "" : " open"}><summary>Audio source<small data-recording-summary></small></summary>
       ${isIOS ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
-      ${isIOS ? "" : "<p>Scribe records your microphone and audio from the selected application. Other audio playing in that application may also be included. This Mac build does not support microphone-only recording.</p>"}
+      ${isIOS ? "" : `<label>Record audio from<select name="desktop-audio"><option value="microphone"${preferredDesktopAudio === "microphone" ? " selected" : ""}>Microphone only · room or speakerphone</option><option value="meeting"${preferredDesktopAudio === "meeting" ? " selected" : ""}>Microphone + Zoom or Chrome audio</option></select></label><p>Microphone only captures voices audible to this Mac. Application audio also captures the selected app; Chrome can include other tabs and windows.</p>`}
       </details>
       <button data-workspace-action="prepare" aria-describedby="provider-start-consent">Confirm consent &amp; record</button>
       <p class="provider-consent-explanation" id="provider-start-consent">Everyone has agreed to recording and transcription.</p>
@@ -378,15 +417,22 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const summarize = (): void => {
       options.querySelector<HTMLElement>("[data-recording-summary]")!.textContent = isIOS
         ? content.querySelector<HTMLSelectElement>('[name="microphone"]')!.selectedOptions[0]!.textContent
-        : "Microphone + selected application audio";
+        : input("desktop-audio") === "microphone" ? "Microphone only" : "Microphone + application audio";
       content.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = isIOS
         ? input("modality") === "in_person" ? "Records the selected iPhone microphone. Check the sound bars when recording begins."
           : "Records the selected iPhone microphone. Call audio is not captured directly; use Scribe on a separate device where both voices can be heard."
-        : input("modality") === "virtual" ? "Next, choose your Zoom or Chrome meeting window. Scribe records your microphone and that application's audio."
-          : "This Mac build requires a Zoom or Chrome window and records microphone + application audio, including for this visit type. For an in-person microphone recording, use the iPhone app.";
+        : input("desktop-audio") === "microphone" ? "Records this Mac’s microphone. Keep both voices audible; use speakerphone for a call."
+          : "Next, choose the Zoom or Chrome window for this visit. Close unrelated audio in that application.";
     };
-    summarize(); content.addEventListener("change", summarize);
-    disposeContent = () => content.removeEventListener("change", summarize);
+    const changed = (event: Event): void => {
+      if (!isIOS && (event.target as HTMLElement).getAttribute("name") === "modality") {
+        const mode = content.querySelector<HTMLSelectElement>('[name="desktop-audio"]')!;
+        mode.value = input("modality") === "virtual" ? "meeting" : "microphone";
+      }
+      summarize();
+    };
+    summarize(); content.addEventListener("change", changed);
+    disposeContent = () => content.removeEventListener("change", changed);
     consentAction = content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]');
   };
   const renewConsent = (): void => {
@@ -420,6 +466,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ...(initialAction ? { initialAction } : {}),
       journal: context.reviewJournal(session()), continueToNote: openNotes,
       speakerNameSuggestions: { patient: activeContext.encounter.patientName, clinician: host.providerDisplayName },
+      ...(activeContext.playPassage ? { playPassage: activeContext.playPassage } : {}),
       ...(context.editJournal ? { editJournal: context.editJournal(session()) } : {}),
       ...(context.noteOpeningSupported ? { prepareNoteOpening: noteOpeningPreparation() } : {}),
     });
@@ -432,17 +479,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
     step = "recording status check";
-    const view = openingView?.session_id === id ? openingView
+    const view = startRequested !== undefined && host.recorderRechecksReview === true ? null : openingView?.session_id === id ? openingView
       : await interruptibleRead(new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read(), openingSignal);
     if (!authorized(n)) return;
-    observeReview(view, n);
+    if (view) observeReview(view, n);
     endOpening(); // Recorder ownership or journal mutation starts after this boundary.
-    if (!["created", "capturing"].includes(view.status)) {
+    if (view && !["created", "capturing"].includes(view.status)) {
       if (!progress().uploaded) await persist({ ...progress(), uploaded: true });
       if (authorized(n)) showReview(view, initialAction);
       return;
     }
-    if (initialAction) {
+    if (initialAction && view) {
       showReview(view);
       notice.textContent = "A saved draft is not available. Return to Your encounters to open the recording.";
       return;
@@ -478,11 +525,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       const preparing = await local.flowStore.getPreparationState();
       requireValue((active === null || active.sessionId === id && active.reviewAfterUpload === true)
         && (preparing === null || preparing.sessionId === id && preparing.mode === "configured_core"));
-      if (view.status === "capturing" && active === null && preparing === null) throw new CaptureDeviceCustodyError();
+      if (view?.status === "capturing" && active === null && preparing === null) throw new CaptureDeviceCustodyError();
       step = "secure recording preparation";
       if (!await localController.restore()) await localController.prepareConfigured(id);
     }
     requireValue(controller.snapshot.sessionId === id);
+    if (startRequested !== undefined && native?.controller.selectDesktopAudio) await native.controller.selectDesktopAudio(preferredDesktopAudio);
     if (!authorized(n)) { await close(); return; }
     show("");
     const app = document.createElement("cosmaneura-capture") as CaptureApp;
@@ -493,6 +541,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       languageMode: recordingProgress.admission.languageMode === "en-US" ? "english" : "english_spanish",
       authorizedRequest: activeClient.reviewRequest(id), journal: activeContext.reviewJournal(id),
       speakerNameSuggestions: { patient: activeContext.encounter.patientName, clinician: host.providerDisplayName },
+      ...(activeContext.playPassage ? { playPassage: activeContext.playPassage } : {}),
       ...(activeContext.editJournal ? { editJournal: activeContext.editJournal(id) } : {}),
       signal: activeClient.signal, deactivate: close, resumePendingUpload: () => lifecycle.resumePendingWork(),
       ...(activeContext.noteOpeningSupported ? { prepareNoteOpening: noteOpeningPreparation(async () => {
@@ -781,17 +830,28 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (context && journal.progress?.sessionId && draft.status === "draft") {
       recentStates.set(context.encounter.appointmentRef, { sessionId: journal.progress.sessionId, status: "draft_ready" });
     }
+    const groups = orderedNoteFields(draft.field_order ?? []);
+    const field = (key: string): string => `<label>${escape(noteFieldLabel(key))}<textarea data-note-field name="note-${draft!.field_order!.indexOf(key)}" rows="2">${escape(draft!.fields![key]!)}</textarea></label>`;
     show(`<section class="provider-note" data-note-view="note"><div class="provider-note-heading"><h1>${escape(draft.note_type)}</h1>
       <p class="provider-draft-status">${draft.status === "draft" ? "Draft · Clinical review required" : "Your transcript is ready. Prepare a draft note."}</p></div>
       ${draft.reviewed_source.capture_continuity ? '<p role="status">Recording continuity is unconfirmed. Review this note for missing speech; gap lengths are unknown.</p>' : ""}
-      ${draft.status === "draft" ? `<div class="provider-save-bar"><p data-note-save-state role="status" aria-atomic="true">Saved · Not clinically reviewed</p><button data-workspace-action="save">Save draft</button></div>
+      ${draft.status === "draft" ? `<div class="provider-save-bar"><p data-note-save-state role="status" aria-atomic="true">Saved · Not clinically reviewed</p><div><button data-workspace-action="save">Save draft</button><button data-workspace-action="finish-note">Save &amp; review in chart</button></div></div>
       <div class="provider-note-tabs" aria-label="Note and conversation"><button data-workspace-action="note-view" aria-pressed="true">Note</button><button data-workspace-action="transcript-view" aria-pressed="false">Transcript</button></div>
-      <div class="provider-note-grid"><div class="provider-note-editor" tabindex="0" role="region" aria-label="Draft note">${draft.field_order!.map((key, index) => `<label>${escape(noteFieldLabel(key))}<textarea data-note-field name="note-${index}" rows="5">${escape(draft!.fields![key]!)}</textarea></label>`).join("")}</div>
+      <div class="provider-note-grid"><div class="provider-note-editor" tabindex="0" role="region" aria-label="Draft note">${groups.clinical.map(field).join("")}${groups.details.length ? `<details class="provider-template-details"><summary>Patient and visit details</summary>${groups.details.map(field).join("")}</details>` : ""}</div>
       <aside class="provider-note-evidence"><div class="provider-note-source-toolbar"></div><div data-note-transcript-scroll tabindex="0" role="region" aria-label="Recording transcript">${noteTranscript ? renderNoteTranscript(noteTranscript) : ""}</div></aside></div>`
         : '<button data-workspace-action="generate">Prepare draft note</button><button data-workspace-action="check-note">Check for note</button>'}
-      <div class="provider-note-actions"><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">${draft.status === "draft" ? "Open saved note in Core" : "Open patient chart in Core"}</button></div>
+      <div class="provider-note-actions"><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">${draft.status === "draft" ? "Review saved draft in patient chart" : "Open patient chart"}</button></div>
       ${draft.field_order?.some(key => noteFieldLabel(key) !== key) ? `<details class="provider-note-guidance"><summary>Original template headings</summary><p>These headings come from your saved template. Dates and statements in headings do not confirm what happened in this visit.</p><ul>${draft.field_order.filter(key => noteFieldLabel(key) !== key).map(key => `<li>${escape(noteFieldLabel(key))}: ${escape(key)}</li>`).join("")}</ul></details>` : ""}
-      <details class="provider-note-guidance"><summary>About this draft</summary><p>Check the note against the conversation and edit anything that is missing or incorrect. Saving preserves your edits; it does not mark the note clinically reviewed.${draft.status === "draft" ? " To review the saved note in the patient chart, choose Open saved note in Core." : ""}</p></details></section>`);
+      <details class="provider-note-guidance"><summary>About this draft</summary><p>Check the note against the conversation and edit anything that is missing or incorrect. Saving preserves your edits; it does not mark the note clinically reviewed.${draft.status === "draft" ? " To complete clinical review, choose Save &amp; review in chart." : ""}</p></details></section>`);
+    for (const area of content.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")) {
+      const size = (): void => { area.style.height = "auto"; area.style.height = `${Math.max(68, area.scrollHeight + 2)}px`; };
+      size(); area.addEventListener("input", size);
+    }
+    const templateDetails = content.querySelector<HTMLDetailsElement>(".provider-template-details");
+    const resizeDetails = (): void => {
+      if (templateDetails?.open) for (const area of templateDetails.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")) { area.style.height = "auto"; area.style.height = `${Math.max(68, area.scrollHeight + 2)}px`; }
+    };
+    templateDetails?.addEventListener("toggle", resizeDetails);
     const transcriptDetails = content.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
     if (transcriptDetails && window.matchMedia("(min-width: 900px)").matches) transcriptDetails.open = true;
     const stopTranscriptTools = bindTranscriptTools(content);
@@ -804,6 +864,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     content.addEventListener("input", updateSaveState);
     content.addEventListener("focusin", rememberEditorField);
     disposeContent = () => {
+      templateDetails?.removeEventListener("toggle", resizeDetails);
       sourceNavigation.dispose();
       if (refreshNoteSources === sourceNavigation.refresh) refreshNoteSources = null;
       stopTranscriptTools(); content.removeEventListener("input", updateSaveState); content.removeEventListener("focusin", rememberEditorField);
@@ -984,13 +1045,21 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "new-encounter": await setup(); break;
         case "add-dob": addDateOfBirth(); break;
         case "new-patient": showSetup(setupQuery, true); break;
-        case "patient-results": showSetup(setupQuery); break;
+        case "patient-results": selectedCreationPatient = null; showSetup(setupQuery); break;
+        case "confirm-create": { requireValue(selectedCreationPatient); const patient = selectedCreationPatient; selectedCreationPatient = null; await create(patient); break; }
+        case "hide-visit": {
+          const ref = button.dataset.appointment; requireValue(ref && reference(ref, "appointment"));
+          const hidden = !hiddenVisits.has(ref);
+          await host.encounterSetup?.setHidden?.(ref, hidden, host.signal);
+          if (hidden) hiddenVisits.add(ref); else hiddenVisits.delete(ref);
+          await list(); notice.textContent = hiddenVisits.has(ref) ? "Visit hidden. The patient chart is retained. Choose Hidden visits to restore it." : "Visit restored."; break;
+        }
         case "check-creation": await setup(true); break;
         case "retry-creation": await create(null); break;
         case "select-patient": {
           requireValue(setupState && !setupState.pending);
           const patient = setupState.patients.find(p => p.patientRef === button.dataset.patient);
-          requireValue(patient); await create({ kind: "existing", patientRef: patient.patientRef }); break;
+          requireValue(patient); selectedCreationPatient = { kind: "existing", patientRef: patient.patientRef }; confirmCreation(patient.name); break;
         }
         case "open": await open(button.dataset.appointment!); break;
         case "open-draft": {
@@ -1010,6 +1079,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
             attestation: { modality: modality as "in_person" | "virtual" | "phone", participant_regions: [],
               method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } },
           sessionId: null, uploaded: false, pendingSave: null };
+          const desktopAudio = content.querySelector<HTMLSelectElement>('[name="desktop-audio"]')?.value;
+          if (desktopAudio === "microphone" || desktopAudio === "meeting") preferredDesktopAudio = desktopAudio;
           const microphone = content.querySelector<HTMLSelectElement>('[name="microphone"]')?.value ?? "built_in";
           requireValue(isMicrophoneInput(microphone));
           assertProgress(next); consentAction = null; button.disabled = true; await persist(next);
@@ -1038,6 +1109,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
         case "core": requireValue(context); await context.openInCore(draft?.note_ref ?? null); break;
         case "save": await saveCurrentNote(); break;
+        case "finish-note": if (await saveCurrentNote()) { requireValue(context); await context.openInCore(draft?.note_ref ?? null); } break;
         case "save-and-leave": {
           const destination = pendingNavigation;
           if (await saveCurrentNote() && destination) await navigate(destination);

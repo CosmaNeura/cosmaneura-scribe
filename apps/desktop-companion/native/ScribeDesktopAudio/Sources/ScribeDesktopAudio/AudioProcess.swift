@@ -111,7 +111,7 @@ private actor AudioProcessHost {
                 window = try DesktopCaptureWindow(authorization, now: .now)
                 try AudioProcessFence.shared.acquire(fence)
                 let nextMixer = try AlignedMeetingPCM(maximumOutputFrames: authorization.maximumOutputFrames,
-                    hardMaximumOutputFrames: authorization.hardMaximumOutputFrames, sink: nextSink)
+                    hardMaximumOutputFrames: authorization.hardMaximumOutputFrames, microphoneOnly: selection.application == .microphone, sink: nextSink)
                 mixer = nextMixer
                 startTask = Task {
                     do {
@@ -132,7 +132,7 @@ private actor AudioProcessHost {
             sink = nextSink
             do {
                 try AudioProcessFence.shared.acquire(fence)
-                let nextMixer = try AlignedMeetingPCM(maximumOutputFrames: frames, sink: nextSink)
+                let nextMixer = try AlignedMeetingPCM(maximumOutputFrames: frames, microphoneOnly: selection.application == .microphone, sink: nextSink)
                 mixer = nextMixer
                 startTask = Task {
                     do {

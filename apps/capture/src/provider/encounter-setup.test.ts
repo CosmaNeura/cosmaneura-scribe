@@ -18,7 +18,7 @@ function records() {
   };
   return { store, data };
 }
-function fixture(capacitorProxy = false) {
+function fixture(capacitorProxy = false, hiding = false) {
   const disk = records(), scope = crypto.randomUUID(), workspaceId = crypto.randomUUID();
   // Capacitor exposes every property as a method, including `then`. Reject
   // assimilation explicitly so this regression fails without hanging the suite.
@@ -39,7 +39,7 @@ function fixture(capacitorProxy = false) {
       patient_name: "Synthetic Patient", title: "Visit", appointment_at: "2026-09-29T12:00:00Z" } }; });
   const openStore = vi.fn(async () => ({ records: store, close: vi.fn(async () => undefined) }));
   const created = vi.fn(), abort = new AbortController();
-  const newOwner = () => createEncounterSetup({ request, records: openStore, created, current: signal => { if (abort.signal.aborted || signal?.aborted) throw new Error("closed"); } });
+  const newOwner = () => createEncounterSetup({ request, records: openStore, created, ...(hiding ? { canHide: (ref: string) => ref === appointmentRef } : {}), current: signal => { if (abort.signal.aborted || signal?.aborted) throw new Error("closed"); } });
   return { ...disk, scope, request, created, abort, openStore, newOwner, assimilated, signal: abort.signal };
 }
 describe("shared mobile/desktop encounter creation", () => {
@@ -122,4 +122,17 @@ describe("shared mobile/desktop encounter creation", () => {
     { ...initial, expected_actor_ref: "caller-selected" },
     { ...initial, appointmentAt: "2026-09-29T12:00:00" },
   ])("rejects ambiguous or extra encounter intent", value => expect(() => parseEncounterDraft(value)).toThrow());
+});
+
+it("retains hidden visits across restart, allows restoration and rejects foreign references or revoked identity", async () => {
+  const f = fixture(false, true), owner = f.newOwner();
+  expect(await owner.hidden!(f.signal)).toEqual([]);
+  await owner.setHidden!(appointmentRef, true, f.signal); await owner.dispose();
+  const reopened = f.newOwner();
+  expect(await reopened.hidden!(f.signal)).toEqual([appointmentRef]);
+  await expect(reopened.setHidden!("appointment_01j00000000000000000000001", true, f.signal)).rejects.toThrow();
+  await reopened.setHidden!(appointmentRef, false, f.signal);
+  expect(await reopened.hidden!(f.signal)).toEqual([]);
+  expect(f.request.mock.calls.every(([body]) => body.action === "patients")).toBe(true);
+  f.abort.abort(); await expect(reopened.hidden!(f.signal)).rejects.toThrow(); await reopened.dispose();
 });

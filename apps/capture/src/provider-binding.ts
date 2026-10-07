@@ -21,6 +21,7 @@ export interface ProviderRecorderSnapshot extends CaptureFlowSnapshot {
     readonly trimmedStartMs: number;
     readonly trimmedEndMs: number | null;
     readonly inputSignal?: DesktopInputFeedback;
+    readonly audioMode?: "microphone" | "meeting";
   };
 }
 export interface ProviderRecorderController {
@@ -34,6 +35,7 @@ export interface ProviderRecorderController {
   refreshPermissions?(): Promise<void>;
   /** Reveals the current native picker; never creates a choice or starts audio. */
   showWindowChooser?(): Promise<void>;
+  selectDesktopAudio?(mode: "microphone" | "meeting"): Promise<void>;
   selectMicrophoneInput?(input: MicrophoneInput): Promise<void>;
   readonly getCaptureSignal?: () => Promise<unknown>;
 }
@@ -65,6 +67,7 @@ export interface ProviderCaptureBinding {
   readonly authorizedRequest: AuthorizedReviewRequest;
   readonly journal: CreatorReviewJournal;
   readonly editJournal?: CreatorEditJournal;
+  readonly playPassage?: (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<{ wavBase64: string } | null>;
   readonly speakerNameSuggestions?: SpeakerNameSuggestions;
   /** Abort on sign-out, revocation, encounter change or native host teardown. */
   readonly signal: AbortSignal;

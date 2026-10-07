@@ -88,6 +88,26 @@ export class DurableDesktopFlowStore implements CaptureFlowStore {
     if (uuid(stored.value.state.sessionId) !== uuid(sessionId)) throw failure();
     const key = await this.records.unwrap(sessionId, stored.value.localKey); assertSessionDek(key); return key;
   }
+  async retainPlaybackKey(sessionId: string, archive: DesktopRecordNamespace): Promise<void> {
+    const stored = await this.read(`session:${uuid(sessionId)}`, assertSession);
+    if (!stored || stored.value.state.sessionId !== sessionId || stored.value.state.state !== "bound") throw failure();
+    const existing = await archive.get("session-key");
+    if (existing) {
+      try { if (JSON.stringify(decode(existing, assertSession).value) !== JSON.stringify(stored.value)) throw failure(); }
+      finally { existing.data.fill(0); }
+      return;
+    }
+    const bytes = new TextEncoder().encode(JSON.stringify(stored.value));
+    try { await archive.save("session-key", null, bytes); } finally { bytes.fill(0); }
+  }
+  async playbackKey(sessionId: string, archive: DesktopRecordNamespace): Promise<CryptoKey | null> {
+    const saved = await archive.get("session-key"); if (!saved) return null;
+    try {
+      const value = decode(saved, assertSession).value;
+      if (value.state.sessionId !== sessionId || value.state.state !== "bound") throw failure();
+      return await this.records.unwrapForPlayback(sessionId, value.localKey);
+    } finally { saved.data.fill(0); }
+  }
   async markSessionKeyBound(sessionId: string): Promise<void> {
     const key = `session:${uuid(sessionId)}`, prior = await this.read(key, assertSession);
     if (!prior || uuid(prior.value.state.sessionId) !== uuid(sessionId)) throw failure();

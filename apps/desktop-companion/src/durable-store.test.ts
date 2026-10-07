@@ -223,6 +223,32 @@ describe("durable desktop capture", () => {
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
   });
 
+  it("retains a decrypt-only playback key after upload recovery is cleared, with session and custody binding", async () => {
+    const path = await directory(), key = await master();
+    const store = await DurableDesktopRecordStore.open({ directory: path, recoveryScope, workspaceId, key });
+    try {
+      const flowRecords = store.namespace("flow"), flow = new DurableDesktopFlowStore(flowRecords), archive = store.namespace("playback-key");
+      const rsa = await crypto.subtle.generateKey({ name: "RSA-OAEP", hash: "SHA-256", modulusLength: 3072,
+        publicExponent: new Uint8Array([1, 0, 1]) }, true, ["wrapKey", "unwrapKey"]);
+      const jwk = await crypto.subtle.exportKey("jwk", rsa.publicKey);
+      const value = await flow.createSessionKey(attemptId, { algorithm: "RSA-OAEP-256", key_version: "invented-v1",
+        public_jwk: { kty: "RSA", alg: "RSA-OAEP-256", e: "AQAB", n: jwk.n!, ext: true, key_ops: ["wrapKey"] } }, crypto);
+      await flow.putSessionKeyCandidate({ schemaVersion: 2, sessionId: attemptId, keyVersion: value.keyVersion,
+        wrappedDek: value.wrappedDek, idempotencyKey: "invented-key-bind-v1", state: "pending" }, value.key);
+      await expect(flow.retainPlaybackKey(attemptId, archive)).rejects.toThrow();
+      await flow.markSessionKeyBound(attemptId); await flow.retainPlaybackKey(attemptId, archive);
+      const nonce = new Uint8Array(12), plaintext = new Uint8Array([12, 34, 56]);
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, value.key, plaintext);
+      const original = await flowRecords.get(`session:${attemptId}`); flowRecords.delete(original!.key, original!.revision); original!.data.fill(0);
+      expect(await flow.getSessionKey(attemptId)).toBeNull();
+      const playback = await flow.playbackKey(attemptId, archive);
+      expect(playback!.extractable).toBe(false); expect(playback!.usages).toEqual(["decrypt"]);
+      expect(new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, playback!, ciphertext))).toEqual(plaintext);
+      await expect(flow.playbackKey(crypto.randomUUID(), archive)).rejects.toThrow();
+      store.close(); await expect(flow.playbackKey(attemptId, archive)).rejects.toThrow();
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+
   it("refuses an unprotected session-key candidate instead of persisting an unrecoverable key", async () => {
     const path = await directory(), key = await master();
     const store = await DurableDesktopRecordStore.open({ directory: path, recoveryScope, workspaceId, key });

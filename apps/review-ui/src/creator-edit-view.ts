@@ -21,16 +21,16 @@ export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: stri
   const name = confirmed?.display_name ?? "";
   return `<dialog class="creator-edit-dialog" data-creator-edit-dialog aria-labelledby="creator-edit-title">
     <h2 id="creator-edit-title">Correct this passage</h2>
-    <p>Save a new transcript version. The original wording and previous corrections stay available.</p>
+    <p>Edit the wording below, then save. Your original transcript is retained.</p>
     <form data-creator-edit-form data-segment="${escapeReviewText(segmentId)}">
       <div class="creator-edit-fields">
       <details><summary>${source.source_locale === "es-US" ? "Spanish original" : "Original wording"}</summary>
         <p lang="${source.source_locale === "es-US" ? "es" : "en"}">${escapeReviewText(source.content)}</p></details>
-      ${working.content != null ? `<label>English wording<textarea name="content" rows="6" maxlength="100000">${escapeReviewText(working.content)}</textarea></label>`
+      ${working.content != null ? `<label>English wording<textarea name="content" rows="3" maxlength="100000">${escapeReviewText(working.content)}</textarea></label>`
         : translationNeedsHelp
           ? `<p>English wording is unavailable for this passage. Your original ${source.source_locale === "es-US" ? "Spanish " : ""}transcript is retained. Keep this visit and contact your practice administrator for help.</p>`
           : `<p>Finish translation review before correcting the English wording.</p>`}
-      <fieldset><legend>Confirm who is speaking</legend>
+      <details class="creator-speaker-details"><summary>Change speaker (optional)</summary><fieldset><legend>Confirm who is speaking</legend>
       <p>This applies to every passage with this detected voice. Choose “Not sure” if the voice cannot be identified.</p>
       <div class="creator-speaker-suggestions">${([ ["clinician", "Provider"], ["patient", "Patient"] ] as const).map(([value, label]) => {
         const suggested = speakerNameSuggestion(suggestions[value]);
@@ -39,7 +39,7 @@ export function renderCreatorEditDialog(view: CreatorReviewView, segmentId: stri
       <label>Speaker<select name="role">${[["unknown", "Not sure"], ["clinician", "Provider"], ["patient", "Patient"], ["interpreter", "Interpreter"], ["other", "Other speaker"]]
         .map(([value, label]) => `<option value="${value}" ${role === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
       <label>Name (optional)<input name="display_name" maxlength="120" autocomplete="off" value="${escapeReviewText(name)}" ${role === "unknown" ? "disabled" : ""}></label>
-      <small>Enter a name only after confirming whose voice this is.</small></fieldset>
+      <small>Enter a name only after confirming whose voice this is.</small></fieldset></details>
       <p role="alert" data-edit-validation></p>
       </div>
       <div class="creator-edit-actions"><button type="button" data-review-action="cancel-edit">Cancel</button>

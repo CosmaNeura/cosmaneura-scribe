@@ -29,6 +29,7 @@ export interface CreatorReviewOptions {
   readonly initialAction?: "open-draft";
   /** Current authorized encounter/profile display values; assignment still needs confirmation. */
   readonly speakerNameSuggestions?: SpeakerNameSuggestions;
+  readonly playPassage?: (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<{ wavBase64: string } | null>;
   readonly journal?: CreatorReviewJournal;
   readonly editJournal?: CreatorEditJournal;
   /** Open the host's existing Core note flow with this action's fresh authorized read. */
@@ -51,6 +52,13 @@ export function mountCreatorReview(
   let continuing = false;
   let refreshing = false;
   let initialAction = options.initialAction;
+  let playbackAbort: AbortController | null = null, playbackUrl: string | null = null;
+  let playbackAudio: HTMLAudioElement | null = null;
+  const stopPlayback = (): void => {
+    playbackAbort?.abort(); playbackAbort = null;
+    if (playbackAudio) { playbackAudio.pause(); playbackAudio.removeAttribute("src"); playbackAudio.load(); playbackAudio = null; }
+    if (playbackUrl) URL.revokeObjectURL(playbackUrl); playbackUrl = null;
+  };
   const disposeTranscriptTools = bindTranscriptTools(root);
   const waitingForTranscript = (): boolean => state.phase === "ready" && pending === null && pendingEdit === null
     && editingSegment === null && !continuing && !refreshing && hasPendingReviewProgress(state.view);
@@ -75,7 +83,17 @@ export function mountCreatorReview(
   const scheduleRefresh = (): void => progress.schedule();
   const render = (): void => {
     if (disposed) return;
+    stopPlayback();
     root.innerHTML = renderCreatorReview({ ...state, editable: Boolean(api.edit && options.editJournal) });
+    if (options.playPassage && state.view?.source) {
+      for (const row of root.querySelectorAll<HTMLElement>("[data-transcript-segment]")) {
+        const segment = state.view.source.segments.find(item => item.source_segment_id === row.dataset.transcriptSegment);
+        if (!segment) continue;
+        const button = document.createElement("button"); button.type = "button";
+        button.dataset.reviewAction = "play-passage"; button.dataset.segment = segment.source_segment_id;
+        button.textContent = "Listen to passage"; row.append(button);
+      }
+    }
     if (editingSegment && state.view) {
       root.insertAdjacentHTML("beforeend", renderCreatorEditDialog(state.view, editingSegment, options.speakerNameSuggestions));
       const dialog = root.querySelector<HTMLDialogElement>("[data-creator-edit-dialog]");
@@ -91,6 +109,29 @@ export function mountCreatorReview(
       root.querySelector(".creator-status")?.append(button);
     }
   };
+
+  const play = (event: Event): void => {
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button[data-review-action="play-passage"]') : null;
+    if (!button || !root.contains(button) || !options.playPassage || !state.view || !button.dataset.segment) return;
+    stopPlayback(); const controller = new AbortController(); playbackAbort = controller;
+    const view = state.view, row = button.parentElement; if (!row) return;
+    row.querySelector("[data-playback-result]")?.remove();
+    const result = document.createElement("div"); result.dataset.playbackResult = ""; result.setAttribute("role", "status");
+    result.textContent = "Opening saved audio…"; row.append(result); button.disabled = true;
+    void options.playPassage(view.session_id, button.dataset.segment, controller.signal).then(value => {
+      if (disposed || controller.signal.aborted || state.view !== view || !result.isConnected) return;
+      if (!value) { result.textContent = "Audio playback is unavailable for this passage on this device. The transcript is retained."; return; }
+      if (value.wavBase64.length > 1_300_000 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(value.wavBase64)) throw new Error("Invalid passage audio");
+      const bytes = Uint8Array.from(atob(value.wavBase64), char => char.charCodeAt(0));
+      try { playbackUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" })); } finally { bytes.fill(0); }
+      const audio = document.createElement("audio"); audio.controls = true; audio.preload = "none";
+      playbackAudio = audio; audio.src = playbackUrl; audio.setAttribute("aria-label", "Recorded passage, up to 30 seconds"); result.replaceChildren(audio);
+      void audio.play().catch(() => undefined);
+    }).catch(() => {
+      if (!controller.signal.aborted && result.isConnected) result.textContent = "Audio could not open. Check your connection and try again.";
+    }).finally(() => { if (button.isConnected) button.disabled = false; });
+  };
+  root.addEventListener("click", play);
 
   const renderPreservingReading = (): void => {
     const input = root.querySelector<HTMLInputElement>("[data-transcript-search]");
@@ -359,7 +400,7 @@ export function mountCreatorReview(
   render();
   void refresh();
   return () => {
-    disposed = true;
+    disposed = true; stopPlayback(); root.removeEventListener("click", play);
     progress.dispose();
     generation += 1;
     pending = null;

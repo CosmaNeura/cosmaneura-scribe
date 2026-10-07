@@ -132,6 +132,12 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
           if (!currentEncounter || currentEncounter.appointmentRef !== selected.appointmentRef) throw unavailable();
           return encounter(await send("add_birth_date", { dateOfBirth, key }, currentEncounter.id, extra));
         },
+        hidden: async extra => {
+          const refs = await send("encounter_setup", { action: "hidden" }, null, extra);
+          if (!Array.isArray(refs) || refs.length > 1000 || refs.some(ref => !reference(ref, "appointment")) || new Set(refs).size !== refs.length) throw unavailable();
+          return refs as string[];
+        },
+        setHidden: async (appointmentRef, hidden, extra) => { await send("encounter_setup", { action: "set_hidden", appointmentRef, hidden }, null, extra); },
         state: async extra => parseSetupState(await send("encounter_setup", { action: "state" }, null, extra)),
         search: async (query, extra) => {
           const result = object(await send("encounter_setup", { action: "search", query }, null, extra));
@@ -143,6 +149,7 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         }, null, extra)),
       };
       const workspace: ProviderWorkspaceHost = {
+        recorderRechecksReview: true,
         get providerDisplayName() {
           return !abort.signal.aborted && !signal.aborted && state?.phase === "ready"
             && state.revision === expected.revision ? state.providerDisplayName : undefined;
@@ -218,6 +225,13 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
                 },
               };
               return connectDesktopRecorderView(cleanupPort, sessionId, AbortSignal.any([linked, extra]));
+            },
+            playPassage: async (sessionId, segmentId, extra) => {
+              const value = await call("play_passage", { sessionId, segmentId }, extra);
+              if (value === null) return null;
+              const result = exact(value, ["wavBase64"]);
+              if (typeof result.wavBase64 !== "string" || result.wavBase64.length > 1_300_000 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(result.wavBase64)) throw unavailable();
+              return { wavBase64: result.wavBase64 };
             },
             openInCore: async noteRef => { await call("open_core", { noteRef }); },
           };

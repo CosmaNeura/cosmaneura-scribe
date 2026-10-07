@@ -74,7 +74,7 @@ describe("packaged desktop provider host", () => {
     const f = await fixture();
     try {
       const assets = await loadPackagedProvider(f.rendererDirectory), response = assets.respond({ url: PROVIDER_ENTRY, method: "GET" });
-      expect(response.status).toBe(200); expect(response.headers.get("content-security-policy")).toContain("media-src 'none'");
+      expect(response.status).toBe(200); expect(response.headers.get("content-security-policy")).toContain("media-src blob:");
       for (const url of ["https://example.invalid/", "app://cosmas/../preload.cjs", "app://cosmas/%70rovider.html", PROVIDER_ENTRY + "?path=preload.cjs", "app://cosmas/renderer-manifest.json"]) {
         expect(assets.respond({ url, method: "GET" }).status).toBe(404);
       }

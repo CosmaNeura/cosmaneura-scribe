@@ -40,11 +40,14 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly editJournal?: (sessionId: string) => CreatorEditJournal;
   /** Reauthorize and acquire the existing exclusive, creator-scoped recorder. */
   readonly recorder: (sessionId: string, signal: AbortSignal) => Promise<R>;
+  readonly playPassage?: (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<{ wavBase64: string } | null>;
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
   /** Ephemeral name from the current native authenticated profile, not an identity. */
   readonly providerDisplayName?: string | undefined;
+  /** Trusted desktop recorder independently checks current review status at acquisition. */
+  readonly recorderRechecksReview?: true;
   readonly encounterSetup?: ProviderEncounterSetup | undefined;
   readonly account?: ProviderAccount | undefined;
   readonly signal: AbortSignal;

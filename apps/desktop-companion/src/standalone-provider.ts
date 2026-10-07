@@ -67,7 +67,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
         const linked = AbortSignal.any([signal, abort.signal, native.signal]);
         if (profile.enabled !== true || linked.aborted || !native.isReady()) throw unavailable();
         const uploadTarget = new HttpCiphertextUploadTarget(profile.uploadOrigins as string[], fetch, "azure_block_blob");
-        const backend = await connectDesktopNativeBackend(native, { signal: linked, uploadTarget,
+        const backend = await connectDesktopNativeBackend(native, { signal: linked, uploadTarget, diagnostics,
           creationRecords: async (recoveryScope, signal) => {
             const directory = join(runtime.userDataDirectory, "provider-creation-v1");
             // A separate encrypted namespace, scoped to Core's reviewed account.

@@ -24,8 +24,8 @@ enum ProcessCommand: Sendable {
             try keys(["type", "application", "processID", "windowID", "authorization", "processFence"])
             guard let raw = value["application"] as? String,
                   let application = MeetingAudioSelection.Application(rawValue: raw) else { throw DesktopAudioFailure.selectionChanged }
-            let pid = try integer(value["processID"], maximum: Int(Int32.max))
-            let window = try integer(value["windowID"], maximum: Int(UInt32.max))
+            let pid = try integer(value["processID"], minimum: application == .microphone ? 0 : 1, maximum: Int(Int32.max))
+            let window = try integer(value["windowID"], minimum: application == .microphone ? 0 : 1, maximum: Int(UInt32.max))
             return .startRenewable(try MeetingAudioSelection(application: application, processID: Int32(pid), windowID: UInt32(window)),
                 try authorization(value["authorization"]), try NativeFenceTicket(value["processFence"]))
         case "extend":
@@ -35,8 +35,8 @@ enum ProcessCommand: Sendable {
             try keys(["type", "application", "processID", "windowID", "maximumDurationSeconds", "maximumOutputFrames", "processFence"])
             guard let raw = value["application"] as? String,
                   let application = MeetingAudioSelection.Application(rawValue: raw) else { throw DesktopAudioFailure.selectionChanged }
-            let pid = try integer(value["processID"], maximum: Int(Int32.max))
-            let window = try integer(value["windowID"], maximum: Int(UInt32.max))
+            let pid = try integer(value["processID"], minimum: application == .microphone ? 0 : 1, maximum: Int(Int32.max))
+            let window = try integer(value["windowID"], minimum: application == .microphone ? 0 : 1, maximum: Int(UInt32.max))
             let duration = try integer(value["maximumDurationSeconds"], maximum: 86_400)
             let frames = try integer(value["maximumOutputFrames"], maximum: 1_382_400_000)
             guard frames <= duration * 16_000 else { throw DesktopAudioFailure.invalidAudio }

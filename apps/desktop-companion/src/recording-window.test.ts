@@ -18,11 +18,12 @@ function snapshot(phase: "ready" | "starting" | "recording" | "interrupted" | "s
   return { state, desktop: { phase } } as ProviderRecorderSnapshot;
 }
 describe("trusted main recording window", () => {
-  it("compacts once, keeps paused controls above Zoom, and restores after confirmed recording completion", async () => {
+  it("preserves window geometry, keeps paused controls visible, and removes pinning after confirmed completion", async () => {
     const f = fixture();
     expect(f.controller.primaryWindowId()).toBeNull();
     f.controller.update(snapshot("starting"));
-    expect(f.window.setBounds).toHaveBeenCalledWith({ x: -496, y: 40, width: 480, height: 360 });
+    expect(f.window.setBounds).not.toHaveBeenCalled();
+    expect(f.window.setMinimumSize).not.toHaveBeenCalled();
     expect(f.window.setAlwaysOnTop).toHaveBeenCalledWith(true, "status");
     expect(f.window.setVisibleOnAllWorkspaces).toHaveBeenCalledWith(true, { visibleOnFullScreen: true });
     await responsive();
@@ -42,7 +43,7 @@ describe("trusted main recording window", () => {
     expect(f.controller.primaryWindowId()).toBeNull(); // retain visible retry, never claim a confirmed active owner
     f.controller.update(snapshot("stopped", "processing"));
     expect(f.window.setAlwaysOnTop).toHaveBeenLastCalledWith(false);
-    expect(f.window.setBounds).toHaveBeenLastCalledWith({ x: -1200, y: 40, width: 1100, height: 800 });
+    expect(f.window.setBounds).not.toHaveBeenCalled();
     expect(f.controller.primaryWindowId()).toBeNull();
   });
   it.each(["hide", "minimize", "destroy", "block"] as const)("withdraws coverage after %s without trusting a renderer claim", async action => {

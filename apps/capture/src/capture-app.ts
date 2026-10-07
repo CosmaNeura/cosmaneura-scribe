@@ -178,6 +178,7 @@ export class CaptureApp extends LitElement {
           journal: binding.journal,
           ...(binding.speakerNameSuggestions ? { speakerNameSuggestions: binding.speakerNameSuggestions } : {}),
           ...(binding.editJournal ? { editJournal: binding.editJournal } : {}),
+          ...(binding.playPassage ? { playPassage: binding.playPassage } : {}),
           ...(binding.continueToNote ? { continueToNote: binding.continueToNote } : {}),
           ...(binding.prepareNoteOpening ? { prepareNoteOpening: binding.prepareNoteOpening } : {}),
         });
@@ -280,7 +281,8 @@ export class CaptureApp extends LitElement {
               <h2 id="record-title">${nativeProvider ? "Microphone" : "Record"}</h2>
               <p>
                 ${provider?.captureMode === "desktop_meeting"
-                  ? "Choose your Meet window in Chrome or your Zoom window when starting. This records your microphone and the selected application’s audio; other audio from that application may be included. Encrypted audio uploads while you record. If you go offline, saved audio waits on this Mac."
+                  ? this.#snapshot.desktop?.audioMode === "microphone" ? "Records this Mac’s microphone only. Keep both voices audible in the room or use speakerphone. Encrypted audio is saved and uploaded as you record."
+                    : "Records your microphone and the selected application’s audio. Chrome may include audio from other tabs and windows. Close unrelated audio before recording. Encrypted audio uploads as you record."
                   : nativeProvider ? "Audio is saved on this iPhone until upload is confirmed."
                   : provider ? "Keep this app in the foreground while recording. Start and stop deliberately."
                   : this.#sourceKind === "microphone"
@@ -295,7 +297,7 @@ export class CaptureApp extends LitElement {
             </div>` : ""}
             ${desktopProvider || nativeProvider ? this.#renderProviderProgress() : ""}
             ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
-              ? html`<scribe-desktop-input-meter .signal=${this.#snapshot.desktop.inputSignal}></scribe-desktop-input-meter>` : ""}
+              ? html`<scribe-desktop-input-meter .signal=${this.#snapshot.desktop.inputSignal} .microphoneOnly=${this.#snapshot.desktop.audioMode === "microphone"}></scribe-desktop-input-meter>` : ""}
             ${showInputMeter
               ? html`<scribe-ios-input-meter .readSignal=${provider?.controller.getCaptureSignal}></scribe-ios-input-meter>` : ""}
             ${this.#isNativeIPhone() && (!nativeProvider || ["ready", "paused"].includes(this.#snapshot.state)) ? html`<label>Microphone
@@ -307,6 +309,12 @@ export class CaptureApp extends LitElement {
               <small>${microphoneInputs.find(input => input.value === this.#microphoneInput)?.help}</small>
             </label>` : ""}
             ${this.#microphoneError ? html`<p role="alert">Microphone choice could not be confirmed. Stop any other recording, then retry.</p>` : ""}
+            ${desktopProvider && provider.controller.selectDesktopAudio && this.#snapshot.recordedChunks === 0
+              && this.#snapshot.elapsedSeconds === 0 && !this.#isStarting() && ["ready", "permission_required"].includes(this.#snapshot.desktop?.phase ?? "")
+              ? html`<label>Record audio from<select data-testid="desktop-audio-mode"
+                .value=${this.#snapshot.desktop?.audioMode ?? "meeting"} ?disabled=${this.#busy || this.#stopping}
+                @change=${this.#changeDesktopAudio}><option value="microphone">Microphone only · in the room or speakerphone</option>
+                <option value="meeting">Microphone + Zoom or Chrome audio</option></select></label>` : ""}
             <div class="record-actions">
               ${desktopProvider && this.#snapshot.statusCode === "capture_window_selection_pending"
                 && provider.controller.showWindowChooser ? html`<button class="primary" data-testid="show-window-chooser"
@@ -437,8 +445,8 @@ export class CaptureApp extends LitElement {
             <p role="status">
             ${this.#snapshot.desktop.coverage === "incomplete"
               ? "Recording coverage is incomplete. Review the retained audio and transcript for missing speech."
-              : this.#snapshot.desktop.coverage === "aligned" ? "Microphone and meeting audio are aligned."
-              : this.#snapshot.desktop.coverage === "complete" ? "Recording retained the interval covered by both microphone and meeting audio."
+              : this.#snapshot.desktop.coverage === "aligned" ? this.#snapshot.desktop.audioMode === "microphone" ? "Microphone audio is being captured." : "Microphone and application audio are aligned."
+              : this.#snapshot.desktop.coverage === "complete" ? this.#snapshot.desktop.audioMode === "microphone" ? "Microphone recording saved." : "Recording retained the interval covered by microphone and application audio."
               : this.#snapshot.desktop.phase === "starting" ? "Recording is not confirmed yet."
               : ["stopping", "stop_unconfirmed", "interrupted"].includes(this.#snapshot.desktop.phase)
                 ? "Recording status is being confirmed."
@@ -456,10 +464,7 @@ export class CaptureApp extends LitElement {
   }
 
   #isDesktopCompact(): boolean {
-    const phase = this.#snapshot.desktop?.phase;
-    return this.#provider?.captureMode === "desktop_meeting" && phase !== undefined
-      && (["starting", "recording", "stopping", "stop_unconfirmed"].includes(phase)
-        || this.#snapshot.state === "paused" && phase === "interrupted");
+    return false; // Window geometry stays under the provider’s control.
   }
 
   #isCancelledEmptyStart(): boolean {
@@ -493,6 +498,7 @@ export class CaptureApp extends LitElement {
     const nativeProvider = this.#provider?.captureMode === "native_microphone";
     const showInputMeter = this.#snapshot.state === "recording" && !this.#stopping
       && !this.#snapshot.desktop && this.#isNativeIPhone();
+    const savedAudio = this.#snapshot.recordedChunks > 0 ? "Saved audio is retained." : "No saved audio has been confirmed.";
     const uploadProgress = this.#snapshot.native?.uploadProgress ?? this.#snapshot.uploadProgress;
     return html`<section class=${desktopProvider || nativeProvider ? "recording-progress" : "flow-card"} aria-label="Recording progress">
             <p role="status" ?hidden=${nativeProvider && showInputMeter && this.#snapshot.statusCode === "capture_recording"}>${this.#stopping
@@ -505,17 +511,20 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.desktop?.phase === "starting"
               ? this.#snapshot.statusCode === "capture_window_selection_pending"
                 ? "Choose your meeting window. Recording has not started."
-                : "Starting microphone and meeting audio… Recording is not confirmed yet."
+                : this.#snapshot.desktop.audioMode === "microphone"
+                  ? "Starting microphone… Recording has not started yet." : "Starting microphone and application audio… Recording has not started yet."
               : this.#snapshot.desktop?.phase === "stopping" ? this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
                 ? "Confirming recording stopped…" : "Stopping recording…"
               : this.#snapshot.desktop?.phase === "stop_unconfirmed" ? "Recording may still be active. Choose Retry finish recording to confirm it has stopped."
               : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending"
                 ? "Recording has stopped. Retry confirmation before uploading."
-              : this.#snapshot.desktop?.phase === "permission_required" ? "Choose Set up recording access to allow microphone and screen recording. If you previously denied access, enable Scribe in macOS Settings, then try again."
+              : this.#snapshot.desktop?.phase === "permission_required" ? this.#snapshot.desktop.audioMode === "microphone"
+                ? "Microphone access is needed. Choose Set up recording access. If access was denied, enable Scribe in macOS Settings, then retry."
+                : "Microphone and application-audio access are needed. Choose Set up recording access. macOS may ask for microphone and screen-recording permission."
               : this.#snapshot.statusCode === "capture_stopping" ? "Stopping recording…"
               : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
               : this.#snapshot.statusCode === "capture_start_failed" ? this.#snapshot.desktop
-                ? "Recording did not start. Your saved audio is retained. Choose Start recording to try again."
+                ? "Recording did not start. Check the selected audio source, then try again."
                 : "Recording could not start. Check your microphone and connection, then retry Resume."
               : this.#snapshot.statusCode === "capture_preparation_failed" ? "Recording preparation could not finish. Reopen this encounter to retry. Saved work is retained."
               : this.#snapshot.statusCode === "capture_setup_expired" ? this.#isExpiredEmptyStart()
@@ -523,17 +532,17 @@ export class CaptureApp extends LitElement {
                 : "Recording setup expired. Confirm recording status before continuing."
               : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
-              : this.#snapshot.statusCode === "capture_storage_low" ? "Not enough device storage to continue recording. Saved audio is retained. Free up space, then retry recording, or finish recording."
-              : this.#snapshot.statusCode === "capture_storage_unavailable" ? "Device storage could not be checked. Saved audio is retained. Retry before continuing to record."
+              : this.#snapshot.statusCode === "capture_storage_low" ? `Not enough device storage to continue recording. ${savedAudio} Free up space, then retry recording, or finish recording.`
+              : this.#snapshot.statusCode === "capture_storage_unavailable" ? `Device storage could not be checked. ${savedAudio} Retry before continuing to record.`
               : this.#snapshot.statusCode === "capture_tail_not_saved" ? "Recording has stopped, but the last part could not be saved. Earlier saved audio is retained. Keep this visit and contact support before continuing or uploading."
-              : this.#snapshot.statusCode === "capture_interrupted" ? "Recording was interrupted. Saved audio is retained, but some audio just before the interruption may be missing. Speech during the interruption was not recorded. Check your microphone, then resume and repeat the last part, or finish recording."
+              : this.#snapshot.statusCode === "capture_interrupted" ? `Recording was interrupted. ${savedAudio} Some audio just before the interruption may be missing. Speech during the interruption was not recorded. Check your microphone, then resume and repeat the last part, or finish recording.`
               : this.#snapshot.statusCode === "capture_paused" ? this.#isDesktopCompact() || nativeProvider
                 ? html`<strong>${this.#isCancelledEmptyStart() ? "Start canceled" : "Paused"}</strong><span class="recording-state-detail">${this.#isCancelledEmptyStart()
                   ? "Recording has not started. Start when ready." : "No audio is being recorded."}</span>`
                 : "Recording is paused. Resume when ready, or finish recording. Missing speech during the pause cannot be recovered."
               : this.#snapshot.statusCode === "capture_no_saved_audio" ? "No audio was saved from this recording. Resume recording when ready."
               : this.#snapshot.statusCode === "capture_reopen_required" ? "Recording is stopped. Return to Your encounters and reopen this encounter to recover saved work."
-              : this.#snapshot.statusCode === "capture_resume_pending" ? "Recording has not resumed. Check your connection and retry Resume. Saved audio is retained."
+              : this.#snapshot.statusCode === "capture_resume_pending" ? `Recording has not resumed. Check your connection and retry Resume. ${savedAudio}`
               : this.#snapshot.statusCode === "capture_upload_pending" ? "Recording has stopped. Your saved recording is waiting for upload confirmation. Check your connection and retry."
               : this.#snapshot.statusCode === "capture_upload_settling" ? "Recording stopped. Finishing the current upload…"
               : this.#snapshot.statusCode === "capture_upload_confirming" ? "Audio uploaded. Confirming receipt before transcription…"
@@ -560,9 +569,9 @@ export class CaptureApp extends LitElement {
             <p class="recording-duration"><span>${nativeProvider ? "Elapsed" : "Recorded"}</span> <strong>${formatDuration(this.#snapshot.elapsedSeconds)}</strong></p>
             ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
               ? html`<p class="recording-control-hint">Use Pause for a break. Finish recording when the visit is finished.</p>` : ""}
-            ${this.#snapshot.remainingAuthoritySeconds === null || this.#isExpiredEmptyStart() ? "" : html`<p
-              ?hidden=${(this.#isDesktopCompact() || nativeProvider) && this.#snapshot.remainingAuthoritySeconds > 300}>
-              Recording window remaining ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
+            ${this.#snapshot.remainingAuthoritySeconds === null || this.#isExpiredEmptyStart() ? "" : desktopProvider
+              ? this.#snapshot.desktop?.phase === "recording" ? html`<p>Secure connection renews automatically. If it cannot renew, Scribe will pause and show a warning.</p>` : ""
+              : html`<p ?hidden=${nativeProvider && this.#snapshot.remainingAuthoritySeconds > 300}>Recording window remaining: ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`;
   }
 
@@ -626,6 +635,12 @@ export class CaptureApp extends LitElement {
     void controller.showWindowChooser().catch(() => { this.#chooserUnavailable = true; }).finally(() => {
       this.#showingChooser = false; this.requestUpdate();
     });
+  };
+
+  readonly #changeDesktopAudio = (event: Event): void => {
+    const mode = (event.target as HTMLSelectElement).value;
+    if (mode !== "microphone" && mode !== "meeting") return;
+    void this.#run(async () => this.#requireController().selectDesktopAudio?.(mode));
   };
 
   readonly #refreshPermissions = (): void => {

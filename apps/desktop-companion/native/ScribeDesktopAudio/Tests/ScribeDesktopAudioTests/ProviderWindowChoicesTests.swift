@@ -65,7 +65,7 @@ func compactRecordingStatusFitsBothStatesAndRetainsAnExplicitStopAction() {
             #expect(!view.isHidden)
         }
         #expect(controls.heading.stringValue == (failed ? "⚠ Stop unconfirmed" : "● Recording"))
-        #expect(controls.source.stringValue == (failed ? "Recording may still be active." : "Microphone + application audio"))
+        #expect(controls.source.stringValue == (failed ? "Recording may still be active." : "Audio recording active"))
         #expect(controls.guidance.stringValue == (failed ? "Keep Scribe open and retry Stop." : "Pause or resume in the main Scribe window."))
         #expect(controls.stop.title == (failed ? "Retry stop" : "Stop and upload"))
         #expect(controls.stop.target === receiver)

@@ -77,7 +77,7 @@ describe("private native pipe framing", () => {
 describe("content-free existing probe timings", () => {
   // This executable accepts read-only/setup modes only; it has no audio source.
   const probeScript = `#!${process.execPath}
-if (!["--availability-v1", "--request-permissions-v1"].includes(process.argv[2])) process.exit(77);
+if (!["--availability-v1", "--request-permissions-v1", "--microphone-availability-v1", "--microphone-permissions-v1"].includes(process.argv[2])) process.exit(77);
 const payload = Buffer.from(JSON.stringify({type: "availability", available: true}));
 const header = Buffer.alloc(5); header.writeUInt32BE(payload.length + 1); header[4] = 1;
 setTimeout(() => process.stdout.write(Buffer.concat([header, payload]), () => process.exit(0)), 40);
@@ -89,6 +89,14 @@ setTimeout(() => process.stdout.write(Buffer.concat([header, payload]), () => pr
       await run({ helperPath, helperSha256: createHash("sha256").update(probeScript).digest("hex") });
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
+  it("uses microphone permission probes without application-audio access", async () => {
+    await fixture(async helper => {
+      const driver = new NativeProcessPCMDriver({ ...helper, enabled: true, audioMode: () => "microphone",
+        isSessionActive: () => true, authorizeSelectedWindow: async () => { throw new Error("must not start"); } });
+      expect(await driver.getAvailability()).toBe(true);
+      await driver.requestPermissions(new AbortController().signal);
+    });
+  });
   const deniedSelection = async (): Promise<never> => { throw new Error("read-only probe must not authorize capture"); };
   it("measures helper checks and validated probe completion without changing results when diagnostics throws", async () => {
     await fixture(async helper => {

@@ -180,3 +180,27 @@
   .provider-note[data-note-view="transcript"] .provider-note-editor { display: none; }
 }
 @media (min-width: 900px) { .provider-note-tabs { display: none; } }
+
+/* Compact visit browsing and one page scroll for the clinical note. */
+.provider-list-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, .5fr); gap: 12px; }
+.provider-list-filters label { margin: 12px 0 0; }
+.provider-encounters { gap: 8px; }
+.provider-encounters li { grid-template-columns: minmax(0, 1fr) auto auto; }
+.provider-encounters li[hidden] { display: none; }
+.provider-encounters button { padding: 10px 14px; gap: 2px; }
+.provider-encounters .provider-hide-visit { width: auto; padding: 8px; background: transparent; border-color: transparent; font-size: .85rem; }
+.provider-header { padding: 4px 0; }
+.provider-header p { margin: 0; }
+.provider-account { padding: 0; background: none; margin: 0 0 8px; font-size: .8rem; }
+.provider-template-details { border-top: 1px solid #dce5e3; margin-top: 20px; }
+.provider-template-details summary { min-height: 44px; padding: 10px 0; cursor: pointer; font-weight: 600; }
+.provider-note-grid { height: auto; }
+.provider-note-editor { overflow: visible; }
+.provider-note-editor label { margin: 12px 0; }
+.provider-note-editor textarea { overflow: hidden; min-height: 68px; }
+.provider-save-bar { flex-wrap: wrap; }
+.provider-save-bar > div { display: flex; gap: 8px; }
+.provider-save-bar button { padding: 8px 12px; font-size: .9rem; }
+.provider-workspace button[data-workspace-action="finish-note"] { color: white; background: #17352f; }
+@media (min-width: 900px) { .provider-note-evidence { position: sticky; top: calc(var(--provider-header-height, 76px) + 86px); height: min(70dvh, 680px); } }
+@media (max-width: 600px) { .provider-list-filters { grid-template-columns: 1fr; gap: 0; } }

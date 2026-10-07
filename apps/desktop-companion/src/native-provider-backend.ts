@@ -1,3 +1,4 @@
+import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 import { parseEncounterDisplay } from "../../capture/src/provider/encounter-display";
 import { openingReviewFromCore } from "../../capture/src/provider/opening-review";
 import type { CiphertextUploadTarget } from "../../capture/src/bff/contracts";
@@ -14,10 +15,17 @@ import { parseProviderAccount, type ProviderAccount, createEncounterSetup, type 
  * source-start proofs; the main process receives only the checked grant/decision. */
 export async function connectDesktopNativeBackend(native: NativeProviderClient, options: {
   signal: AbortSignal;
+  diagnostics?: RuntimeDiagnostic;
   uploadTarget: CiphertextUploadTarget;
   openCore(appointmentRef: string | null): Promise<void>;
   creationRecords?: (scope: string, signal: AbortSignal) => Promise<{ records: CreationRecords; close(): Promise<void> }>;
 }): Promise<DesktopProviderBackend> {
+  const diagnostics = options.diagnostics ?? NO_DIAGNOSTICS;
+  const timed = async <T>(event: RuntimeTimingEvent, run: () => Promise<T>): Promise<T> => {
+    const began = performance.now();
+    try { return await run(); }
+    finally { try { diagnostics(event, Math.max(0, performance.now() - began)); } catch { /* Observation cannot affect authority. */ } }
+  };
   const state = await native.getState();
   if (state.phase !== "ready" || options.signal.aborted || native.signal.aborted) throw unavailable();
   const revision = state.revision, abort = new AbortController();
@@ -50,10 +58,15 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
     signal: AbortSignal): Promise<Response> => {
     current(signal);
     if (!["catalog", "encounters", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes", "note-opening"].includes(action)) throw unavailable();
-    const value = exact(await native.request("providerRequest", {
+    const operation = typeof body.operation === "object" && body.operation !== null && "kind" in body.operation ? body.operation.kind : null;
+    const event: RuntimeTimingEvent = action === "catalog" ? "provider_catalog" : action === "mount" ? "provider_mount"
+      : action === "capture-admissions" ? "provider_admission" : operation === "creator_review" ? "provider_review"
+      : operation === "capabilities" ? "provider_capabilities" : operation === "encryption_key" ? "provider_encryption_key"
+      : operation === "prepare_recording_window" ? "provider_recording_window" : "provider_other_operation";
+    const value = exact(await timed(event, () => native.request("providerRequest", {
       revision, action, key, body: JSON.stringify(body),
     }, AbortSignal.any([lifetime, signal]), action === "capture-admissions" ? 220_000
-      : ["capture-notes", "note-opening"].includes(action) ? 125_000 : 35_000), ["status", "body"]);
+      : ["capture-notes", "note-opening"].includes(action) ? 125_000 : 35_000)), ["status", "body"]);
     current(signal);
     if (typeof value.status !== "number" || typeof value.body !== "string"
       || ![200, 401, 403, 409, 422, 503].includes(value.status)) throw unavailable();
@@ -71,6 +84,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   };
   const encounterSetup = options.creationRecords ? createEncounterSetup({
     current, records: options.creationRecords,
+    canHide: appointmentRef => encounters.has(appointmentRef),
     created: entry => { encounters.set(entry.appointmentRef, { workspaceId: entry.workspaceId, encounter: entry }); },
     request: async (body, key, signal) => {
       const response = await request("encounters", body, key, signal);
@@ -160,13 +174,13 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
           // Called after deliberate Start and window selection. The native
           // owner keeps the short-lived decision until sourceAuthorize consumes
           // it; this reply exposes only the original grant and process fence.
-          const raw = await native.request("sourcePrepareForStart", {
+          const raw = await timed("provider_source_prepare", () => native.request("sourcePrepareForStart", {
             revision, preparationId, workspaceId: scope.workspaceId, bindingRef: scope.bindingRef,
             sessionId: prepared.sessionId, leaseId: prepared.captureLeaseId,
             leaseReceiptId: prepared.leaseReceiptId, leaseGeneration: prepared.captureLeaseGeneration,
             captureAuthorizedUntil: prepared.captureAuthorizedUntil,
             ...(prepared.firstSequenceNumber ? { firstSequenceNumber: prepared.firstSequenceNumber } : {}),
-          }, AbortSignal.any([lifetime, signal, operationSignal]));
+          }, AbortSignal.any([lifetime, signal, operationSignal])));
           const value = exact(raw, ["grant", "processFence"]);
           const grant = parseBackendCaptureGrant(value.grant);
           const processFence = parseNativeProcessFence(value.processFence);
@@ -185,8 +199,8 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
         authority: { authorizeStart: async (grant, operationSignal) => {
           current(signal); current(operationSignal);
           if (![...ownedSources].some(id => sources.get(id)?.sourceLeaseId === grant.sourceLeaseId)) throw unavailable();
-          const decision = await native.request("sourceAuthorize", { sourceLeaseId: grant.sourceLeaseId },
-            AbortSignal.any([lifetime, signal, operationSignal]));
+          const decision = await timed("provider_source_authorize", () => native.request("sourceAuthorize", { sourceLeaseId: grant.sourceLeaseId },
+            AbortSignal.any([lifetime, signal, operationSignal])));
           current(signal); current(operationSignal);
           return decision; // Existing protected validator binds every grant field and consumes once.
         } },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encounterDetail } from "./workspace-display";
+import { encounterDetail, encounterTimestamp, orderedNoteFields } from "./workspace-display";
 
 describe("encounter date display", () => {
   it("distinguishes repeated local times across daylight saving time", () => {
@@ -14,4 +14,14 @@ describe("encounter date display", () => {
     for (const value of ["Visit", "Visit · 2026-09-30", "Visit · 2026-99-30T10:26:45Z", "2026-09-30T10:26:45Z · Other detail"])
       expect(encounterDetail(value)).toBe(value);
   });
+});
+
+it("sorts only explicit encounter dates and puts clinical sections ahead of chart metadata", () => {
+  expect(encounterTimestamp("Visit · 2026-10-07T19:00:00Z")).toBe(Date.parse("2026-10-07T19:00:00Z"));
+  expect(encounterTimestamp("Visit 2026-10-07")).toBeNull();
+  const keys = ["Patient name", "Date of birth", "Plan", "Objective", "Subjective", "Assessment", "Other section"];
+  const result = orderedNoteFields(keys);
+  expect(result.clinical).toEqual(["Subjective", "Objective", "Assessment", "Plan", "Other section"]);
+  expect(result.details).toEqual(["Patient name", "Date of birth"]);
+  expect(keys[0]).toBe("Patient name"); // Template identity/order remains unchanged.
 });
