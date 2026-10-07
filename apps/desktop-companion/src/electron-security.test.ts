@@ -128,6 +128,7 @@ describe("Electron renderer security", () => {
         webviewTag: false,
         devTools: false,
         navigateOnDragDrop: false,
+        backgroundThrottling: false,
       },
     });
     expect(RENDERER_CONTENT_SECURITY_POLICY).toContain("default-src 'none'");

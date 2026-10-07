@@ -165,7 +165,7 @@ try {
       assert.doesNotMatch(root.querySelector(".recording-progress").textContent, /Your visit is still here/u);
       assert.equal(button("stop-button").hidden, desktop.phase === "stopping",
         "Unsafe or saved-audio states retain their existing Stop/Finish recovery");
-      assert.match(root.querySelector(".recording-progress").textContent, /Recording window remaining/u);
+      assert.doesNotMatch(root.querySelector(".recording-progress").textContent, /Recording window remaining/u);
       checks++;
     }
   } finally { await dispose(); }

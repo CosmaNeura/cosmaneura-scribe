@@ -11,6 +11,7 @@ import { parseDesktopProviderRequest, sessionState, exact, object, uuid, jsonCop
   type DesktopProviderRequest, type DesktopProviderEvent } from "../../capture/src/provider/desktop-host-protocol";
 import { parseEncounterDraft } from "../../capture/src/provider/encounter-setup";
 import type { DesktopProviderRecorder } from "./provider-recorder.js";
+import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 
 export interface DesktopProviderMainHost {
   readonly session: NativeProviderSession;
@@ -54,7 +55,8 @@ export class DesktopProviderWorkspaceMain {
   private initializing: Promise<void> | null = null;
   private disposing: Promise<void> | null = null;
   constructor(private readonly host: DesktopProviderMainHost,
-    private readonly attachRecorder: (recorder: DesktopProviderRecorder) => { dispose(): Promise<void> }) {
+    private readonly attachRecorder: (recorder: DesktopProviderRecorder) => { dispose(): Promise<void> },
+    private readonly diagnostics: RuntimeDiagnostic = NO_DIAGNOSTICS) {
     if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
       || "type" in process && process.type === "renderer") throw unavailable();
   }
@@ -84,12 +86,19 @@ export class DesktopProviderWorkspaceMain {
     if (cleanup ? this.cleanupRequests.has(cleanup) : this.pending.size - this.cleanupRequests.size >= 8) throw unavailable();
     if (cleanup) this.cleanupRequests.add(cleanup);
     const abort = new AbortController(); this.pending.set(request.requestId, abort);
+    const started = performance.now();
+    const event: RuntimeTimingEvent | undefined = request.method === "list" ? "provider_workspace_list"
+      : request.method === "open" ? "provider_workspace_open" : request.method === "journal_load" ? "provider_journal_read"
+      : request.method === "encounter_setup" && request.payload.action === "hidden" ? "provider_visit_preferences" : undefined;
     try {
       const result = await this.dispatch(request, abort.signal);
       if (this.closed || abort.signal.aborted) throw unavailable();
       return { requestId: request.requestId, ok: true, result: jsonCopy(result) };
     } catch { return { requestId: request.requestId, ok: false, result: null }; }
-    finally { this.pending.delete(request.requestId); if (cleanup) this.cleanupRequests.delete(cleanup); }
+    finally {
+      this.pending.delete(request.requestId); if (cleanup) this.cleanupRequests.delete(cleanup);
+      if (event) { try { this.diagnostics(event, Math.max(0, performance.now() - started)); } catch { /* Observation cannot affect cleanup. */ } }
+    }
   }
   private async dispatch(request: DesktopProviderRequest, signal: AbortSignal): Promise<unknown> {
     const payload = request.payload;

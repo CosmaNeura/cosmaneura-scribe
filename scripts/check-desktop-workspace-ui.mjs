@@ -17,6 +17,12 @@ const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "app://cosm
 const window = dom.window, root = window.document.getElementById("root");
 Object.defineProperty(window, "crypto", { value: webcrypto });
 Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone, AbortController, AbortSignal });
+window.ResizeObserver = class { observe() {} disconnect() {} };
+window.matchMedia = () => ({ matches: false });
+window.scrollTo = () => {}; window.scrollBy = () => {};
+window.HTMLElement.prototype.scrollIntoView = () => {};
+window.HTMLDialogElement.prototype.showModal = function() { this.setAttribute("open", ""); };
+window.HTMLDialogElement.prototype.close = function() { this.removeAttribute("open"); };
 window.fetch = () => { throw new Error("Unexpected renderer network"); };
 const module = new SourceTextModule(await readFile(bundle, "utf8"), { context: dom.getInternalVMContext() });
 await module.link(() => { throw new Error("Unexpected external module"); }); await module.evaluate();
@@ -56,7 +62,7 @@ const review = () => ({ schema_version: "1.0", session_id: sessionId, status: ac
   working: { source_transcript_version: 1, working_transcript_id: workingId, working_transcript_version: accepted ? 2 : 1,
     note_ready: accepted, segments: [{ source_segment_id: segmentId, source_segment_version: 1,
       resolution: accepted ? "spanish_translation" : "unresolved", content: accepted ? english : null }],
-    blockers: accepted ? [] : [{ source_segment_id: segmentId, code: "review_required" }] },
+    blockers: accepted ? [] : [{ source_segment_id: segmentId, code: "translation_review_required" }] },
   review_queue: { schema_version: "1.0", session_id: sessionId, source_transcript_version: 1,
     working_transcript_id: workingId, working_transcript_version: accepted ? 2 : 1, status: accepted ? "complete" : "review_required",
     items: accepted ? [] : [{ source_segment_id: segmentId, source_segment_version: 1, source_locale: "es-US", target_locale: "en-US",
@@ -128,6 +134,7 @@ const host = {
             if (body.action === "read" && noteGate) await noteGate.promise;
             return Response.json({ ...envelope, action: body.action, receipt });
           },
+          editJournal: () => ({ async load() { return null; }, async save() { throw new Error("not used"); }, async clear() {} }),
           async recorder() { throw new Error("No source activation in review/save check"); },
           async openInCore(ref) { navigation.push(ref); },
         };
@@ -157,7 +164,7 @@ if (preloadBundle) {
 } else installDesktopProviderPreload(contextBridge, rendererPort);
 let dispose;
 try {
-  assert.deepEqual(Object.keys(exposed).sort(), ["scribeProvider", "scribeRecorder"]);
+  assert.deepEqual(Object.keys(exposed).sort(), ["scribeApplication", "scribeProvider", "scribeRecorder"]);
   const invoke = handlers.get("scribe:provider:workspace:v1"), read = { method: "session_read", requestId: webcrypto.randomUUID(), connectionId: null, encounterId: null, payload: {} };
   await assert.rejects(invoke({ ...event, senderFrame: { url: renderer.mainFrame.url } }, read), /unavailable/);
   await assert.rejects(invoke({ ...event, sender: { ...renderer, id: 78 } }, read), /unavailable/);
@@ -238,7 +245,7 @@ try {
   root.querySelector('[name="note-0"]').value = "Invented clinician edit.";
   click(action("encounters")); await until(() => root.querySelector(action("discard-edits")));
   click(action("save"));
-  await until(() => /Edits saved to Core/u.test(root.textContent)); assert.equal(journal.progress.pendingSave, null);
+  await until(() => /Saved · Not clinically reviewed/u.test(root.textContent)); assert.equal(journal.progress.pendingSave, null);
   assert.equal(root.querySelector(action("discard-edits")), null, "Saving must cancel the old navigation request");
   assert.ok(journalSaves.some(progress => progress.pendingSave)); assert.equal(fields.Subjective, "Invented clinician edit.");
   click(action("encounters")); await until(() => root.querySelector(action("open")));

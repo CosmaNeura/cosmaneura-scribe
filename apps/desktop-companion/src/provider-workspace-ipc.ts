@@ -3,6 +3,7 @@ import { DESKTOP_PROVIDER_CHANNELS, parseDesktopProviderRequest, parseDesktopPro
 import { DesktopProviderRecorderIpc, installDesktopProviderRecorderPreload } from "./provider-recorder-ipc.js";
 import { DesktopProviderWorkspaceMain, type DesktopProviderMainHost } from "./provider-workspace-main.js";
 import { installApplicationClosePreload, type ApplicationCloseContextPort, type ApplicationCloseRendererPort } from "./application-close-ipc.js";
+import { NO_DIAGNOSTICS, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 interface Frame { readonly url: string }
 interface Event { readonly sender: { readonly id: number; readonly mainFrame: Frame }; readonly senderFrame: Frame | null }
@@ -28,10 +29,11 @@ export class DesktopProviderWorkspaceIpc {
   private installed = false;
   private revoked = false;
   private unsubscribe: (() => void) | undefined;
-  constructor(private readonly ipc: MainPort, private readonly renderer: RendererTarget, host: DesktopProviderMainHost) {
+  constructor(private readonly ipc: MainPort, private readonly renderer: RendererTarget, host: DesktopProviderMainHost,
+    diagnostics: RuntimeDiagnostic = NO_DIAGNOSTICS) {
     this.main = new DesktopProviderWorkspaceMain(host, recorder => {
       const boundary = new DesktopProviderRecorderIpc(ipc, renderer, recorder); boundary.install(); return boundary;
-    });
+    }, diagnostics);
   }
   /** Install before loading the packaged page. Native initialization is awaited
    * by requests while the application's existing loading screen stays responsive. */

@@ -45,3 +45,20 @@ outdated countdown expectation. The complete workspace script has older fixture
 assumptions (missing edit journal, ResizeObserver and dialog implementation);
 it is not passing evidence. Focused workspace tests pass. Installed walkthrough
 is required to verify this complete user journey.
+
+Follow-up installed walkthrough: build 48 exposed a visible frame that remained
+on the encounter list after the accessibility tree advanced to recording setup.
+Native catalog and mount timings completed; process samples were idle. Candidate
+49 disables Chromium background throttling for this one provider window, keeps
+all sandbox/permission/CSP controls, and adds fixed duration-only timings around
+the full main list/open/journal/preferences operations. Native picker focus must
+not suspend preparation or stop/recovery rendering. Confirm improvement in the
+signed installed app before claiming latency reduction. Rollback preserves the
+prior build 48 and its keys/configuration. This continues the owner's all-twelve
+authorization; no cloud/service deployment or permission expansion.
+
+The complete compiled workspace fixtures now include the browser APIs and edit
+journal required by the real UI, the current translation blocker, close preload
+and save wording. Both normal and uploaded-recovery checks pass, including
+revocation and explicit unsaved-edit decisions. These checks use an invented
+backend and do not substitute for installed or physical audio qualification.

@@ -137,7 +137,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
     installElectronRendererSecurity(appWindow.webContents, PROVIDER_ENTRY);
     removeApplicationClose = installApplicationClose(runtime.ipcMain, appWindow.webContents, requestClose);
     if (!owner) throw unavailable();
-    boundary = new DesktopProviderWorkspaceIpc(runtime.ipcMain, appWindow.webContents, (owner as DesktopProviderOwner).host); boundary.install();
+    boundary = new DesktopProviderWorkspaceIpc(runtime.ipcMain, appWindow.webContents, (owner as DesktopProviderOwner).host, diagnostics); boundary.install();
     appWindow.on("close", windowClose);
     appWindow.on("unresponsive", () => { recordingWindow.block(); requestClose(); });
     appWindow.webContents.on("render-process-gone", () => { diagnostics("renderer_gone"); requestClose(); });

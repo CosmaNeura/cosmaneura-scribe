@@ -5,6 +5,7 @@ import type { DesktopProviderMethod, DesktopProviderEvent } from "../../capture/
 import type { ProviderSessionState } from "../../capture/src/provider/native-plugin";
 import type { JournalSnapshot, ProviderProgress } from "../../capture/src/provider/workspace-journal";
 import type { PendingReviewDecision } from "../../review-ui/src/creator-review-journal";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 const sessionId = "10000000-0000-4000-8000-000000000001", workspaceId = "20000000-0000-4000-8000-000000000002";
 const scope = { workspaceId, bindingRef: "scribe_capture_binding_01j00000000000000000000000", appointmentRef: "appointment_01j00000000000000000000000" };
@@ -60,7 +61,8 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
     }),
   };
   const attached = vi.fn(() => { if (refuseAttachment) throw new Error("invented IPC attachment failure"); return { dispose: stop }; });
-  const main = new DesktopProviderWorkspaceMain(host, attached);
+  const diagnostics = vi.fn<RuntimeDiagnostic>();
+  const main = new DesktopProviderWorkspaceMain(host, attached, diagnostics);
   main.subscribe(event => events.push(event)); await main.initialize();
   let connectionId: string | null = null, encounterId: string | null = null;
   const invoke = async (method: DesktopProviderMethod, payload: Record<string, unknown> = {}, ids?: { connectionId: string | null; encounterId: string | null }) =>
@@ -69,7 +71,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
     expect(reply.ok).toBe(true); connectionId = reply.result!.connectionId as string; encounterId = null; };
   const open = async () => { const reply = await invoke("open", { appointmentRef: scope.appointmentRef }, { connectionId, encounterId: null });
     expect(reply.ok).toBe(true); encounterId = reply.result!.encounterId as string; };
-  return { main, invoke, connect, open, backend, setup, attached, stop, dispose, events, changed, contextSignals, navigation, signOut,
+  return { main, invoke, connect, open, backend, setup, attached, stop, dispose, events, changed, contextSignals, navigation, signOut, diagnostics,
     get opens() { return opens; },
     get ids() { return { connectionId, encounterId }; }, get saved() { return saved; },
     delayCore: (value: Promise<void>) => { coreGate = value; }, delayRecorder: (value: Promise<void>) => { recorderGate = value; },
@@ -80,6 +82,20 @@ const core = (kind: string) => ({ path: "/service/v1/agent/scribe/capture-operat
   body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID(), operation: { kind } } });
 
 describe("trusted desktop provider workspace", () => {
+  it("measures complete desktop operations without content and isolates diagnostic failures", async () => {
+    const f = await fixture();
+    try {
+      await f.connect(); await f.invoke("list"); await f.open(); await f.invoke("journal_load");
+      expect(f.diagnostics.mock.calls.map(([event]) => event)).toEqual([
+        "provider_workspace_list", "provider_workspace_open", "provider_journal_read",
+      ]);
+      for (const call of f.diagnostics.mock.calls) {
+        expect(call).toHaveLength(2); expect(call[1]).toEqual(expect.any(Number)); expect(call[1]).toBeGreaterThanOrEqual(0);
+      }
+      f.diagnostics.mockImplementation(() => { throw new Error("invented observation failure"); });
+      expect((await f.invoke("journal_load")).ok).toBe(true);
+    } finally { await f.main.dispose(); }
+  });
   it.each([
     ["capture-admissions", 409, { detail: "provider_consent_required" }, { detail: "provider_consent_required" }],
     ["capture-notes", 409, { detail: "provider_consent_required" }, null],

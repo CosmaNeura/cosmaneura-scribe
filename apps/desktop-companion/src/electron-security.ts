@@ -41,6 +41,7 @@ export interface SecureBrowserWindowOptions {
     readonly webviewTag: false;
     readonly devTools: false;
     readonly navigateOnDragDrop: false;
+    readonly backgroundThrottling: false;
   };
 }
 
@@ -80,6 +81,9 @@ export function createSecureBrowserWindowOptions(
       webviewTag: false,
       devTools: false,
       navigateOnDragDrop: false,
+      // Recording preparation and stop/recovery must keep updating when a
+      // native picker or another application takes focus from the provider.
+      backgroundThrottling: false,
     }),
   });
 }
