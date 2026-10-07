@@ -318,10 +318,11 @@ export class CaptureApp extends LitElement {
             ${desktopProvider && this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows
               && !this.#isStarting() && ["ready", "permission_required", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase)
               ? html`<div class="meeting-window-selection">
-                <label>Meeting window<select data-testid="meeting-window" .value=${this.#snapshot.desktop.meetingWindows.selectedId ?? ""}
+                <label>Meeting window<select data-testid="meeting-window"
                   ?disabled=${this.#busy || this.#stopping} @change=${this.#changeMeetingWindow}>
-                  <option value="">Choose the window for this visit</option>
-                  ${this.#snapshot.desktop.meetingWindows.windows.map(row => html`<option value=${row.id}>${row.title}</option>`)}
+                  <option value="" ?selected=${this.#snapshot.desktop.meetingWindows.selectedId === null}>Choose the window for this visit</option>
+                  ${this.#snapshot.desktop.meetingWindows.windows.map(row => html`<option value=${row.id}
+                    ?selected=${this.#snapshot.desktop!.meetingWindows!.selectedId === row.id}>${row.title}</option>`)}
                 </select></label>
                 <button class="secondary" data-testid="refresh-meeting-windows" ?disabled=${this.#busy || this.#stopping}
                   @click=${this.#refreshMeetingWindows}>Refresh windows</button>

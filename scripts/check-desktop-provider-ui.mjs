@@ -129,6 +129,7 @@ try {
     assert.equal(choice.value, ""); choice.value = windowId;
     choice.dispatchEvent(new window.Event("change", { bubbles: true }));
     await until(() => !button("record-button").disabled);
+    assert.equal(button("meeting-window").selectedOptions[0].textContent.trim(), "Zoom — Invented visit");
     assert.deepEqual(inline.calls, ["read", "meeting_window"]);
     button("refresh-meeting-windows").click(); await until(() => button("record-button").disabled && !button("meeting-window").disabled);
     assert.equal(button("meeting-window").value, "");
