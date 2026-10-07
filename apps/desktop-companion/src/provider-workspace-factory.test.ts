@@ -88,7 +88,7 @@ describe("desktop provider resource factory", () => {
   });
 
   it("binds the recorder to retained admission and Core scope without starting a picker or inventing authority", async () => {
-    const f = await fixture(), connection = f.connect();
+    const f = await fixture(), connection = f.connect({ prepareInBackground: true });
     const opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
     let options!: DesktopProviderRecorderOptions;
     const stop = vi.fn(async () => undefined);
@@ -111,6 +111,7 @@ describe("desktop provider resource factory", () => {
     expect(f.request).toHaveBeenCalledWith("/service/v1/agent/scribe/capture-operations",
       expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "capabilities" } }),
       expect.any(String), expect.any(AbortSignal));
+    expect(options.prepareInBackground).toBe(true);
     expect(options.authority).toBe(f.selected.authority); expect(f.authorizeStart).not.toHaveBeenCalled();
     expect(f.resources.selectWindow).not.toHaveBeenCalled();
     await options.release(); expect((await opened.journal.load()).progress).toEqual(progress);

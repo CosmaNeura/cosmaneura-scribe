@@ -110,7 +110,7 @@ export function parseDesktopRecorderState(value: unknown): DesktopRecorderState 
   if (typeof snapshot.state !== "string" || !["idle", "preparing", "ready", "recording", "paused", "uploading", "processing", "complete", "error"].includes(snapshot.state)
     || typeof snapshot.statusCode !== "string" || !/^[a-z][a-z0-9_]{0,99}$/u.test(snapshot.statusCode)
     || snapshot.transcript !== null || snapshot.transcriptionStatus !== null
-    || typeof desktop.phase !== "string" || !["ready", "permission_required", "starting", "recording", "stopping", "interrupted", "stop_unconfirmed", "stopped"].includes(desktop.phase)
+    || typeof desktop.phase !== "string" || !["preparing", "ready", "permission_required", "starting", "recording", "stopping", "interrupted", "stop_unconfirmed", "stopped"].includes(desktop.phase)
     || typeof desktop.coverage !== "string" || !["not_started", "aligned", "complete", "incomplete"].includes(desktop.coverage)) throw failure();
   uuid(snapshot.sessionId); uuid(envelope.recorderId); number(envelope.revision);
   for (const key of ["recordedChunks", "queuedChunks", "elapsedSeconds"] as const) number(snapshot[key]);

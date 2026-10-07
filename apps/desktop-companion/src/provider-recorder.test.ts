@@ -133,6 +133,63 @@ function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
   } };
 }
 
+describe("desktop preparation screen", () => {
+  it("exposes disabled preparation before fresh review finishes, then enables the same owned recorder", async () => {
+    const f = await fixture(true), checked = deferred(), review = deferred();
+    const list = vi.fn(async () => [{ application: "com.google.Chrome" as const, processID: 1, windowID: 1, title: "Invented visit" }]);
+    const recorder = await f.open({ prepareInBackground: true, listMeetingWindows: list,
+      authorizePreparation: async () => { checked.resolve(); await review.promise; return { sessionId: f.session.id, status: "created" }; } });
+    const bridge = wire(recorder), view = await connectDesktopRecorderView(bridge.port, f.session.id, f.abort.signal);
+    try {
+      await checked.promise;
+      expect(view.controller.snapshot).toMatchObject({ state: "preparing", statusCode: "capture_preparing", desktop: { phase: "preparing" } });
+      expect(await f.options.flowStore.getActiveCaptureState()).toBeNull();
+      await expect(view.controller.startRecording()).rejects.toThrow();
+      await expect(view.controller.refreshPermissions!()).rejects.toThrow();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled(); expect(list).not.toHaveBeenCalled();
+      review.resolve();
+      await vi.waitFor(() => expect(view.controller.snapshot.desktop?.phase).toBe("ready"));
+      expect(view.controller.snapshot.desktop?.meetingWindows?.windows).toHaveLength(1);
+      expect(list).toHaveBeenCalledTimes(1); expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { review.resolve(); await view.deactivate(); await bridge.boundary.dispose(); await f.close(); }
+  });
+  it("joins a late metadata branch before releasing custody after cancellation", async () => {
+    const f = await fixture(true), entered = deferred(), reply = deferred();
+    const bff = f.options.createBff(f.abort.signal), capabilities = await bff.getCapabilities(f.session.id);
+    vi.spyOn(bff, "getCapabilities").mockImplementation(async () => { entered.resolve(); await reply.promise; return capabilities; });
+    const recorder = await f.open({ prepareInBackground: true });
+    try {
+      await entered.promise;
+      const close = recorder.deactivate();
+      expect(recorder.availableForView).toBe(false); expect(f.release).not.toHaveBeenCalled();
+      reply.resolve(); await close;
+      expect(f.release).toHaveBeenCalledTimes(1); expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { reply.resolve(); await f.close(); }
+  });
+  it("shows a fixed preparation failure and retains its encrypted owner until navigation", async () => {
+    const f = await fixture(true), reply = deferred();
+    const recorder = await f.open({ prepareInBackground: true,
+      authorizePreparation: async () => { await reply.promise; throw new Error("Invented private backend failure"); } });
+    try {
+      reply.resolve();
+      await vi.waitFor(() => expect(recorder.snapshot).toMatchObject({ state: "error", statusCode: "capture_preparation_failed", desktop: { phase: "stopped" } }));
+      expect(recorder.availableForView).toBe(true); expect(f.release).not.toHaveBeenCalled();
+      expect(() => recorder.startRecording()).toThrow(); expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      await recorder.deactivate(); expect(f.release).toHaveBeenCalledTimes(1);
+    } finally { reply.resolve(); await f.close(); }
+  });
+  it("keeps direct diagnostic compositions waiting for completed preparation", async () => {
+    const f = await fixture(true), entered = deferred(), reply = deferred(); let settled = false;
+    const opening = f.open({ authorizePreparation: async () => { entered.resolve(); await reply.promise; return { sessionId: f.session.id, status: "created" }; } })
+      .then(recorder => { settled = true; return recorder; });
+    try {
+      await entered.promise; expect(settled).toBe(false); reply.resolve();
+      expect((await opening).snapshot.desktop?.phase).toBe("ready");
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { reply.resolve(); await opening; await f.close(); }
+  });
+});
+
 describe("automatic interrupted-owner settlement", () => {
   it("shows subchunk accepted duration and adds exact retained duration once on Resume", async () => {
     const f = await fixture(true);

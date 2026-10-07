@@ -26,6 +26,13 @@ describe("desktop recorder command view", () => {
     expect(() => parseDesktopRecorderRequest({ ...command, processID: 42 })).toThrow();
     expect(() => parseDesktopRecorderRequest({ ...command, kind: "start" })).toThrow();
   });
+  it("accepts admitted preparation metadata without audio or new renderer authority", () => {
+    const original = state(0);
+    const preparing = { ...original, snapshot: { ...original.snapshot, state: "preparing", statusCode: "capture_preparing",
+      desktop: { ...original.snapshot.desktop, phase: "preparing" } } };
+    expect(parseDesktopRecorderState(preparing)).toEqual(preparing);
+    expect(() => parseDesktopRecorderState({ ...preparing, credentials: "blocked" })).toThrow();
+  });
   it("accepts existing snapshots and only bounded receipt-count progress", () => {
     const original = state(2);
     expect(parseDesktopRecorderState(original)).toEqual(original);

@@ -69,6 +69,7 @@ export class CaptureApp extends LitElement {
     transcript: null,
   };
   #unsubscribe: (() => void) | undefined;
+  readonly #preparationWaiters = new Set<() => void>();
 
   /** Bind once, before mounting. Default preview startup never supplies this. */
   public bindProvider(binding: ProviderCaptureBinding): void {
@@ -83,10 +84,36 @@ export class CaptureApp extends LitElement {
   }
 
   /** Continue one explicit consent-screen Start, never a saved/replayed intent. */
-  public async startFromProviderAction(input: MicrophoneInput): Promise<void> {
-    if (!this.isConnected || !this.#provider || this.#providerClosed || this.#provider.signal.aborted
-      || this.#snapshot.state !== "ready" || this.#snapshot.desktop && this.#snapshot.desktop.phase !== "ready"
-      || !isMicrophoneInput(input)) return;
+  public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting"): Promise<void> {
+    const binding = this.#provider;
+    if (!binding || !isMicrophoneInput(input)) return;
+    if (this.#snapshot.desktop?.phase === "preparing") {
+      await new Promise<void>(resolve => {
+        let settled = false, unsubscribe = (): void => undefined;
+        const finish = (): void => {
+          if (settled) return;
+          settled = true; unsubscribe(); this.#preparationWaiters.delete(finish); resolve();
+        };
+        this.#preparationWaiters.add(finish);
+        unsubscribe = binding.controller.subscribe(snapshot => {
+          if (snapshot.desktop?.phase !== "preparing" || this.#providerClosed || binding.signal.aborted) finish();
+        });
+        if (settled) unsubscribe();
+      });
+    }
+    const current = (): boolean => this.isConnected && this.#provider === binding && !this.#providerClosed
+      && !binding.signal.aborted && this.#snapshot.state === "ready"
+      && (!this.#snapshot.desktop || ["ready", "permission_required"].includes(this.#snapshot.desktop.phase));
+    if (!current() || this.#busy || this.#stopping) return;
+    if (desktopAudio && binding.controller.selectDesktopAudio) {
+      this.#busy = true; this.requestUpdate();
+      try { await binding.controller.selectDesktopAudio(desktopAudio); }
+      finally { this.#busy = false; this.requestUpdate(); }
+      if (!current()) return;
+    }
+    if (this.#snapshot.desktop && this.#snapshot.desktop.phase !== "ready") return;
+    // Meeting visits always require a deliberate inline window choice and Start.
+    if (this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows) return;
     this.#microphoneInput = input;
     await this.#record();
   }
@@ -188,6 +215,7 @@ export class CaptureApp extends LitElement {
   readonly #closeProvider = (): void => {
     if (this.#providerClosed) return;
     this.#providerClosed = true;
+    for (const finish of this.#preparationWaiters) finish();
     this.#clearStartupProgress();
     this.#unsubscribe?.();
     this.#disposeReview?.();
@@ -310,23 +338,24 @@ export class CaptureApp extends LitElement {
             </label>` : ""}
             ${this.#microphoneError ? html`<p role="alert">Microphone choice could not be confirmed. Stop any other recording, then retry.</p>` : ""}
             ${desktopProvider && provider.controller.selectDesktopAudio && this.#snapshot.recordedChunks === 0
-              && this.#snapshot.elapsedSeconds === 0 && !this.#isStarting() && ["ready", "permission_required"].includes(this.#snapshot.desktop?.phase ?? "")
+              && this.#snapshot.elapsedSeconds === 0 && !this.#isStarting() && ["preparing", "ready", "permission_required"].includes(this.#snapshot.desktop?.phase ?? "")
               ? html`<label>Record audio from<select data-testid="desktop-audio-mode"
-                .value=${this.#snapshot.desktop?.audioMode ?? "meeting"} ?disabled=${this.#busy || this.#stopping}
+                .value=${this.#snapshot.desktop?.audioMode ?? "meeting"} ?disabled=${this.#busy || this.#stopping || this.#snapshot.desktop?.phase === "preparing"}
                 @change=${this.#changeDesktopAudio}><option value="microphone">Microphone only · in the room or speakerphone</option>
                 <option value="meeting">Microphone + Zoom or Chrome audio</option></select></label>` : ""}
             ${desktopProvider && this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows
-              && !this.#isStarting() && ["ready", "permission_required", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase)
+              && !this.#isStarting() && ["preparing", "ready", "permission_required", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase)
               ? html`<div class="meeting-window-selection">
                 <label>Meeting window<select data-testid="meeting-window"
-                  ?disabled=${this.#busy || this.#stopping} @change=${this.#changeMeetingWindow}>
+                  ?disabled=${this.#busy || this.#stopping || this.#snapshot.desktop.phase === "preparing"} @change=${this.#changeMeetingWindow}>
                   <option value="" ?selected=${this.#snapshot.desktop.meetingWindows.selectedId === null}>Choose the window for this visit</option>
                   ${this.#snapshot.desktop.meetingWindows.windows.map(row => html`<option value=${row.id}
                     ?selected=${this.#snapshot.desktop!.meetingWindows!.selectedId === row.id}>${row.title}</option>`)}
                 </select></label>
-                <button class="secondary" data-testid="refresh-meeting-windows" ?disabled=${this.#busy || this.#stopping}
+                <button class="secondary" data-testid="refresh-meeting-windows" ?disabled=${this.#busy || this.#stopping || this.#snapshot.desktop.phase === "preparing"}
                   @click=${this.#refreshMeetingWindows}>Refresh windows</button>
-                <small>${this.#snapshot.desktop.meetingWindows.state === "unavailable"
+                <small>${this.#snapshot.desktop.phase === "preparing" ? "Your meeting windows will appear when preparation finishes."
+                  : this.#snapshot.desktop.meetingWindows.state === "unavailable"
                   ? "Windows could not be loaded. Check recording access, then refresh."
                   : this.#snapshot.desktop.meetingWindows.windows.length === 0
                     ? "Open your visit in Zoom or Chrome, then refresh."
@@ -340,7 +369,7 @@ export class CaptureApp extends LitElement {
               <button
                 data-testid="record-button"
                 class="record-button"
-                ?hidden=${(nativeProvider || desktopProvider) && (this.#snapshot.state !== "ready" || this.#isStarting())}
+                ?hidden=${(nativeProvider || desktopProvider) && (this.#snapshot.state !== "ready" && this.#snapshot.desktop?.phase !== "preparing" || this.#isStarting())}
                 aria-label=${provider ? "Start recording" : this.#sourceKind === "microphone"
                   ? "Start foreground microphone test recording"
                   : "Start silent synthetic recording"}
@@ -529,6 +558,8 @@ export class CaptureApp extends LitElement {
               || this.#busy && this.#snapshot.state === "ready") ? nativeProvider
                 ? html`<strong>Starting microphone…</strong><span class="recording-state-detail">Recording is not confirmed yet.</span>`
                 : "Starting microphone… Recording is not confirmed yet."
+              : this.#snapshot.desktop?.phase === "preparing"
+                ? html`<strong>Preparing your recording…</strong><span class="recording-state-detail">Recording has not started. Keep this screen open, or return to Your encounters to cancel.</span>`
               : this.#snapshot.desktop?.phase === "starting"
               ? this.#snapshot.statusCode === "capture_window_selection_pending"
                 ? "Choose your meeting window. Recording has not started."

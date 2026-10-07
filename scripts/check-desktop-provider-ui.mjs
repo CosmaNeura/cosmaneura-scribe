@@ -156,6 +156,48 @@ try {
     assert.equal(root.querySelector("[data-visit-count]").textContent, "2 visits");
     assert.equal(hidden.size, 0); assert.deepEqual(visits.calls, []); checks++;
   } finally { await visitDispose(); }
+  const navigatingPreparation = fixture();
+  navigatingPreparation.change({ state: "preparing", statusCode: "capture_preparing" }, { phase: "preparing" });
+  const navigationPreparationDispose = await open(navigatingPreparation);
+  try {
+    const intent = root.querySelector("cosmaneura-capture").startFromProviderAction("built_in");
+    root.querySelector('[data-workspace-action="encounters"]').click();
+    await until(() => root.querySelector('[data-workspace-action="open"]'));
+    await intent;
+    navigatingPreparation.change({ state: "ready", statusCode: "capture_ready" }, { phase: "ready" });
+    assert.deepEqual(navigatingPreparation.calls, ["read", "deactivate"], "Your encounters cancels visible preparation without replaying Start"); checks++;
+  } finally { await navigationPreparationDispose(); }
+  const preparing = fixture();
+  preparing.change({ state: "preparing", statusCode: "capture_preparing" }, { phase: "preparing", audioMode: "meeting",
+    meetingWindows: { state: "ready", selectedId: null, windows: [] } });
+  const preparingDispose = await open(preparing);
+  try {
+    assert.equal(button("record-button").hidden, false); assert.equal(button("record-button").disabled, true);
+    assert.equal(button("meeting-window").disabled, true); assert.equal(button("refresh-meeting-windows").disabled, true);
+    assert.match(root.textContent, /Preparing your recording/u);
+    const app = root.querySelector("cosmaneura-capture");
+    const intent = app.startFromProviderAction("built_in", "meeting");
+    assert.deepEqual(preparing.calls, ["read"]);
+    preparing.change({ state: "ready", statusCode: "capture_ready" }, { phase: "ready" });
+    await intent; assert.equal(preparing.calls.includes("start"), false, "Meeting metadata readiness cannot start capture"); checks++;
+  } finally { await preparingDispose(); }
+  const cancelledPreparation = fixture();
+  cancelledPreparation.change({ state: "preparing", statusCode: "capture_preparing" }, { phase: "preparing" });
+  const cancelledDispose = await open(cancelledPreparation);
+  const cancelledApp = root.querySelector("cosmaneura-capture");
+  const cancelledIntent = cancelledApp.startFromProviderAction("built_in");
+  await cancelledDispose(); await cancelledIntent;
+  cancelledPreparation.change({ state: "ready", statusCode: "capture_ready" }, { phase: "ready" });
+  assert.equal(cancelledPreparation.calls.includes("start"), false, "Removed view cannot replay consent Start"); checks++;
+  const microphonePreparation = fixture();
+  microphonePreparation.change({ state: "preparing", statusCode: "capture_preparing" }, { phase: "preparing", audioMode: "microphone" });
+  const microphoneDispose = await open(microphonePreparation);
+  try {
+    const intent = root.querySelector("cosmaneura-capture").startFromProviderAction("built_in");
+    assert.deepEqual(microphonePreparation.calls, ["read"]);
+    microphonePreparation.change({ state: "ready", statusCode: "capture_ready" }, { phase: "ready" });
+    await intent; assert.equal(microphonePreparation.calls.filter(kind => kind === "start").length, 1); checks++;
+  } finally { await microphoneDispose(); }
   const inline = fixture();
   const windowId = webcrypto.randomUUID();
   inline.change({}, { audioMode: "meeting", meetingWindows: { state: "ready", selectedId: null,

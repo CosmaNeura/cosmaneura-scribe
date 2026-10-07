@@ -542,7 +542,6 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (!await localController.restore()) await localController.prepareConfigured(id);
     }
     requireValue(controller.snapshot.sessionId === id);
-    if (startRequested !== undefined && native?.controller.selectDesktopAudio) await native.controller.selectDesktopAudio(preferredDesktopAudio);
     if (!authorized(n)) { await close(); return; }
     show("");
     const app = document.createElement("cosmaneura-capture") as CaptureApp;
@@ -577,9 +576,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     disposeContent = () => { stopObserving(); app.remove(); };
     // Only the current explicit Start action carries this in-memory intent.
     // Reopening/recovering a journal never starts a microphone or meeting.
-    if (startRequested !== undefined && !(native?.controller.snapshot.desktop?.audioMode === "meeting" && native.controller.snapshot.desktop.meetingWindows)) {
+    if (startRequested !== undefined) {
       await app.updateComplete;
-      if (authorized(n) && app.isConnected) await app.startFromProviderAction(startRequested);
+      if (authorized(n) && app.isConnected) {
+        // Visible preparation must not hold the workspace navigation busy guard.
+        // The bound view discards this one intent on removal/revocation.
+        void app.startFromProviderAction(startRequested, native?.controller.selectDesktopAudio ? preferredDesktopAudio : undefined)
+          .catch(() => { if (authorized(n) && app.isConnected) notice.textContent = "Recording could not start. Check the audio source and recording access, then retry."; });
+      }
     }
   };
   const admit = async (mode: "initial" | "recover" | "renew" = "initial", startRequested?: MicrophoneInput): Promise<void> => {
