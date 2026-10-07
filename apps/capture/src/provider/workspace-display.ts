@@ -31,12 +31,15 @@ export function encounterTimestamp(detail: string): number | null {
 }
 
 export function orderedNoteFields(keys: readonly string[]): { clinical: string[]; details: string[] } {
-  const details = keys.filter(key => /^(patient(?: name| information| details)?|name|dob|date of birth|date(?: of (?:visit|service))?|visit date|appointment|provider(?: name)?|clinician(?: name)?|encounter(?: type)?|modality|location|language)$/iu.test(key.trim()));
+  const details = keys.filter(key => /^(patient(?: name| information| details)?|name|dob|date of birth|mrn(?:\s*\/\s*dob)?|medical record number|payer|insurance|sites|place of service|telehealth attestation|coding, attestation, signature|date(?: of (?:visit|service))?|visit date|appointment|provider(?: name)?|clinician(?: name)?|encounter(?: type)?|modality|location|language)$/iu.test(key.trim()));
   const clinical = keys.filter(key => !details.includes(key));
-  const rank = (key: string): number => /^(?:chief complaint|reason for visit)$/iu.test(key) ? 0
-    : /^(?:subjective|hpi|history of present illness)$/iu.test(key) ? 1
-    : /^(?:objective|exam|physical exam|examination)$/iu.test(key) ? 2
-    : /^assessment$/iu.test(key) ? 3 : /^plan$/iu.test(key) ? 4 : 5;
+  const rank = (key: string): number => {
+    const heading = key.trim().replace(/^[SOAP]\s*[-–—:]\s*/iu, "");
+    return /^(?:chief complaint|reason for visit)$/iu.test(heading) ? 0
+      : /^(?:subjective|hpi|history of present illness)$/iu.test(heading) ? 1
+      : /^(?:objective|exam|physical exam|examination)$/iu.test(heading) ? 2
+      : /^assessment$/iu.test(heading) ? 3 : /^plan$/iu.test(heading) ? 4 : 5;
+  };
   clinical.sort((a, b) => rank(a) - rank(b));
   return { clinical, details };
 }
