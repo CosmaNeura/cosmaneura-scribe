@@ -334,3 +334,21 @@ private final class PCMSink: DesktopPCMSink, @unchecked Sendable {
     #expect(results[0] == [16384, -16384, -16384, 16384, 16384, -16384, -16384, 16384, 16384, -16384, -16384])
     #expect(results[0] == results[1])
 }
+
+@Test func microphoneOnlyUsesItsActualClockAtFullGainWithoutASystemSource() throws {
+    let fixture = MixerFixture(), sink = PCMSink()
+    let mixer = try AlignedMeetingPCM(maximumOutputFrames: 480, microphoneOnly: true, sink: sink)
+    for tick in 0..<3 {
+        #expect(mixer.receive(try fixture.frame(.microphone, offset: UInt64(tick * 10_000_000), position: Int64(tick * 160),
+            rate: 16_000, samples: Array(repeating: 0.5, count: 160))))
+    }
+    let result = try mixer.finish()
+    #expect(result.outputFrames == 480)
+    #expect(result.start.hostTimeNanoseconds == fixture.origin)
+    #expect(result.start.microphonePrerollNanoseconds == 0 && result.start.systemPrerollNanoseconds == 0)
+    #expect(result.microphoneTailNanoseconds == 0 && result.systemTailNanoseconds == 0)
+    #expect(sink.values == Array(repeating: 16_384, count: 480))
+    #expect(sink.errors.isEmpty)
+    let rejected = try AlignedMeetingPCM(maximumOutputFrames: 480, microphoneOnly: true, sink: PCMSink())
+    #expect(!rejected.receive(try fixture.frame(.systemAudio, offset: 0, position: 0, samples: [0.5])))
+}

@@ -143,6 +143,12 @@ export class DesktopProviderWorkspaceMain {
             } else {
               if (!setup) throw unavailable();
               if (payload.action === "state") { exact(payload, ["action"]); result = await setup.state(linked); }
+              else if (payload.action === "hidden") { exact(payload, ["action"]); if (!setup.hidden) throw unavailable(); result = await setup.hidden(linked); }
+              else if (payload.action === "set_hidden") {
+                exact(payload, ["action", "appointmentRef", "hidden"]);
+                if (!setup.setHidden || !reference(payload.appointmentRef, "appointment") || typeof payload.hidden !== "boolean") throw unavailable();
+                await setup.setHidden(payload.appointmentRef, payload.hidden, linked); result = null;
+              }
               else if (payload.action === "search") {
                 exact(payload, ["action", "query"]);
                 if (typeof payload.query !== "string" || payload.query.length > 200) throw unavailable();
@@ -235,6 +241,14 @@ export class DesktopProviderWorkspaceMain {
             void this.closeEncounter(connection, encounter).catch(() => undefined); throw error;
           } finally { delete encounter.recorderOpening; }
           result = null; break;
+        }
+        case "play_passage": {
+          exact(payload, ["sessionId", "segmentId"]);
+          await this.requireSession(encounter, payload.sessionId);
+          this.requireEncounter(connection, encounter, signal);
+          if (!encounter.value.playPassage) throw unavailable();
+          result = await encounter.value.playPassage(uuid(payload.sessionId), uuid(payload.segmentId),
+            AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal])); break;
         }
         case "open_core": {
           exact(payload, ["noteRef"]);

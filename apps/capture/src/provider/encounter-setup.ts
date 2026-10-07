@@ -21,6 +21,8 @@ export interface ProviderEncounterSetup {
   state(signal: AbortSignal): Promise<EncounterSetupState>;
   search(query: string, signal: AbortSignal): Promise<Omit<EncounterSetupState, "pending">>;
   submit(draft: EncounterDraft | null, signal: AbortSignal): Promise<ProviderEncounter>;
+  hidden?(signal: AbortSignal): Promise<readonly string[]>;
+  setHidden?(appointmentRef: string, hidden: boolean, signal: AbortSignal): Promise<void>;
   addDateOfBirth?(encounter: ProviderEncounter, dateOfBirth: string, key: string, signal: AbortSignal): Promise<ProviderEncounter>;
 }
 export type CreationRecords = Pick<SecureQueuePlugin, "get" | "create" | "compareAndSwap">;
@@ -93,6 +95,7 @@ export function createEncounterSetup(options: {
   records(recoveryScope: string, signal: AbortSignal): Promise<{ records: CreationRecords; close(): Promise<void> }>;
   created(encounter: ProviderEncounter & { workspaceId: string }): void;
   current(signal?: AbortSignal): void;
+  canHide?(appointmentRef: string): boolean;
 }): ProviderEncounterSetup & { dispose(): Promise<void> } {
   let recovery: string | null = null, account: string | null = null;
   let storage: Promise<Awaited<ReturnType<typeof options.records>>> | null = null;
@@ -151,7 +154,39 @@ export function createEncounterSetup(options: {
     if (new Set(patients.map(p => p.patientRef)).size !== patients.length) throw fail();
     return { account: account!, patients, moreResults: value.more_results };
   };
+  const hiddenSnapshot = async (signal: AbortSignal): Promise<{ revision: string | null; refs: string[] }> => {
+    if (!recovery) await search("", signal);
+    const { records } = await journal(signal), key = "provider-hidden-visits-v1:" + recovery;
+    let saved;
+    try { saved = await records.get({ key }); }
+    catch (error) { if (record(error) && error.code === "SECURE_QUEUE_NOT_FOUND") return { revision: null, refs: [] }; throw fail(); }
+    options.current(signal);
+    if (saved.key !== key || !/^[1-9][0-9]*$/u.test(saved.revision) || saved.data.length > 100_000) throw fail();
+    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(saved.data), ch => ch.charCodeAt(0))));
+    if (!record(value) || Object.keys(value).sort().join(",") !== "recoveryScope,refs,version" || value.version !== 1 || value.recoveryScope !== recovery
+      || !Array.isArray(value.refs) || value.refs.length > 1000 || value.refs.some(ref => !reference(ref, "appointment")) || new Set(value.refs).size !== value.refs.length) throw fail();
+    return { revision: saved.revision, refs: value.refs as string[] };
+  };
   return {
+    ...(options.canHide ? {
+      hidden: async (signal: AbortSignal) => (await hiddenSnapshot(signal)).refs,
+      setHidden: async (appointmentRef: string, hidden: boolean, signal: AbortSignal) => {
+        options.current(signal);
+        if (busy || !reference(appointmentRef, "appointment") || !options.canHide!(appointmentRef)) throw fail();
+        busy = true;
+        try {
+          const saved = await hiddenSnapshot(signal), refs = new Set(saved.refs);
+          if (hidden) refs.add(appointmentRef); else refs.delete(appointmentRef);
+          if (refs.size > 1000) throw fail();
+          const { records } = await journal(signal), key = "provider-hidden-visits-v1:" + recovery;
+          const raw = new TextEncoder().encode(JSON.stringify({ version: 1, recoveryScope: recovery, refs: [...refs] }));
+          const data = btoa(Array.from(raw, byte => String.fromCharCode(byte)).join("")); raw.fill(0);
+          if (saved.revision === null) await records.create({ key, data });
+          else await records.compareAndSwap({ key, data, expectedRevision: saved.revision });
+          options.current(signal);
+        } finally { busy = false; }
+      },
+    } : {}),
     search,
     state: async signal => ({ ...await search("", signal), pending: (await load(signal)).pending }),
     submit: async (input, signal) => {

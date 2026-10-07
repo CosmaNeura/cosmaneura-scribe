@@ -204,3 +204,16 @@ it("preserves the opening timestamp while acquiring existing desktop custody", a
   expect(f.authorizeRecorder).not.toHaveBeenCalled();
   expect(f.resources.selectWindow).not.toHaveBeenCalled();
 });
+
+it("reauthorizes passage review, refuses a foreign session or segment, and suppresses revoked replies", async () => {
+  const f = await fixture(), opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  await opened.journal.save(await opened.journal.load(), { ...progress, uploaded: true });
+  const operation = new AbortController().signal, segment = crypto.randomUUID();
+  await expect(opened.playPassage!(crypto.randomUUID(), segment, operation)).rejects.toThrow();
+  expect(f.request).not.toHaveBeenCalled();
+  expect(await opened.playPassage!(sessionId, segment, operation)).toBeNull();
+  expect(f.request).toHaveBeenCalledOnce();
+  const original = f.request.getMockImplementation()!;
+  f.request.mockImplementationOnce(async (...args) => { const value = await original(...args); f.authorized.abort(); return value; });
+  await expect(opened.playPassage!(sessionId, segment, operation)).rejects.toThrow();
+});

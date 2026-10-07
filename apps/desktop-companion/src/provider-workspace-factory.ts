@@ -1,3 +1,4 @@
+import { passageWav, retainPassageAudio } from "./passage-playback.js";
 import { NativeCreatorEditJournal } from "../../review-ui/src/native-edit-journal";
 import type { DesktopRecordingWindow } from "./recording-window.js";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter } from "../../capture/src/provider/workspace-contracts";
@@ -182,6 +183,23 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           scope: selected.scope, encounter: selected.encounter, signal: mountSignal, request,
           ...(selected.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
           ...(selected.openingReview ? { openingReview: selected.openingReview } : {}),
+          playPassage: (sessionId, segmentId, operation) => guarded(async () => {
+            uuid(sessionId); uuid(segmentId);
+            if (owned.recorderOpening || (owned.recorder && !["ready", "stopped"].includes(owned.recorder.snapshot.desktop?.phase ?? "")) || operation.aborted) throw unavailable();
+            const saved = await journal.load(); check();
+            if (saved.progress?.sessionId !== sessionId) throw unavailable();
+            const client = new CoreCaptureClient(selected.scope, request, AbortSignal.any([mountSignal, operation]));
+            const view = parseCreatorReview(await client.operation(sessionId, { kind: "creator_review" }), sessionId); check();
+            const segment = view.source?.segments.find(item => item.source_segment_id === segmentId);
+            if (!segment || view.capture_continuity) return null;
+            const archive = owned.store!.namespace(`playback:${sessionId}`);
+            const key = await new DurableDesktopFlowStore(owned.store!.namespace("flow")).playbackKey(sessionId, owned.store!.namespace(`playback-key:${sessionId}`)); check();
+            if (!key) return null;
+            const wav = await passageWav(archive, sessionId, key, segment.start_ms, Math.min(segment.end_ms, segment.start_ms + 30_000), () => { check(); if (operation.aborted) throw unavailable(); });
+            if (!wav) return null;
+            try { check(); if (operation.aborted) throw unavailable(); return { wavBase64: Buffer.from(wav).toString("base64") }; }
+            finally { wav.fill(0); }
+          }),
           openInCore: noteRef => guarded(() => selected.openInCore(noteRef)),
           journal: { load: () => guarded(() => journal.load()), save: (previous, progress) => guarded(() => journal.save(previous, progress)) },
           editJournal: sessionId => {
@@ -206,8 +224,30 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
               const saved = await journal.load(); check();
               if (saved.progress?.sessionId !== sessionId || recorderSignal.aborted) throw unavailable();
               const linked = AbortSignal.any([mountSignal, recorderSignal]);
+              const inputRecords = owned.store!.namespace("recording-input");
+              const inputKey = `audio-mode:${sessionId}`;
+              const storedInput = await inputRecords.get(inputKey);
+              let inputRevision = storedInput?.revision ?? null;
+              let audioMode: "microphone" | "meeting" = saved.progress.admission?.attestation.modality === "virtual" ? "meeting" : "microphone";
+              if (storedInput) {
+                try {
+                  const mode = new TextDecoder().decode(storedInput.data);
+                  if (mode !== "meeting" && mode !== "microphone") throw unavailable();
+                  audioMode = mode;
+                } finally { storedInput.data.fill(0); }
+              } else {
+                // Existing desktop recordings keep their original combined input.
+                const prior = await new DurableDesktopFlowStore(owned.store!.namespace("flow")).getActiveCaptureState(); check();
+                if (prior) audioMode = "meeting";
+              }
+              const saveAudioMode = async (mode: "microphone" | "meeting") => {
+                const bytes = new TextEncoder().encode(mode);
+                try { inputRevision = await inputRecords.save(inputKey, inputRevision, bytes); check(); }
+                finally { bytes.fill(0); }
+              };
+              if (!storedInput) await saveAudioMode(audioMode);
               const flow = new DurableDesktopFlowStore(owned.store!.namespace("flow"));
-              owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, sessionId, signal: linked,
+              owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, sessionId, audioMode, saveAudioMode, signal: linked,
                 createBff: captureSignal => new CoreCaptureBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId),
                 authorizePreparation: async captureSignal => {
                   const client = new CoreCaptureClient(selected.scope, request, captureSignal);
@@ -219,9 +259,13 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                 retireSource: selected.retireSource,
                 flowStore: flow, createSessionKey: flow.createSessionKey,
                 storageCapacity: { availableBytes: async () => {
-                  check(); const bytes = await owned.store!.availableBytes(); check(); return bytes;
+                  check(); const bytes = await owned.store!.availableBytes(); check(); return Math.floor(bytes / 2);
                 } },
-                queueStorage: new DurableDesktopQueueStorage(owned.store!.namespace(`queue:${sessionId}`), sessionId),
+                queueStorage: new DurableDesktopQueueStorage(owned.store!.namespace(`queue:${sessionId}`), sessionId, async record => {
+                  check(); const archive = owned.store!.namespace(`playback:${sessionId}`);
+                  await flow.retainPlaybackKey(sessionId, owned.store!.namespace(`playback-key:${sessionId}`)); check();
+                  await retainPassageAudio(archive, record); check();
+                }),
                 uploadTarget: selected.uploadTarget,
                 coverage: new DurableDesktopCoverage(owned.store!.namespace("coverage"), sessionId),
                 native: { ...resources.native, getProcessFence: () => {

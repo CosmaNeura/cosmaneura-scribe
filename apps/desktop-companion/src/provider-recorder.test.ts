@@ -1541,3 +1541,34 @@ describe("start readiness overlap", () => {
     } finally { releaseBranch.resolve(); await starting.catch(() => undefined); await f.close(); }
   });
 });
+
+
+describe("deliberate desktop input selection", () => {
+  it("starts microphone-only without a picker and keeps the current backend start decision", async () => {
+    const f = await fixture(true), driver = interruptedDriver(f);
+    const saveAudioMode = vi.fn(async () => undefined);
+    const recorder = await f.open({ audioMode: "microphone", saveAudioMode });
+    try {
+      expect(recorder.snapshot.desktop?.audioMode).toBe("microphone");
+      await recorder.startRecording();
+      expect(f.selectWindow).not.toHaveBeenCalled();
+      expect(f.authority).toHaveBeenCalledOnce();
+      expect(f.nativeStart).toHaveBeenCalledOnce();
+      await expect(recorder.selectDesktopAudio("meeting")).rejects.toThrow();
+      await driver.interrupt(true);
+      await vi.waitFor(() => expect(recorder.snapshot.desktop?.phase).toBe("interrupted"));
+      await expect(recorder.selectDesktopAudio("meeting")).rejects.toThrow();
+      expect(saveAudioMode).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+  it("persists an explicit input change before capture and still uses the picker for meeting audio", async () => {
+    const f = await fixture(true); interruptedDriver(f);
+    const save = vi.fn(async () => undefined), recorder = await f.open({ audioMode: "microphone", saveAudioMode: save });
+    try {
+      await recorder.selectDesktopAudio("meeting");
+      expect(save).toHaveBeenCalledWith("meeting");
+      expect(recorder.snapshot.desktop?.audioMode).toBe("meeting");
+      await recorder.startRecording(); expect(f.selectWindow).toHaveBeenCalledOnce();
+    } finally { await f.close(); }
+  });
+});

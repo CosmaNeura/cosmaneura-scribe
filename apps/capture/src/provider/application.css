@@ -25,3 +25,8 @@
 .scribe-desktop-close:focus-visible { outline: 3px solid #90b4ff; outline-offset: 2px; }
 .provider-session-header:has(.scribe-desktop-close) { gap: 12px; }
 .provider-session-header:has(.scribe-desktop-close) [data-session-actions] { margin-left: auto; }
+
+.provider-session-header { padding-top: 8px; padding-bottom: 8px; gap: 8px; }
+.provider-brand { font-size: 1.1rem; gap: 8px; }
+.provider-brand-icon { width: 32px; height: 32px; border-radius: 8px; }
+.provider-session-header button[data-session-action], .scribe-desktop-close { padding: 6px 10px; font-size: .85rem; border-color: transparent; }

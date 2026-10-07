@@ -13,7 +13,7 @@ import { NativeProcessDecoder, nativeCommand, nativeMetadata, exactKeys } from "
 import type { RuntimeDiagnostic, RuntimeTimingEvent } from "./runtime-diagnostics.js";
 
 export interface AuthorizedDesktopSelection {
-  readonly application: "com.google.Chrome" | "us.zoom.xos";
+  readonly application: "com.google.Chrome" | "us.zoom.xos" | "microphone";
   readonly processID: number;
   readonly windowID: number;
   readonly captureAuthorizedUntil: number;
@@ -21,6 +21,7 @@ export interface AuthorizedDesktopSelection {
 export interface NativeProcessDriverOptions {
   /** Existing companion enablement; false/omitted never executes a helper. */
   readonly enabled?: boolean;
+  readonly audioMode?: () => "microphone" | "meeting";
   readonly helperPath: string;
   readonly helperSha256: string;
   /** Observed native workstation state, supplied by the trusted host. */
@@ -52,7 +53,7 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
       if (!this.options.enabled || !this.options.isSessionActive()) return false;
       await timed(this.options, "audio_availability_helper_check", () => verifyNativeHelper(this.options));
       if (!this.options.isSessionActive()) return false;
-      return await timed(this.options, "audio_availability_probe", () => probe(this.options.helperPath))
+      return await timed(this.options, "audio_availability_probe", () => probe(this.options.helperPath, undefined, this.options.audioMode?.() === "microphone"))
         && this.options.isSessionActive();
     } catch { return false; }
   }
@@ -63,7 +64,7 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
       if (!this.options.enabled || signal.aborted || !this.options.isSessionActive()) return false;
       await timed(this.options, "audio_permission_helper_check", () => verifyNativeHelper(this.options));
       if (signal.aborted || !this.options.isSessionActive()) return false;
-      return await timed(this.options, "audio_permission_probe", () => probe(this.options.helperPath, signal))
+      return await timed(this.options, "audio_permission_probe", () => probe(this.options.helperPath, signal, this.options.audioMode?.() === "microphone"))
         && !signal.aborted && this.options.isSessionActive();
     } catch { return false; }
   }
@@ -126,8 +127,10 @@ class ProcessSession implements DesktopPCMDriverSession {
     const duration = Math.floor((selection.captureAuthorizedUntil - Date.now()) / 1000);
     if (!this.options.isSessionActive() || !exactKeys({ ...selection },
       ["application", "processID", "windowID", "captureAuthorizedUntil"])
-      || !["com.google.Chrome", "us.zoom.xos"].includes(selection.application)
-      || !integer(selection.processID, 1, 2_147_483_647) || !integer(selection.windowID, 1, 4_294_967_295)
+      || !["com.google.Chrome", "us.zoom.xos", "microphone"].includes(selection.application)
+      || (selection.application === "microphone"
+        ? selection.processID !== 0 || selection.windowID !== 0
+        : !integer(selection.processID, 1, 2_147_483_647) || !integer(selection.windowID, 1, 4_294_967_295))
       || !Number.isSafeInteger(selection.captureAuthorizedUntil) || !integer(duration, 1, 86_400)) throw failure();
     if (this.authorization) {
       this.authorization = checkedAuthorization(this.authorization, this.maximumFrames);
@@ -360,10 +363,11 @@ export async function verifyNativeHelper(options: Pick<NativeProcessDriverOption
       || after.mtimeMs !== before.mtimeMs || length !== before.size || hash.digest("hex") !== options.helperSha256) throw failure();
   } finally { bytes.fill(0); await file.close(); }
 }
-async function probe(path: string, permissionSignal?: AbortSignal): Promise<boolean> {
+async function probe(path: string, permissionSignal?: AbortSignal, microphoneOnly = false): Promise<boolean> {
   if (permissionSignal?.aborted) return false;
   return await new Promise<boolean>(resolve => {
-    const child = launch(path, permissionSignal ? "--request-permissions-v1" : "--availability-v1");
+    const child = launch(path, microphoneOnly ? permissionSignal ? "--microphone-permissions-v1" : "--microphone-availability-v1"
+      : permissionSignal ? "--request-permissions-v1" : "--availability-v1");
     const decoder = new NativeProcessDecoder();
     let available: boolean | undefined;
     // Neither probe mode records. OS setup may wait for an explicit user choice;

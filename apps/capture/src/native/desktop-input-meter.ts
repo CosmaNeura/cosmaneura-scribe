@@ -23,6 +23,8 @@ export class DesktopInputMeter extends LitElement {
     meter { width: 100%; height: 12px; accent-color: #167052; }
     p { margin: 6px 0 0; line-height: 1.4; }
   `;
+  static override properties = { microphoneOnly: { type: Boolean } };
+  microphoneOnly = false;
   #signal: DesktopInputFeedback | undefined;
   #receivedAt = -Infinity;
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -42,13 +44,13 @@ export class DesktopInputMeter extends LitElement {
     const microphone = desktopInputLevel(this.#signal?.microphone, age);
     const meeting = desktopInputLevel(this.#signal?.meetingAudio, age);
     return html`<div class="inputs" aria-label="Audio input activity">
-      ${[["Microphone", microphone], ["Meeting audio", meeting]].map(([name, value]) => {
+      ${(this.microphoneOnly ? [["Microphone", microphone]] : [["Microphone", microphone], ["Application audio", meeting]]).map(([name, value]) => {
         const state = value as ReturnType<typeof desktopInputLevel>;
         return html`<div class="input"><strong>${name}</strong><meter min="0" max="100"
           value=${Math.round(state.level * 100)} aria-label=${name}></meter><span>${state.label}</span></div>`;
       })}
-    </div>${microphone.level === 0 || meeting.level === 0
-      ? html`<p>Say a few words and watch Microphone. Ask the other participant to speak and watch Meeting audio.</p>` : ""}`;
+    </div>${microphone.level === 0 || !this.microphoneOnly && meeting.level === 0
+      ? html`<p>${this.microphoneOnly ? "Say a few words and check that both voices move the microphone bar." : "Check Microphone when you speak and Application audio when the other participant speaks."}</p>` : ""}`;
   }
 }
 if (!customElements.get("scribe-desktop-input-meter")) customElements.define("scribe-desktop-input-meter", DesktopInputMeter);

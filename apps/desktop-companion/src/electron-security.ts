@@ -8,7 +8,7 @@ export const RENDERER_CONTENT_SECURITY_POLICY = [
   "form-action 'none'",
   "frame-ancestors 'none'",
   "img-src 'self' data:",
-  "media-src 'none'",
+  "media-src blob:",
   "object-src 'none'",
   "script-src 'self'",
   "style-src 'self'",

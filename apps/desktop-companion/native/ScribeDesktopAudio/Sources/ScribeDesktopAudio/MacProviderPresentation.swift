@@ -16,6 +16,8 @@ public final class MacProviderWindowPicker: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var choices: [NSButton] = []
     private var cancel: NSButton?
+    private var start: NSButton?
+    private var selectedIndex: Int?
     private var requestID: UUID?
     private var selections: [MeetingAudioSelection] = []
     private var continuation: CheckedContinuation<MeetingAudioSelection, any Error>?
@@ -55,14 +57,18 @@ public final class MacProviderWindowPicker: NSObject, NSWindowDelegate {
                 let listHeight = min(272, rows.count * 52 - 8)
                 let window = providerMeetingPickerPanel(listHeight: listHeight, visibleFrame: NSScreen.main?.visibleFrame)
                 panel = window; window.delegate = self
-                let controls = providerWindowChoices(rows.map(\.1), target: self, action: #selector(confirmSelection(_:)))
+                let controls = providerWindowChoices(rows.map(\.1), target: self, action: #selector(selectRow(_:)))
                 choices = controls.buttons
                 let scroll = controls.scroll
                 let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelSelection(_:)))
                 cancel = cancelButton; cancelButton.keyEquivalent = "\u{1b}"
+                let startButton = NSButton(title: "Start recording", target: self, action: #selector(confirmSelection(_:)))
+                start = startButton; startButton.isEnabled = false
+                let actions = NSStackView(views: [cancelButton, startButton])
+                actions.orientation = .horizontal; actions.spacing = 12
                 let disclosure = NSTextField(wrappingLabelWithString:
-                    "Choose a window to start recording your microphone and application audio. Chrome audio can include other tabs or windows. Window selection does not isolate one browser tab.")
-                let stack = NSStackView(views: [disclosure, scroll, cancelButton])
+                    "Select the window for this visit, then choose Start recording. Scribe records your microphone and all audio from that application. Close unrelated audio in Chrome, including other tabs and windows.")
+                let stack = NSStackView(views: [disclosure, scroll, actions])
                 stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
                 scroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
                 install(stack, in: window)
@@ -96,16 +102,21 @@ public final class MacProviderWindowPicker: NSObject, NSWindowDelegate {
         guard sender === cancel, let requestID else { return }
         finish(.failure(ProviderPresentationFailure.cancelled), attempt: requestID)
     }
+    @objc private func selectRow(_ sender: NSButton) {
+        guard continuation != nil, let index = choices.firstIndex(where: { $0 === sender }) else { return }
+        selectedIndex = index
+        for button in choices { button.state = button === sender ? .on : .off }
+        start?.isEnabled = true
+    }
     @objc private func confirmSelection(_ sender: NSButton) {
-        guard let requestID, let index = choices.firstIndex(where: { $0 === sender }),
-              index < selections.count else { return }
+        guard sender === start, let requestID, let index = selectedIndex, index < selections.count else { return }
         finish(.success(selections[index]), attempt: requestID)
     }
     private func finish(_ result: Result<MeetingAudioSelection, any Error>, attempt: UUID) {
         guard requestID == attempt, let pending = continuation else { return }
         continuation = nil
         panel?.delegate = nil; panel?.close(); panel = nil
-        choices.removeAll(); cancel = nil; selections.removeAll()
+        choices.removeAll(); cancel = nil; start = nil; selectedIndex = nil; selections.removeAll()
         pending.resume(with: result)
     }
 }
@@ -114,7 +125,7 @@ public final class MacProviderWindowPicker: NSObject, NSWindowDelegate {
 /// Space behavior can be checked with a hidden panel and invented labels.
 @MainActor
 func providerMeetingPickerPanel(listHeight: Int, visibleFrame: NSRect?) -> NSPanel {
-    let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 540, height: listHeight + 180),
+    let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 540, height: listHeight + 200),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
     window.title = "Scribe · Choose a meeting window"
     window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
@@ -140,9 +151,10 @@ func providerWindowChoices(_ labels: [String], target: AnyObject, action: Select
     list.autoresizingMask = [.width]
     let buttons = labels.map { label in
         let button = NSButton(title: label, target: target, action: action)
+        button.setButtonType(.radio)
         button.alignment = .left; button.bezelStyle = .rounded
         button.lineBreakMode = .byTruncatingTail; button.toolTip = label
-        button.setAccessibilityHelp("Start recording this meeting window and your microphone.")
+        button.setAccessibilityHelp("Select this window. Recording starts only after choosing Start recording.")
         list.addArrangedSubview(button)
         button.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         button.heightAnchor.constraint(equalToConstant: 44).isActive = true
@@ -303,7 +315,7 @@ struct ProviderRecordingControls {
 
     func update(failed: Bool) {
         heading.stringValue = failed ? "⚠ Stop unconfirmed" : "● Recording"
-        source.stringValue = failed ? "Recording may still be active." : "Microphone + application audio"
+        source.stringValue = failed ? "Recording may still be active." : "Audio recording active"
         guidance.stringValue = failed ? "Keep Scribe open and retry Stop." : "Pause or resume in the main Scribe window."
         stop.title = failed ? "Retry stop" : "Stop and upload"
     }

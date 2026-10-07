@@ -6,6 +6,7 @@ import Foundation
 
 public struct MeetingAudioSelection: Sendable, Equatable {
     public enum Application: String, Sendable {
+        case microphone = "microphone"
         case chrome = "com.google.Chrome"
         case zoom = "us.zoom.xos"
     }
@@ -14,7 +15,7 @@ public struct MeetingAudioSelection: Sendable, Equatable {
     public let windowID: UInt32
 
     public init(application: Application, processID: Int32, windowID: UInt32) throws {
-        guard processID > 0, windowID > 0 else { throw DesktopAudioFailure.selectionChanged }
+        guard application == .microphone ? processID == 0 && windowID == 0 : processID > 0 && windowID > 0 else { throw DesktopAudioFailure.selectionChanged }
         self.application = application; self.processID = processID; self.windowID = windowID
     }
 }
@@ -29,25 +30,25 @@ public enum DesktopAudioStopMode: Sendable { case drain, discard }
 public actor MacMeetingAudio {
     private enum Phase { case idle, starting, recording, stopping, stopped, failed }
     private let enabled: Bool
-    private let checkPermissions: @Sendable () -> Bool
+    private let checkPermissions: @Sendable (Bool) -> Bool
     private var phase: Phase = .idle
     private var active: CaptureSession?
 
     public init(enabled: Bool = false) {
         self.enabled = enabled
-        checkPermissions = Self.permissionsGranted
+        checkPermissions = { Self.permissionsGranted(microphoneOnly: $0) }
     }
 
     // Internal injection for denial-only tests; the public/native helper entry
     // always uses the actual macOS permission check above.
     init(enabled: Bool, checkPermissions: @escaping @Sendable () -> Bool) {
         self.enabled = enabled
-        self.checkPermissions = checkPermissions
+        self.checkPermissions = { _ in checkPermissions() }
     }
 
     /// Read-only. Permission prompts belong to an explicit reviewed native UI.
-    public static func permissionsGranted() -> Bool {
-        CGPreflightScreenCaptureAccess() && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    public static func permissionsGranted(microphoneOnly: Bool = false) -> Bool {
+        (microphoneOnly || CGPreflightScreenCaptureAccess()) && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
     /// maximumDurationSeconds must be derived by the trusted host from the
@@ -76,17 +77,22 @@ public actor MacMeetingAudio {
                        window: DesktopCaptureWindowOwner?, sink: any DesktopAudioSink) async throws {
         guard enabled, phase == .idle, !Task.isCancelled else { throw DesktopAudioFailure.unavailable }
         guard (1...86_400).contains(maximumDurationSeconds) else { throw DesktopAudioFailure.unavailable }
-        guard checkPermissions() else { throw DesktopAudioFailure.permissionRequired }
+        guard checkPermissions(selection.application == .microphone) else { throw DesktopAudioFailure.permissionRequired }
         phase = .starting
         do {
             // A caller-selected window is re-resolved against current PID/bundle.
             // Never infer authority from a title, URL, frontmost app or first row.
-            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
-            guard phase == .starting, !Task.isCancelled else { throw DesktopAudioFailure.cancelled }
+            let selectedWindow: SCWindow?
+            if selection.application == .microphone { selectedWindow = nil }
+            else {
+                let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+                guard phase == .starting, !Task.isCancelled else { throw DesktopAudioFailure.cancelled }
+                guard let candidate = content.windows.first(where: { $0.windowID == selection.windowID }),
+                      let owner = candidate.owningApplication, owner.processID == selection.processID,
+                      owner.bundleIdentifier == selection.application.rawValue else { throw DesktopAudioFailure.selectionChanged }
+                selectedWindow = candidate
+            }
             if let window, window.remaining <= .zero { throw DesktopAudioFailure.windowExpired }
-            guard let selectedWindow = content.windows.first(where: { $0.windowID == selection.windowID }),
-                  let owner = selectedWindow.owningApplication, owner.processID == selection.processID,
-                  owner.bundleIdentifier == selection.application.rawValue else { throw DesktopAudioFailure.selectionChanged }
             let workspaceCenter = await MainActor.run { NSWorkspace.shared.notificationCenter }
             guard phase == .starting, !Task.isCancelled else { throw DesktopAudioFailure.cancelled }
             let delivery = AudioDelivery(sink: sink, validate: { window == nil || window!.remaining > .zero }) { [weak self] _ in
@@ -95,7 +101,8 @@ public actor MacMeetingAudio {
             let output = AudioOutput(delivery: delivery)
             // SCContentFilter consults WindowServer during construction. Keep
             // that AppKit boundary on the initialized application main thread.
-            let stream = await MainActor.run {
+            let stream: SCStream? = await MainActor.run {
+                guard let selectedWindow else { return nil }
                 let configuration = SCStreamConfiguration()
                 configuration.capturesAudio = true
                 configuration.excludesCurrentProcessAudio = true
@@ -119,7 +126,7 @@ public actor MacMeetingAudio {
                     delivery.fail(.windowExpired)
                 }
             }
-            try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
+            try stream?.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
             let format = session.engine.inputNode.outputFormat(forBus: 0)
             guard format.commonFormat == .pcmFormatFloat32, (1...2).contains(format.channelCount),
                   (16_000...96_000).contains(format.sampleRate) else { throw DesktopAudioFailure.invalidAudio }
@@ -135,7 +142,7 @@ public actor MacMeetingAudio {
             session.tapInstalled = true
             session.observeInterruptions(workspaceCenter: workspaceCenter)
             session.engine.prepare()
-            let starting = Task { try await stream.startCapture() }
+            let starting = Task { if let stream { try await stream.startCapture() } }
             session.starting = starting
             try await withTaskCancellationHandler {
                 try await starting.value
@@ -180,7 +187,7 @@ public actor MacMeetingAudio {
                 if let starting = session.starting { _ = await starting.result }
                 // A delegate-confirmed stop is authoritative even when a later
                 // redundant stopCapture reports that the stream is already down.
-                if !session.output.stopped { try await session.stream.stopCapture() }
+                if !session.output.stopped { try await session.stream?.stopCapture() }
                 await session.delivery.drain()
             }
             closing = CaptureStopAttempt(task: task)
@@ -227,7 +234,7 @@ private struct CaptureStopAttempt: Sendable {
 
 @available(macOS 14.2, *)
 private final class CaptureSession: @unchecked Sendable {
-    let stream: SCStream
+    let stream: SCStream?
     let output: AudioOutput
     let delivery: AudioDelivery
     let window: DesktopCaptureWindowOwner?
@@ -240,7 +247,7 @@ private final class CaptureSession: @unchecked Sendable {
     private var workspaceCenter: NotificationCenter?
     private var engineObserver: NSObjectProtocol?
 
-    init(stream: SCStream, output: AudioOutput, delivery: AudioDelivery, window: DesktopCaptureWindowOwner?) {
+    init(stream: SCStream?, output: AudioOutput, delivery: AudioDelivery, window: DesktopCaptureWindowOwner?) {
         self.stream = stream; self.output = output; self.delivery = delivery
         self.window = window
     }

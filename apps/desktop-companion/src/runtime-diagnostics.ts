@@ -3,7 +3,9 @@ import { open, realpath } from "node:fs/promises";
 import { join } from "node:path";
 
 const TIMING_EVENTS = ["audio_availability_helper_check", "audio_availability_probe", "audio_permission_helper_check",
-  "audio_permission_probe", "audio_capture_helper_check"] as const;
+  "audio_permission_probe", "audio_capture_helper_check", "provider_catalog", "provider_mount",
+  "provider_admission", "provider_review", "provider_capabilities", "provider_encryption_key",
+  "provider_recording_window", "provider_other_operation", "provider_source_prepare", "provider_source_authorize"] as const;
 export type RuntimeTimingEvent = typeof TIMING_EVENTS[number];
 const EVENTS = ["host_open", "window_ready", "connect_begin", "backend_ready", "presentation_ready", "connect_ready", "connect_failed",
   "before_quit", "window_close", "renderer_gone", "renderer_navigation", "close_begin", "boundary_closed", "owner_closed", "close_failed", "quit_ready",

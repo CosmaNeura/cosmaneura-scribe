@@ -28,6 +28,8 @@ export interface PreparedDesktopCapture {
 
 export interface DesktopProviderRecorderOptions {
   readonly enabled?: boolean;
+  readonly audioMode?: "microphone" | "meeting";
+  readonly saveAudioMode?: (mode: "microphone" | "meeting") => Promise<void>;
   /** Selected by the trusted beta host; direct/diagnostic compositions default off. */
   readonly uploadWhileRecording?: boolean;
   readonly sessionId: string;
@@ -107,14 +109,16 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private captureMayBeActive = false;
   private capturePriorAudioFrames = 0;
   private capturedAudioFrames: number | null = null;
+  private audioMode: "microphone" | "meeting";
   private inputLevels: Partial<Record<"microphone" | "meetingAudio", { level: number; receivedAt: number }>> = {};
 
   private constructor(private readonly options: DesktopProviderRecorderOptions) {
     if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
       || "type" in process && process.type === "renderer" || options.enabled !== true
       || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(options.sessionId) || options.signal.aborted) throw unavailable();
+    this.audioMode = options.audioMode ?? "meeting";
     this.signal = AbortSignal.any([options.signal, this.abort.signal]);
-    const driver = new NativeProcessPCMDriver({ ...options.native, enabled: true,
+    const driver = new NativeProcessPCMDriver({ ...options.native, enabled: true, audioMode: () => this.audioMode,
       authorizeSelectedWindow: async () => {
         this.requireStart();
         const selection = this.selectedWindow;
@@ -207,7 +211,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           "created", "capturing", "uploaded", "processing", "speech_failed", "speech_retryable",
           "handed_off", "translation_pending", "review_required", "transcript_ready", "quality_blocked",
         ].includes(current.status)) throw unavailable();
-        const active = await options.flowStore.getActiveCaptureState(), preparing = await options.flowStore.getPreparationState();
+        const reads = await Promise.allSettled([options.flowStore.getActiveCaptureState(), options.flowStore.getPreparationState()]);
+        if (reads[0].status === "rejected") throw reads[0].reason;
+        if (reads[1].status === "rejected") throw reads[1].reason;
+        const [active, preparing] = [reads[0].value, reads[1].value];
         recorder.requireOpen();
         // A failed start can retain a prepared continuation while earlier chunks
         // have already advanced the server to capturing. Restore that exact
@@ -286,7 +293,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
       elapsedSeconds: this.capturedAudioFrames === null ? flow.elapsedSeconds : Math.floor(this.capturedAudioFrames / 16_000),
-      desktop: { phase, inputSignal: { microphone: this.inputLevel("microphone", phase),
+      desktop: { phase, audioMode: this.audioMode, inputSignal: { microphone: this.inputLevel("microphone", phase),
         meetingAudio: this.inputLevel("meetingAudio", phase) }, coverage: this.continuityUnconfirmed ? "incomplete" : this.coverage?.phase === "stopped" ? "complete"
         : this.coverage ? phase === "recording" ? "aligned" : "incomplete" : "not_started",
       trimmedStartMs: start ? milliseconds(start.microphonePrerollNanoseconds, start.systemPrerollNanoseconds) : 0,
@@ -302,6 +309,17 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   subscribe(listener: (value: ProviderRecorderSnapshot) => void): () => void {
     this.listeners.add(listener); listener(this.snapshot); return () => this.listeners.delete(listener);
   }
+  async selectDesktopAudio(mode: "microphone" | "meeting"): Promise<void> {
+    this.requireOpen();
+    if (!["microphone", "meeting"].includes(mode) || this.operation || this.stopping
+      || this.captureMayBeActive || this.coverage !== null || this.flow.snapshot.recordedChunks > 0) throw unavailable();
+    if (mode === this.audioMode) return;
+    await this.run("other", async () => {
+      await this.options.saveAudioMode?.(mode); this.requireOpen();
+      this.audioMode = mode;
+      this.unmountedAvailability = await this.availability(this.signal); this.requireOpen();
+    });
+  }
   startRecording(): Promise<void> {
     this.requireOpen();
     if (this.snapshot.desktop?.phase !== "ready" || this.stopping) return Promise.reject(unavailable());
@@ -314,9 +332,10 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       // for a person to choose. The native source still revalidates the window.
       try {
         await this.flow.checkStorageCapacity(); this.requireOpen();
-        this.choosingWindow = true; this.publish();
+        this.choosingWindow = this.audioMode === "meeting"; this.publish();
         let selected: Awaited<ReturnType<DesktopProviderRecorderOptions["selectWindow"]>>;
-        try { selected = await chooseWindow(this.options.selectWindow, attempt.signal); }
+        try { selected = this.audioMode === "microphone" ? { application: "microphone", processID: 0, windowID: 0 }
+          : await chooseWindow(this.options.selectWindow, attempt.signal); }
         finally { this.choosingWindow = false; this.publish(); }
         this.requireOpen();
         if (attempt.signal.aborted || this.attempt !== attempt) throw unavailable();
