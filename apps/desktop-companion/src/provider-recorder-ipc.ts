@@ -47,6 +47,8 @@ export class DesktopProviderRecorderIpc {
         switch (request.kind) {
           case "audio_microphone": await this.recorder.selectDesktopAudio("microphone"); break;
           case "audio_meeting": await this.recorder.selectDesktopAudio("meeting"); break;
+          case "meeting_windows": await this.recorder.refreshMeetingWindows(); break;
+          case "meeting_window": await this.recorder.selectMeetingWindow(request.windowId!); break;
           case "start": await this.recorder.startRecording(); break;
           case "stop": await this.recorder.stopRecording(); break;
           case "pause": await this.recorder.pauseRecording(); break;

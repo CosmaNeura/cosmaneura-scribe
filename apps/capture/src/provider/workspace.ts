@@ -415,6 +415,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       </section>`);
     const options = content.querySelector<HTMLDetailsElement>(".provider-recording-options")!;
     const summarize = (): void => {
+      const meeting = !isIOS && input("desktop-audio") === "meeting";
+      content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!.textContent = meeting ? "Confirm consent & choose window" : "Confirm consent & record";
       options.querySelector<HTMLElement>("[data-recording-summary]")!.textContent = isIOS
         ? content.querySelector<HTMLSelectElement>('[name="microphone"]')!.selectedOptions[0]!.textContent
         : input("desktop-audio") === "microphone" ? "Microphone only" : "Microphone + application audio";
@@ -565,7 +567,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     disposeContent = () => { stopObserving(); app.remove(); };
     // Only the current explicit Start action carries this in-memory intent.
     // Reopening/recovering a journal never starts a microphone or meeting.
-    if (startRequested !== undefined) {
+    if (startRequested !== undefined && !(native?.controller.snapshot.desktop?.audioMode === "meeting" && native.controller.snapshot.desktop.meetingWindows)) {
       await app.updateComplete;
       if (authorized(n) && app.isConnected) await app.startFromProviderAction(startRequested);
     }

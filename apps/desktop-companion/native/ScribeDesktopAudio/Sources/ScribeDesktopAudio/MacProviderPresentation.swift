@@ -6,6 +6,33 @@ public enum ProviderPresentationFailure: Error, Sendable {
     case disabled, unavailable, cancelled, busy, invalidTransition
 }
 
+public struct ProviderMeetingWindow: Sendable {
+    public let selection: MeetingAudioSelection
+    public let title: String
+    public init(selection: MeetingAudioSelection, title: String) { self.selection = selection; self.title = title }
+}
+
+/// Metadata only for the authenticated recording screen. Never opens a panel,
+/// requests permission, captures a screenshot, or starts an audio source.
+@MainActor
+func providerMeetingWindows() async throws -> [ProviderMeetingWindow] {
+    guard MacMeetingAudio.permissionsGranted() else { throw ProviderPresentationFailure.unavailable }
+    let rows = try await ProviderWindowDiscovery<[ProviderMeetingWindow]>().load {
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        try Task.checkCancellation()
+        return content.windows.compactMap { window -> ProviderMeetingWindow? in
+            guard let owner = window.owningApplication,
+                  let app = MeetingAudioSelection.Application(rawValue: owner.bundleIdentifier), app != .microphone,
+                  let selection = try? MeetingAudioSelection(application: app, processID: owner.processID, windowID: window.windowID) else { return nil }
+            let title = String(String.UnicodeScalarView((window.title ?? "Untitled window").unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }.prefix(128)))
+            return ProviderMeetingWindow(selection: selection, title: (app == .chrome ? "Chrome — " : "Zoom — ") + title)
+        }.sorted { $0.selection.windowID < $1.selection.windowID }
+    }
+    try Task.checkCancellation()
+    guard rows.count <= 64 else { throw ProviderPresentationFailure.unavailable }
+    return rows
+}
+
 /// A deliberate native window choice for the existing macOS 14.2 capture source.
 /// The trusted host invokes this only from its authorized Start path. It does
 /// not request permission, start a stream, capture a screenshot, or log titles.

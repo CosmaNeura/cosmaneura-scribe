@@ -70,3 +70,19 @@ iOS initial reservation count (30 rather than 90) to fresh desktop compound
 windows. Keep retained requests byte-for-byte and continuation batches unchanged;
 do not change consent, lease duration, source admission or total capture budget.
 Measure a fresh visit in signed build 50 before attributing a latency improvement.
+
+Build 50 measured about 25 seconds again; its 30-chunk batch did not show a
+measurable speed improvement. Most time remains admission/review/key/window
+service work. Do not claim the initial-batch change solved startup latency.
+
+Owner requested eliminating the meeting-window popup. Build 51 adds version 3
+metadata discovery to the existing signed presentation helper and displays the
+bounded Zoom/Chrome labels in the recording screen. Only current opaque row IDs
+cross renderer IPC; main retains app/PID/window and native capture revalidates
+them after the existing fresh server decision. No default or remembered choice,
+new permissions, screenshots, title logging/storage, or capture on row selection.
+Refresh invalidates IDs. Meeting consent opens inline selection without starting
+audio; its main Start button is the deliberate capture action. Old v1/v2 native
+contracts remain available for older hosts. Stop indicators and ownership remain
+unchanged. Verify compiled IPC/UI, actual native metadata pipes, cancellation and
+signed installed layout; roll back to signed build 50 with existing stores intact.

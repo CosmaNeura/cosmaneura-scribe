@@ -89,6 +89,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
         let presentation: NativeProviderPresentation | undefined;
         try {
           presentation = await NativeProviderPresentation.open({ enabled: true, ...presentationOptions,
+            inlineMeetingSelection: true,
             isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady(),
             ...(runtime.recordingWindow ? { primaryWindowId: () => runtime.recordingWindow!.primaryWindowId() } : {}) });
           diagnostics("presentation_ready");
@@ -96,6 +97,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
             openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
             indicator: presentation, presentation, selectWindow: presentation.selectWindow,
+            listMeetingWindows: presentation.listMeetingWindows,
             showWindowChooser: presentation.showWindowChooser,
             ...(runtime.recordingWindow ? { recordingWindow: runtime.recordingWindow } : {}),
             native: { ...audioOptions, diagnostics, isSessionActive: () => !linked.aborted && native.isReady() },

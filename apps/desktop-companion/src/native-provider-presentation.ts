@@ -21,6 +21,13 @@ export interface NativePresentationOptions {
   readonly isSessionActive: () => boolean;
   /** Exact main-owned CGWindowID; never a renderer visibility assertion. */
   readonly primaryWindowId?: () => number | null;
+  readonly inlineMeetingSelection?: boolean;
+}
+export interface NativeMeetingWindow {
+  readonly application: "com.google.Chrome" | "us.zoom.xos";
+  readonly processID: number;
+  readonly windowID: number;
+  readonly title: string;
 }
 type Metadata = Record<string, unknown>;
 type Selection = Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil">;
@@ -29,11 +36,13 @@ interface Pending {
   readonly response: ReturnType<typeof deferred<Metadata>>;
   readonly expected: string;
   timer?: ReturnType<typeof setTimeout>;
+  windows?: NativeMeetingWindow[];
 }
 const TIMEOUT = 3_000;
 
 /** Main-only native picker/indicator transport. Path and hash are fixed release
- * inputs. Titles, credentials, grants and audio never cross these pipes. */
+ * inputs. Only bounded meeting-window labels cross for inline selection;
+ * credentials, grants and audio never cross these pipes. */
 export class NativeProviderPresentation implements PersistentRecordingIndicator, NativePresentationOwner {
   private readonly decoder = new NativeProcessDecoder();
   private readonly readiness = deferred<void>();
@@ -57,7 +66,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
   private disposing: Promise<void> | undefined;
 
   private constructor(private readonly options: NativePresentationOptions) {
-    this.child = spawn(options.helperPath, [options.primaryWindowId ? "--presentation-v2" : "--presentation-v1"], {
+    this.child = spawn(options.helperPath, [options.inlineMeetingSelection ? "--presentation-v3" : options.primaryWindowId ? "--presentation-v2" : "--presentation-v1"], {
       stdio: ["pipe", "pipe", "ignore"], env: {}, cwd: dirname(options.helperPath), windowsHide: true,
     });
     void this.readiness.promise.catch(() => undefined);
@@ -128,6 +137,30 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
       return Object.freeze({ application: value.application as Selection["application"],
         processID: value.processID as number, windowID: value.windowID as number });
     } finally { signal.removeEventListener("abort", cancel); }
+  };
+
+  readonly listMeetingWindows = async (signal: AbortSignal): Promise<readonly NativeMeetingWindow[]> => {
+    requireMain();
+    if (!this.options.inlineMeetingSelection || !this.isHealthy() || signal.aborted || this.choice !== null || this.active !== null || this.publishing) throw unavailable();
+    const request = this.request("windows", "windows", {}, false);
+    this.pending.get(request.id)!.windows = [];
+    this.choice = request.id;
+    let cancelled = false;
+    const cancel = (): void => {
+      cancelled = true;
+      if (this.choice !== request.id) return;
+      this.cancellingChoice = request.id; this.send({ type: "cancel", request: request.id });
+      const pending = this.pending.get(request.id);
+      if (pending && !pending.timer) pending.timer = setTimeout(() => this.fail(), TIMEOUT);
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    const timer = setTimeout(cancel, 15_000);
+    try {
+      if (signal.aborted) cancel();
+      const value = await request.promise;
+      if (cancelled || signal.aborted || !this.isHealthy()) throw unavailable();
+      return value.windows as NativeMeetingWindow[];
+    } finally { clearTimeout(timer); signal.removeEventListener("abort", cancel); }
   };
 
   /** Raise only the exact choice already pending in this native process. */
@@ -220,7 +253,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
   }
   private receive(value: Metadata): void {
     if (value.type === "ready") {
-      if (this.ready || !exactKeys(value, ["type", "version"]) || value.version !== (this.options.primaryWindowId ? 2 : 1)) throw unavailable();
+      if (this.ready || !exactKeys(value, ["type", "version"]) || value.version !== (this.options.inlineMeetingSelection ? 3 : this.options.primaryWindowId ? 2 : 1)) throw unavailable();
       this.ready = true; this.readiness.resolve(); return;
     }
     if (!this.ready) throw unavailable();
@@ -232,8 +265,22 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
     }
     if (!integer(value.request, 1, 2_147_483_647)) throw unavailable();
     const pending = this.pending.get(value.request);
+    if (value.type === "window") {
+      if (!pending?.windows || pending.expected !== "windows" || pending.windows.length >= 64
+        || !exactKeys(value, ["type", "request", "application", "processID", "windowID", "title"])
+        || !["com.google.Chrome", "us.zoom.xos"].includes(value.application as string)
+        || !integer(value.processID, 1, 2_147_483_647) || !integer(value.windowID, 1, 4_294_967_295)
+        || typeof value.title !== "string" || [...value.title].length > 160
+        || [...value.title].some(char => char.codePointAt(0)! < 32 || char.codePointAt(0) === 127)
+        || pending.windows.some(row => row.windowID === value.windowID)) throw unavailable();
+      pending.windows.push({ application: value.application as NativeMeetingWindow["application"], processID: value.processID,
+        windowID: value.windowID, title: value.title });
+      return;
+    }
     if (!pending || value.type !== pending.expected && value.type !== "unavailable") throw unavailable();
-    if (value.type === "selected") {
+    if (value.type === "windows") {
+      if (!pending.windows || !exactKeys(value, ["type", "request", "count"]) || value.count !== pending.windows.length) throw unavailable();
+    } else if (value.type === "selected") {
       if (!exactKeys(value, ["type", "request", "application", "processID", "windowID"])
         || !["com.google.Chrome", "us.zoom.xos"].includes(value.application as string)
         || !integer(value.processID, 1, 2_147_483_647) || !integer(value.windowID, 1, 4_294_967_295)) throw unavailable();
@@ -242,7 +289,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
     if (this.choice === value.request) { this.choice = null; this.cancellingChoice = null; }
     if (value.type === "closed") this.closeAcknowledged = true;
     if (value.type === "unavailable") pending.response.reject(unavailable());
-    else pending.response.resolve(value);
+    else pending.response.resolve(value.type === "windows" ? { windows: pending.windows! } : value);
   }
   private fail(): void {
     if (this.broken) return;

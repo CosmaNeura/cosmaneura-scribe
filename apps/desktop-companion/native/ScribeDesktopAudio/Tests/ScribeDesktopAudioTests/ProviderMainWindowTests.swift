@@ -3,6 +3,14 @@ import Testing
 @testable import ScribeDesktopAudio
 
 private let workArea = CGRect(x: -1440, y: 24, width: 1440, height: 840)
+
+@Test func inlineWindowDiscoveryIsVersionedMetadataOnly() throws {
+    var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: ["type": "windows", "request": 1]))
+    #expect(throws: ProviderPresentationFailure.self) { try PresentationCommand.parse(data, protocolVersion: 2) }
+    if case .windows(1) = try PresentationCommand.parse(data, protocolVersion: 3) {} else { Issue.record("Expected metadata discovery") }
+    var invalid = Data([1]); invalid.append(try JSONSerialization.data(withJSONObject: ["type": "windows", "request": 1, "processID": 42]))
+    #expect(throws: ProviderPresentationFailure.self) { try PresentationCommand.parse(invalid, protocolVersion: 3) }
+}
 private let mainBounds = CGRect(x: -500, y: 40, width: 480, height: 360)
 private func window(_ id: UInt32 = 73, owner: Int32 = 41, bounds: CGRect = mainBounds,
                     alpha: Double = 1, layer: Int = NSWindow.Level.statusBar.rawValue) -> ProviderWindowMetadata {

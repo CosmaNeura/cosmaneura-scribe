@@ -9,6 +9,7 @@ public enum ProviderPresentationEvent: Sendable {
 public protocol ProviderPresentationSurface: AnyObject {
     var onEvent: (@MainActor (ProviderPresentationEvent) -> Void)? { get set }
     func choose() async throws -> MeetingAudioSelection
+    func meetingWindows() async throws -> [ProviderMeetingWindow]
     func showWindowChooser() throws
     func publish(_ state: ProviderRecordingPresentation) throws
     func verifyVisibility()
@@ -16,6 +17,7 @@ public protocol ProviderPresentationSurface: AnyObject {
 }
 
 public extension ProviderPresentationSurface {
+    func meetingWindows() async throws -> [ProviderMeetingWindow] { throw ProviderPresentationFailure.unavailable }
     func showWindowChooser() throws { throw ProviderPresentationFailure.unavailable }
     func refreshMainWindow(_ windowID: UInt32?) throws { throw ProviderPresentationFailure.unavailable }
 }
@@ -31,6 +33,7 @@ public final class MacProviderPresentationSurface: ProviderPresentationSurface {
         visibilityLost: { [weak self] in self?.onEvent?(.visibilityLost($0)) })
     public init() {}
     public func choose() async throws -> MeetingAudioSelection { try await picker.choose() }
+    public func meetingWindows() async throws -> [ProviderMeetingWindow] { try await providerMeetingWindows() }
     public func showWindowChooser() throws { try picker.showWindowChooser() }
     public func publish(_ state: ProviderRecordingPresentation) throws { try indicator.publish(state) }
     public func verifyVisibility() { indicator.verifyVisibility() }
@@ -45,7 +48,7 @@ public enum ProviderPresentationProcess {
     public static func run(surface: any ProviderPresentationSurface,
                            input: FileHandle = .standardInput, output: FileHandle = .standardOutput,
                            protocolVersion: Int = 1) async -> Int32 {
-        guard protocolVersion == 1 || protocolVersion == 2 else { return 64 }
+        guard (1...3).contains(protocolVersion) else { return 64 }
         let host = PresentationHost(surface: surface, output: ProcessOutput(output), protocolVersion: protocolVersion)
         let reader = PresentationInput(input, protocolVersion: protocolVersion)
         let reading = Task.detached {
@@ -67,6 +70,7 @@ public enum ProviderPresentationProcess {
 }
 
 enum PresentationCommand: Sendable {
+    case windows(Int)
     case choose(Int), cancel(Int), publish(Int, ProviderRecordingPresentation), heartbeat(Int), close(Int)
     case primaryWindow(Int, UInt32?), focusChooser(Int, Int)
     static func parse(_ data: Data, protocolVersion: Int = 1) throws -> Self {
@@ -80,6 +84,10 @@ enum PresentationCommand: Sendable {
         let request = number.intValue
         func keys(_ expected: Set<String>) throws { guard Set(value.keys) == expected else { throw invalid() } }
         switch kind {
+        case "windows":
+            try keys(["type", "request"])
+            guard protocolVersion == 3 else { throw invalid() }
+            return .windows(request)
         case "choose": try keys(["type", "request"]); return .choose(request)
         case "cancel": try keys(["type", "request"]); return .cancel(request)
         case "heartbeat": try keys(["type", "request"]); return .heartbeat(request)
@@ -93,7 +101,7 @@ enum PresentationCommand: Sendable {
             return .focusChooser(request, choice.intValue)
         case "primaryWindow":
             try keys(["type", "request", "windowID"])
-            guard protocolVersion == 2 else { throw invalid() }
+            guard protocolVersion >= 2 else { throw invalid() }
             if value["windowID"] is NSNull { return .primaryWindow(request, nil) }
             guard let id = value["windowID"] as? NSNumber,
                   CFGetTypeID(id) != CFBooleanGetTypeID(), id.doubleValue.isFinite,
@@ -173,12 +181,30 @@ private final class PresentationHost {
         }
         let request: Int
         switch command {
-        case .choose(let id), .publish(let id, _), .heartbeat(let id), .close(let id), .primaryWindow(let id, _), .focusChooser(let id, _): request = id
+        case .windows(let id), .choose(let id), .publish(let id, _), .heartbeat(let id), .close(let id), .primaryWindow(let id, _), .focusChooser(let id, _): request = id
         case .cancel: return
         }
         guard request > lastRequest else { disconnect(); return }
         lastRequest = request
         switch command {
+        case .windows:
+            guard choice == nil, state == .inactive else { refuse(request); return }
+            let task = Task { @MainActor in
+                do {
+                    let rows = try await surface.meetingWindows()
+                    try Task.checkCancellation()
+                    guard rows.count <= 64, !disconnected, choice?.request == request else { throw ProviderPresentationFailure.unavailable }
+                    for row in rows {
+                        output.metadata(["type": "window", "request": request, "application": row.selection.application.rawValue,
+                            "processID": row.selection.processID, "windowID": row.selection.windowID, "title": row.title])
+                    }
+                    output.metadata(["type": "windows", "request": request, "count": rows.count])
+                } catch {
+                    if !disconnected { output.metadata(["type": "unavailable", "request": request]) }
+                }
+                if choice?.request == request { choice = nil }
+            }
+            choice = (request, task)
         case .choose:
             guard choice == nil, state == .inactive else { refuse(request); return }
             let task = Task { @MainActor in
