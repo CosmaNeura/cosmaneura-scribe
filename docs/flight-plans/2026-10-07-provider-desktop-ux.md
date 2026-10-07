@@ -112,3 +112,12 @@ retain encrypted work and cannot start. Diagnostic compositions continue waiting
 This improves time to visible controls; service readiness still requires timing
 measurement, and no physical audio result is implied. No server route, lease,
 consent, permissions, capture grant, native source or cloud configuration changes.
+
+Recheck the passage playback guard after journal/review/key reads, throughout
+bounded decryption and before publishing playable bytes. Capture the original
+recorder owner so a delayed review cannot publish after replacement, even when
+the replacement is ready. Recorder acquisition remains available and takes
+priority; an obsolete Listen request refuses without delaying recording. Verify
+late recorder opening, ready replacement and active phase changes using deferred
+synthetic review responses. Preserve fresh server review, key custody, original
+audio, buffer clearing and playback disposal on navigation.
