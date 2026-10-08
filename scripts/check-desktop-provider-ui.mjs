@@ -212,7 +212,11 @@ try {
     const intent = root.querySelector("cosmaneura-capture").startFromProviderAction("built_in");
     assert.deepEqual(microphonePreparation.calls, ["read"]);
     microphonePreparation.change({ state: "ready", statusCode: "capture_ready" }, { phase: "ready" });
-    await intent; assert.equal(microphonePreparation.calls.filter(kind => kind === "start").length, 1); checks++;
+    await intent; await until(() => !button("record-button").disabled);
+    assert.equal(microphonePreparation.calls.includes("start"), false, "Microphone readiness waits for visible Start");
+    assert.equal(button("record-button").textContent.trim(), "Start recording");
+    button("record-button").click(); await until(() => button("record-button").hidden && !button("stop-button").disabled);
+    assert.equal(microphonePreparation.calls.filter(kind => kind === "start").length, 1, "Only explicit Start opens the microphone"); checks++;
   } finally { await microphoneDispose(); }
   const inline = fixture();
   const windowId = webcrypto.randomUUID();
