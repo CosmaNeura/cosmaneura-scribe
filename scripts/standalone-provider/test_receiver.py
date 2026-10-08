@@ -1330,6 +1330,19 @@ def core_created_opening(h, after_lookup=None):
             kind = body.get("operation", {}).get("kind", "provider_encounter")
             h.wire.operations.append(kind)
             receipt = {"schema_version": "1.0", "status": "not_prepared", "review": None}
+            if kind == "encryption_key":
+                receipt = {
+                    "key_version": "synthetic-key",
+                    "algorithm": "RSA-OAEP-256",
+                    "public_jwk": {
+                        "kty": "RSA",
+                        "n": "a" * 512,
+                        "e": "AQAB",
+                        "alg": "RSA-OAEP-256",
+                        "ext": True,
+                        "key_ops": ["wrapKey"],
+                    },
+                }
             if body["action"] == "mount":
                 value.update(
                     appointment_ref=APPOINTMENT,
@@ -1484,7 +1497,7 @@ async def test_core_created_capture_uses_six_checks_and_keeps_outer_boundaries(h
     async with client(h) as c:
         result = await c.post("/provider/v1/" + route, json=body)
     assert result.status_code == 200
-    if kind in {"creator_review", "native_recording_context"}:
+    if kind in {"creator_review", "native_recording_context", "encryption_key"}:
         assert lookups == [] and len(h.wire.calls) == 1
     else:
         assert len(lookups) == 6 and len(h.wire.calls) == 3

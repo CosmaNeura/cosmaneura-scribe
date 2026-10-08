@@ -68,6 +68,19 @@ class Wire:
             "checked_at": datetime.now(UTC).isoformat(),
         }
         review = {"schema_version": "1.0", "session_id": SESSION}
+        if data.get("operation", {}).get("kind") == "encryption_key":
+            review = {
+                "key_version": "synthetic-key",
+                "algorithm": "RSA-OAEP-256",
+                "public_jwk": {
+                    "kty": "RSA",
+                    "n": "a" * 512,
+                    "e": "AQAB",
+                    "alg": "RSA-OAEP-256",
+                    "ext": True,
+                    "key_ops": ["wrapKey"],
+                },
+            }
         if data["action"] == "operation":
             result.update(operation=data["operation"]["kind"], receipt=review)
         else:
@@ -194,16 +207,68 @@ async def test_wrong_scope_replayed_or_stale_reply_is_rejected(field):
     [
         {"kind": "issue_lease", "payload": {}},
         {"kind": "source_start"},
-        {"kind": "encryption_key"},
+        {"kind": "bind_key", "payload": {}},
         {"kind": []},
     ],
 )
-async def test_mutation_and_key_operations_cannot_enter_facade(operation):
+async def test_mutation_and_key_binding_operations_cannot_enter_facade(operation):
     wire = Wire()
     data = body("capture-operations") | {"operation": operation}
     with pytest.raises(ProviderCoreUnavailable):
         await wire.call("capture-operations", data)
     assert wire.calls == []
+
+
+async def test_public_key_read_uses_one_core_call_and_three_fresh_account_checks():
+    wire = Wire()
+    account, result = await wire.call(
+        "capture-operations", body("capture-operations", "encryption_key")
+    )
+    assert account == ACCOUNT and len(wire.calls) == 1 and wire.checks == 3
+    assert wire.calls[0]["operation"] == {"kind": "encryption_key"}
+    assert result["operation"] == "encryption_key"
+
+
+@pytest.mark.parametrize("extra", ["payload", "profile_receipt_id", "private_key"])
+async def test_public_key_request_cannot_add_key_material_or_profile(extra):
+    wire = Wire()
+    data = body("capture-operations", "encryption_key")
+    data["operation"][extra] = "invented-private-sentinel"
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call("capture-operations", data)
+    assert wire.calls == [] and wire.checks == 0
+
+
+@pytest.mark.parametrize("extra", ["d", "p", "q", "secret", "wrapped_key"])
+async def test_public_key_response_rejects_private_or_extra_fields(extra):
+    wire = Wire()
+
+    def alter(value):
+        value["result"]["receipt"]["public_jwk"][extra] = "invented-private-sentinel"
+        return value
+
+    wire.alter = alter
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call("capture-operations", body("capture-operations", "encryption_key"))
+    assert len(wire.calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["workload", "response"])
+async def test_public_key_read_keeps_account_revocation_fences(phase):
+    wire = Wire()
+    if phase == "workload":
+
+        async def workload():
+            wire.revoked = True
+            return SecretStr("invented-workload-token")
+
+        wire.workload = workload
+    else:
+        wire.after = lambda: setattr(wire, "revoked", True)
+    with pytest.raises(ProviderCoreUnavailable) as error:
+        await wire.call("capture-operations", body("capture-operations", "encryption_key"))
+    assert error.value.status == 403
+    assert len(wire.calls) == (0 if phase == "workload" else 1)
 
 
 async def test_cancellation_during_wire_read_does_not_publish():
