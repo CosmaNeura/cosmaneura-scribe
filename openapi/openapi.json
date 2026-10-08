@@ -1806,6 +1806,81 @@
         "title": "CreatorTranslationReviewQueueV1",
         "type": "object"
       },
+      "CreatorWindowReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/SessionAudioKeyReceipt"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/CaptureLeaseReceipt"
+          },
+          "reservations": {
+            "$ref": "#/components/schemas/ChunkReservationBatchReceipt"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding",
+          "lease",
+          "reservations"
+        ],
+        "title": "CreatorWindowReceipt",
+        "type": "object"
+      },
+      "CreatorWindowRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "bind_idempotency_key": {
+            "pattern": "^[A-Za-z0-9._:-]{8,255}$",
+            "title": "Bind Idempotency Key",
+            "type": "string"
+          },
+          "binding": {
+            "$ref": "#/components/schemas/WindowBinding"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/CaptureChannel"
+          },
+          "lease_idempotency_key": {
+            "pattern": "^[A-Za-z0-9._:-]{8,255}$",
+            "title": "Lease Idempotency Key",
+            "type": "string"
+          },
+          "reservation_count": {
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Reservation Count",
+            "type": "integer"
+          },
+          "reserve_idempotency_key": {
+            "pattern": "^[A-Za-z0-9._:-]{8,255}$",
+            "title": "Reserve Idempotency Key",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding",
+          "bind_idempotency_key",
+          "lease_idempotency_key",
+          "reserve_idempotency_key",
+          "channel",
+          "reservation_count"
+        ],
+        "title": "CreatorWindowRequest",
+        "type": "object"
+      },
       "DeliveryStatus": {
         "enum": [
           "pending",
@@ -2891,6 +2966,29 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WindowBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "key_version": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "title": "Key Version",
+            "type": "string"
+          },
+          "wrapped_dek": {
+            "maxLength": 512,
+            "minLength": 512,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Wrapped Dek",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_version",
+          "wrapped_dek"
+        ],
+        "title": "WindowBinding",
+        "type": "object"
+      },
       "WorkingSegmentResolution": {
         "enum": [
           "english_source",
@@ -3561,6 +3659,97 @@
           }
         ],
         "summary": "Read Creator Preparation Metadata",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/recording-window": {
+      "post": {
+        "operationId": "prepare_creator_window_v1_captured_sessions__session_id__recording_window_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatorWindowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorWindowReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Prepare Creator Window",
         "tags": [
           "configured-capture"
         ]

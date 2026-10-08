@@ -49,6 +49,7 @@ from .creator_continuation_routes import router as creator_continuation_router
 from .creator_preparation_routes import router as creator_preparation_router
 from .creator_recording_routes import router as creator_recording_router
 from .creator_review_routes import router as creator_review_router
+from .creator_window_routes import router as creator_window_router
 from .delivery_reconciler import (
     complete_delivery_failure,
     complete_delivery_success,
@@ -508,6 +509,7 @@ app.include_router(captured_admission_router)
 app.include_router(source_start_router)
 app.include_router(source_extension_router)
 app.include_router(creator_continuation_router)
+app.include_router(creator_window_router)
 
 
 @app.get(
