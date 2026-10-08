@@ -136,6 +136,78 @@ function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("desktop preparation screen", () => {
+  it.each(["metadata", "discovery"] as const)("overlaps fresh meeting discovery and preparation, waiting for %s before enabling Start", async last => {
+    const f = await fixture(true), metadataEntered = deferred(), discoveryEntered = deferred();
+    const metadataReply = deferred(), discoveryReply = deferred();
+    const bff = f.options.createBff(f.abort.signal), capabilities = await bff.getCapabilities(f.session.id);
+    const preflight = vi.fn(f.options.authorizePreparation);
+    vi.spyOn(bff, "getCapabilities").mockImplementation(async () => {
+      metadataEntered.resolve(); await metadataReply.promise; return capabilities;
+    });
+    const list = vi.fn(async () => {
+      expect(preflight).toHaveBeenCalledOnce(); discoveryEntered.resolve(); await discoveryReply.promise;
+      return [{ application: "us.zoom.xos" as const, processID: 42, windowID: 74, title: "Synthetic visit" }];
+    });
+    const recorder = await f.open({ prepareInBackground: true, listMeetingWindows: list, authorizePreparation: preflight });
+    try {
+      await Promise.all([metadataEntered.promise, discoveryEntered.promise]);
+      expect(recorder.snapshot.desktop?.phase).toBe("preparing");
+      if (last === "metadata") {
+        discoveryReply.resolve();
+        await vi.waitFor(() => expect(recorder.snapshot.desktop?.meetingWindows?.windows).toHaveLength(1));
+        await expect(recorder.selectMeetingWindow(recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id)).rejects.toThrow();
+      } else {
+        metadataReply.resolve();
+        await vi.waitFor(async () => expect((await f.options.flowStore.getActiveCaptureState())?.captureAuthorizedUntil).toBeTruthy());
+      }
+      expect(recorder.snapshot.desktop?.phase).toBe("preparing");
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      metadataReply.resolve(); discoveryReply.resolve();
+      await vi.waitFor(() => expect(recorder.snapshot.desktop?.phase).toBe("ready"));
+      expect(recorder.snapshot.desktop?.meetingWindows?.windows).toHaveLength(1);
+      expect(list).toHaveBeenCalledOnce(); expect(f.selectWindow).not.toHaveBeenCalled();
+    } finally { metadataReply.resolve(); discoveryReply.resolve(); await f.close(); }
+  });
+  it("joins pending discovery after preparation failure before releasing its encrypted owner", async () => {
+    const f = await fixture(true), entered = deferred(), reply = deferred();
+    const bff = f.options.createBff(f.abort.signal);
+    vi.spyOn(bff, "getCapabilities").mockRejectedValue(new Error("Synthetic preparation failed"));
+    const recorder = await f.open({ prepareInBackground: true, listMeetingWindows: async () => {
+      entered.resolve(); await reply.promise; return [];
+    } });
+    try {
+      await entered.promise;
+      const closing = recorder.deactivate();
+      expect(recorder.availableForView).toBe(false); expect(f.release).not.toHaveBeenCalled();
+      reply.resolve(); await closing;
+      expect(f.release).toHaveBeenCalledOnce(); expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { reply.resolve(); await f.close(); }
+  });
+  it("keeps microphone preparation independent of meeting discovery", async () => {
+    const f = await fixture(true), list = vi.fn(async () => []);
+    try {
+      const recorder = await f.open({ audioMode: "microphone", listMeetingWindows: list });
+      expect(recorder.snapshot.desktop?.phase).toBe("ready"); expect(list).not.toHaveBeenCalled();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+  it("keeps failed discovery retryable without treating it as recording preparation failure", async () => {
+    const f = await fixture(true), list = vi.fn<NonNullable<DesktopProviderRecorderOptions["listMeetingWindows"]>>(async () => {
+      throw new Error("Synthetic discovery unavailable");
+    });
+    try {
+      const recorder = await f.open({ listMeetingWindows: list });
+      expect(recorder.snapshot).toMatchObject({ state: "ready", desktop: { phase: "ready",
+        meetingWindows: { state: "unavailable", selectedId: null, windows: [] } } });
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      list.mockResolvedValue([]);
+      await recorder.refreshMeetingWindows();
+      expect(recorder.snapshot.desktop?.meetingWindows?.state).toBe("ready");
+      expect(list).toHaveBeenCalledTimes(2);
+    } finally { await f.close(); }
+  });
   it("exposes disabled preparation before fresh review finishes, then enables the same owned recorder", async () => {
     const f = await fixture(true), checked = deferred(), review = deferred();
     const list = vi.fn(async () => [{ application: "com.google.Chrome" as const, processID: 1, windowID: 1, title: "Invented visit" }]);

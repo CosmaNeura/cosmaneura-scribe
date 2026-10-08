@@ -260,16 +260,24 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         if (!await this.flow.restore()) await this.flow.prepareConfigured(options.sessionId);
       };
       let initialAvailability: "ready" | "permission_required" | undefined;
+      let discoveredMeetingWindows = false;
       if (current.status === "created" && active === null && this.coverage === null) {
         // This read-only probe cannot capture or prompt. Overlap it with fresh
         // secure setup only after the trusted creator/session preflight. Wait
         // for both branches, including on failure, before releasing ownership.
         // The separate fresh check after window choice still runs at Start.
-        const [preparation, availability] = await Promise.allSettled([
+        // Window metadata is another independent read after creator/session and
+        // retained-owner checks. Overlap its bounded OS discovery with secure
+        // preparation, rather than adding that lookup to the end of startup.
+        // Selection and Start remain blocked until every branch has settled.
+        discoveredMeetingWindows = !!options.listMeetingWindows && this.audioMode === "meeting";
+        const [preparation, availability, windows] = await Promise.allSettled([
           prepare(), this.availability(this.signal),
+          discoveredMeetingWindows ? this.loadMeetingWindows() : Promise.resolve(),
         ]);
         if (preparation.status === "rejected") throw preparation.reason;
         if (availability.status === "rejected") throw availability.reason;
+        if (windows.status === "rejected") throw windows.reason;
         initialAvailability = availability.value;
       } else await prepare();
       this.requireOpen();
@@ -303,7 +311,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           || await options.coverage.hasPriorCapture?.(active.lease.receipt_id) !== false;
         this.requireOpen();
       }
-      if (options.listMeetingWindows && this.audioMode === "meeting"
+      if (!discoveredMeetingWindows && options.listMeetingWindows && this.audioMode === "meeting"
         && ["ready", "paused", "error"].includes(this.flow.snapshot.state)) await this.loadMeetingWindows();
     });
   }
