@@ -359,7 +359,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     disposeContent = () => { search?.removeEventListener("submit", onSearch); searchInput?.removeEventListener("input", updateResults); newPatient?.removeEventListener("submit", onNew); };
   };
   const confirmCreation = (name: string): void => {
-    show(`<section class="provider-setup"><h1>Start a visit for ${escape(name)}</h1><p>This will create a visit in the patient chart. Recording starts after you confirm consent on the next screen.</p><button data-workspace-action="confirm-create">Create visit &amp; continue</button><button data-workspace-action="patient-results">Back</button><button data-workspace-action="encounters">Cancel</button></section>`);
+    show(`<section class="provider-setup"><h1>Start a visit for ${escape(name)}</h1><p>This will create a visit in the patient chart. ${isIOS ? "Recording starts after you confirm consent on the next screen." : "Confirm consent next, then choose Start in the recording controls."}</p><button data-workspace-action="confirm-create">Create visit &amp; continue</button><button data-workspace-action="patient-results">Back</button><button data-workspace-action="encounters">Cancel</button></section>`);
   };
   const renderPatientDetails = (encounter: AuthorizedProviderEncounter["encounter"]): void => {
     patientDetail.replaceChildren();
@@ -420,21 +420,20 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ${isIOS ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
       ${isIOS ? "" : `<label>Record audio from<select name="desktop-audio"><option value="microphone"${preferredDesktopAudio === "microphone" ? " selected" : ""}>Microphone only · room or speakerphone</option><option value="meeting"${preferredDesktopAudio === "meeting" ? " selected" : ""}>Microphone + Zoom or Chrome audio</option></select></label><p>Microphone only captures voices audible to this Mac. Application audio also captures the selected app; Chrome can include other tabs and windows.</p>`}
       </details>
-      <button data-workspace-action="prepare" aria-describedby="provider-start-consent">Confirm consent &amp; record</button>
-      <p class="provider-consent-explanation" id="provider-start-consent">Everyone has agreed to recording and transcription.</p>
+      <button data-workspace-action="prepare" aria-describedby="provider-start-consent">${isIOS ? "Confirm consent &amp; record" : "Confirm consent &amp; continue"}</button>
+      <p class="provider-consent-explanation" id="provider-start-consent">Everyone has agreed to recording and transcription.${isIOS ? "" : " You’ll choose Start when the recording is ready."}</p>
       </section>`);
     const options = content.querySelector<HTMLDetailsElement>(".provider-recording-options")!;
     const summarize = (): void => {
-      const meeting = !isIOS && input("desktop-audio") === "meeting";
-      content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!.textContent = meeting ? "Confirm consent & choose window" : "Confirm consent & record";
+      content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!.textContent = isIOS ? "Confirm consent & record" : "Confirm consent & continue";
       options.querySelector<HTMLElement>("[data-recording-summary]")!.textContent = isIOS
         ? content.querySelector<HTMLSelectElement>('[name="microphone"]')!.selectedOptions[0]!.textContent
         : input("desktop-audio") === "microphone" ? "Microphone only" : "Microphone + application audio";
       content.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = isIOS
         ? input("modality") === "in_person" ? "Records the selected iPhone microphone. Check the sound bars when recording begins."
           : "Records the selected iPhone microphone. Call audio is not captured directly; use Scribe on a separate device where both voices can be heard."
-        : input("desktop-audio") === "microphone" ? "Records this Mac’s microphone. Keep both voices audible; use speakerphone for a call."
-          : "Next, choose the Zoom or Chrome window for this visit. Close unrelated audio in that application.";
+        : input("desktop-audio") === "microphone" ? "Records this Mac’s microphone after you choose Start. Keep both voices audible; use speakerphone for a call."
+          : "Next, choose the Zoom or Chrome window for this visit, then choose Start. Close unrelated audio in that application.";
     };
     const changed = (event: Event): void => {
       if (!isIOS && (event.target as HTMLElement).getAttribute("name") === "modality") {
@@ -574,7 +573,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       else recentStates.delete(ref); // Starting, errors and unresolved stops invalidate earlier labels.
     });
     disposeContent = () => { stopObserving(); app.remove(); };
-    // Only the current explicit Start action carries this in-memory intent.
+    // Only the current consent action carries this in-memory source choice.
+    // Desktop waits for Start; mobile retains its consent-and-record action.
     // Reopening/recovering a journal never starts a microphone or meeting.
     if (startRequested !== undefined) {
       await app.updateComplete;

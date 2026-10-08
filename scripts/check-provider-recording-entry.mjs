@@ -19,6 +19,7 @@ for (const platform of ["desktop", "ios"]) {
   const window = dom.window, root = window.document.getElementById("root"), nativeCalls = [];
   Object.defineProperty(window, "crypto", { value: webcrypto });
   Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
+  window.ResizeObserver = class { observe() {} disconnect() {} };
   window.fetch = () => { throw new Error("Unexpected network"); };
   if (platform === "ios") {
     window.CapacitorCustomPlatform = { name: "ios" };
@@ -38,7 +39,7 @@ for (const platform of ["desktop", "ios"]) {
   const scope = { workspaceId: "20000000-0000-4000-8000-000000000002", appointmentRef: "appointment_01j00000000000000000000000",
     bindingRef: "scribe_capture_binding_01j00000000000000000000000" };
   const encounter = { appointmentRef: scope.appointmentRef, title: "Invented recording entry", detail: "Synthetic all-party consent only" };
-  for (const mode of ["fresh", "options", "recovered", "revoked", "permission", "journal-failure"]) {
+  for (const mode of ["fresh", "in-person", "options", "recovered", "revoked", "permission", "journal-failure"]) {
     const abort = new window.AbortController(), gate = deferred(), acquisition = deferred(), listeners = new Set();
     let starts = 0, closes = 0, admissions = 0, acquiring = false;
     const admission = { key: webcrypto.randomUUID(), languageMode: "en-US", attestation: { modality: "virtual", participant_regions: [],
@@ -59,6 +60,7 @@ for (const platform of ["desktop", "ios"]) {
         if (!abort.signal.aborted) update({ statusCode: "capture_recording",
           ...(snapshot.desktop ? { desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned" } } : {}) });
       }, stopRecording: forbidden, refreshTranscriptionStatus: forbidden,
+      ...(platform === "desktop" ? { async selectDesktopAudio(audioMode) { update({ desktop: { ...snapshot.desktop, audioMode } }); } } : {}),
     };
     const dispose = module.namespace.mountProviderWorkspace(root, { signal: abort.signal, listEncounters: async () => [encounter], createEncounter: forbidden,
       openEncounter: async () => ({ encounter, scope, signal: abort.signal,
@@ -72,7 +74,7 @@ for (const platform of ["desktop", "ios"]) {
           if (path.endsWith("capture-admissions")) {
             admissions++; assert.equal(body.attestation.all_parties_consented, true);
             assert.equal(body.configured_capture.language_mode, mode === "options" ? "en-US+es-US" : "en-US");
-            assert.equal(body.attestation.modality, mode === "options" ? "phone" : platform === "ios" ? "in_person" : "virtual");
+            assert.equal(body.attestation.modality, mode === "options" ? "phone" : platform === "ios" || mode === "in-person" ? "in_person" : "virtual");
             return Response.json({ ...base, operation_ref: "scribe_admission_01j00000000000000000000000", appointment_ref: scope.appointmentRef,
               consent_record_id: sessionId, session_id: sessionId });
           }
@@ -98,22 +100,21 @@ for (const platform of ["desktop", "ios"]) {
       await until(() => root.querySelector('[data-workspace-action="prepare"]'));
       assert.equal(starts, 0); assert.equal(acquiring, false);
       const options = root.querySelector(".provider-recording-options");
-      assert.equal(options.open, false); assert.equal(root.querySelector('[name="consent"]'), null);
+      assert.equal(options.open, platform === "desktop"); assert.equal(root.querySelector('[name="consent"]'), null);
       assert.equal(root.querySelector('[name="language"]').value, "en-US");
-      assert.equal(root.querySelector('[name="modality"]').value, platform === "ios" ? "in_person" : "virtual");
+      assert.equal(root.querySelector('[name="modality"]').value, "in_person");
       assert.equal(root.querySelector('[name="modality"]').closest("details"), null);
       assert.equal(root.querySelector('[name="language"]').closest("details"), null);
-      assert.ok(options.querySelector("summary").textContent.includes(platform === "ios" ? "iPhone microphone" : "Microphone + selected application audio"));
+      assert.ok(options.querySelector("summary").textContent.includes(platform === "ios" ? "iPhone microphone" : "Microphone only"));
       if (platform === "desktop") {
         const type = root.querySelector('[name="modality"]');
         type.value = "in_person"; type.dispatchEvent(new window.Event("change", { bubbles: true }));
-        assert.ok(root.querySelector("[data-recording-guidance]").textContent.includes("requires a Zoom or Chrome window"));
-        assert.ok(options.textContent.includes("does not support microphone-only recording"));
-        type.value = "virtual"; type.dispatchEvent(new window.Event("change", { bubbles: true }));
+        assert.ok(root.querySelector("[data-recording-guidance]").textContent.includes("after you choose Start"));
+        if (mode !== "in-person") { type.value = "virtual"; type.dispatchEvent(new window.Event("change", { bubbles: true })); }
       }
       const start = root.querySelector('[data-workspace-action="prepare"]');
-      assert.equal(start.textContent, "Confirm consent & record");
-      assert.ok(window.document.getElementById(start.getAttribute("aria-describedby")).textContent.includes("everyone has agreed to recording and transcription"));
+      assert.equal(start.textContent, platform === "ios" ? "Confirm consent & record" : "Confirm consent & continue");
+      assert.ok(window.document.getElementById(start.getAttribute("aria-describedby")).textContent.includes("Everyone has agreed to recording and transcription"));
       // A detached/replaced action cannot reuse consent from a different screen.
       const forged = start.cloneNode(true); start.after(forged); forged.click();
       await until(() => root.getAttribute("aria-busy") !== "true"); forged.remove();
@@ -124,7 +125,7 @@ for (const platform of ["desktop", "ios"]) {
         choose("language", "en-US+es-US"); choose("modality", "phone");
         if (platform === "ios") choose("microphone", "external");
         assert.ok(root.querySelector("[data-recording-guidance]").textContent.includes(platform === "ios"
-          ? "Call audio is not captured directly" : "requires a Zoom or Chrome window"));
+          ? "Call audio is not captured directly" : "after you choose Start"));
         assert.equal(starts, 0); assert.equal(admissions, 0); assert.equal(saved.progress, null);
       }
       start.click(); start.click(); // Double taps must not create another admission/start.
@@ -141,6 +142,14 @@ for (const platform of ["desktop", "ios"]) {
       if (mode === "permission" && platform === "desktop") {
         await until(() => root.querySelector('[data-testid="refresh-permissions"]'));
         assert.equal(starts, 0); checks++; continue;
+      }
+      if (platform === "desktop") {
+        await until(() => root.querySelector('[data-testid="record-button"]')?.disabled === false);
+        assert.equal(starts, 0, "Consent and preparation cannot start desktop audio");
+        assert.equal(snapshot.desktop.audioMode, mode === "in-person" || mode === "options" ? "microphone" : "meeting");
+        assert.equal(snapshot.elapsedSeconds, 0); assert.equal(snapshot.recordedChunks, 0);
+        const record = root.querySelector('[data-testid="record-button"]');
+        record.click(); record.click(); // Explicit Start retains the double-click guard.
       }
       await until(() => starts === 1 && root.textContent.includes("Starting microphone"));
       assert.ok(root.querySelector('[data-testid="startup-progress"]').textContent.includes("Wait for Recording"));

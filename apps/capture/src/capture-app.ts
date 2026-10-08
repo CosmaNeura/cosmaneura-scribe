@@ -83,7 +83,7 @@ export class CaptureApp extends LitElement {
     binding.signal.addEventListener("abort", this.#closeProvider, { once: true });
   }
 
-  /** Continue one explicit consent-screen Start, never a saved/replayed intent. */
+  /** Apply the consent-screen source choice; desktop Start stays deliberate. */
   public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting"): Promise<void> {
     const binding = this.#provider;
     if (!binding || !isMicrophoneInput(input)) return;
@@ -112,8 +112,9 @@ export class CaptureApp extends LitElement {
       if (!current()) return;
     }
     if (this.#snapshot.desktop && this.#snapshot.desktop.phase !== "ready") return;
-    // Meeting visits always require a deliberate inline window choice and Start.
-    if (this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows) return;
+    // Every desktop visit waits for Start in the visible recording controls.
+    // Consent confirms permission; finishing preparation never opens a source.
+    if (binding.captureMode === "desktop_meeting" || this.#snapshot.desktop) return;
     this.#microphoneInput = input;
     await this.#record();
   }
