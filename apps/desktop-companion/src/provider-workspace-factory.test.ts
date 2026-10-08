@@ -8,6 +8,7 @@ import { DesktopProviderRecorder, type DesktopProviderRecorderOptions } from "./
 import type { ProviderProgress } from "../../capture/src/provider/workspace-journal";
 import { InMemoryRecordingIndicator } from "./recording-indicator.js";
 import type { NativePresentationEvent } from "./native-provider-presentation.js";
+import { DesktopPreparationBff } from "./preparation-metadata.js";
 
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
 const sessionId = "30000000-0000-4000-8000-000000000003";
@@ -54,6 +55,26 @@ async function fixture() {
 }
 
 describe("desktop provider resource factory", () => {
+  it.each([false, true])("uses parallel metadata only before any encrypted preparation exists: retained=%s", async retained => {
+    const f = await fixture(), connection = f.connect();
+    const opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+    await opened.journal.save(await opened.journal.load(), progress);
+    let options!: DesktopProviderRecorderOptions;
+    vi.spyOn(DesktopProviderRecorder, "open").mockImplementation(async value => {
+      options = value;
+      return { availableForView: true, deactivate: async () => undefined } as unknown as DesktopProviderRecorder;
+    });
+    await opened.recorder(sessionId, new AbortController().signal);
+    if (retained) await options.flowStore.putPreparationState({ mode: "configured_core", schemaVersion: 6, channel: "mixed",
+      sessionId, startedAt: new Date().toISOString(), completeIdempotencyKey: "synthetic-complete",
+      leaseIdempotencyKey: null, leaseRequest: null, windowPreparation: null });
+    const authorization = vi.spyOn(DesktopPreparationBff.prototype, "authorizePreparation");
+    expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
+    expect(authorization).toHaveBeenCalledWith(!retained);
+    expect(f.request.mock.calls.map(call => (call[1].operation as { kind: string }).kind).sort())
+      .toEqual(retained ? ["creator_review"] : ["capabilities", "creator_review", "encryption_key"]);
+    await connection.dispose(); expect(f.release).toHaveBeenCalledOnce();
+  });
   it("reauthorizes before custody, recovers the journal, and rejects a replacement device key", async () => {
     const f = await fixture(), first = f.connect();
     const one = await first.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);

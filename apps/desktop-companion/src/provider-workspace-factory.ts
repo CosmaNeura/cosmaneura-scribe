@@ -2,7 +2,7 @@ import { passageWav, retainPassageAudio } from "./passage-playback.js";
 import { NativeCreatorEditJournal } from "../../review-ui/src/native-edit-journal";
 import type { DesktopRecordingWindow } from "./recording-window.js";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter } from "../../capture/src/provider/workspace-contracts";
-import { CoreCaptureBff, CoreCaptureClient, reference } from "../../capture/src/provider/core-client";
+import { CoreCaptureClient, reference } from "../../capture/src/provider/core-client";
 import { NativeProviderWorkspaceJournal } from "../../capture/src/provider/workspace-journal";
 import { NativeCreatorReviewJournal } from "../../review-ui/src/native-review-journal";
 import type { CiphertextUploadTarget } from "../../capture/src/bff/contracts";
@@ -15,6 +15,7 @@ import { DurableDesktopCoverage, desktopJournalRecords } from "./durable-provide
 import type { NativePresentationOwner } from "./native-provider-presentation.js";
 import { parseCreatorReview } from "../../review-ui/src/creator-review-api";
 import type { PreparedDesktopCapture } from "./provider-recorder.js";
+import { DesktopPreparationBff } from "./preparation-metadata.js";
 
 export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderEncounter,
   "journal" | "reviewJournal" | "recorder"> {
@@ -255,12 +256,26 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
               };
               if (!storedInput) await saveAudioMode(audioMode);
               const flow = new DurableDesktopFlowStore(owned.store!.namespace("flow"));
+              const coverage = new DurableDesktopCoverage(owned.store!.namespace("coverage"), sessionId);
+              let preparationBff: DesktopPreparationBff | undefined, preparationSignal: AbortSignal | undefined;
+              const bff = (captureSignal: AbortSignal): DesktopPreparationBff => {
+                if (preparationBff) {
+                  if (preparationSignal !== captureSignal) throw unavailable();
+                  return preparationBff;
+                }
+                preparationSignal = captureSignal;
+                return preparationBff = new DesktopPreparationBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId);
+              };
               owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, prepareInBackground: resources.prepareInBackground === true, sessionId, audioMode, saveAudioMode, signal: linked,
-                createBff: captureSignal => new CoreCaptureBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId),
+                createBff: bff,
                 authorizePreparation: async captureSignal => {
-                  const client = new CoreCaptureClient(selected.scope, request, captureSignal);
-                  const view = parseCreatorReview(await client.operation(sessionId, { kind: "creator_review" }), sessionId);
-                  return { sessionId: view.session_id, status: view.status };
+                  const retained = await Promise.allSettled([
+                    flow.getActiveCaptureState(), flow.getPreparationState(), flow.getSessionKeyState(sessionId), coverage.load(),
+                  ]);
+                  for (const result of retained) if (result.status === "rejected") throw result.reason;
+                  check(); if (captureSignal.aborted) throw unavailable();
+                  // Retained/crashed attempts keep their original read/replay path.
+                  return bff(captureSignal).authorizePreparation(retained.every(result => result.status === "fulfilled" && result.value === null));
                 },
                 authorizeMount: (prepared, captureSignal) => selected.authorizeRecorder(prepared, captureSignal),
                 authority: selected.authority, indicator: resources.indicator,
@@ -275,7 +290,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                   await retainPassageAudio(archive, record); check();
                 }),
                 uploadTarget: selected.uploadTarget,
-                coverage: new DurableDesktopCoverage(owned.store!.namespace("coverage"), sessionId),
+                coverage,
                 native: { ...resources.native, getProcessFence: () => {
                   if (!selected.processFence) throw unavailable();
                   return selected.processFence();

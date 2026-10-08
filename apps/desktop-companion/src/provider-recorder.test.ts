@@ -21,6 +21,8 @@ import { DurableDesktopCoverage } from "./durable-provider-records.js";
 import { InMemoryRecordingIndicator } from "./recording-indicator.js";
 import { NativeProcessPCMDriver } from "./native-process-driver.js";
 import { nativePipeFixtureFence } from "./native-pipe-fixture.js";
+import { CoreCaptureClient } from "../../capture/src/provider/core-client";
+import { DesktopPreparationBff } from "./preparation-metadata.js";
 
 const helperPath = process.env.SCRIBE_DESKTOP_PIPE_FIXTURE;
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
@@ -136,6 +138,56 @@ function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("desktop preparation screen", () => {
+  it.each(["success", "revoked", "cancelled"] as const)("joins parallel preparation reads before writes or release on %s", async outcome => {
+    const f = await fixture(true), reviewReply = deferred(), keyReply = deferred();
+    const baseline = f.options.createBff(f.abort.signal);
+    const key = await baseline.getAudioEncryptionKey(), capabilities = await baseline.getCapabilities(f.session.id);
+    const writes = vi.spyOn(f.options.flowStore, "putPreparationState");
+    const candidate = vi.spyOn(f.options.flowStore, "putSessionKeyCandidate");
+    const issue = vi.spyOn(baseline, "issueLease"), bind = vi.spyOn(baseline, "bindSessionAudioKey");
+    const request = vi.fn(async (_path: string, body: Readonly<Record<string, unknown>>) => {
+      const kind = (body.operation as { kind: string }).kind;
+      if (kind === "creator_review") await reviewReply.promise;
+      if (kind === "encryption_key") await keyReply.promise;
+      if (kind === "creator_review" && outcome === "revoked") return new Response(null, { status: 403 });
+      const receipt = kind === "creator_review" ? { schema_version: "1.0", session_id: f.session.id, status: "created", source: null,
+        working: null, review_queue: null, translation_progress: [] } : kind === "encryption_key" ? key : capabilities;
+      return Response.json({ contract_version: "1", workspace_id: workspaceId, binding_ref: body.binding_ref,
+        request_nonce: body.request_nonce, checked_at: new Date().toISOString(), operation: kind, receipt });
+    });
+    const metadata = new DesktopPreparationBff(new CoreCaptureClient({ workspaceId,
+      appointmentRef: "appointment_01j00000000000000000000000", bindingRef: "scribe_capture_binding_01j00000000000000000000000" }, request, f.abort.signal), f.session.id);
+    vi.spyOn(baseline, "getAudioEncryptionKey").mockImplementation(options => metadata.getAudioEncryptionKey(options));
+    vi.spyOn(baseline, "getCapabilities").mockImplementation((id, options) => metadata.getCapabilities(id, options));
+    const recorder = await f.open({ prepareInBackground: true,
+      authorizePreparation: () => metadata.authorizePreparation(true) });
+    try {
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
+      expect(recorder.snapshot.desktop?.phase).toBe("preparing");
+      expect(writes).not.toHaveBeenCalled(); expect(candidate).not.toHaveBeenCalled();
+      expect(issue).not.toHaveBeenCalled(); expect(bind).not.toHaveBeenCalled();
+      expect(f.nativeAvailability).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      let closed = false;
+      const closing = outcome === "cancelled" ? recorder.deactivate().then(() => { closed = true; }) : null;
+      reviewReply.resolve();
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(writes).not.toHaveBeenCalled(); expect(closed).toBe(false); expect(f.release).not.toHaveBeenCalled();
+      keyReply.resolve();
+      if (outcome === "success") {
+        await vi.waitFor(() => expect(recorder.snapshot.desktop?.phase).toBe("ready"));
+        expect(candidate).toHaveBeenCalledOnce(); expect(issue).toHaveBeenCalledOnce();
+        expect(request).toHaveBeenCalledTimes(3); // Real flow consumes each one-use response.
+      } else if (outcome === "revoked") {
+        await vi.waitFor(() => expect(recorder.snapshot.desktop?.phase).toBe("stopped"));
+        expect(writes).not.toHaveBeenCalled(); expect(candidate).not.toHaveBeenCalled();
+        expect(issue).not.toHaveBeenCalled(); expect(bind).not.toHaveBeenCalled();
+      } else {
+        await closing; expect(closed).toBe(true); expect(f.release).toHaveBeenCalledOnce();
+        expect(writes).not.toHaveBeenCalled(); expect(candidate).not.toHaveBeenCalled();
+      }
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally { reviewReply.resolve(); keyReply.resolve(); await f.close(); }
+  });
   it.each(["metadata", "discovery"] as const)("overlaps fresh meeting discovery and preparation, waiting for %s before enabling Start", async last => {
     const f = await fixture(true), metadataEntered = deferred(), discoveryEntered = deferred();
     const metadataReply = deferred(), discoveryReply = deferred();
