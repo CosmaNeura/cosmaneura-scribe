@@ -71,6 +71,7 @@ func generatedSpeechSurvivesNativeMeetingMix(systemRate: Int) async throws {
   #expect(energy(mixed[patientOnlyRange]) > 0.00001)
   #expect(
     mixed.allSatisfy { abs(Int($0)) < 32_767 }, "Speech must retain headroom without clipping")
+  try retainVirtualPCM(mixed, root: root, name: "meeting-\(systemRate)")
 }
 
 @Test(
@@ -115,6 +116,28 @@ func generatedSpeechSurvivesNativeMicrophoneOnlyMix(microphoneRate: Int) async t
     #expect(energy(samples[(turn * slot * 16_000)..<((turn + 1) * slot * 16_000)]) > 0.00001)
   }
   #expect(samples.allSatisfy { abs(Int($0)) < 32_767 })
+  try retainVirtualPCM(samples, root: root, name: "microphone-\(microphoneRate)")
+}
+
+// Retain only these consented fictional samples for the separate desktop
+// encryption/upload/playback check. Product capture has no fixture export.
+private func retainVirtualPCM(_ samples: [Int16], root: URL, name: String) throws {
+  try #require(!samples.isEmpty && samples.count <= 16_000 * 48)
+  var bytes = Data(capacity: samples.count * 2)
+  for sample in samples {
+    var littleEndian = sample.littleEndian
+    withUnsafeBytes(of: &littleEndian) { bytes.append(contentsOf: $0) }
+  }
+  let consent = try Data(contentsOf: root.appendingPathComponent("synthetic-consent.json"))
+  let receipt: [String: Any] = [
+    "schema": 1, "synthetic_only": true, "name": name,
+    "sample_rate_hz": 16_000, "frames": samples.count,
+    "pcm_sha256": SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+    "consent_sha256": SHA256.hash(data: consent).map { String(format: "%02x", $0) }.joined(),
+  ]
+  try bytes.write(to: root.appendingPathComponent(name + ".pcm"), options: .atomic)
+  try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]).write(
+    to: root.appendingPathComponent(name + ".json"), options: .atomic)
 }
 
 private func microphoneMix(_ samples: [Float], rate: Int, renewEveryTicks: Int? = nil) async throws -> [Int16] {
