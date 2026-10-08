@@ -7,11 +7,13 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import uuid4
 
 import httpx
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
+from .creator_review_routes import CreatorReviewViewV1
 from .provider_core_connections import ProviderCoreConnections
 from .provider_core_transport import (
     MAX_CORE_CAPTURE_RESPONSE_BYTES,
@@ -35,7 +37,7 @@ from .provider_core_transport import (
 )
 from .provider_encounter_transport import ProviderEncounterAccount
 from .provider_performance import provider_phase_timing
-from .schemas import AudioEncryptionPublicKey
+from .schemas import AudioEncryptionPublicKey, CaptureCapabilities
 
 PATH = "/service/v1/agent/scribe/native-capture"
 NATIVE_READ_OPERATIONS = frozenset(
@@ -46,8 +48,17 @@ NATIVE_READ_OPERATIONS = frozenset(
         "native_recording_context",
         # Existing public wrapping-key read, qualified Core receiver first.
         "encryption_key",
+        "preparation_metadata",
     }
 )
+
+
+class PreparationMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    schema_version: Literal["1.0"]
+    review: CreatorReviewViewV1
+    encryption_key: AudioEncryptionPublicKey
+    capabilities: CaptureCapabilities
 
 
 class ProviderNativeCoreTransport:
@@ -121,7 +132,11 @@ class ProviderNativeCoreTransport:
                     isinstance(operation.get("kind"), str)
                     and operation["kind"] in NATIVE_READ_OPERATIONS
                 )
-                if operation["kind"] in {"native_recording_context", "encryption_key"}:
+                if operation["kind"] in {
+                    "native_recording_context",
+                    "encryption_key",
+                    "preparation_metadata",
+                }:
                     _require(set(operation) == {"kind"})
                 request["operation"] = operation
         try:
@@ -222,6 +237,16 @@ class ProviderNativeCoreTransport:
                             and result.get("operation") == _object(request["operation"])["kind"]
                         )
                         receipt = _object(result.get("receipt"))
+                        if _object(request["operation"])["kind"] == "preparation_metadata":
+                            metadata = PreparationMetadata.model_validate(receipt)
+                            public = _object(receipt.get("encryption_key"))
+                            wrapping_jwk = _object(public.get("public_jwk"))
+                            _require(
+                                set(public) == {"key_version", "algorithm", "public_jwk"}
+                                and set(wrapping_jwk) == {"kty", "n", "e", "alg", "ext", "key_ops"}
+                                and wrapping_jwk.get("key_ops") == ["wrapKey"]
+                            )
+                            result["receipt"] = metadata.model_dump(mode="json")
                         if _object(request["operation"])["kind"] == "encryption_key":
                             public = _object(receipt.get("public_jwk"))
                             _require(

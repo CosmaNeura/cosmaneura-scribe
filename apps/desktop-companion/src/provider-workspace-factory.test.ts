@@ -31,7 +31,13 @@ async function fixture() {
     contract_version: "1", binding_ref: body.binding_ref, workspace_id: body.workspace_id,
     request_nonce: body.request_nonce, checked_at: "2026-09-22T12:00:00Z",
     operation: (body.operation as { kind: string }).kind,
-    receipt: (body.operation as { kind: string }).kind === "creator_review"
+    receipt: (body.operation as { kind: string }).kind === "preparation_metadata" ? { schema_version: "1.0",
+      review: { schema_version: "1.0", session_id: sessionId, status: "created", source: null, working: null, review_queue: null, translation_progress: [] },
+      encryption_key: { key_version: "synthetic-key", algorithm: "RSA-OAEP-256", public_jwk: { kty: "RSA", n: "a".repeat(512), e: "AQAB", alg: "RSA-OAEP-256", ext: true, key_ops: ["wrapKey"] } },
+      capabilities: { protocol_version: "1.0", media: { media_type: "audio/wav", encoding: "pcm_s16le", channels: 1, sample_rate_hz: 16000 },
+        target_chunk_duration_ms: 10000, max_envelope_bytes: 327680, max_chunks: 1000, remaining_aggregate_plaintext_bytes: 67108864,
+        capture_lease_ttl_seconds: 900, reservation_window_seconds: 900, max_reservations_per_batch: 90, upload_concurrency: 2 } }
+      : (body.operation as { kind: string }).kind === "creator_review"
       ? { schema_version: "1.0", session_id: sessionId, status: "created", source: null,
         working: null, review_queue: null, translation_progress: [] } : { session_id: sessionId },
   }));
@@ -55,7 +61,7 @@ async function fixture() {
 }
 
 describe("desktop provider resource factory", () => {
-  it.each([false, true])("uses parallel metadata only before any encrypted preparation exists: retained=%s", async retained => {
+  it.each([false, true])("uses combined metadata only before any encrypted preparation exists: retained=%s", async retained => {
     const f = await fixture(), connection = f.connect();
     const opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
     await opened.journal.save(await opened.journal.load(), progress);
@@ -72,7 +78,7 @@ describe("desktop provider resource factory", () => {
     expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
     expect(authorization).toHaveBeenCalledWith(!retained);
     expect(f.request.mock.calls.map(call => (call[1].operation as { kind: string }).kind).sort())
-      .toEqual(retained ? ["creator_review"] : ["capabilities", "creator_review", "encryption_key"]);
+      .toEqual(retained ? ["creator_review"] : ["preparation_metadata"]);
     await connection.dispose(); expect(f.release).toHaveBeenCalledOnce();
   });
   it("reauthorizes before custody, recovers the journal, and rejects a replacement device key", async () => {
@@ -122,12 +128,13 @@ describe("desktop provider resource factory", () => {
     await opened.recorder(sessionId, new AbortController().signal);
     expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
     expect(f.request).toHaveBeenCalledWith("/service/v1/agent/scribe/capture-operations",
-      expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "creator_review" } }),
+      expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "preparation_metadata" } }),
       expect.any(String), expect.any(AbortSignal));
     const prepared = { sessionId, captureLeaseId: crypto.randomUUID(), leaseReceiptId: crypto.randomUUID(),
       captureLeaseGeneration: 1, captureAuthorizedUntil: new Date(Date.now() + 60_000).toISOString() };
     await options.authorizeMount(prepared, options.signal);
     expect(f.authorizeRecorder).toHaveBeenCalledWith(prepared, options.signal);
+    await options.createBff(options.signal).getCapabilities(sessionId);
     await options.createBff(options.signal).getCapabilities(sessionId);
     expect(f.request).toHaveBeenCalledWith("/service/v1/agent/scribe/capture-operations",
       expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "capabilities" } }),

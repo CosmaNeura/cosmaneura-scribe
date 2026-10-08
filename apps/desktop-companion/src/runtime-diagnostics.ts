@@ -5,6 +5,7 @@ import { join } from "node:path";
 const TIMING_EVENTS = ["audio_availability_helper_check", "audio_availability_probe", "audio_permission_helper_check",
   "audio_permission_probe", "audio_capture_helper_check", "provider_catalog", "provider_mount",
   "provider_admission", "provider_review", "provider_capabilities", "provider_encryption_key",
+  "provider_preparation_metadata",
   "provider_recording_window", "provider_other_operation", "provider_source_prepare", "provider_source_authorize",
   "provider_workspace_list", "provider_workspace_open", "provider_journal_read", "provider_visit_preferences"] as const;
 export type RuntimeTimingEvent = typeof TIMING_EVENTS[number];
