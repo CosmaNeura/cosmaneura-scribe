@@ -138,7 +138,7 @@ function interruptedDriver(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("desktop preparation screen", () => {
-  it.each(["success", "revoked", "cancelled"] as const)("joins parallel preparation reads before writes or release on %s", async outcome => {
+  it.each(["success", "revoked", "cancelled"] as const)("joins combined preparation metadata before writes or release on %s", async outcome => {
     const f = await fixture(true), reviewReply = deferred(), keyReply = deferred();
     const baseline = f.options.createBff(f.abort.signal);
     const key = await baseline.getAudioEncryptionKey(), capabilities = await baseline.getCapabilities(f.session.id);
@@ -147,11 +147,11 @@ describe("desktop preparation screen", () => {
     const issue = vi.spyOn(baseline, "issueLease"), bind = vi.spyOn(baseline, "bindSessionAudioKey");
     const request = vi.fn(async (_path: string, body: Readonly<Record<string, unknown>>) => {
       const kind = (body.operation as { kind: string }).kind;
-      if (kind === "creator_review") await reviewReply.promise;
-      if (kind === "encryption_key") await keyReply.promise;
-      if (kind === "creator_review" && outcome === "revoked") return new Response(null, { status: 403 });
-      const receipt = kind === "creator_review" ? { schema_version: "1.0", session_id: f.session.id, status: "created", source: null,
-        working: null, review_queue: null, translation_progress: [] } : kind === "encryption_key" ? key : capabilities;
+      await reviewReply.promise; await keyReply.promise;
+      if (outcome === "revoked") return new Response(null, { status: 403 });
+      const review = { schema_version: "1.0", session_id: f.session.id, status: "created", source: null,
+        working: null, review_queue: null, translation_progress: [] };
+      const receipt = { schema_version: "1.0", review, encryption_key: key, capabilities };
       return Response.json({ contract_version: "1", workspace_id: workspaceId, binding_ref: body.binding_ref,
         request_nonce: body.request_nonce, checked_at: new Date().toISOString(), operation: kind, receipt });
     });
@@ -162,7 +162,7 @@ describe("desktop preparation screen", () => {
     const recorder = await f.open({ prepareInBackground: true,
       authorizePreparation: () => metadata.authorizePreparation(true) });
     try {
-      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
+      await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
       expect(recorder.snapshot.desktop?.phase).toBe("preparing");
       expect(writes).not.toHaveBeenCalled(); expect(candidate).not.toHaveBeenCalled();
       expect(issue).not.toHaveBeenCalled(); expect(bind).not.toHaveBeenCalled();
@@ -176,7 +176,7 @@ describe("desktop preparation screen", () => {
       if (outcome === "success") {
         await vi.waitFor(() => expect(recorder.snapshot.desktop?.phase).toBe("ready"));
         expect(candidate).toHaveBeenCalledOnce(); expect(issue).toHaveBeenCalledOnce();
-        expect(request).toHaveBeenCalledTimes(3); // Real flow consumes each one-use response.
+        expect(request).toHaveBeenCalledOnce(); // Real flow consumes both one-use components.
       } else if (outcome === "revoked") {
         await vi.waitFor(() => expect(recorder.snapshot.desktop?.phase).toBe("stopped"));
         expect(writes).not.toHaveBeenCalled(); expect(candidate).not.toHaveBeenCalled();

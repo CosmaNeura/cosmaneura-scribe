@@ -45,6 +45,7 @@ _OPERATIONS = frozenset(
         "creator_review",
         "provider_encounter",
         "native_recording_context",
+        "preparation_metadata",
         "prepare_recording_window",
         "prepare_continuation_window",
         "decide_translation",

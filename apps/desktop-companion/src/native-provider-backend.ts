@@ -62,7 +62,8 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
     const event: RuntimeTimingEvent = action === "catalog" ? "provider_catalog" : action === "mount" ? "provider_mount"
       : action === "capture-admissions" ? "provider_admission" : operation === "creator_review" ? "provider_review"
       : operation === "capabilities" ? "provider_capabilities" : operation === "encryption_key" ? "provider_encryption_key"
-      : operation === "prepare_recording_window" ? "provider_recording_window" : "provider_other_operation";
+      : operation === "prepare_recording_window" ? "provider_recording_window"
+      : operation === "preparation_metadata" ? "provider_preparation_metadata" : "provider_other_operation";
     const value = exact(await timed(event, () => native.request("providerRequest", {
       revision, action, key, body: JSON.stringify(body),
     }, AbortSignal.any([lifetime, signal]), action === "capture-admissions" ? 220_000

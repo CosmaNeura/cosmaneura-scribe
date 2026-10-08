@@ -23,20 +23,27 @@ export class DesktopPreparationBff extends CoreCaptureBff {
       const view = await review(); this.current();
       return { sessionId: view.session_id, status: view.status };
     }
-    // Every read uses its ordinary authenticated endpoint. Do not wrap/store a
-    // key, bind a key, obtain a lease, discover OS windows or publish readiness
-    // until the full creator/session preflight and all three reads have settled.
-    const [view, key, capabilities] = await Promise.allSettled([
-      review(), super.getAudioEncryptionKey(), super.getCapabilities(this.admittedSession),
-    ]);
+    // The receiver-first Core sequence preserves each original read's complete
+    // authorization and consent checks. It shares only request setup/client
+    // connections, and grants no audio permission. No partial result is retained.
+    const result = await this.preparationClient.operation(this.admittedSession, { kind: "preparation_metadata" });
     this.current();
-    if (view.status === "rejected") throw view.reason;
-    if (key.status === "rejected") throw key.reason;
-    if (capabilities.status === "rejected") throw capabilities.reason;
-    if (view.value.status === "created") {
-      this.publicKey = key.value; this.capabilities = capabilities.value;
+    if (!record(result) || Object.keys(result).sort().join(",") !== "capabilities,encryption_key,review,schema_version"
+      || result.schema_version !== "1.0") throw new Error("Desktop preparation metadata is unavailable.");
+    const view = parseCreatorReview(result.review, this.admittedSession);
+    const key = result.encryption_key, capabilities = result.capabilities;
+    if (!record(key) || Object.keys(key).sort().join(",") !== "algorithm,key_version,public_jwk"
+      || key.algorithm !== "RSA-OAEP-256" || typeof key.key_version !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(key.key_version)
+      || !record(key.public_jwk) || Object.keys(key.public_jwk).sort().join(",") !== "alg,e,ext,key_ops,kty,n"
+      || key.public_jwk.kty !== "RSA" || key.public_jwk.alg !== "RSA-OAEP-256" || key.public_jwk.ext !== true
+      || typeof key.public_jwk.n !== "string" || !/^[A-Za-z0-9_-]{512}$/.test(key.public_jwk.n)
+      || typeof key.public_jwk.e !== "string" || !/^[A-Za-z0-9_-]{1,16}$/.test(key.public_jwk.e)
+      || !Array.isArray(key.public_jwk.key_ops) || key.public_jwk.key_ops.join(",") !== "wrapKey"
+      || !validCapabilities(capabilities)) throw new Error("Desktop preparation metadata is unavailable.");
+    if (view.status === "created") {
+      this.publicKey = key as AudioEncryptionPublicKey; this.capabilities = capabilities;
     }
-    return { sessionId: view.value.session_id, status: view.value.status };
+    return { sessionId: view.session_id, status: view.status };
   }
 
   override async getAudioEncryptionKey(options?: RequestOptions): Promise<AudioEncryptionPublicKey> {
@@ -59,4 +66,22 @@ export class DesktopPreparationBff extends CoreCaptureBff {
   }
 
   private clear(): void { this.publicKey = null; this.capabilities = null; }
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validCapabilities(value: unknown): value is CaptureCapabilities {
+  if (!record(value) || Object.keys(value).sort().join(",") !==
+    "capture_lease_ttl_seconds,max_chunks,max_envelope_bytes,max_reservations_per_batch,media,protocol_version,remaining_aggregate_plaintext_bytes,reservation_window_seconds,target_chunk_duration_ms,upload_concurrency"
+    || value.protocol_version !== "1.0" || !record(value.media)
+    || Object.keys(value.media).sort().join(",") !== "channels,encoding,media_type,sample_rate_hz"
+    || value.media.media_type !== "audio/wav" || value.media.encoding !== "pcm_s16le"
+    || value.media.channels !== 1 || value.media.sample_rate_hz !== 16000) return false;
+  return ["capture_lease_ttl_seconds", "max_chunks", "max_envelope_bytes", "max_reservations_per_batch",
+    "reservation_window_seconds", "target_chunk_duration_ms", "upload_concurrency"].every(name =>
+    typeof value[name] === "number" && Number.isSafeInteger(value[name]) && value[name] > 0)
+    && typeof value.remaining_aggregate_plaintext_bytes === "number"
+    && Number.isSafeInteger(value.remaining_aggregate_plaintext_bytes) && value.remaining_aggregate_plaintext_bytes >= 0;
 }

@@ -81,6 +81,40 @@ class Wire:
                     "key_ops": ["wrapKey"],
                 },
             }
+        if data.get("operation", {}).get("kind") == "preparation_metadata":
+            review = {
+                "schema_version": "1.0",
+                "review": {"schema_version": "1.0", "session_id": SESSION, "status": "created"},
+                "encryption_key": {
+                    "key_version": "synthetic-key",
+                    "algorithm": "RSA-OAEP-256",
+                    "public_jwk": {
+                        "kty": "RSA",
+                        "n": "a" * 512,
+                        "e": "AQAB",
+                        "alg": "RSA-OAEP-256",
+                        "ext": True,
+                        "key_ops": ["wrapKey"],
+                    },
+                },
+                "capabilities": {
+                    "protocol_version": "1.0",
+                    "media": {
+                        "media_type": "audio/wav",
+                        "encoding": "pcm_s16le",
+                        "channels": 1,
+                        "sample_rate_hz": 16000,
+                    },
+                    "target_chunk_duration_ms": 10000,
+                    "max_envelope_bytes": 327680,
+                    "max_chunks": 1000,
+                    "remaining_aggregate_plaintext_bytes": 67108864,
+                    "capture_lease_ttl_seconds": 900,
+                    "reservation_window_seconds": 900,
+                    "max_reservations_per_batch": 90,
+                    "upload_concurrency": 2,
+                },
+            }
         if data["action"] == "operation":
             result.update(operation=data["operation"]["kind"], receipt=review)
         else:
@@ -120,6 +154,64 @@ class Wire:
 
 
 SESSION = str(uuid4())
+
+
+async def test_combined_preparation_is_one_fresh_core_request_with_closed_metadata():
+    wire = Wire()
+    account, value = await wire.call(
+        "capture-operations", body("capture-operations", "preparation_metadata")
+    )
+    assert account == ACCOUNT and len(wire.calls) == 1 and wire.checks == 3
+    result = value["receipt"]
+    assert (
+        result["review"]["session_id"] == SESSION
+        and result["capabilities"]["protocol_version"] == "1.0"
+    )
+    assert result["encryption_key"]["public_jwk"]["key_ops"] == ["wrapKey"]
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing", "extra", "private_key", "key_ops", "budget", "review"]
+)
+async def test_malformed_combined_preparation_is_never_published(fault):
+    wire = Wire()
+
+    def alter(value):
+        receipt = value["result"]["receipt"]
+        if fault == "missing":
+            receipt.pop("encryption_key")
+        elif fault == "extra":
+            receipt["capture_permission"] = True
+        elif fault in {"private_key", "key_ops"}:
+            receipt["encryption_key"]["public_jwk"][
+                ("d" if fault == "private_key" else "key_ops")
+            ] = "invented" if fault == "private_key" else ["unwrapKey"]
+        elif fault == "budget":
+            receipt["capabilities"]["remaining_aggregate_plaintext_bytes"] = -1
+        else:
+            receipt["review"]["schema_version"] = "unknown"
+        return value
+
+    wire.alter = alter
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call("capture-operations", body("capture-operations", "preparation_metadata"))
+
+
+@pytest.mark.parametrize("phase", ["workload", "response"])
+async def test_combined_preparation_rechecks_account_around_io(phase):
+    wire = Wire()
+    if phase == "workload":
+
+        async def workload():
+            wire.revoked = True
+            return SecretStr("invented-workload-token")
+
+        wire.workload = workload
+    else:
+        wire.after = lambda: setattr(wire, "revoked", True)
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call("capture-operations", body("capture-operations", "preparation_metadata"))
+    assert len(wire.calls) == (0 if phase == "workload" else 1)
 
 
 def body(action, kind="creator_review"):
