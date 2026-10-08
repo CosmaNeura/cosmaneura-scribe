@@ -63,3 +63,31 @@ This uses generated voices and a test-only driver. It does not open a microphone
 meeting window, installed account or Keychain. The existing mock permits only
 in-person consent, so these cases do not test modality policy. Mock transcription
 does not measure speech recognition accuracy or qualify physical OS routing.
+
+### Service modality qualification with generated voices
+
+Use the same validated native speech directory to qualify `in_person`, `phone`,
+and `virtual` through the actual service capture API and encrypted worker input:
+
+```sh
+SCRIBE_SYNTHETIC_SPEECH_DIRECTORY=/absolute/native-speech-output \
+  uv run pytest tests/test_virtual_modality_audio.py -k memory
+```
+
+For PostgreSQL and the configured desktop admission/worker path, supply a fresh
+caller-owned disposable database ending in `_test`; the existing fixture rejects
+previously migrated databases. It rehearses migrations and removes only its
+synthetic rows. Retire the disposable lab under its owning runbook afterward.
+
+```sh
+COSMANEURA_SCRIBE_TEST_DATABASE_URL=postgresql+asyncpg://OWNER@127.0.0.1:PORT/FRESH_test \
+SCRIBE_SYNTHETIC_SPEECH_DIRECTORY=/absolute/native-speech-output \
+  uv run pytest tests/test_virtual_modality_audio.py tests/test_virtual_configured_audio.py
+```
+
+The generated-voice consent and hashes are checked before audio is read. These
+cases verify matching visit modality, leases/renewal, idempotent encrypted chunk
+completion, exact reconstructed PCM at the worker, and completed-job recovery.
+Blob storage, key unwrapping, request identity and recognition are explicit
+local substitutes. Returned words are invented, so this is neither an Azure
+recognition-accuracy result nor an OS microphone/window-routing test.
