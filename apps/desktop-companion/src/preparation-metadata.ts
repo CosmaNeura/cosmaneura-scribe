@@ -39,17 +39,17 @@ export class DesktopPreparationBff extends CoreCaptureBff {
     return { sessionId: view.value.session_id, status: view.value.status };
   }
 
-  override getAudioEncryptionKey(options?: RequestOptions): Promise<AudioEncryptionPublicKey> {
+  override async getAudioEncryptionKey(options?: RequestOptions): Promise<AudioEncryptionPublicKey> {
     this.current(options);
     const key = this.publicKey; this.publicKey = null;
-    return key === null ? super.getAudioEncryptionKey(options) : Promise.resolve(key);
+    return key === null ? super.getAudioEncryptionKey(options) : key;
   }
 
-  override getCapabilities(id: string, options?: RequestOptions): Promise<CaptureCapabilities> {
+  override async getCapabilities(id: string, options?: RequestOptions): Promise<CaptureCapabilities> {
     this.current(options);
     if (id !== this.admittedSession) throw new Error("Desktop preparation session changed.");
     const capabilities = this.capabilities; this.capabilities = null;
-    return capabilities === null ? super.getCapabilities(id, options) : Promise.resolve(capabilities);
+    return capabilities === null ? super.getCapabilities(id, options) : capabilities;
   }
 
   private current(options?: RequestOptions): void {

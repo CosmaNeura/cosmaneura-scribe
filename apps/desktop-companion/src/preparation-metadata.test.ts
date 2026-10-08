@@ -66,8 +66,8 @@ describe("fresh desktop preparation metadata", () => {
     const f = fixture(), preparation = f.bff.authorizePreparation(true);
     for (const kind of kinds) f.gates[kind].resolve();
     await preparation; f.abort.abort();
-    expect(() => f.bff.getAudioEncryptionKey()).toThrow();
-    expect(() => f.bff.getCapabilities(sessionId)).toThrow();
+    await expect(f.bff.getAudioEncryptionKey()).rejects.toThrow();
+    await expect(f.bff.getCapabilities(sessionId)).rejects.toThrow();
     expect(f.request).toHaveBeenCalledTimes(3);
   });
 
@@ -76,7 +76,7 @@ describe("fresh desktop preparation metadata", () => {
     const rejection = expect(preparation).rejects.toThrow();
     await vi.waitFor(() => expect(f.request).toHaveBeenCalledTimes(3)); f.abort.abort();
     for (const kind of kinds) f.gates[kind].resolve();
-    await rejection; expect(() => f.bff.getAudioEncryptionKey()).toThrow();
+    await rejection; await expect(f.bff.getAudioEncryptionKey()).rejects.toThrow();
   });
 
   it("keeps retained recovery serial and does not prefetch a key or capabilities", async () => {
@@ -90,9 +90,9 @@ describe("fresh desktop preparation metadata", () => {
   it("refuses a foreign session and clears metadata after a cancelled consumer", async () => {
     const f = fixture(); const preparation = f.bff.authorizePreparation(true);
     for (const kind of kinds) f.gates[kind].resolve(); await preparation;
-    expect(() => f.bff.getCapabilities(crypto.randomUUID())).toThrow();
+    await expect(f.bff.getCapabilities(crypto.randomUUID())).rejects.toThrow();
     const consumer = new AbortController(); consumer.abort();
-    expect(() => f.bff.getAudioEncryptionKey({ signal: consumer.signal })).toThrow();
+    await expect(f.bff.getAudioEncryptionKey({ signal: consumer.signal })).rejects.toThrow();
     await f.bff.getAudioEncryptionKey(); expect(f.request).toHaveBeenCalledTimes(4);
   });
 });
