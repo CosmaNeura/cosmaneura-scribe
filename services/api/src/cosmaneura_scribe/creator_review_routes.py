@@ -160,6 +160,13 @@ class CreatorReviewRuntime:
             review_edits=current.creator_edits,
         )
 
+    async def read_in_transaction(
+        self, store: CapturedSourceRepository, tenant_id: UUID, session_id: UUID, actor: str
+    ) -> CreatorReviewViewV1:
+        """Current view within a caller-owned creator preparation transaction."""
+        self.authorize_cohort(tenant_id)
+        return await self._view(store, tenant_id, session_id, actor)
+
     async def read(self, tenant_id: UUID, session_id: UUID, actor: str) -> CreatorReviewViewV1:
         self.authorize_cohort(tenant_id)
         try:

@@ -46,6 +46,7 @@ from .captured_admission_routes import router as captured_admission_router
 from .consent import ConsentError, ConsentPolicy
 from .consent_routes import build_consent_router
 from .creator_continuation_routes import router as creator_continuation_router
+from .creator_preparation_routes import router as creator_preparation_router
 from .creator_recording_routes import router as creator_recording_router
 from .creator_review_routes import router as creator_review_router
 from .delivery_reconciler import (
@@ -502,6 +503,7 @@ app.include_router(
 )
 app.include_router(creator_review_router)
 app.include_router(creator_recording_router)
+app.include_router(creator_preparation_router)
 app.include_router(captured_admission_router)
 app.include_router(source_start_router)
 app.include_router(source_extension_router)
@@ -761,6 +763,13 @@ async def get_capture_capabilities(
         )
         usage = await store.capture_reservation_usage(tenant_id, session_id)
     response.headers["Cache-Control"] = "no-store"
+    return capture_capabilities_from_usage(usage.plaintext_budget_bytes, settings)
+
+
+def capture_capabilities_from_usage(
+    plaintext_budget_bytes: int, settings: Settings
+) -> CaptureCapabilities:
+    """One capability projection shared by direct and creator preparation reads."""
     return CaptureCapabilities(
         protocol_version=PROTOCOL_VERSION,
         media=CaptureMediaCapabilities(
@@ -775,7 +784,7 @@ async def get_capture_capabilities(
         remaining_aggregate_plaintext_bytes=max(
             0,
             min(MAX_AGGREGATE_PLAINTEXT_BYTES, settings.audio_assembly_max_plaintext_bytes)
-            - usage.plaintext_budget_bytes,
+            - plaintext_budget_bytes,
         ),
         capture_lease_ttl_seconds=CAPTURE_LEASE_TTL_SECONDS,
         reservation_window_seconds=RESERVATION_WINDOW_SECONDS,

@@ -1269,6 +1269,33 @@
         "title": "CreatorDecisionReceiptV1",
         "type": "object"
       },
+      "CreatorPreparationMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/CaptureCapabilities"
+          },
+          "encryption_key": {
+            "$ref": "#/components/schemas/AudioEncryptionPublicKey"
+          },
+          "review": {
+            "$ref": "#/components/schemas/CreatorReviewViewV1"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review",
+          "encryption_key",
+          "capabilities"
+        ],
+        "title": "CreatorPreparationMetadata",
+        "type": "object"
+      },
       "CreatorReviewQueueStatus": {
         "enum": [
           "not_ready",
@@ -3464,6 +3491,76 @@
           }
         ],
         "summary": "Prepare Creator Continuation",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/preparation-metadata": {
+      "get": {
+        "operationId": "read_creator_preparation_metadata_v1_captured_sessions__session_id__preparation_metadata_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorPreparationMetadata"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Creator Preparation Metadata",
         "tags": [
           "configured-capture"
         ]
