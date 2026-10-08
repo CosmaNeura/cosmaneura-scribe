@@ -584,8 +584,12 @@ export class CaptureApp extends LitElement {
                 : "Recording setup expired. Confirm recording status before continuing."
               : this.#snapshot.statusCode === "capture_recovery_pending" ? "Recording is stopped, but saving could not be confirmed. Retry saving and upload, or verify the saved audio and resume recording."
               : this.#snapshot.statusCode === "capture_start_unconfirmed" ? "Recording start could not be confirmed. Stop confirmation is required before recording can resume."
-              : this.#snapshot.statusCode === "capture_storage_low" ? `Not enough device storage to continue recording. ${savedAudio} Free up space, then retry recording, or finish recording.`
-              : this.#snapshot.statusCode === "capture_storage_unavailable" ? `Device storage could not be checked. ${savedAudio} Retry before continuing to record.`
+              : this.#snapshot.statusCode === "capture_storage_low" ? desktopProvider && this.#snapshot.state === "ready" && this.#snapshot.recordedChunks === 0
+                ? "Not enough space on this Mac to record safely. Recording has not started. Free up space, then choose Start recording to check again."
+                : `Not enough device storage to continue recording. ${savedAudio} Free up space, then retry recording, or finish recording.`
+              : this.#snapshot.statusCode === "capture_storage_unavailable" ? desktopProvider && this.#snapshot.state === "ready" && this.#snapshot.recordedChunks === 0
+                ? "Scribe could not check space on this Mac. Recording has not started. Choose Start recording to check again."
+                : `Device storage could not be checked. ${savedAudio} Retry before continuing to record.`
               : this.#snapshot.statusCode === "capture_tail_not_saved" ? "Recording has stopped, but the last part could not be saved. Earlier saved audio is retained. Keep this visit and contact support before continuing or uploading."
               : this.#snapshot.statusCode === "capture_interrupted" ? `Recording was interrupted. ${savedAudio} Some audio just before the interruption may be missing. Speech during the interruption was not recorded. Check your microphone, then resume and repeat the last part, or finish recording.`
               : this.#snapshot.statusCode === "capture_paused" ? this.#isDesktopCompact() || nativeProvider

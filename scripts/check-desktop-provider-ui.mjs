@@ -181,6 +181,22 @@ try {
     preparing.change({ state: "ready", statusCode: "capture_ready" }, { phase: "ready" });
     await intent; assert.equal(preparing.calls.includes("start"), false, "Meeting metadata readiness cannot start capture"); checks++;
   } finally { await preparingDispose(); }
+  for (const [statusCode, expected] of [
+    ["capture_storage_low", /Not enough space on this Mac to record safely/u],
+    ["capture_storage_unavailable", /Scribe could not check space on this Mac/u],
+  ]) {
+    const storage = fixture();
+    storage.change({ statusCode }, { audioMode: "microphone" });
+    const storageDispose = await open(storage);
+    try {
+      const status = root.querySelector(".recording-progress").textContent;
+      assert.match(status, expected);
+      assert.match(status, /Recording has not started/u);
+      assert.match(status, /Start recording to check again/u);
+      assert.equal(button("record-button").disabled, false, "Explicit Start retains its fresh guarded retry");
+      assert.deepEqual(storage.calls, ["read"], "Showing storage failure cannot start capture"); checks++;
+    } finally { await storageDispose(); }
+  }
   const cancelledPreparation = fixture();
   cancelledPreparation.change({ state: "preparing", statusCode: "capture_preparing" }, { phase: "preparing" });
   const cancelledDispose = await open(cancelledPreparation);

@@ -70,7 +70,9 @@ async function fixture(nativeStub = false) {
   const resources = () => {
     const flowStore = new DurableDesktopFlowStore(store.namespace("flow"));
     return { flowStore, createSessionKey: flowStore.createSessionKey,
-      storageCapacity: { availableBytes: () => store.availableBytes() },
+      // Synthetic BFF budgets must not depend on the developer Mac's free disk.
+      // Dedicated capacity tests below supply their own low/unknown readings.
+      storageCapacity: { availableBytes: async () => 10_000_000_000 },
       queueStorage: new DurableDesktopQueueStorage(store.namespace(`queue:${session.id}`), session.id),
       coverage: new DurableDesktopCoverage(store.namespace("coverage"), session.id) };
   };
@@ -187,6 +189,36 @@ describe("desktop preparation screen", () => {
       expect((await opening).snapshot.desktop?.phase).toBe("ready");
       expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
     } finally { reply.resolve(); await opening; await f.close(); }
+  });
+  it.each(["low", "unavailable"] as const)("shows %s storage before Start and rechecks after space is restored", async failure => {
+    const f = await fixture(true), availableBytes = vi.fn(async (): Promise<number> => {
+      if (failure === "unavailable") throw new Error("Invented private storage error");
+      return 1;
+    });
+    interruptedDriver(f); // In-memory synthetic source; no executable or OS audio.
+    const recorder = await f.open({ prepareInBackground: true, storageCapacity: { availableBytes } });
+    const bridge = wire(recorder), view = await connectDesktopRecorderView(bridge.port, f.session.id, f.abort.signal);
+    try {
+      await vi.waitFor(() => expect(view.controller.snapshot).toMatchObject({ state: "ready",
+        statusCode: failure === "low" ? "capture_storage_low" : "capture_storage_unavailable", desktop: { phase: "ready" } }));
+      expect(availableBytes).toHaveBeenCalledTimes(1);
+      expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      const prepared = await f.options.flowStore.getActiveCaptureState();
+      await expect(view.controller.startRecording()).rejects.toThrow();
+      expect(view.controller.snapshot.statusCode).toBe(failure === "low" ? "capture_storage_low" : "capture_storage_unavailable");
+      expect(availableBytes).toHaveBeenCalledTimes(2);
+      expect(await f.options.flowStore.getActiveCaptureState()).toEqual(prepared);
+      expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      availableBytes.mockResolvedValue(10_000_000_000);
+      await view.controller.startRecording();
+      // Both existing checks run: before source choice and before flow capture.
+      expect(availableBytes).toHaveBeenCalledTimes(4);
+      expect(f.selectWindow).toHaveBeenCalledTimes(1); expect(f.nativeStart).toHaveBeenCalledTimes(1);
+      expect(view.controller.snapshot.statusCode).not.toBe("capture_storage_low");
+      expect(view.controller.snapshot.statusCode).not.toBe("capture_storage_unavailable");
+      await view.deactivate();
+      expect(f.indicator.current()?.visible).not.toBe(true);
+    } finally { await view.deactivate(); await bridge.boundary.dispose(); await f.close(); }
   });
 });
 

@@ -4,6 +4,7 @@ import type { CaptureStorageCapacity } from "../../capture/src/flow/storage-capa
 import type { CreatorReviewView } from "../../review-ui/src/creator-review-api";
 import { CaptureQueue } from "../../capture/src/queue/capture-queue";
 import type { CaptureQueueStorage } from "../../capture/src/queue/types";
+import { QueueInvariantError } from "../../capture/src/queue/errors";
 import type { CaptureBff, CiphertextUploadTarget } from "../../capture/src/bff/contracts";
 import { BffCaptureQueueTransport } from "../../capture/src/bff/queue-transport";
 import type { ProviderRecorderController, ProviderRecorderSnapshot } from "../../capture/src/provider-binding";
@@ -286,6 +287,15 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         if (this.coverage !== null) throw unavailable(); // Never replay an attempt over retained coverage.
         if (!mayRestoreReady) throw unavailable();
         await this.preparedContext();
+        // Surface the existing storage guard before a person chooses a source.
+        // Keep the ready owner so freeing space permits the normal fresh Start
+        // check; a low/unknown capacity never grants capture or changes reserve.
+        try { await this.flow.checkStorageCapacity(); }
+        catch (error) {
+          if (!(error instanceof QueueInvariantError)
+            || !["capture_storage_low", "capture_storage_unavailable"].includes(error.code)) throw error;
+        }
+        this.requireOpen();
         this.unmountedAvailability = initialAvailability ?? await this.availability(this.signal);
       }
       if (active?.continuation) {
@@ -319,7 +329,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : this.stopping && phase === "stopped" && flow.state === "recording" ? "capture_upload_settling"
       : this.reopenRequired && flow.state === "error" ? "capture_reopen_required"
       : setupExpired ? "capture_setup_expired"
-      : phase === "ready" && this.startFailed && flow.statusCode !== "capture_storage_low" ? "capture_start_failed"
+      : phase === "ready" && this.startFailed && !["capture_storage_low", "capture_storage_unavailable"].includes(flow.statusCode) ? "capture_start_failed"
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
       elapsedSeconds: this.capturedAudioFrames === null ? flow.elapsedSeconds : Math.floor(this.capturedAudioFrames / 16_000),
