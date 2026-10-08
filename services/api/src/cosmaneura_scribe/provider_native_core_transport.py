@@ -35,10 +35,18 @@ from .provider_core_transport import (
 )
 from .provider_encounter_transport import ProviderEncounterAccount
 from .provider_performance import provider_phase_timing
+from .schemas import AudioEncryptionPublicKey
 
 PATH = "/service/v1/agent/scribe/native-capture"
 NATIVE_READ_OPERATIONS = frozenset(
-    {"creator_review", "provider_encounter", "capabilities", "native_recording_context"}
+    {
+        "creator_review",
+        "provider_encounter",
+        "capabilities",
+        "native_recording_context",
+        # Existing public wrapping-key read, qualified Core receiver first.
+        "encryption_key",
+    }
 )
 
 
@@ -113,7 +121,7 @@ class ProviderNativeCoreTransport:
                     isinstance(operation.get("kind"), str)
                     and operation["kind"] in NATIVE_READ_OPERATIONS
                 )
-                if operation["kind"] == "native_recording_context":
+                if operation["kind"] in {"native_recording_context", "encryption_key"}:
                     _require(set(operation) == {"kind"})
                 request["operation"] = operation
         try:
@@ -214,6 +222,16 @@ class ProviderNativeCoreTransport:
                             and result.get("operation") == _object(request["operation"])["kind"]
                         )
                         receipt = _object(result.get("receipt"))
+                        if _object(request["operation"])["kind"] == "encryption_key":
+                            public = _object(receipt.get("public_jwk"))
+                            _require(
+                                set(receipt) == {"key_version", "algorithm", "public_jwk"}
+                                and set(public) == {"kty", "n", "e", "alg", "ext", "key_ops"}
+                                and public.get("key_ops") == ["wrapKey"]
+                            )
+                            result["receipt"] = AudioEncryptionPublicKey.model_validate(
+                                receipt
+                            ).model_dump(mode="json")
                         if action == "recorder":
                             _require(
                                 receipt.get("schema_version") == "1.0"
