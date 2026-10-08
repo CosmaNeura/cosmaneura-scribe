@@ -31,10 +31,22 @@ export function runtimeDiagnostics(directory: string): RuntimeDiagnostic {
     writing = writing.then(async () => {
       if (await realpath(directory) !== directory) return;
       const file = await open(join(directory, "runtime-diagnostics-v1.jsonl"),
-        constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+        constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
       try {
         const info = await file.stat();
-        if (!info.isFile() || info.nlink !== 1 || (info.mode & 0o077) !== 0 || info.size + Buffer.byteLength(line) > 65_536) return;
+        if (!info.isFile() || info.nlink !== 1 || (info.mode & 0o077) !== 0 || info.size > 65_536) return;
+        if (info.size + Buffer.byteLength(line) > 65_536) {
+          // The single-instance host serializes its writes. Retain recent complete
+          // records so a full log cannot silently hide every subsequent startup.
+          // Reuse the checked descriptor; never follow a replacement pathname.
+          const tail = Buffer.alloc(Math.min(info.size, 32_768));
+          const { bytesRead } = await file.read(tail, 0, tail.length, info.size - tail.length);
+          const end = tail.lastIndexOf(10, bytesRead - 1);
+          const start = info.size > tail.length ? tail.indexOf(10) + 1 : 0;
+          const retained = end >= start ? tail.subarray(start, end + 1) : Buffer.alloc(0);
+          await file.truncate(0);
+          if (retained.length) await file.writeFile(retained);
+        }
         await file.writeFile(line);
       } finally { await file.close(); }
     }).catch(() => undefined);
