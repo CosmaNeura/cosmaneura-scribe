@@ -6,7 +6,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
 
-from .audio_keys import AudioEncryptionKeyProvider, AudioEncryptionKeyUnavailable
+from .audio_keys import (
+    AudioEncryptionKeyProvider,
+    AudioEncryptionKeyUnavailable,
+    build_audio_encryption_key_provider,
+)
 from .creator_review_routes import Creator, CreatorReviewViewV1, Runtime, Tenant
 from .schemas import AudioEncryptionPublicKey, CaptureCapabilities
 from .settings import Settings, get_settings
@@ -16,9 +20,9 @@ Configuration = Annotated[Settings, Depends(get_settings)]
 
 
 def preparation_keys() -> AudioEncryptionKeyProvider:
-    from .main import get_audio_encryption_key_provider
-
-    return get_audio_encryption_key_provider()
+    # This route closes its provider before final publication. It must never
+    # borrow the application's cached provider used by later key binding.
+    return build_audio_encryption_key_provider(get_settings())
 
 
 Keys = Annotated[AudioEncryptionKeyProvider, Depends(preparation_keys)]

@@ -5,13 +5,15 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from cosmaneura_scribe import creator_preparation_routes, main
 from cosmaneura_scribe.audio_keys import AudioEncryptionKeyUnavailable
 from cosmaneura_scribe.creator_preparation_routes import preparation_keys
 from cosmaneura_scribe.creator_review_routes import CreatorReviewRuntime
-from cosmaneura_scribe.main import app
+from cosmaneura_scribe.main import app, get_audio_encryption_key_provider
 from cosmaneura_scribe.service_auth import get_verified_tenant_id
 from cosmaneura_scribe.settings import get_settings
 from sqlalchemy import event
+from test_audio_assembly import WRAPPED_DEK
 from test_capture_protocol_api import CaptureKeyProvider
 from test_captured_source_runtime import trial as trial
 from test_captured_transcription_worker import capture as capture
@@ -75,6 +77,48 @@ async def test_metadata_matches_existing_receipts_without_capture(preparation):
     assert result.headers["cache-control"] == "no-store"
     assert keys.calls == keys.closed == 1
     assert t.provider.engine.pool.checkedout() == 0
+
+
+async def test_production_dependency_closes_only_its_owned_client_before_key_binding(
+    preparation, monkeypatch
+):
+    capture, _, _ = preparation
+    created = []
+
+    class LifecycleKeys(CaptureKeyProvider):
+        closed = False
+
+        async def get_public_key(self):
+            if self.closed:
+                raise RuntimeError("Synthetic key client is closed")
+            return await super().get_public_key()
+
+        async def close(self):
+            self.closed = True
+
+    shared = LifecycleKeys()
+    app.dependency_overrides[get_audio_encryption_key_provider] = lambda: shared
+    monkeypatch.setattr(main, "get_audio_encryption_key_provider", lambda: shared)
+    app.dependency_overrides[preparation_keys] = creator_preparation_routes.preparation_keys
+
+    def build(_settings):
+        provider = LifecycleKeys()
+        created.append(provider)
+        return provider
+
+    monkeypatch.setattr(creator_preparation_routes, "build_audio_encryption_key_provider", build)
+    # Exercise the actual preparation dependency, twice, followed by the same
+    # ordinary key-binding endpoint used by installed recording preparation.
+    for _ in range(2):
+        assert (await metadata(capture)).status_code == 200
+    assert len(created) == 2 and all(provider.closed for provider in created)
+    assert not shared.closed
+    result = await capture.post(
+        "audio-key",
+        {"key_version": "capture-key-version", "wrapped_dek": WRAPPED_DEK},
+        "metadata-lifetime-bind",
+    )
+    assert result.status_code == 201 and not shared.closed
 
 
 async def test_one_receiver_read_reduces_real_database_work(preparation, record_property):
