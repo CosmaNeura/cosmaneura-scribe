@@ -358,13 +358,23 @@ class ProviderReceiver:
                 preparation = (
                     action == "capture-admissions"
                     and set(body)
-                    == {
-                        "workspace_id",
-                        "binding_ref",
-                        "request_nonce",
-                        "attestation",
-                        "configured_capture",
-                    }
+                    in (
+                        {
+                            "workspace_id",
+                            "binding_ref",
+                            "request_nonce",
+                            "attestation",
+                            "configured_capture",
+                        },
+                        {
+                            "workspace_id",
+                            "binding_ref",
+                            "request_nonce",
+                            "attestation",
+                            "configured_capture",
+                            "preparation_metadata",
+                        },
+                    )
                 ) or (
                     action == "capture-operations"
                     and isinstance(operation, dict)
@@ -621,6 +631,7 @@ class ProviderReceiver:
                 "workspaceId": row["workspaceId"],
                 "appointmentRef": row["appointmentRef"],
                 "bindingRef": value["binding_ref"],
+                "admission_metadata_v1": True,
                 "encounter": {
                     "appointmentRef": row["appointmentRef"],
                     "title": row["title"],

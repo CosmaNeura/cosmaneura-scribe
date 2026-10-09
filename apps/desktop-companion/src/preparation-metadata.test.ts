@@ -34,10 +34,34 @@ function fixture(fault?: string) {
       request_nonce: body.request_nonce, checked_at: new Date().toISOString(), operation: kind, receipt: receipts[kind] });
   });
   const bff = new DesktopPreparationBff(new CoreCaptureClient(scope, request, abort.signal), sessionId);
-  return { bff, request, abort, resolve, key, capabilities };
+  return { bff, request, abort, resolve, key, capabilities, review };
 }
 
 describe("fresh desktop preparation metadata", () => {
+  it("consumes the checked admission's metadata without another authenticated request", async () => {
+    const f = fixture();
+    const bff = new DesktopPreparationBff(new CoreCaptureClient(scope, f.request, f.abort.signal), sessionId,
+      { schema_version: "1.0", review: f.review, encryption_key: f.key, capabilities: f.capabilities });
+    expect(await bff.authorizePreparation(true)).toEqual({ sessionId, status: "created" });
+    expect(await bff.getAudioEncryptionKey()).toEqual(f.key);
+    expect(await bff.getCapabilities(sessionId)).toEqual(f.capabilities);
+    expect(f.request).not.toHaveBeenCalled();
+    f.resolve(); await bff.getAudioEncryptionKey(); expect(f.request).toHaveBeenCalledOnce();
+  });
+  it("discards admission metadata when the encrypted journal contains a retained attempt", async () => {
+    const f = fixture();
+    const bff = new DesktopPreparationBff(new CoreCaptureClient(scope, f.request, f.abort.signal), sessionId,
+      { schema_version: "1.0", review: f.review, encryption_key: f.key, capabilities: f.capabilities });
+    f.resolve(); await bff.authorizePreparation(false); await bff.getAudioEncryptionKey();
+    expect(f.request.mock.calls.map(call => (call[1].operation as { kind: string }).kind)).toEqual(["creator_review", "encryption_key"]);
+  });
+  it("rejects foreign admission metadata without an automatic read fallback", async () => {
+    const f = fixture();
+    const bff = new DesktopPreparationBff(new CoreCaptureClient(scope, f.request, f.abort.signal), sessionId,
+      { schema_version: "1.0", review: { ...f.review, session_id: crypto.randomUUID() }, encryption_key: f.key, capabilities: f.capabilities });
+    await expect(bff.authorizePreparation(true)).rejects.toThrow();
+    expect(f.request).not.toHaveBeenCalled();
+  });
   it("waits for one complete authenticated response and consumes each component only once", async () => {
     const f = fixture(); let settled = false;
     const preparation = f.bff.authorizePreparation(true).then(value => { settled = true; return value; });

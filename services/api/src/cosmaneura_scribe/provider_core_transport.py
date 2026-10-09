@@ -310,7 +310,8 @@ class ProviderCoreTransport:
         _validate_intent(mount, action, payload)
         _require(
             action == "capture-admissions"
-            or _object(payload["operation"]).get("kind") == "prepare_recording_window"
+            or _object(payload["operation"]).get("kind")
+            in {"prepare_recording_window", "preparation_metadata"}
         )
         _require(
             re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key)

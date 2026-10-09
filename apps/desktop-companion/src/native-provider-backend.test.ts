@@ -7,7 +7,7 @@ function preparedReply(grant: Record<string, unknown>) {
     coordinatorInode: "2", captureDevice: "1", captureInode: "3" } };
 }
 
-it("keeps admission RPC alive beyond native HTTP while retaining its key and cancellation", async () => {
+it.each([false, true])("keeps admission RPC alive with its key, cancellation and negotiated metadata support (%s)", async supported => {
   const signal = new AbortController().signal, attempt = new AbortController();
   const revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
   const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
@@ -17,7 +17,7 @@ it("keeps admission RPC alive beyond native HTTP while retaining its key and can
     calls.push({ payload, signal: operationSignal, timeout });
     return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
-      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID(), admission_metadata_v1: supported }) };
   });
   const native = { signal, request, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
     addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
@@ -25,6 +25,7 @@ it("keeps admission RPC alive beyond native HTTP while retaining its key and can
     uploadTarget: { putCompleteEnvelope: async () => undefined } });
   await backend.listEncounters(signal);
   const mount = await backend.openEncounter(appointmentRef, signal);
+  expect(mount.admissionMetadataSupported).toBe(supported ? true : undefined);
   const body = { workspace_id: workspaceId, binding_ref: bindingRef, attestation: null };
   await mount.request("/service/v1/agent/scribe/capture-admissions", body, "retained-admission-key", attempt.signal);
   const admission = calls.at(-1)!;

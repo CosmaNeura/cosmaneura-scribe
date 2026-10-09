@@ -16,10 +16,15 @@ import type { NativePresentationOwner } from "./native-provider-presentation.js"
 import { parseCreatorReview } from "../../review-ui/src/creator-review-api";
 import type { PreparedDesktopCapture } from "./provider-recorder.js";
 import { DesktopPreparationBff } from "./preparation-metadata.js";
+import { readBoundedJson } from "../../review-ui/src/beta-api";
+import { coreCaptureResponseLimit } from "../../review-ui/src/capture-response-limits";
+import { canonical } from "../../capture/src/provider/core-notes";
 
 export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderEncounter,
   "journal" | "reviewJournal" | "recorder"> {
   readonly recoveryScope: string;
+  /** Optional receiver capability, confined to this backend-issued mount. */
+  readonly admissionMetadataSupported?: true;
   readonly release?: () => Promise<void>;
   readonly uploadTarget: CiphertextUploadTarget;
   /** Backend-issued authority. A session/capabilities receipt is insufficient. */
@@ -172,6 +177,9 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           recoveryScope: selected.recoveryScope, workspaceId: selected.scope.workspaceId, key: owned.custody.key }); check();
         const records = desktopJournalRecords(owned.store.namespace("provider-journals"));
         const journal = new NativeProviderWorkspaceJournal(records, selected.recoveryScope, selected.scope);
+        let admissionMetadata: { sessionId: string; key: string; value: unknown; signal: AbortSignal } | undefined;
+        let admissionGeneration = 0;
+        mountSignal.addEventListener("abort", () => { admissionGeneration++; admissionMetadata = undefined; }, { once: true });
         const guarded = <T>(run: () => Promise<T>): Promise<T> => track(owned.work, async () => {
           check(); const value = await run(); check(); return value;
         });
@@ -179,7 +187,44 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           check();
           const linked = AbortSignal.any([mountSignal, operationSignal]);
           if (linked.aborted) throw unavailable();
-          const value = await selected.request(path, body, key, linked);
+          const admission = path === "/service/v1/agent/scribe/capture-admissions";
+          if (admission && "preparation_metadata" in body) throw unavailable();
+          const generation = admission ? ++admissionGeneration : admissionGeneration;
+          let combine = false;
+          if (admission) {
+            admissionMetadata = undefined;
+            // Only the already-journaled, deliberate first admission opts in.
+            // Recovery, renewal and renderer-supplied options keep the old path.
+            if (selected.admissionMetadataSupported && body.attestation !== null
+              && Object.keys(body).sort().join(",") === "attestation,binding_ref,configured_capture,request_nonce,workspace_id") {
+              const saved = (await journal.load()).progress; check();
+              combine = saved?.sessionId === null && saved.admission?.key === key
+                && canonical(body.attestation) === canonical(saved.admission.attestation)
+                && canonical(body.configured_capture) === canonical({ schema_version: "1.0", language_mode: saved.admission.languageMode });
+            }
+          }
+          check(); if (linked.aborted) throw unavailable();
+          const value = await selected.request(path, combine ? { ...body, preparation_metadata: true } : body, key, linked);
+          if (combine && value.status === 200) {
+            if (value.headers.get("content-type")?.split(";", 1)[0] !== "application/json") throw unavailable();
+            const result = await readBoundedJson(value, coreCaptureResponseLimit("capture-admissions"));
+            check(); if (linked.aborted || generation !== admissionGeneration) throw unavailable();
+            if (typeof result !== "object" || result === null || Array.isArray(result)) throw unavailable();
+            const row = result as Record<string, unknown>;
+            if (row.contract_version !== "1" || row.workspace_id !== selected.scope.workspaceId
+              || row.binding_ref !== selected.scope.bindingRef || row.request_nonce !== body.request_nonce
+              || row.appointment_ref !== selected.scope.appointmentRef || !reference(row.operation_ref, "scribe_admission")
+              || typeof row.session_id !== "string" || typeof row.consent_record_id !== "string"
+              || typeof row.checked_at !== "string" || !Number.isFinite(Date.parse(row.checked_at))
+              || row.preparation_metadata === null || typeof row.preparation_metadata !== "object") throw unavailable();
+            const sessionId = uuid(row.session_id); uuid(row.consent_record_id);
+            admissionMetadata = { sessionId, key, value: row.preparation_metadata, signal: linked };
+            linked.addEventListener("abort", () => {
+              if (generation === admissionGeneration) { admissionGeneration++; admissionMetadata = undefined; }
+            }, { once: true });
+            delete row.preparation_metadata;
+            return Response.json(row, { headers: { "Cache-Control": "no-store" } });
+          }
           check(); if (linked.aborted) throw unavailable(); return value;
         });
         return {
@@ -232,6 +277,10 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
               owned.removeWindow?.(); delete owned.removeWindow; resources.recordingWindow?.update(null); check();
               const saved = await journal.load(); check();
               if (saved.progress?.sessionId !== sessionId || recorderSignal.aborted) throw unavailable();
+              const initialMetadata = admissionMetadata;
+              admissionMetadata = undefined;
+              const matchingMetadata = initialMetadata?.sessionId === sessionId
+                && initialMetadata.key === saved.progress.admission?.key ? initialMetadata.value : undefined;
               const linked = AbortSignal.any([mountSignal, recorderSignal]);
               const inputRecords = owned.store!.namespace("recording-input");
               const inputKey = `audio-mode:${sessionId}`;
@@ -264,7 +313,8 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                   return preparationBff;
                 }
                 preparationSignal = captureSignal;
-                return preparationBff = new DesktopPreparationBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId);
+                return preparationBff = new DesktopPreparationBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId,
+                  initialMetadata?.signal.aborted ? undefined : matchingMetadata);
               };
               owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, prepareInBackground: resources.prepareInBackground === true, sessionId, audioMode, saveAudioMode, signal: linked,
                 createBff: bff,
