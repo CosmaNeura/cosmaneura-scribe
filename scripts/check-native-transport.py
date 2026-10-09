@@ -4,6 +4,13 @@ import argparse
 import json
 import subprocess
 from pathlib import Path
+from typing import TypedDict
+
+
+class CheckResult(TypedDict):
+    command: list[str]
+    exit_code: int
+    log: str
 
 
 def main() -> None:
@@ -85,7 +92,18 @@ def main() -> None:
             ],
             [str(output / name)] + ([str(output / "fixture.der")] if name == "provider" else []),
         ]
-    results = []
+    commands += [
+        common
+        + [
+            "-parse-as-library",
+            "-o",
+            str(output / "token-timing"),
+            str(source / "Sources/CosmasNativeAuth/NativeTokenRequestTiming.swift"),
+            str(standalone / "check-native-token-timing.swift"),
+        ],
+        [str(output / "token-timing")],
+    ]
+    results: list[CheckResult] = []
     for index, command in enumerate(commands):
         result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=60)
         log = output / f"{index}.log"
