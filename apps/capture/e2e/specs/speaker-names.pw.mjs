@@ -11,7 +11,7 @@ for (const width of [390, 780]) {
     await expect(dialog.locator('[name="role"]')).toHaveValue("unknown");
     await expect(dialog.locator('[name="display_name"]')).toBeDisabled();
     const provider = dialog.locator('[data-speaker-role="clinician"]');
-    await provider.focus(); await page.keyboard.press("Enter");
+    await provider.press("Enter");
     await expect(dialog.locator('[name="role"]')).toHaveValue("clinician");
     await expect(dialog.locator('[name="display_name"]')).toHaveValue(await page.evaluate(() => window.speakerNamesLab.provider));
     expect(await page.evaluate(() => window.speakerNamesLab.writes.length)).toBe(0);
