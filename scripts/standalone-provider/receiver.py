@@ -40,6 +40,7 @@ from cosmaneura_scribe.provider_performance import (
     provider_request_timing,
 )
 from cosmaneura_scribe.provider_preparation_core_transport import prepare_then_dispatch
+from cosmaneura_scribe.provider_preparation_handoff import PreparationHandoff
 from cosmas_os.api.auth import (
     CORE_STAGING_PERSONAL,
     AccessDenied,
@@ -191,6 +192,10 @@ class ProviderReceiver:
         self.enabled, self.core_http = enabled is True, core_http
         self.core_connections = core_connections
         self.encounter_creation_enabled = encounter_creation_enabled is True
+        # Existing personal staging receiver only; no renderer flag or token.
+        self._preparation_handoff = (
+            PreparationHandoff() if profile.allows_provider_trace() else None
+        )
         # This host-only switch is off for general receivers. The personal
         # staging profile above already pins both exact HTTPS origins; caller
         # headers/body can neither enable this trace nor select another host.
@@ -405,6 +410,7 @@ class ProviderReceiver:
                         self.workload_token,
                         transport=self.core_http,
                         connections=self.core_connections,
+                        handoff=self._preparation_handoff,
                     )
                     if not self.enabled:
                         raise AccessDenied()
@@ -613,7 +619,13 @@ class ProviderReceiver:
             connections=self.core_connections,
         )
         try:
-            account, value = await transport.request(action, body, key)
+            account, value = await transport.request(
+                action,
+                body,
+                key,
+                handoff=self._preparation_handoff if action == "mount" else None,
+                revision=revision,
+            )
             if not self.enabled:
                 raise AccessDenied()
             if action == "recorder":
