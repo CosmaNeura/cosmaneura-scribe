@@ -6,7 +6,11 @@ import CosmasNativeAuth
 @MainActor private final class JournalMemory: NativeSourceJournalBacking {
   var data: Data?
   var fail = false
-  func read() throws -> Data? { data }
+  var onNextRead: (() -> Void)?
+  func read() throws -> Data? {
+    let hook = onNextRead; onNextRead = nil; hook?()
+    return data
+  }
   func write(_ value: Data) throws {
     if fail { throw NativeSourceJournalError.unavailable }
     data = value
@@ -167,6 +171,153 @@ private actor SourceWire: ProviderNativeWire {
   }
   @MainActor static func main() async throws {
     var checks = 0
+    // Real filesystem locks, generated private files and in-memory journals.
+    // Change only the saved mount number to reproduce the reboot failure.
+    #if os(macOS)
+    let directory = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("scribe-fence-check-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: directory) }
+    var original: NativeCaptureProcessCoordinator? = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: nil)
+    let mounted = original!.anchor
+    let changedDevice = mounted.coordinator.device + 2
+    let legacy = NativeFenceAnchor(coordinator: .init(device: changedDevice, inode: mounted.coordinator.inode),
+      capture: .init(device: changedDevice, inode: mounted.capture.inode))
+    let remounted = NativeFenceAnchor(coordinator: legacy.coordinator, capture: legacy.capture, volumeID: mounted.volumeID)
+    try require(mounted.volumeID != nil && mounted.matchesMountedFiles(remounted, allowLegacyRemount: false))
+    let ticket = try NativeFenceTicket(original!.wireValue)
+    try require(ticket.anchor.coordinator == mounted.coordinator && ticket.anchor.capture == mounted.capture)
+    try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: mounted) }
+    original = nil
+    try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: legacy) }
+    try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: nil) }
+    checks += 1
+    do {
+      let memory = JournalMemory()
+      memory.data = try JSONSerialization.data(withJSONObject: ["schema": 1, "platform": "desktop", "owners": [],
+        "anchor": ["coordinator": ["device": changedDevice, "inode": mounted.coordinator.inode],
+                   "capture": ["device": changedDevice, "inode": mounted.capture.inode]]])
+      let journal = try NativeSourceProofJournal(platform: .desktop, backing: memory)
+      let recovered = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: journal.anchor,
+        allowLegacyRemount: journal.pending.isEmpty)
+      try journal.reloadWhileExclusive(expectedAnchor: legacy)
+      try journal.initializeAnchor(recovered.anchor)
+      let reread = try NativeSourceProofJournal(platform: .desktop, backing: memory)
+      try require(reread.anchor == mounted && reread.pending.isEmpty)
+      try recovered.allowCaptureAfterConfirmedRecovery()
+      let lease = try NativeCaptureProcessLease(privateDirectory: directory.path,
+        expectedAnchor: NativeFenceTicket(recovered.wireValue).anchor, expectedEpoch: recovered.epoch)
+      try await rejects { _ = try NativeCaptureProcessLease(privateDirectory: directory.path,
+        expectedAnchor: mounted, expectedEpoch: UUID().uuidString.lowercased()) }
+      withExtendedLifetime(lease) {}
+      checks += 1
+    }
+    do {
+      let recovered = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: remounted)
+      try require(recovered.anchor == mounted)
+      let memory = JournalMemory(); let journal = try NativeSourceProofJournal(platform: .desktop, backing: memory)
+      try journal.initializeAnchor(remounted)
+      try journal.initializeAnchor(recovered.anchor)
+      try require(journal.anchor == mounted)
+      checks += 1
+    }
+    let wrongVolume = NativeFenceAnchor(coordinator: mounted.coordinator, capture: mounted.capture,
+      volumeID: UUID().uuidString.lowercased())
+    try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path,
+      expectedAnchor: wrongVolume, allowLegacyRemount: true) }
+    do {
+      let memory = JournalMemory(); let journal = try NativeSourceProofJournal(platform: .desktop, backing: memory)
+      try journal.initializeAnchor(wrongVolume)
+      try await rejects { try journal.initializeAnchor(mounted) }
+      try require(journal.anchor == wrongVolume)
+      checks += 1
+    }
+    do {
+      let f = try Fixture(); _ = try await f.prepare()
+      try await rejects { try f.journal.initializeAnchor(mounted) }
+      try require(f.journal.pending.count == 1 && f.journal.anchor?.volumeID == nil)
+      checks += 1
+    }
+    for changedMount in [true, false] {
+      let f = try Fixture(); _ = try await f.prepare()
+      var envelope = try JSONSerialization.jsonObject(with: f.memory.data!) as! [String: Any]
+      let saved = changedMount ? legacy : NativeFenceAnchor(coordinator: mounted.coordinator, capture: mounted.capture)
+      envelope["anchor"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved))
+      f.memory.data = try JSONSerialization.data(withJSONObject: envelope)
+      let journal = try NativeSourceProofJournal(platform: .desktop, backing: f.memory)
+      let recovery = NativeSourceRecovery(journal: journal, desktopDirectory: directory.path)
+      let before = await f.wire.requests.count
+      if changedMount {
+        try await rejects { try await recovery.recover(connection: f.connection) }
+        try require(journal.pending.count == 1 && journal.anchor == legacy)
+        try require(await f.wire.requests.count == before)
+      } else {
+        try await recovery.recover(connection: f.connection)
+        try recovery.requireReady()
+        try require(journal.pending.isEmpty && journal.anchor == mounted)
+        try require(await f.wire.stopAttempts.count == 1)
+      }
+      checks += 1
+    }
+    do {
+      let f = try Fixture(); _ = try await f.prepare()
+      var pendingEnvelope = try JSONSerialization.jsonObject(with: f.memory.data!) as! [String: Any]
+      pendingEnvelope["anchor"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy))
+      let pendingBytes = try JSONSerialization.data(withJSONObject: pendingEnvelope)
+      var emptyEnvelope = pendingEnvelope; emptyEnvelope["owners"] = []
+      f.memory.data = try JSONSerialization.data(withJSONObject: emptyEnvelope)
+      let journal = try NativeSourceProofJournal(platform: .desktop, backing: f.memory)
+      f.memory.onNextRead = { f.memory.data = pendingBytes }
+      let recovery = NativeSourceRecovery(journal: journal, desktopDirectory: directory.path)
+      let before = await f.wire.requests.count
+      try await rejects { try await recovery.recover(connection: f.connection) }
+      try require(journal.pending.count == 1 && journal.anchor == legacy)
+      try require(await f.wire.requests.count == before)
+      checks += 1
+    }
+    do {
+      let memory = JournalMemory(); let journal = try NativeSourceProofJournal(platform: .desktop, backing: memory)
+      try journal.initializeAnchor(legacy)
+      memory.fail = true
+      try await rejects { try journal.initializeAnchor(mounted) }
+      try await rejects { try journal.requireUsable() }
+      try require(journal.anchor == legacy)
+      memory.fail = false
+      try journal.reloadWhileExclusive(expectedAnchor: legacy)
+      try journal.initializeAnchor(mounted)
+      try journal.requireUsable()
+      checks += 1
+    }
+    var active: NativeCaptureProcessLease?
+    do {
+      var current: NativeCaptureProcessCoordinator? = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: mounted)
+      try current!.allowCaptureAfterConfirmedRecovery()
+      // Keep only the capture lease alive; a replacement coordinator must
+      // still fail while the original audio process owns its shared lock.
+      active = try NativeCaptureProcessLease(privateDirectory: directory.path,
+        expectedAnchor: mounted, expectedEpoch: current!.epoch)
+      current = nil
+    }
+    try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: remounted) }
+    withExtendedLifetime(active) {}
+    active = nil
+    checks += 1
+    let capturePath = directory.appendingPathComponent("capture.lock")
+    try FileManager.default.moveItem(at: capturePath, to: directory.appendingPathComponent("prior-capture.lock"))
+    _ = FileManager.default.createFile(atPath: capturePath.path, contents: Data(), attributes: [.posixPermissions: 0o600])
+    try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path,
+      expectedAnchor: mounted, allowLegacyRemount: true) }
+    checks += 1
+    try FileManager.default.removeItem(at: capturePath)
+    try FileManager.default.createSymbolicLink(at: capturePath, withDestinationURL: directory.appendingPathComponent("prior-capture.lock"))
+    try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: mounted) }
+    checks += 1
+    try FileManager.default.removeItem(at: capturePath)
+    try FileManager.default.moveItem(at: directory.appendingPathComponent("prior-capture.lock"), to: capturePath)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: capturePath.path)
+    try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: mounted) }
+    checks += 1
+    #endif
     for first in [0, 1024] {
       let f = try Fixture(first: first)
       let grant = try await f.prepare()
