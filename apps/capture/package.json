@@ -31,7 +31,7 @@
   "dependencies": {
     "@capacitor/android": "8.5.0",
     "@capacitor/core": "8.5.0",
-    "@capacitor/ios": "8.5.0",
+    "@capacitor/ios": "8.5.1",
     "@cosmaneura-scribe/capacitor-secure-queue": "0.1.0",
     "@cosmaneura-scribe/capture-preview-domain": "0.1.0",
     "@cosmaneura-scribe/capture-protocol": "1.0.0",
