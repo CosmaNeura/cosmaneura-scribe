@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -18,7 +18,7 @@ describe("local runtime diagnostics", () => {
       expect((await stat(path)).mode & 0o777).toBe(0o600);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
-  it("does not follow a log symlink or grow a full diagnostic file", async () => {
+  it("does not follow a log symlink", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-diagnostic-")));
     try {
       const path = join(directory, "runtime-diagnostics-v1.jsonl"), target = join(directory, "untouched");
@@ -27,10 +27,75 @@ describe("local runtime diagnostics", () => {
       // Allow the asynchronous, best-effort write to settle before checking.
       await new Promise(resolve => setTimeout(resolve, 100));
       expect(await readFile(target, "utf8")).toBe("unchanged");
-      await rm(path); await writeFile(path, "x".repeat(65_536), { mode: 0o600 });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("keeps current startup timings when earlier launches have filled the private log", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-full-")));
+    try {
+      const path = join(directory, "runtime-diagnostics-v1.jsonl");
+      const prior = JSON.stringify({ utc: "2026-10-07T00:00:00.000Z", pid: 1, event: "connect_begin" }) + "\n";
+      const oldRecords = prior.repeat(Math.floor(65_536 / Buffer.byteLength(prior)));
+      await writeFile(path, oldRecords, { mode: 0o600 });
+      const record = runtimeDiagnostics(directory);
+      record("host_open"); record("provider_recording_window", 7455.91);
+      await vi.waitFor(async () => {
+        const rows = (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
+        expect(rows.at(-1)).toMatchObject({ pid: process.pid, event: "provider_recording_window", duration_ms: 7455.91 });
+        expect(rows.at(-2)).toMatchObject({ pid: process.pid, event: "host_open" });
+        expect(rows.slice(0, -2).length).toBeGreaterThan(0);
+        expect(rows.slice(0, -2).every(row => row.pid === 1 && row.event === "connect_begin")).toBe(true);
+      });
+      expect((await stat(path)).size).toBeLessThanOrEqual(65_536);
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("leaves hard-linked, oversized and non-private files unchanged", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-refuse-")));
+    try {
+      const path = join(directory, "runtime-diagnostics-v1.jsonl"), target = join(directory, "retained");
+      await writeFile(target, "unchanged", { mode: 0o600 }); await link(target, path);
       runtimeDiagnostics(directory)("host_open");
       await new Promise(resolve => setTimeout(resolve, 100));
-      expect((await stat(path)).size).toBe(65_536);
+      expect(await readFile(target, "utf8")).toBe("unchanged");
+      await rm(path); await writeFile(path, "x".repeat(65_537), { mode: 0o600 });
+      runtimeDiagnostics(directory)("host_open");
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect((await stat(path)).size).toBe(65_537);
+      await rm(path); await writeFile(path, "unchanged", { mode: 0o644 });
+      runtimeDiagnostics(directory)("host_open");
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(await readFile(path, "utf8")).toBe("unchanged");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("accepts bounded numeric phase durations only for fixed timing events", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-timing-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (const value of [undefined, NaN, Infinity, -1, 3_600_001, "private text" as unknown as number]) {
+        record("audio_availability_probe", value);
+      }
+      record("host_open", 1);
+      record("invented private timing" as Parameters<RuntimeDiagnostic>[0], 12);
+      record("audio_availability_helper_check", 0);
+      record("audio_availability_probe", 12.34567);
+      record("audio_permission_helper_check", 1);
+      record("audio_permission_probe", 3_600_000);
+      record("audio_capture_helper_check", 2);
+      record("provider_recorder_attach", 72.5);
+      record("provider_recorder_prepare", 6274.81);
+      record("provider_consent_to_ready", 6274.81);
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(8));
+      const expected = [
+        ["audio_availability_helper_check", 0], ["audio_availability_probe", 12.346],
+        ["audio_permission_helper_check", 1], ["audio_permission_probe", 3_600_000], ["audio_capture_helper_check", 2],
+        ["provider_recorder_attach", 72.5], ["provider_recorder_prepare", 6274.81],
+        ["provider_consent_to_ready", 6274.81],
+      ];
+      (await readFile(path, "utf8")).trim().split("\n").forEach((line, index) => {
+        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid,
+          event: expected[index]![0], duration_ms: expected[index]![1] });
+      });
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

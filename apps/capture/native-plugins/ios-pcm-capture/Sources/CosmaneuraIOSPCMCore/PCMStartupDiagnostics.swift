@@ -4,6 +4,9 @@ import Foundation
 /// There is no string/message/identity/content input and no network transport.
 public enum PCMStartupEvent: String, Codable, Sendable {
   case startRequested, ticketAccepted, permissionAccepted, authorityAccepted, handleCreated
+  case leaseReady, reservationsReady, sourcePrepareRequested, sourcePrepared, sourceConsumeRequested
+  case sourceReadyRequested, sourceReadyReceived
+  case firstInputBuffer, firstInputSignal, firstConvertedBuffer, firstConvertedSignal
   case startRejected, readyRequested, readyAccepted, readyRejected
   case driverStarting, sessionActivated, tapInstalled, engineStarted, driverArmed, driverRejected
   case engineConfigurationChanged, sessionConfigurationChanged, routeChanged, interrupted
@@ -44,7 +47,14 @@ public final class PCMStartupDiagnostics: @unchecked Sendable {
       entries.append(entry)
       do {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        // Milliseconds distinguish native setup from reservation/admission waits.
+        // Keep the existing two-field envelope; no request or account IDs enter it.
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+          let formatter = ISO8601DateFormatter()
+          formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+          var container = encoder.singleValueContainer()
+          try container.encode(formatter.string(from: date))
+        }
         let data = try encoder.encode(entries)
         guard data.count <= 32_768 else { return }
         try data.write(to: target, options: .atomic)

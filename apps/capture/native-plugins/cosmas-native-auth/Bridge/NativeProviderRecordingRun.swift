@@ -9,9 +9,10 @@ import Foundation
 /// The production source is the existing Core owner with its original stop proof.
 @MainActor protocol NativeProviderMicrophoneSource: AnyObject {
   var recordingPreparation: NativeSourcePreparation { get }
-  func prepare() async throws -> NativeSourceGrant
   func consumeForMicrophone() async throws -> NativeCapturePermit
   func requireActiveMicrophone(runID: String) throws
+  func requireMicrophoneFinalization(runID: String) throws
+  func retireForStop()
   func retireForAuthenticationChange()
   func confirmStopped() async throws
 }
@@ -20,12 +21,14 @@ extension NativeSourceStartOwner: NativeProviderMicrophoneSource {}
 @MainActor protocol NativeProviderEncryptedRecorder: AnyObject {
   var isPhysicallyIdle: Bool { get }
   var captureState: NativeRecordingPCMState { get }
+  var capturedAudioFrames: Int { get }
   func start(
     runID: String, captureExpiresAtMilliseconds: Int64,
     lease: NativeRecordingLease, batch: NativeRecordingReservationBatch
   ) throws
   func ready() async throws
   func stop() async throws
+  func invalidatePendingAudio()
   func snapshot() async -> NativeRecordingContinuationState?
   func captureSignal() -> PCMSignalMonitor.Snapshot
 }
@@ -35,6 +38,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
   let id = UUID()
   let source: any NativeProviderMicrophoneSource
   var runID: String?
+  var finalizationRevoked = false
   init(source: any NativeProviderMicrophoneSource) { self.source = source }
 
   func validate() throws {
@@ -44,6 +48,21 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
       try source.requireActiveMicrophone(runID: runID)
     } catch { throw NativeRecordingBindingFailure.authorityChanged }
   }
+
+  func finalize(_ write: @Sendable () throws -> Void) throws {
+    try Task.checkCancellation()
+    guard !finalizationRevoked, let runID else {
+      throw NativeRecordingBindingFailure.authorityChanged
+    }
+    do {
+      try NativeCaptureStartGate.requireEncryptedFinalizationOwner(id)
+      try source.requireMicrophoneFinalization(runID: runID)
+    } catch { throw NativeRecordingBindingFailure.authorityChanged }
+    // No await between the current source/account check and the sink's locked
+    // durable write. MainActor auth retirement cannot cross this boundary.
+    try write()
+  }
+
 }
 
 /// One native source interval (including automatic lease renewals). The provider
@@ -52,13 +71,14 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
 /// and completion intent remain owned by the host's durable recording journal.
 @MainActor final class NativeProviderRecordingRun {
   enum Phase: String { case ready, starting, recording, stopping, stopPending, stopped }
-  enum Failure: String { case startFailed, physicalStopPending, sourceStopPending }
+  enum Failure: String { case startFailed, physicalStopPending, sourceStopPending, recordingIncomplete }
 
   private let authority: NativeProviderRunAuthority
   private let recorder: any NativeProviderEncryptedRecorder
   private let lease: NativeRecordingLease
   private let batch: NativeRecordingReservationBatch
   private let requestPermission: @MainActor () async throws -> Bool
+  private var completionFailure: NativeRecordingFinalizationFailure?
   private var installed = false
   private var starting: Task<Void, Error>?
   private var stopping: Task<Void, Error>?
@@ -72,7 +92,8 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
     source: any NativeProviderMicrophoneSource,
     lease: NativeRecordingLease, batch: NativeRecordingReservationBatch,
     requestPermission: @escaping @MainActor () async throws -> Bool,
-    makeRecorder: (@escaping @Sendable () async throws -> Void) throws
+    makeRecorder: (@escaping @Sendable () async throws -> Void,
+      @escaping NativeRecordingFinalizer) throws
       -> any NativeProviderEncryptedRecorder
   ) throws {
     let prepared = source.recordingPreparation
@@ -90,7 +111,8 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
     self.lease = lease
     self.batch = batch
     self.requestPermission = requestPermission
-    recorder = try makeRecorder { try await authority.validate() }
+    recorder = try makeRecorder(
+      { try await authority.validate() }, { write in try await authority.finalize(write) })
   }
 
   /// Concrete encrypted graph uses the existing Apple adapters and queue. This
@@ -114,17 +136,26 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         if permission.currentPermission() == .granted { return true }
         return await permission.requestPermission() == .granted
       },
-      makeRecorder: { validate in
+      makeRecorder: { validate, finalize in
         try NativeEncryptedPCMRecorder(
           encryption: encryption, recoveryScope: recoveryScope, records: records,
           firstSequence: source.recordingPreparation.firstSequenceNumber,
           priorPlaintextBytes: priorPlaintextBytes, leases: leases, reservations: reservations,
           permission: AVFoundationMicrophonePermissionAdapter(provider: permission),
-          system: system, foreground: foreground, signal: signal, validateActiveSource: validate)
+          system: system, foreground: foreground, signal: signal, validateActiveSource: validate,
+          finalizeCapturedAudio: { write in
+            try await finalize {
+              guard permission.currentPermission() == .granted else {
+                throw NativeRecordingBindingFailure.authorityChanged
+              }
+              try write()
+            }
+          })
       })
   }
 
   var captureState: NativeRecordingPCMState { recorder.captureState }
+  var capturedAudioFrames: Int { recorder.capturedAudioFrames }
   var isPhysicallyIdle: Bool { recorder.isPhysicallyIdle }
   func captureSignal() -> PCMSignalMonitor.Snapshot { recorder.captureSignal() }
   func continuationState() async -> NativeRecordingContinuationState? {
@@ -145,12 +176,15 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         // the 15-second one-use start decision, and recheck after every await.
         guard try await requestPermission() else { throw ProviderNativeError.unavailable }
         try requireStarting()
-        _ = try await authority.source.prepare()
-        try requireStarting()
+        PCMStartupDiagnostics.shared.record(.permissionAccepted)
+        PCMStartupDiagnostics.shared.record(.sourceReadyRequested)
+        PCMStartupDiagnostics.shared.record(.sourceConsumeRequested)
         try await NativeCaptureStartGate.consume(
           owner: authority.id, consumer: .nativeEncryptedMicrophone
         ) { permit in
           try requireStarting()
+          PCMStartupDiagnostics.shared.record(.sourceReadyReceived)
+          PCMStartupDiagnostics.shared.record(.authorityAccepted)
           authority.runID = permit.runID
           try recorder.start(
             runID: permit.runID,
@@ -162,6 +196,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         try requireStarting()
         try authority.validate()
         phase = .recording
+        PCMStartupDiagnostics.shared.record(.readyAccepted)
         observeTerminalState()
       } catch {
         if failure == nil { failure = .startFailed }
@@ -180,10 +215,13 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
   /// retain stopPending and offer retry; expiry alone is not cessation evidence.
   func stop() async throws {
     if let stopping { return try await stopping.value }
-    if phase == .stopped { return }
+    if phase == .stopped {
+      if let completionFailure { throw completionFailure }
+      return
+    }
     phase = .stopping
     if installed { NativeCaptureStartGate.retire(owner: authority.id) }
-    authority.source.retireForAuthenticationChange()
+    authority.source.retireForStop()
     starting?.cancel()
     observing?.cancel()
     observing = nil
@@ -192,9 +230,13 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         try await recorder.stop()
         guard recorder.isPhysicallyIdle else { throw ProviderNativeError.unavailable }
       } catch {
-        failure = .physicalStopPending
-        phase = .stopPending
-        throw error
+        if let incomplete = error as? NativeRecordingFinalizationFailure, recorder.isPhysicallyIdle {
+          completionFailure = incomplete
+        } else {
+          failure = .physicalStopPending
+          phase = .stopPending
+          throw error
+        }
       }
       do {
         if installed {
@@ -209,12 +251,14 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
           }
         }
         phase = .stopped
-        if failure != .startFailed { failure = nil }
+        if completionFailure != nil { failure = .recordingIncomplete }
+        else if failure != .startFailed { failure = nil }
       } catch {
         failure = .sourceStopPending
         phase = .stopPending
         throw error
       }
+      if let completionFailure { throw completionFailure }
     }
     stopping = task
     defer { stopping = nil }
@@ -224,6 +268,8 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
   /// Synchronous fence before scheduling closure, used by native auth changes.
   /// UI disappearance/background alone must not invoke this operation.
   func retire() {
+    authority.finalizationRevoked = true
+    recorder.invalidatePendingAudio()
     if installed { NativeCaptureStartGate.retire(owner: authority.id) }
     authority.source.retireForAuthenticationChange()
     Task { @MainActor [self] in try? await stop() }

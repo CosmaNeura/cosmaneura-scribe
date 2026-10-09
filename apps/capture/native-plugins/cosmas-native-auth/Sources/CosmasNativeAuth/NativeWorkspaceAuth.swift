@@ -58,9 +58,30 @@ public struct NativeAuthState: Equatable, Sendable, Codable {
 @MainActor public protocol NativeAuthDriver: AnyObject {
     var loaded: Bool { get }
     var identity: NativeAuthIdentity? { get }
+    var providerDisplayName: String? { get }
     func signIn() async throws
     func freshToken() async throws -> String?
     func signOut() async throws
+}
+
+public extension NativeAuthDriver {
+    var providerDisplayName: String? { nil }
+}
+
+/// Display suggestions only. Never included in identity, token or custody data.
+public enum NativeProviderDisplayName {
+    public static func valid(_ value: String?) -> String? {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              value.utf16.count <= 120,
+              value.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value != 127 }) else { return nil }
+        return value
+    }
+
+    public static func joined(firstName: String?, lastName: String?) -> String? {
+        let parts = [firstName, lastName].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return valid(parts.joined(separator: " "))
+    }
 }
 
 /// A persisted local access block, not a token store. Write before remote logout.
@@ -135,6 +156,19 @@ public struct NativeAuthState: Equatable, Sendable, Codable {
             }
         } catch { change(.unavailable) }
         return snapshot()
+    }
+
+    /// Synchronous metadata from the loaded SDK, scoped to this ready revision.
+    /// Missing/invalid names do not change authorization or request a token.
+    public func providerDisplayName(expectedRevision: String) -> String? {
+        let before = state()
+        guard before.phase == .ready, before.revision == expectedRevision,
+              let expected = before.identity, let driver, driver.loaded else { return nil }
+        let name = NativeProviderDisplayName.valid(driver.providerDisplayName)
+        let after = state()
+        guard after.phase == .ready, after.revision == expectedRevision,
+              after.identity == expected, driver.identity == expected else { return nil }
+        return name
     }
 
     /// Stable device-custody namespace, never a credential or capture grant.

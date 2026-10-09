@@ -18,14 +18,52 @@ struct StartupDiagnosticsTests {
     let entries = try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
     #expect(entries.count == PCMStartupDiagnostics.maximumEvents)
     #expect(data.count <= 32_768)
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     for entry in entries {
       #expect(Set(entry.keys) == ["utc", "event"])
       #expect(entry["event"] as? String == "startRequested")
-      #expect(ISO8601DateFormatter().date(from: try #require(entry["utc"] as? String)) != nil)
+      let utc = try #require(entry["utc"] as? String)
+      #expect(utc.contains("."))
+      #expect(formatter.date(from: utc) != nil)
     }
     let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
     #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     #expect(try file.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+  }
+
+  @Test func recordsFirstBuffersSeparatelyFromFirstNonzeroSignalWithoutRepeatedSpeechEvents() async throws {
+    // Invented PCM only, under synthetic test consent; no OS microphone opens.
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("startup.json")
+    let journal = PCMStartupDiagnostics()
+    journal.configure(destination: file)
+    let monitor = PCMSignalMonitor(diagnostics: journal)
+    monitor.recordInput([[0, 0]], sampleRateHz: 16_000)
+    monitor.recordConverted([0, 0])
+    await journal.flush()
+    var entries = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+    #expect(entries.compactMap { $0["event"] as? String } == ["firstInputBuffer", "firstConvertedBuffer"])
+    for _ in 0..<100 {
+      monitor.recordInput([[0.125, -0.125]], sampleRateHz: 16_000)
+      monitor.recordConverted([4096, -4096])
+      monitor.recordInput([[0, 0]], sampleRateHz: 16_000)
+      monitor.recordConverted([0, 0])
+    }
+    await journal.flush()
+    entries = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+    #expect(entries.compactMap { $0["event"] as? String } == [
+      "firstInputBuffer", "firstConvertedBuffer", "firstInputSignal", "firstConvertedSignal",
+    ])
+    #expect(entries.allSatisfy { Set($0.keys) == ["utc", "event"] })
+    monitor.reset()
+    monitor.recordInput([[0.125]], sampleRateHz: 16_000)
+    monitor.recordConverted([4096])
+    await journal.flush()
+    entries = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+    #expect(entries.count == 8)
   }
 
   @Test func disabledJournalDoesNotRetainEarlierEventsOrAcceptRedirection() async throws {

@@ -16,6 +16,7 @@ import CosmasNativeAuth
 
     var loaded: Bool { base.loaded }
     var identity: NativeAuthIdentity? { base.identity }
+    var providerDisplayName: String? { base.providerDisplayName }
     func signIn() async throws { try await base.signIn() }
     func signOut() async throws { try await base.signOut() }
 

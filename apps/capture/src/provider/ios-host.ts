@@ -1,3 +1,4 @@
+import { NativeCreatorEditJournal } from "../../../review-ui/src/native-edit-journal";
 import { Capacitor } from "@capacitor/core";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { NativeCreatorReviewJournal } from "../../../review-ui/src/native-review-journal";
@@ -35,7 +36,7 @@ export interface PreparedProviderIOSCapture {
   readonly captureAuthorizedUntil: string;
   readonly firstSequenceNumber?: number;
 }
-export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter"> {
+export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account" | "providerDisplayName"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedProviderIOSMount>;
 }
 
@@ -45,6 +46,9 @@ export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal"
 export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWorkspaceHost {
   requireNative();
   return {
+    get providerDisplayName() { return backend.signal.aborted ? undefined : backend.providerDisplayName; },
+    get encounterSetup() { return backend.encounterSetup; },
+    get account() { return backend.account; },
     signal: backend.signal,
     listEncounters: signal => backend.listEncounters(signal),
     createEncounter: signal => backend.createEncounter(signal),
@@ -65,8 +69,18 @@ export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWork
       const journal = new NativeProviderWorkspaceJournal(SecureQueue, mount.recoveryScope, mount.scope);
       return {
         encounter: mount.encounter, scope: mount.scope, request: mount.request, signal: mount.signal,
+        ...(mount.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
+        ...(mount.recorderRechecksReview === true ? { recorderRechecksReview: true as const } : {}),
+        ...(mount.openingReview ? { openingReview: mount.openingReview } : {}),
         openInCore: noteRef => { current(); return mount.openInCore(noteRef); },
         journal,
+        editJournal: sessionId => {
+          current();
+          const edit = new NativeCreatorEditJournal(SecureQueue, mount.recoveryScope, sessionId);
+          const guarded = async <T>(run: () => Promise<T>): Promise<T> => { current(); const value = await run(); current(); return value; };
+          return { load: () => guarded(() => edit.load()), save: value => guarded(() => edit.save(value)),
+            clear: key => guarded(() => edit.clear(key)) };
+        },
         reviewJournal: sessionId => {
           current(); return new NativeCreatorReviewJournal(SecureQueue, mount.recoveryScope, sessionId);
         },
@@ -94,8 +108,15 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
       databaseName: `scribe-provider-flow:v1:${mount.recoveryScope}:${mount.scope.workspaceId}`,
     });
     current();
-    const active = await flow.getActiveCaptureState();
-    const preparing = await flow.getPreparationState();
+    // These independent read-only checks share the same exclusive flow lock and
+    // fresh authorization. Join every read before releasing the store on failure;
+    // preserve the original validation order when inspecting their results.
+    const [activeRead, preparingRead, keyStateRead, legacyKeyRead] = await Promise.allSettled([
+      flow.getActiveCaptureState(), flow.getPreparationState(),
+      flow.getSessionKeyState(sessionId), flow.getSessionKey(sessionId),
+    ]);
+    const active = readResult(activeRead);
+    const preparing = readResult(preparingRead);
     current();
     if (active && (active.sessionId !== sessionId || active.reviewAfterUpload !== true)
       || preparing && (preparing.sessionId !== sessionId || preparing.mode !== "configured_core")) {
@@ -104,8 +125,8 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     const nativeQueue = scopedQueue(SecureQueue, mount.recoveryScope, mount.scope.workspaceId, sessionId);
     // Native key custody is selected only for new recordings. Existing browser
     // keys/intents stay with their original flow; never replace or rebind them.
-    const keyState = await flow.getSessionKeyState(sessionId);
-    const legacyKey = await flow.getSessionKey(sessionId);
+    const keyState = readResult(keyStateRead);
+    const legacyKey = readResult(legacyKeyRead);
     current();
     if (mount.nativeRecording && !active && !preparing && !keyState && !legacyKey) {
       const ownedFlow = flow;
@@ -186,6 +207,11 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
     // failed acquisition's handles, including after cancellation during open().
     flow?.close(); await unlock(); throw error;
   }
+}
+
+function readResult<T>(result: PromiseSettledResult<T>): T {
+  if (result.status === "rejected") throw result.reason;
+  return result.value;
 }
 
 function reuseOpeningRead(storage: CaptureQueueStorage, records: readonly CaptureChunkMetadata[],

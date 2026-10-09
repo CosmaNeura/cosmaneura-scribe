@@ -19,6 +19,7 @@ for (const platform of ["desktop", "ios"]) {
   const window = dom.window, root = window.document.getElementById("root"), nativeCalls = [];
   Object.defineProperty(window, "crypto", { value: webcrypto });
   Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
+  window.ResizeObserver = class { observe() {} disconnect() {} };
   window.fetch = () => { throw new Error("Unexpected network"); };
   if (platform === "ios") {
     window.CapacitorCustomPlatform = { name: "ios" };
@@ -38,9 +39,10 @@ for (const platform of ["desktop", "ios"]) {
   const scope = { workspaceId: "20000000-0000-4000-8000-000000000002", appointmentRef: "appointment_01j00000000000000000000000",
     bindingRef: "scribe_capture_binding_01j00000000000000000000000" };
   const encounter = { appointmentRef: scope.appointmentRef, title: "Invented recording entry", detail: "Synthetic all-party consent only" };
-  for (const mode of ["fresh", "recovered", "revoked", "permission"]) {
+  for (const mode of ["fresh", "in-person", "options", "recovered", "revoked", "permission", "journal-failure", "native-recheck", "native-recheck-denied"]) {
     const abort = new window.AbortController(), gate = deferred(), acquisition = deferred(), listeners = new Set();
-    let starts = 0, closes = 0, admissions = 0, acquiring = false;
+    let starts = 0, closes = 0, admissions = 0, reviews = 0, acquiring = false;
+    const rechecksReview = mode.startsWith("native-recheck");
     const admission = { key: webcrypto.randomUUID(), languageMode: "en-US", attestation: { modality: "virtual", participant_regions: [],
       method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } };
     let saved = mode === "recovered" ? { revision: "1", progress: { admission, sessionId, uploaded: false, pendingSave: null } } : { revision: null, progress: null };
@@ -59,25 +61,34 @@ for (const platform of ["desktop", "ios"]) {
         if (!abort.signal.aborted) update({ statusCode: "capture_recording",
           ...(snapshot.desktop ? { desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned" } } : {}) });
       }, stopRecording: forbidden, refreshTranscriptionStatus: forbidden,
+      ...(platform === "desktop" ? { async selectDesktopAudio(audioMode) { update({ desktop: { ...snapshot.desktop, audioMode } }); } } : {}),
     };
     const dispose = module.namespace.mountProviderWorkspace(root, { signal: abort.signal, listEncounters: async () => [encounter], createEncounter: forbidden,
       openEncounter: async () => ({ encounter, scope, signal: abort.signal,
-        journal: { load: async () => saved, save: async (_prior, progress) => { saved = { revision: String(Number(saved.revision ?? 0) + 1), progress }; return saved; } },
+        ...(rechecksReview ? { recorderRechecksReview: true } : {}),
+        journal: { load: async () => saved, save: async (_prior, progress) => {
+          if (mode === "journal-failure") throw new Error("Invented private storage unavailable");
+          saved = { revision: String(Number(saved.revision ?? 0) + 1), progress }; return saved;
+        } },
         reviewJournal: () => ({ load: async () => null, save: forbidden, clear: forbidden }), openInCore: forbidden,
         request: async (path, body) => {
           const base = { ...body, contract_version: "1", checked_at: new Date().toISOString() };
           if (path.endsWith("capture-admissions")) {
             admissions++; assert.equal(body.attestation.all_parties_consented, true);
+            assert.equal(body.configured_capture.language_mode, mode === "options" ? "en-US+es-US" : "en-US");
+            assert.equal(body.attestation.modality, mode === "options" ? "phone" : platform === "ios" || mode === "in-person" ? "in_person" : "virtual");
             return Response.json({ ...base, operation_ref: "scribe_admission_01j00000000000000000000000", appointment_ref: scope.appointmentRef,
               consent_record_id: sessionId, session_id: sessionId });
           }
           assert.ok(["provider_encounter", "creator_review"].includes(body.operation.kind));
+          if (body.operation.kind === "creator_review") reviews++;
           return Response.json({ ...base, operation: body.operation.kind, receipt: body.operation.kind === "provider_encounter"
             ? { schema_version: "1.0", status: "not_prepared", review: null }
             : { schema_version: "1.0", session_id: sessionId, status: "created", source: null, working: null, review_queue: null } });
         },
         recorder: async () => {
           acquiring = true; if (mode === "revoked") await acquisition.promise;
+          if (mode === "native-recheck-denied") throw new Error("Invented native current-status denial");
           return { controller, sourceKind: "microphone", ...(platform === "desktop" ? { captureMode: "desktop_meeting" } : {}),
             deactivate: async () => { closes++; }, resumePendingWork: forbidden, releaseUploadedCapture: forbidden };
         },
@@ -92,14 +103,48 @@ for (const platform of ["desktop", "ios"]) {
       }
       await until(() => root.querySelector('[data-workspace-action="prepare"]'));
       assert.equal(starts, 0); assert.equal(acquiring, false);
-      root.querySelector('[name="language"]').value = "en-US+es-US";
-      const start = root.querySelector('[data-workspace-action="prepare"]'); start.click();
-      await until(() => root.textContent.includes("confirm all-party consent"));
+      const options = root.querySelector(".provider-recording-options");
+      assert.equal(options.open, platform === "desktop"); assert.equal(root.querySelector('[name="consent"]'), null);
+      assert.equal(root.querySelector('[name="language"]').value, "en-US");
+      assert.equal(root.querySelector('[name="modality"]').value, "in_person");
+      assert.equal(root.querySelector('[name="modality"]').closest("details"), null);
+      assert.equal(root.querySelector('[name="language"]').closest("details"), null);
+      assert.ok(options.querySelector("summary").textContent.includes(platform === "ios" ? "iPhone microphone" : "Microphone only"));
+      if (platform === "desktop") {
+        const type = root.querySelector('[name="modality"]');
+        type.value = "in_person"; type.dispatchEvent(new window.Event("change", { bubbles: true }));
+        assert.ok(root.querySelector("[data-recording-guidance]").textContent.includes("after you choose Start"));
+        if (mode !== "in-person") { type.value = "virtual"; type.dispatchEvent(new window.Event("change", { bubbles: true })); }
+      }
+      const start = root.querySelector('[data-workspace-action="prepare"]');
+      assert.equal(start.textContent, platform === "ios" ? "Confirm consent & record" : "Confirm consent & continue");
+      assert.ok(window.document.getElementById(start.getAttribute("aria-describedby")).textContent.includes("Everyone has agreed to recording and transcription"));
+      // A detached/replaced action cannot reuse consent from a different screen.
+      const forged = start.cloneNode(true); start.after(forged); forged.click();
+      await until(() => root.getAttribute("aria-busy") !== "true"); forged.remove();
       assert.equal(admissions, 0); assert.equal(saved.progress, null);
-      root.querySelector('[name="consent"]').checked = true;
-      if (platform === "ios") root.querySelector('[name="microphone"]').value = "external";
+      if (mode === "options") {
+        options.querySelector("summary").click();
+        const choose = (name, value) => { const field = root.querySelector(`[name="${name}"]`); field.value = value; field.dispatchEvent(new window.Event("change", { bubbles: true })); };
+        choose("language", "en-US+es-US"); choose("modality", "phone");
+        if (platform === "ios") choose("microphone", "external");
+        assert.ok(root.querySelector("[data-recording-guidance]").textContent.includes(platform === "ios"
+          ? "Call audio is not captured directly" : "after you choose Start"));
+        assert.equal(starts, 0); assert.equal(admissions, 0); assert.equal(saved.progress, null);
+      }
       start.click(); start.click(); // Double taps must not create another admission/start.
+      if (mode === "journal-failure") {
+        await until(() => root.getAttribute("aria-busy") !== "true");
+        assert.equal(start.disabled, true); assert.equal(acquiring, false); assert.equal(starts, 0);
+        assert.equal(admissions, 0); assert.equal(saved.progress, null); checks++; continue;
+      }
       await until(() => acquiring);
+      assert.equal(reviews, rechecksReview ? 0 : 1);
+      if (mode === "native-recheck-denied") {
+        await until(() => root.getAttribute("aria-busy") !== "true");
+        assert.equal(starts, 0); assert.equal(admissions, 1);
+        assert.equal(root.querySelector('[data-testid="record-button"]'), null); checks++; continue;
+      }
       if (mode === "revoked") {
         abort.abort(); acquisition.resolve(); await until(() => closes > 0);
         assert.equal(starts, 0); assert.equal(root.textContent.includes(encounter.title), false); checks++; continue;
@@ -108,20 +153,47 @@ for (const platform of ["desktop", "ios"]) {
         await until(() => root.querySelector('[data-testid="refresh-permissions"]'));
         assert.equal(starts, 0); checks++; continue;
       }
+      if (platform === "desktop") {
+        await until(() => root.querySelector('[data-testid="record-button"]')?.disabled === false);
+        assert.equal(starts, 0, "Consent and preparation cannot start desktop audio");
+        assert.equal(snapshot.desktop.audioMode, mode === "in-person" || mode === "options" ? "microphone" : "meeting");
+        assert.equal(snapshot.elapsedSeconds, 0); assert.equal(snapshot.recordedChunks, 0);
+        const record = root.querySelector('[data-testid="record-button"]');
+        record.click(); record.click(); // Explicit Start retains the double-click guard.
+      }
       await until(() => starts === 1 && root.textContent.includes("Starting microphone"));
+      assert.ok(root.querySelector('[data-testid="startup-progress"]').textContent.includes("Wait for Recording"));
       assert.equal(admissions, 1); assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
       assert.equal(saved.progress.sessionId, sessionId);
       if (platform === "ios") {
-        assert.equal(nativeCalls.at(-1), "external");
-        assert.equal(root.querySelector('[data-testid="microphone-input"]').value, "external");
+        const microphone = mode === "options" ? "external" : "built_in";
+        assert.equal(nativeCalls.at(-1), microphone);
+        assert.equal(root.querySelector('[data-testid="microphone-input"]').value, microphone);
       }
       gate.resolve(); await until(() => root.getAttribute("aria-busy") !== "true");
       assert.equal(starts, 1); assert.equal(root.textContent.includes("Recording prepared"), false);
+      if (mode === "fresh") {
+        const recording = snapshot;
+        const progress = registered => platform === "desktop" ? { uploadProgress: { total: 2, registered } }
+          : { native: { phase: "uploading", busy: true, uploadProgress: { total: 2, registered } } };
+        update({ recordedChunks: 2, state: platform === "desktop" ? "recording" : "uploading",
+          statusCode: platform === "desktop" ? "capture_upload_settling" : "capture_upload_pending",
+          ...(snapshot.desktop ? { desktop: { ...snapshot.desktop, phase: "stopped" } } : {}), ...progress(1) });
+        await until(() => root.textContent.includes("Audio uploaded 50%"));
+        assert.equal(root.querySelector('progress[aria-label="Audio upload"]').value, 1);
+        if (platform === "desktop") assert.ok(root.textContent.includes("Recording stopped. Finishing the current upload"));
+        update({ state: "uploading", statusCode: "capture_upload_confirming", ...progress(2) });
+        await until(() => root.textContent.includes("Audio uploaded 100%"));
+        assert.ok(root.textContent.includes("Confirming receipt before transcription"));
+        assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
+        update(recording);
+      }
       root.querySelector('[data-workspace-action="encounters"]').click();
       await until(() => root.querySelector('[data-workspace-action="open"]'));
       root.querySelector('[data-workspace-action="open"]').click();
       await until(() => root.querySelector('[data-testid="record-button"]'));
       assert.equal(starts, 1, "Reopening cannot replay the Start action"); checks++;
+      if (rechecksReview) assert.equal(reviews, 1, "Reopening retains its fresh status read");
     } finally { acquisition.resolve(); gate.resolve(); await dispose(); }
   }
   dom.window.close();

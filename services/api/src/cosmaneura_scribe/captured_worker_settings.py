@@ -15,7 +15,9 @@ from .speech_private_network import IpNetwork, PrivateSpeechEndpointGuard
 
 class CapturedWorkerSettings(Settings):
     model_config = SettingsConfigDict(
-        env_file=None, env_prefix="COSMANEURA_SCRIBE_", extra="ignore",
+        env_file=None,
+        env_prefix="COSMANEURA_SCRIBE_",
+        extra="ignore",
         hide_input_in_errors=True,
     )
 
@@ -32,28 +34,36 @@ class CapturedWorkerSettings(Settings):
             return self
         stage = self.captured_worker_stage
         principal = (
-            self.database_transcription_principal_name if stage == "speech"
+            self.database_transcription_principal_name
+            if stage == "speech"
             else self.database_translation_principal_name
         )
         if (
-            stage is None or principal is None or self.database_user != principal
-            or self.repository_backend != "postgres" or self.database_url is not None
-            or not self.database_ssl or self.managed_identity_client_id is None
+            stage is None
+            or principal is None
+            or self.database_user != principal
+            or self.repository_backend != "postgres"
+            or self.database_url is not None
+            or not self.database_ssl
+            or self.managed_identity_client_id is None
             or len(self.configured_capture_tenant_ids) != 1
-            or self.transcription_job_enabled or self.configured_capture_enabled
+            or self.transcription_job_enabled
+            or self.configured_capture_enabled
             or self.external_ingest_admission_enabled
             or self.audio_encryption_key_id is None
         ):
             raise ValueError("captured_worker_bindings_invalid")
         if stage == "speech":
             if (
-                self.transcription_backend != "azure" or self.storage_backend != "azure"
+                self.transcription_backend != "azure"
+                or self.storage_backend != "azure"
                 or self.audio_assembly_encrypted_temp_directory is None
             ):
                 raise ValueError("captured_worker_speech_bindings_invalid")
         else:
             if (
-                self.transcription_backend != "none" or self.storage_backend != "memory"
+                self.transcription_backend != "none"
+                or self.storage_backend != "memory"
                 or self.azure_translation_endpoint is None
                 or self.azure_translation_deployment is None
             ):

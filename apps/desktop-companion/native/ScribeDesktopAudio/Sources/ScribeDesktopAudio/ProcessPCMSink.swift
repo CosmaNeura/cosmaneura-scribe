@@ -23,6 +23,7 @@ final class ProcessPCMSink: DesktopPCMSink, @unchecked Sendable {
     private var packets: [Packet] = []
     private var inFlight: Packet?
     private var expectedFrame = 0
+    private var inputMeter = DesktopInputLevels()
     private var waiters: [CheckedContinuation<Void, Error>] = []
 
     init(output: ProcessOutput, onFailure: @escaping @Sendable (DesktopAudioFailure) -> Void) {
@@ -66,6 +67,14 @@ final class ProcessPCMSink: DesktopPCMSink, @unchecked Sendable {
             sendNext(); return true
         }
     }
+    func observeInput(_ frame: DesktopAudioFrame) {
+        lock.withLock {
+            guard activated, !discarding, output.isValid,
+                  let signal = inputMeter.observe(frame, now: .now) else { return }
+            output.metadata(["type": "inputSignal", "sequence": signal.sequence,
+                "channel": signal.channel, "level": signal.level])
+        }
+    }
     func acknowledge(_ firstFrame: Int) -> Bool {
         lock.withLock {
             if discarding { return true } // An in-flight acknowledgement may outlive discard.
@@ -107,5 +116,36 @@ final class ProcessPCMSink: DesktopPCMSink, @unchecked Sendable {
     private func resolveDrain() {
         guard inFlight == nil, packets.isEmpty else { return }
         let current = waiters; waiters.removeAll(); current.forEach { $0.resume() }
+    }
+}
+
+/// Meters only frames accepted by the real mixer. It never copies or retains
+/// PCM and cannot replace or acknowledge recording data.
+final class MeteredDesktopAudioSink: DesktopAudioSink, @unchecked Sendable {
+    private let downstream: any DesktopAudioSink
+    private let meter: ProcessPCMSink
+    init(downstream: any DesktopAudioSink, meter: ProcessPCMSink) {
+        self.downstream = downstream; self.meter = meter
+    }
+    func receive(_ frame: DesktopAudioFrame) -> Bool {
+        guard downstream.receive(frame) else { return false }
+        meter.observeInput(frame); return true
+    }
+    func failed(_ reason: DesktopAudioFailure) { downstream.failed(reason) }
+}
+
+struct DesktopInputLevels {
+    private var last: [DesktopAudioChannel: ContinuousClock.Instant] = [:]
+    private var sequence = 0
+    mutating func observe(_ frame: DesktopAudioFrame, now: ContinuousClock.Instant)
+        -> (sequence: Int, channel: String, level: Double)? {
+        if let previous = last[frame.channel], now - previous < .milliseconds(250) { return nil }
+        let level = frame.withSamples { samples -> Double in
+            guard !samples.isEmpty else { return 0 }
+            let square = samples.reduce(0.0) { $0 + Double($1) * Double($1) }
+            return min(1, sqrt(square / Double(samples.count)))
+        }
+        last[frame.channel] = now; sequence += 1
+        return (sequence, frame.channel == .microphone ? "microphone" : "meetingAudio", level)
     }
 }

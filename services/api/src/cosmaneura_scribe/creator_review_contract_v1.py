@@ -144,9 +144,7 @@ class CreatorTranslationDecisionRequestV1(_StrictProtectedModel):
     ) -> CreatorTranslationReviewCommand:
         return CreatorTranslationReviewCommand(
             review_id=review_id,
-            expected_source_transcript_version=(
-                self.expected_source_transcript_version
-            ),
+            expected_source_transcript_version=(self.expected_source_transcript_version),
             source_segment_id=self.source_segment_id,
             expected_source_segment_version=self.expected_source_segment_version,
             translation_id=self.translation_id,
@@ -173,18 +171,10 @@ def build_creator_translation_review_queue(
     working = build_english_working_transcript(bundle)
     derived_status = derive_working_transcript_status(working)
     status_mapping = {
-        ConfiguredExternalSessionStatus.TRANSLATION_PENDING: (
-            CreatorReviewQueueStatus.NOT_READY
-        ),
-        ConfiguredExternalSessionStatus.REVIEW_REQUIRED: (
-            CreatorReviewQueueStatus.REVIEW_REQUIRED
-        ),
-        ConfiguredExternalSessionStatus.QUALITY_BLOCKED: (
-            CreatorReviewQueueStatus.QUALITY_BLOCKED
-        ),
-        ConfiguredExternalSessionStatus.TRANSCRIPT_READY: (
-            CreatorReviewQueueStatus.COMPLETE
-        ),
+        ConfiguredExternalSessionStatus.TRANSLATION_PENDING: (CreatorReviewQueueStatus.NOT_READY),
+        ConfiguredExternalSessionStatus.REVIEW_REQUIRED: (CreatorReviewQueueStatus.REVIEW_REQUIRED),
+        ConfiguredExternalSessionStatus.QUALITY_BLOCKED: (CreatorReviewQueueStatus.QUALITY_BLOCKED),
+        ConfiguredExternalSessionStatus.TRANSCRIPT_READY: (CreatorReviewQueueStatus.COMPLETE),
     }
     queue_status = status_mapping[derived_status]
     if queue_status != CreatorReviewQueueStatus.REVIEW_REQUIRED:
@@ -203,8 +193,7 @@ def build_creator_translation_review_queue(
         if blocker.code == WorkingTranscriptBlockerCode.TRANSLATION_REVIEW_REQUIRED
     }
     reviews_by_translation = {
-        (review.translation_id, review.translation_version)
-        for review in bundle.translation_reviews
+        (review.translation_id, review.translation_version) for review in bundle.translation_reviews
     }
     items: list[CreatorTranslationReviewItemV1] = []
     for source in bundle.source_transcript.segments:

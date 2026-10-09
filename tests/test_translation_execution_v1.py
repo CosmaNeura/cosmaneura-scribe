@@ -421,10 +421,16 @@ def test_durable_job_rejects_completed_result_from_different_scope() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", [
-    "source_content", "source_transcript_version", "source_segment_version",
-    "previous_translation_version", "reserved_at",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "source_content",
+        "source_transcript_version",
+        "source_segment_version",
+        "previous_translation_version",
+        "reserved_at",
+    ],
+)
 async def test_changed_reservation_at_claim_cannot_reach_provider(mutation: str) -> None:
     class ChangedClaimStore(_MemoryDurableStore):
         async def claim_provider_call(self, *args, **kwargs):

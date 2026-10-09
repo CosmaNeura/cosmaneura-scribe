@@ -30,6 +30,12 @@ the first window, uses a title as authority or accepts a caller-supplied URL.
 Only the `.audio` stream output is registered. No screen frame is delivered or
 written. ScreenCaptureKit still requires its system screen-capture permission.
 
+The provider picker bounds macOS window discovery to ten seconds and can cancel
+that lookup without waiting for ScreenCaptureKit to return. Once the list is
+visible, the deliberate human choice has no extra picker deadline. Expiry of the
+existing recording setup closes the choice and exposes its ordinary recovery
+state. Late discovery or selection results cannot start capture.
+
 **Window selection does not prove tab-specific audio isolation.** In particular,
 Chrome audio may include other tabs/windows. The eventual native selection UI
 must disclose the actual capture extent, and physical qualification must verify
@@ -125,7 +131,12 @@ application-audio buffers through the actual AVFoundation conversion, bounded
 AudioDelivery and aligned PCM mixer used by the Zoom/Chrome capture path. It
 checks alternating speech, overlap, callback ordering, duration/tail coverage,
 clipping headroom and sample clearing. It detects loss of either voice without
-requiring a person to listen. The output is metadata-only test evidence.
+requiring a person to listen. A separate microphone-only check places both
+fictional voices on one 44.1 or 48 kHz input, compares every output sample with an
+independent full-gain resampling reference, and checks that window renewals
+preserve the speech. It requires no system-audio callback and covers the mixer
+used by room and speakerphone visits. Receipts contain metadata; generated
+fictional audio fixtures and the native test log remain in the evidence directory.
 
 These input-format checks are not proof of live Zoom/Chrome window selection,
 ScreenCaptureKit permission, remote conferencing transport, echo cancellation,

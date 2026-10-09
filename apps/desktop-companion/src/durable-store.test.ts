@@ -1,3 +1,4 @@
+import { NativeCreatorEditJournal } from "../../review-ui/src/native-edit-journal";
 import { fork } from "node:child_process";
 import { createHash, randomBytes, webcrypto } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -142,6 +143,8 @@ describe("durable desktop capture", () => {
         expected_source_transcript_version: 1, expected_translation_version: 1 } };
       await review.save(decision);
       const coverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
+      expect(await coverage.capturedAudioFrames(0)).toBe(0);
+      expect(await coverage.capturedAudioFrames(1)).toBeNull();
       const start = { hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" };
       await coverage.persist({ phase: "started", value: start }); store.close();
       store = await DurableDesktopRecordStore.open(options);
@@ -151,7 +154,25 @@ describe("durable desktop capture", () => {
       await restored.clear(decision.key); expect(await restored.load()).toBeNull();
       const restoredCoverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
       expect(await restoredCoverage.load()).toEqual({ phase: "started", value: start });
+      expect(await restoredCoverage.capturedAudioFrames(0)).toBeNull();
       await expect(restoredCoverage.persist({ phase: "started", value: { ...start, hostTimeNanoseconds: "2" } })).rejects.toThrow();
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+  it("retains Unicode transcript corrections encrypted across reopening without crossing creators", async () => {
+    const path = await directory(), key = await master(), options = { directory: path, recoveryScope, workspaceId, key };
+    let store = await DurableDesktopRecordStore.open(options);
+    const operation = { key: "synthetic-edit-stable-key", request: { schema_version: "1.0" as const,
+      expected_source_transcript_version: 1, expected_working_transcript_id: workspaceId, expected_working_transcript_version: 1,
+      corrections: [{ source_segment_id: attemptId, expected_source_segment_version: 1, content: "Sí — synthetic correction 🩺" }], speakers: [] } };
+    try {
+      await new NativeCreatorEditJournal(desktopJournalRecords(store.namespace("review")), recoveryScope, attemptId).save(operation);
+      store.close(); store = await DurableDesktopRecordStore.open(options);
+      const records = desktopJournalRecords(store.namespace("review"));
+      const restored = new NativeCreatorEditJournal(records, recoveryScope, attemptId);
+      expect(await restored.load()).toEqual(operation);
+      expect(await new NativeCreatorEditJournal(records, workspaceId, attemptId).load()).toBeNull();
+      await expect(restored.clear("different-synthetic-key")).rejects.toThrow();
+      await restored.clear(operation.key); expect(await restored.load()).toBeNull();
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
   });
   it("reopens native coverage after a late long-visit resume", async () => {
@@ -162,8 +183,69 @@ describe("durable desktop capture", () => {
       store.close(); store = await DurableDesktopRecordStore.open(options);
       const coverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
       expect(await coverage.load()).toBeNull();
+      expect(await coverage.hasPriorCapture(workspaceId)).toBe(true);
+      expect(await coverage.capturedAudioFrames(1080)).toBeNull();
       await coverage.beginInterval(workspaceId, 1080);
       await expect(coverage.beginInterval(recoveryScope, 2048)).rejects.toThrow();
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+
+  it.each(["started", "stopped"] as const)("distinguishes empty setup history from a prior %s interval after reopening", async phase => {
+    const path = await directory(), key = await master(), options = { directory: path, recoveryScope, workspaceId, key };
+    let store = await DurableDesktopRecordStore.open(options);
+    try {
+      const coverage = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
+      expect(await coverage.hasPriorCapture(workspaceId)).toBe(true); // Unknown interval.
+      await coverage.beginInterval(workspaceId, 0);
+      expect(await coverage.hasPriorCapture(workspaceId)).toBe(false);
+      const start = { hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" };
+      await coverage.persist({ phase: "started", value: start });
+      if (phase === "stopped") await coverage.persist({ phase, value: { start,
+        endHostTimeNanoseconds: "1100000000", outputFrames: 1600,
+        microphoneTailNanoseconds: "0", systemTailNanoseconds: "0" } });
+      store.close(); store = await DurableDesktopRecordStore.open(options);
+      const restored = new DurableDesktopCoverage(store.namespace("coverage"), attemptId);
+      expect((await restored.load())?.phase).toBe(phase);
+      expect(await restored.capturedAudioFrames(0)).toBe(phase === "stopped" ? 1600 : null);
+      expect(await restored.hasPriorCapture(workspaceId)).toBe(false); // Current capture is not a prior gap.
+      expect(await restored.hasPriorCapture(recoveryScope)).toBe(true); // Wrong receipt cannot clear a warning.
+      await restored.beginInterval(recoveryScope, 0);
+      expect(await restored.load()).toBeNull();
+      expect(await restored.hasPriorCapture(recoveryScope)).toBe(true); // Even with zero saved chunks.
+      expect(await restored.capturedAudioFrames(0)).toBe(phase === "stopped" ? 1600 : null);
+      const secondStart = { ...start, hostTimeNanoseconds: "2000000000" };
+      await restored.persist({ phase: "started", value: secondStart });
+      expect(await restored.capturedAudioFrames(0)).toBeNull();
+      await restored.persist({ phase: "stopped", value: { start: secondStart,
+        endHostTimeNanoseconds: "2200000000", outputFrames: 3200,
+        microphoneTailNanoseconds: "0", systemTailNanoseconds: "0" } });
+      expect(await restored.capturedAudioFrames(0)).toBe(phase === "stopped" ? 4800 : null);
+    } finally { store.close(); await rm(path, { recursive: true, force: true }); }
+  });
+
+  it("retains a decrypt-only playback key after upload recovery is cleared, with session and custody binding", async () => {
+    const path = await directory(), key = await master();
+    const store = await DurableDesktopRecordStore.open({ directory: path, recoveryScope, workspaceId, key });
+    try {
+      const flowRecords = store.namespace("flow"), flow = new DurableDesktopFlowStore(flowRecords), archive = store.namespace("playback-key");
+      const rsa = await crypto.subtle.generateKey({ name: "RSA-OAEP", hash: "SHA-256", modulusLength: 3072,
+        publicExponent: new Uint8Array([1, 0, 1]) }, true, ["wrapKey", "unwrapKey"]);
+      const jwk = await crypto.subtle.exportKey("jwk", rsa.publicKey);
+      const value = await flow.createSessionKey(attemptId, { algorithm: "RSA-OAEP-256", key_version: "invented-v1",
+        public_jwk: { kty: "RSA", alg: "RSA-OAEP-256", e: "AQAB", n: jwk.n!, ext: true, key_ops: ["wrapKey"] } }, crypto);
+      await flow.putSessionKeyCandidate({ schemaVersion: 2, sessionId: attemptId, keyVersion: value.keyVersion,
+        wrappedDek: value.wrappedDek, idempotencyKey: "invented-key-bind-v1", state: "pending" }, value.key);
+      await expect(flow.retainPlaybackKey(attemptId, archive)).rejects.toThrow();
+      await flow.markSessionKeyBound(attemptId); await flow.retainPlaybackKey(attemptId, archive);
+      const nonce = new Uint8Array(12), plaintext = new Uint8Array([12, 34, 56]);
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, value.key, plaintext);
+      const original = await flowRecords.get(`session:${attemptId}`); flowRecords.delete(original!.key, original!.revision); original!.data.fill(0);
+      expect(await flow.getSessionKey(attemptId)).toBeNull();
+      const playback = await flow.playbackKey(attemptId, archive);
+      expect(playback!.extractable).toBe(false); expect(playback!.usages).toEqual(["decrypt"]);
+      expect(new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, playback!, ciphertext))).toEqual(plaintext);
+      await expect(flow.playbackKey(crypto.randomUUID(), archive)).rejects.toThrow();
+      store.close(); await expect(flow.playbackKey(attemptId, archive)).rejects.toThrow();
     } finally { store.close(); await rm(path, { recursive: true, force: true }); }
   });
 
@@ -232,7 +314,7 @@ describe("durable desktop capture", () => {
       const wav = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(base64UrlDecode(envelope.header.nonce)),
         additionalData: new Uint8Array(base64UrlDecode(encrypted.reservation.additionalAuthenticatedData)) }, decryptKey, new Uint8Array(envelope.ciphertext)));
       expect(wav.length).toBe(9644);
-      const samples = new DataView(wav.buffer); for (let i = 44; i < wav.length; i += 2) expect(samples.getInt16(i, true)).toBe(4096);
+      const samples = new DataView(wav.buffer); for (let i = 44; i < wav.length; i += 2) expect(samples.getInt16(i, true)).toBe(12288);
       const restoredKey = (await flow.getSessionKey(session.id))!;
       expect(restoredKey.extractable).toBe(false); expect(restoredKey.usages).toEqual(["encrypt"]);
       const nonce = crypto.getRandomValues(new Uint8Array(12));

@@ -38,7 +38,7 @@ let snapshot = { sessionId, state: "ready", statusCode: "ready", recordedChunks:
   transcriptionStatus: null, transcript: null }, listener;
 const forbidden = () => { throw new Error("Unexpected capture or clinical operation"); };
 const dispose = module.namespace.mountProviderCapture(root, {
-  sessionId, sourceKind: "microphone", languageMode: "english", signal: abort.signal,
+  sessionId, sourceKind: "microphone", captureMode: "native_microphone", languageMode: "english", signal: abort.signal,
   authorizedRequest: forbidden, journal: { load: forbidden, save: forbidden }, deactivate: async () => {},
   controller: { get snapshot() { return snapshot; },
     subscribe: callback => { listener = callback; callback(snapshot); return () => {}; },
@@ -47,7 +47,7 @@ const dispose = module.namespace.mountProviderCapture(root, {
 const app = root.querySelector("cosmaneura-capture");
 const flush = async () => { await app.updateComplete; await new Promise(resolve => setImmediate(resolve));
   await root.querySelector("scribe-ios-input-meter")?.updateComplete; };
-const change = async state => { snapshot = { ...snapshot, state }; listener(snapshot); await flush(); };
+const change = async state => { snapshot = { ...snapshot, state, statusCode: `capture_${state}` }; listener(snapshot); await flush(); };
 const tick = async () => { for (const callback of timers.values()) callback(); await flush(); };
 try {
   await flush(); assert.equal(reads, 0); assert.equal(timers.size, 0);
@@ -56,9 +56,16 @@ try {
   assert.ok(meter); assert.ok(meter.closest(".recorder")); assert.equal(timers.size, 1);
   assert.ok(meter.shadowRoot.textContent.includes("iPhone microphone"));
   assert.ok(meter.shadowRoot.querySelectorAll(".on").length > 0);
+  assert.equal(meter.shadowRoot.querySelector("h3").textContent, "Recording");
+  assert.ok(meter.compareDocumentPosition(root.querySelector(".record-actions")) & window.Node.DOCUMENT_POSITION_FOLLOWING);
+  assert.equal(root.querySelector('[aria-label="Recording progress"] [role="status"]').hidden, true);
+  assert.equal(root.querySelector('[data-testid="record-button"]').hidden, true);
+  assert.equal(root.querySelector('[data-testid="microphone-input"]'), null);
   response = { version: 2, signal: { ...signal, inputLevel: 0, convertedLevel: 0, zeroInputMs: 3_500 } };
   await tick(); assert.equal(meter.shadowRoot.querySelectorAll(".on").length, 0);
-  assert.ok(meter.shadowRoot.textContent.includes("No input detected"));
+  assert.equal(meter.shadowRoot.querySelector("h3").textContent, "No microphone input");
+  assert.ok(meter.shadowRoot.querySelector(".attention"));
+  assert.equal(meter.shadowRoot.textContent.includes("Recording"), false);
   response = { version: 2, signal: { ...signal, inputAgeMs: 2_000 } };
   await tick(); assert.equal(meter.shadowRoot.querySelectorAll(".on").length, 0);
   response = { version: 2, signal: { ...signal, inputMuted: true } };
@@ -67,6 +74,7 @@ try {
   hold = true; await tick(); const late = pending, beforePause = reads;
   await change("paused"); assert.equal(timers.size, 0); assert.equal(reads, beforePause);
   assert.equal(root.querySelector("scribe-ios-input-meter"), null);
+  assert.ok(root.querySelector('[data-testid="microphone-input"]'));
   hold = false; response = { version: 2, signal: null };
   await change("recording"); meter = root.querySelector("scribe-ios-input-meter");
   late({ version: 2, signal }); await flush();

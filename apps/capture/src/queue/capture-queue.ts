@@ -50,6 +50,12 @@ export interface CaptureQueueOptions {
   readonly maxRetryMs?: number;
 }
 
+/** Receipt-confirmed counts only; never exposes audio, object IDs or URLs. */
+export interface DrainProgress {
+  readonly total: number;
+  readonly registered: number;
+}
+
 export class CaptureQueue {
   readonly #storage: CaptureQueueStorage;
   readonly #crypto: Crypto;
@@ -88,6 +94,7 @@ export class CaptureQueue {
   /** Applies the current session capability before any queue drain begins. */
   public configureUploadConcurrency(uploadConcurrency: number): void {
     assertUploadConcurrency(uploadConcurrency);
+    if (uploadConcurrency === this.#uploadConcurrency) return;
     if (this.#draining) throw new QueueInvariantError("queue_drain_in_progress");
     this.#uploadConcurrency = uploadConcurrency;
   }
@@ -177,27 +184,51 @@ export class CaptureQueue {
    * Processes every currently eligible record once, with no more than the
    * generated protocol's two simultaneous upload workers.
    */
-  async drainOnce(transport: CaptureQueueTransport): Promise<DrainResult> {
+  async drainOnce(transport: CaptureQueueTransport, progress?: (value: DrainProgress) => void,
+    stopScheduling?: AbortSignal): Promise<DrainResult> {
     return withOriginDrainLock(async () => {
       if (this.#draining) throw new QueueInvariantError("queue_drain_in_progress");
       this.#draining = true;
       try {
-        const records = (await this.#storage.listMetadata()).filter(isDrainCandidate);
+        const metadata = await this.#storage.listMetadata();
+        const records = metadata.filter(isDrainCandidate);
+        const total = metadata.filter(record => record.state !== "reserved").length;
+        let registered = metadata.filter(record => record.state === "registered" || record.state === "purged").length;
+        const publish = (): void => {
+          try { progress?.({ total, registered }); } catch { /* Observers cannot interrupt custody or uploads. */ }
+        };
+        publish();
         const results: DrainItemResult[] = records.map((record) =>
           skipped(record.reservation.objectId),
         );
         let nextIndex = 0;
+        let workerFailed = false;
         const worker = async (): Promise<void> => {
-          while (true) {
-            const index = nextIndex;
-            nextIndex += 1;
-            const record = records[index];
-            if (record === undefined) return;
-            results[index] = await this.#processOne(record.reservation.objectId, transport);
+          try {
+            while (true) {
+              // Finish any already claimed chunk and its durable receipt. Leave
+              // unclaimed records untouched for the next explicit drain/resume.
+              if (workerFailed || stopScheduling?.aborted) return;
+              const index = nextIndex;
+              nextIndex += 1;
+              const record = records[index];
+              if (record === undefined) return;
+              results[index] = await this.#processOne(record.reservation.objectId, transport);
+              if (results[index]?.outcome === "registered") registered += 1;
+              publish();
+            }
+          } catch (error) {
+            workerFailed = true;
+            throw error;
           }
         };
         const workerCount = Math.min(this.#uploadConcurrency, records.length);
-        await Promise.all(Array.from({ length: workerCount }, worker));
+        // A storage failure can escape the per-chunk retry handler. Retain both
+        // drain locks until every claimed upload/receipt has settled, otherwise
+        // recovery or teardown can race a surviving worker against a new drain.
+        const workers = await Promise.allSettled(Array.from({ length: workerCount }, worker));
+        const failed = workers.find(result => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
         return { items: results };
       } finally {
         this.#draining = false;
@@ -210,8 +241,10 @@ export class CaptureQueue {
     transport: CaptureQueueTransport,
   ): Promise<DrainItemResult> {
     let operation: QueueOperation = "upload";
+    let uploadedNow = false;
     try {
       let current = await this.#requireRecord(objectId);
+      const firstUploadAttempt = current.state === "encrypted";
       if (current.state === "encrypted") {
         if (!isOperationDue(current, "upload", this.#now())) return skipped(objectId);
         current = await this.#mutate(objectId, (latest) =>
@@ -221,17 +254,34 @@ export class CaptureQueue {
 
       if (current.state === "uploading") {
         if (!isOperationDue(current, "upload", this.#now())) return skipped(objectId);
-        const remote = await transport.getReceipt(current.reservation);
-        if (remote.state === "registered") {
-          await this.#reconcileRegistered(objectId, remote.registration);
-          return { objectId, outcome: "registered" };
+        if (!firstUploadAttempt) {
+          const remote = await transport.getReceipt(current.reservation);
+          if (remote.state === "registered") {
+            await this.#reconcileRegistered(objectId, remote.registration);
+            return { objectId, outcome: "registered" };
+          }
         }
 
-        const authorization = await transport.authorizeUpload(
-          current.reservation.sessionId,
-          current.reservation.objectId,
-          current.idempotencyKeys.uploadAuthorization,
-        );
+        let authorization;
+        try {
+          // Authorization already checks the reservation and rejects registered
+          // chunks. A retained encrypted backup can still be registered remotely;
+          // reconcile that receipt before treating a rejected first attempt as failed.
+          authorization = await transport.authorizeUpload(
+            current.reservation.sessionId,
+            current.reservation.objectId,
+            current.idempotencyKeys.uploadAuthorization,
+          );
+        } catch (error) {
+          if (firstUploadAttempt) {
+            const remote = await transport.getReceipt(current.reservation);
+            if (remote.state === "registered") {
+              await this.#reconcileRegistered(objectId, remote.registration);
+              return { objectId, outcome: "registered" };
+            }
+          }
+          throw error;
+        }
         if (
           authorization.objectId !== current.reservation.objectId ||
           authorization.additionalAuthenticatedData !==
@@ -250,14 +300,18 @@ export class CaptureQueue {
         current = await this.#mutate(objectId, (latest) =>
           latest.state === "uploading" ? markUploaded(latest) : latest,
         );
+        uploadedNow = true;
       }
 
       operation = "registration";
       if (current.state === "uploaded") {
         if (!isOperationDue(current, "registration", this.#now())) return skipped(objectId);
-        const remote = await transport.getReceipt(current.reservation);
+        // A confirmed upload in this attempt can register with its existing
+        // idempotency key immediately. Retained/uncertain attempts still read
+        // the receipt before replaying registration after recovery.
+        const remote = uploadedNow ? null : await transport.getReceipt(current.reservation);
         const receipt =
-          remote.state === "registered"
+          remote?.state === "registered"
             ? remote.registration
             : await transport.register(registrationRequest(current));
         await this.#reconcileRegistered(objectId, receipt);

@@ -13,6 +13,7 @@ body { min-height: 100vh; margin: 0; }
 button, input, select, textarea { font: inherit; }
 button:focus-visible, input:focus-visible { outline: 0.2rem solid #337f68; outline-offset: 0.2rem; }
 cosmaneura-capture { display: block; }
+cosmaneura-capture [hidden] { display: none !important; }
 cosmaneura-capture .shell {
   margin: 0 auto;
   max-width: 48rem;
@@ -130,6 +131,31 @@ cosmaneura-capture .fixed-status {
   overflow-wrap: anywhere;
   text-align: center;
 }
+/* Provider recorders keep status, duration, and current actions together. */
+cosmaneura-capture .provider-desktop-capture { max-width: 42rem; }
+cosmaneura-capture .provider-desktop-capture header { margin-bottom: 1rem; }
+cosmaneura-capture .provider-desktop-capture h1 { font-size: clamp(2rem, 6vw, 2.75rem); line-height: 1.1; }
+cosmaneura-capture .provider-desktop-capture .recorder { grid-template-columns: minmax(0, 1fr); }
+cosmaneura-capture .recording-progress { display: grid; gap: 0.75rem; }
+cosmaneura-capture .recording-progress > p { margin: 0; }
+cosmaneura-capture .recording-progress > [role="status"] { color: #12372d; font-size: 1.15rem; font-weight: 650; }
+cosmaneura-capture .recording-state-detail { display: block; font-size: .9rem; font-weight: 400; margin-top: 4px; }
+cosmaneura-capture .recording-progress .recording-duration { display: grid; gap: 0.1rem; }
+cosmaneura-capture .recording-progress .recording-duration strong {
+  color: #12372d;
+  font-size: 3rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+cosmaneura-capture .recording-source-help { border-top: 1px solid #d6e0da; padding-top: 1rem; }
+cosmaneura-capture .recording-source-help summary { cursor: pointer; color: #536860; }
+cosmaneura-capture .recording-source-help p { font-size: .82rem; line-height: 1.45; }
+cosmaneura-capture .provider-native-capture .recorder { grid-template-columns: minmax(0, 1fr); }
+cosmaneura-capture .provider-native-capture .recording-progress { grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: .75rem; }
+cosmaneura-capture .provider-native-capture .recording-progress > :not([role="status"]):not(.recording-duration) { grid-column: 1 / -1; }
+cosmaneura-capture .provider-native-capture .recording-duration { grid-column: 2; grid-row: 1; }
+cosmaneura-capture .provider-native-capture .recording-duration strong { font-size: 2rem; }
+cosmaneura-capture .provider-native-capture .recording-duration span { font-size: .75rem; }
 @media (min-width: 40rem) {
   cosmaneura-capture .shell { padding-inline: 1.5rem; }
   cosmaneura-capture .recorder {
@@ -137,3 +163,17 @@ cosmaneura-capture .fixed-status {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 }
+
+/* One patient, status and control group across the native recorder surfaces. */
+cosmaneura-capture .recording-patient { display: grid; gap: .2rem; min-width: 0; }
+cosmaneura-capture .recording-patient strong { color: #12372d; font-size: 1.1rem; overflow-wrap: anywhere; }
+cosmaneura-capture .recording-patient span { color: #536860; font-size: .85rem; }
+cosmaneura-capture .recording-recovery { font-size: .85rem; }
+cosmaneura-capture .provider-native-capture .record-actions,
+cosmaneura-capture .provider-desktop-capture .record-actions { gap: .5rem; }
+cosmaneura-capture .provider-native-capture .record-actions button,
+cosmaneura-capture .provider-desktop-capture .record-actions button { min-height: 44px; }
+cosmaneura-capture [data-testid="stop-button"] { background: #a52026; color: white; }
+cosmaneura-capture .provider-desktop-compact .recording-patient { gap: 2px; }
+cosmaneura-capture .provider-desktop-compact .recording-patient strong { font-size: 16px; }
+cosmaneura-capture .provider-desktop-compact .recording-patient span { font-size: 12px; }

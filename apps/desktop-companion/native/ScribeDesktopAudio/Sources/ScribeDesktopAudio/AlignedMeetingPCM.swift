@@ -57,14 +57,29 @@ public final class AlignedMeetingPCM: DesktopAudioSink, @unchecked Sendable {
     private var core: MeetingPCMCore
     private var terminal = false
     private var delivering = false
+    private let hardMaximumOutputFrames: Int
 
     /// The trusted host derives this bound from current Core capture authority.
     /// Numeric validation alone grants no capture permission. No source starts
     /// here. Native delivery must serialize receive/finish/discard; failed may
     /// arrive concurrently. A concurrent/reentrant delivery is a terminal error.
-    public init(maximumOutputFrames: Int, sink: any DesktopPCMSink) throws {
-        guard (1...1_382_400_000).contains(maximumOutputFrames) else { throw DesktopAudioFailure.invalidAudio }
-        self.sink = sink; self.core = MeetingPCMCore(maximumOutputFrames: maximumOutputFrames)
+    public init(maximumOutputFrames: Int, hardMaximumOutputFrames: Int? = nil, microphoneOnly: Bool = false, sink: any DesktopPCMSink) throws {
+        let hard = hardMaximumOutputFrames ?? maximumOutputFrames
+        guard (1...1_382_400_000).contains(hard), (1...hard).contains(maximumOutputFrames) else {
+            throw DesktopAudioFailure.invalidAudio
+        }
+        self.hardMaximumOutputFrames = hard
+        self.sink = sink; self.core = MeetingPCMCore(maximumOutputFrames: maximumOutputFrames, microphoneOnly: microphoneOnly)
+    }
+
+    /// The owning process verifies the same live window before this call. The
+    /// mixer keeps its clock, source positions and output offset across renewal.
+    public func extend(maximumOutputFrames: Int) throws {
+        try lock.withLock {
+            guard !terminal, maximumOutputFrames >= core.maximumOutputFrames,
+                  maximumOutputFrames <= hardMaximumOutputFrames else { throw DesktopAudioFailure.invalidAudio }
+            core.maximumOutputFrames = maximumOutputFrames
+        }
     }
 
     public func receive(_ frame: DesktopAudioFrame) -> Bool {
@@ -247,7 +262,8 @@ private struct ClockTrack {
 }
 
 private struct MeetingPCMCore {
-    let maximumOutputFrames: Int
+    var maximumOutputFrames: Int
+    let microphoneOnly: Bool
     var microphone = ClockTrack()
     var system = ClockTrack()
     var start: DesktopPCMStart?
@@ -258,14 +274,16 @@ private struct MeetingPCMCore {
         let mono = try MonoFrame(frame)
         switch frame.channel {
         case .microphone: try microphone.push(mono)
-        case .systemAudio: try system.push(mono)
+        case .systemAudio:
+            guard !microphoneOnly else { mono.clear(); throw DesktopAudioFailure.invalidAudio }
+            try system.push(mono)
         }
         return try produce(final: false)
     }
 
     mutating func finish() throws -> (PCMBatch, DesktopPCMCompletion) {
-        try microphone.finish(); try system.finish()
-        guard let microphoneEnd = microphone.spans.last?.end, let systemEnd = system.spans.last?.end else {
+        try microphone.finish(); if !microphoneOnly { try system.finish() }
+        guard let microphoneEnd = microphone.spans.last?.end, let systemEnd = microphoneOnly ? microphone.spans.last?.end : system.spans.last?.end else {
             throw DesktopAudioFailure.clockDiscontinuity
         }
         let batch = try produce(final: true)
@@ -278,8 +296,8 @@ private struct MeetingPCMCore {
 
     mutating func produce(final: Bool) throws -> PCMBatch {
         var batch = PCMBatch()
-        guard let microphoneEnd = microphone.spans.last?.end, let systemEnd = system.spans.last?.end,
-              let microphoneStart = microphone.firstStart, let systemStart = system.firstStart else { return batch }
+        guard let microphoneEnd = microphone.spans.last?.end, let systemEnd = microphoneOnly ? microphone.spans.last?.end : system.spans.last?.end,
+              let microphoneStart = microphone.firstStart, let systemStart = microphoneOnly ? microphone.firstStart : system.firstStart else { return batch }
         if start == nil {
             let origin = max(microphoneStart, systemStart)
             guard origin < min(microphoneEnd, systemEnd) else { return batch }
@@ -297,8 +315,9 @@ private struct MeetingPCMCore {
             if duration < 62_500 && !final { break }
             guard outputFrames < maximumOutputFrames else { throw DesktopAudioFailure.windowExpired }
             let next = cursor + duration
-            let mean = (try microphone.area(from: cursor, to: next) + system.area(from: cursor, to: next))
-                / (2 * Double(duration))
+            let microphoneArea = try microphone.area(from: cursor, to: next)
+            let mean = microphoneOnly ? microphoneArea / Double(duration)
+                : (microphoneArea + (try system.area(from: cursor, to: next))) / (2 * Double(duration))
             let bounded = max(-1, min(1, mean))
             samples.append(Int16(floor(bounded * (bounded < 0 ? 32_768 : 32_767) + 0.5)))
             outputFrames += 1; cursor = next

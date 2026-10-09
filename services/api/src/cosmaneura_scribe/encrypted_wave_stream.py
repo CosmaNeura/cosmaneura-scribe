@@ -47,9 +47,20 @@ def wave_header(pcm_size: int) -> bytes:
     if not 0 < pcm_size <= 0xFFFFFFFF - 36 or pcm_size % alignment:
         raise ValueError("audio_wave_size_invalid")
     return struct.pack(
-        "<4sI4s4sIHHIIHH4sI", b"RIFF", pcm_size + 36, b"WAVE", b"fmt ",
-        16, 1, AUDIO_CHANNELS, SAMPLE_RATE_HZ, SAMPLE_RATE_HZ * alignment,
-        alignment, MEDIA_SAMPLE_WIDTH_BYTES * 8, b"data", pcm_size,
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        pcm_size + 36,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        AUDIO_CHANNELS,
+        SAMPLE_RATE_HZ,
+        SAMPLE_RATE_HZ * alignment,
+        alignment,
+        MEDIA_SAMPLE_WIDTH_BYTES * 8,
+        b"data",
+        pcm_size,
     )
 
 
@@ -99,8 +110,13 @@ class _EncryptedWaveStream(io.RawIOBase):
         self._ensure_open()
         if whence not in (os.SEEK_SET, os.SEEK_CUR, os.SEEK_END):
             raise ValueError("invalid whence")
-        position = offset + (0 if whence == os.SEEK_SET else
-                             self._position if whence == os.SEEK_CUR else self._length)
+        position = offset + (
+            0
+            if whence == os.SEEK_SET
+            else self._position
+            if whence == os.SEEK_CUR
+            else self._length
+        )
         if position < 0:
             raise ValueError("negative seek position")
         self._position = position
@@ -128,9 +144,13 @@ class _EncryptedWaveStream(io.RawIOBase):
             ):
                 raise ValueError
             _, ciphertext = decode_envelope(envelope)
-            self._plaintext = bytearray(AESGCM(bytes(self._key)).decrypt(
-                chunk.nonce, ciphertext, chunk.additional_data,
-            ))
+            self._plaintext = bytearray(
+                AESGCM(bytes(self._key)).decrypt(
+                    chunk.nonce,
+                    ciphertext,
+                    chunk.additional_data,
+                )
+            )
             if chunk.pcm_offset < 0 or chunk.pcm_offset + chunk.pcm_size > len(self._plaintext):
                 raise ValueError
         except (OSError, InvalidTag, ValueError):
@@ -146,8 +166,8 @@ class _EncryptedWaveStream(io.RawIOBase):
             while written < length:
                 if self._position < len(self._header):
                     count = min(length - written, len(self._header) - self._position)
-                    target[written:written + count] = self._header[
-                        self._position:self._position + count
+                    target[written : written + count] = self._header[
+                        self._position : self._position + count
                     ]
                 else:
                     position = self._position - len(self._header)
@@ -157,7 +177,7 @@ class _EncryptedWaveStream(io.RawIOBase):
                     within = position - self._starts[index]
                     count = min(length - written, chunk.pcm_size - within)
                     start = chunk.pcm_offset + within
-                    target[written:written + count] = self._plaintext[start:start + count]
+                    target[written : written + count] = self._plaintext[start : start + count]
                 self._position += count
                 written += count
             return written
@@ -178,7 +198,9 @@ class EncryptedAudioTrackReader:
     chunks: tuple[EncryptedWaveChunk, ...] = field(repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _streams: set[io.BufferedIOBase] = field(
-        default_factory=lambda: set[io.BufferedIOBase](), init=False, repr=False,
+        default_factory=lambda: set[io.BufferedIOBase](),
+        init=False,
+        repr=False,
     )
 
     @contextmanager

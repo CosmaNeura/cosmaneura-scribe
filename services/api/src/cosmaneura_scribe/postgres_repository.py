@@ -27,6 +27,12 @@ from .capture_protocol_v1 import (
     PROTOCOL_VERSION,
     RESERVATION_PLAINTEXT_BUDGET_BYTES,
 )
+from .creator_edit_contract import (
+    CreatorTranscriptEditBodyV1,
+    CreatorTranscriptEditV1,
+    validate_edit_history,
+)
+from .creator_edit_projection import apply_creator_edits
 from .external_transcript_v1 import (
     NormalizedSourceTranscriptReceiptV1,
     NormalizedSourceTranscriptRequestV1,
@@ -389,7 +395,10 @@ class PostgresRepository:
         if row is None:
             return None
         if self._configured_capture and row["status"] in {
-            "source_received", "translation_pending", "review_required", "quality_blocked"
+            "source_received",
+            "translation_pending",
+            "review_required",
+            "quality_blocked",
         }:
             # Recorder phase only. The creator review service exposes actual source state.
             row = {**row, "status": SessionStatus.PROCESSING.value}
@@ -414,9 +423,8 @@ class PostgresRepository:
             row is not None
             and (
                 SessionIngestMode(row["ingest_mode"]) != SessionIngestMode.CHUNK_UPLOAD
-                or row["transcript_contract_version"] != (
-                    "1.0" if self._configured_capture else None
-                )
+                or row["transcript_contract_version"]
+                != ("1.0" if self._configured_capture else None)
             )
         ) or (row is None and self._configured_capture):
             raise CaptureIngestModeError("session does not accept audio chunk capture")
@@ -683,7 +691,9 @@ class PostgresRepository:
 
     async def update_session(self, tenant_id: UUID, session: CaptureSession) -> None:
         if self._configured_capture and session.status not in {
-            SessionStatus.CAPTURING, SessionStatus.UPLOADED, SessionStatus.PROCESSING
+            SessionStatus.CAPTURING,
+            SessionStatus.UPLOADED,
+            SessionStatus.PROCESSING,
         }:
             raise CaptureIngestModeError("configured capture requires its source writer")
         await self.lock_consent(tenant_id, session.consent_record_id)
@@ -1188,8 +1198,12 @@ class PostgresRepository:
         return await self._read_locked_working_transcript(tenant_id, *locked, creator_read=False)
 
     async def _read_locked_working_transcript(
-        self, tenant_id: UUID, session: VersionedExternalSessionRecord, database_now: datetime,
-        *, creator_read: bool,
+        self,
+        tenant_id: UUID,
+        session: VersionedExternalSessionRecord,
+        database_now: datetime,
+        *,
+        creator_read: bool,
     ) -> WorkingTranscriptDerivation | None:
         session_id = session.id
         self._require_live_working_session(session, database_now)
@@ -1214,6 +1228,7 @@ class PostgresRepository:
             await self._get_working_review_inputs(tenant_id, session_id, source_version),
             working_transcript_id=working_id,
             working_transcript_version=working_version,
+            creator_edits=await self.get_creator_edit_inputs(tenant_id, session_id, source_version),
         )
         if (
             current["working_fingerprint"] != derivation.working_fingerprint
@@ -1222,7 +1237,8 @@ class PostgresRepository:
             raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
         await self.audit(
             tenant_id=tenant_id,
-            action="normalized_working_transcript.creator_read" if creator_read
+            action="normalized_working_transcript.creator_read"
+            if creator_read
             else "normalized_working_transcript.worker_read",
             entity_type="normalized_working_transcript",
             entity_id=working_id,
@@ -1237,6 +1253,123 @@ class PostgresRepository:
             working_fingerprint=derivation.working_fingerprint,
         )
         return derivation
+
+    async def get_creator_edit_inputs(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        source_version: int,
+    ) -> tuple[CreatorTranscriptEditV1, ...]:
+        rows = await self._session.execute(
+            text("""
+            SELECT edit_id, result_working_version, created_at, request
+            FROM creator_transcript_edits
+            WHERE tenant_id = :tenant AND session_id = :session
+              AND source_transcript_version = :source
+            ORDER BY result_working_version LIMIT 1025
+        """),
+            {"tenant": tenant_id, "session": session_id, "source": source_version},
+        )
+        try:
+            edits = tuple(
+                CreatorTranscriptEditV1.model_validate(
+                    {
+                        "edit_id": row["edit_id"],
+                        "working_transcript_version": row["result_working_version"],
+                        "created_at": row["created_at"],
+                        "request": row["request"],
+                    }
+                )
+                for row in rows.mappings()
+            )
+            validate_edit_history(edits)
+            return edits
+        except (TypeError, ValueError):
+            raise WorkingTranscriptPersistenceError(
+                WorkingTranscriptPersistenceCode.EVIDENCE_INVALID
+            ) from None
+
+    async def record_creator_transcript_edit(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        *,
+        actor: str,
+        request: CreatorTranscriptEditBodyV1,
+        edit_id: UUID,
+    ) -> CreatorTranscriptEditV1:
+        current = await self.get_creator_working_transcript(
+            tenant_id,
+            session_id,
+            creator_actor_id=actor,
+        )
+        if current is None:
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        existing = next((edit for edit in current.creator_edits if edit.edit_id == edit_id), None)
+        if existing is not None:
+            if existing.request != request:
+                raise WorkingTranscriptPersistenceError(
+                    WorkingTranscriptPersistenceCode.STATE_CONFLICT
+                )
+            return existing
+        working = current.working_transcript
+        if (
+            working.source_transcript_version != request.expected_source_transcript_version
+            or working.working_transcript_id != request.expected_working_transcript_id
+            or working.working_transcript_version != request.expected_working_transcript_version
+        ):
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        created_at = await self._session.scalar(text("SELECT clock_timestamp()"))
+        edit = CreatorTranscriptEditV1(
+            edit_id=edit_id,
+            created_at=created_at,
+            working_transcript_version=working.working_transcript_version + 1,
+            request=request,
+        )
+        # Reject nonexistent/blocked targets before any protected edit is stored.
+        apply_creator_edits(
+            working.model_copy(
+                update={
+                    "working_transcript_version": edit.working_transcript_version,
+                }
+            ),
+            (edit,),
+        )
+        validate_edit_history((*current.creator_edits, edit))
+        await self._session.execute(
+            text("""
+            INSERT INTO creator_transcript_edits
+                (tenant_id, session_id, edit_id, source_transcript_version,
+                 prior_working_version, result_working_version,
+                 creator_actor_id, request, created_at)
+            VALUES (:tenant, :session, :edit, :source, :prior, :result, :actor,
+                    CAST(:request AS jsonb), :created)
+        """),
+            {
+                "tenant": tenant_id,
+                "session": session_id,
+                "edit": edit_id,
+                "source": request.expected_source_transcript_version,
+                "prior": working.working_transcript_version,
+                "result": edit.working_transcript_version,
+                "actor": actor,
+                "request": request.model_dump_json(),
+                "created": created_at,
+            },
+        )
+        publication = await self.publish_current_working_transcript(tenant_id, session_id)
+        if (
+            publication is None
+            or publication.working_transcript_version != edit.working_transcript_version
+        ):
+            raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
+        await self.audit(
+            tenant_id=tenant_id,
+            action="creator_transcript_edit.recorded",
+            entity_type="creator_transcript_edit",
+            entity_id=edit_id,
+        )
+        return edit
 
     async def publish_current_working_transcript(
         self,
@@ -1273,9 +1406,12 @@ class PostgresRepository:
             session_id,
             source_version,
         )
+        creator_edits = await self.get_creator_edit_inputs(tenant_id, session_id, source_version)
         working_id = session.working_transcript_id or uuid4()
         current_version = session.current_working_transcript_version
-        if current_version is not None:
+        if current_version is not None and (
+            not creator_edits or creator_edits[-1].working_transcript_version <= current_version
+        ):
             current = await self._get_working_header(
                 tenant_id,
                 session_id,
@@ -1295,6 +1431,7 @@ class PostgresRepository:
                 reviews,
                 working_transcript_id=working_id,
                 working_transcript_version=current_version,
+                creator_edits=creator_edits,
             )
             if current["working_fingerprint"] == current_derivation.working_fingerprint:
                 if session.status != current_derivation.status:
@@ -1339,6 +1476,7 @@ class PostgresRepository:
             reviews,
             working_transcript_id=working_id,
             working_transcript_version=next_version,
+            creator_edits=creator_edits,
         )
         if not can_publish_working_transcript(session.status, derivation.status):
             raise WorkingTranscriptPersistenceError(WorkingTranscriptPersistenceCode.STATE_CONFLICT)
@@ -3363,6 +3501,29 @@ class PostgresRepository:
         )
         return _capture_lease_receipt(row) if row is not None else None
 
+    async def capture_lease_receipt_for_generation(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        generation: int,
+    ) -> CaptureLeaseReceipt | None:
+        row = await self._one_or_none(
+            f"""
+            SELECT receipt.id, lease_id, session_id, generation, issued_at, expires_at
+            FROM capture_lease_receipts AS receipt
+            WHERE tenant_id = :tenant_id AND session_id = :session_id AND generation = :generation
+              AND EXISTS (
+                  SELECT 1 FROM scribe_sessions AS session
+                  WHERE session.tenant_id = :tenant_id AND session.id = :session_id
+                    AND {self._capture_scope("session")}
+              )
+            """,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            generation=generation,
+        )
+        return _capture_lease_receipt(row) if row is not None else None
+
     async def issue_capture_lease(
         self,
         tenant_id: UUID,
@@ -3705,25 +3866,17 @@ class PostgresRepository:
         if not lease_is_active:
             raise CaptureLeaseConflictError
 
-        existing_rows = (
-            (
-                await self._session.execute(
-                    text(
-                        """
-                        SELECT object_id, session_id, sequence_number, channel,
-                               protocol_version, additional_data,
-                               plaintext_budget_bytes, created_at
-                        FROM audio_chunk_reservations
-                        WHERE tenant_id = :tenant_id AND session_id = :session_id
-                        ORDER BY channel, sequence_number
-                        """
-                    ),
-                    {"tenant_id": tenant_id, "session_id": session_id},
-                )
-            )
-            .mappings()
-            .all()
+        reservation_query = text(
+            """
+            SELECT object_id, session_id, sequence_number, channel,
+                   protocol_version, additional_data, plaintext_budget_bytes, created_at
+            FROM audio_chunk_reservations
+            WHERE tenant_id = :tenant_id AND session_id = :session_id
+            ORDER BY channel, sequence_number
+            """
         )
+        scope = {"tenant_id": tenant_id, "session_id": session_id}
+        existing_rows = (await self._session.execute(reservation_query, scope)).mappings().all()
         existing = {
             (CaptureChannel(row["channel"]), int(row["sequence_number"])): _chunk_reservation(
                 dict(row)
@@ -3762,7 +3915,10 @@ class PostgresRepository:
         ):
             raise CaptureReservationLimitError
 
-        for draft in new_drafts:
+        if new_drafts:
+            # SQLAlchemy/asyncpg batches parameter sets on this same locked
+            # transaction. Keep all immutable position/conflict rules while
+            # avoiding one database dispatch for every chunk.
             await self._session.execute(
                 text(
                     """
@@ -3777,38 +3933,35 @@ class PostgresRepository:
                     DO NOTHING
                     """
                 ),
-                {
-                    "object_id": draft.object_id,
-                    "tenant_id": tenant_id,
-                    "session_id": session_id,
-                    "sequence_number": draft.sequence_number,
-                    "channel": draft.channel.value,
-                    "protocol_version": draft.protocol_version,
-                    "additional_data": draft.additional_data,
-                    "plaintext_budget_bytes": draft.plaintext_budget_bytes,
-                },
+                [
+                    {
+                        **scope,
+                        "object_id": draft.object_id,
+                        "sequence_number": draft.sequence_number,
+                        "channel": draft.channel.value,
+                        "protocol_version": draft.protocol_version,
+                        "additional_data": draft.additional_data,
+                        "plaintext_budget_bytes": draft.plaintext_budget_bytes,
+                    }
+                    for draft in new_drafts
+                ],
             )
 
+        # Reload canonical database records together, including pre-existing
+        # overlapping positions. Request order may differ from database order.
+        canonical_rows = (await self._session.execute(reservation_query, scope)).mappings().all()
+        by_position = {
+            (CaptureChannel(row["channel"]), int(row["sequence_number"])): _chunk_reservation(
+                dict(row)
+            )
+            for row in canonical_rows
+        }
         canonical: list[ChunkReservationRecord] = []
         for draft in drafts:
-            row = await self._one_or_none(
-                """
-                SELECT object_id, session_id, sequence_number, channel,
-                       protocol_version, additional_data, plaintext_budget_bytes, created_at
-                FROM audio_chunk_reservations
-                WHERE tenant_id = :tenant_id
-                  AND session_id = :session_id
-                  AND sequence_number = :sequence_number
-                  AND channel = :channel
-                """,
-                tenant_id=tenant_id,
-                session_id=session_id,
-                sequence_number=draft.sequence_number,
-                channel=draft.channel.value,
-            )
+            row = by_position.get((draft.channel, draft.sequence_number))
             if row is None:
                 raise CaptureReservationLimitError
-            canonical.append(_chunk_reservation(row))
+            canonical.append(row)
 
         inserted_batch = await self._session.execute(
             text(
@@ -3842,25 +3995,26 @@ class PostgresRepository:
         )
         if inserted_batch.scalar_one_or_none() is None:
             raise CaptureLeaseConflictError
-        for ordinal, reservation in enumerate(canonical):
-            await self._session.execute(
-                text(
-                    """
-                    INSERT INTO audio_chunk_reservation_batch_items (
-                        tenant_id, session_id, batch_id, ordinal, object_id
-                    ) VALUES (
-                        :tenant_id, :session_id, :batch_id, :ordinal, :object_id
-                    )
-                    """
-                ),
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO audio_chunk_reservation_batch_items (
+                    tenant_id, session_id, batch_id, ordinal, object_id
+                ) VALUES (
+                    :tenant_id, :session_id, :batch_id, :ordinal, :object_id
+                )
+                """
+            ),
+            [
                 {
-                    "tenant_id": tenant_id,
-                    "session_id": session_id,
+                    **scope,
                     "batch_id": batch_id,
                     "ordinal": ordinal,
                     "object_id": reservation.object_id,
-                },
-            )
+                }
+                for ordinal, reservation in enumerate(canonical)
+            ],
+        )
         batch = await self.get_chunk_reservation_batch(tenant_id, batch_id)
         if batch is None:
             raise CaptureReservationLimitError
@@ -4645,7 +4799,8 @@ class PostgresRepository:
         expected_lease_token: UUID,
     ) -> bool:
         if self._configured_capture and job.status not in {
-            TranscriptionJobStatus.RETRYABLE, TranscriptionJobStatus.TERMINAL
+            TranscriptionJobStatus.RETRYABLE,
+            TranscriptionJobStatus.TERMINAL,
         }:
             raise CaptureIngestModeError("configured capture completion requires its source writer")
         updated = await self._session.execute(

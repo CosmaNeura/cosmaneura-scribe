@@ -116,9 +116,7 @@ def test_normalized_request_and_receipt_require_strict_wire_discriminators() -> 
         NormalizedSourceTranscriptRequestV1.model_validate(
             {**_request().model_dump(mode="python"), "provider": "not-allowed"}
         )
-    required = set(
-        NormalizedSourceTranscriptRequestV1.model_json_schema().get("required", [])
-    )
+    required = set(NormalizedSourceTranscriptRequestV1.model_json_schema().get("required", []))
     assert required == {"schema_version", "duration_ms", "segments"}
     assert set(NormalizedSourceTranscriptReceiptV1.model_json_schema()["required"]) == {
         "schema_version",
@@ -133,9 +131,10 @@ def test_normalized_request_and_receipt_require_strict_wire_discriminators() -> 
 
 def test_normalized_request_json_arrays_and_strict_boundaries() -> None:
     request = _request()
-    assert NormalizedSourceTranscriptRequestV1.model_validate_json(
-        request.model_dump_json()
-    ) == request
+    assert (
+        NormalizedSourceTranscriptRequestV1.model_validate_json(request.model_dump_json())
+        == request
+    )
     payload = request.model_dump(mode="python")
     invalid_payloads = (
         {**payload, "duration_ms": 0},
@@ -226,9 +225,7 @@ def test_accept_replay_converge_correction_and_current_read_are_backend_equivale
     consent = _consent()
     draft = _draft(consent)
     first_request = _request(tied_timing=True)
-    corrected_request = _request(
-        spanish_content="Contenido sintetico corregido.", tied_timing=True
-    )
+    corrected_request = _request(spanish_content="Contenido sintetico corregido.", tied_timing=True)
 
     async def scenario() -> None:
         await _seed_configured_session(repository_backend.provider, tenant_id, consent, draft)
@@ -262,14 +259,11 @@ def test_accept_replay_converge_correction_and_current_read_are_backend_equivale
         assert configured.current_source_transcript_version == 1
         assert configured.source_received_at is not None
         assert (
-            configured.transcript_content_expires_at
-            == first.receipt.transcript_content_expires_at
+            configured.transcript_content_expires_at == first.receipt.transcript_content_expires_at
         )
         assert configured.content_purged_at is None
 
-        before_replay_audits = len(
-            await _audit_actions(repository_backend.provider, tenant_id)
-        )
+        before_replay_audits = len(await _audit_actions(repository_backend.provider, tenant_id))
         async with repository_backend.provider.transaction(tenant_id) as store:
             replay = await store.accept_normalized_source_transcript(
                 tenant_id,
@@ -345,12 +339,15 @@ def test_conflicts_consent_and_transaction_rollback_leave_no_partial_source(
         await _seed_configured_session(repository_backend.provider, tenant_id, consent, draft)
         with pytest.raises(RuntimeError, match="synthetic rollback"):
             async with repository_backend.provider.transaction(tenant_id) as store:
-                assert await store.accept_normalized_source_transcript(
-                    tenant_id,
-                    draft.id,
-                    idempotency_key="rollback-key-0001",
-                    request=request,
-                ) is not None
+                assert (
+                    await store.accept_normalized_source_transcript(
+                        tenant_id,
+                        draft.id,
+                        idempotency_key="rollback-key-0001",
+                        request=request,
+                    )
+                    is not None
+                )
                 raise RuntimeError("synthetic rollback")
 
         async with repository_backend.provider.transaction(tenant_id) as store:
@@ -387,12 +384,15 @@ def test_conflicts_consent_and_transaction_rollback_leave_no_partial_source(
         assert revoked.value.code == NormalizedSourcePersistenceCode.CONSENT_INVALID
 
         async with repository_backend.provider.transaction(uuid4()) as store:
-            assert await store.accept_normalized_source_transcript(
-                uuid4(),
-                draft.id,
-                idempotency_key="cross-tenant-key",
-                request=request,
-            ) is None
+            assert (
+                await store.accept_normalized_source_transcript(
+                    uuid4(),
+                    draft.id,
+                    idempotency_key="cross-tenant-key",
+                    request=request,
+                )
+                is None
+            )
 
     repository_backend.run(scenario)
 
@@ -502,13 +502,16 @@ async def test_postgres_concurrent_same_key_converges_without_duplicate_source(
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(tenant_id)},
             )
-            assert await connection.scalar(
-                text(
-                    "SELECT count(*) FROM normalized_source_transcripts "
-                    "WHERE tenant_id = :tenant_id AND session_id = :session_id"
-                ),
-                {"tenant_id": tenant_id, "session_id": draft.id},
-            ) == 1
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM normalized_source_transcripts "
+                        "WHERE tenant_id = :tenant_id AND session_id = :session_id"
+                    ),
+                    {"tenant_id": tenant_id, "session_id": draft.id},
+                )
+                == 1
+            )
     finally:
         await provider.close()
 
@@ -619,13 +622,16 @@ async def test_postgres_revocation_winning_the_lock_prevents_any_receipt_write(
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(tenant_id)},
             )
-            assert await connection.scalar(
-                text(
-                    "SELECT count(*) FROM normalized_source_transcripts "
-                    "WHERE tenant_id = :tenant_id AND session_id = :session_id"
-                ),
-                {"tenant_id": tenant_id, "session_id": draft.id},
-            ) == 0
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM normalized_source_transcripts "
+                        "WHERE tenant_id = :tenant_id AND session_id = :session_id"
+                    ),
+                    {"tenant_id": tenant_id, "session_id": draft.id},
+                )
+                == 0
+            )
     finally:
         await provider.close()
 
@@ -644,12 +650,15 @@ async def test_postgres_database_clock_retention_gate_precedes_cached_replay(
     await _seed_configured_session(provider, tenant_id, consent, draft)
     try:
         async with provider.transaction(tenant_id) as store:
-            assert await store.accept_normalized_source_transcript(
-                tenant_id,
-                draft.id,
-                idempotency_key="expired-replay-key",
-                request=_request(),
-            ) is not None
+            assert (
+                await store.accept_normalized_source_transcript(
+                    tenant_id,
+                    draft.id,
+                    idempotency_key="expired-replay-key",
+                    request=_request(),
+                )
+                is not None
+            )
         async with admin.begin() as connection:
             await connection.execute(text("SET LOCAL session_replication_role = replica"))
             await connection.execute(
@@ -833,8 +842,7 @@ async def _normalized_source_counts(
     if isinstance(provider, InMemoryRepository):
         return (
             sum(
-                key[:2] == (tenant_id, session_id)
-                for key in provider.normalized_source_transcripts
+                key[:2] == (tenant_id, session_id) for key in provider.normalized_source_transcripts
             ),
             sum(
                 key[:2] == (tenant_id, session_id)
@@ -1274,12 +1282,15 @@ def test_purge_preserves_handed_off_state_after_consent_revocation(
             handed_draft,
         )
         async with repository_backend.provider.transaction(tenant_id) as store:
-            assert await store.accept_normalized_source_transcript(
-                tenant_id,
-                handed_draft.id,
-                idempotency_key="handed-purge-key",
-                request=_request(),
-            ) is not None
+            assert (
+                await store.accept_normalized_source_transcript(
+                    tenant_id,
+                    handed_draft.id,
+                    idempotency_key="handed-purge-key",
+                    request=_request(),
+                )
+                is not None
+            )
         if isinstance(repository_backend.provider, InMemoryRepository):
             current = repository_backend.provider.versioned_external_sessions[
                 (tenant_id, handed_draft.id)

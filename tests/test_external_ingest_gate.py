@@ -161,9 +161,11 @@ def test_disabled_and_nonadmitted_tenants_are_opaque_before_repository_access(
     )
 
     assert disabled.status_code == nonadmitted.status_code == 404
-    assert disabled.json() == nonadmitted.json() == {
-        "detail": "External transcript session creation is unavailable."
-    }
+    assert (
+        disabled.json()
+        == nonadmitted.json()
+        == {"detail": "External transcript session creation is unavailable."}
+    )
     assert "WWW-Authenticate" not in disabled.headers
     assert "WWW-Authenticate" not in nonadmitted.headers
     assert provider.transaction_calls == 0
@@ -454,12 +456,9 @@ def test_external_session_request_rejects_authority_and_phi_fields(
 def test_external_session_openapi_contract_is_strict_and_authenticated() -> None:
     operation = app.openapi()["paths"]["/v1/external-transcript-sessions"]["post"]
     parameters = {
-        (parameter["name"], parameter["in"]): parameter
-        for parameter in operation["parameters"]
+        (parameter["name"], parameter["in"]): parameter for parameter in operation["parameters"]
     }
-    request_reference = operation["requestBody"]["content"]["application/json"]["schema"][
-        "$ref"
-    ]
+    request_reference = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     request_schema_name = request_reference.rsplit("/", maxsplit=1)[-1]
     request_schema = app.openapi()["components"]["schemas"][request_schema_name]
     response_schema = app.openapi()["components"]["schemas"]["CaptureSession"]

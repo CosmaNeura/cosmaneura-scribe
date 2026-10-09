@@ -190,9 +190,13 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
             guard call.options.isEmpty else { return Self.rejectProvider(call) }
             self.initializeAuth()
             guard let auth = self.auth else { return Self.rejectProvider(call) }
-            var value = Self.payload(auth.state())
+            let state = auth.state()
+            var value = Self.payload(state)
+            if let name = auth.providerDisplayName(expectedRevision: state.revision) {
+                value["providerDisplayName"] = name
+            }
             value["providerReady"] = self.providerRequestsAvailable
-            if self.nativeRecordingAvailable { value["nativeRecordingVersion"] = 1 }
+            if self.nativeRecordingAvailable { value["nativeRecordingVersion"] = 2 }
             call.resolve(value)
         }
     }
@@ -217,7 +221,11 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 }
                 guard let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
                 try await self.recoverSources(connection: connection)
-                let reply = try await connection.send(request)
+                let reply: ProviderNativeReply
+                if request.action == .recorderContext {
+                    guard self.nativeRecordingAvailable else { throw ProviderNativeError.unavailable }
+                    reply = try await connection.prepareRecordingContext(request)
+                } else { reply = try await connection.send(request) }
                 guard self.providerRequestsAvailable,
                       let response = String(data: reply.body, encoding: .utf8) else {
                     throw ProviderNativeError.response
@@ -255,7 +263,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 let result = try await Self.recordingBridge.open(selection, current: current, make: {
                     try await NativeProviderRecordingHost.make(connection: connection, auth: auth,
                         recovery: recovery, workspaceID: selection.workspaceID, bindingRef: selection.bindingRef,
-                        sessionID: selection.sessionID, revision: selection.revision)
+                        sessionID: selection.sessionID, revision: selection.revision, authorizationID: selection.authorizationID)
                 }, inputMuted: { AVAudioApplication.shared.isInputMuted })
                 call.resolve(result)
             } catch { Self.rejectProvider(call) }

@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { HttpCreatorReviewApi, parseCreatorReview, parseCaptureContinuity } from "./creator-review-api";
-import { renderCreatorReview, renderNoteTranscript } from "./creator-review-panel";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HttpCreatorReviewApi, parseCreatorReview, parseCaptureContinuity, type AuthorizedReviewRequest } from "./creator-review-api";
+import { mountCreatorReview, renderCreatorReview, renderNoteTranscript, transcriptParagraphs } from "./creator-review-panel";
+import { renderCreatorEditDialog } from "./creator-edit-view";
 import { longReviewFixture } from "./long-review.fixture";
 import { MAX_CREATOR_REVIEW_BYTES } from "./capture-response-limits";
 
@@ -30,6 +31,43 @@ const view = {
 };
 
 describe("creator review surface", () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+  it("breaks long speech into readable paragraphs without changing characters or assigning voices", () => {
+    for (const text of [
+      "Dr. Avery described a fictional test. No medication was discussed. ".repeat(20),
+      "síntoma sin puntuación ".repeat(80),
+      "First sentence.\nSecond sentence!  Third sentence? Fourth sentence. Fifth sentence.",
+      "<script>never interpret this</script> & original wording.",
+    ]) {
+      const parts = transcriptParagraphs(text);
+      expect(parts.join("")).toBe(text);
+      expect(parts.every(part => part.length <= 401)).toBe(true);
+      if (text.length > 400) expect(parts.length).toBeGreaterThan(1);
+    }
+    const html = renderCreatorReview({ phase: "ready", view: parseCreatorReview(view, session), notice: "" });
+    expect(html.match(/class="creator-segment-heading"/gu)).toHaveLength(1);
+    expect(html).toContain("Speaker not assigned");
+    expect(html).not.toContain("<script>");
+  });
+  it("keeps the same detected speaker number across languages without inferring a patient or clinician", () => {
+    const speakerA = "00000000-0000-4000-8000-000000000011";
+    const speakerB = "00000000-0000-4000-8000-000000000012";
+    const ids = [segment, translation, working];
+    const segments = ids.map((id, index) => ({ ...view.source.segments[0]!, source_segment_id: id,
+      speaker_id: index === 1 ? speakerB : speakerA, source_locale: index === 2 ? "en-US" : "es-US",
+      content: index === 2 ? "Invented English speech." : "Habla ficticia.", start_ms: index * 1000, end_ms: index * 1000 + 900 }));
+    const parsed = parseCreatorReview({ ...view, status: "transcript_ready", source: { ...view.source, segments },
+      working: { ...view.working, note_ready: true, blockers: [], segments: segments.map(item => ({
+        source_segment_id: item.source_segment_id, source_segment_version: 1,
+        resolution: item.source_locale === "en-US" ? "english_source" : "spanish_translation", content: "Invented English speech.",
+      })) }, review_queue: { ...view.review_queue, status: "complete", items: [] },
+    }, session);
+    const html = renderCreatorReview({ phase: "ready", view: parsed, notice: "" });
+    expect(html.match(/Speaker 1 · not identified/gu)).toHaveLength(2);
+    expect(html.match(/Speaker 2 · not identified/gu)).toHaveLength(1);
+    expect(html).not.toContain("<strong>Clinician</strong>");
+    expect(html).not.toContain("<strong>Patient</strong>");
+  });
   it("receives every segment of a bounded maximum-length review", async () => {
     const source = longReviewFixture(session), json = JSON.stringify(source);
     expect(new TextEncoder().encode(json).length).toBeGreaterThan(8 * 1024 * 1024);
@@ -76,6 +114,8 @@ describe("creator review surface", () => {
       expect(html).toContain(copy);
       expect(html).not.toContain('data-review-action="accepted"');
       expect(html).not.toContain("English transcript ready");
+      expect(html).toContain("Check status</button>");
+      expect(html).toContain(state === "unconfirmed" ? "Choose Check status later" : "Checking translation automatically");
     }
   });
 
@@ -90,12 +130,86 @@ describe("creator review surface", () => {
       working: { ...view.working, blockers: [{ source_segment_id: segment, code: "translation_retry_required" }] },
     };
     expect(renderCreatorReview({ phase: "ready", view: parseCreatorReview(rejected, session), notice: "" }))
-      .toContain("Translation needs a new attempt");
+      .toContain("English translation needs help");
+    expect(renderCreatorReview({ phase: "ready", view: parseCreatorReview(rejected, session), notice: "" }))
+      .not.toContain("Checking translation automatically");
+  });
+
+  it.each(["translation_failed", "translation_retry_required"])("keeps %s blocked while repeated Check status only reads", async code => {
+    const failed = { ...view, status: "translation_pending", editing_allowed: true,
+      review_queue: { ...view.review_queue, status: "not_ready", items: [] },
+      working: { ...view.working, blockers: [{ source_segment_id: segment, code }] },
+    };
+    const parsed = parseCreatorReview(failed, session), original = JSON.stringify(parsed);
+    const afterDecision = renderCreatorReview({ phase: "ready", view: parsed, notice: "Decision saved." });
+    expect(afterDecision).toContain("Decision saved.");
+    expect(afterDecision).toContain("Check status only looks for updates; it does not retry translation.");
+    const edit = renderCreatorEditDialog(parsed, segment);
+    expect(edit).toContain("English wording is unavailable for this passage.");
+    expect(edit).toContain("Your original Spanish transcript is retained.");
+    expect(edit).not.toContain("Finish translation review");
+    expect(edit).not.toContain('textarea name="content"');
+
+    // Minimal event surface only; the actual mounted controller and HTTP adapter run.
+    // This exercises read/mutation boundaries without a browser or simulated provider success.
+    class Surface extends EventTarget {
+      innerHTML = "";
+      disabled = false;
+      dataset = { reviewAction: "refresh" };
+      closest(selector: string): Surface | null { return selector === "button[data-review-action]" ? this : null; }
+      contains(element: unknown): boolean { return element === button; }
+      replaceChildren(): void { this.innerHTML = ""; }
+    }
+    const root = new Surface(), button = new Surface();
+    vi.stubGlobal("Element", Surface);
+    vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
+    vi.useFakeTimers();
+    const request = vi.fn<AuthorizedReviewRequest>(async () => new Response(JSON.stringify(failed), { headers: { "content-type": "application/json" } }));
+    const api = new HttpCreatorReviewApi(session, request), decide = vi.spyOn(api, "decide"), openNote = vi.fn();
+    const dispose = mountCreatorReview(root as unknown as HTMLElement, api, { continueToNote: openNote });
+    try {
+      await vi.waitFor(() => expect(root.innerHTML).toContain("English translation needs help"));
+      for (let index = 0; index < 2; index += 1) {
+        expect(root.innerHTML).toContain("Check status</button>");
+        const click = new Event("click");
+        Object.defineProperty(click, "target", { value: button });
+        root.dispatchEvent(click);
+        await vi.waitFor(() => expect(root.innerHTML).toContain("English translation needs help"));
+      }
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(3);
+      for (const [url, options] of request.mock.calls) {
+        expect(url).toBe(`/v1/captured-sessions/${session}/review`);
+        expect(options.method).toBe("GET");
+      }
+      expect(decide).not.toHaveBeenCalled();
+      expect(openNote).not.toHaveBeenCalled();
+      expect(root.innerHTML).toContain("Your original Spanish transcript is retained.");
+      expect(root.innerHTML).toContain("Keep this visit and contact your practice administrator for help.");
+      expect(root.innerHTML).toContain("Check status only looks for updates; it does not retry translation.");
+      expect(root.innerHTML).toContain("A note cannot be prepared yet.");
+      expect(root.innerHTML).toContain("No tengo fiebre.");
+      expect(root.innerHTML).not.toMatch(/data-review-action="(?:accepted|rejected|continue|retry)"/u);
+      expect(JSON.stringify(parsed)).toBe(original);
+    } finally { dispose(); }
   });
 
   it("shows the actual bilingual review contract, explicit decisions and unassigned speakers", () => {
     const parsed = parseCreatorReview(view, session);
+    const original = JSON.stringify(parsed);
     const html = renderCreatorReview({ phase: "ready", view: parsed, notice: "" });
+    const disclosure = html.match(/<details class="creator-transcript-details">.*?<\/details>/su)?.[0];
+    expect(disclosure).toBe('<details class="creator-transcript-details"><summary>Transcript details</summary><p>Version 2</p></details>');
+    const visibleReview = html.replace(disclosure!, "");
+    expect(visibleReview).toContain("Your translation review is needed");
+    expect(visibleReview).toContain("Spanish · original");
+    expect(visibleReview).toContain("English · proposed translation");
+    expect(visibleReview).toContain("Accept English translation");
+    expect(visibleReview).toContain("Speaker not assigned");
+    expect(html).toContain("1 transcript passage");
+    expect(html).toContain('aria-label="Next matching passage"');
+    expect(html).toContain(`data-transcript-segment="${segment}"`);
+    expect(JSON.stringify(parsed)).toBe(original);
     expect(html).toContain("Spanish · original");
     expect(html).toContain("English · proposed translation");
     expect(html).toContain("I do not have a fever.");

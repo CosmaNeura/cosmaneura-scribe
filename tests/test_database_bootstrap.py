@@ -695,12 +695,10 @@ async def test_enabled_derived_writer_grants_keep_evidence_authority_split(
         if statement.lstrip().startswith("GRANT")
     ]
     assert any(
-        statement.startswith("GRANT INSERT") and allowed_insert in statement
-        for statement in grants
+        statement.startswith("GRANT INSERT") and allowed_insert in statement for statement in grants
     )
     assert not any(
-        statement.startswith("GRANT INSERT") and denied_insert in statement
-        for statement in grants
+        statement.startswith("GRANT INSERT") and denied_insert in statement for statement in grants
     )
     assert any("ON normalized_working_transcripts TO" in statement for statement in grants)
     assert any(
@@ -731,14 +729,12 @@ async def test_translation_permissions_are_revoke_only_until_the_gate_is_enabled
         'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM "scribe-translation"',
         'REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM "scribe-translation"',
     ]
-    policy_name = f'scribe_translation_scope_{object_id.hex}'
+    policy_name = f"scribe_translation_scope_{object_id.hex}"
     assert statements[5:7] == [
         "SET LOCAL lock_timeout = '5s'",
         "SET LOCAL statement_timeout = '60s'",
     ]
-    assert statements[7] == (
-        f'DROP POLICY IF EXISTS "{policy_name}" ON public.scribe_sessions'
-    )
+    assert statements[7] == (f'DROP POLICY IF EXISTS "{policy_name}" ON public.scribe_sessions')
     assert statements[8].startswith(
         f'CREATE POLICY "{policy_name}" ON public.scribe_sessions AS RESTRICTIVE '
         'FOR ALL TO "scribe-translation"'
@@ -892,6 +888,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 "normalized_source_receipt_keys",
                 "source_start_attempts",
                 "source_start_retirements",
+                "source_start_extensions",
             )
             for privilege in ("SELECT", "INSERT")
         }
@@ -928,9 +925,10 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
     }
     runtime_column_expected = {
         ("consent_records", "revoked_at", "UPDATE"),
-        *(("source_start_attempts", column, "UPDATE") for column in (
-            "state", "issued_at", "expires_at", "stopped_at"
-        )),
+        *(
+            ("source_start_attempts", column, "UPDATE")
+            for column in ("state", "issued_at", "expires_at", "stopped_at")
+        ),
         *(
             ("capture_leases", column, "UPDATE")
             for column in (
@@ -1121,63 +1119,71 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
         ("transcription_jobs", "UPDATE"),
         ("audit_events", "INSERT"),
     }
-    reconciler_expected = {
-        ("consent_records", column, "SELECT")
-        for column in (
-            "id",
-            "tenant_id",
-            "appointment_id",
-            "practitioner_id",
-            "patient_id",
-            "modality",
-            "all_parties_consented",
-            "revoked_at",
-        )
-    } | {
-        ("scribe_sessions", column, "SELECT")
-        for column in (
-            "id",
-            "tenant_id",
-            "appointment_id",
-            "practitioner_id",
-            "patient_id",
-            "consent_record_id",
-            "modality",
-            "status",
-            "transcript_contract_version",
-        )
-    } | {
-        ("transcripts", column, "SELECT")
-        for column in ("id", "tenant_id", "session_id", "segments")
-    } | {
-        ("transcript_deliveries", column, "SELECT")
-        for column in (
-            "id",
-            "tenant_id",
-            "session_id",
-            "idempotency_key",
-            "payload_sha256",
-            "status",
-            "attempt_count",
-            "platform_transcript_id",
-            "last_error_code",
-            "updated_at",
-        )
-    } | {
-        ("transcript_deliveries", column, "UPDATE")
-        for column in (
-            "status",
-            "attempt_count",
-            "platform_transcript_id",
-            "last_error_code",
-            "updated_at",
-        )
-    } | {
-        ("scribe_sessions", "status", "UPDATE"),
-    } | {
-        ("audit_events", column, "INSERT")
-        for column in ("id", "tenant_id", "action", "entity_type", "entity_id")
-    }
+    reconciler_expected = (
+        {
+            ("consent_records", column, "SELECT")
+            for column in (
+                "id",
+                "tenant_id",
+                "appointment_id",
+                "practitioner_id",
+                "patient_id",
+                "modality",
+                "all_parties_consented",
+                "revoked_at",
+            )
+        }
+        | {
+            ("scribe_sessions", column, "SELECT")
+            for column in (
+                "id",
+                "tenant_id",
+                "appointment_id",
+                "practitioner_id",
+                "patient_id",
+                "consent_record_id",
+                "modality",
+                "status",
+                "transcript_contract_version",
+            )
+        }
+        | {
+            ("transcripts", column, "SELECT")
+            for column in ("id", "tenant_id", "session_id", "segments")
+        }
+        | {
+            ("transcript_deliveries", column, "SELECT")
+            for column in (
+                "id",
+                "tenant_id",
+                "session_id",
+                "idempotency_key",
+                "payload_sha256",
+                "status",
+                "attempt_count",
+                "platform_transcript_id",
+                "last_error_code",
+                "updated_at",
+            )
+        }
+        | {
+            ("transcript_deliveries", column, "UPDATE")
+            for column in (
+                "status",
+                "attempt_count",
+                "platform_transcript_id",
+                "last_error_code",
+                "updated_at",
+            )
+        }
+        | {
+            ("scribe_sessions", "status", "UPDATE"),
+        }
+        | {
+            ("audit_events", column, "INSERT")
+            for column in ("id", "tenant_id", "action", "entity_type", "entity_id")
+        }
+    )
 
     async def drop_probe_objects_and_roles(connection: AsyncConnection) -> None:
         database_name = connection.dialect.identifier_preparer.quote(settings.database_name)
@@ -1246,8 +1252,10 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 )
             )
             await connection.execute(
-                text(f"GRANT EXECUTE ON FUNCTION reject_audit_event_mutation() "
-                     f"TO {FOREIGN_GRANTOR_ROLE} WITH GRANT OPTION")
+                text(
+                    f"GRANT EXECUTE ON FUNCTION reject_audit_event_mutation() "
+                    f"TO {FOREIGN_GRANTOR_ROLE} WITH GRANT OPTION"
+                )
             )
             await connection.execute(
                 text("GRANT USAGE ON SCHEMA public TO " + FOREIGN_GRANTOR_ROLE)
@@ -1277,8 +1285,10 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 )
             )
             await connection.execute(
-                text(f"REVOKE EXECUTE ON FUNCTION reject_audit_event_mutation() "
-                     f"FROM {FOREIGN_GRANTOR_ROLE} CASCADE")
+                text(
+                    f"REVOKE EXECUTE ON FUNCTION reject_audit_event_mutation() "
+                    f"FROM {FOREIGN_GRANTOR_ROLE} CASCADE"
+                )
             )
             await connection.execute(text(f"SET ROLE {FOREIGN_DEFAULT_OWNER_ROLE}"))
             await connection.execute(
@@ -1329,9 +1339,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 await check_defaults(connection, application_roles)
 
         async with engine.begin() as connection:
-            await connection.execute(
-                text(f"ALTER DATABASE {database} OWNER TO CURRENT_USER")
-            )
+            await connection.execute(text(f"ALTER DATABASE {database} OWNER TO CURRENT_USER"))
             await connection.execute(text("ALTER SCHEMA public OWNER TO pg_database_owner"))
             await database_bootstrap._ensure_no_database_principal_public_ownership(settings)
             await connection.execute(
@@ -1657,9 +1665,7 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             assert await _role_column_privileges(connection, TRANSLATION_ROLE) == set()
             translation_object_id = settings.database_translation_principal_object_id
             assert translation_object_id is not None
-            translation_policy_name = (
-                f"scribe_translation_scope_{translation_object_id.hex}"
-            )
+            translation_policy_name = f"scribe_translation_scope_{translation_object_id.hex}"
             translation_policy = (
                 await connection.execute(
                     text(
@@ -1683,8 +1689,11 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 str(translation_policy.with_check),
             ):
                 for scope_value in (
-                    "external_async_transcript", "1.0", "translation_pending",
-                    "review_required", "transcript_ready",
+                    "external_async_transcript",
+                    "1.0",
+                    "translation_pending",
+                    "review_required",
+                    "transcript_ready",
                 ):
                     assert scope_value in expression
             assert await connection.scalar(
@@ -1720,12 +1729,17 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
             "normalized_working_blockers",
         )
         async with engine.begin() as connection:
-            assert await _role_table_privileges(connection, RUNTIME_ROLE) == runtime_expected
+            assert await _role_table_privileges(connection, RUNTIME_ROLE) == runtime_expected | {
+                ("creator_transcript_edits", "SELECT"),
+                ("creator_transcript_edits", "INSERT"),
+            }
             assert (
                 await _role_column_privileges(connection, RUNTIME_ROLE)
                 == runtime_enabled_column_expected
             )
-            assert await _role_table_privileges(connection, TRANSLATION_ROLE) == set()
+            assert await _role_table_privileges(connection, TRANSLATION_ROLE) == {
+                ("creator_transcript_edits", "SELECT")
+            }
             assert (
                 await _role_column_privileges(connection, TRANSLATION_ROLE)
                 == translation_column_expected
@@ -1843,20 +1857,26 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(configured_tenant_id)},
             )
-            assert await connection.scalar(
-                text("SELECT count(*) FROM scribe_sessions WHERE id = :id"),
-                {"id": legacy_session_id},
-            ) == 0
+            assert (
+                await connection.scalar(
+                    text("SELECT count(*) FROM scribe_sessions WHERE id = :id"),
+                    {"id": legacy_session_id},
+                )
+                == 0
+            )
             hidden_update = await connection.execute(
                 text("UPDATE scribe_sessions SET status = 'capturing' WHERE id = :id RETURNING id"),
                 {"id": legacy_session_id},
             )
             assert hidden_update.scalar_one_or_none() is None
             await connection.execute(text("RESET ROLE"))
-            assert await connection.scalar(
-                text("SELECT status FROM scribe_sessions WHERE id = :id"),
-                {"id": legacy_session_id},
-            ) == "created"
+            assert (
+                await connection.scalar(
+                    text("SELECT status FROM scribe_sessions WHERE id = :id"),
+                    {"id": legacy_session_id},
+                )
+                == "created"
+            )
 
         repository_provider = build_postgres_provider(enabled_settings)
         try:
@@ -1982,10 +2002,13 @@ async def test_postgres_bootstrap_converges_exact_grants_and_denies_future_objec
                 text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                 {"tenant_id": str(configured_tenant_id)},
             )
-            assert await connection.scalar(
-                text("SELECT status FROM scribe_sessions WHERE id = :id"),
-                {"id": configured_session_id},
-            ) == "transcript_ready"
+            assert (
+                await connection.scalar(
+                    text("SELECT status FROM scribe_sessions WHERE id = :id"),
+                    {"id": configured_session_id},
+                )
+                == "transcript_ready"
+            )
             counts = (
                 await connection.execute(
                     text(

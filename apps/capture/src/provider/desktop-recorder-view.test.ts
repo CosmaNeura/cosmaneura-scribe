@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
+import { connectDesktopRecorderView, parseDesktopRecorderRequest, parseDesktopRecorderState, type DesktopRecorderPort } from "./desktop-recorder-view";
 
 const sessionId = "10000000-0000-4000-8000-000000000001", recorderId = "20000000-0000-4000-8000-000000000002";
 const state = (revision: number, phase = "ready") => ({ recorderId, revision,
@@ -11,6 +11,52 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve };
 }
 describe("desktop recorder command view", () => {
+  it("accepts bounded inline labels and opaque IDs, never renderer process/window metadata", () => {
+    const id = crypto.randomUUID(), original = state(0);
+    const choices = { state: "ready", selectedId: id, windows: [{ id, title: "Zoom — Synthetic visit" }] };
+    const snapshot = (meetingWindows: unknown) => ({ ...original, snapshot: { ...original.snapshot,
+      desktop: { ...original.snapshot.desktop, meetingWindows } } });
+    expect(parseDesktopRecorderState(snapshot(choices)).snapshot.desktop?.meetingWindows).toEqual(choices);
+    for (const invalid of [{ ...choices, selectedId: crypto.randomUUID() }, { ...choices, windows: [...choices.windows, ...choices.windows] },
+      { ...choices, windows: [{ id, title: "blocked\u0000" }] }, { ...choices, windows: [{ id, title: "Test", processID: 42 }] }]) {
+      expect(() => parseDesktopRecorderState(snapshot(invalid))).toThrow();
+    }
+    const command = { kind: "meeting_window", requestId: crypto.randomUUID(), recorderId, windowId: id };
+    expect(parseDesktopRecorderRequest(command)).toEqual(command);
+    expect(() => parseDesktopRecorderRequest({ ...command, processID: 42 })).toThrow();
+    expect(() => parseDesktopRecorderRequest({ ...command, kind: "start" })).toThrow();
+  });
+  it("accepts admitted preparation metadata without audio or new renderer authority", () => {
+    const original = state(0);
+    const preparing = { ...original, snapshot: { ...original.snapshot, state: "preparing", statusCode: "capture_preparing",
+      desktop: { ...original.snapshot.desktop, phase: "preparing" } } };
+    expect(parseDesktopRecorderState(preparing)).toEqual(preparing);
+    expect(() => parseDesktopRecorderState({ ...preparing, credentials: "blocked" })).toThrow();
+  });
+  it("accepts existing snapshots and only bounded receipt-count progress", () => {
+    const original = state(2);
+    expect(parseDesktopRecorderState(original)).toEqual(original);
+    const progress = (uploadProgress: unknown) => ({ ...original, snapshot: { ...original.snapshot, uploadProgress } });
+    expect(parseDesktopRecorderState(progress({ total: 2, registered: 1 })).snapshot.uploadProgress)
+      .toEqual({ total: 2, registered: 1 });
+    for (const invalid of [null, { total: 3, registered: 1 }, { total: 1, registered: 2 },
+      { total: 2, registered: -1 }, { total: 2, registered: 0.5 }, { total: 2, registered: 1, extra: "blocked" }]) {
+      expect(() => parseDesktopRecorderState(progress(invalid))).toThrow();
+    }
+  });
+  it("accepts only content-free bounded input activity", () => {
+    const signal = (inputSignal: unknown) => {
+      const original = state(0);
+      return { ...original, snapshot: { ...original.snapshot, desktop: { ...original.snapshot.desktop, inputSignal } } };
+    };
+    expect(parseDesktopRecorderState(signal({ microphone: { level: 0.1, ageMs: 0 }, meetingAudio: null })).snapshot.desktop?.inputSignal)
+      .toEqual({ microphone: { level: 0.1, ageMs: 0 }, meetingAudio: null });
+    for (const value of [{ level: NaN, ageMs: 0 }, { level: 1.1, ageMs: 0 }, { level: 0.1, ageMs: -1 },
+      { level: 0.1, ageMs: 0, device: "blocked" }]) {
+      expect(() => parseDesktopRecorderState(signal({ microphone: value, meetingAudio: null }))).toThrow();
+    }
+    expect(() => parseDesktopRecorderState(signal({ microphone: null, meetingAudio: null, transcript: "blocked" }))).toThrow();
+  });
   it("does not overwrite newer state with an older command response or accept another recorder", async () => {
     let observer: ((value: unknown) => void) | undefined;
     const delayed = deferred<unknown>(), commands: Parameters<DesktopRecorderPort["request"]>[0][] = [];
@@ -28,6 +74,20 @@ describe("desktop recorder command view", () => {
     await view.deactivate(); expect(() => view.controller.snapshot).toThrow();
     expect(commands.filter(command => command.kind === "deactivate")).toHaveLength(1);
     expect(commands.at(-1)!.recorderId).toBe(recorderId);
+  });
+  it("reveals the exact owned chooser without starting or replacing a recorder", async () => {
+    const commands: Parameters<DesktopRecorderPort["request"]>[0][] = [];
+    const port: DesktopRecorderPort = { subscribe: () => () => undefined, request: async command => {
+      commands.push(command);
+      return { requestId: command.requestId, ok: true, state: command.kind === "deactivate" ? null : state(0, "starting") };
+    } };
+    const view = await connectDesktopRecorderView(port, sessionId, new AbortController().signal);
+    await view.controller.showWindowChooser!();
+    expect(commands.map(command => command.kind)).toEqual(["read", "show_chooser"]);
+    expect(commands[1]!.recorderId).toBe(recorderId);
+    await view.deactivate();
+    await expect(view.controller.showWindowChooser!()).rejects.toThrow();
+    expect(commands).toHaveLength(3);
   });
   it("closes the exact late acquisition after cancellation and never exposes its snapshot", async () => {
     const read = deferred<unknown>(), abort = new AbortController(), commands: Parameters<DesktopRecorderPort["request"]>[0][] = [];

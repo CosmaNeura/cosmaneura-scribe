@@ -1,7 +1,7 @@
 import type { CaptureBff, CiphertextUploadTarget } from "../bff/contracts";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import type { PreparedProviderRecorder, ProviderRecorderSnapshot } from "../provider-binding";
-import { CaptureQueue, QueueInvariantError, type CaptureQueueStorage } from "../queue";
+import { CaptureQueue, QueueInvariantError, type CaptureQueueStorage, type DrainProgress } from "../queue";
 import { parseInputSignal } from "../native/ios-input-signal";
 import { isMicrophoneInput, type MicrophoneInput } from "../native/microphone-input";
 
@@ -14,8 +14,10 @@ export interface NativeRecordingState {
   readonly version: 1; readonly revision: number; readonly recorderId: string; readonly sessionId: string;
   readonly phase: "unopened" | "opening" | "ready" | "starting" | "recording" | "pausing" | "paused"
     | "stopPending" | "sealing" | "sealed" | "failed" | "closed";
-  readonly failure: "preparationFailed" | "startFailed" | "stopPending" | "recoveryFailed" | null;
+  readonly failure: "preparationFailed" | "startFailed" | "stopPending" | "recoveryFailed" | "captureInterrupted" | "recordingIncomplete" | null;
   readonly busy: boolean; readonly recordedChunks: number; readonly recordedPlaintextBytes: number;
+  /** Accepted 16 kHz mono frames, including the retained pre-run baseline. Not custody proof. */
+  readonly capturedAudioFrames?: number;
   readonly maximumPlaintextBytes: number; readonly input: MicrophoneInput; readonly signal: unknown;
   readonly completion: { readonly idempotencyKey: string; readonly leaseId: string; readonly leaseGeneration: number;
     readonly finalSequence: number } | null;
@@ -30,29 +32,39 @@ export async function connectNativeProviderRecorder(options: {
   const { sessionId, port, signal } = options;
   uuid(sessionId);
   let state: NativeRecordingState | null = null, closed = false, accepted = false, starting = false;
+  let startAttempt = 0;
+  let confirmStartCancelled: (() => void) | undefined;
   let status: string | null = null, reading: Promise<void> | null = null, closing: Promise<void> | null = null;
   let uploading: Promise<void> | null = null;
+  let uploadProgress: DrainProgress | undefined;
+  let lastReadAt = -Infinity;
   const listeners = new Set<(value: ProviderRecorderSnapshot) => void>();
   const queue = new CaptureQueue(options.queueStorage);
   const transport = new BffCaptureQueueTransport(options.bff, options.uploadTarget);
   const current = (): void => { if (closed || signal.aborted) throw failure(); };
   const snapshot = (): ProviderRecorderSnapshot => {
     if (!state) throw failure();
-    const phase = state.phase, awaitingStart = starting && phase === "ready" || phase === "starting", paused = phase === "paused" || phase === "stopPending" || phase === "pausing";
+    const phase = state.phase, awaitingStart = starting && ["ready", "paused"].includes(phase) || phase === "starting", paused = phase === "paused" || phase === "stopPending" || phase === "pausing";
     return { sessionId, state: accepted ? "processing" : phase === "sealed" || phase === "sealing" ? "uploading"
       : paused ? "paused" : phase === "recording" ? "recording" : phase === "ready" || phase === "starting" ? "ready"
       : phase === "opening" || phase === "unopened" ? "preparing" : "error",
     statusCode: status ?? (accepted ? "capture_processing" : awaitingStart ? "capture_starting"
+      : state.failure === "recordingIncomplete" ? "capture_tail_not_saved"
       : phase === "pausing" ? "capture_stopping" : phase === "stopPending" ? "audio_capture_native_stop_failed"
       : phase === "sealed" ? "capture_upload_pending" : phase === "sealing" ? "capture_sealing"
       : phase === "recording" ? "capture_recording"
+      : state.failure === "recoveryFailed" ? "capture_recovery_pending"
+      : state.failure === "captureInterrupted" ? "capture_interrupted"
       : state.failure === "startFailed" ? "capture_start_failed" : phase === "paused" ? "capture_paused"
       : phase === "failed" ? "capture_preparation_failed" : phase === "closed" ? "capture_reopen_required" : "capture_ready"),
-    recordedChunks: state.recordedChunks, queuedChunks: accepted ? 0 : state.recordedChunks,
-    elapsedSeconds: Math.floor(Math.max(0, state.recordedPlaintextBytes - state.recordedChunks * 44) / 32_000),
+    recordedChunks: state.recordedChunks, queuedChunks: accepted ? 0 : uploadProgress
+      ? uploadProgress.total - uploadProgress.registered : state.recordedChunks,
+    elapsedSeconds: Math.floor((state.capturedAudioFrames
+      ?? Math.max(0, state.recordedPlaintextBytes - state.recordedChunks * 44) / 2) / 16_000),
     remainingBudgetSeconds: Math.floor((state.maximumPlaintextBytes - state.recordedPlaintextBytes) / 32_000),
     remainingAuthoritySeconds: null, transcriptionStatus: null, transcript: null,
-    native: { phase: awaitingStart ? "starting" : phase, busy: state.busy } };
+    native: { phase: awaitingStart ? "starting" : phase, busy: state.busy,
+      ...(uploadProgress ? { uploadProgress: { ...uploadProgress } } : {}) } };
   };
   const publish = (): void => {
     if (!state || closed || signal.aborted) return;
@@ -78,17 +90,24 @@ export async function connectNativeProviderRecorder(options: {
     if (kind !== "close") current();
     if (!ok) throw failure();
   };
-  const read = (): Promise<void> => reading ??= invoke("read").finally(() => { reading = null; });
+  const read = (): Promise<void> => reading ??= invoke("read").finally(() => { lastReadAt = performance.now(); reading = null; });
   const upload = (): Promise<void> => uploading ??= (async () => {
     current();
-    status = "capture_uploading"; publish();
+    uploadProgress = undefined; status = null; publish();
     try {
       if (state?.phase !== "sealed") await invoke("seal");
       current();
       const sealed = state;
       if (sealed?.phase !== "sealed" || !sealed.completion) throw failure();
+      status = "capture_uploading"; publish();
       const completion = sealed.completion;
-      const drained = await queue.drainOnce(transport); current();
+      const drained = await queue.drainOnce(transport, progress => {
+        // Counts are feedback, never completion authority. Suppress them when
+        // stored positions do not match the sealed native recording length.
+        if (closed || signal.aborted) return;
+        uploadProgress = progress.total === sealed.recordedChunks ? progress : undefined;
+        publish();
+      }); current();
       const records = await queue.listMetadata(); current();
       if (drained.items.some(item => item.outcome !== "registered")) throw failure();
       const positions = new Set<number>();
@@ -107,6 +126,7 @@ export async function connectNativeProviderRecorder(options: {
         current();
       }
       for (let index = 0; index <= completion.finalSequence; index += 1) if (!positions.has(index)) throw failure();
+      status = "capture_upload_confirming"; publish();
       await options.bff.completeCapture(sessionId, { protocol_version: "1.0", capture_lease_id: completion.leaseId,
         capture_lease_generation: completion.leaseGeneration,
         channels: [{ channel: "microphone", final_sequence_number: completion.finalSequence }] },
@@ -114,15 +134,42 @@ export async function connectNativeProviderRecorder(options: {
       current(); accepted = true; status = null; publish();
     } catch (error) {
       status = state?.phase === "sealed" || state?.phase === "sealing" ? "capture_upload_pending"
-        : state?.recordedChunks === 0 && state.phase === "paused" ? "capture_no_saved_audio" : null;
+        : state?.recordedChunks === 0 && state.phase === "paused" && state.failure !== "recoveryFailed"
+          ? "capture_no_saved_audio" : null;
       publish(); throw error;
     }
   })().finally(() => { uploading = null; });
   const start = async (): Promise<void> => {
-    current(); starting = true; status = null; publish();
-    try { await invoke("start"); }
-    catch (error) { await read().catch(() => { status = "capture_start_unconfirmed"; }); throw error; }
-    finally { starting = false; publish(); }
+    current();
+    const attempt = ++startAttempt;
+    starting = true; uploadProgress = undefined; status = null; publish();
+    const cancelled = new Promise<void>(resolve => { confirmStartCancelled = resolve; });
+    // Keep observing the original native command, but release the UI operation
+    // as soon as a separate native Pause positively confirms cancellation.
+    try { await Promise.race([invoke("start"), cancelled]); }
+    catch (error) {
+      if (startAttempt !== attempt) return;
+      await Promise.race([read().catch(() => {
+        if (startAttempt === attempt) status = "capture_start_unconfirmed";
+      }), cancelled]);
+      if (startAttempt !== attempt) return;
+      throw error;
+    }
+    finally {
+      if (startAttempt === attempt) { starting = false; confirmStartCancelled = undefined; publish(); }
+    }
+  };
+  const pause = async (): Promise<void> => {
+    const attempt = startAttempt;
+    status = null;
+    await invoke("pause");
+    // A confirmed native pause ends the visible Start immediately, even when
+    // its original bridge reply is late. Do not clear a newer Start attempt.
+    if (startAttempt === attempt) {
+      startAttempt += 1; starting = false;
+      confirmStartCancelled?.(); confirmStartCancelled = undefined;
+    }
+    publish();
   };
   const openingId = crypto.randomUUID();
   // Even an unsuccessful open returns its retained handle for explicit recovery
@@ -140,16 +187,22 @@ export async function connectNativeProviderRecorder(options: {
   signal.addEventListener("abort", aborted, { once: true });
   if (!signal.aborted) {
     document.addEventListener("visibilitychange", visible);
-    timer = setInterval(() => { void read().catch(() => undefined); }, 1000);
+    timer = setInterval(() => {
+      // Confirm Start/Resume promptly. Otherwise the meter's existing reads
+      // keep state current without a second polling stream or hidden UI work.
+      if (document.visibilityState !== "visible") return;
+      if (state?.phase === "starting" || starting && ["ready", "paused"].includes(state?.phase ?? "")
+        || performance.now() - lastReadAt >= 1000) {
+        void read().catch(() => undefined);
+      }
+    }, 250);
   }
   return { sourceKind: "microphone", captureMode: "native_microphone", deactivate,
     resumePendingWork: upload, releaseUploadedCapture: () => accepted ? Promise.resolve() : Promise.reject(failure()),
     controller: { get snapshot() { return snapshot(); }, subscribe: listener => {
       current(); listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener);
-    }, startRecording: start, resumeRecording: start, pauseRecording: async () => {
-      status = null; await invoke("pause"); publish();
-    }, stopRecording: async () => {
-      if (starting && state?.phase === "ready" || state?.phase === "starting") { status = null; await invoke("pause"); return; }
+    }, startRecording: start, resumeRecording: start, pauseRecording: pause, stopRecording: async () => {
+      if (starting && ["ready", "paused"].includes(state?.phase ?? "") || state?.phase === "starting") { await pause(); return; }
       await upload();
     }, selectMicrophoneInput: async input => { current(); if (state?.input !== input) await invoke("input", input); }, getCaptureSignal: async () => {
       await read(); return state!.signal;
@@ -157,15 +210,19 @@ export async function connectNativeProviderRecorder(options: {
 }
 
 export function parseNativeRecordingState(value: unknown): NativeRecordingState {
+  const hasFrames = value !== null && typeof value === "object" && Object.hasOwn(value, "capturedAudioFrames");
   const data = exact(value, ["version", "revision", "recorderId", "sessionId", "phase", "failure", "busy", "recordedChunks",
-    "recordedPlaintextBytes", "maximumPlaintextBytes", "input", "completion", "signal"]);
+    "recordedPlaintextBytes", "maximumPlaintextBytes", "input", "completion", "signal", ...(hasFrames ? ["capturedAudioFrames"] : [])]);
   if (data.version !== 1 || !integer(data.revision, 1, Number.MAX_SAFE_INTEGER)
     || typeof data.phase !== "string" || !["unopened", "opening", "ready", "starting", "recording", "pausing", "paused", "stopPending", "sealing", "sealed", "failed", "closed"].includes(data.phase)
-    || data.failure !== null && (typeof data.failure !== "string" || !["preparationFailed", "startFailed", "stopPending", "recoveryFailed"].includes(data.failure))
+    || data.failure !== null && (typeof data.failure !== "string" || !["preparationFailed", "startFailed", "stopPending", "recoveryFailed", "captureInterrupted", "recordingIncomplete"].includes(data.failure))
     || typeof data.busy !== "boolean" || !isMicrophoneInput(data.input)
     || !integer(data.recordedChunks, 0, 2048) || data.maximumPlaintextBytes !== 402_653_184
     || !integer(data.recordedPlaintextBytes, Number(data.recordedChunks) * 46,
       Math.min(402_653_184, Number(data.recordedChunks) * 320_044))) throw failure();
+  if (hasFrames && !integer(data.capturedAudioFrames,
+    Math.max(0, Number(data.recordedPlaintextBytes) - Number(data.recordedChunks) * 44) / 2,
+    2048 * 160_000)) throw failure();
   uuid(data.recorderId); uuid(data.sessionId); parseInputSignal(data.signal);
   if (data.completion !== null) {
     const completion = exact(data.completion, ["idempotencyKey", "leaseId", "leaseGeneration", "finalSequence"]);

@@ -85,7 +85,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
   // response caches. Separate timeout profiles preserve each route's budget.
   private func session(for action: ProviderNativeAction) -> URLSession {
     let profile: TimeoutProfile =
-      action == .admission ? .admission : action == .note ? .note : .standard
+      action == .admission ? .admission : (action == .note || action == .noteOpening) ? .note : .standard
     sessionLock.lock()
     defer { sessionLock.unlock() }
     if let existing = sessions[profile] { return existing }
@@ -151,6 +151,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
   }
 
   func send(_ operation: ProviderNativeRequest, token: String) async throws -> ProviderNativeReply {
+    guard operation.action != .recorderContext else { throw ProviderNativeError.invalidRequest }
     try Task.checkCancellation()
     guard !token.isEmpty, token.utf8.count <= 8192,
       token.unicodeScalars.allSatisfy({ $0.isASCII && $0.value >= 33 && $0.value < 127 })
@@ -175,22 +176,24 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
       // or size limits. Other requests using the pool must keep running.
       defer { bytes.task.cancel() }
       guard let http = response as? HTTPURLResponse, http.url == request.url,
-        [200, 401, 403, 409, 422, 503].contains(http.statusCode),
+        operation.action.acceptsResponseStatus(http.statusCode),
         http.mimeType == "application/json",
         http.value(forHTTPHeaderField: "Cache-Control")?.split(separator: ",").contains(where: {
           $0.trimmingCharacters(in: .whitespaces).lowercased() == "no-store"
         }) == true
       else { throw ProviderNativeError.response }
       var data = Data()
+      let responseLimit = operation.responseLimit
       for try await byte in bytes {
         try Task.checkCancellation()
-        guard data.count < operation.action.responseLimit else {
+        guard data.count < responseLimit else {
           throw ProviderNativeError.response
         }
         data.append(byte)
       }
       try Task.checkCancellation()
-      return ProviderNativeReply(status: http.statusCode, body: data)
+      return ProviderNativeReply(status: http.statusCode, body: data,
+                                 serverTiming: ProviderServerTiming.from(http))
     } catch {
       // No HTTP body, URL, token, framework exception or TLS detail escapes.
       throw ProviderNativeError.unavailable

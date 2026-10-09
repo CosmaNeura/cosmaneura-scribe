@@ -73,8 +73,73 @@ private final class FixtureEvents: IOSPCMBridgeEventPublishing, @unchecked Senda
   var fullPacketCount: Int { lock.withLock { fullPackets } }
 }
 
+private struct CounterSink: PCMEmissionSink {
+  let reject: Bool
+  struct Acknowledgement: PCMAcknowledging {
+    func wait() async -> PCMAcknowledgementResult { .accepted }
+    func cancel() {}
+  }
+  func emit(_ packet: PCMEncodedPacket) throws -> any PCMAcknowledging {
+    if reject { throw PCMFailure(.sinkFailed) }
+    Issue.record("Ten-second chunk should not yet be complete")
+    return Acknowledgement()
+  }
+  func terminated(_ code: PCMTerminationCode) {}
+}
+
 @Suite(.serialized)
 struct NativeInputFrameLimitTests {
+  @Test func acceptedDurationAdvancesBeforeChunkCommitAndIncludesOnlyRealResampledTail() async throws {
+    let encounter = ConsentedSyntheticEncounter(), audio = InjectedAudioDriver()
+    let core = IOSPCMCore(permission: FixturePermission(encounter: encounter), audio: audio,
+      sink: CounterSink(reject: false))
+    let handle = try core.start(configuration: PCMConfiguration(targetFramesPerChunk: 160_000,
+      maximumChunks: 2, maximumInputFramesPerBuffer: 32_768))
+    try await handle.ready()
+    #expect(handle.capturedAudioFrames == 0)
+    // Exact silence still occupies audio time. Six 48k buffers yield 16,384
+    // accepted 16k frames without emitting even the first encrypted chunk.
+    for _ in 0..<6 {
+      try await audio.offer(OwnedAudioFrames(sampleRateHz: 48_000,
+        channels: [Array(repeating: Float.zero, count: 8_192)]))
+    }
+    #expect(handle.capturedAudioFrames == 16_384)
+    try await audio.offer(encounter.frames(count: 8_192))
+    #expect(handle.capturedAudioFrames == 19_114)
+    let stopped = try await handle.stop(.drain)
+    #expect(handle.capturedAudioFrames == 19_115)
+    #expect(stopped.finalPacket?.bytes.count == handle.capturedAudioFrames * 2)
+    stopped.finalPacket?.bytes.zeroize()
+    await handle.heartbeat()
+    #expect(handle.capturedAudioFrames == 19_115)
+    let next = try core.start(configuration: PCMConfiguration(targetFramesPerChunk: 160_000, maximumChunks: 1))
+    try await next.ready()
+    #expect(next.capturedAudioFrames == 0)
+    _ = try await next.stop(.discard)
+  }
+
+  @Test func rejectedInputAndUnacceptedOverflowDoNotInflateDuration() async throws {
+    let encounter = ConsentedSyntheticEncounter()
+    for invalid in [true, false] {
+      let audio = InjectedAudioDriver()
+      let core = IOSPCMCore(permission: FixturePermission(encounter: encounter), audio: audio,
+        sink: CounterSink(reject: true))
+      let handle = try core.start(configuration: PCMConfiguration(targetFramesPerChunk: 64,
+        maximumChunks: 2, maximumInputFramesPerBuffer: 64))
+      try await handle.ready()
+      if !invalid {
+        try await audio.offer(OwnedAudioFrames(sampleRateHz: 16_000,
+          channels: [Array(repeating: Float(0.125), count: 32)]))
+      }
+      try await audio.offer(OwnedAudioFrames(sampleRateHz: 16_000,
+        channels: [Array(repeating: invalid ? Float.nan : 0.125, count: 64)]))
+      _ = try await handle.stop(.discard)
+      // Sink rejection happens after one accumulator fills; the other half
+      // of the input was never appended and must not become elapsed time.
+      #expect(handle.capturedAudioFrames == (invalid ? 0 : 64))
+    }
+  }
+
   @Test func acceptsLargerNativeTapBufferAndDrainsResampledAudio() async throws {
     let encounter = ConsentedSyntheticEncounter()
     let audio = InjectedAudioDriver(), events = FixtureEvents()

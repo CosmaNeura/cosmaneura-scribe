@@ -322,11 +322,17 @@ class EncryptedBlobAudioTrackAssembler:
                             if total_plaintext_bytes > self._maximum_plaintext_bytes:
                                 raise AudioAssemblyError("audio_plaintext_limit_exceeded")
                             pcm_offset, pcm_size = _wave_layout(plaintext)
-                            index.append(EncryptedWaveChunk(
-                                envelope_offset=destination.tell(), envelope_size=len(envelope),
-                                sha256=chunk.sha256, nonce=nonce, additional_data=aad,
-                                pcm_offset=pcm_offset, pcm_size=pcm_size,
-                            ))
+                            index.append(
+                                EncryptedWaveChunk(
+                                    envelope_offset=destination.tell(),
+                                    envelope_size=len(envelope),
+                                    sha256=chunk.sha256,
+                                    nonce=nonce,
+                                    additional_data=aad,
+                                    pcm_offset=pcm_offset,
+                                    pcm_size=pcm_size,
+                                )
+                            )
                             # Reuse capture encryption; no new file codec or nonce.
                             destination.write(envelope)
                         finally:
@@ -336,13 +342,19 @@ class EncryptedBlobAudioTrackAssembler:
             finally:
                 os.close(descriptor)
             track_reader = EncryptedAudioTrackReader(
-                path=encrypted_path, key=bytearray(content_key), chunks=tuple(index),
+                path=encrypted_path,
+                key=bytearray(content_key),
+                chunks=tuple(index),
             )
             track_readers.append(track_reader)
-            tracks.append(AudioTrack(
-                object_id=chunks[0].object_id, channel=channel,
-                local_path=encrypted_path, reader=track_reader,
-            ))
+            tracks.append(
+                AudioTrack(
+                    object_id=chunks[0].object_id,
+                    channel=channel,
+                    local_path=encrypted_path,
+                    reader=track_reader,
+                )
+            )
         if not tracks:
             raise AudioAssemblyError("audio_chunks_missing")
         return tuple(tracks)
@@ -408,8 +420,10 @@ def _wave_layout(value: bytearray) -> tuple[int, int]:
     try:
         with io.BytesIO(value) as buffer, wave.open(buffer, "rb") as source:
             current = _WaveFormat(
-                channels=source.getnchannels(), sample_width=source.getsampwidth(),
-                frame_rate=source.getframerate(), compression_type=source.getcomptype(),
+                channels=source.getnchannels(),
+                sample_width=source.getsampwidth(),
+                frame_rate=source.getframerate(),
+                compression_type=source.getcomptype(),
             )
             if current != ACCEPTED_WAVE_FORMAT:
                 raise AudioAssemblyError("audio_wave_media_profile_unsupported")

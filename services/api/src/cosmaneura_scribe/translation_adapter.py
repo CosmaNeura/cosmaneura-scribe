@@ -178,9 +178,7 @@ class SpanishTranslationCandidate:
             expected_source_transcript_version=self.expected_source_transcript_version,
             source_segment_id=self.source_segment_id,
             expected_source_segment_version=self.expected_source_segment_version,
-            expected_previous_translation_version=(
-                self.expected_previous_translation_version
-            ),
+            expected_previous_translation_version=(self.expected_previous_translation_version),
             source_locale=self.source_locale,
             source_content=self.source_content,
         )
@@ -255,9 +253,7 @@ def plan_spanish_translation_work(
         attempts = translations_by_source[source.source_segment_id]
         latest = attempts[-1] if attempts else None
         if latest is not None and latest.outcome == TranslationOutcome.SUCCEEDED:
-            review = reviews_by_translation.get(
-                (latest.translation_id, latest.translation_version)
-            )
+            review = reviews_by_translation.get((latest.translation_id, latest.translation_version))
             if review is None:
                 waiting_for_review = True
                 continue
@@ -324,9 +320,7 @@ def _failed_attempt(
         expected_source_transcript_version=reservation.expected_source_transcript_version,
         source_segment_id=reservation.source_segment_id,
         expected_source_segment_version=reservation.expected_source_segment_version,
-        expected_previous_translation_version=(
-            reservation.expected_previous_translation_version
-        ),
+        expected_previous_translation_version=(reservation.expected_previous_translation_version),
         outcome=TranslationOutcome.FAILED,
         translation_adapter_id=adapter_id,
         translation_model_profile_id=model_profile_id,
@@ -374,9 +368,7 @@ async def prepare_spanish_to_english_attempt(
         expected_source_transcript_version=reservation.expected_source_transcript_version,
         source_segment_id=reservation.source_segment_id,
         expected_source_segment_version=reservation.expected_source_segment_version,
-        expected_previous_translation_version=(
-            reservation.expected_previous_translation_version
-        ),
+        expected_previous_translation_version=(reservation.expected_previous_translation_version),
         outcome=TranslationOutcome.SUCCEEDED,
         translation_adapter_id=adapter_id,
         translation_model_profile_id=model_profile_id,

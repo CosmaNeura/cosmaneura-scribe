@@ -22,8 +22,9 @@
     "generate:api": "openapi-typescript ../../openapi/openapi.json -o src/generated/capture-api.ts",
     "lint": "eslint . --max-warnings 0",
     "mock:bff": "tsx src/mock-bff/server.ts",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:tools",
     "test:coverage": "vitest run --coverage",
+    "test:tools": "node --test e2e/support/timing-reporter.test.mjs test-tools/iphone-performance/cli.test.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

@@ -80,6 +80,7 @@ alembic upgrade head -> downgrade base -> upgrade head   clean
 
 ```python
 from cosmaneura_scribe.session_state_v1 import render_transition_predicate, render_status_values
+
 ...
 op.execute(_transition_function(render_transition_predicate()))
 ```

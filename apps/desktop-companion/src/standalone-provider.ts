@@ -1,3 +1,4 @@
+import type { DesktopRecordingWindow } from "./recording-window.js";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { exact, object } from "../../capture/src/provider/desktop-host-protocol";
@@ -9,12 +10,15 @@ import { connectDesktopNativeBackend } from "./native-provider-backend.js";
 import { createDesktopProviderConnection } from "./provider-workspace-factory.js";
 import { openDeviceCustody, type DeviceProtection } from "./device-custody.js";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
+import { DurableDesktopRecordStore } from "./durable-record-store.js";
+import { desktopJournalRecords } from "./durable-provider-records.js";
 
 interface PackagedRuntime {
   readonly packageDirectory: string;
   readonly userDataDirectory: string;
   readonly protection: DeviceProtection;
   readonly diagnostics?: RuntimeDiagnostic;
+  readonly recordingWindow?: DesktopRecordingWindow;
   openExternal(url: string): Promise<void>;
 }
 
@@ -63,7 +67,19 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
         const linked = AbortSignal.any([signal, abort.signal, native.signal]);
         if (profile.enabled !== true || linked.aborted || !native.isReady()) throw unavailable();
         const uploadTarget = new HttpCiphertextUploadTarget(profile.uploadOrigins as string[], fetch, "azure_block_blob");
-        const backend = await connectDesktopNativeBackend(native, { signal: linked, uploadTarget,
+        const backend = await connectDesktopNativeBackend(native, { signal: linked, uploadTarget, diagnostics,
+          creationRecords: async (recoveryScope, signal) => {
+            const directory = join(runtime.userDataDirectory, "provider-creation-v1");
+            // A separate encrypted namespace, scoped to Core's reviewed account.
+            const workspaceId = "56f527ab-0caf-459b-bda9-cf7f0ca2f709";
+            const custody = await openDeviceCustody(directory, runtime.protection, { recoveryScope, workspaceId }, signal);
+            try {
+              const store = await DurableDesktopRecordStore.open({ directory, recoveryScope, workspaceId, key: custody.key });
+              if (signal.aborted || linked.aborted) { store.close(); throw unavailable(); }
+              return { records: desktopJournalRecords(store.namespace("pending-creation")),
+                close: async () => { store.close(); await custody.release(); } };
+            } catch (error) { await custody.release(); throw error; }
+          },
           openCore: async appointment => {
             if (linked.aborted) throw unavailable();
             const path = appointment === null ? "/notes" : "/notes/" + encodeURIComponent(appointment);
@@ -73,12 +89,18 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
         let presentation: NativeProviderPresentation | undefined;
         try {
           presentation = await NativeProviderPresentation.open({ enabled: true, ...presentationOptions,
-            isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady() });
+            inlineMeetingSelection: true,
+            isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady(),
+            ...(runtime.recordingWindow ? { primaryWindowId: () => runtime.recordingWindow!.primaryWindowId() } : {}) });
           diagnostics("presentation_ready");
           const connection = createDesktopProviderConnection(backend, { enabled: true,
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
             openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
             indicator: presentation, presentation, selectWindow: presentation.selectWindow,
+            prepareInBackground: true,
+            listMeetingWindows: presentation.listMeetingWindows,
+            showWindowChooser: presentation.showWindowChooser,
+            ...(runtime.recordingWindow ? { recordingWindow: runtime.recordingWindow } : {}),
             native: { ...audioOptions, diagnostics, isSessionActive: () => !linked.aborted && native.isReady() },
           }, linked);
           const owned = { workspace: connection.workspace,

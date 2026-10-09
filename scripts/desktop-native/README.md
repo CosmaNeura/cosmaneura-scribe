@@ -36,3 +36,58 @@ It never queries permissions, requests setup, selects a window or creates audio.
 The native screen filter itself still requires installed, owner-operated testing;
 this check does not claim that physical recording has passed. The pipe suite also
 checks discard after a child exits before readiness without a normal stop receipt.
+
+## Virtual speech recording and playback
+
+Generate the consented fictional provider and patient voices in a new temporary
+directory, then run their native outputs through the desktop flow:
+
+```sh
+python3 scripts/check-desktop-synthetic-voices.py /private/tmp/scribe-speech-check-unique
+cd apps/desktop-companion
+SCRIBE_SYNTHETIC_SPEECH_DIRECTORY=/private/tmp/scribe-speech-check-unique \
+  /absolute/path/to/node ../../node_modules/vitest/vitest.mjs run src/virtual-speech-roundtrip.test.ts
+```
+
+Use Node 24 and allow the test server to listen on loopback. The native tests
+preserve both voices, overlap, silence and renewal at microphone 44.1/48 kHz and
+meeting 32/48 kHz, then retain hashed PCM bound to the synthetic consent manifest.
+Eight desktop cases cover the microphone path used for room/speakerphone visits
+and the meeting path, with normal Stop including a seven-frame tail and reopening
+paused encrypted storage. Each compares the recovered full recording and a
+passage across chunk boundaries with the native PCM, after local HTTP upload and
+a second storage reopening. Playback uses the actual decrypt-only retained key
+and encrypted review archive.
+
+This uses generated voices and a test-only driver. It does not open a microphone,
+meeting window, installed account or Keychain. The existing mock permits only
+in-person consent, so these cases do not test modality policy. Mock transcription
+does not measure speech recognition accuracy or qualify physical OS routing.
+
+### Service modality qualification with generated voices
+
+Use the same validated native speech directory to qualify `in_person`, `phone`,
+and `virtual` through the actual service capture API and encrypted worker input:
+
+```sh
+SCRIBE_SYNTHETIC_SPEECH_DIRECTORY=/absolute/native-speech-output \
+  uv run pytest tests/test_virtual_modality_audio.py -k memory
+```
+
+For PostgreSQL and the configured desktop admission/worker path, supply a fresh
+caller-owned disposable database ending in `_test`; the existing fixture rejects
+previously migrated databases. It rehearses migrations and removes only its
+synthetic rows. Retire the disposable lab under its owning runbook afterward.
+
+```sh
+COSMANEURA_SCRIBE_TEST_DATABASE_URL=postgresql+asyncpg://OWNER@127.0.0.1:PORT/FRESH_test \
+SCRIBE_SYNTHETIC_SPEECH_DIRECTORY=/absolute/native-speech-output \
+  uv run pytest tests/test_virtual_modality_audio.py tests/test_virtual_configured_audio.py
+```
+
+The generated-voice consent and hashes are checked before audio is read. These
+cases verify matching visit modality, leases/renewal, idempotent encrypted chunk
+completion, exact reconstructed PCM at the worker, and completed-job recovery.
+Blob storage, key unwrapping, request identity and recognition are explicit
+local substitutes. Returned words are invented, so this is neither an Azure
+recognition-accuracy result nor an OS microphone/window-routing test.

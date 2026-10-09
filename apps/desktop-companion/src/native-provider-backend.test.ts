@@ -7,7 +7,7 @@ function preparedReply(grant: Record<string, unknown>) {
     coordinatorInode: "2", captureDevice: "1", captureInode: "3" } };
 }
 
-it("keeps admission RPC alive beyond native HTTP while retaining its key and cancellation", async () => {
+it.each([false, true])("keeps admission RPC alive with its key, cancellation and negotiated metadata support (%s)", async supported => {
   const signal = new AbortController().signal, attempt = new AbortController();
   const revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
   const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
@@ -17,7 +17,7 @@ it("keeps admission RPC alive beyond native HTTP while retaining its key and can
     calls.push({ payload, signal: operationSignal, timeout });
     return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
-      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter: { ...encounter, admission_metadata_v1: supported }, recoveryScope: crypto.randomUUID() }) };
   });
   const native = { signal, request, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
     addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
@@ -25,6 +25,7 @@ it("keeps admission RPC alive beyond native HTTP while retaining its key and can
     uploadTarget: { putCompleteEnvelope: async () => undefined } });
   await backend.listEncounters(signal);
   const mount = await backend.openEncounter(appointmentRef, signal);
+  expect(mount.admissionMetadataSupported).toBe(supported ? true : undefined);
   const body = { workspace_id: workspaceId, binding_ref: bindingRef, attestation: null };
   await mount.request("/service/v1/agent/scribe/capture-admissions", body, "retained-admission-key", attempt.signal);
   const admission = calls.at(-1)!;
@@ -53,7 +54,7 @@ it("retains an unacknowledged preparation until native cleanup confirms it befor
     if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
       : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
-    if (method === "sourcePrepare") {
+    if (method === "sourcePrepareForStart") {
       preparationIds.push(payload.preparationId);
       if (lostPreparation) { lostPreparation = false; throw new Error("lost preparation reply"); }
       return preparedReply(grant);
@@ -95,7 +96,7 @@ it("cleans an unknown native preparation after the recorder request is cancelled
     if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
       : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
-    if (method === "sourcePrepare") { preparationId = payload.preparationId; attempt.abort(); throw new Error("request cancelled"); }
+    if (method === "sourcePrepareForStart") { preparationId = payload.preparationId; attempt.abort(); throw new Error("request cancelled"); }
     if (method === "sourcePreparationRelease") return null;
     throw new Error("Unexpected native request");
   });
@@ -125,7 +126,7 @@ it("retains a returned source grant for cleanup when the scope is cancelled with
     if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
       : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
-    if (method === "sourcePrepare") { attempt.abort(); return preparedReply(grant); }
+    if (method === "sourcePrepareForStart") { attempt.abort(); return preparedReply(grant); }
     if (method === "sourceRelease") return null;
     throw new Error("Unexpected native request");
   });
@@ -156,7 +157,7 @@ it("retries the same native desktop source after a lost stop acknowledgement", a
     if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
       : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
-    if (method === "sourcePrepare") return preparedReply(grant);
+    if (method === "sourcePrepareForStart") return preparedReply(grant);
     if (method === "sourceStopped") { if (lost) { lost = false; throw new Error("lost stop reply"); } return null; }
     throw new Error("Unexpected native request");
   });
@@ -175,4 +176,65 @@ it("retries the same native desktop source after a lost stop acknowledgement", a
     ["sourceStopped", { sourceLeaseId: grant.sourceLeaseId }], ["sourceStopped", { sourceLeaseId: grant.sourceLeaseId }],
   ]);
   expect(request.mock.calls.some(([method]) => method === "sourceRelease")).toBe(false);
+});
+
+it.each([false, true])("preserves legacy opening and carries a validated combined read (%s)", async supported => {
+  const signal = new AbortController().signal, revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
+  const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
+  const encounter = { appointmentRef, title: "Invented visit", detail: "Opening fixture" };
+  const calls: Record<string, unknown>[] = [];
+  const native = { signal, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
+    addListener: async () => ({ remove: async () => undefined }),
+    request: async (_method: string, payload: Record<string, unknown>) => {
+      calls.push(payload);
+      const body = JSON.parse(payload.body as string);
+      return { status: 200, body: JSON.stringify(payload.action === "catalog"
+        ? { revision, encounters: [{ ...encounter, workspaceId }], opening_review_v1: supported }
+        : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID(),
+          ...(supported ? { openingReview: { contract_version: "1", workspace_id: workspaceId, binding_ref: bindingRef,
+            request_nonce: body.opening_nonce, checked_at: new Date().toISOString(), operation: "provider_encounter",
+            receipt: { schema_version: "1.0", status: "not_prepared", review: null } } } : {}) }) };
+    } } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  try {
+    await backend.listEncounters(signal);
+    const mount = await backend.openEncounter(appointmentRef, signal);
+    expect(mount.openingReview?.view).toBe(supported ? null : undefined);
+    expect(mount.openingReview?.scope).toEqual(supported ? mount.scope : undefined);
+    expect(Object.keys(JSON.parse(calls[1]!.body as string)).sort())
+      .toEqual(supported ? ["opening_nonce", "workspace_id"] : ["workspace_id"]);
+    expect(calls).toHaveLength(2);
+  } finally { await backend.dispose(); }
+});
+
+it.each([false, true])("gates coordinated notes and preserves its native timeout (%s)", async supported => {
+  const signal = new AbortController().signal, revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
+  const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
+  const encounter = { appointmentRef, title: "Invented note opening", detail: "Offline fixture" };
+  const request = vi.fn(async (_method: string, payload: Record<string, unknown>, _signal?: AbortSignal, _timeout?: number) => {
+    expect(_signal?.aborted).toBe(false); expect(_timeout).toBeGreaterThan(0);
+    return { status: 200, body: JSON.stringify(payload.action === "catalog"
+      ? { revision, encounters: [{ ...encounter, workspaceId }], note_opening_v1: supported }
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+  });
+  const native = { signal, request, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
+    addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  try {
+    await backend.listEncounters(signal);
+    const mount = await backend.openEncounter(appointmentRef, signal);
+    expect(mount.noteOpeningSupported).toBe(supported ? true : undefined);
+    const body = { workspace_id: workspaceId, binding_ref: bindingRef,
+      expected_session_id: crypto.randomUUID(), request_nonce: crypto.randomUUID() };
+    const open = () => mount.request("/service/v1/agent/scribe/note-opening", body, "fresh-note-open", signal);
+    if (supported) {
+      await open();
+      expect(request.mock.calls.at(-1)?.[3]).toBe(125_000);
+      expect(JSON.parse(request.mock.calls.at(-1)?.[1].body as string)).toEqual(body);
+    } else await expect(async () => open()).rejects.toThrow();
+    expect(request.mock.calls.map(([, payload]) => payload.action))
+      .toEqual(["catalog", "mount", ...(supported ? ["note-opening"] : [])]);
+  } finally { await backend.dispose(); }
 });
