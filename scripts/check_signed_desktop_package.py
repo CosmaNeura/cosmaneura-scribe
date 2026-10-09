@@ -51,6 +51,7 @@ def provider_claims(binary: bytes) -> dict[str, object]:
     require(12 + count * 8 <= size)
     claims: dict[str, object] | None = None
     seen: set[int] = set()
+    cms_signature = False
     for index in range(count):
         slot, relative = struct.unpack_from(">II", binary, begin + 12 + index * 8)
         require(slot not in seen)
@@ -58,7 +59,15 @@ def provider_claims(binary: bytes) -> dict[str, object]:
         require(relative >= 12 + count * 8 and relative + 8 <= size)
         blob_magic, blob_size = struct.unpack_from(">II", binary, begin + relative)
         require(blob_size >= 8 and relative + blob_size <= size)
-        if slot == 5:
+        if slot == 0:
+            require(blob_magic == 0xFADE0C02 and blob_size >= 16)
+            flags = struct.unpack_from(">I", binary, begin + relative + 12)[0]
+            # Ad-hoc signatures cannot authenticate existing Keychain access.
+            require(flags & 0x2 == 0)
+        elif slot == 0x10000:
+            require(blob_magic == 0xFADE0B01 and blob_size > 8)
+            cms_signature = True
+        elif slot == 5:
             require(blob_magic == 0xFADE7171)
             try:
                 value = plistlib.loads(binary[begin + relative + 8 : begin + relative + blob_size])
@@ -68,7 +77,7 @@ def provider_claims(binary: bytes) -> dict[str, object]:
             claims = cast(dict[str, object], value)
         elif slot == 7:
             require(blob_magic == 0xFADE7172)
-    require(claims == PROVIDER_CLAIMS and 7 in seen)
+    require(claims == PROVIDER_CLAIMS and 7 in seen and 0 in seen and cms_signature)
     assert claims is not None
     return claims
 
