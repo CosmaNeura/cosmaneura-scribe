@@ -6,7 +6,8 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import { BffResponseError, HttpCaptureBff } from "../bff/http-client";
-import type { CaptureBff } from "../bff/contracts";
+import type { CaptureBff, PreparedRecordingWindow, PrepareRecordingWindowRequest, MutationOptions,
+  PreparedContinuationWindow, PrepareContinuationWindowRequest } from "../bff/contracts";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import { HttpCiphertextUploadTarget } from "../bff/upload-target";
 import type {
@@ -31,6 +32,219 @@ const TEST_ENCOUNTER = Object.freeze({
   practitionerId: "synthetic-practitioner",
   patientId: "synthetic-patient",
   participantRegions: ["US-NY"],
+});
+
+describe("configured first-window sequence", () => {
+  it("keeps an older retained preparation on its original mutation path", async () => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server), indexedDB = new IDBFactory();
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const bff: CaptureBff = new HttpCaptureBff(createSameOriginFetch(origin)), source = new InspectableCaptureSource();
+    const composite = vi.fn(async () => { throw new Error("A retained legacy recipe cannot change paths"); });
+    bff.prepareRecordingWindow = composite;
+    const issue = vi.spyOn(bff, "issueLease");
+    const controller = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "legacy-consent-key" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "legacy-session-key" });
+      const retained = { schemaVersion: 2 as const, mode: "configured_core" as const, sessionId: session.id,
+        startedAt: new Date().toISOString(), completeIdempotencyKey: "legacy-complete-key", leaseIdempotencyKey: "legacy-retained-lease",
+        leaseRequest: { protocol_version: "1.0" as const } };
+      await flowStore.putPreparationState(retained);
+      expect(await controller.restore()).toBe(true);
+      expect(controller.snapshot.state).toBe("ready");
+      expect(composite).not.toHaveBeenCalled();
+      expect(issue).toHaveBeenCalledWith(session.id, { protocol_version: "1.0" }, { idempotencyKey: retained.leaseIdempotencyKey });
+      expect(await flowStore.getPreparationState()).toEqual(retained);
+      expect(source.startCalls).toBe(0);
+    } finally {
+      await controller.deactivate().catch(() => undefined); flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
+
+  it.each(["bind", "lease", "reserve", "malformed", "active_write", "queue_write"] as const)(
+    "retains exact component keys and resumes after %s uncertainty without recording", async failure => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server);
+    const indexedDB = new IDBFactory();
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const bff = new HttpCaptureBff(createSameOriginFetch(origin)), source = new InspectableCaptureSource();
+    const requests: { payload: PrepareRecordingWindowRequest; key: string }[] = [];
+    const leases: string[] = [], batches: string[][] = [];
+    let first = true;
+    const composite = vi.fn(async (id: string, payload: PrepareRecordingWindowRequest, options: MutationOptions): Promise<PreparedRecordingWindow> => {
+      // Product flow must retain all keys before this first possible mutation.
+      const saved = await flowStore.getPreparationState();
+      expect(saved).toMatchObject({ schemaVersion: 6, windowPreparation: { idempotencyKey: options.idempotencyKey,
+        bindIdempotencyKey: payload.bind_idempotency_key, reserveIdempotencyKey: payload.reserve_idempotency_key } });
+      requests.push({ payload: structuredClone(payload), key: options.idempotencyKey });
+      const fault = first; first = false;
+      const binding = await bff.bindSessionAudioKey(id, payload.binding, { idempotencyKey: payload.bind_idempotency_key });
+      if (fault && failure === "bind") throw new TypeError("Synthetic lost key reply");
+      const lease = await bff.issueLease(id, { protocol_version: "1.0" }, { idempotencyKey: payload.lease_idempotency_key });
+      leases.push(lease.receipt_id);
+      if (fault && failure === "lease") throw new TypeError("Synthetic lost lease reply");
+      const reservations = await bff.reserveChunks(id, { protocol_version: "1.0", capture_lease_id: lease.lease_id,
+        capture_lease_generation: lease.generation, channel: payload.channel, first_sequence_number: 0, count: payload.reservation_count },
+      { idempotencyKey: payload.reserve_idempotency_key });
+      batches.push(reservations.reservations.map(row => row.object_id));
+      if (fault && failure === "reserve") throw new TypeError("Synthetic lost reservation reply");
+      return { schema_version: "1.0", binding, lease,
+        reservations: fault && failure === "malformed" ? { ...reservations, capture_authorized_until: new Date(0).toISOString() } : reservations };
+    });
+    const combined = Object.assign(bff, { prepareRecordingWindow: composite });
+    const create = (initialReservationCount: number) => createControllerWithSource({ bff: combined, flowStore, queueStorage, origin, source, initialReservationCount });
+    const initial = create(30); let recovered: CaptureFlowController | undefined;
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "compound-consent" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "compound-session" });
+      if (failure === "active_write") vi.spyOn(flowStore, "putActiveCaptureState").mockRejectedValueOnce(new Error("Synthetic local write failed"));
+      if (failure === "queue_write") vi.spyOn(queueStorage, "create").mockRejectedValueOnce(new Error("Synthetic local queue write failed"));
+      await expect(initial.prepareConfigured(session.id)).rejects.toThrow();
+      const pending = await flowStore.getPreparationState(), retainedKey = await flowStore.getSessionKeyState(session.id);
+      expect(pending).toMatchObject({ schemaVersion: 6 });
+      expect(requests[0]!.payload.reservation_count).toBe(30);
+      expect(source.startCalls).toBe(0);
+      await initial.deactivate();
+      // A newer/older host's preferred count must not rewrite the saved recipe.
+      recovered = create(90); expect(await recovered.restore()).toBe(true);
+      expect(recovered.snapshot).toMatchObject({ state: "ready", recordedChunks: 0 });
+      expect(await flowStore.getPreparationState()).toEqual(pending);
+      expect(await flowStore.getSessionKeyState(session.id)).toEqual({ ...retainedKey, state: "bound" });
+      expect(await flowStore.listReservationIntents()).toHaveLength(0);
+      expect(source.startCalls).toBe(0);
+      expect(new Set(leases).size).toBe(1);
+      if (batches.length > 1) expect(batches[0]).toEqual(batches[1]);
+      for (const request of requests) expect(request).toEqual(requests[0]);
+      expect(composite).toHaveBeenCalledTimes(failure === "queue_write" ? 1 : 2);
+      const rows = await queueStorage.list();
+      expect(rows).toHaveLength(requests[0]!.payload.reservation_count);
+      expect(rows.every(row => row.idempotencyKeys.reservation === requests[0]!.payload.reserve_idempotency_key)).toBe(true);
+    } finally {
+      await recovered?.deactivate().catch(() => undefined); await initial.deactivate().catch(() => undefined);
+      flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
+
+  it("does not downgrade an uncertain compound request when a receiver is missing", async () => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server), indexedDB = new IDBFactory();
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const bff: CaptureBff = new HttpCaptureBff(createSameOriginFetch(origin)), source = new InspectableCaptureSource();
+    bff.prepareRecordingWindow = vi.fn(async () => { throw new BffResponseError(404, "synthetic_missing_receiver", null); });
+    const bind = vi.spyOn(bff, "bindSessionAudioKey"), lease = vi.spyOn(bff, "issueLease"), reserve = vi.spyOn(bff, "reserveChunks");
+    const first = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    let restored: CaptureFlowController | undefined;
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "unsupported-consent" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "unsupported-session" });
+      await expect(first.prepareConfigured(session.id)).rejects.toThrow();
+      const pending = await flowStore.getPreparationState();
+      await first.deactivate(); delete bff.prepareRecordingWindow;
+      restored = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+      await expect(restored.restore()).rejects.toThrow("recording_window_receiver_required");
+      expect(await flowStore.getPreparationState()).toEqual(pending);
+      expect(bind).not.toHaveBeenCalled(); expect(lease).not.toHaveBeenCalled(); expect(reserve).not.toHaveBeenCalled();
+    } finally {
+      await restored?.deactivate().catch(() => undefined); await first.deactivate().catch(() => undefined);
+      flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
+});
+
+describe("server-selected continuation", () => {
+  it.each(["lost_reply", "active_write", "queue_write", "ready_write", "malformed", "missing_receiver"] as const)(
+    "recovers %s with the original lease, reservation count and encrypted audio", async failure => {
+    const server = createMockBffServer(), origin = await listenOnEphemeralLoopback(server), indexedDB = new IDBFactory();
+    const flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const queueStorage = await EncryptedIndexedDbQueueStorage.open({ databaseName: TEST_CRYPTO.randomUUID(), indexedDB, crypto: TEST_CRYPTO });
+    const bff: CaptureBff = new HttpCaptureBff(createSameOriginFetch(origin)), source = new InspectableCaptureSource();
+    const initial = createControllerWithSource({ bff, flowStore, queueStorage, origin, source });
+    const requests: { body: PrepareContinuationWindowRequest; key: string }[] = [];
+    let retained: PreparedContinuationWindow | undefined, failOnce = true;
+    const composite = vi.fn(async (id: string, body: PrepareContinuationWindowRequest, options: MutationOptions): Promise<PreparedContinuationWindow> => {
+      expect(await flowStore.getActiveCaptureState()).toMatchObject({ schemaVersion: 7, phase: "paused",
+        continuation: { prepared: false, reservationCount: 0, renewIdempotencyKey: body.renew_idempotency_key,
+          windowRequest: { idempotencyKey: options.idempotencyKey, reservationIdempotencyKey: body.reservation_idempotency_key } } });
+      requests.push({ body: structuredClone(body), key: options.idempotencyKey });
+      if (failure === "missing_receiver") throw new BffResponseError(404, "synthetic_missing_receiver", null);
+      if (!retained) {
+        const lease = await bff.renewLease(id, body.previous_lease_id,
+          { protocol_version: "1.0", expected_generation: body.previous_lease_generation }, { idempotencyKey: body.renew_idempotency_key });
+        const reservations = await bff.reserveChunks(id, { protocol_version: "1.0", capture_lease_id: lease.lease_id,
+          capture_lease_generation: lease.generation, channel: body.channel, first_sequence_number: body.first_sequence_number, count: 90 },
+        { idempotencyKey: body.reservation_idempotency_key });
+        retained = { schema_version: "1.0", lease, reservations };
+      }
+      if (failOnce && failure === "lost_reply") { failOnce = false; throw new Error("Synthetic committed reply lost"); }
+      if (failOnce && failure === "malformed") {
+        failOnce = false; return { ...retained, lease: { ...retained.lease, generation: 9 } };
+      }
+      return retained;
+    });
+    bff.prepareContinuationWindow = composite;
+    const capabilities = vi.spyOn(bff, "getCapabilities");
+    let recovered: CaptureFlowController | undefined;
+    try {
+      const person = { appointment_id: TEST_ENCOUNTER.appointmentId, practitioner_id: TEST_ENCOUNTER.practitionerId, patient_id: TEST_ENCOUNTER.patientId };
+      const consent = await bff.createConsent({ ...person, participant_regions: ["US-NY"], modality: "in_person", method: "verbal_attestation",
+        all_parties_consented: true, granted_at: new Date().toISOString() }, { idempotencyKey: "continuation-consent" });
+      const session = await bff.createSession({ ...person, consent_record_id: consent.id, modality: "in_person" }, { idempotencyKey: "continuation-session" });
+      await initial.prepareConfigured(session.id); await initial.startRecording(); await source.emit(); await initial.pauseRecording();
+      const encrypted = (await queueStorage.list()).find(row => row.state === "encrypted")!;
+      if (failure === "queue_write") vi.spyOn(queueStorage, "create").mockRejectedValueOnce(new Error("Synthetic queue write failed"));
+      if (failure === "active_write" || failure === "ready_write") {
+        const original = flowStore.putActiveCaptureState.bind(flowStore);
+        vi.spyOn(flowStore, "putActiveCaptureState").mockImplementation(async state => {
+          if (failOnce && state.schemaVersion === 7 && state.lease.generation === 2
+            && (failure === "active_write" || state.phase === "ready")) {
+            failOnce = false; throw new Error("Synthetic durable state write failed");
+          }
+          await original(state);
+        });
+      }
+      capabilities.mockClear();
+      await expect(initial.prepareContinuation()).rejects.toThrow();
+      expect(capabilities).not.toHaveBeenCalled();
+      expect(source.startCalls).toBe(1);
+      await initial.deactivate();
+      if (failure === "missing_receiver") delete bff.prepareContinuationWindow;
+      const nextSource = new InspectableCaptureSource();
+      recovered = createControllerWithSource({ bff, flowStore, queueStorage, origin, source: nextSource });
+      expect(await recovered.restore()).toBe(true); expect(nextSource.startCalls).toBe(0);
+      capabilities.mockClear();
+      if (failure === "missing_receiver") {
+        const reserve = vi.spyOn(bff, "reserveChunks"), renew = vi.spyOn(bff, "renewLease");
+        await expect(recovered.prepareContinuation()).rejects.toThrow("continuation_window_receiver_required");
+        expect(reserve).not.toHaveBeenCalled(); expect(renew).not.toHaveBeenCalled();
+        expect(await flowStore.getActiveCaptureState()).toMatchObject({ schemaVersion: 7, phase: "paused",
+          continuation: { reservationCount: 0, prepared: false } });
+        expect(await queueStorage.get(encrypted.reservation.objectId)).toEqual(encrypted);
+        return;
+      }
+      await recovered.prepareContinuation();
+      expect(capabilities).not.toHaveBeenCalled();
+      expect(recovered.snapshot).toMatchObject({ state: "ready", recordedChunks: 1 });
+      expect(await flowStore.getActiveCaptureState()).toMatchObject({ schemaVersion: 7, lease: retained!.lease,
+        continuation: { reservationCount: 90, firstSequenceNumber: 1, prepared: true } });
+      expect(await queueStorage.get(encrypted.reservation.objectId)).toEqual(encrypted);
+      expect(await flowStore.listReservationIntents()).toHaveLength(0);
+      expect(composite).toHaveBeenCalledTimes(["queue_write", "ready_write"].includes(failure) ? 1 : 2);
+      for (const request of requests) expect(request).toEqual(requests[0]);
+      await recovered.startRecording(); await nextSource.emit(); await recovered.pauseRecording();
+      expect(recovered.snapshot.recordedChunks).toBe(2);
+      expect((await queueStorage.list()).filter(row => row.state === "encrypted").map(row => row.reservation.sequenceNumber).sort()).toEqual([0, 1]);
+    } finally {
+      await recovered?.deactivate().catch(() => undefined); await initial.deactivate().catch(() => undefined);
+      flowStore.close(); queueStorage.close(); await closeServer(server);
+    }
+  });
 });
 
 describe("CaptureFlowController", () => {
@@ -238,6 +452,8 @@ describe("CaptureFlowController", () => {
       expect(source.startCalls).toBe(1);
       const pending = (await flowStore.getActiveCaptureState())!;
       expect(pending).toMatchObject({ schemaVersion: 4, phase: "paused", continuation: { prepared: false, firstSequenceNumber: 1 } });
+      const newerReceiver = vi.fn(async () => { throw new Error("Pending legacy continuation must retain its original path"); });
+      Object.assign(bff, { prepareContinuationWindow: newerReceiver });
       await expect(flowStore.putActiveCaptureState({ ...pending, schemaVersion: channel === "microphone" ? 2 : 3 })).rejects.toThrow();
       await first.deactivate(); flowStore.close(); queueStorage.close();
       flowStore = await EncryptedIndexedDbFlowStore.open({ databaseName: flowName, indexedDB, crypto: TEST_CRYPTO });
@@ -252,6 +468,7 @@ describe("CaptureFlowController", () => {
       await expect(second.resumeRecording()).rejects.toThrow("invented lost reservation reply");
       expect(secondSource.startCalls).toBe(0); expect(renewSpy.mock.calls[1]).toEqual(renewSpy.mock.calls[0]);
       await second.resumeRecording();
+      expect(newerReceiver).not.toHaveBeenCalled();
       expect(reserveSpy.mock.calls[1]).toEqual(reserveSpy.mock.calls[0]);
       expect(reserveSpy.mock.calls[1]![1]).toMatchObject({ first_sequence_number: 1, capture_lease_generation: 2 });
       expect(renewSpy).toHaveBeenCalledTimes(2); expect(secondSource.startCalls).toBe(1);
@@ -1173,6 +1390,7 @@ interface ControllerWithSourceOptions {
   readonly origin: string;
   readonly source: CaptureSource;
   readonly now?: () => Date;
+  readonly initialReservationCount?: number;
   readonly scheduleTimeout?: (callback: () => void, delayMs: number) => unknown;
   readonly cancelTimeout?: (handle: unknown) => void;
 }
@@ -1193,6 +1411,7 @@ function createControllerWithSource(
       new HttpCiphertextUploadTarget([options.origin]),
     ),
     source: options.source,
+    ...(options.initialReservationCount === undefined ? {} : { initialReservationCount: options.initialReservationCount }),
     ...(options.storageCapacity ? { storageCapacity: options.storageCapacity } : {}),
     ...(options.pauseForStorage ? { pauseForStorage: options.pauseForStorage } : {}),
     crypto: TEST_CRYPTO,

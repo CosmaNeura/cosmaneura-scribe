@@ -2,7 +2,7 @@ import { webcrypto } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpCreatorReviewApi } from "../../../review-ui/src/creator-review-api";
 import { CoreCaptureClient, CoreCaptureBff, type AdmissionIntent, type CoreCaptureScope, type AuthorizedCoreRequest } from "./core-client";
-import { canonical, parseDraft, pendingSave, resolveNote, saveNote, sha256, type CoreDraft } from "./core-notes";
+import { canonical, parseDraft, pendingSave, resolveNote, checkNoteSave, saveNote, sha256, type CoreDraft } from "./core-notes";
 import { NativeProviderWorkspaceJournal, assertProgress, type ProviderProgress } from "./workspace-journal";
 
 const uuid = "10000000-0000-4000-8000-000000000001";
@@ -28,6 +28,19 @@ async function base(): Promise<CoreDraft> {
 }
 
 describe("configured Core provider boundary", () => {
+  it("cancels a background review read without aborting encounter access or sending a mutation", async () => {
+    const encounter = new AbortController(), observation = new AbortController();
+    let transportSignal!: AbortSignal;
+    const send = vi.fn<AuthorizedCoreRequest>((_path, body, _key, signal) => {
+      expect(body.operation).toEqual({ kind: "creator_review" }); transportSignal = signal;
+      return new Promise((_resolve, reject) => { signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }); });
+    });
+    const client = new CoreCaptureClient(scope, send, encounter.signal);
+    const read = new HttpCreatorReviewApi(uuid, client.reviewRequest(uuid)).read(observation.signal);
+    observation.abort();
+    await expect(read).rejects.toMatchObject({ kind: "unavailable" });
+    expect(transportSignal.aborted).toBe(true); expect(encounter.signal.aborted).toBe(false); expect(send).toHaveBeenCalledTimes(1);
+  });
   it("discovers the admitted session without inventing consent or selecting a session", async () => {
     const view = { schema_version: "1.0", session_id: uuid, status: "processing", source: null, working: null, review_queue: null };
     const send = vi.fn(wire({ schema_version: "1.0", status: "available", review: view }));
@@ -132,6 +145,22 @@ describe("configured Core provider boundary", () => {
       { ...draft, review_required: false }, { ...draft, scribe_source_id: crypto.randomUUID() } ]) {
       await expect(parseDraft(changed, uuid, schema, source)).rejects.toThrow();
     }
+  });
+  it.each(["pending", "closed", "saved"] as const)("checks an exact %s save receipt without submitting a save or resolution", async status => {
+    const draft = await base(), fields = { CC: "Invented correction", Plan: "Invented follow-up" };
+    const pending = pendingSave(draft, fields);
+    const receipt = { session_id: uuid, schema_ref: schema, client_key: pending.edit.client_key,
+      request_sha256: await sha256(canonical({ edit: pending.edit, schema, session: uuid, workspace: scope.workspaceId })),
+      status, result_note_ref: status === "saved" ? resultRef : null,
+      result_sha256: status === "saved" ? await sha256(JSON.stringify(Object.entries(fields))) : null };
+    const send = vi.fn(wire(receipt));
+    const client = new CoreCaptureClient(scope, send, new AbortController().signal);
+    expect(await checkNoteSave(client, uuid, pending)).toBe(status);
+    expect(send.mock.calls[0]![1].action).toBe("save_status");
+    expect(send.mock.calls[0]![2]).toBe(pending.edit.client_key);
+    const altered = new CoreCaptureClient(scope, wire({ ...receipt, result_sha256: "0".repeat(64) }), new AbortController().signal);
+    await expect(checkNoteSave(altered, uuid, pending)).rejects.toThrow();
+    await expect(checkNoteSave(client, uuid, { ...pending, edit: { ...pending.edit, client_key: crypto.randomUUID() } })).rejects.toThrow();
   });
   it("verifies saves and resolves only the exact journalled edit before a fresh read", async () => {
     const draft = await base(), fields = { CC: "Edited invented complaint", Plan: "Discussed follow-up" };

@@ -13,6 +13,8 @@ import type {
   CaptureLeaseReceipt,
   CaptureTranscriptionStatus,
   ChunkReservationBatchReceipt,
+  PrepareRecordingWindowRequest,
+  PrepareContinuationWindowRequest,
   ConsentCreate,
   Transcript,
 } from "../bff/contracts";
@@ -24,11 +26,12 @@ import type {
   CapturedWavChunk,
   CaptureAudioChannel,
   CaptureSource,
+  CaptureSourceWindow,
   CaptureSourceErrorCode,
   CaptureSourceInterruptionCode,
 } from "../capture";
 import { QueueInvariantError } from "../queue/errors";
-import type { CaptureQueue } from "../queue/capture-queue";
+import type { CaptureQueue, DrainProgress } from "../queue/capture-queue";
 import type { CaptureQueueTransport, ChunkReservation } from "../queue/types";
 import { createWrappedSessionKey, type WrappedSessionKey } from "./session-key";
 import { CAPTURE_STORAGE_RESERVE_BYTES, captureStorageFailure, requiredCaptureStorageBytes,
@@ -37,6 +40,9 @@ import {
   FLOW_RECORD_SCHEMA_VERSION,
   CHANNEL_FLOW_RECORD_SCHEMA_VERSION,
   CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
+  CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION,
+  WINDOW_PREPARATION_SCHEMA_VERSION,
+  SERVER_CONTINUATION_SCHEMA_VERSION,
   type ActiveCapturePhase,
   type ActiveCaptureState,
   type CaptureFlowState,
@@ -61,6 +67,8 @@ export interface CaptureFlowSnapshot {
   readonly sessionId: string | null;
   readonly recordedChunks: number;
   readonly queuedChunks: number;
+  /** Receipt-confirmed progress, reconstructed from the existing encrypted queue. */
+  readonly uploadProgress?: DrainProgress;
   readonly elapsedSeconds: number;
   readonly remainingBudgetSeconds: number | null;
   readonly remainingAuthoritySeconds: number | null;
@@ -74,6 +82,11 @@ export interface CaptureFlowControllerOptions {
   readonly queue: CaptureQueue;
   readonly queueTransport: CaptureQueueTransport;
   readonly source: CaptureSource;
+  /** Trusted desktop host only; reuse the encrypted queue while acquisition runs. */
+  readonly uploadWhileRecording?: boolean;
+  /** Host-selected upper bound for a fresh compound window; retained recipes
+   * always keep their exact count. Does not change the server's capture budget. */
+  readonly initialReservationCount?: number;
   readonly storageCapacity?: CaptureStorageCapacity;
   /** Host pause includes its physical-stop and server-retirement barriers. */
   readonly pauseForStorage?: () => Promise<void>;
@@ -97,6 +110,12 @@ export class CaptureFlowController {
   readonly #queue: CaptureQueue;
   readonly #queueTransport: CaptureQueueTransport;
   readonly #source: CaptureSource;
+  readonly #uploadWhileRecording: boolean;
+  readonly #initialReservationCount: number;
+  #backgroundUpload: Promise<void> | null = null;
+  #backgroundUploadCancellation: AbortController | null = null;
+  #backgroundUploadQueued = false;
+  #backgroundUploadSuspended = true;
   readonly #storageCapacity: CaptureStorageCapacity | undefined;
   readonly #pauseForStorage: () => Promise<void>;
   #storageCheck: Promise<void> | null = null;
@@ -122,6 +141,11 @@ export class CaptureFlowController {
   #reviewAfterUpload = false;
   #recordingAbortController: AbortController | null = null;
   #chunkPersistence: Promise<void> = Promise.resolve();
+  #activeWrites: Promise<void> = Promise.resolve();
+  #sourceWindow: CaptureSourceWindow | null = null;
+  #continuousTimeout: unknown = null;
+  #continuousTask: Promise<void> | null = null;
+  #continuousCancelled = true;
   #authorityExpiryRequested = false;
   #authorityTimeout: unknown = null;
   #authorityExpiryTask: Promise<void> | null = null;
@@ -147,6 +171,11 @@ export class CaptureFlowController {
     this.#storageCapacity = options.storageCapacity;
     this.#pauseForStorage = options.pauseForStorage ?? (() => this.pauseRecording());
     this.#channel = options.source.channel ?? "microphone";
+    this.#uploadWhileRecording = options.uploadWhileRecording === true && this.#channel === "mixed";
+    this.#initialReservationCount = options.initialReservationCount ?? 90;
+    if (!Number.isSafeInteger(this.#initialReservationCount) || this.#initialReservationCount < 1 || this.#initialReservationCount > 90) {
+      throw new QueueInvariantError("initial_reservation_count_invalid");
+    }
     if (!["microphone", "mixed", "system_audio"].includes(this.#channel)) {
       throw new QueueInvariantError("capture_channel_invalid");
     }
@@ -304,6 +333,7 @@ export class CaptureFlowController {
       const preparation: ConfiguredCapturePreparationState = {
         mode: "configured_core",
         ...this.#channelState(),
+        ...(this.#bff.prepareRecordingWindow ? { schemaVersion: WINDOW_PREPARATION_SCHEMA_VERSION, windowPreparation: null } : {}),
         sessionId,
         startedAt: this.#now().toISOString(),
         completeIdempotencyKey: this.#operationKey("complete"),
@@ -372,6 +402,9 @@ export class CaptureFlowController {
     this.#reviewAfterUpload = preparation.mode === "configured_core";
     this.#sessionId = sessionId;
     this.#setSnapshot({ sessionId });
+    if (preparation.mode === "configured_core" && preparation.schemaVersion === WINDOW_PREPARATION_SCHEMA_VERSION) {
+      await this.#prepareRecordingWindow(preparation); return;
+    }
 
     // Capabilities are a consent-scoped read that does not require the audio key.
     // Overlap that round trip with key binding, and settle both before advancing
@@ -458,6 +491,14 @@ export class CaptureFlowController {
     if (this.#runFirstSequenceNumber !== this.#snapshot.recordedChunks) {
       throw new QueueInvariantError("capture_interval_position_conflict");
     }
+    this.#continuousCancelled = false;
+    this.#backgroundUploadSuspended = false;
+    const hardMaximumChunks = Math.min(this.#requireCapabilities().max_chunks - this.#runFirstSequenceNumber,
+      Math.floor((this.#requireActiveState().aggregatePlaintextBudgetBytes - this.#recordedPlaintextBytes)
+        / this.#requireCapabilities().max_envelope_bytes));
+    this.#sourceWindow = this.#reviewAfterUpload && this.#channel === "mixed" && this.#source.supportsRenewal === true
+      && this.#source.extend ? { runId: this.#idFactory(), generation: 1,
+        expiresAtMilliseconds: this.#captureAuthorityDeadline()!, maximumChunks: capabilities.max_chunks, hardMaximumChunks } : null;
     this.#sourcePausedBySignal = false;
     this.#sourcePausePersistence = null;
     this.#sourceStarted = false;
@@ -476,6 +517,7 @@ export class CaptureFlowController {
     try {
       await this.#source.start({
         capabilities,
+        ...(this.#sourceWindow ? { window: this.#sourceWindow } : {}),
         onChunk: async (chunk) => this.#acceptChunk(chunk),
         onInterruption: (code) => this.#pauseAfterSourceSignal(code),
         onError: (code) => this.#pauseAfterSourceSignal(code),
@@ -487,6 +529,8 @@ export class CaptureFlowController {
         this.#sourceStarted = false;
       } else if (this.#snapshot.state === "recording" && !this.#sourcePausedBySignal) {
         this.#setSnapshot({ statusCode: this.#reviewAfterUpload ? "capture_recording" : "synthetic_preview_recording" });
+        this.#armContinuousRenewal();
+        this.#queueBackgroundUpload();
       }
     } catch (error) {
       this.#clearAuthorityTimeout();
@@ -502,8 +546,101 @@ export class CaptureFlowController {
     }
   }
 
-  /** Explicit physical pause. It retains the key/chunks and never uploads. */
+  #armContinuousRenewal(): void {
+    const window = this.#sourceWindow;
+    if (!window || this.#continuousCancelled || this.#continuousTask || !this.#sourceStarted
+      || this.#snapshot.state !== "recording" || window.maximumChunks >= window.hardMaximumChunks) return;
+    const capabilities = this.#requireCapabilities();
+    const margin = Math.min(120_000, Math.floor(Math.min(capabilities.max_reservations_per_batch, window.maximumChunks)
+      * capabilities.target_chunk_duration_ms / 5));
+    const remaining = window.maximumChunks - (this.#snapshot.recordedChunks - this.#runFirstSequenceNumber);
+    const chunkDelay = remaining * capabilities.target_chunk_duration_ms - margin;
+    const delay = Math.max(0, Math.min(window.expiresAtMilliseconds - this.#now().getTime() - margin, chunkDelay));
+    if (this.#continuousTimeout !== null) {
+      if (delay > 0) return;
+      this.#cancelTimeout(this.#continuousTimeout);
+    }
+    this.#continuousTimeout = this.#scheduleTimeout(() => {
+      this.#continuousTimeout = null;
+      if (this.#continuousCancelled || this.#continuousTask) return;
+      const task = this.#continueRecordingWindow(window);
+      this.#continuousTask = task;
+      void task.catch(async () => {
+        // Stop native capture before waiting for any recovery. Original receipts,
+        // key and committed chunks remain available for deliberate Resume/upload.
+        if (!this.#continuousCancelled && this.#snapshot.state === "recording") {
+          try {
+            await this.#pauseForStorage();
+            if (this.snapshot.state === "paused") this.#setSnapshot({ statusCode: "capture_resume_pending" });
+          } catch { /* Host owns the explicit unconfirmed-stop state. */ }
+        }
+      }).finally(() => {
+        if (this.#continuousTask === task) { this.#continuousTask = null; this.#armContinuousRenewal(); }
+      });
+    }, delay);
+  }
+
+  #requireContinuousRun(window: CaptureSourceWindow): void {
+    if (this.#continuousCancelled || this.#sourceWindow !== window || !this.#sourceStarted
+      || this.#snapshot.state !== "recording" || this.#authorityExpiryRequested
+      || window.expiresAtMilliseconds <= this.#now().getTime()) throw new QueueInvariantError("capture_authority_expired");
+  }
+
+  async #resolveContinuousLease(): Promise<void> {
+    const active = this.#requireActiveState(), continuation = active.continuation;
+    if (!continuation?.continuous || active.lease.generation !== continuation.previousLease.generation) return;
+    const lease = await this.#bff.renewLease(active.sessionId, continuation.previousLease.lease_id,
+      { protocol_version: PROTOCOL_VERSION, expected_generation: continuation.previousLease.generation },
+      { idempotencyKey: continuation.renewIdempotencyKey });
+    if (lease.session_id !== active.sessionId || lease.lease_id !== active.lease.lease_id
+      || lease.generation !== active.lease.generation + 1 || Date.parse(lease.expires_at) <= Date.parse(active.lease.expires_at)) {
+      throw new QueueInvariantError("capture_lease_conflict");
+    }
+    await this.#writeActive(current => {
+      if (current.continuation?.renewIdempotencyKey !== continuation.renewIdempotencyKey
+        || current.lease.generation !== continuation.previousLease.generation) throw new QueueInvariantError("capture_lease_conflict");
+      return { ...current, lease };
+    });
+  }
+
+  async #continueRecordingWindow(window: CaptureSourceWindow): Promise<void> {
+    this.#requireContinuousRun(window);
+    const capabilities = await this.#bff.getCapabilities(this.#requireSessionId());
+    this.#requireContinuousRun(window);
+    this.#setCapabilities(capabilities);
+    await this.#writeActive(current => {
+      this.#requireContinuousRun(window);
+      const first = current.recordedChunks;
+      const unused = [...this.#reservations.keys()].filter(sequence => sequence >= first).length;
+      const count = Math.min(capabilities.max_reservations_per_batch, capabilities.max_chunks - first,
+        unused + Math.floor(capabilities.remaining_aggregate_plaintext_bytes / capabilities.max_envelope_bytes));
+      if (!Number.isSafeInteger(count) || count < 1) throw new QueueInvariantError("capture_budget_exhausted");
+      return { ...current, schemaVersion: current.schemaVersion === SERVER_CONTINUATION_SCHEMA_VERSION
+        ? SERVER_CONTINUATION_SCHEMA_VERSION : CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION,
+        continuation: { continuous: true, prepared: false, firstSequenceNumber: first, reservationCount: count,
+          previousLease: current.lease, renewIdempotencyKey: this.#operationKey("renew") } };
+    });
+    await this.#resolveContinuousLease();
+    this.#requireContinuousRun(window);
+    const continuation = this.#requireActiveState().continuation!;
+    await this.#reserveWindow(continuation.firstSequenceNumber, continuation.reservationCount);
+    this.#requireContinuousRun(window);
+    await this.#writeActive(current => ({ ...current, continuation: { ...current.continuation!, prepared: true } }));
+    this.#requireContinuousRun(window);
+    const maximumChunks = Math.min(window.hardMaximumChunks,
+      continuation.firstSequenceNumber + continuation.reservationCount - this.#runFirstSequenceNumber);
+    const next = { ...window, generation: window.generation + 1,
+      expiresAtMilliseconds: this.#captureAuthorityDeadline()!, maximumChunks };
+    await this.#source.extend!(next);
+    this.#requireContinuousRun(window);
+    this.#sourceWindow = next;
+    this.#armAuthorityDeadline();
+  }
+
+  /** Explicit physical pause; no new upload work is started by this action. */
   public async pauseRecording(): Promise<void> {
+    this.#suspendBackgroundUpload();
+    this.#continuousCancelled = true;
     if (!this.#reviewAfterUpload || !["ready", "recording", "paused"].includes(this.#snapshot.state)) {
       throw new QueueInvariantError("capture_state_conflict");
     }
@@ -511,8 +648,10 @@ export class CaptureFlowController {
     try {
       await this.#authorityExpiryTask;
       await this.#source.stop(); // Native wrapper also confirms server retirement.
+      await this.#continuousTask?.catch(() => undefined);
       await this.#chunkPersistence;
       await this.#sourcePausePersistence;
+      await this.#backgroundUpload;
       this.#sourceStarted = false;
       this.#recordingAbortController = null;
       await this.#saveActivePhase("paused");
@@ -533,11 +672,17 @@ export class CaptureFlowController {
     }
     await this.pauseRecording();
     try {
+      await this.#resolveContinuousLease();
       let active = this.#requireActiveState();
-      // An interrupted preparation reuses the same renewal/reservation intent.
-      if (!active.continuation || active.continuation.prepared
+      const needsNew = !active.continuation || active.continuation.continuous || active.continuation.prepared
         || active.lease.generation > active.continuation.previousLease.generation
-          && Date.parse(active.lease.expires_at) <= this.#now().getTime()) {
+          && Date.parse(active.lease.expires_at) <= this.#now().getTime();
+      if (active.continuation?.windowRequest && !active.continuation.prepared
+        || needsNew && this.#bff.prepareContinuationWindow && this.#channel !== "system_audio") {
+        await this.#prepareServerContinuation(active); return;
+      }
+      // An interrupted preparation reuses the same renewal/reservation intent.
+      if (needsNew) {
         this.#setCapabilities(await this.#bff.getCapabilities(active.sessionId));
         const capabilities = this.#requireCapabilities();
         const first = active.recordedChunks;
@@ -545,7 +690,9 @@ export class CaptureFlowController {
         const count = Math.min(capabilities.max_reservations_per_batch, capabilities.max_chunks - first,
           unused + Math.floor(capabilities.remaining_aggregate_plaintext_bytes / capabilities.max_envelope_bytes));
         if (!Number.isSafeInteger(count) || count < 1) throw new QueueInvariantError("capture_budget_exhausted");
-        active = { ...active, schemaVersion: CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
+        active = { ...active, schemaVersion: active.schemaVersion === SERVER_CONTINUATION_SCHEMA_VERSION
+          ? SERVER_CONTINUATION_SCHEMA_VERSION : active.schemaVersion === CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION
+            ? CONTINUOUS_FLOW_RECORD_SCHEMA_VERSION : CONTINUATION_FLOW_RECORD_SCHEMA_VERSION,
           continuation: { prepared: false, firstSequenceNumber: first, reservationCount: count, previousLease: active.lease,
             renewIdempotencyKey: this.#operationKey("renew") } };
         await this.#flowStore.putActiveCaptureState(active);
@@ -585,7 +732,70 @@ export class CaptureFlowController {
     await this.startRecording();
   }
 
+  async #prepareServerContinuation(initial: ActiveCaptureState): Promise<void> {
+    if (!this.#bff.prepareContinuationWindow || this.#channel === "system_audio") {
+      throw new QueueInvariantError("continuation_window_receiver_required");
+    }
+    let active = initial;
+    if (!active.continuation?.windowRequest || active.continuation.prepared) {
+      active = { ...active, schemaVersion: SERVER_CONTINUATION_SCHEMA_VERSION,
+        continuation: { prepared: false, firstSequenceNumber: active.recordedChunks, reservationCount: 0,
+          previousLease: active.lease, renewIdempotencyKey: this.#operationKey("renew"), windowRequest: {
+            idempotencyKey: this.#operationKey("continue-window"), reservationIdempotencyKey: this.#operationKey("reserve"),
+          } } };
+      // The server decides and freezes the count. Zero is a pending sentinel,
+      // never capture authority, and is invalid for any ready/recording state.
+      await this.#flowStore.putActiveCaptureState(active); this.#activeState = active;
+    }
+    let continuation = active.continuation!;
+    const saved = continuation.windowRequest!;
+    if (continuation.reservationCount === 0) {
+      const request: PrepareContinuationWindowRequest = { schema_version: "1.0", channel: this.#channel,
+        first_sequence_number: continuation.firstSequenceNumber, previous_lease_id: continuation.previousLease.lease_id,
+        previous_lease_generation: continuation.previousLease.generation, renew_idempotency_key: continuation.renewIdempotencyKey,
+        reservation_idempotency_key: saved.reservationIdempotencyKey };
+      const result = await this.#bff.prepareContinuationWindow(active.sessionId, request, { idempotencyKey: saved.idempotencyKey });
+      const lease = result.lease, batch = result.reservations, count = batch.reservations.length;
+      const first = continuation.firstSequenceNumber;
+      if (result.schema_version !== "1.0" || lease.protocol_version !== PROTOCOL_VERSION || lease.session_id !== active.sessionId
+        || lease.lease_id !== continuation.previousLease.lease_id || lease.generation !== continuation.previousLease.generation + 1
+        || lease.receipt_id === continuation.previousLease.receipt_id
+        || !Number.isFinite(Date.parse(lease.expires_at)) || Date.parse(lease.expires_at) <= this.#now().getTime()
+        || batch.protocol_version !== PROTOCOL_VERSION || batch.session_id !== active.sessionId || batch.capture_authorized_until !== lease.expires_at
+        || count < 1 || count > this.#requireCapabilities().max_reservations_per_batch
+        || first + count > this.#requireCapabilities().max_chunks
+        || batch.reservations.some((row, index) => row.session_id !== active.sessionId || row.channel !== this.#channel
+          || row.sequence_number !== first + index)) throw new QueueInvariantError("invalid_continuation_window_receipt");
+      const reservation: ReservationIntent = { schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
+        intentId: `${active.sessionId}:${this.#channel}:${String(first)}:${String(count)}:${String(lease.generation)}`,
+        sessionId: active.sessionId, idempotencyKey: saved.reservationIdempotencyKey, createdAt: lease.issued_at,
+        request: { protocol_version: PROTOCOL_VERSION, capture_lease_id: lease.lease_id, capture_lease_generation: lease.generation,
+          channel: this.#channel, first_sequence_number: first, count } };
+      await this.#flowStore.putReservationIntent(reservation);
+      continuation = { ...continuation, reservationCount: count };
+      active = { ...active, lease, continuation, captureAuthorizedUntil: null };
+      await this.#flowStore.putActiveCaptureState(active);
+      this.#activeState = active; this.#lease = lease;
+      await this.#persistReservations(batch, reservation);
+      await this.#flowStore.deleteReservationIntent(reservation.intentId);
+    } else {
+      // A confirmed combined reply was persisted before a local queue failure.
+      // The original reserve key recovers the same canonical batch.
+      await this.#recoverReservationIntents();
+    }
+    if (!this.#hasActiveCaptureAuthority()) throw new QueueInvariantError("capture_authority_expired");
+    this.#authorityExpiryRequested = false;
+    const ready: ActiveCaptureState = { ...this.#requireActiveState(), phase: "ready",
+      continuation: { ...continuation, prepared: true } };
+    await this.#flowStore.putActiveCaptureState(ready); this.#activeState = ready;
+    this.#setSnapshot({ state: "ready", statusCode: "capture_continuation_ready",
+      remainingAuthoritySeconds: this.#remainingCaptureSeconds(active.recordedChunks) });
+    this.#armAuthorityDeadline();
+  }
+
   public async stopRecording(): Promise<void> {
+    this.#suspendBackgroundUpload();
+    this.#continuousCancelled = true;
     if (this.#snapshot.state !== "recording" && this.#snapshot.state !== "paused") {
       throw new QueueInvariantError("capture_state_conflict");
     }
@@ -607,8 +817,19 @@ export class CaptureFlowController {
       }
       this.#sourceStarted = false;
       this.#recordingAbortController = null;
+      await this.#continuousTask?.catch(() => undefined);
       await this.#chunkPersistence;
       await this.#sourcePausePersistence;
+      await this.#backgroundUpload;
+      if (this.#activeState?.continuation?.continuous) {
+        await this.#saveActivePhase("paused");
+        this.#setSnapshot({ state: "paused", statusCode: "capture_paused" });
+        try { await this.#resolveContinuousLease(); }
+        catch (error) {
+          this.#setSnapshot({ statusCode: "capture_resume_pending" });
+          throw error;
+        }
+      }
       if (this.#snapshot.recordedChunks < 1) {
         if (!this.#reviewAfterUpload) throw new QueueInvariantError("capture_has_no_chunks");
         // A confirmed stop can leave no saved audio after an interrupted partial
@@ -618,7 +839,7 @@ export class CaptureFlowController {
         this.#setSnapshot({ state: "paused", statusCode: "capture_no_saved_audio" });
         return;
       }
-      if (this.#activeState?.continuation?.prepared === false) {
+      if (this.#activeState?.continuation?.prepared === false && !this.#activeState.continuation.continuous) {
         // Resolve a committed-but-lost renewal before completing with its current generation.
         await this.prepareContinuation();
         this.#clearAuthorityTimeout();
@@ -627,18 +848,23 @@ export class CaptureFlowController {
       this.#setSnapshot({ state: "uploading", statusCode: "synthetic_preview_uploading" });
       await this.#drainAndComplete();
     } catch (error) {
+      if (this.#snapshot.state === "paused" && this.#snapshot.statusCode === "capture_resume_pending") throw error;
       if (!isUnconfirmedCaptureStop(error) || this.#snapshot.state !== "paused") this.#failOrRetainUpload(error);
       throw error;
     }
   }
 
-  /** Host teardown stops acquisition and retains recoverable work without upload. */
+  /** Host teardown stops acquisition, joins existing uploads and retains recovery. */
   public async deactivate(): Promise<void> {
+    this.#suspendBackgroundUpload();
+    this.#continuousCancelled = true;
     this.#clearAuthorityTimeout();
     this.#recordingAbortController?.abort();
     await this.#source.stop();
+    await this.#continuousTask?.catch(() => undefined);
     await this.#chunkPersistence;
     await this.#sourcePausePersistence;
+    await this.#backgroundUpload;
     this.#sourceStarted = false;
     if (this.#activeState?.phase === "recording") {
       await this.#saveActivePhase("paused");
@@ -700,7 +926,7 @@ export class CaptureFlowController {
   }
 
   async #drainAndComplete(): Promise<void> {
-    const drained = await this.#queue.drainOnce(this.#queueTransport);
+    const drained = await this.#queue.drainOnce(this.#queueTransport, this.#uploadProgress);
     const records = await this.#queue.listMetadata();
     if (drained.items.some(item => item.outcome === "terminal") || records.some(record =>
       record.reservation.sessionId === this.#requireSessionId()
@@ -722,10 +948,50 @@ export class CaptureFlowController {
     await this.#completeAndRefresh();
   }
 
+  #suspendBackgroundUpload(): void {
+    this.#backgroundUploadSuspended = true;
+    this.#backgroundUploadCancellation?.abort();
+  }
+
+  #queueBackgroundUpload(): void {
+    if (!this.#uploadWhileRecording || !this.#reviewAfterUpload || this.#backgroundUploadSuspended
+      || !this.#sourceStarted || this.#snapshot.state !== "recording" || this.#snapshot.recordedChunks === 0) return;
+    this.#backgroundUploadQueued = true;
+    if (this.#backgroundUpload) return;
+    this.#backgroundUploadQueued = false;
+    const cancellation = new AbortController();
+    this.#backgroundUploadCancellation = cancellation;
+    // Never await network work from onChunk. The existing two-worker queue owns
+    // idempotency, retries and authenticated receipts. Stop joins this task before
+    // draining the remaining queue and finalizing; no transcript starts here.
+    this.#backgroundUpload = (async () => {
+      const drained = await this.#queue.drainOnce(this.#queueTransport, this.#uploadProgress, cancellation.signal);
+      for (const item of drained.items) {
+        if (item.outcome === "registered") await this.#queue.purge(item.objectId);
+      }
+    })().catch(() => {
+      // Offline/uncertain work stays in the encrypted queue for its normal retry.
+      // Network failure must not interrupt local audio acquisition.
+    }).finally(() => {
+      this.#backgroundUpload = null;
+      this.#backgroundUploadCancellation = null;
+      if (this.#backgroundUploadQueued) this.#queueBackgroundUpload();
+    });
+  }
+
+  readonly #uploadProgress = (progress: DrainProgress): void => {
+    // Queue persistence can precede the flow's recorded-count commit. Publish a
+    // conservative count until onChunk has acknowledged that same saved audio.
+    if (this.#reviewAfterUpload) this.#setSnapshot({ uploadProgress: {
+      total: this.#snapshot.recordedChunks, registered: Math.min(progress.registered, this.#snapshot.recordedChunks),
+    } });
+  };
+
   async #completeAndRefresh(): Promise<void> {
     const sessionId = this.#requireSessionId();
     const lease = this.#requireLease();
     const active = this.#requireActiveState();
+    if (this.#reviewAfterUpload) this.#setSnapshot({ statusCode: "capture_upload_confirming" });
     await this.#bff.completeCapture(sessionId, {
       protocol_version: PROTOCOL_VERSION,
       capture_lease_id: lease.lease_id,
@@ -738,6 +1004,82 @@ export class CaptureFlowController {
     await this.#saveActivePhase("processing");
     this.#setSnapshot({ state: "processing", statusCode: "synthetic_preview_processing" });
     await this.refreshTranscriptionStatus();
+  }
+
+  async #prepareRecordingWindow(initial: ConfiguredCapturePreparationState): Promise<void> {
+    if (!this.#bff.prepareRecordingWindow) throw new QueueInvariantError("recording_window_receiver_required");
+    const sessionId = initial.sessionId;
+    const pendingKey = async (): Promise<SessionKeyBindingState> => {
+      const retained = await this.#flowStore.getSessionKeyState(sessionId);
+      if (retained) return retained;
+      const candidate = await this.#createSessionKeyCandidate(sessionId);
+      await this.#flowStore.putSessionKeyCandidate(candidate.state, candidate.key);
+      return candidate.state;
+    };
+    const [keyResult, capabilitiesResult] = await Promise.allSettled([pendingKey(), this.#bff.getCapabilities(sessionId)]);
+    if (keyResult.status === "rejected") throw keyResult.reason;
+    if (capabilitiesResult.status === "rejected") throw capabilitiesResult.reason;
+    const key = keyResult.value;
+    this.#setCapabilities(capabilitiesResult.value);
+    let preparation = initial;
+    if (!preparation.windowPreparation) {
+      const capabilities = this.#requireCapabilities();
+      const count = Math.min(this.#initialReservationCount, capabilities.max_reservations_per_batch, capabilities.max_chunks,
+        Math.floor(capabilities.remaining_aggregate_plaintext_bytes / capabilities.max_envelope_bytes));
+      if (!Number.isSafeInteger(count) || count < 1) throw new QueueInvariantError("capture_budget_exhausted");
+      preparation = { ...preparation, leaseIdempotencyKey: this.#operationKey("lease"),
+        leaseRequest: { protocol_version: PROTOCOL_VERSION }, windowPreparation: {
+          idempotencyKey: this.#operationKey("prepare-window"), bindIdempotencyKey: key.idempotencyKey,
+          reserveIdempotencyKey: this.#operationKey("reserve"), keyVersion: key.keyVersion, wrappedDek: key.wrappedDek,
+          reservationCount: count, aggregatePlaintextBudgetBytes: capabilities.remaining_aggregate_plaintext_bytes,
+        } };
+      // Every recipe/key is durable before any server mutation. Never replace
+      // this intent or fall back to individually generated keys after uncertainty.
+      await this.#flowStore.putPreparationState(preparation);
+    }
+    const intent = preparation.windowPreparation!;
+    if (!preparation.leaseIdempotencyKey || key.keyVersion !== intent.keyVersion || key.wrappedDek !== intent.wrappedDek
+      || key.idempotencyKey !== intent.bindIdempotencyKey) throw new CaptureDeviceCustodyError();
+    const request: PrepareRecordingWindowRequest = { schema_version: "1.0",
+      binding: { key_version: intent.keyVersion, wrapped_dek: intent.wrappedDek },
+      bind_idempotency_key: intent.bindIdempotencyKey, lease_idempotency_key: preparation.leaseIdempotencyKey,
+      reserve_idempotency_key: intent.reserveIdempotencyKey, channel: this.#channel, reservation_count: intent.reservationCount };
+    let result;
+    try { result = await this.#bff.prepareRecordingWindow(sessionId, request, { idempotencyKey: intent.idempotencyKey }); }
+    catch (error) {
+      if (error instanceof BffResponseError && error.status === 409) throw new CaptureDeviceCustodyError();
+      throw error;
+    }
+    const lease = result.lease, batch = result.reservations;
+    if (result.schema_version !== "1.0" || result.binding.session_id !== sessionId || result.binding.key_version !== key.keyVersion
+      || lease.session_id !== sessionId || lease.protocol_version !== PROTOCOL_VERSION || lease.generation !== 1
+      || !Number.isFinite(Date.parse(lease.expires_at)) || Date.parse(lease.expires_at) <= this.#now().getTime()
+      || batch.protocol_version !== PROTOCOL_VERSION || batch.session_id !== sessionId || batch.capture_authorized_until !== lease.expires_at
+      || batch.reservations.length !== intent.reservationCount
+      || batch.reservations.some((row, index) => row.sequence_number !== index || row.channel !== this.#channel || row.session_id !== sessionId)) {
+      throw new QueueInvariantError("invalid_recording_window_receipt");
+    }
+    // Persist the original reservation intent before publishing active state.
+    // A crash during local receipt application then reuses its exact server key.
+    const reservation: ReservationIntent = { schemaVersion: FLOW_RECORD_SCHEMA_VERSION,
+      intentId: `${sessionId}:${this.#channel}:0:${String(intent.reservationCount)}:${String(lease.generation)}`,
+      sessionId, idempotencyKey: intent.reserveIdempotencyKey, createdAt: preparation.startedAt,
+      request: { protocol_version: PROTOCOL_VERSION, capture_lease_id: lease.lease_id,
+        capture_lease_generation: lease.generation, channel: this.#channel, first_sequence_number: 0, count: intent.reservationCount } };
+    await this.#flowStore.putReservationIntent(reservation);
+    await this.#flowStore.markSessionKeyBound(sessionId);
+    this.#lease = lease;
+    this.#activeState = { ...this.#channelState(), sessionId, lease, captureAuthorizedUntil: null,
+      aggregatePlaintextBudgetBytes: intent.aggregatePlaintextBudgetBytes, phase: "ready",
+      completeIdempotencyKey: preparation.completeIdempotencyKey, recordedChunks: 0, recordedPlaintextBytes: 0,
+      startedAt: preparation.startedAt, reviewAfterUpload: true };
+    await this.#flowStore.putActiveCaptureState(this.#activeState);
+    await this.#persistReservations(batch, reservation);
+    await this.#flowStore.deleteReservationIntent(reservation.intentId);
+    if (!this.#hasActiveCaptureAuthority()) throw new QueueInvariantError("capture_authority_expired");
+    this.#setSnapshot({ state: "ready", statusCode: "capture_ready", remainingBudgetSeconds: this.#remainingAggregateBudgetSeconds(0),
+      remainingAuthoritySeconds: this.#remainingCaptureSeconds(0) });
+    this.#armAuthorityDeadline();
   }
 
   async #bindSessionKey(sessionId: string): Promise<void> {
@@ -876,18 +1218,17 @@ export class CaptureFlowController {
       throw new QueueInvariantError("invalid_capture_authority");
     }
     const active = this.#requireActiveState();
+    const continuedWindow = active.continuation?.continuous === true && !active.continuation.prepared
+      && active.lease.generation === active.continuation.previousLease.generation + 1
+      && active.captureAuthorizedUntil === active.continuation.previousLease.expires_at;
     if (
       active.captureAuthorizedUntil !== null &&
-      active.captureAuthorizedUntil !== batch.capture_authorized_until
+      active.captureAuthorizedUntil !== batch.capture_authorized_until && !continuedWindow
     ) {
       throw new QueueInvariantError("capture_authority_conflict");
     }
-    if (active.captureAuthorizedUntil === null) {
-      this.#activeState = {
-        ...active,
-        captureAuthorizedUntil: batch.capture_authorized_until,
-      };
-      await this.#flowStore.putActiveCaptureState(this.#activeState);
+    if (active.captureAuthorizedUntil === null || continuedWindow) {
+      await this.#writeActive(current => ({ ...current, captureAuthorizedUntil: batch.capture_authorized_until }));
     }
     for (const remote of batch.reservations) {
       const reservation: ChunkReservation = {
@@ -918,7 +1259,7 @@ export class CaptureFlowController {
     });
     this.#chunkPersistence = task.catch(() => undefined);
     // The callback must finish before stop waits for its native delivery barrier.
-    void task.then(() => this.#checkStorageAfterChunk(), () => undefined);
+    void task.then(() => { this.#checkStorageAfterChunk(); this.#armContinuousRenewal(); }, () => undefined);
     return task;
   }
 
@@ -995,19 +1336,16 @@ export class CaptureFlowController {
     envelope.fill(0);
     this.#recordedPlaintextBytes = nextPlaintextBytes;
     const recordedChunks = this.#snapshot.recordedChunks + 1;
-    const active = this.#requireActiveState();
-    this.#activeState = {
-      ...active,
-      recordedChunks,
-      recordedPlaintextBytes: this.#recordedPlaintextBytes,
-    };
-    await this.#flowStore.putActiveCaptureState(this.#activeState);
+    await this.#writeActive(current => ({ ...current, recordedChunks,
+      recordedPlaintextBytes: this.#recordedPlaintextBytes }));
     this.#setSnapshot({
       recordedChunks,
+      ...(this.#snapshot.uploadProgress ? { uploadProgress: { ...this.#snapshot.uploadProgress, total: recordedChunks } } : {}),
       elapsedSeconds: captureSeconds(capabilities, recordedChunks),
       remainingBudgetSeconds: this.#remainingAggregateBudgetSeconds(recordedChunks),
       remainingAuthoritySeconds: this.#remainingCaptureSeconds(recordedChunks),
     });
+    this.#queueBackgroundUpload();
   }
 
   #setCapabilities(capabilities: CaptureCapabilities): void {
@@ -1019,7 +1357,7 @@ export class CaptureFlowController {
     if ((channel ?? "microphone") !== this.#channel) throw new QueueInvariantError("capture_channel_conflict");
   }
 
-  #channelState(): Pick<ConfiguredCapturePreparationState, "schemaVersion" | "channel"> {
+  #channelState(): { schemaVersion: typeof FLOW_RECORD_SCHEMA_VERSION | typeof CHANNEL_FLOW_RECORD_SCHEMA_VERSION; channel?: CaptureAudioChannel } {
     return this.#channel === "microphone" ? { schemaVersion: FLOW_RECORD_SCHEMA_VERSION }
       : { schemaVersion: CHANNEL_FLOW_RECORD_SCHEMA_VERSION, channel: this.#channel };
   }
@@ -1145,6 +1483,9 @@ export class CaptureFlowController {
   }
 
   #clearAuthorityTimeout(): void {
+    if (this.#continuousTimeout !== null) {
+      this.#cancelTimeout(this.#continuousTimeout); this.#continuousTimeout = null;
+    }
     if (this.#authorityTimeout === null) return;
     this.#cancelTimeout(this.#authorityTimeout);
     this.#authorityTimeout = null;
@@ -1154,6 +1495,8 @@ export class CaptureFlowController {
     if (this.#snapshot.state !== "ready" && this.#snapshot.state !== "recording") return;
     const wasRecording = this.#snapshot.state === "recording";
     if (wasRecording) {
+      this.#suspendBackgroundUpload();
+      this.#continuousCancelled = true;
       this.#sourcePausedBySignal = true;
       this.#recordingAbortController?.abort();
       await this.#chunkPersistence;
@@ -1169,7 +1512,9 @@ export class CaptureFlowController {
     code: CaptureSourceErrorCode | CaptureSourceInterruptionCode,
   ): void {
     if (this.#snapshot.state !== "recording" || this.#authorityExpiryRequested) return;
+    this.#suspendBackgroundUpload();
     this.#clearAuthorityTimeout();
+    this.#continuousCancelled = true;
     this.#sourcePausedBySignal = true;
     this.#setSnapshot({ state: "paused", statusCode: code });
     const persistence = this.#saveActivePhase("paused");
@@ -1205,12 +1550,23 @@ export class CaptureFlowController {
     return this.#activeState;
   }
 
+  #writeActive(update: (current: ActiveCaptureState) => ActiveCaptureState): Promise<ActiveCaptureState> {
+    const work = this.#activeWrites.then(async () => {
+      const next = update(this.#requireActiveState());
+      await this.#flowStore.putActiveCaptureState(next);
+      this.#activeState = next; this.#lease = next.lease;
+      return next;
+    });
+    this.#activeWrites = work.then(() => undefined, () => undefined);
+    return work;
+  }
+
   async #saveActivePhase(phase: ActiveCapturePhase): Promise<void> {
-    this.#activeState = { ...this.#requireActiveState(), phase };
-    await this.#flowStore.putActiveCaptureState(this.#activeState);
+    await this.#writeActive(current => ({ ...current, phase }));
   }
 
   #fail(): void {
+    this.#continuousCancelled = true;
     this.#clearAuthorityTimeout();
     this.#authorityExpiryRequested = true;
     this.#recordingAbortController?.abort();

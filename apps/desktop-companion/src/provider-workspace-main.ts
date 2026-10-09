@@ -1,3 +1,4 @@
+import { parsePendingCreatorEdit } from "../../review-ui/src/creator-edit";
 import type { PluginListenerHandle } from "@capacitor/core";
 import type { NativeProviderSession, ProviderSessionState } from "../../capture/src/provider/native-plugin";
 import type { AuthorizedProviderEncounter, ProviderWorkspaceHost } from "../../capture/src/provider/workspace-contracts";
@@ -8,7 +9,9 @@ import { readBoundedJson } from "../../review-ui/src/beta-api";
 import { coreCaptureResponseLimit } from "../../review-ui/src/capture-response-limits";
 import { parseDesktopProviderRequest, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderRequest, type DesktopProviderEvent } from "../../capture/src/provider/desktop-host-protocol";
+import { parseEncounterDraft } from "../../capture/src/provider/encounter-setup";
 import type { DesktopProviderRecorder } from "./provider-recorder.js";
+import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 
 export interface DesktopProviderMainHost {
   readonly session: NativeProviderSession;
@@ -33,6 +36,7 @@ interface Encounter {
   readonly value: AuthorizedProviderEncounter<DesktopProviderRecorder>;
   recorder?: { dispose(): Promise<void> };
   recorderOpening?: boolean;
+  preparationAttempt?: { readonly key: string; readonly began: number };
   closing?: Promise<void>;
 }
 
@@ -52,7 +56,8 @@ export class DesktopProviderWorkspaceMain {
   private initializing: Promise<void> | null = null;
   private disposing: Promise<void> | null = null;
   constructor(private readonly host: DesktopProviderMainHost,
-    private readonly attachRecorder: (recorder: DesktopProviderRecorder) => { dispose(): Promise<void> }) {
+    private readonly attachRecorder: (recorder: DesktopProviderRecorder) => { dispose(): Promise<void> },
+    private readonly diagnostics: RuntimeDiagnostic = NO_DIAGNOSTICS) {
     if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
       || "type" in process && process.type === "renderer") throw unavailable();
   }
@@ -82,12 +87,20 @@ export class DesktopProviderWorkspaceMain {
     if (cleanup ? this.cleanupRequests.has(cleanup) : this.pending.size - this.cleanupRequests.size >= 8) throw unavailable();
     if (cleanup) this.cleanupRequests.add(cleanup);
     const abort = new AbortController(); this.pending.set(request.requestId, abort);
+    const started = performance.now();
+    const event: RuntimeTimingEvent | undefined = request.method === "list" ? "provider_workspace_list"
+      : request.method === "open" ? "provider_workspace_open" : request.method === "journal_load" ? "provider_journal_read"
+      : request.method === "recorder" ? "provider_recorder_attach"
+      : request.method === "encounter_setup" && request.payload.action === "hidden" ? "provider_visit_preferences" : undefined;
     try {
       const result = await this.dispatch(request, abort.signal);
       if (this.closed || abort.signal.aborted) throw unavailable();
       return { requestId: request.requestId, ok: true, result: jsonCopy(result) };
     } catch { return { requestId: request.requestId, ok: false, result: null }; }
-    finally { this.pending.delete(request.requestId); if (cleanup) this.cleanupRequests.delete(cleanup); }
+    finally {
+      this.pending.delete(request.requestId); if (cleanup) this.cleanupRequests.delete(cleanup);
+      if (event) { try { this.diagnostics(event, Math.max(0, performance.now() - started)); } catch { /* Observation cannot affect cleanup. */ } }
+    }
   }
   private async dispatch(request: DesktopProviderRequest, signal: AbortSignal): Promise<unknown> {
     const payload = request.payload;
@@ -118,7 +131,7 @@ export class DesktopProviderWorkspaceMain {
       await this.closeConnection(); return null;
     }
     const connection = this.currentConnection(request.connectionId);
-    if (["list", "create", "open"].includes(request.method)) {
+    if (["list", "create", "encounter_setup", "open"].includes(request.method)) {
       if (request.encounterId !== null || connection.transitioning) throw unavailable();
       connection.transitioning = true;
       return this.track(connection.work, async () => {
@@ -133,6 +146,31 @@ export class DesktopProviderWorkspaceMain {
             exact(payload, []); await connection.value!.workspace.createEncounter(linked);
             this.requireConnection(connection, signal); return null;
           }
+          if (request.method === "encounter_setup") {
+            const workspace = connection.value!.workspace, setup = workspace.encounterSetup;
+            let result: unknown;
+            if (payload.action === "info") {
+              exact(payload, ["action"]); result = { enabled: !!setup, account: workspace.account ?? null };
+            } else {
+              if (!setup) throw unavailable();
+              if (payload.action === "state") { exact(payload, ["action"]); result = await setup.state(linked); }
+              else if (payload.action === "hidden") { exact(payload, ["action"]); if (!setup.hidden) throw unavailable(); result = await setup.hidden(linked); }
+              else if (payload.action === "set_hidden") {
+                exact(payload, ["action", "appointmentRef", "hidden"]);
+                if (!setup.setHidden || !reference(payload.appointmentRef, "appointment") || typeof payload.hidden !== "boolean") throw unavailable();
+                await setup.setHidden(payload.appointmentRef, payload.hidden, linked); result = null;
+              }
+              else if (payload.action === "search") {
+                exact(payload, ["action", "query"]);
+                if (typeof payload.query !== "string" || payload.query.length > 200) throw unavailable();
+                result = await setup.search(payload.query, linked);
+              } else if (payload.action === "submit") {
+                exact(payload, ["action", "draft"]);
+                result = await setup.submit(payload.draft === null ? null : parseEncounterDraft(payload.draft), linked);
+              } else throw unavailable();
+            }
+            this.requireConnection(connection, signal); return result;
+          }
           exact(payload, ["appointmentRef"]);
           if (!reference(payload.appointmentRef, "appointment")) throw unavailable();
           const opening = new AbortController();
@@ -143,7 +181,9 @@ export class DesktopProviderWorkspaceMain {
             const encounter: Encounter = { id: crypto.randomUUID(), abort: opening, value: opened, work: new Set() };
             connection.encounter = encounter;
             opened.signal.addEventListener("abort", () => { void this.closeEncounter(connection, encounter).catch(() => undefined); }, { once: true });
-            return { encounterId: encounter.id, encounter: opened.encounter, scope: opened.scope };
+            return { encounterId: encounter.id, encounter: opened.encounter, scope: opened.scope,
+              ...(opened.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
+              ...(opened.openingReview ? { openingReview: opened.openingReview } : {}) };
           } catch (error) { opening.abort(); throw error; }
         } finally { connection.transitioning = false; }
       });
@@ -154,13 +194,40 @@ export class DesktopProviderWorkspaceMain {
       this.requireEncounter(connection, encounter, signal);
       let result: unknown;
       switch (request.method) {
+        case "add_birth_date": {
+          exact(payload, ["dateOfBirth", "key"]);
+          const setup = connection.value!.workspace.encounterSetup;
+          if (!setup?.addDateOfBirth || typeof payload.dateOfBirth !== "string") throw unavailable();
+          result = await setup.addDateOfBirth(encounter.value.encounter, payload.dateOfBirth, uuid(payload.key),
+            AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal]));
+          break;
+        }
         case "core": result = await this.core(encounter, payload, AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal])); break;
         case "journal_load": exact(payload, []); result = await encounter.value.journal.load(); break;
         case "journal_save": {
+          const began = performance.now();
           exact(payload, ["previous", "progress"]); const previous = exact(payload.previous, ["revision", "progress"]);
           if (previous.revision !== null && (typeof previous.revision !== "string" || !/^[1-9][0-9]{0,15}$/u.test(previous.revision))) throw unavailable();
           if (previous.progress !== null) assertProgress(previous.progress); assertProgress(payload.progress);
-          result = await encounter.value.journal.save(previous as unknown as JournalSnapshot, payload.progress); break;
+          result = await encounter.value.journal.save(previous as unknown as JournalSnapshot, payload.progress);
+          if (previous.progress === null && payload.progress.sessionId === null && payload.progress.admission !== null) {
+            encounter.preparationAttempt = { key: payload.progress.admission.key, began };
+          } else if (encounter.preparationAttempt?.key !== payload.progress.admission?.key) delete encounter.preparationAttempt;
+          break;
+        }
+        case "edit_load": case "edit_save": case "edit_clear": {
+          exact(payload, request.method === "edit_load" ? ["sessionId"] : request.method === "edit_save" ? ["sessionId", "operation"] : ["sessionId", "key"]);
+          await this.requireSession(encounter, payload.sessionId);
+          this.requireEncounter(connection, encounter, signal);
+          const journal = encounter.value.editJournal?.(uuid(payload.sessionId));
+          if (!journal) throw unavailable();
+          if (request.method === "edit_load") result = await journal.load();
+          else if (request.method === "edit_save") { await journal.save(parsePendingCreatorEdit(payload.operation)); result = null; }
+          else {
+            if (typeof payload.key !== "string" || !/^[A-Za-z0-9._-]{8,255}$/u.test(payload.key)) throw unavailable();
+            await journal.clear(payload.key); result = null;
+          }
+          break;
         }
         case "review_load": case "review_save": case "review_clear": {
           exact(payload, request.method === "review_load" ? ["sessionId"] : request.method === "review_save" ? ["sessionId", "operation"] : ["sessionId", "key"]);
@@ -176,7 +243,8 @@ export class DesktopProviderWorkspaceMain {
           break;
         }
         case "recorder": {
-          exact(payload, ["sessionId"]); await this.requireSession(encounter, payload.sessionId);
+          const preparationStarted = performance.now();
+          exact(payload, ["sessionId"]); const saved = await this.requireSession(encounter, payload.sessionId);
           this.requireEncounter(connection, encounter, signal);
           if (encounter.recorder || encounter.recorderOpening) throw unavailable();
           encounter.recorderOpening = true;
@@ -186,10 +254,21 @@ export class DesktopProviderWorkspaceMain {
             // stop remains unconfirmed. Close waits for this handoff to settle.
             encounter.recorder = { dispose: () => recorder.deactivate() };
             encounter.recorder = this.attachRecorder(recorder);
+            const attempt = encounter.preparationAttempt; delete encounter.preparationAttempt;
+            const consentStarted = attempt?.key === saved.progress?.admission?.key ? attempt?.began : undefined;
+            this.observeRecorderPreparation(connection, encounter, recorder, preparationStarted, signal, consentStarted);
           } catch (error) {
             void this.closeEncounter(connection, encounter).catch(() => undefined); throw error;
           } finally { delete encounter.recorderOpening; }
           result = null; break;
+        }
+        case "play_passage": {
+          exact(payload, ["sessionId", "segmentId"]);
+          await this.requireSession(encounter, payload.sessionId);
+          this.requireEncounter(connection, encounter, signal);
+          if (!encounter.value.playPassage) throw unavailable();
+          result = await encounter.value.playPassage(uuid(payload.sessionId), uuid(payload.segmentId),
+            AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal])); break;
         }
         case "open_core": {
           exact(payload, ["noteRef"]);
@@ -210,12 +289,24 @@ export class DesktopProviderWorkspaceMain {
     const path = payload.path;
     if (path === "/service/v1/agent/scribe/capture-operations") {
       const operation = object(body.operation);
-      if (typeof operation.kind !== "string" || !["provider_encounter", "creator_review", "decide_translation"].includes(operation.kind)) throw unavailable();
+      if (typeof operation.kind !== "string" || !["provider_encounter", "creator_review", "decide_translation", "edit_transcript"].includes(operation.kind)) throw unavailable();
+    } else if (path === "/service/v1/agent/scribe/note-opening") {
+      if (!encounter.value.noteOpeningSupported) throw unavailable();
+      exact(body, ["workspace_id", "binding_ref", "request_nonce", "expected_session_id"]);
+      uuid(body.expected_session_id);
     } else if (path !== "/service/v1/agent/scribe/capture-admissions" && path !== "/service/v1/agent/scribe/capture-notes") throw unavailable();
-    const response = await encounter.value.request(path, body, payload.key, signal);
+    const admission = path === "/service/v1/agent/scribe/capture-admissions";
+    if (admission && encounter.preparationAttempt?.key !== payload.key) delete encounter.preparationAttempt;
+    let response: Response;
+    try { response = await encounter.value.request(path, body, payload.key, signal); }
+    catch (error) { if (admission) delete encounter.preparationAttempt; throw error; }
+    if (admission && (response.status !== 200 || signal.aborted)) delete encounter.preparationAttempt;
     if (signal.aborted || ![200, 401, 403, 409, 422, 503].includes(response.status)) throw unavailable();
-    if (response.status === 200) return { status: 200, body: await readBoundedJson(response,
-      coreCaptureResponseLimit(path.slice(path.lastIndexOf("/") + 1))) };
+    if (response.status === 200) {
+      try { return { status: 200, body: await readBoundedJson(response,
+        coreCaptureResponseLimit(path.slice(path.lastIndexOf("/") + 1))) }; }
+      catch (error) { if (admission) delete encounter.preparationAttempt; throw error; }
+    }
     // Permit one native-sanitized recovery outcome, never arbitrary error content.
     if (path === "/service/v1/agent/scribe/capture-admissions" && response.status === 409
       && response.headers.get("content-type")?.split(";", 1)[0] === "application/json") {
@@ -227,9 +318,41 @@ export class DesktopProviderWorkspaceMain {
     }
     return { status: response.status, body: null };
   }
-  private async requireSession(encounter: Encounter, value: unknown): Promise<void> {
+  private async requireSession(encounter: Encounter, value: unknown): Promise<JournalSnapshot> {
     const sessionId = uuid(value), saved = await encounter.value.journal.load();
     if (saved.progress?.sessionId !== sessionId) throw unavailable();
+    return saved;
+  }
+  /** Trusted recorder state only. This measures initial preparation through the
+   * main-process Ready state; renderer paint and later user decisions are separate. */
+  private observeRecorderPreparation(connection: Connection, encounter: Encounter,
+    recorder: DesktopProviderRecorder, began: number, signal: AbortSignal, consentBegan?: number): void {
+    const lifetime = AbortSignal.any([signal, connection.abort.signal, encounter.abort.signal, encounter.value.signal]);
+    let finished = false, remove: (() => void) | undefined;
+    const finish = (): void => {
+      finished = true;
+      try { remove?.(); } catch { /* Observation must never affect recorder ownership. */ }
+      lifetime.removeEventListener("abort", finish);
+    };
+    if (lifetime.aborted) return;
+    lifetime.addEventListener("abort", finish, { once: true });
+    try {
+      remove = recorder.subscribe(snapshot => {
+        if (finished || lifetime.aborted) { finish(); return; }
+        if (snapshot.state === "ready" && snapshot.desktop?.phase === "ready"
+          && snapshot.statusCode === "capture_ready") {
+          try {
+            const ready = performance.now();
+            this.diagnostics("provider_recorder_prepare", Math.max(0, ready - began));
+            if (consentBegan !== undefined) this.diagnostics("provider_consent_to_ready", Math.max(0, ready - consentBegan));
+          }
+          catch { /* Observation cannot affect recording or cleanup. */ }
+          finish();
+        } else if (snapshot.state !== "preparing" || snapshot.desktop?.phase !== "preparing") finish();
+      });
+      // subscribe publishes its initial snapshot synchronously.
+      if (finished) finish();
+    } catch { finish(); }
   }
   private async readSession(): Promise<ProviderSessionState> {
     const observation = this.observations, value = sessionState(await this.host.session.getState());

@@ -378,6 +378,8 @@ private final class DriverCallbackGate: @unchecked Sendable {
   private var eventsArmed = false
   private var startupFailed = false
   private var terminalEventSent = false
+  private var hardEventSent = false
+  private var frameWaiters: [CheckedContinuation<Bool, Never>] = []
   private var terminalDelivery: Task<Void, Never>?
 
   init(continueInBackground: Bool) { self.continueInBackground = continueInBackground }
@@ -391,6 +393,7 @@ private final class DriverCallbackGate: @unchecked Sendable {
       eventsArmed = false
       startupFailed = false
       terminalEventSent = false
+      hardEventSent = false
       terminalDelivery = nil
     }
   }
@@ -416,15 +419,18 @@ private final class DriverCallbackGate: @unchecked Sendable {
   }
 
   func retireAdmission(generation: UInt64) -> Task<Void, Never>? {
-    lock.withLock {
-      guard self.generation == generation else { return nil }
+    let retired = lock.withLock { () -> (Task<Void, Never>?, [CheckedContinuation<Bool, Never>]) in
+      guard self.generation == generation else { return (nil, []) }
       framesOpen = false
       callbacks = nil
       self.generation = nil
       let delivery = terminalDelivery
       terminalDelivery = nil
-      return delivery
+      defer { frameWaiters.removeAll() }
+      return (delivery, frameWaiters)
     }
+    for waiter in retired.1 { waiter.resume(returning: false) }
+    return retired.0
   }
 
   func receive(frames: OwnedAudioFrames, generation: UInt64) {
@@ -436,6 +442,8 @@ private final class DriverCallbackGate: @unchecked Sendable {
         framesOpen = false
         if !terminalEventSent {
           terminalEventSent = true
+          hardEventSent = true
+          callbacks.invalidate?(.captureFailed)
           terminalDelivery = Task { await callbacks.event(.captureFailed) }
         }
         return .overflow
@@ -465,31 +473,79 @@ private final class DriverCallbackGate: @unchecked Sendable {
 
   func receive(event: AppleAudioSystemEvent, generation: UInt64) {
     let mapped = Self.map(event)
+    let benign = event == .routeChanged || event == .interruptionBegan
     lock.withLock {
-      guard self.generation == generation, !terminalEventSent,
-        let storedCallbacks = callbacks
-      else { return }
+      guard self.generation == generation, let storedCallbacks = callbacks else { return }
       guard eventsArmed else {
         if event == .configurationChanged { return }
         startupFailed = true
         terminalEventSent = true
         return
       }
-      // Startup remains foreground-only. Once armed, the native encrypted
-      // owner supplies heartbeat, short authority windows and durable storage.
-      // Interruptions, route changes and permission revocation remain terminal.
       if event == .backgrounded && continueInBackground { return }
+      // Only the native encrypted graph opts into preservation. Its hard events
+      // still override a prior benign event; a stopped source never reopens.
+      let preserve = continueInBackground && storedCallbacks.invalidate != nil
+      let deliveryEvent: PCMAudioEvent = preserve && event == .configurationChanged ? .captureFailed : mapped
+      if terminalEventSent && (!preserve || benign || hardEventSent) { return }
       terminalEventSent = true
       framesOpen = false
-      terminalDelivery = Task { await storedCallbacks.event(mapped) }
+      if !benign {
+        hardEventSent = true
+        // Lock order is driver admission → native sink → queue store. The
+        // native invalidator only fences the sink; it must never call back into
+        // the driver. Sink observers schedule an actor task after releasing the
+        // sink lock, so no reverse acquisition exists in the native graph.
+        storedCallbacks.invalidate?(deliveryEvent)
+        for waiter in frameWaiters { waiter.resume(returning: false) }
+        frameWaiters.removeAll()
+      }
+      terminalDelivery = Task { [weak self] in
+        // Keep the one already-admitted callback ahead of a benign close, while
+        // rejecting every later callback. Hard invalidation never waits for it.
+        if preserve && benign {
+          guard await self?.waitForFrame(generation: generation) == true else { return }
+        }
+        await storedCallbacks.event(deliveryEvent)
+      }
     }
   }
 
-  private func completeFrame(generation: UInt64) {
-    lock.withLock {
-      guard self.generation == generation else { return }
-      frameOutstanding = false
+  private func waitForFrame(generation: UInt64) async -> Bool {
+    await withCheckedContinuation { continuation in
+      let immediate = lock.withLock { () -> Bool? in
+        guard self.generation == generation, !hardEventSent else { return false }
+        guard frameOutstanding else { return true }
+        frameWaiters.append(continuation)
+        return nil
+      }
+      if let immediate { continuation.resume(returning: immediate) }
+      else {
+        // Do not leave the microphone waiting indefinitely on an admitted
+        // callback. Timeout is a hard failure, so partial audio is discarded.
+        Task { [weak self] in
+          try? await Task.sleep(for: .seconds(2))
+          self?.expireFrameWait(generation: generation)
+        }
+      }
     }
+  }
+
+  private func expireFrameWait(generation: UInt64) {
+    let pending = lock.withLock {
+      self.generation == generation && frameOutstanding && !frameWaiters.isEmpty
+    }
+    if pending { receive(event: .captureFailed, generation: generation) }
+  }
+
+  private func completeFrame(generation: UInt64) {
+    let waiters = lock.withLock { () -> [CheckedContinuation<Bool, Never>] in
+      guard self.generation == generation else { return [] }
+      frameOutstanding = false
+      defer { frameWaiters.removeAll() }
+      return frameWaiters
+    }
+    for waiter in waiters { waiter.resume(returning: true) }
   }
 
   private static func map(_ event: AppleAudioSystemEvent) -> PCMAudioEvent {

@@ -23,9 +23,7 @@ def _job_blocks(workflow: str) -> list[tuple[str, str]]:
         (
             match.group(1),
             jobs[
-                match.end() : matches[index + 1].start()
-                if index + 1 < len(matches)
-                else len(jobs)
+                match.end() : matches[index + 1].start() if index + 1 < len(matches) else len(jobs)
             ],
         )
         for index, match in enumerate(matches)

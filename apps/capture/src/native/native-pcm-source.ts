@@ -1,3 +1,4 @@
+import { captureSourceWindow } from "./capture-source-window";
 import { AudioCaptureError } from "../audio/errors";
 import type {
   CapturedWavChunk,
@@ -6,6 +7,7 @@ import type {
   CaptureSourceErrorCode,
   CaptureSourceInterruptionCode,
   CaptureSourceStartOptions,
+  CaptureSourceWindow,
   Pcm16WavProfile,
 } from "../capture";
 import {
@@ -58,7 +60,9 @@ interface CaptureRun {
   pendingDelivery: Promise<void>;
   deliveredChunks: number;
   expectedSequenceNumber: number;
-  readonly maximumChunks: number;
+  maximumChunks: number;
+  window: CaptureSourceWindow | undefined;
+  extending: boolean;
   readonly targetFramesPerChunk: number;
   readonly profile: Pcm16WavProfile;
   onChunk: ((chunk: CapturedWavChunk) => Promise<void>) | undefined;
@@ -74,6 +78,7 @@ interface CaptureRun {
 export class NativePcmCaptureSource implements CaptureSource {
   public readonly kind = "microphone" as const;
   public readonly channel?: CaptureAudioChannel;
+  public readonly supportsRenewal?: true;
 
   readonly #bridge: NativePcmBridge;
   #generation = 0;
@@ -81,6 +86,7 @@ export class NativePcmCaptureSource implements CaptureSource {
 
   public constructor(bridge: NativePcmBridge, channel?: CaptureAudioChannel) {
     this.#bridge = bridge;
+    if (bridge.supportsRenewal === true) this.supportsRenewal = true;
     if (channel !== undefined) this.channel = channel;
   }
 
@@ -95,14 +101,20 @@ export class NativePcmCaptureSource implements CaptureSource {
     if (isAborted(options.signal)) throw abortError();
 
     const bounds = captureBounds(options);
+    if (options.window && this.#bridge.supportsRenewal !== true) throw new AudioCaptureError("audio_capture_unavailable");
+    const window = options.window ? captureSourceWindow(options.window, bounds.maximumChunks) : undefined;
     const run = this.#createRun(options, bounds);
+    run.window = window;
     this.#run = run;
     this.#addAbortHandler(run, options.signal);
 
     let availability: unknown;
     try {
       this.#assertStartingRun(run, "checking_availability");
-      availability = await Promise.race([
+      // The desktop capture helper performs this same permission check inside
+      // its owned start, after fresh authority and before any source setup.
+      // Avoid launching a second disposable helper just to repeat that check.
+      availability = this.#bridge.checksAvailabilityOnStart === true ? true : await Promise.race([
         this.#bridge.getAvailability(),
         run.startupCancellation.promise,
       ]);
@@ -124,6 +136,7 @@ export class NativePcmCaptureSource implements CaptureSource {
       ...NATIVE_PCM_FORMAT,
       targetFramesPerChunk: bounds.targetFramesPerChunk,
       maximumChunks: bounds.maximumChunks,
+      ...(window ? { window } : {}),
     };
     const generation = run.generation;
     this.#assertStartingRun(run, "starting_native");
@@ -188,6 +201,29 @@ export class NativePcmCaptureSource implements CaptureSource {
     }
   }
 
+  public async extend(value: CaptureSourceWindow): Promise<void> {
+    const run = this.#run;
+    if (!run || this.supportsRenewal !== true || run.phase !== "active" || run.extending
+      || !run.window || !run.nativeSession?.extend) throw new AudioCaptureError("audio_capture_unavailable");
+    const next = captureSourceWindow(value, value.maximumChunks, run.window);
+    run.extending = true;
+    // Stage the durable allowance before native can deliver a renewed callback.
+    run.maximumChunks = next.maximumChunks;
+    try {
+      await run.nativeSession.extend(next);
+      if (!this.#isCurrentRun(run) || run.phase !== "active" || run.cancelReason !== undefined) {
+        throw new AudioCaptureError("audio_capture_unavailable");
+      }
+      run.window = next;
+    } catch (error) {
+      if (this.#isCurrentRun(run) && run.phase === "active") {
+        run.terminalFailure = sanitizeStartFailure(error); run.cancelReason = "terminal";
+        await this.#requestClose(run, "discard");
+      }
+      throw error;
+    } finally { run.extending = false; }
+  }
+
   public async stop(): Promise<void> {
     const run = this.#run;
     if (run === undefined) return;
@@ -219,6 +255,7 @@ export class NativePcmCaptureSource implements CaptureSource {
       deliveredChunks: 0,
       expectedSequenceNumber: 0,
       maximumChunks: bounds.maximumChunks,
+      window: undefined, extending: false,
       targetFramesPerChunk: bounds.targetFramesPerChunk,
       profile: bounds.profile,
       onChunk: options.onChunk,

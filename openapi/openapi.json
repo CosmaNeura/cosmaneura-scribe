@@ -430,6 +430,41 @@
         "title": "CaptureLeaseRenewRequest",
         "type": "object"
       },
+      "CaptureLeaseState": {
+        "additionalProperties": false,
+        "properties": {
+          "current_lease": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaptureLeaseReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lease_closed": {
+            "title": "Lease Closed",
+            "type": "boolean"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "session_status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          }
+        },
+        "required": [
+          "session_id",
+          "current_lease",
+          "lease_closed",
+          "session_status"
+        ],
+        "title": "CaptureLeaseState",
+        "type": "object"
+      },
       "CaptureMediaCapabilities": {
         "additionalProperties": false,
         "properties": {
@@ -1121,6 +1156,86 @@
         "title": "ConsentRecord",
         "type": "object"
       },
+      "CreatorContinuationReceiptV1": {
+        "additionalProperties": false,
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/CaptureLeaseReceipt"
+          },
+          "reservations": {
+            "$ref": "#/components/schemas/ChunkReservationBatchReceipt"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease",
+          "reservations"
+        ],
+        "title": "CreatorContinuationReceiptV1",
+        "type": "object"
+      },
+      "CreatorContinuationRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "enum": [
+              "microphone",
+              "mixed"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "first_sequence_number": {
+            "exclusiveMaximum": 2048.0,
+            "minimum": 0.0,
+            "title": "First Sequence Number",
+            "type": "integer"
+          },
+          "previous_lease_generation": {
+            "minimum": 1.0,
+            "title": "Previous Lease Generation",
+            "type": "integer"
+          },
+          "previous_lease_id": {
+            "format": "uuid",
+            "title": "Previous Lease Id",
+            "type": "string"
+          },
+          "renew_idempotency_key": {
+            "maxLength": 255,
+            "minLength": 8,
+            "title": "Renew Idempotency Key",
+            "type": "string"
+          },
+          "reservation_idempotency_key": {
+            "maxLength": 255,
+            "minLength": 8,
+            "title": "Reservation Idempotency Key",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "channel",
+          "first_sequence_number",
+          "previous_lease_id",
+          "previous_lease_generation",
+          "renew_idempotency_key",
+          "reservation_idempotency_key"
+        ],
+        "title": "CreatorContinuationRequestV1",
+        "type": "object"
+      },
       "CreatorDecisionReceiptV1": {
         "additionalProperties": false,
         "properties": {
@@ -1154,6 +1269,33 @@
         "title": "CreatorDecisionReceiptV1",
         "type": "object"
       },
+      "CreatorPreparationMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/CaptureCapabilities"
+          },
+          "encryption_key": {
+            "$ref": "#/components/schemas/AudioEncryptionPublicKey"
+          },
+          "review": {
+            "$ref": "#/components/schemas/CreatorReviewViewV1"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review",
+          "encryption_key",
+          "capabilities"
+        ],
+        "title": "CreatorPreparationMetadata",
+        "type": "object"
+      },
       "CreatorReviewQueueStatus": {
         "enum": [
           "not_ready",
@@ -1176,6 +1318,20 @@
                 "type": "null"
               }
             ]
+          },
+          "editing_allowed": {
+            "default": false,
+            "title": "Editing Allowed",
+            "type": "boolean"
+          },
+          "review_edits": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CreatorTranscriptEditV1"
+            },
+            "maxItems": 1024,
+            "title": "Review Edits",
+            "type": "array"
           },
           "review_queue": {
             "anyOf": [
@@ -1237,6 +1393,208 @@
           "status"
         ],
         "title": "CreatorReviewViewV1",
+        "type": "object"
+      },
+      "CreatorSpeakerConfirmationV1": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "enum": [
+                  "interpreter",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "role": {
+            "$ref": "#/components/schemas/SpeakerRole"
+          },
+          "speaker_id": {
+            "format": "uuid",
+            "title": "Speaker Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "speaker_id",
+          "role"
+        ],
+        "title": "CreatorSpeakerConfirmationV1",
+        "type": "object"
+      },
+      "CreatorTextCorrectionV1": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_source_segment_version": {
+            "minimum": 1.0,
+            "title": "Expected Source Segment Version",
+            "type": "integer"
+          },
+          "source_segment_id": {
+            "format": "uuid",
+            "title": "Source Segment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_segment_id",
+          "expected_source_segment_version",
+          "content"
+        ],
+        "title": "CreatorTextCorrectionV1",
+        "type": "object"
+      },
+      "CreatorTranscriptEditBodyV1": {
+        "additionalProperties": false,
+        "properties": {
+          "corrections": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CreatorTextCorrectionV1"
+            },
+            "maxItems": 128,
+            "title": "Corrections",
+            "type": "array"
+          },
+          "expected_source_transcript_version": {
+            "minimum": 1.0,
+            "title": "Expected Source Transcript Version",
+            "type": "integer"
+          },
+          "expected_working_transcript_id": {
+            "format": "uuid",
+            "title": "Expected Working Transcript Id",
+            "type": "string"
+          },
+          "expected_working_transcript_version": {
+            "minimum": 1.0,
+            "title": "Expected Working Transcript Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "speakers": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CreatorSpeakerConfirmationV1"
+            },
+            "maxItems": 128,
+            "title": "Speakers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_source_transcript_version",
+          "expected_working_transcript_id",
+          "expected_working_transcript_version"
+        ],
+        "title": "CreatorTranscriptEditBodyV1",
+        "type": "object"
+      },
+      "CreatorTranscriptEditReceiptV1": {
+        "additionalProperties": false,
+        "properties": {
+          "edit_id": {
+            "format": "uuid",
+            "title": "Edit Id",
+            "type": "string"
+          },
+          "saved": {
+            "const": true,
+            "default": true,
+            "title": "Saved",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "working_transcript_id": {
+            "format": "uuid",
+            "title": "Working Transcript Id",
+            "type": "string"
+          },
+          "working_transcript_version": {
+            "minimum": 2.0,
+            "title": "Working Transcript Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "edit_id",
+          "working_transcript_id",
+          "working_transcript_version"
+        ],
+        "title": "CreatorTranscriptEditReceiptV1",
+        "type": "object"
+      },
+      "CreatorTranscriptEditV1": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "edit_id": {
+            "format": "uuid",
+            "title": "Edit Id",
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/CreatorTranscriptEditBodyV1"
+          },
+          "working_transcript_version": {
+            "minimum": 2.0,
+            "title": "Working Transcript Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "edit_id",
+          "working_transcript_version",
+          "created_at",
+          "request"
+        ],
+        "title": "CreatorTranscriptEditV1",
         "type": "object"
       },
       "CreatorTranslationDecisionBodyV1": {
@@ -1446,6 +1804,81 @@
           "status"
         ],
         "title": "CreatorTranslationReviewQueueV1",
+        "type": "object"
+      },
+      "CreatorWindowReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/SessionAudioKeyReceipt"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/CaptureLeaseReceipt"
+          },
+          "reservations": {
+            "$ref": "#/components/schemas/ChunkReservationBatchReceipt"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding",
+          "lease",
+          "reservations"
+        ],
+        "title": "CreatorWindowReceipt",
+        "type": "object"
+      },
+      "CreatorWindowRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "bind_idempotency_key": {
+            "pattern": "^[A-Za-z0-9._:-]{8,255}$",
+            "title": "Bind Idempotency Key",
+            "type": "string"
+          },
+          "binding": {
+            "$ref": "#/components/schemas/WindowBinding"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/CaptureChannel"
+          },
+          "lease_idempotency_key": {
+            "pattern": "^[A-Za-z0-9._:-]{8,255}$",
+            "title": "Lease Idempotency Key",
+            "type": "string"
+          },
+          "reservation_count": {
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Reservation Count",
+            "type": "integer"
+          },
+          "reserve_idempotency_key": {
+            "pattern": "^[A-Za-z0-9._:-]{8,255}$",
+            "title": "Reserve Idempotency Key",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding",
+          "bind_idempotency_key",
+          "lease_idempotency_key",
+          "reserve_idempotency_key",
+          "channel",
+          "reservation_count"
+        ],
+        "title": "CreatorWindowRequest",
         "type": "object"
       },
       "DeliveryStatus": {
@@ -1921,6 +2354,75 @@
         ],
         "title": "SessionStatus",
         "type": "string"
+      },
+      "SourceExtensionIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_authorized_until": {
+            "format": "date-time",
+            "title": "Capture Authorized Until",
+            "type": "string"
+          },
+          "first_sequence_number": {
+            "exclusiveMaximum": 2048.0,
+            "minimum": 1.0,
+            "title": "First Sequence Number",
+            "type": "integer"
+          },
+          "lease_generation": {
+            "minimum": 2.0,
+            "title": "Lease Generation",
+            "type": "integer"
+          },
+          "lease_receipt_id": {
+            "format": "uuid",
+            "title": "Lease Receipt Id",
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/SourceStartIntent"
+          },
+          "previous_extension_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Extension Id"
+          },
+          "reservation_batch_id": {
+            "format": "uuid",
+            "title": "Reservation Batch Id",
+            "type": "string"
+          },
+          "reservation_count": {
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Reservation Count",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "lease_receipt_id",
+          "lease_generation",
+          "capture_authorized_until",
+          "reservation_batch_id",
+          "first_sequence_number",
+          "reservation_count"
+        ],
+        "title": "SourceExtensionIntent",
+        "type": "object"
       },
       "SourceLocale": {
         "enum": [
@@ -2464,6 +2966,29 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WindowBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "key_version": {
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "title": "Key Version",
+            "type": "string"
+          },
+          "wrapped_dek": {
+            "maxLength": 512,
+            "minLength": 512,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Wrapped Dek",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_version",
+          "wrapped_dek"
+        ],
+        "title": "WindowBinding",
+        "type": "object"
+      },
       "WorkingSegmentResolution": {
         "enum": [
           "english_source",
@@ -2695,6 +3220,541 @@
         ]
       }
     },
+    "/v1/captured-sessions/{session_id}/capture-lease": {
+      "post": {
+        "operationId": "issue_creator_capture_lease_v1_captured_sessions__session_id__capture_lease_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureLeaseIssueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureLeaseReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Issue Creator Capture Lease",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/capture-leases/{lease_id}/renew": {
+      "post": {
+        "operationId": "renew_creator_capture_lease_v1_captured_sessions__session_id__capture_leases__lease_id__renew_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "lease_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lease Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureLeaseRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureLeaseReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Renew Creator Capture Lease",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/chunk-reservations": {
+      "post": {
+        "operationId": "reserve_creator_audio_chunks_v1_captured_sessions__session_id__chunk_reservations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkReservationBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkReservationBatchReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reserve Creator Audio Chunks",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/continuation-window": {
+      "post": {
+        "operationId": "prepare_creator_continuation_v1_captured_sessions__session_id__continuation_window_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatorContinuationRequestV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorContinuationReceiptV1"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Prepare Creator Continuation",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/preparation-metadata": {
+      "get": {
+        "operationId": "read_creator_preparation_metadata_v1_captured_sessions__session_id__preparation_metadata_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorPreparationMetadata"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Creator Preparation Metadata",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/recording-window": {
+      "post": {
+        "operationId": "prepare_creator_window_v1_captured_sessions__session_id__recording_window_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatorWindowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorWindowReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Prepare Creator Window",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
     "/v1/captured-sessions/{session_id}/review": {
       "get": {
         "operationId": "read_creator_review_v1_captured_sessions__session_id__review_get",
@@ -2851,6 +3911,186 @@
         "summary": "Decide Creator Review",
         "tags": [
           "creator-review"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/review/edit": {
+      "post": {
+        "operationId": "edit_creator_transcript_v1_captured_sessions__session_id__review_edit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatorTranscriptEditBodyV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatorTranscriptEditReceiptV1"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Edit Creator Transcript",
+        "tags": [
+          "creator-review"
+        ]
+      }
+    },
+    "/v1/captured-sessions/{session_id}/source-extension": {
+      "post": {
+        "operationId": "source_extension_v1_captured_sessions__session_id__source_extension_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceExtensionIntent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Source Extension",
+        "tags": [
+          "native-source-extension"
         ]
       }
     },
@@ -3532,6 +4772,62 @@
           }
         ],
         "summary": "Issue Capture Lease"
+      }
+    },
+    "/v1/sessions/{session_id}/capture-lease-state": {
+      "get": {
+        "description": "Observe capture authority, including untouched setup; never issue or renew it.",
+        "operationId": "get_capture_lease_state_v1_sessions__session_id__capture_lease_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureLeaseState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Capture Lease State"
       }
     },
     "/v1/sessions/{session_id}/capture-leases/{lease_id}/renew": {

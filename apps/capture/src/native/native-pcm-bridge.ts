@@ -1,3 +1,4 @@
+import type { CaptureSourceWindow } from "../capture/source";
 /** Native/main-process contract; not a renderer or credential API. */
 export const NATIVE_PCM_FORMAT = { encoding: "pcm_s16le", channels: 1, sampleRateHz: 16_000 } as const;
 export type NativePcmStopMode = "drain" | "discard";
@@ -11,6 +12,7 @@ export interface NativePcmConfiguration {
   readonly sampleRateHz: typeof NATIVE_PCM_FORMAT.sampleRateHz;
   readonly targetFramesPerChunk: number;
   readonly maximumChunks: number;
+  readonly window?: CaptureSourceWindow;
 }
 export interface NativePcmPacket {
   readonly sequenceNumber: number;
@@ -31,6 +33,7 @@ export interface NativePcmSession {
   readonly ready: Promise<void>;
   /** Optional native delivery acknowledgement, called only after the source is active. */
   activate?(): void;
+  extend?(window: CaptureSourceWindow): Promise<void>;
   /** Stop works during startup. Rejection retains the same native handle for retry.
    * Discard upgrades an in-flight drain; successful stop confirms no later callbacks.
    */
@@ -39,8 +42,12 @@ export interface NativePcmSession {
 export interface NativePcmBridge {
   /** Platform policy stays here: iOS foreground; desktop unlocked session/permission. */
   getAvailability(): Promise<boolean>;
+  /** Trusted native start rechecks availability before any source setup and
+   * rejects ready on denial. Other bridges keep the separate preflight. */
+  readonly checksAvailabilityOnStart?: true;
   /** Only desktop delivery opts in to draining accepted full packets during stop. */
   readonly deliversDuringDrain?: true;
+  readonly supportsRenewal?: true;
   /** Return ownership synchronously, before permission/startup can await. No packet
    * may arrive before ready, or before activate when that handshake is provided.
    */

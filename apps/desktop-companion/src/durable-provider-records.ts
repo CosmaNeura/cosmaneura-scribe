@@ -62,6 +62,29 @@ export class DurableDesktopCoverage {
     const prior = await this.read();
     return prior?.intervals ? prior.intervals.at(-1)!.coverage : prior?.value ?? null;
   }
+  /** Actual mixed frames retained in authenticated native completion metadata.
+   * Missing/interrupted intervals are unknown, never inferred from byte budgets. */
+  async capturedAudioFrames(recordedChunks: number): Promise<number | null> {
+    if (!Number.isSafeInteger(recordedChunks) || recordedChunks < 0 || recordedChunks > MAX_CHUNKS) throw failure();
+    const prior = await this.read();
+    if (!prior) return recordedChunks === 0 ? 0 : null;
+    const intervals = prior.intervals ?? [{ firstSequenceNumber: 0, coverage: prior.value }];
+    let frames = 0;
+    for (const [index, interval] of intervals.entries()) {
+      if (interval.coverage?.phase === "started") return null;
+      if (interval.coverage?.phase === "stopped") frames += interval.coverage.value.outputFrames;
+      else if ((intervals[index + 1]?.firstSequenceNumber ?? recordedChunks) > interval.firstSequenceNumber) return null;
+    }
+    return frames;
+  }
+  /** Only an exact current interval with no earlier native start or saved chunks
+   * proves an unused setup. Unknown/legacy history retains the continuity warning. */
+  async hasPriorCapture(receiptId: string): Promise<boolean> {
+    uuid(receiptId);
+    const intervals = (await this.read())?.intervals, current = intervals?.at(-1);
+    return !current || current.receiptId !== receiptId || current.firstSequenceNumber > 0
+      || intervals!.slice(0, -1).some(item => item.coverage !== null);
+  }
   /** Called after confirmed physical/server stop, before a fresh source start.
    * Receipt ID makes retries exact even for a zero-chunk interval. */
   async beginInterval(receiptId: string, firstSequenceNumber: number): Promise<void> {

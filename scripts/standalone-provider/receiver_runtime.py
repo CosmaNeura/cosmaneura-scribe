@@ -33,6 +33,7 @@ class ReceiverConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
     schema_version: Literal[1] = Field(default=1, alias="schema")
     enabled: bool = False
+    encounter_creation_enabled: bool = False
     platforms: tuple[Literal["ios", "desktop"], ...] = ("ios", "desktop")
     desktop_native_session_without_origin: bool = False
     environment_id: UUID | None = None
@@ -60,18 +61,12 @@ class ReceiverConfiguration(BaseModel):
                     self.managed_identity_client_id,
                 )
             )
-            or re.fullmatch(
-                r"[a-z0-9-]+\.postgres\.database\.azure\.com", self.database_host or ""
-            )
+            or re.fullmatch(r"[a-z0-9-]+\.postgres\.database\.azure\.com", self.database_host or "")
             is None
             or re.fullmatch(r"[A-Za-z0-9_-]{1,63}", self.database_name or "") is None
-            or re.fullmatch(r"[A-Za-z0-9_-]{1,63}", self.database_reader_role or "")
-            is None
-            or re.fullmatch(r"api://[0-9a-f-]{36}/\.default", self.core_scope or "")
-            is None
-            or re.fullmatch(
-                r"[A-Za-z0-9._:/-]{8,160}", self.ingress_isolation_receipt or ""
-            )
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,63}", self.database_reader_role or "") is None
+            or re.fullmatch(r"api://[0-9a-f-]{36}/\.default", self.core_scope or "") is None
+            or re.fullmatch(r"[A-Za-z0-9._:/-]{8,160}", self.ingress_isolation_receipt or "")
             is None
         ):
             raise ValueError("receiver_configuration_invalid")
@@ -117,9 +112,7 @@ class OriginReceivers:
         self._apps = {origin.encode("ascii"): app for origin, app in apps.items()}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        origins = [
-            value for key, value in scope.get("headers", []) if key.lower() == b"origin"
-        ]
+        origins = [value for key, value in scope.get("headers", []) if key.lower() == b"origin"]
         app = self._apps.get(origins[0]) if len(origins) == 1 else None
         await (app or unavailable)(scope, receive, send)
 
@@ -133,6 +126,7 @@ class ReceiverResources:
 async def finish_close(close: Callable[[], Awaitable[None]]) -> None:
     async def invoke() -> None:
         await close()
+
     task = asyncio.create_task(invoke())
     try:
         await asyncio.shield(task)
@@ -160,9 +154,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
 
     if not config.enabled:
         raise RuntimeError("receiver_disabled")
-    credential = ManagedIdentityCredential(
-        client_id=str(config.managed_identity_client_id)
-    )
+    credential = ManagedIdentityCredential(client_id=str(config.managed_identity_client_id))
     verifiers: list[ClerkTokenVerifier] = []
     engine = None
     core_connections: ProviderCoreConnections | None = None
@@ -197,9 +189,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
         core_connections = ProviderCoreConnections(CORE_ORIGIN)
 
         async def database_password() -> str:
-            token = await credential.get_token(
-                "https://ossrdbms-aad.database.windows.net/.default"
-            )
+            token = await credential.get_token("https://ossrdbms-aad.database.windows.net/.default")
             if not token.token or token.expires_on <= time() + 30:
                 raise RuntimeError("receiver_database_credential_unavailable")
             return token.token
@@ -275,6 +265,7 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
             return SecretStr(token.token)
 
         apps: dict[str, ASGIApp] = {}
+
         class ReceiverIdentitySettings(Settings):
             model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
@@ -319,12 +310,17 @@ async def build_runtime(config: ReceiverConfiguration) -> ReceiverResources:
                 CORE_STAGING_PERSONAL,
             )
             apps[origin] = ProviderReceiver(
-                profile, engine, settings, verifier, workload_token, enabled=True,
+                profile,
+                engine,
+                settings,
+                verifier,
+                workload_token,
+                enabled=True,
                 core_connections=core_connections,
+                encounter_creation_enabled=config.encounter_creation_enabled,
+                provider_trace_enabled=True,
             ).app()
-        return ReceiverResources(
-            AzureIngress(OriginReceivers(apps), profile=ACA_PROFILE), close
-        )
+        return ReceiverResources(AzureIngress(OriginReceivers(apps), profile=ACA_PROFILE), close)
     except asyncio.CancelledError:
         await finish_close(close)
         raise

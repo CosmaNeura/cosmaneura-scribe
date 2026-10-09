@@ -37,6 +37,29 @@ private final class PCMSink: DesktopPCMSink, @unchecked Sendable {
     func failed(_ reason: DesktopAudioFailure) { lock.withLock { errors.append(reason) } }
 }
 
+@Test func renewingMixerPreservesClockSamplesAndContiguousOutputPositions() throws {
+    let fixture = MixerFixture(), sink = PCMSink()
+    let mixer = try AlignedMeetingPCM(maximumOutputFrames: 480, hardMaximumOutputFrames: 960, sink: sink)
+    for tick in 0..<6 {
+        if tick == 2 { try mixer.extend(maximumOutputFrames: 960) }
+        for channel in [DesktopAudioChannel.microphone, .systemAudio] {
+            #expect(mixer.receive(try fixture.frame(channel, offset: UInt64(tick * 10_000_000), position: Int64(tick * 160),
+                rate: 16_000, samples: Array(repeating: channel == .microphone ? 0.5 : 0.25, count: 160))))
+        }
+    }
+    #expect(throws: DesktopAudioFailure.self) { try mixer.extend(maximumOutputFrames: 961) }
+    #expect(throws: DesktopAudioFailure.self) { try mixer.extend(maximumOutputFrames: 959) }
+    let result = try mixer.finish()
+    #expect(result.outputFrames == 960 && sink.starts.count == 1)
+    #expect(sink.values == Array(repeating: 12_288, count: 960))
+    var position = 0
+    for packet in sink.packets { #expect(packet.firstFrame == position); position += packet.frameCount }
+    #expect(position == 960 && sink.errors.isEmpty)
+    #expect(throws: DesktopAudioFailure.self) { try mixer.extend(maximumOutputFrames: 960) }
+    let legacy = try AlignedMeetingPCM(maximumOutputFrames: 160, sink: PCMSink())
+    #expect(throws: DesktopAudioFailure.self) { try legacy.extend(maximumOutputFrames: 161) }
+}
+
 @Test func actualNativeDeliveryMixesStereoAndDifferentRatesAtCommonStart() async throws {
     let fixture = MixerFixture(), sink = PCMSink()
     let mixer = try AlignedMeetingPCM(maximumOutputFrames: 16_000, sink: sink)
@@ -310,4 +333,22 @@ private final class PCMSink: DesktopPCMSink, @unchecked Sendable {
     }
     #expect(results[0] == [16384, -16384, -16384, 16384, 16384, -16384, -16384, 16384, 16384, -16384, -16384])
     #expect(results[0] == results[1])
+}
+
+@Test func microphoneOnlyUsesItsActualClockAtFullGainWithoutASystemSource() throws {
+    let fixture = MixerFixture(), sink = PCMSink()
+    let mixer = try AlignedMeetingPCM(maximumOutputFrames: 480, microphoneOnly: true, sink: sink)
+    for tick in 0..<3 {
+        #expect(mixer.receive(try fixture.frame(.microphone, offset: UInt64(tick * 10_000_000), position: Int64(tick * 160),
+            rate: 16_000, samples: Array(repeating: 0.5, count: 160))))
+    }
+    let result = try mixer.finish()
+    #expect(result.outputFrames == 480)
+    #expect(result.start.hostTimeNanoseconds == fixture.origin)
+    #expect(result.start.microphonePrerollNanoseconds == 0 && result.start.systemPrerollNanoseconds == 0)
+    #expect(result.microphoneTailNanoseconds == 0 && result.systemTailNanoseconds == 0)
+    #expect(sink.values == Array(repeating: 16_384, count: 480))
+    #expect(sink.errors.isEmpty)
+    let rejected = try AlignedMeetingPCM(maximumOutputFrames: 480, microphoneOnly: true, sink: PCMSink())
+    #expect(!rejected.receive(try fixture.frame(.systemAudio, offset: 0, position: 0, samples: [0.5])))
 }

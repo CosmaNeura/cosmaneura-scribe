@@ -5,6 +5,9 @@ const config: CapacitorConfig = {
   appName: "Cosmaneura Capture",
   webDir: "dist",
   loggingBehavior: "none",
+  ios: {
+    zoomEnabled: true,
+  },
   android: {
     allowMixedContent: false,
     webContentsDebuggingEnabled: false,

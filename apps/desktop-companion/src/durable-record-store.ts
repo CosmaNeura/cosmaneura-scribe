@@ -96,14 +96,14 @@ export class DurableDesktopRecordStore {
   wrapping(namespace: string, sessionId: string): LocalSessionKeyWrapping {
     return { key: this.current(), additionalData: this.aad(namespace, `session-key:${uuid(sessionId)}`, 0) };
   }
-  async unwrap(namespace: string, sessionId: string, value: NonNullable<WrappedSessionKey["localKey"]>): Promise<CryptoKey> {
+  async unwrap(namespace: string, sessionId: string, value: NonNullable<WrappedSessionKey["localKey"]>, usage: "encrypt" | "decrypt" = "encrypt"): Promise<CryptoKey> {
     try {
       if (typeof value.nonce !== "string" || typeof value.ciphertext !== "string") throw failure();
       const nonce = base64UrlDecode(value.nonce), bytes = base64UrlDecode(value.ciphertext);
       if (nonce.length !== 12 || bytes.length !== 48) throw failure();
       const key = await this.crypto.subtle.unwrapKey("raw", owned(bytes), this.current(),
         { name: "AES-GCM", iv: owned(nonce), additionalData: this.aad(namespace, `session-key:${uuid(sessionId)}`, 0) },
-        { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+        { name: "AES-GCM", length: 256 }, false, [usage]);
       this.current(); return key;
     } catch { throw failure(); }
   }
@@ -203,6 +203,7 @@ export class DesktopRecordNamespace {
   removeGroup(key: string, revision: number, others: readonly string[]): void { this.store.removeGroup(this.namespace, key, revision, others); }
   wrapping(sessionId: string): LocalSessionKeyWrapping { return this.store.wrapping(this.namespace, sessionId); }
   unwrap(sessionId: string, value: NonNullable<WrappedSessionKey["localKey"]>): Promise<CryptoKey> { return this.store.unwrap(this.namespace, sessionId, value); }
+  unwrapForPlayback(sessionId: string, value: NonNullable<WrappedSessionKey["localKey"]>): Promise<CryptoKey> { return this.store.unwrap(this.namespace, sessionId, value, "decrypt"); }
 }
 
 function requireMain(): void {

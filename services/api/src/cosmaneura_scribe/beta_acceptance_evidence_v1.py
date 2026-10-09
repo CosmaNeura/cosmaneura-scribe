@@ -243,12 +243,8 @@ _REQUIRED_SCENARIO_SURFACES: dict[BetaScenarioId, frozenset[BetaClientSurface]] 
     BetaScenarioId.GOOGLE_MEET_CHROME: frozenset(
         {BetaClientSurface.BACKEND, BetaClientSurface.DESKTOP}
     ),
-    BetaScenarioId.ZOOM_DESKTOP: frozenset(
-        {BetaClientSurface.BACKEND, BetaClientSurface.DESKTOP}
-    ),
-    BetaScenarioId.IOS_CAPTURE: frozenset(
-        {BetaClientSurface.BACKEND, BetaClientSurface.IOS}
-    ),
+    BetaScenarioId.ZOOM_DESKTOP: frozenset({BetaClientSurface.BACKEND, BetaClientSurface.DESKTOP}),
+    BetaScenarioId.IOS_CAPTURE: frozenset({BetaClientSurface.BACKEND, BetaClientSurface.IOS}),
     BetaScenarioId.BILINGUAL_FLOW: frozenset(
         {BetaClientSurface.BACKEND, BetaClientSurface.DESKTOP, BetaClientSurface.IOS}
     ),
@@ -271,9 +267,7 @@ _BASE_BACKEND_COMPONENTS = frozenset(
         BetaArtifactComponent.ENVIRONMENT,
     }
 )
-_REQUIRED_SCENARIO_COMPONENTS: dict[
-    BetaScenarioId, frozenset[BetaArtifactComponent]
-] = {
+_REQUIRED_SCENARIO_COMPONENTS: dict[BetaScenarioId, frozenset[BetaArtifactComponent]] = {
     BetaScenarioId.EXISTING_MCD_IDENTITY: frozenset(
         {
             BetaArtifactComponent.CORE_BACKEND,
@@ -294,12 +288,9 @@ _REQUIRED_SCENARIO_COMPONENTS: dict[
     ),
     BetaScenarioId.CREATOR_ISOLATION: _BASE_BACKEND_COMPONENTS
     | {BetaArtifactComponent.DESKTOP, BetaArtifactComponent.IOS},
-    BetaScenarioId.GOOGLE_MEET_CHROME: _BASE_BACKEND_COMPONENTS
-    | {BetaArtifactComponent.DESKTOP},
-    BetaScenarioId.ZOOM_DESKTOP: _BASE_BACKEND_COMPONENTS
-    | {BetaArtifactComponent.DESKTOP},
-    BetaScenarioId.IOS_CAPTURE: _BASE_BACKEND_COMPONENTS
-    | {BetaArtifactComponent.IOS},
+    BetaScenarioId.GOOGLE_MEET_CHROME: _BASE_BACKEND_COMPONENTS | {BetaArtifactComponent.DESKTOP},
+    BetaScenarioId.ZOOM_DESKTOP: _BASE_BACKEND_COMPONENTS | {BetaArtifactComponent.DESKTOP},
+    BetaScenarioId.IOS_CAPTURE: _BASE_BACKEND_COMPONENTS | {BetaArtifactComponent.IOS},
     BetaScenarioId.BILINGUAL_FLOW: _BASE_BACKEND_COMPONENTS
     | {
         BetaArtifactComponent.DESKTOP,
@@ -530,14 +521,11 @@ class BetaAcceptanceRunV1(_StrictEvidenceModel):
                 self.ended_at is not None and result.ended_at > self.ended_at
             ):
                 raise ValueError("beta acceptance scenario falls outside its run")
-            expected_surfaces = frozenset(
-                _REQUIRED_SCENARIO_SURFACES[result.scenario_id]
-            )
+            expected_surfaces = frozenset(_REQUIRED_SCENARIO_SURFACES[result.scenario_id])
             if frozenset(result.surfaces) != expected_surfaces:
                 raise ValueError("beta acceptance scenario surfaces are incomplete")
             bindings = {
-                binding.component: binding.fingerprint
-                for binding in result.artifact_bindings
+                binding.component: binding.fingerprint for binding in result.artifact_bindings
             }
             expected_components = _REQUIRED_SCENARIO_COMPONENTS[result.scenario_id]
             if set(bindings) != set(expected_components):
@@ -582,9 +570,7 @@ class BetaAcceptanceRunV1(_StrictEvidenceModel):
         if self.nonpassing_scenarios():
             blockers.append(BetaTechnicalBlocker.SCENARIO_NOT_PASSING)
         open_findings = tuple(
-            finding
-            for finding in self.findings
-            if finding.status == BetaFindingStatus.OPEN
+            finding for finding in self.findings if finding.status == BetaFindingStatus.OPEN
         )
         if any(finding.severity <= BetaFindingSeverity.SEV2 for finding in open_findings):
             blockers.append(BetaTechnicalBlocker.OPEN_HIGH_SEVERITY_FINDING)

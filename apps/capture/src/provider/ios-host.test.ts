@@ -105,6 +105,13 @@ const preparation = { mode: "configured_core" as const, schemaVersion: 2 as cons
   leaseIdempotencyKey: null, leaseRequest: null };
 
 describe("native provider host composition", () => {
+  it.each([undefined, true])("retains only the mount's trusted acquisition-review capability %s", async capability => {
+    const service = connection(capability ? { recorderRechecksReview: true } : {});
+    const encounter = await service.openAny();
+    expect(encounter.recorderRechecksReview).toBe(capability);
+    expect(service.mount.reauthorizeRecorder).not.toHaveBeenCalled();
+    service.abort.abort();
+  });
   it("gets native volume capacity and rejects a result after encounter revocation", async () => {
     const service = connection(), resources = await (await service.open()).recorder(session, service.abort.signal);
     try {
@@ -329,6 +336,72 @@ it.each(["recording", "interrupted", "expired"] as const)("holds mobile upload u
 
 
 describe("native provider selection and ownership", () => {
+  it("joins independent custody reads within one delayed-read interval after authorization", async () => {
+    const store = await EncryptedIndexedDbFlowStore.open();
+    vi.spyOn(EncryptedIndexedDbFlowStore, "open").mockResolvedValueOnce(store);
+    const started: string[] = [];
+    for (const name of ["getActiveCaptureState", "getPreparationState", "getSessionKeyState", "getSessionKey"] as const) {
+      vi.spyOn(store, name).mockImplementationOnce(() => {
+        started.push(name);
+        return new Promise<null>(resolve => { setTimeout(() => { resolve(null); }, 1500); });
+      });
+    }
+    const nativeRecorder = recordingFixture(session);
+    const originalOpen = nativeRecorder.port.open;
+    const opened = vi.spyOn(nativeRecorder.port, "open");
+    let authorizedAt = 0, openedAt = 0;
+    const authorize = vi.fn(async () => { authorizedAt = Date.now(); });
+    opened.mockImplementation((...args) => { openedAt = Date.now(); return originalOpen(...args); });
+    const service = connection({ nativeRecording: nativeRecorder.port, reauthorizeRecorder: authorize });
+    const encounter = await service.openAny();
+    vi.useFakeTimers();
+    try {
+      const pending = encounter.recorder(session, service.abort.signal);
+      void pending.catch(() => undefined); // The original promise is asserted below.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(authorize).toHaveBeenCalledOnce();
+      expect(started).toEqual(["getActiveCaptureState", "getPreparationState", "getSessionKeyState", "getSessionKey"]);
+      expect(opened).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1499);
+      expect(opened).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const resources = await pending;
+      if (!("controller" in resources)) throw new Error("Expected native recorder");
+      // Four synthetic 1.5s reads take 1.5s rather than 6s. The native context's
+      // existing 5s reuse limit is unchanged; this is not device timing evidence.
+      expect(openedAt - authorizedAt).toBe(1500);
+      expect(source.start).not.toHaveBeenCalled();
+      await resources.deactivate();
+    } finally { store.close(); vi.useRealTimers(); }
+  });
+
+  it("retains the lock until every custody read settles and preserves failure priority", async () => {
+    const store = await EncryptedIndexedDbFlowStore.open();
+    vi.spyOn(EncryptedIndexedDbFlowStore, "open").mockResolvedValueOnce(store);
+    const closed = vi.spyOn(store, "close");
+    let finish!: (value: null) => void;
+    const delayed = new Promise<null>(resolve => { finish = resolve; });
+    vi.spyOn(store, "getActiveCaptureState").mockRejectedValueOnce(new Error("active read unavailable"));
+    vi.spyOn(store, "getPreparationState").mockResolvedValueOnce(null);
+    vi.spyOn(store, "getSessionKeyState").mockRejectedValueOnce(new Error("key read unavailable"));
+    const lastRead = vi.spyOn(store, "getSessionKey").mockReturnValueOnce(delayed);
+    const nativeRecorder = recordingFixture(session), opened = vi.spyOn(nativeRecorder.port, "open");
+    const service = connection({ nativeRecording: nativeRecorder.port }), encounter = await service.openAny();
+    const pending = encounter.recorder(session, service.abort.signal);
+    const rejected = expect(pending).rejects.toThrow("active read unavailable");
+    await vi.waitFor(() => expect(lastRead).toHaveBeenCalled());
+    expect(closed).not.toHaveBeenCalled();
+    await expect(encounter.recorder(session, service.abort.signal)).rejects.toThrow("capture_flow_already_active");
+    finish(null);
+    await rejected;
+    expect(closed).toHaveBeenCalledOnce();
+    expect(opened).not.toHaveBeenCalled();
+    expect(source.start).not.toHaveBeenCalled();
+    const resources = await encounter.recorder(session, service.abort.signal);
+    if (!("controller" in resources)) throw new Error("Expected native recorder");
+    await resources.deactivate();
+  });
+
   it("selects the native controller for a new visit without creating a legacy source or scanning its audio", async () => {
     const nativeRecorder = recordingFixture(session), service = connection({ nativeRecording: nativeRecorder.port });
     const encounter = await service.openAny(), resources = await encounter.recorder(session, service.abort.signal);
@@ -373,4 +446,15 @@ describe("native provider selection and ownership", () => {
     expect(nativeRecorder.commands.map(c => c.kind)).toEqual(["close"]);
     expect(sourceFactory.createProviderIOSCaptureSource).not.toHaveBeenCalled();
   });
+});
+
+it("carries opening display data through the native host without acquiring a recorder", async () => {
+  const f = connection();
+  const openingReview = { scope: { ...f.mount.scope }, receivedAt: Date.now() - 100, view: null };
+  const g = connection({ openingReview, noteOpeningSupported: true });
+  const opened = await g.openAny();
+  expect(opened.openingReview).toEqual(openingReview);
+  expect(opened.noteOpeningSupported).toBe(true);
+  expect(g.mount.reauthorizeRecorder).not.toHaveBeenCalled();
+  expect(source.start).not.toHaveBeenCalled();
 });

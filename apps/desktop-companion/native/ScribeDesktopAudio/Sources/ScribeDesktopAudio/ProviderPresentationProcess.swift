@@ -9,8 +9,17 @@ public enum ProviderPresentationEvent: Sendable {
 public protocol ProviderPresentationSurface: AnyObject {
     var onEvent: (@MainActor (ProviderPresentationEvent) -> Void)? { get set }
     func choose() async throws -> MeetingAudioSelection
+    func meetingWindows() async throws -> [ProviderMeetingWindow]
+    func showWindowChooser() throws
     func publish(_ state: ProviderRecordingPresentation) throws
     func verifyVisibility()
+    func refreshMainWindow(_ windowID: UInt32?) throws
+}
+
+public extension ProviderPresentationSurface {
+    func meetingWindows() async throws -> [ProviderMeetingWindow] { throw ProviderPresentationFailure.unavailable }
+    func showWindowChooser() throws { throw ProviderPresentationFailure.unavailable }
+    func refreshMainWindow(_ windowID: UInt32?) throws { throw ProviderPresentationFailure.unavailable }
 }
 
 /// Only the separate, explicitly selected presentation executable constructs this.
@@ -24,8 +33,11 @@ public final class MacProviderPresentationSurface: ProviderPresentationSurface {
         visibilityLost: { [weak self] in self?.onEvent?(.visibilityLost($0)) })
     public init() {}
     public func choose() async throws -> MeetingAudioSelection { try await picker.choose() }
+    public func meetingWindows() async throws -> [ProviderMeetingWindow] { try await providerMeetingWindows() }
+    public func showWindowChooser() throws { try picker.showWindowChooser() }
     public func publish(_ state: ProviderRecordingPresentation) throws { try indicator.publish(state) }
     public func verifyVisibility() { indicator.verifyVisibility() }
+    public func refreshMainWindow(_ windowID: UInt32?) throws { try indicator.refreshMainWindow(windowID) }
 }
 
 /// Private inherited metadata pipes. The executable owns the Cocoa run loop.
@@ -34,9 +46,11 @@ public final class MacProviderPresentationSurface: ProviderPresentationSurface {
 public enum ProviderPresentationProcess {
     @MainActor
     public static func run(surface: any ProviderPresentationSurface,
-                           input: FileHandle = .standardInput, output: FileHandle = .standardOutput) async -> Int32 {
-        let host = PresentationHost(surface: surface, output: ProcessOutput(output))
-        let reader = PresentationInput(input)
+                           input: FileHandle = .standardInput, output: FileHandle = .standardOutput,
+                           protocolVersion: Int = 1) async -> Int32 {
+        guard (1...3).contains(protocolVersion) else { return 64 }
+        let host = PresentationHost(surface: surface, output: ProcessOutput(output), protocolVersion: protocolVersion)
+        let reader = PresentationInput(input, protocolVersion: protocolVersion)
         let reading = Task.detached {
             do {
                 while let command = try reader.next() { await host.accept(command) }
@@ -55,9 +69,11 @@ public enum ProviderPresentationProcess {
     }
 }
 
-private enum PresentationCommand: Sendable {
+enum PresentationCommand: Sendable {
+    case windows(Int)
     case choose(Int), cancel(Int), publish(Int, ProviderRecordingPresentation), heartbeat(Int), close(Int)
-    static func parse(_ data: Data) throws -> Self {
+    case primaryWindow(Int, UInt32?), focusChooser(Int, Int)
+    static func parse(_ data: Data, protocolVersion: Int = 1) throws -> Self {
         guard data.first == 1, data.count <= 2048,
               let value = try JSONSerialization.jsonObject(with: data.dropFirst()) as? [String: Any],
               let kind = value["type"] as? String,
@@ -68,10 +84,30 @@ private enum PresentationCommand: Sendable {
         let request = number.intValue
         func keys(_ expected: Set<String>) throws { guard Set(value.keys) == expected else { throw invalid() } }
         switch kind {
+        case "windows":
+            try keys(["type", "request"])
+            guard protocolVersion == 3 else { throw invalid() }
+            return .windows(request)
         case "choose": try keys(["type", "request"]); return .choose(request)
         case "cancel": try keys(["type", "request"]); return .cancel(request)
         case "heartbeat": try keys(["type", "request"]); return .heartbeat(request)
         case "close": try keys(["type", "request"]); return .close(request)
+        case "focusChooser":
+            try keys(["type", "request", "choiceRequest"])
+            guard let choice = value["choiceRequest"] as? NSNumber,
+                  CFGetTypeID(choice) != CFBooleanGetTypeID(), choice.doubleValue.isFinite,
+                  choice.doubleValue.rounded() == choice.doubleValue,
+                  choice.doubleValue >= 1, choice.doubleValue < Double(request) else { throw invalid() }
+            return .focusChooser(request, choice.intValue)
+        case "primaryWindow":
+            try keys(["type", "request", "windowID"])
+            guard protocolVersion >= 2 else { throw invalid() }
+            if value["windowID"] is NSNull { return .primaryWindow(request, nil) }
+            guard let id = value["windowID"] as? NSNumber,
+                  CFGetTypeID(id) != CFBooleanGetTypeID(), id.doubleValue.isFinite,
+                  id.doubleValue.rounded() == id.doubleValue,
+                  id.doubleValue >= 1, id.doubleValue <= Double(UInt32.max) else { throw invalid() }
+            return .primaryWindow(request, id.uint32Value)
         case "publish":
             try keys(["type", "request", "phase", "session"])
             guard let phase = value["phase"] as? String else { throw invalid() }
@@ -88,12 +124,13 @@ private enum PresentationCommand: Sendable {
 
 private final class PresentationInput: @unchecked Sendable {
     private let input: FileHandle
-    init(_ input: FileHandle) { self.input = input }
+    private let protocolVersion: Int
+    init(_ input: FileHandle, protocolVersion: Int) { self.input = input; self.protocolVersion = protocolVersion }
     func next() throws -> PresentationCommand? {
         guard let header = try read(4) else { return nil }
         let count = header.reduce(0) { $0 * 256 + Int($1) }
         guard (2...2048).contains(count), let body = try read(count) else { throw invalid() }
-        return try PresentationCommand.parse(body)
+        return try PresentationCommand.parse(body, protocolVersion: protocolVersion)
     }
     private func read(_ count: Int) throws -> Data? {
         var data = Data()
@@ -121,10 +158,10 @@ private final class PresentationHost {
     private var result: Int32?
     private var waiter: CheckedContinuation<Int32, Never>?
 
-    init(surface: any ProviderPresentationSurface, output: ProcessOutput) {
+    init(surface: any ProviderPresentationSurface, output: ProcessOutput, protocolVersion: Int) {
         self.surface = surface; self.output = output
         surface.onEvent = { [weak self] event in self?.event(event) }
-        output.metadata(["type": "ready", "version": 1])
+        output.metadata(["type": "ready", "version": protocolVersion])
     }
     func wait() async -> Int32 {
         await withCheckedContinuation { continuation in
@@ -144,12 +181,30 @@ private final class PresentationHost {
         }
         let request: Int
         switch command {
-        case .choose(let id), .publish(let id, _), .heartbeat(let id), .close(let id): request = id
+        case .windows(let id), .choose(let id), .publish(let id, _), .heartbeat(let id), .close(let id), .primaryWindow(let id, _), .focusChooser(let id, _): request = id
         case .cancel: return
         }
         guard request > lastRequest else { disconnect(); return }
         lastRequest = request
         switch command {
+        case .windows:
+            guard choice == nil, state == .inactive else { refuse(request); return }
+            let task = Task { @MainActor in
+                do {
+                    let rows = try await surface.meetingWindows()
+                    try Task.checkCancellation()
+                    guard rows.count <= 64, !disconnected, choice?.request == request else { throw ProviderPresentationFailure.unavailable }
+                    for row in rows {
+                        output.metadata(["type": "window", "request": request, "application": row.selection.application.rawValue,
+                            "processID": row.selection.processID, "windowID": row.selection.windowID, "title": row.title])
+                    }
+                    output.metadata(["type": "windows", "request": request, "count": rows.count])
+                } catch {
+                    if !disconnected { output.metadata(["type": "unavailable", "request": request]) }
+                }
+                if choice?.request == request { choice = nil }
+            }
+            choice = (request, task)
         case .choose:
             guard choice == nil, state == .inactive else { refuse(request); return }
             let task = Task { @MainActor in
@@ -166,6 +221,13 @@ private final class PresentationHost {
                 if choice?.request == request { choice = nil }
             }
             choice = (request, task)
+        case .focusChooser(_, let choiceRequest):
+            guard choice?.request == choiceRequest, state == .inactive,
+                  choice?.task.isCancelled == false else { refuse(request); return }
+            do {
+                try surface.showWindowChooser()
+                output.metadata(["type": "chooserFocused", "request": request])
+            } catch { refuse(request) }
         case .publish(_, let next):
             guard choice == nil else { refuse(request); return }
             if let prior = state.session, let incoming = next.session, prior != incoming { refuse(request); return }
@@ -182,6 +244,17 @@ private final class PresentationHost {
                     state = .failed(session); try? surface.publish(state)
                     output.metadata(["type": "visibilityLost", "session": session.uuidString.lowercased()])
                 } else { state = prior }
+                refuse(request)
+            }
+        case .primaryWindow(_, let windowID):
+            do {
+                try surface.refreshMainWindow(windowID)
+                output.metadata(["type": "primaryWindow", "request": request])
+            } catch {
+                if let session = state.session {
+                    state = .failed(session); try? surface.publish(state)
+                    output.metadata(["type": "visibilityLost", "session": session.uuidString.lowercased()])
+                }
                 refuse(request)
             }
         case .heartbeat:

@@ -2,6 +2,8 @@ import { DESKTOP_PROVIDER_CHANNELS, parseDesktopProviderRequest, parseDesktopPro
   type DesktopProviderPort } from "../../capture/src/provider/desktop-host-protocol";
 import { DesktopProviderRecorderIpc, installDesktopProviderRecorderPreload } from "./provider-recorder-ipc.js";
 import { DesktopProviderWorkspaceMain, type DesktopProviderMainHost } from "./provider-workspace-main.js";
+import { installApplicationClosePreload, type ApplicationCloseContextPort, type ApplicationCloseRendererPort } from "./application-close-ipc.js";
+import { NO_DIAGNOSTICS, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 interface Frame { readonly url: string }
 interface Event { readonly sender: { readonly id: number; readonly mainFrame: Frame }; readonly senderFrame: Frame | null }
@@ -12,12 +14,12 @@ type MainPort = ConstructorParameters<typeof DesktopProviderRecorderIpc>[0] & {
 type RendererTarget = ConstructorParameters<typeof DesktopProviderRecorderIpc>[1] & {
   send(channel: typeof DESKTOP_PROVIDER_CHANNELS.event, value: unknown): void;
 };
-type RendererPort = Parameters<typeof installDesktopProviderRecorderPreload>[1] & {
+type RendererPort = Parameters<typeof installDesktopProviderRecorderPreload>[1] & ApplicationCloseRendererPort & {
   invoke(channel: typeof DESKTOP_PROVIDER_CHANNELS.request, value: unknown): Promise<unknown>;
   on(channel: typeof DESKTOP_PROVIDER_CHANNELS.event, listener: (event: unknown, value: unknown) => void): void;
   removeListener(channel: typeof DESKTOP_PROVIDER_CHANNELS.event, listener: (event: unknown, value: unknown) => void): void;
 };
-type ContextPort = Parameters<typeof installDesktopProviderRecorderPreload>[0] & {
+type ContextPort = Parameters<typeof installDesktopProviderRecorderPreload>[0] & ApplicationCloseContextPort & {
   exposeInMainWorld(name: "scribeProvider", api: DesktopProviderPort): void;
 };
 
@@ -27,10 +29,11 @@ export class DesktopProviderWorkspaceIpc {
   private installed = false;
   private revoked = false;
   private unsubscribe: (() => void) | undefined;
-  constructor(private readonly ipc: MainPort, private readonly renderer: RendererTarget, host: DesktopProviderMainHost) {
+  constructor(private readonly ipc: MainPort, private readonly renderer: RendererTarget, host: DesktopProviderMainHost,
+    diagnostics: RuntimeDiagnostic = NO_DIAGNOSTICS) {
     this.main = new DesktopProviderWorkspaceMain(host, recorder => {
       const boundary = new DesktopProviderRecorderIpc(ipc, renderer, recorder); boundary.install(); return boundary;
-    });
+    }, diagnostics);
   }
   /** Install before loading the packaged page. Native initialization is awaited
    * by requests while the application's existing loading screen stays responsive. */
@@ -69,6 +72,7 @@ export class DesktopProviderWorkspaceIpc {
 
 /** The complete standalone preload, with no generic Electron/Node exposure. */
 export function installDesktopProviderPreload(context: ContextPort, ipc: RendererPort): void {
+  installApplicationClosePreload(context, ipc);
   installDesktopProviderRecorderPreload(context, ipc);
   context.exposeInMainWorld("scribeProvider", Object.freeze({
     request: (value: Parameters<DesktopProviderPort["request"]>[0]) =>

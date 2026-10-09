@@ -83,7 +83,7 @@ async function fixture(discovery = "new") {
 const opening = await fixture();
 try {
   await opening.click("open", first);
-  assert.ok(opening.text().includes("Prepare recording"),
+  assert.ok(opening.text().includes("Record this visit"),
     "Opening an encounter must work when AbortSignal.any is unavailable");
   assert.equal(opening.journalReads(), 1);
   assert.equal(opening.openedSignals[0].aborted, false);
@@ -104,11 +104,11 @@ try {
   switching.revoked.get(first).abort();
   await switching.settle();
   assert.equal(newSignal.aborted, false);
-  assert.ok(switching.text().includes("Prepare recording"));
+  assert.ok(switching.text().includes("Record this visit"));
   switching.revoked.get(second).abort();
   await switching.settle();
   assert.equal(newSignal.aborted, true);
-  assert.equal(switching.text().includes("Prepare recording"), false);
+  assert.equal(switching.text().includes("Record this visit"), false);
   assert.equal(switching.text().includes("Invented visit 2"), false);
   assert.ok(switching.text().includes("Encounter access ended"));
 } finally { await switching.close(); }
@@ -132,7 +132,7 @@ for (const state of ["uploaded", "unfinished", "failed"]) {
   try {
     await recovered.click("open", first);
     assert.equal(recovered.discoveryReads(), 1);
-    assert.equal(recovered.text().includes("Prepare recording"), false);
+    assert.equal(recovered.text().includes("Record this visit"), false);
     if (state === "uploaded") {
       assert.ok(recovered.root.querySelector('[data-review-action="refresh"]'));
       assert.ok(recovered.text().includes("Transcribing your recording"));

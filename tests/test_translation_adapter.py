@@ -261,19 +261,14 @@ def test_planner_distinguishes_review_wait_retry_and_completion(
     expected_status: SpanishTranslationPlanStatus,
     expected_previous_version: int | None,
 ) -> None:
-    plan = plan_spanish_translation_work(
-        _bundle(translations=translations, reviews=reviews)
-    )
+    plan = plan_spanish_translation_work(_bundle(translations=translations, reviews=reviews))
 
     assert plan.status == expected_status
     if expected_previous_version is None:
         assert plan.candidates == ()
     else:
         assert len(plan.candidates) == 1
-        assert (
-            plan.candidates[0].expected_previous_translation_version
-            == expected_previous_version
-        )
+        assert plan.candidates[0].expected_previous_translation_version == expected_previous_version
 
 
 def test_planner_stops_before_provider_work_when_source_quality_is_blocked() -> None:

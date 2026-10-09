@@ -1,10 +1,11 @@
+import { speakerNameSuggestion } from "../../../review-ui/src/creator-edit";
 import { isUuid } from "../../../review-ui/src/contracts";
 import { MAX_PROVIDER_RESPONSE_BYTES } from "../../../review-ui/src/capture-response-limits";
 import type { ProviderSessionState } from "./native-plugin";
 
 export const DESKTOP_PROVIDER_CHANNELS = Object.freeze({ request: "scribe:provider:workspace:v1", event: "scribe:provider:workspace-event:v1" });
 export type DesktopProviderMethod = "session_read" | "sign_in" | "sign_out" | "connect" | "disconnect" | "cancel"
-  | "list" | "create" | "open" | "core" | "journal_load" | "journal_save" | "review_load" | "review_save" | "review_clear" | "recorder" | "open_core";
+  | "list" | "create" | "encounter_setup" | "add_birth_date" | "open" | "core" | "journal_load" | "journal_save" | "edit_load" | "edit_save" | "edit_clear" | "review_load" | "review_save" | "review_clear" | "recorder" | "open_core" | "play_passage";
 export interface DesktopProviderRequest {
   readonly requestId: string;
   readonly method: DesktopProviderMethod;
@@ -15,13 +16,14 @@ export interface DesktopProviderRequest {
 export type DesktopProviderEvent = { readonly kind: "session"; readonly state: ProviderSessionState }
   | { readonly kind: "connection_closed" | "encounter_closed"; readonly id: string };
 /** This is the entire preload surface. It carries intended provider content,
- * never SDK tokens, network destinations, audio or storage/key handles. */
+ * never SDK tokens, network destinations or storage/key handles. Passage playback
+ * returns bounded WAV content only after native main reauthorizes the segment. */
 export interface DesktopProviderPort {
   request(value: DesktopProviderRequest): Promise<unknown>;
   subscribe(listener: (event: unknown) => void): () => void;
 }
-const methods: readonly string[] = ["session_read", "sign_in", "sign_out", "connect", "disconnect", "cancel", "list", "create", "open", "core",
-  "journal_load", "journal_save", "review_load", "review_save", "review_clear", "recorder", "open_core"];
+const methods: readonly string[] = ["session_read", "sign_in", "sign_out", "connect", "disconnect", "cancel", "list", "create", "encounter_setup", "add_birth_date", "open", "core",
+  "journal_load", "journal_save", "edit_load", "edit_save", "edit_clear", "review_load", "review_save", "review_clear", "recorder", "open_core", "play_passage"];
 
 export function parseDesktopProviderRequest(value: unknown): DesktopProviderRequest {
   const data = exact(value, ["requestId", "method", "connectionId", "encounterId", "payload"]);
@@ -42,7 +44,9 @@ export function parseDesktopProviderEvent(value: unknown): DesktopProviderEvent 
 export function sessionState(value: unknown): ProviderSessionState {
   const state = object(value);
   if (typeof state.phase !== "string" || !["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(state.phase)) throw unavailable();
-  return { phase: state.phase as ProviderSessionState["phase"], revision: uuid(state.revision) };
+  const name = state.phase === "ready" ? speakerNameSuggestion(state.providerDisplayName) : undefined;
+  return { phase: state.phase as ProviderSessionState["phase"], revision: uuid(state.revision),
+    ...(name !== undefined ? { providerDisplayName: name } : {}) };
 }
 export function exact(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const data = object(value);

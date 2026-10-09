@@ -44,6 +44,8 @@ public struct PCMSourceExtension: Equatable, Sendable {
 public enum PCMWindowCloseReason: String, Sendable {
   case authorityExpired = "authority_expired"
   case frameLimit = "frame_limit"
+  case interruption = "interruption"
+  case routeChanged = "route_changed"
 }
 
 public struct PCMSourceTime: Sendable {

@@ -32,7 +32,7 @@ process.on("message", async input => {
       helperPath: input.helperPath, helperSha256: input.helperSha256, isSessionActive: () => true,
       getProcessFence: () => input.processFence,
       authorizeSelectedWindow: async () => ({ application: "com.google.Chrome", processID: 1, windowID: 1,
-        captureAuthorizedUntil: Date.now() + 60_000 }) }), coverage.persist);
+        captureAuthorizedUntil: Date.parse((await flow.getActiveCaptureState()).captureAuthorizedUntil) }) }), coverage.persist);
     const bff = new HttpCaptureBff((url, init) => fetch(typeof url === "string" ? new URL(url, input.origin) : url, init));
     bff.getAudioEncryptionKey = async () => input.published; // Explicit invented RSA owner.
     const controller = new CaptureFlowController({ bff, flowStore: flow, createSessionKey: flow.createSessionKey,

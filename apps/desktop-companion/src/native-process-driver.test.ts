@@ -1,6 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CaptureCapabilities } from "../../capture/src/bff/contracts";
 import { DesktopPcmCaptureSource } from "./pcm-capture-source.js";
@@ -9,6 +11,7 @@ import { NativeProcessPCMDriver } from "./native-process-driver.js";
 import { NativeProcessDecoder, nativeCommand, nativeMetadata } from "./native-process-wire.js";
 import { nativePipeFixtureFence } from "./native-pipe-fixture.js";
 import type { NativeProcessFence } from "./native-process-fence.js";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 const fixturePath = process.env.SCRIBE_DESKTOP_PIPE_FIXTURE;
 const consent = Object.freeze({ id: "desktop-pipe-invented-all-parties-consent", allPartiesAgreed: true });
@@ -71,9 +74,113 @@ describe("private native pipe framing", () => {
   });
 });
 
+describe("content-free existing probe timings", () => {
+  // This executable accepts read-only/setup modes only; it has no audio source.
+  const probeScript = `#!${process.execPath}
+if (!["--availability-v1", "--request-permissions-v1", "--microphone-availability-v1", "--microphone-permissions-v1"].includes(process.argv[2])) process.exit(77);
+const payload = Buffer.from(JSON.stringify({type: "availability", available: true}));
+const header = Buffer.alloc(5); header.writeUInt32BE(payload.length + 1); header[4] = 1;
+setTimeout(() => process.stdout.write(Buffer.concat([header, payload]), () => process.exit(0)), 40);
+`;
+  async function fixture(run: (options: { helperPath: string; helperSha256: string }) => Promise<void>): Promise<void> {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-readonly-probe-"))), helperPath = join(directory, "probe");
+    try {
+      await writeFile(helperPath, probeScript, { mode: 0o700 });
+      await run({ helperPath, helperSha256: createHash("sha256").update(probeScript).digest("hex") });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+  it("uses microphone permission probes without application-audio access", async () => {
+    await fixture(async helper => {
+      const driver = new NativeProcessPCMDriver({ ...helper, enabled: true, audioMode: () => "microphone",
+        isSessionActive: () => true, authorizeSelectedWindow: async () => { throw new Error("must not start"); } });
+      expect(await driver.getAvailability()).toBe(true);
+      await driver.requestPermissions(new AbortController().signal);
+    });
+  });
+  const deniedSelection = async (): Promise<never> => { throw new Error("read-only probe must not authorize capture"); };
+  it("measures helper checks and validated probe completion without changing results when diagnostics throws", async () => {
+    await fixture(async helper => {
+      const events: Array<{ event: string; duration: number | undefined }> = [];
+      const driver = new NativeProcessPCMDriver({ ...helper, enabled: true, isSessionActive: () => true,
+        authorizeSelectedWindow: deniedSelection, diagnostics: (event, duration) => {
+          events.push({ event, duration }); throw new Error("diagnostics unavailable");
+        } });
+      expect(await driver.getAvailability()).toBe(true);
+      expect(await driver.requestPermissions(new AbortController().signal)).toBe(true);
+      expect(events.map(item => item.event)).toEqual(["audio_availability_helper_check", "audio_availability_probe",
+        "audio_permission_helper_check", "audio_permission_probe"]);
+      for (const item of events) {
+        expect(Number.isFinite(item.duration)).toBe(true); expect(item.duration).toBeGreaterThanOrEqual(0);
+        expect(item.duration).toBeLessThanOrEqual(3_600_000);
+      }
+      for (const item of events.filter(item => item.event.endsWith("_probe"))) expect(item.duration).toBeGreaterThanOrEqual(35);
+    });
+  });
+  it("does not probe disabled, locked, already cancelled or tampered helpers", async () => {
+    await fixture(async helper => {
+      const diagnostics = vi.fn<RuntimeDiagnostic>(), base = { ...helper, diagnostics, authorizeSelectedWindow: deniedSelection };
+      expect(await new NativeProcessPCMDriver({ ...base, isSessionActive: () => true }).getAvailability()).toBe(false);
+      expect(await new NativeProcessPCMDriver({ ...base, enabled: true, isSessionActive: () => false }).getAvailability()).toBe(false);
+      const cancelled = new AbortController(); cancelled.abort();
+      expect(await new NativeProcessPCMDriver({ ...base, enabled: true, isSessionActive: () => true }).requestPermissions(cancelled.signal)).toBe(false);
+      expect(diagnostics).not.toHaveBeenCalled();
+      const wrong = new NativeProcessPCMDriver({ ...base, enabled: true, isSessionActive: () => true, helperSha256: "0".repeat(64) });
+      expect(await wrong.getAvailability()).toBe(false);
+      expect(diagnostics).toHaveBeenCalledTimes(1);
+      expect(diagnostics).toHaveBeenCalledWith("audio_availability_helper_check", expect.any(Number));
+    });
+  });
+  it("preserves the fresh session check and permission cancellation after diagnostic completion", async () => {
+    await fixture(async helper => {
+      let active = true;
+      const events: string[] = [], abort = new AbortController();
+      const driver = new NativeProcessPCMDriver({ ...helper, enabled: true, isSessionActive: () => active,
+        authorizeSelectedWindow: deniedSelection, diagnostics: event => {
+          events.push(event);
+          if (event === "audio_availability_helper_check") active = false;
+          if (event === "audio_permission_helper_check") abort.abort();
+        } });
+      expect(await driver.getAvailability()).toBe(false); active = true;
+      expect(await driver.requestPermissions(abort.signal)).toBe(false);
+      expect(events).toEqual(["audio_availability_helper_check", "audio_permission_helper_check"]);
+    });
+  });
+  it("measures a cancelled in-flight permission probe and failed capture helper verification without suppressing failure", async () => {
+    await fixture(async helper => {
+      const abort = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
+      const diagnostics = vi.fn<RuntimeDiagnostic>(event => {
+        if (event === "audio_permission_helper_check") timer = setTimeout(() => abort.abort(), 20);
+      });
+      const driver = new NativeProcessPCMDriver({ ...helper, diagnostics, enabled: true, isSessionActive: () => true,
+        authorizeSelectedWindow: deniedSelection });
+      const permission = driver.requestPermissions(abort.signal);
+      try { expect(await permission).toBe(false); }
+      finally { clearTimeout(timer); }
+      expect(diagnostics.mock.calls.map(call => call[0])).toEqual(["audio_permission_helper_check", "audio_permission_probe"]);
+      const events: string[] = [], timings: Array<number | undefined> = [], failures: DesktopPCMFailure[] = [];
+      const wrong = new NativeProcessPCMDriver({ ...helper, helperSha256: "0".repeat(64), enabled: true,
+        isSessionActive: () => true, authorizeSelectedWindow: async () => ({ application: "us.zoom.xos", processID: 1,
+          windowID: 1, captureAuthorizedUntil: Date.now() + 60_000 }), diagnostics: (event, duration) => {
+          events.push(event);
+          if (event === "audio_capture_helper_check") {
+            timings.push(duration); throw new Error("diagnostic sink failed");
+          }
+        } });
+      const session = wrong.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+        onPcmPacket: async () => { throw new Error("must not capture"); }, onFailure: code => { failures.push(code); },
+      });
+      await expect(session.ready).rejects.toThrow();
+      expect(await session.stop({ mode: "discard" })).toBeNull();
+      expect(events).toEqual(["audio_start_pending", "audio_capture_helper_check", "audio_failed"]);
+      expect(timings).toHaveLength(1); expect(Number.isFinite(timings[0])).toBe(true);
+      expect(failures).toEqual(["failed"]);
+    });
+  });
+});
+
 describe.skipIf(!fixturePath)("actual Swift process with explicit invented source", () => {
   async function driver(pid = 1, authorize?: () => Promise<void>, hash?: string,
-    fence: () => NativeProcessFence = nativePipeFixtureFence): Promise<NativeProcessPCMDriver> {
+    fence: () => NativeProcessFence = nativePipeFixtureFence, expiresAt?: number): Promise<NativeProcessPCMDriver> {
     expect(consent.allPartiesAgreed).toBe(true);
     if (!fixturePath) throw new Error("compiled fixture required");
     return new NativeProcessPCMDriver({ enabled: true, helperPath: fixturePath,
@@ -81,9 +188,60 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
       getProcessFence: fence,
       isSessionActive: () => true, authorizeSelectedWindow: async () => {
         await authorize?.();
-        return { application: "com.google.Chrome", processID: pid, windowID: 1, captureAuthorizedUntil: Date.now() + 60_000 };
+        return { application: "com.google.Chrome", processID: pid, windowID: 1, captureAuthorizedUntil: expiresAt ?? Date.now() + 60_000 };
       } });
   }
+  it("rejects native permission denial after authorization without a disposable probe or activation", async () => {
+    const native = await driver(9), availability = vi.spyOn(native, "getAvailability");
+    const coverage: DesktopPCMCoverage[] = [], chunks = vi.fn(async () => undefined);
+    const source = new DesktopPcmCaptureSource(native, async value => { coverage.push(value); });
+    try {
+      await expect(source.start({ capabilities: renewableCapabilities(), onChunk: chunks })).rejects.toThrow();
+      expect(availability).not.toHaveBeenCalled(); expect(coverage).toEqual([]);
+      expect(chunks).not.toHaveBeenCalled();
+    } finally { await source.stop(); }
+  });
+  it("carries a renewable window through every adapter and preserves partial WAV boundaries", async () => {
+    const expiresAt = Date.now() + 60_000, waves: Uint8Array[] = [], sequences: number[] = [], coverage: DesktopPCMCoverage[] = [];
+    const source = new DesktopPcmCaptureSource(await driver(1, undefined, undefined, nativePipeFixtureFence, expiresAt),
+      async value => { coverage.push(value); });
+    const initial = { runId: randomUUID(), generation: 1, expiresAtMilliseconds: expiresAt, maximumChunks: 2, hardMaximumChunks: 4 };
+    const next = { ...initial, generation: 2, expiresAtMilliseconds: expiresAt + 30_000, maximumChunks: 4 };
+    try {
+      await source.start({ capabilities: renewableCapabilities(), window: initial,
+        onChunk: async chunk => { waves.push(chunk.wavBytes.slice()); sequences.push(chunk.sequenceNumber); } });
+      await vi.waitFor(() => expect(waves).toHaveLength(1));
+      await source.extend(next); await source.extend(next);
+      await source.stop();
+      expect(sequences).toEqual([0, 1, 2]);
+      expect(waves.map(wave => wave.length)).toEqual([6444, 6444, 6444]);
+      expect(coverage.map(value => value.phase)).toEqual(["started", "stopped"]);
+      expect(coverage[1]).toMatchObject({ value: { outputFrames: 9600, endHostTimeNanoseconds: "1600000000" } });
+      for (const wave of waves) {
+        const view = new DataView(wave.buffer, wave.byteOffset, wave.length);
+        for (let offset = 44; offset < wave.length; offset += 2) expect(view.getInt16(offset, true)).toBe(12288);
+        wave.fill(0);
+      }
+      await expect(source.extend(next)).rejects.toThrow();
+    } finally { await source.stop(); }
+  });
+  it("fences an in-flight extension with Stop without restarting the helper", async () => {
+    const expiresAt = Date.now() + 60_000, waves: number[] = [], coverage: DesktopPCMCoverage[] = [];
+    const source = new DesktopPcmCaptureSource(await driver(5, undefined, undefined, nativePipeFixtureFence, expiresAt),
+      async value => { coverage.push(value); });
+    const initial = { runId: randomUUID(), generation: 1, expiresAtMilliseconds: expiresAt, maximumChunks: 2, hardMaximumChunks: 4 };
+    try {
+      await source.start({ capabilities: renewableCapabilities(), window: initial,
+        onChunk: async chunk => { waves.push(chunk.sequenceNumber); } });
+      await vi.waitFor(() => expect(waves).toHaveLength(1));
+      const extension = expect(source.extend({ ...initial, generation: 2,
+        expiresAtMilliseconds: expiresAt + 30_000, maximumChunks: 4 })).rejects.toThrow();
+      await source.stop(); await extension;
+      expect(waves).toEqual([0, 1]);
+      expect(coverage.map(value => value.phase)).toEqual(["started", "stopped"]);
+      expect(coverage[1]).toMatchObject({ value: { outputFrames: 4800 } });
+    } finally { await source.stop(); }
+  });
   it("waits for activation and packet acknowledgement, drains mixer tail, then confirms process exit", async () => {
     const native = await driver(); expect(await native.getAvailability()).toBe(true);
     const received: Uint8Array[] = [], references: Uint8Array[] = [], failures: DesktopPCMFailure[] = [];
@@ -250,4 +408,10 @@ function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(yes => { resolve = yes; });
   return { promise, resolve };
+}
+
+function renewableCapabilities(): CaptureCapabilities {
+  return { protocol_version: "1.0", media: { media_type: "audio/wav", encoding: "pcm_s16le", channels: 1, sample_rate_hz: 16_000 },
+    target_chunk_duration_ms: 200, max_envelope_bytes: 10_000, max_chunks: 2, remaining_aggregate_plaintext_bytes: 20_000,
+    capture_lease_ttl_seconds: 30, reservation_window_seconds: 30, max_reservations_per_batch: 2, upload_concurrency: 1 };
 }

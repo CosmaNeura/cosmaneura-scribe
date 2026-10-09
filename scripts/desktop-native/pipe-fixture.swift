@@ -9,9 +9,36 @@ private actor InventedSource: DesktopProcessSource {
     private var failFirstDrain = false
     private var uncooperativeStop = false
     private var exitOnStop = false
+    private var renewableSink: (any DesktopAudioSink)?
+    private var authorization: DesktopCaptureAuthorization?
+    private var slowExtension = false
+    func start(selection: MeetingAudioSelection, authorization: DesktopCaptureAuthorization, sink: any DesktopAudioSink) async throws {
+        slowExtension = selection.processID == 5
+        self.authorization = authorization
+        renewableSink = sink
+        try await start(selection: selection, maximumDurationSeconds: 60, sink: sink)
+    }
+    func extend(_ next: DesktopCaptureAuthorization) async throws {
+        if slowExtension { try await Task.sleep(for: .milliseconds(150)) }
+        guard !stopped, let sink = renewableSink, let authorization else { throw DesktopAudioFailure.cancelled }
+        if next == authorization { return }
+        self.authorization = next
+        for i in 3..<6 {
+            for channel in [DesktopAudioChannel.microphone, .systemAudio] {
+                let frame = try DesktopAudioFrame(channel: channel, sampleRate: 16_000, channels: 1,
+                    hostTimeNanoseconds: 1_000_000_000 + UInt64(i * 100_000_000), sourceSamplePosition: Int64(i * 1600),
+                    samples: Array(repeating: channel == .microphone ? Float(0.25) : Float(0.5), count: 1600))
+                let accepted = sink.receive(frame); frame.clear()
+                if !accepted { throw DesktopAudioFailure.sinkRejected }
+            }
+        }
+    }
     func start(selection: MeetingAudioSelection, maximumDurationSeconds: Int, sink: any DesktopAudioSink) async throws {
         precondition(!consentID.isEmpty && maximumDurationSeconds > 0)
         guard !stopped else { throw DesktopAudioFailure.cancelled }
+        // The real producer checks current macOS permission before source setup.
+        // This denial substitutes only that OS result, never opens an OS source.
+        if selection.processID == 9 { throw DesktopAudioFailure.permissionRequired }
         // Model a native child dying before readiness, without generating a
         // real OS crash report or ever constructing a physical audio source.
         if selection.processID == 7 { _exit(70) }
@@ -25,7 +52,7 @@ private actor InventedSource: DesktopProcessSource {
                 let frame = try DesktopAudioFrame(channel: channel, sampleRate: 16_000, channels: 1,
                     hostTimeNanoseconds: 1_000_000_000 + UInt64(i * 100_000_000),
                     sourceSamplePosition: Int64(i * 1600),
-                    samples: Array(repeating: channel == .microphone ? Float(0.25) : 0, count: 1600))
+                    samples: Array(repeating: channel == .microphone ? Float(0.25) : (authorization == nil ? 0 : Float(0.5)), count: 1600))
                 let accepted = sink.receive(frame); frame.clear()
                 if !accepted { throw DesktopAudioFailure.sinkRejected }
             }
@@ -64,8 +91,8 @@ private actor InventedSource: DesktopProcessSource {
                 _exit(0)
             } catch { _exit(70) }
         }
-        guard arguments == ["--capture-v2"] else { _exit(64) }
-        let result = await DesktopAudioProcess.run(source: InventedSource())
+        guard arguments == ["--capture-v2"] || arguments == ["--capture-v3"] else { _exit(64) }
+        let result = await DesktopAudioProcess.run(source: InventedSource(), allowsRenewal: arguments == ["--capture-v3"])
         _exit(result)
     }
 }

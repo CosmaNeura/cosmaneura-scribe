@@ -5,13 +5,19 @@ import Foundation
 
 struct NativeProviderRecordingSelection {
   let requestID: UUID, revision: String, workspaceID: UUID, bindingRef: String, sessionID: UUID
+  let authorizationID: UUID?
   init(_ value: [String: Any]) throws {
-    guard Set(value.keys) == ["requestId", "revision", "workspaceId", "bindingRef", "sessionId"],
+    guard
+      Set(value.keys)
+        == Set(
+          ["requestId", "revision", "workspaceId", "bindingRef", "sessionId"]
+            + (value["authorizationId"] == nil ? [] : ["authorizationId"])),
       let binding = value["bindingRef"] as? String,
       binding.range(
         of: "^scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression)
         != nil
     else { throw ProviderNativeError.invalidRequest }
+    authorizationID = try value["authorizationId"].map { try recordingUUID($0) }
     requestID = try recordingUUID(value["requestId"])
     revision = try recordingUUID(value["revision"]).uuidString.lowercased()
     workspaceID = try recordingUUID(value["workspaceId"])
@@ -171,7 +177,9 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
     let saved = host.saved
     let live = host.phase == .sealed ? nil : host.captureState
     let count = max(saved?.committedChunks ?? 0, live?.nextSequence ?? 0)
-    let bytes = max(saved?.committedPlaintextBytes ?? 0, live?.committedPlaintextBytes ?? 0)
+    let bytes = max(
+      saved?.committedPlaintextBytes ?? 0,
+      live.map { host.capturePriorPlaintextBytes + $0.committedPlaintextBytes } ?? 0)
     let completion: [String: Any]? = saved?.completionLease.map {
       [
         "idempotencyKey": saved!.completionIntent.uuidString.lowercased(),
@@ -194,6 +202,7 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
       "sessionId": host.scope.sessionID.uuidString.lowercased(), "phase": host.phase.rawValue,
       "failure": host.failure?.rawValue as Any? ?? NSNull(), "busy": host.busy,
       "recordedChunks": count, "recordedPlaintextBytes": bytes,
+      "capturedAudioFrames": host.capturedAudioFrames,
       "maximumPlaintextBytes": NativeRecordingFlowOwner.maximumPlaintextBytes,
       "input": host.microphoneInput.rawValue, "completion": completion as Any? ?? NSNull(),
       "signal": ["version": 2, "signal": signal as Any? ?? NSNull()],

@@ -1,5 +1,8 @@
+import { passageWav, retainPassageAudio } from "./passage-playback.js";
+import { NativeCreatorEditJournal } from "../../review-ui/src/native-edit-journal";
+import type { DesktopRecordingWindow } from "./recording-window.js";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter } from "../../capture/src/provider/workspace-contracts";
-import { CoreCaptureBff, CoreCaptureClient, reference } from "../../capture/src/provider/core-client";
+import { CoreCaptureClient, reference } from "../../capture/src/provider/core-client";
 import { NativeProviderWorkspaceJournal } from "../../capture/src/provider/workspace-journal";
 import { NativeCreatorReviewJournal } from "../../review-ui/src/native-review-journal";
 import type { CiphertextUploadTarget } from "../../capture/src/bff/contracts";
@@ -12,10 +15,16 @@ import { DurableDesktopCoverage, desktopJournalRecords } from "./durable-provide
 import type { NativePresentationOwner } from "./native-provider-presentation.js";
 import { parseCreatorReview } from "../../review-ui/src/creator-review-api";
 import type { PreparedDesktopCapture } from "./provider-recorder.js";
+import { DesktopPreparationBff } from "./preparation-metadata.js";
+import { readBoundedJson } from "../../review-ui/src/beta-api";
+import { coreCaptureResponseLimit } from "../../review-ui/src/capture-response-limits";
+import { canonical } from "../../capture/src/provider/core-notes";
 
 export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderEncounter,
   "journal" | "reviewJournal" | "recorder"> {
   readonly recoveryScope: string;
+  /** Optional receiver capability, confined to this backend-issued mount. */
+  readonly admissionMetadataSupported?: true;
   readonly release?: () => Promise<void>;
   readonly uploadTarget: CiphertextUploadTarget;
   /** Backend-issued authority. A session/capabilities receipt is insufficient. */
@@ -24,12 +33,13 @@ export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderE
   readonly authority: DesktopProviderRecorderOptions["authority"];
   readonly processFence?: DesktopProviderRecorderOptions["native"]["getProcessFence"];
 }
-export interface DesktopProviderBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter"> {
+export interface DesktopProviderBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedDesktopProviderMount>;
   dispose(): Promise<void>;
 }
 export interface DesktopProviderResources {
   readonly enabled?: boolean;
+  readonly prepareInBackground?: boolean;
   /** Explicit app-owned directory, separate from every existing app namespace. */
   readonly directory: string;
   /** The native owner supplies a stable device-protected key after authorization.
@@ -41,9 +51,12 @@ export interface DesktopProviderResources {
   readonly indicator: DesktopProviderRecorderOptions["indicator"];
   readonly native: DesktopProviderRecorderOptions["native"];
   readonly selectWindow: DesktopProviderRecorderOptions["selectWindow"];
+  readonly listMeetingWindows?: DesktopProviderRecorderOptions["listMeetingWindows"];
+  readonly showWindowChooser?: () => Promise<void>;
   /** When using the native presentation transport, retain its lifecycle/events
    * with the connection. Existing injected fixture resources may omit it. */
   readonly presentation?: NativePresentationOwner;
+  readonly recordingWindow?: DesktopRecordingWindow;
 }
 type Connection = Awaited<ReturnType<DesktopProviderMainHost["connect"]>>;
 type Custody = Awaited<ReturnType<DesktopProviderResources["openCustody"]>>;
@@ -58,6 +71,7 @@ interface Mount {
   recorderOpening: boolean;
   closing?: Promise<void>;
   removeAbort?: () => void;
+  removeWindow?: () => void;
 }
 
 /** Trusted connection factory for the existing main host. It owns real encrypted
@@ -87,6 +101,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
       await Promise.allSettled([...owned.work]);
       // Failed native stop retains store/key ownership and blocks replacement.
       await owned.recorder?.deactivate();
+      owned.removeWindow?.(); delete owned.removeWindow; resources.recordingWindow?.update(null);
       await owned.releaseBackend?.();
       owned.store?.close();
       await owned.custody?.release();
@@ -109,12 +124,12 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
   };
   const onAbort = (): void => { void dispose().catch(() => undefined); };
   const removePresentation = resources.presentation?.onEvent(event => {
-    if (closed || !mount) return;
+    if (closed) return;
     if (event.kind === "failed") {
-      // Revocation interrupts startup immediately; closeMount retains keys and
-      // the recorder after an unconfirmed source stop, allowing owner retry.
-      void closeMount().catch(() => undefined);
-    } else if (event.sessionId === mount.recorder?.snapshot.sessionId) {
+      // Notify the app even when idle so it can offer a fresh connection.
+      // Normal disposal still retains custody after an unconfirmed source stop.
+      abort.abort();
+    } else if (mount && event.sessionId === mount.recorder?.snapshot.sessionId) {
       void mount.recorder.stopRecording().catch(() => undefined);
     }
   });
@@ -132,6 +147,8 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
   return { dispose, workspace: {
     signal: lifetime,
     listEncounters: operation => transition(operation, () => backend.listEncounters(AbortSignal.any([lifetime, operation]))),
+    get encounterSetup() { return backend.encounterSetup; },
+    get account() { return backend.account; },
     createEncounter: operation => transition(operation, () => backend.createEncounter(AbortSignal.any([lifetime, operation]))),
     openEncounter: (appointmentRef, operation) => transition(operation, async () => {
       if (!reference(appointmentRef, "appointment")) throw unavailable();
@@ -160,6 +177,9 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           recoveryScope: selected.recoveryScope, workspaceId: selected.scope.workspaceId, key: owned.custody.key }); check();
         const records = desktopJournalRecords(owned.store.namespace("provider-journals"));
         const journal = new NativeProviderWorkspaceJournal(records, selected.recoveryScope, selected.scope);
+        let admissionMetadata: { sessionId: string; key: string; value: unknown; signal: AbortSignal } | undefined;
+        let admissionGeneration = 0;
+        mountSignal.addEventListener("abort", () => { admissionGeneration++; admissionMetadata = undefined; }, { once: true });
         const guarded = <T>(run: () => Promise<T>): Promise<T> => track(owned.work, async () => {
           check(); const value = await run(); check(); return value;
         });
@@ -167,13 +187,81 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           check();
           const linked = AbortSignal.any([mountSignal, operationSignal]);
           if (linked.aborted) throw unavailable();
-          const value = await selected.request(path, body, key, linked);
+          const admission = path === "/service/v1/agent/scribe/capture-admissions";
+          if (admission && "preparation_metadata" in body) throw unavailable();
+          const generation = admission ? ++admissionGeneration : admissionGeneration;
+          let combine = false;
+          if (admission) {
+            admissionMetadata = undefined;
+            // Only the already-journaled, deliberate first admission opts in.
+            // Recovery, renewal and renderer-supplied options keep the old path.
+            if (selected.admissionMetadataSupported && body.attestation !== null
+              && Object.keys(body).sort().join(",") === "attestation,binding_ref,configured_capture,request_nonce,workspace_id") {
+              const saved = (await journal.load()).progress; check();
+              combine = saved?.sessionId === null && saved.admission?.key === key
+                && canonical(body.attestation) === canonical(saved.admission.attestation)
+                && canonical(body.configured_capture) === canonical({ schema_version: "1.0", language_mode: saved.admission.languageMode });
+            }
+          }
+          check(); if (linked.aborted) throw unavailable();
+          const value = await selected.request(path, combine ? { ...body, preparation_metadata: true } : body, key, linked);
+          if (combine && value.status === 200) {
+            if (value.headers.get("content-type")?.split(";", 1)[0] !== "application/json") throw unavailable();
+            const result = await readBoundedJson(value, coreCaptureResponseLimit("capture-admissions"));
+            check(); if (linked.aborted || generation !== admissionGeneration) throw unavailable();
+            if (typeof result !== "object" || result === null || Array.isArray(result)) throw unavailable();
+            const row = result as Record<string, unknown>;
+            if (row.contract_version !== "1" || row.workspace_id !== selected.scope.workspaceId
+              || row.binding_ref !== selected.scope.bindingRef || row.request_nonce !== body.request_nonce
+              || row.appointment_ref !== selected.scope.appointmentRef || !reference(row.operation_ref, "scribe_admission")
+              || typeof row.session_id !== "string" || typeof row.consent_record_id !== "string"
+              || typeof row.checked_at !== "string" || !Number.isFinite(Date.parse(row.checked_at))
+              || row.preparation_metadata === null || typeof row.preparation_metadata !== "object") throw unavailable();
+            const sessionId = uuid(row.session_id); uuid(row.consent_record_id);
+            admissionMetadata = { sessionId, key, value: row.preparation_metadata, signal: linked };
+            linked.addEventListener("abort", () => {
+              if (generation === admissionGeneration) { admissionGeneration++; admissionMetadata = undefined; }
+            }, { once: true });
+            delete row.preparation_metadata;
+            return Response.json(row, { headers: { "Cache-Control": "no-store" } });
+          }
           check(); if (linked.aborted) throw unavailable(); return value;
         });
         return {
           scope: selected.scope, encounter: selected.encounter, signal: mountSignal, request,
+          ...(selected.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
+          ...(selected.openingReview ? { openingReview: selected.openingReview } : {}),
+          playPassage: (sessionId, segmentId, operation) => guarded(async () => {
+            uuid(sessionId); uuid(segmentId);
+            const recorder = owned.recorder;
+            const playbackCurrent = (): void => {
+              check();
+              if (operation.aborted || owned.recorderOpening || owned.recorder !== recorder
+                || recorder && !["ready", "stopped"].includes(recorder.snapshot.desktop?.phase ?? "")) throw unavailable();
+            };
+            playbackCurrent();
+            const saved = await journal.load(); playbackCurrent();
+            if (saved.progress?.sessionId !== sessionId) throw unavailable();
+            const client = new CoreCaptureClient(selected.scope, request, AbortSignal.any([mountSignal, operation]));
+            const view = parseCreatorReview(await client.operation(sessionId, { kind: "creator_review" }), sessionId); playbackCurrent();
+            const segment = view.source?.segments.find(item => item.source_segment_id === segmentId);
+            if (!segment || view.capture_continuity) return null;
+            const archive = owned.store!.namespace(`playback:${sessionId}`);
+            const key = await new DurableDesktopFlowStore(owned.store!.namespace("flow")).playbackKey(sessionId, owned.store!.namespace(`playback-key:${sessionId}`)); playbackCurrent();
+            if (!key) return null;
+            const wav = await passageWav(archive, sessionId, key, segment.start_ms, Math.min(segment.end_ms, segment.start_ms + 30_000), playbackCurrent);
+            if (!wav) return null;
+            try { playbackCurrent(); return { wavBase64: Buffer.from(wav).toString("base64") }; }
+            finally { wav.fill(0); }
+          }),
           openInCore: noteRef => guarded(() => selected.openInCore(noteRef)),
           journal: { load: () => guarded(() => journal.load()), save: (previous, progress) => guarded(() => journal.save(previous, progress)) },
+          editJournal: sessionId => {
+            check(); uuid(sessionId);
+            const edit = new NativeCreatorEditJournal(records, selected.recoveryScope, sessionId);
+            return { load: () => guarded(() => edit.load()), save: value => guarded(() => edit.save(value)),
+              clear: key => guarded(() => edit.clear(key)) };
+          },
           reviewJournal: sessionId => {
             check(); uuid(sessionId);
             const review = new NativeCreatorReviewJournal(records, selected.recoveryScope, sessionId);
@@ -185,38 +273,89 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
             if (owned.recorderOpening || owned.recorder?.availableForView) throw unavailable();
             owned.recorderOpening = true;
             try {
-              await owned.recorder?.deactivate(); check();
+              await owned.recorder?.deactivate();
+              owned.removeWindow?.(); delete owned.removeWindow; resources.recordingWindow?.update(null); check();
               const saved = await journal.load(); check();
               if (saved.progress?.sessionId !== sessionId || recorderSignal.aborted) throw unavailable();
+              const initialMetadata = admissionMetadata;
+              admissionMetadata = undefined;
+              const matchingMetadata = initialMetadata?.sessionId === sessionId
+                && initialMetadata.key === saved.progress.admission?.key ? initialMetadata.value : undefined;
               const linked = AbortSignal.any([mountSignal, recorderSignal]);
+              const inputRecords = owned.store!.namespace("recording-input");
+              const inputKey = `audio-mode:${sessionId}`;
+              const storedInput = await inputRecords.get(inputKey);
+              let inputRevision = storedInput?.revision ?? null;
+              let audioMode: "microphone" | "meeting" = saved.progress.admission?.attestation.modality === "virtual" ? "meeting" : "microphone";
+              if (storedInput) {
+                try {
+                  const mode = new TextDecoder().decode(storedInput.data);
+                  if (mode !== "meeting" && mode !== "microphone") throw unavailable();
+                  audioMode = mode;
+                } finally { storedInput.data.fill(0); }
+              } else {
+                // Existing desktop recordings keep their original combined input.
+                const prior = await new DurableDesktopFlowStore(owned.store!.namespace("flow")).getActiveCaptureState(); check();
+                if (prior) audioMode = "meeting";
+              }
+              const saveAudioMode = async (mode: "microphone" | "meeting") => {
+                const bytes = new TextEncoder().encode(mode);
+                try { inputRevision = await inputRecords.save(inputKey, inputRevision, bytes); check(); }
+                finally { bytes.fill(0); }
+              };
+              if (!storedInput) await saveAudioMode(audioMode);
               const flow = new DurableDesktopFlowStore(owned.store!.namespace("flow"));
-              owned.recorder = await DesktopProviderRecorder.open({ enabled: true, sessionId, signal: linked,
-                createBff: captureSignal => new CoreCaptureBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId),
+              const coverage = new DurableDesktopCoverage(owned.store!.namespace("coverage"), sessionId);
+              let preparationBff: DesktopPreparationBff | undefined, preparationSignal: AbortSignal | undefined;
+              const bff = (captureSignal: AbortSignal): DesktopPreparationBff => {
+                if (preparationBff) {
+                  if (preparationSignal !== captureSignal) throw unavailable();
+                  return preparationBff;
+                }
+                preparationSignal = captureSignal;
+                return preparationBff = new DesktopPreparationBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId,
+                  initialMetadata?.signal.aborted ? undefined : matchingMetadata);
+              };
+              owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, prepareInBackground: resources.prepareInBackground === true, sessionId, audioMode, saveAudioMode, signal: linked,
+                createBff: bff,
                 authorizePreparation: async captureSignal => {
-                  const client = new CoreCaptureClient(selected.scope, request, captureSignal);
-                  const view = parseCreatorReview(await client.operation(sessionId, { kind: "creator_review" }), sessionId);
-                  return { sessionId: view.session_id, status: view.status };
+                  const retained = await Promise.allSettled([
+                    flow.getActiveCaptureState(), flow.getPreparationState(), flow.getSessionKeyState(sessionId), coverage.load(),
+                  ]);
+                  for (const result of retained) if (result.status === "rejected") throw result.reason;
+                  check(); if (captureSignal.aborted) throw unavailable();
+                  // Retained/crashed attempts keep their original read/replay path.
+                  return bff(captureSignal).authorizePreparation(retained.every(result => result.status === "fulfilled" && result.value === null));
                 },
                 authorizeMount: (prepared, captureSignal) => selected.authorizeRecorder(prepared, captureSignal),
                 authority: selected.authority, indicator: resources.indicator,
                 retireSource: selected.retireSource,
                 flowStore: flow, createSessionKey: flow.createSessionKey,
                 storageCapacity: { availableBytes: async () => {
-                  check(); const bytes = await owned.store!.availableBytes(); check(); return bytes;
+                  check(); const bytes = await owned.store!.availableBytes(); check(); return Math.floor(bytes / 2);
                 } },
-                queueStorage: new DurableDesktopQueueStorage(owned.store!.namespace(`queue:${sessionId}`), sessionId),
+                queueStorage: new DurableDesktopQueueStorage(owned.store!.namespace(`queue:${sessionId}`), sessionId, async record => {
+                  check(); const archive = owned.store!.namespace(`playback:${sessionId}`);
+                  await flow.retainPlaybackKey(sessionId, owned.store!.namespace(`playback-key:${sessionId}`)); check();
+                  await retainPassageAudio(archive, record); check();
+                }),
                 uploadTarget: selected.uploadTarget,
-                coverage: new DurableDesktopCoverage(owned.store!.namespace("coverage"), sessionId),
+                coverage,
                 native: { ...resources.native, getProcessFence: () => {
                   if (!selected.processFence) throw unavailable();
                   return selected.processFence();
                 }, isSessionActive: () => !linked.aborted && resources.native.isSessionActive()
                   && (!resources.presentation || resources.presentation.isHealthy()) },
                 selectWindow: resources.selectWindow,
+                ...(resources.listMeetingWindows ? { listMeetingWindows: resources.listMeetingWindows } : {}),
+                ...(resources.showWindowChooser ? { showWindowChooser: resources.showWindowChooser } : {}),
                 // Journals still use the encounter store after recorder release.
                 // closeMount owns its closure after every native stop is confirmed.
                 release: () => Promise.resolve(),
               });
+              if (resources.recordingWindow) {
+                owned.removeWindow = owned.recorder.subscribe(snapshot => resources.recordingWindow!.update(snapshot));
+              }
               check(); if (linked.aborted) throw unavailable(); return owned.recorder;
             } finally { owned.recorderOpening = false; }
           }),

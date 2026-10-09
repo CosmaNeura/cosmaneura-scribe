@@ -1,18 +1,23 @@
 import { join } from "node:path";
+import { MainRecordingWindow, type DesktopRecordingWindow, type RecordingWindowPort, type WindowBounds } from "./recording-window.js";
 import { createSecureBrowserWindowOptions, installElectronRendererSecurity, requireElectronSingleInstance, PACKAGED_APP_SCHEME,
   type ElectronSessionSecurityPort, type ElectronWebContentsSecurityPort } from "./electron-security.js";
 import { DesktopProviderWorkspaceIpc } from "./provider-workspace-ipc.js";
 import type { DesktopProviderMainHost } from "./provider-workspace-main.js";
 import { loadPackagedProvider, PROVIDER_ENTRY, type PackagedProvider } from "./packaged-provider.js";
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
+import { installApplicationClose, type ApplicationCloseMainPort } from "./application-close-ipc.js";
 
 interface Event { preventDefault(): void }
-type Renderer = ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[1] & ElectronWebContentsSecurityPort;
-interface Window {
+type Renderer = ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[1] & ElectronWebContentsSecurityPort & {
+  executeJavaScript(code: "0", userGesture: false): Promise<unknown>;
+};
+interface Window extends RecordingWindowPort {
   readonly webContents: Renderer;
   loadURL(url: string): Promise<void>;
   show(): void; focus(): void; destroy(): void; isDestroyed(): boolean;
   on(event: "close", listener: (event: Event) => void): void;
+  on(event: "unresponsive", listener: () => void): void;
   removeListener(event: "close", listener: (event: Event) => void): void;
 }
 interface Session extends ElectronSessionSecurityPort {
@@ -31,9 +36,10 @@ export interface DesktopElectronRuntime<S extends Session = Session> {
     removeListener(event: "before-quit", listener: (event: Event) => void): void;
     removeListener(event: "second-instance", listener: () => void): void;
   };
+  readonly screen: { getDisplayMatching(bounds: WindowBounds): { workArea: WindowBounds } };
   readonly protocol: { registerSchemesAsPrivileged(schemes: Array<typeof PACKAGED_APP_SCHEME>): void };
   readonly session: { fromPartition(partition: string, options: { cache: false }): S };
-  readonly ipcMain: ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[0];
+  readonly ipcMain: ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[0] & ApplicationCloseMainPort;
   readonly BrowserWindow: new (options: ReturnType<typeof createSecureBrowserWindowOptions> & {
     title: string; width: number; height: number; minWidth: number; minHeight: number;
     webPreferences: ReturnType<typeof createSecureBrowserWindowOptions>["webPreferences"] & { session: S };
@@ -50,7 +56,7 @@ export interface DesktopProviderOwner {
 export interface DesktopProviderFactory {
   /** Construct the reviewed native/backend host, without starting a source.
    * There is no default credential, key, environment or fixture implementation. */
-  open(options: { readonly userDataDirectory: string; readonly diagnostics?: RuntimeDiagnostic }): Promise<DesktopProviderOwner>;
+  open(options: { readonly userDataDirectory: string; readonly diagnostics?: RuntimeDiagnostic; readonly recordingWindow?: DesktopRecordingWindow }): Promise<DesktopProviderOwner>;
 }
 
 /** Executable shell composition. Call once from the packaged Electron main entry,
@@ -77,6 +83,11 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
   session.protocol.handle("app", request => assets.respond(request));
   session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !assets.allows(details.url) }));
   let owner: DesktopProviderOwner | null = null, boundary: DesktopProviderWorkspaceIpc | null = null, appWindow: Window | null = null;
+  let removeApplicationClose: (() => void) | undefined;
+  const recordingWindow = new MainRecordingWindow(() => appWindow,
+    bounds => runtime.screen.getDisplayMatching(bounds).workArea,
+    () => appWindow && !appWindow.isDestroyed()
+      ? appWindow.webContents.executeJavaScript("0", false) : Promise.reject(unavailable()));
   let opening: Promise<void> | null = null;
   let ended = false, closing: Promise<void> | null = null, askingToRetry = false;
   const focus = (): void => { if (appWindow && !appWindow.isDestroyed()) { appWindow.show(); appWindow.focus(); } };
@@ -85,11 +96,12 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
   const close = (): Promise<void> => {
     if (ended) return Promise.resolve();
     return closing ??= (async () => {
-      diagnostics("close_begin");
+      diagnostics("close_begin"); recordingWindow.block();
       await opening?.catch(() => undefined);
       await boundary?.dispose(); diagnostics("boundary_closed");
       await owner?.dispose(); diagnostics("owner_closed");
       ended = true;
+      removeApplicationClose?.(); removeApplicationClose = undefined;
       runtime.app.removeListener("before-quit", beforeQuit); runtime.app.removeListener("second-instance", focus);
       appWindow?.removeListener("close", windowClose);
       if (appWindow && !appWindow.isDestroyed()) appWindow.destroy();
@@ -116,16 +128,18 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
   runtime.app.on("before-quit", beforeQuit); runtime.app.on("second-instance", focus);
   runtime.app.removeListener("before-quit", stopStartup);
   try {
-    opening = Promise.resolve().then(async () => { owner = await factory.open({ userDataDirectory: runtime.app.getPath("userData"), diagnostics }); });
+    opening = Promise.resolve().then(async () => { owner = await factory.open({ userDataDirectory: runtime.app.getPath("userData"), diagnostics, recordingWindow }); });
     await opening;
     if (closing || ended) throw unavailable();
     const secure = createSecureBrowserWindowOptions(join(root, "preload.cjs"));
-    appWindow = new runtime.BrowserWindow({ ...secure, title: "Cosmaneura Scribe Beta", width: 1100, height: 800, minWidth: 680, minHeight: 520,
+    appWindow = new runtime.BrowserWindow({ ...secure, title: "Cosmaneura Scribe Beta", width: 780, height: 760, minWidth: 520, minHeight: 520,
       webPreferences: { ...secure.webPreferences, session } });
     installElectronRendererSecurity(appWindow.webContents, PROVIDER_ENTRY);
+    removeApplicationClose = installApplicationClose(runtime.ipcMain, appWindow.webContents, requestClose);
     if (!owner) throw unavailable();
-    boundary = new DesktopProviderWorkspaceIpc(runtime.ipcMain, appWindow.webContents, (owner as DesktopProviderOwner).host); boundary.install();
+    boundary = new DesktopProviderWorkspaceIpc(runtime.ipcMain, appWindow.webContents, (owner as DesktopProviderOwner).host, diagnostics); boundary.install();
     appWindow.on("close", windowClose);
+    appWindow.on("unresponsive", () => { recordingWindow.block(); requestClose(); });
     appWindow.webContents.on("render-process-gone", () => { diagnostics("renderer_gone"); requestClose(); });
     appWindow.webContents.on("will-navigate", () => { diagnostics("renderer_navigation"); requestClose(); });
     await appWindow.loadURL(PROVIDER_ENTRY);

@@ -9,6 +9,7 @@ or register a runtime. Workload and mount credentials never leave this transport
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
@@ -17,13 +18,14 @@ from datetime import UTC, datetime, timedelta
 from http.cookiejar import Cookie, CookieJar, DefaultCookiePolicy
 from typing import cast
 from urllib.parse import urlsplit
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 from pydantic import SecretStr
 
 from .provider_core_connections import ProviderCoreConnections
-from .source_start_contract import SourceStartIntent
+from .provider_performance import provider_phase_timing
+from .source_start_contract import SourceStartCapability, SourceStartIntent, SourceStartReceipt
 
 _ROOT = "/service/v1/agent/scribe/"
 MAX_CORE_CAPTURE_RESPONSE_BYTES = 32 * 1024 * 1024 + 8192
@@ -43,7 +45,11 @@ _OPERATIONS = frozenset(
         "creator_review",
         "provider_encounter",
         "native_recording_context",
+        "preparation_metadata",
+        "prepare_recording_window",
+        "prepare_continuation_window",
         "decide_translation",
+        "edit_transcript",
     }
 )
 _SCOPE_KEYS = {"binding_ref", "workspace_id", "request_nonce"}
@@ -51,6 +57,12 @@ _SCOPE_KEYS = {"binding_ref", "workspace_id", "request_nonce"}
 # budgets only; they never extend a consent, capture lease or start decision.
 ADMISSION_CORE_TIMEOUT_SECONDS = 140
 ADMISSION_TOTAL_TIMEOUT_SECONDS = 180
+NOTE_OPENING_TOTAL_TIMEOUT_SECONDS = 100
+
+
+def provider_cookie_jar() -> CookieJar:
+    """Share the existing no-cookie policy with other fixed Core transports."""
+    return CookieJar(policy=_NoCookies())
 
 
 class _NoCookies(DefaultCookiePolicy):
@@ -124,12 +136,42 @@ class CoreProviderMount:
         }
 
 
+@dataclass(repr=False)
+class _OpeningSequence:
+    """One composed request; a post-I/O check is the next adjacent pre-I/O check.
+
+    All workload credential I/O precedes the shared boundary. Taking the context
+    is synchronous, and dispatch must follow without any intervening await.
+    The final operation closes this object; it cannot authorize another request.
+    """
+
+    context: AuthorizedCoreProvider | None = None
+    workload_headers: dict[str, str] | None = None
+    closed: bool = False
+
+    def take(self) -> AuthorizedCoreProvider:
+        _require(not self.closed and self.context is not None)
+        value = _checked(self.context, AuthorizedCoreProvider)
+        self.context = None
+        return value
+
+    def headers(self) -> dict[str, str]:
+        _require(not self.closed and self.workload_headers is not None)
+        return dict(cast(dict[str, str], self.workload_headers))
+
+    def close(self) -> None:
+        self.context = None
+        self.workload_headers = None
+        self.closed = True
+
+
 @dataclass(frozen=True, repr=False)
 class _NegotiatedMount:
     mount: CoreProviderMount
     token: SecretStr
     interaction_ref: str
     turn: UUID
+    opening: _OpeningSequence | None = None
 
     def headers(self) -> dict[str, str]:
         return {
@@ -200,6 +242,33 @@ class ProviderCoreTransport:
         """Resolve the selected encounter without admitting or starting recording."""
         return (await self._negotiate(None)).mount
 
+    async def open_with_review(
+        self, request_nonce: UUID, key: str
+    ) -> tuple[CoreProviderMount, dict[str, object]]:
+        """Resolve and read in one opening request, never cache mount authority.
+
+        The existing provider_encounter read still checks current Core access.
+        Its negotiated credentials stay local to this call; subsequent actions
+        must negotiate again, including recorder preparation and source start.
+        """
+        _checked(request_nonce, UUID)
+        _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(key, str)))
+        current = await self._negotiate(None, opening=True)
+        mount = current.mount
+        review = await self._request(
+            mount,
+            _ROOT + "capture-operations",
+            {
+                "workspace_id": str(mount.selection.workspace_id),
+                "binding_ref": mount.binding_ref,
+                "request_nonce": str(request_nonce),
+                "operation": {"kind": "provider_encounter"},
+            },
+            key,
+            _negotiated=current,
+        )
+        return mount, review
+
     async def request(
         self,
         mount: CoreProviderMount,
@@ -217,6 +286,267 @@ class ProviderCoreTransport:
         except TimeoutError:
             raise ProviderCoreUnavailable("core_provider_request_timeout") from None
 
+    async def request_prepared(
+        self,
+        mount: CoreProviderMount,
+        path: str,
+        body: Mapping[str, object],
+        key: str,
+        *,
+        token: SecretStr,
+        interaction_ref: str,
+        turn: UUID,
+        workload: SecretStr,
+    ) -> dict[str, object]:
+        """Consume server-only preparation in this invocation, never cache it.
+
+        The receiver validates the preparation and fresh local account before
+        constructing this call. This method rechecks its current context directly
+        before mutation and retains the ordinary post-I/O and publication fences.
+        """
+        action = path.removeprefix(_ROOT)
+        _require(path == _ROOT + action and action in {"capture-admissions", "capture-operations"})
+        payload = _snapshot(body, 2048 if action == "capture-admissions" else 4_194_304)
+        _validate_intent(mount, action, payload)
+        _require(
+            action == "capture-admissions"
+            or _object(payload["operation"]).get("kind")
+            in {"prepare_recording_window", "preparation_metadata"}
+        )
+        _require(
+            re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key)
+            and re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", interaction_ref)
+        )
+        _secret(token)
+        _secret(workload)
+        _checked(turn, UUID)
+        sequence = _OpeningSequence()
+        sequence.workload_headers = {"Authorization": "Bearer " + _secret(workload)}
+        # Only local current-registry work may run in this context callback.
+        # It remains a distinct fence after preparation, before remote mutation.
+        sequence.context = await self._context(mount.selection)
+        return await self._dispatch(
+            mount,
+            action,
+            payload,
+            key,
+            _NegotiatedMount(mount, token, interaction_ref, turn, sequence),
+        )
+
+    async def prepare_and_authorize_source(
+        self,
+        mount: CoreProviderMount,
+        body: Mapping[str, object],
+        key: str,
+    ) -> dict[str, object]:
+        """One Core request composes two existing decisions with distinct intents.
+
+        The native owner must journal its original stop proof before dispatch.
+        No automatic retry or persistent context is created by this sequence.
+        """
+        _checked(mount, CoreProviderMount)
+        payload = _snapshot(body, 8192)
+        authorize_key = payload.pop("authorize_idempotency_key", None)
+        authorize_nonce = _uuid(payload.pop("authorize_request_nonce", None))
+        for value in (key, authorize_key):
+            _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(value, str)))
+        _require(key != authorize_key and payload.get("request_nonce") != authorize_nonce)
+        _validate_intent(mount, "capture-operations", payload, native_start=True)
+        operation = _object(payload["operation"])
+        _require(operation["action"] == "prepare")
+        intent = SourceStartIntent.model_validate(operation["payload"])
+        sequence = {
+            **payload,
+            "operation": {
+                "kind": "source_start_sequence",
+                "payload": operation["payload"],
+                "authorize_idempotency_key": authorize_key,
+            },
+        }
+        current = await self._negotiate(mount.selection, capture_mount=mount)
+        combined = await self._dispatch(
+            mount,
+            "capture-operations",
+            sequence,
+            key,
+            current,
+        )
+        _require(
+            set(combined)
+            == _SCOPE_KEYS
+            | {
+                "contract_version",
+                "checked_at",
+                "operation",
+                "receipt",
+            }
+        )
+        pair = _object(combined.get("receipt"))
+        _require(set(pair) == {"preparation", "authorization"})
+        try:
+            receipt = SourceStartReceipt.model_validate(pair["preparation"])
+            decision = SourceStartCapability.model_validate(pair["authorization"])
+        except ValueError:
+            raise ProviderCoreUnavailable() from None
+        issued = decision.receipt
+        now = self._clock()
+        _require(
+            receipt.state == "prepared"
+            and receipt.creator_actor_id == mount.selection.actor_ref
+            and receipt.issued_at is None
+            and receipt.expires_at is None
+            and now < receipt.preparation_expires_at <= intent.capture_authorized_until
+            and all(
+                getattr(receipt, field) == getattr(intent, field)
+                for field in (
+                    "attempt_id",
+                    "source",
+                    "lease_id",
+                    "lease_receipt_id",
+                    "lease_generation",
+                    "capture_authorized_until",
+                    "first_sequence_number",
+                )
+            )
+            and receipt.model_dump(exclude={"state", "issued_at", "expires_at"})
+            == issued.model_dump(exclude={"state", "issued_at", "expires_at"})
+            and issued.state == "issued"
+            and issued.issued_at is not None
+            and issued.expires_at is not None
+            and issued.issued_at <= now + timedelta(seconds=5)
+            and issued.issued_at < issued.preparation_expires_at
+            and now < issued.expires_at <= issued.capture_authorized_until
+            and timedelta(0) < issued.expires_at - issued.issued_at <= timedelta(seconds=15)
+            and len(decision.secret.get_secret_value()) == 64
+            and hmac.compare_digest(
+                decision.secret.get_secret_value().encode("utf-8"),
+                intent.owner_proof.get_secret_value().encode("ascii"),
+            )
+        )
+        # Core owns cancellation between its decisions. An ambiguous reply still
+        # leaves stop custody with the native owner; never fall back or retry.
+        await asyncio.sleep(0)
+        envelope = {**combined, "operation": "source_start"}
+        return {
+            "preparation": {**envelope, "receipt": pair["preparation"]},
+            "authorization": {
+                **envelope,
+                "request_nonce": authorize_nonce,
+                "receipt": pair["authorization"],
+            },
+        }
+
+    async def open_note(
+        self, mount: CoreProviderMount, session_id: UUID, request_nonce: UUID, key: str
+    ) -> dict[str, object]:
+        """Fresh review/templates/existing note with one request-local negotiation.
+
+        Never generate/save a note or retain credentials for another action. Each
+        Core read still rechecks current access before and after its own I/O.
+        """
+        _checked(mount, CoreProviderMount)
+        _checked(session_id, UUID)
+        _checked(request_nonce, UUID)
+        _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(key, str)))
+        try:
+            async with asyncio.timeout(NOTE_OPENING_TOTAL_TIMEOUT_SECONDS):
+                return await self._open_note(mount, session_id, request_nonce, key)
+        except TimeoutError:
+            raise ProviderCoreUnavailable("core_provider_request_timeout") from None
+
+    async def _open_note(
+        self, mount: CoreProviderMount, session_id: UUID, request_nonce: UUID, key: str
+    ) -> dict[str, object]:
+        current = await self._negotiate(mount.selection)
+        _require(current.mount == mount)
+        scope = {
+            "workspace_id": str(mount.selection.workspace_id),
+            "binding_ref": mount.binding_ref,
+        }
+
+        async def read(action: str, payload: dict[str, object], phase: str) -> dict[str, object]:
+            # Separate deterministic keys even for templates/read on the same
+            # Core route; never alias distinct intents under one idempotency key.
+            value = await self._request(
+                mount,
+                _ROOT + action,
+                {
+                    **scope,
+                    "request_nonce": str(uuid5(request_nonce, phase)),
+                    **payload,
+                },
+                str(uuid5(request_nonce, key + ":" + phase)),
+                _negotiated=current,
+            )
+            receipt = _object(value.get("receipt"))
+            _require(receipt.get("session_id") == str(session_id))
+            return receipt
+
+        review = await read(
+            "capture-operations", {"operation": {"kind": "creator_review"}}, "review"
+        )
+        _require(review.get("schema_version") == "1.0")
+        working = review.get("working")
+        templates: list[object] | None = None
+        note: dict[str, object] | None = None
+        if (
+            review.get("status") == "transcript_ready"
+            and isinstance(working, dict)
+            and cast(dict[str, object], working).get("note_ready") is True
+        ):
+            source = _note_source(review)
+            available = await read(
+                "capture-notes",
+                {
+                    "expected_session_id": str(session_id),
+                    "action": "templates",
+                },
+                "templates",
+            )
+            _require(set(available) == {"session_id", "templates"})
+            _require(isinstance(available["templates"], list))
+            templates = cast(list[object], available["templates"])
+            _require(len(templates) <= 100)
+            if len(templates) == 1:
+                schema = _object(templates[0]).get("schema_ref")
+                _require(_reference(schema, "doctor_note_schema"))
+                note = await read(
+                    "capture-notes",
+                    {
+                        "expected_session_id": str(session_id),
+                        "action": "read",
+                        "schema_ref": schema,
+                    },
+                    "note",
+                )
+                _require(note.get("schema_ref") == schema and note.get("reviewed_source") == source)
+        receipt: dict[str, object] = {
+            "session_id": str(session_id),
+            "review": review,
+            "templates": templates,
+            "note": note,
+        }
+        result: dict[str, object] = {
+            "contract_version": "1",
+            **scope,
+            "request_nonce": str(request_nonce),
+            "checked_at": self._clock().isoformat(),
+            "operation": "note_opening",
+            "receipt": receipt,
+        }
+        # Keep the existing native review byte budget. An oversized combination
+        # explicitly selects separately bounded legacy reads; never truncate it.
+        if (
+            len(
+                json.dumps(
+                    result, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+                ).encode("utf-8")
+            )
+            > MAX_CORE_CAPTURE_RESPONSE_BYTES
+        ):
+            result["receipt"] = {"session_id": str(session_id), "separate_reads_required": True}
+        return result
+
     async def _request(
         self,
         mount: CoreProviderMount,
@@ -225,6 +555,7 @@ class ProviderCoreTransport:
         key: str,
         *,
         native_start: bool = False,
+        _negotiated: _NegotiatedMount | None = None,
     ) -> dict[str, object]:
         """Accept exactly the current provider client's three facade operations.
 
@@ -245,27 +576,53 @@ class ProviderCoreTransport:
             }[action],
         )
         _validate_intent(mount, action, payload, native_start=native_start)
-        current = await self._negotiate(mount.selection)
+        if _negotiated is not None:
+            _require(not native_start and _negotiated_read(action, payload))
+        current = _negotiated or await self._negotiate(
+            mount.selection,
+            capture_mount=mount if action == "capture-operations" else None,
+        )
+        return await self._dispatch(mount, action, payload, key, current)
+
+    async def _dispatch(
+        self,
+        mount: CoreProviderMount,
+        action: str,
+        payload: dict[str, object],
+        key: str,
+        current: _NegotiatedMount,
+    ) -> dict[str, object]:
+        # Callers validate complete intents before reaching this helper. A
+        # combined native start shares negotiation only within its one request;
+        # _send checks current access around I/O; Core checks each decision.
         _require(current.mount == mount)
-        headers = {**await self._workload_headers(), **current.headers()}
+        headers = {
+            **(current.opening.headers() if current.opening else await self._workload_headers()),
+            **current.headers(),
+        }
         headers["Idempotency-Key"] = key
         # Credentials remain request-local even when this connection is used
         # concurrently for progress reads and an explicit provider action.
-        value, _ = await self._send(
-            mount.selection,
-            path,
-            payload,
-            headers,
-            version=("X-Cosmaneura-Capture-Version", "1"),
-            max_bytes=MAX_CORE_CAPTURE_RESPONSE_BYTES
-            if action == "capture-operations"
-            else 8 * 1024 * 1024,
-            request_timeout=ADMISSION_CORE_TIMEOUT_SECONDS
-            if action == "capture-admissions"
-            else 100
-            if action == "capture-notes" and payload.get("action") == "prepare"
-            else 20,
-        )
+        try:
+            value, _ = await self._send(
+                mount.selection,
+                _ROOT + action,
+                payload,
+                headers,
+                version=("X-Cosmaneura-Capture-Version", "1"),
+                max_bytes=MAX_CORE_CAPTURE_RESPONSE_BYTES
+                if action == "capture-operations"
+                else 8 * 1024 * 1024,
+                opening=current.opening,
+                request_timeout=ADMISSION_CORE_TIMEOUT_SECONDS
+                if action == "capture-admissions"
+                else 100
+                if action == "capture-notes" and payload.get("action") == "prepare"
+                else 20,
+            )
+        finally:
+            if current.opening:
+                current.opening.close()
         _require(
             value.get("contract_version") == "1"
             and value.get("binding_ref") == mount.binding_ref
@@ -306,18 +663,36 @@ class ProviderCoreTransport:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403) from None
 
     async def _workload_headers(self) -> dict[str, str]:
-        try:
-            async with asyncio.timeout(10):
-                value = await self._workload_token()
-            return {"Authorization": "Bearer " + _secret(value)}
-        except Exception:
-            raise ProviderCoreUnavailable("core_provider_workload_unavailable") from None
+        with provider_phase_timing("workload_token"):
+            try:
+                async with asyncio.timeout(10):
+                    value = await self._workload_token()
+                return {"Authorization": "Bearer " + _secret(value)}
+            except Exception:
+                raise ProviderCoreUnavailable("core_provider_workload_unavailable") from None
 
-    async def _negotiate(self, expected: CoreProviderSelection | None) -> _NegotiatedMount:
+    async def _negotiate(
+        self,
+        expected: CoreProviderSelection | None,
+        *,
+        capture_mount: CoreProviderMount | None = None,
+        opening: bool = False,
+    ) -> _NegotiatedMount:
+        _require(not opening or capture_mount is None and expected is None)
+        # Opening and capture operations both dispatch a fixed sequence. Reuse
+        # only adjacent post/pre-I/O checks within this invocation; receiver
+        # selection/publication and all later requests still check afresh.
+        sequence = _OpeningSequence() if opening or capture_mount is not None else None
+        if capture_mount is not None:
+            _checked(capture_mount, CoreProviderMount)
+            _require(
+                capture_mount.selection == expected
+                and _reference(capture_mount.binding_ref, "scribe_capture_binding")
+            )
         context = await self._context(expected)
         selection = context.selection
-        issued, _ = await self._send(
-            selection,
+        issued, _ = await self._send_in_context(
+            context,
             "/embed/v1/context-tokens/exchange",
             {"requested_surface": "provider_assistant", "record_ref": selection.appointment_ref},
             {
@@ -326,6 +701,7 @@ class ProviderCoreTransport:
             },
             status=201,
             version=("X-Cosmaneura-Embed-Version", "1.0"),
+            opening=sequence,
         )
         stamp = self._recent(issued.get("issued_at"))
         try:
@@ -346,10 +722,11 @@ class ProviderCoreTransport:
             "/service/v1/agent/mount-context/resolve",
             None,
             {
-                **await self._workload_headers(),
+                **(sequence.headers() if sequence else await self._workload_headers()),
                 "X-Cosmaneura-Mount-Context": _secret(token),
                 "X-Cosmaneura-Client-Turn-ID": str(turn),
             },
+            opening=sequence,
         )
         _require(
             resolved.get("surface") == "provider_assistant"
@@ -360,6 +737,12 @@ class ProviderCoreTransport:
         )
         interaction = response_headers.get("X-Cosmaneura-Interaction-Ref", "")
         _require(re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", interaction))
+        if capture_mount is not None:
+            # Capture operations authorize this exact binding in Core before
+            # any downstream work, then recheck it before publishing. Reuse the
+            # identifier only; token/interaction and registry checks stay fresh
+            # for every request. Opening, admission and notes still resolve it.
+            return _NegotiatedMount(capture_mount, token, interaction, turn, sequence)
         headers = {
             "X-Cosmaneura-Mount-Context": _secret(token),
             "X-Cosmaneura-Client-Turn-ID": str(turn),
@@ -375,8 +758,9 @@ class ProviderCoreTransport:
                 "appointment_ref": selection.appointment_ref,
                 "request_nonce": nonce,
             },
-            {**await self._workload_headers(), **headers},
+            {**(sequence.headers() if sequence else await self._workload_headers()), **headers},
             version=("X-Cosmaneura-Capture-Version", "1"),
+            opening=sequence,
         )
         _require(
             binding.get("contract_version") == "1"
@@ -393,6 +777,7 @@ class ProviderCoreTransport:
             token,
             interaction,
             turn,
+            sequence,
         )
 
     async def _send(
@@ -406,71 +791,119 @@ class ProviderCoreTransport:
         version: tuple[str, str] | None = None,
         max_bytes: int = 16_384,
         request_timeout: float = 20,
+        opening: _OpeningSequence | None = None,
     ) -> tuple[dict[str, object], httpx.Headers]:
-        await self._context(selection)
+        context = opening.take() if opening else await self._context(selection)
+        _require(context.selection == selection)
+        return await self._send_in_context(
+            context,
+            path,
+            payload,
+            headers,
+            status=status,
+            version=version,
+            max_bytes=max_bytes,
+            request_timeout=request_timeout,
+            opening=opening,
+        )
+
+    async def _send_in_context(
+        self,
+        context: AuthorizedCoreProvider,
+        path: str,
+        payload: object,
+        headers: Mapping[str, str],
+        *,
+        status: int = 200,
+        version: tuple[str, str] | None = None,
+        max_bytes: int = 16_384,
+        request_timeout: float = 20,
+        opening: _OpeningSequence | None = None,
+    ) -> tuple[dict[str, object], httpx.Headers]:
+        # Context was checked immediately before dispatch, or consumed from
+        # the adjacent opening post-I/O check without an intervening await.
+        # Exchange needs that same context for its user-token header. Never
+        # retain it across requests; publication still checks access again.
+        _require(self._enabled)
+        selection = context.selection
         try:
-            async with self._client.stream(
-                "POST",
-                self._origin + path,
-                json=payload,
-                timeout=httpx.Timeout(request_timeout, connect=5),
-                headers={"Accept": "application/json", "Cache-Control": "no-store", **headers},
-            ) as response:
-                if response.status_code in {401, 403, 404, 410}:
-                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
-                if response.status_code != status:
-                    if (
-                        path == _ROOT + "capture-admissions"
-                        and response.status_code == 409
-                        and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
-                        and response.headers.get("content-type", "")
-                        .split(";", 1)[0]
-                        .strip()
-                        .lower()
-                        == "application/problem+json"
-                        and "no-store"
-                        in {
-                            item.strip().lower()
-                            for item in response.headers.get("cache-control", "").split(",")
-                        }
-                    ):
-                        failure_bytes = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            _require(len(failure_bytes) + len(chunk) <= 2048)
-                            failure_bytes.extend(chunk)
-                        failure = _decode(failure_bytes)
+            phase = {
+                "/embed/v1/context-tokens/exchange": "core_exchange",
+                "/service/v1/agent/mount-context/resolve": "core_mount",
+                _ROOT + "capture-bindings/resolve": "core_binding",
+            }.get(path, "core_operation")
+            with provider_phase_timing(phase):
+                async with self._client.stream(
+                    "POST",
+                    self._origin + path,
+                    json=payload,
+                    timeout=httpx.Timeout(request_timeout, connect=5),
+                    headers={"Accept": "application/json", "Cache-Control": "no-store", **headers},
+                ) as response:
+                    if response.status_code in {401, 403, 404, 410}:
+                        raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                    if response.status_code != status:
                         if (
-                            failure.get("code") == "CAPTURE_CONSENT_REQUIRED"
-                            and failure.get("status") == 409
-                            and failure.get("retryable") is False
+                            path == _ROOT + "capture-admissions"
+                            and response.status_code == 409
+                            and response.headers.get("X-Cosmaneura-Capture-Version") == "1"
+                            and response.headers.get("content-type", "")
+                            .split(";", 1)[0]
+                            .strip()
+                            .lower()
+                            == "application/problem+json"
+                            and "no-store"
+                            in {
+                                item.strip().lower()
+                                for item in response.headers.get("cache-control", "").split(",")
+                            }
                         ):
-                            await self._context(selection)
-                            raise ProviderCoreUnavailable("core_provider_consent_required", 409)
-                    code, result = {
-                        409: ("core_provider_conflict", 409),
-                        202: ("core_provider_pending", 503),
-                    }.get(response.status_code, ("core_provider_request_unconfirmed", 503))
-                    raise ProviderCoreUnavailable(code, result)
-                _require(
-                    response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                    == "application/json"
-                )
-                _require(
-                    "no-store"
-                    in {
-                        p.strip().lower()
-                        for p in response.headers.get("cache-control", "").split(",")
-                    }
-                )
-                if version:
-                    _require(response.headers.get(version[0]) == version[1])
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    _require(len(data) + len(chunk) <= max_bytes)
-                    data.extend(chunk)
-                value = _decode(data)
-                response_headers = httpx.Headers(response.headers)
-            await self._context(selection)
+                            failure_bytes = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                _require(len(failure_bytes) + len(chunk) <= 2048)
+                                failure_bytes.extend(chunk)
+                            failure = _decode(failure_bytes)
+                            if (
+                                failure.get("code") == "CAPTURE_CONSENT_REQUIRED"
+                                and failure.get("status") == 409
+                                and failure.get("retryable") is False
+                            ):
+                                await self._context(selection)
+                                raise ProviderCoreUnavailable("core_provider_consent_required", 409)
+                        code, result = {
+                            409: ("core_provider_conflict", 409),
+                            202: ("core_provider_pending", 503),
+                        }.get(response.status_code, ("core_provider_request_unconfirmed", 503))
+                        raise ProviderCoreUnavailable(code, result)
+                    _require(
+                        response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        == "application/json"
+                    )
+                    _require(
+                        "no-store"
+                        in {
+                            p.strip().lower()
+                            for p in response.headers.get("cache-control", "").split(",")
+                        }
+                    )
+                    if version:
+                        _require(response.headers.get(version[0]) == version[1])
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        _require(len(data) + len(chunk) <= max_bytes)
+                        data.extend(chunk)
+                    value = _decode(data)
+                    response_headers = httpx.Headers(response.headers)
+            if opening is not None:
+                _require(not opening.closed and opening.context is None)
+                if opening.workload_headers is None:
+                    _require(path == "/embed/v1/context-tokens/exchange")
+                    # Credential retrieval can yield or change access. Finish it
+                    # before the post-exchange check shared with mount dispatch.
+                    opening.workload_headers = await self._workload_headers()
+                opening.context = await self._context(selection)
+            else:
+                await self._context(selection)
             return value, response_headers
         except httpx.HTTPError:
             raise ProviderCoreUnavailable("core_provider_request_unconfirmed") from None
@@ -488,6 +921,41 @@ class ProviderCoreTransport:
             return stamp
         except (ValueError, TypeError):
             raise ProviderCoreUnavailable() from None
+
+
+def _negotiated_read(action: str, body: dict[str, object]) -> bool:
+    keys = set(body) - _SCOPE_KEYS
+    if action == "capture-operations":
+        return keys == {"operation"} and body.get("operation") in (
+            {"kind": "provider_encounter"},
+            {"kind": "creator_review"},
+        )
+    if action != "capture-notes":
+        return False
+    return (
+        body.get("action") == "templates"
+        and keys == {"expected_session_id", "action"}
+        or body.get("action") == "read"
+        and keys == {"expected_session_id", "action", "schema_ref"}
+        and _reference(body.get("schema_ref"), "doctor_note_schema")
+    )
+
+
+def _note_source(review: dict[str, object]) -> dict[str, object]:
+    source, working = _object(review.get("source")), _object(review.get("working"))
+    source_version = source.get("source_transcript_version")
+    working_version = working.get("working_transcript_version")
+    _require(type(source_version) is int and source_version > 0)
+    _require(type(working_version) is int and working_version > 0)
+    result: dict[str, object] = {
+        "kind": "reviewed_english",
+        "source_version": source_version,
+        "working_transcript_id": _uuid(working.get("working_transcript_id")),
+        "working_version": working_version,
+    }
+    if "capture_continuity" in review:
+        result["capture_continuity"] = review["capture_continuity"]
+    return result
 
 
 def _validate_intent(
@@ -533,7 +1001,9 @@ def _validate_intent(
     else:
         _require(keys <= {"expected_session_id", "schema_ref", "action", "edit"})
         _uuid(body.get("expected_session_id"))
-        _require(body.get("action") in ("templates", "read", "prepare", "save", "resolve"))
+        _require(
+            body.get("action") in ("templates", "read", "prepare", "save", "resolve", "save_status")
+        )
 
 
 def _require(condition: object) -> None:
@@ -604,3 +1074,11 @@ def _snapshot(body: Mapping[str, object], maximum: int) -> dict[str, object]:
         return _decode(data)
     except (ValueError, TypeError, RecursionError):
         raise ProviderCoreUnavailable() from None
+
+
+# The native read facade shares these exact closed wire validators.
+core_wire_object = _object
+core_wire_require = _require
+core_wire_secret = _secret
+core_wire_snapshot = _snapshot
+core_wire_uuid = _uuid

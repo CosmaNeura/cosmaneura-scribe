@@ -73,7 +73,7 @@ export class NativeProviderClient implements NativeProviderSession {
     return Promise.resolve({ remove: () => { this.listeners.delete(listener); return Promise.resolve(); } });
   }
 
-  request(method: "getState" | "signIn" | "signOut" | "providerRequest" | "sourcePrepare"
+  request(method: "getState" | "signIn" | "signOut" | "providerRequest" | "sourcePrepare" | "sourcePrepareForStart"
     | "sourceAuthorize" | "sourceRelease" | "sourceStopped" | "sourcePreparationRelease", payload: Record<string, unknown>, signal?: AbortSignal,
     timeout = 35_000): Promise<unknown> {
     requireMain();

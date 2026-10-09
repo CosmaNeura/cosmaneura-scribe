@@ -1,4 +1,5 @@
 """Expanded sequence constraints stay bounded and retain reader recovery."""
+
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,9 @@ async def test_all_sequence_constraints_are_validated_and_bounded(postgres_urls)
     engine = create_async_engine(postgres_urls[0], connect_args={"ssl": False})
     try:
         async with engine.connect() as connection:
-            constraints = (await connection.execute(text("""
+            constraints = (
+                await connection.execute(
+                    text("""
                 SELECT conname, convalidated, pg_get_constraintdef(oid) AS definition
                 FROM pg_constraint WHERE conname IN (
                     'audio_chunk_reservations_sequence_number_check',
@@ -22,7 +25,9 @@ async def test_all_sequence_constraints_are_validated_and_bounded(postgres_urls)
                     'source_start_attempts_first_sequence_number_check',
                     'source_start_retirements_first_sequence_number_check'
                 )
-            """))).all()
+            """)
+                )
+            ).all()
             assert len(constraints) == 4
             for name, validated, definition in constraints:
                 assert validated, name

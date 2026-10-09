@@ -11,7 +11,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
 import { EncryptedIndexedDbQueueStorage } from "../storage/encrypted-indexeddb";
-import { CaptureQueue } from "./capture-queue";
+import { CaptureQueue, type DrainProgress } from "./capture-queue";
 import { QueueTransportError } from "./errors";
 import type { QueueInvariantError } from "./errors";
 import type {
@@ -28,6 +28,24 @@ const TENANT_ID = "20000000-0000-4000-8000-000000000002";
 const REGISTERED_AT = "2026-08-17T12:00:00.000Z";
 
 describe("CaptureQueue", () => {
+  it("does not claim queued audio when scheduling was cancelled, and keeps it available for retry", async () => {
+    const harness = await createHarness(), cancellation = new AbortController();
+    try {
+      const reservation = makeReservation(0);
+      await harness.queue.reserve(reservation, "reservation-batch-0001");
+      await harness.queue.encrypt(reservation.objectId, makeEnvelope(1));
+      const original = await harness.queue.get(reservation.objectId);
+      const transport = successfulTransport(() => harness.now.value);
+      const receipt = vi.spyOn(transport, "getReceipt");
+      cancellation.abort();
+      const result = await harness.queue.drainOnce(transport, undefined, cancellation.signal);
+      expect(result.items).toEqual([{ objectId: reservation.objectId, outcome: "skipped" }]);
+      expect(receipt).not.toHaveBeenCalled();
+      expect(await harness.queue.get(reservation.objectId)).toEqual(original);
+      await harness.queue.drainOnce(transport);
+      expect((await harness.queue.get(reservation.objectId))?.state).toBe("registered");
+    } finally { harness.storage.close(); }
+  });
   it("persists every ordered state and removes bytes only after a registration receipt", async () => {
     const harness = await createHarness();
     const states: string[] = [];
@@ -89,8 +107,12 @@ describe("CaptureQueue", () => {
       receiptAlwaysReserved: true,
     });
 
-    const first = await harness.queue.drainOnce(transport);
+    const progress = vi.fn<(value: DrainProgress) => void>();
+    const first = await harness.queue.drainOnce(transport, progress);
     expect(first.items[0]).toMatchObject({ outcome: "deferred", code: "registration_timeout" });
+    expect(progress.mock.calls.map(([value]) => value)).toEqual([
+      { total: 1, registered: 0 }, { total: 1, registered: 0 },
+    ]);
     expect((await harness.queue.get(reservation.objectId))?.state).toBe("uploaded");
 
     harness.now.value = 1_000;
@@ -99,6 +121,40 @@ describe("CaptureQueue", () => {
     expect(requests).toHaveLength(2);
     expect(requests[1]).toEqual(requests[0]);
     expect(requests[1]?.idempotencyKey).toBe(requests[0]?.idempotencyKey);
+    harness.storage.close();
+  });
+
+  it("skips a redundant receipt after a confirmed upload but reconciles a lost registration after reopening", async () => {
+    const harness = await createHarness({ baseRetryMs: 100, random: () => 0 });
+    const reservation = makeReservation(0);
+    await harness.queue.reserve(reservation, "reservation-batch-0001");
+    await harness.queue.encrypt(reservation.objectId, makeEnvelope(2));
+    let registered: RegistrationReceipt | null = null;
+    let receiptReads = 0, uploads = 0, registrations = 0;
+    const transport = successfulTransport(() => harness.now.value, {
+      receipt: async () => {
+        receiptReads += 1;
+        return registered === null ? { state: "reserved" } : { state: "registered", registration: registered };
+      },
+      upload: async () => { uploads += 1; },
+      register: async request => {
+        registrations += 1;
+        registered = receiptFor(request);
+        throw new QueueTransportError("unknown_success", "registration_timeout");
+      },
+    });
+    expect((await harness.queue.drainOnce(transport)).items[0]?.outcome).toBe("deferred");
+    expect(receiptReads).toBe(0);
+    const retained = await harness.queue.get(reservation.objectId);
+    expect(retained?.state).toBe("uploaded");
+    expect(retained && "envelope" in retained).toBe(true);
+    harness.now.value = 1000;
+    const reopened = harness.queueWithStorage(harness.storage);
+    expect((await reopened.drainOnce(transport)).items[0]?.outcome).toBe("registered");
+    expect(receiptReads).toBe(1);
+    expect(uploads).toBe(1);
+    expect(registrations).toBe(1);
+    expect((await reopened.get(reservation.objectId))?.state).toBe("registered");
     harness.storage.close();
   });
 
@@ -118,6 +174,9 @@ describe("CaptureQueue", () => {
         return { state: "reserved" };
       },
     });
+    vi.spyOn(transport, "authorizeUpload").mockRejectedValueOnce(
+      new QueueTransportError("unknown_success", "bff_result_unknown"),
+    );
 
     const first = await harness.queue.drainOnce(transport);
     expect(first.items[0]).toMatchObject({
@@ -135,9 +194,60 @@ describe("CaptureQueue", () => {
     harness.now.value = 50;
     const second = await harness.queue.drainOnce(transport);
     expect(second.items[0]).toMatchObject({ outcome: "registered" });
-    expect(receiptAttempt).toBe(3);
+    expect(receiptAttempt).toBe(2);
     expect((await harness.queue.get(reservation.objectId))?.state).toBe("registered");
     harness.storage.close();
+  });
+
+  it.each([true, false])("reconciles a remotely registered encrypted backup without another upload (matching=%s)", async matching => {
+    const harness = await createHarness();
+    try {
+      const reservation = makeReservation(0);
+      await harness.queue.reserve(reservation, "reservation-batch-0001");
+      await harness.queue.encrypt(reservation.objectId, makeEnvelope(2));
+      const retained = await harness.queue.get(reservation.objectId);
+      if (retained?.state !== "encrypted") throw new Error("expected encrypted backup");
+      const transport = successfulTransport(() => harness.now.value, {
+        authorize: async () => { throw new QueueTransportError("terminal", "bff_request_rejected"); },
+        receipt: async () => ({ state: "registered", registration: {
+          chunkId: "30000000-0000-4000-8000-000000000001", sha256: matching ? retained.sha256 : "0".repeat(64),
+          byteLength: retained.byteLength, registeredAt: REGISTERED_AT,
+        } }),
+      });
+      const reads = vi.spyOn(transport, "getReceipt"), uploads = vi.spyOn(transport, "upload");
+      const registrations = vi.spyOn(transport, "register");
+      const reopened = harness.queueWithStorage(harness.storage);
+      expect((await reopened.drainOnce(transport)).items[0]?.outcome).toBe(matching ? "registered" : "terminal");
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(uploads).not.toHaveBeenCalled();
+      expect(registrations).not.toHaveBeenCalled();
+      const after = await reopened.get(reservation.objectId);
+      expect(after).toMatchObject({ reservation: retained.reservation, idempotencyKeys: retained.idempotencyKeys,
+        envelope: retained.envelope, sha256: retained.sha256, byteLength: retained.byteLength });
+      expect(after?.state).toBe(matching ? "registered" : "uploading");
+    } finally { harness.storage.close(); }
+  });
+
+  it("rejects a mismatched first authorization without uploading or dropping encrypted audio", async () => {
+    const harness = await createHarness();
+    try {
+      const reservation = makeReservation(0);
+      await harness.queue.reserve(reservation, "reservation-batch-0001");
+      await harness.queue.encrypt(reservation.objectId, makeEnvelope(2));
+      const retained = await harness.queue.get(reservation.objectId);
+      if (retained?.state !== "encrypted") throw new Error("expected encrypted audio");
+      const transport = successfulTransport(() => harness.now.value);
+      const uploads = vi.spyOn(transport, "upload"), reads = vi.spyOn(transport, "getReceipt");
+      vi.spyOn(transport, "authorizeUpload").mockResolvedValueOnce({ objectId: reservation.objectId,
+        additionalAuthenticatedData: makeReservation(1).additionalAuthenticatedData,
+        uploadUrl: "https://upload.invalid/mismatched", expiresAtEpochMs: harness.now.value + 60_000 });
+      expect((await harness.queue.drainOnce(transport)).items[0]).toMatchObject({
+        outcome: "terminal", code: "upload_authorization_mismatch" });
+      expect(uploads).not.toHaveBeenCalled();
+      expect(reads).not.toHaveBeenCalled();
+      expect(await harness.queue.get(reservation.objectId)).toMatchObject({
+        state: "uploading", envelope: retained.envelope });
+    } finally { harness.storage.close(); }
   });
 
   it("rotates only the expired authorization key while retaining object, AAD, and bytes", async () => {
@@ -214,13 +324,19 @@ describe("CaptureQueue", () => {
     });
 
     vi.spyOn(harness.storage, "list").mockRejectedValue(new Error("bulk payload enumeration forbidden"));
-    const draining = harness.queue.drainOnce(transport);
+    const metadata = vi.spyOn(harness.storage, "listMetadata");
+    const progress = vi.fn<(value: DrainProgress) => void>(() => { throw new Error("Observer failure cannot stop an upload"); });
+    const draining = harness.queue.drainOnce(transport, progress);
     await twoStarted;
     expect(active).toBe(2);
     expect(started).toBe(2);
     releaseUploads?.();
     await draining;
     expect(maximumActive).toBe(2);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(progress.mock.calls.map(([value]) => value)).toEqual(
+      Array.from({ length: 6 }, (_, registered) => ({ total: 5, registered })),
+    );
     expect((await harness.queue.listMetadata()).every((record) => record.state === "registered")).toBe(true);
     harness.storage.close();
   });
@@ -251,6 +367,91 @@ describe("CaptureQueue", () => {
     expect(maximumActive).toBe(1);
     expect(uploadCalls).toBe(3);
     harness.storage.close();
+  });
+
+  it.each(["process", "web"])("retains the %s drain lock after a worker storage failure until its peer settles", async (lockKind) => {
+    const previousLocks = Object.getOwnPropertyDescriptor(globalThis.navigator, "locks");
+    let held = false;
+    Object.defineProperty(globalThis.navigator, "locks", { configurable: true, value: lockKind === "process" ? undefined : {
+      request: async (_name: string, _options: LockOptions, callback: (lock: Lock | null) => Promise<unknown>) => {
+        if (held) return callback(null);
+        held = true;
+        try { return await callback({ mode: "exclusive", name: "synthetic-drain-lock" }); }
+        finally { held = false; }
+      },
+    } });
+    const harness = await createHarness();
+    const failed = makeReservation(0), slow = makeReservation(1), waiting = makeReservation(2);
+    for (const reservation of [failed, slow, waiting]) {
+      await harness.queue.reserve(reservation, "reservation-batch-0001");
+      await harness.queue.encrypt(reservation.objectId, makeEnvelope(reservation.sequenceNumber + 60));
+    }
+    const original = await harness.queue.get(failed.objectId);
+    const unclaimed = await harness.queue.get(waiting.objectId);
+    const slowStarted = deferred(), releaseSlow = deferred();
+    const storageFailed = deferred();
+    const storageError = new Error("Synthetic retry-state write failure");
+    const compareAndSwap = harness.storage.compareAndSwap.bind(harness.storage);
+    const failingWrite = vi.spyOn(harness.storage, "compareAndSwap").mockImplementation(async (id, revision, replacement) => {
+      if (id === failed.objectId && replacement.retry.upload.attempts > 0) {
+        storageFailed.resolve();
+        throw storageError;
+      }
+      return compareAndSwap(id, revision, replacement);
+    });
+    let failUpload = true;
+    const transport = successfulTransport(() => harness.now.value, {
+      upload: async url => {
+        if (url.endsWith(failed.objectId) && failUpload) {
+          await slowStarted.promise;
+          throw new QueueTransportError("retryable", "synthetic_network_failure");
+        }
+        if (url.endsWith(slow.objectId)) {
+          slowStarted.resolve();
+          await releaseSlow.promise;
+        }
+      },
+    });
+    const authorizations = vi.spyOn(transport, "authorizeUpload");
+    let settled = false;
+    const draining = harness.queue.drainOnce(transport).then(
+      value => { settled = true; return { value }; },
+      error => { settled = true; return { error }; },
+    );
+    try {
+      await storageFailed.promise;
+      // Let the rejected storage operation propagate while the peer is held
+      // in a real queue upload, rather than stubbing the drain implementation.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+      expect(() => harness.queue.configureUploadConcurrency(1)).toThrow("queue_drain_in_progress");
+      const overlapping = successfulTransport(() => harness.now.value);
+      const overlappingRead = vi.spyOn(overlapping, "getReceipt");
+      await expect(harness.queueWithStorage(harness.storage).drainOnce(overlapping)).rejects.toMatchObject({ code: "queue_drain_in_progress" });
+      expect(overlappingRead).not.toHaveBeenCalled();
+      releaseSlow.resolve();
+      expect(await draining).toEqual({ error: storageError });
+      expect((await harness.queue.get(slow.objectId))?.state).toBe("registered");
+      expect(await harness.queue.get(waiting.objectId)).toEqual(unclaimed);
+      const retained = await harness.queue.get(failed.objectId);
+      expect(retained).toMatchObject({ state: "uploading", idempotencyKeys: original!.idempotencyKeys });
+      expect(retained && "envelope" in retained ? retained.envelope : null).toEqual(
+        original && "envelope" in original ? original.envelope : null,
+      );
+      failingWrite.mockRestore(); failUpload = false;
+      await harness.queue.drainOnce(transport);
+      expect((await harness.queue.listMetadata()).every(record => record.state === "registered")).toBe(true);
+      const attempts = authorizations.mock.calls.filter(call => call[1] === failed.objectId);
+      expect(attempts).toHaveLength(2);
+      expect(attempts[1]).toEqual(attempts[0]);
+    } finally {
+      releaseSlow.resolve();
+      await draining;
+      await vi.waitFor(async () => expect((await harness.queue.get(slow.objectId))?.state).toBe("registered"));
+      failingWrite.mockRestore(); harness.storage.close();
+      if (previousLocks === undefined) delete (globalThis.navigator as { locks?: LockManager }).locks;
+      else Object.defineProperty(globalThis.navigator, "locks", previousLocks);
+    }
   });
 
   it("rejects invalid runtime upload concurrency", async () => {
@@ -424,6 +625,12 @@ describe("CaptureQueue", () => {
 interface HarnessOptions {
   readonly baseRetryMs?: number;
   readonly random?: () => number;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 async function createHarness(options: HarnessOptions = {}) {

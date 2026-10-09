@@ -62,9 +62,7 @@ def test_beta_access_cases_fail_closed_and_enforce_creator_only() -> None:
         assert expected["create_own_capture"] == ("allow" if eligible else "deny")
 
         creator_access = bool(
-            eligible
-            and case["practice_relation"] == "same"
-            and case["resource_creator"] == "self"
+            eligible and case["practice_relation"] == "same" and case["resource_creator"] == "self"
         )
         target_decision = "allow" if creator_access else "deny"
         assert expected["list_target_artifact"] == target_decision
@@ -107,9 +105,7 @@ def test_beta_activation_manifest_is_non_phi_and_false_by_default() -> None:
         "encrypted_translation_job_store_and_ambiguity_runbook"
         in manifest["required_before_activation"]
     )
-    assert "core_owned_encounter_binding_evidence" in manifest[
-        "required_before_activation"
-    ]
+    assert "core_owned_encounter_binding_evidence" in manifest["required_before_activation"]
 
 
 def test_existing_scribe_runtime_controls_remain_dark() -> None:
@@ -129,14 +125,12 @@ def test_limited_dashboard_matrix_covers_every_status_and_stays_creator_only() -
     assert set(by_status) == {status.value for status in ConfiguredExternalSessionStatus}
     assert all(state["creator_authorization_required"] is True for state in states)
     assert all(state["show_to_non_creator"] is False for state in states)
-    assert {
-        state["source_status"]
-        for state in states
-        if state["can_review_translation"]
-    } == {ConfiguredExternalSessionStatus.REVIEW_REQUIRED.value}
-    assert {
-        state["source_status"] for state in states if state["can_request_note"]
-    } == {ConfiguredExternalSessionStatus.TRANSCRIPT_READY.value}
+    assert {state["source_status"] for state in states if state["can_review_translation"]} == {
+        ConfiguredExternalSessionStatus.REVIEW_REQUIRED.value
+    }
+    assert {state["source_status"] for state in states if state["can_request_note"]} == {
+        ConfiguredExternalSessionStatus.TRANSCRIPT_READY.value
+    }
 
 
 def test_encounter_binding_keeps_demographics_in_core_and_precedes_capture() -> None:
@@ -166,9 +160,7 @@ def test_encounter_binding_keeps_demographics_in_core_and_precedes_capture() -> 
         "patient_date_of_birth",
         "possible_matches",
     }
-    assert not set(boundary["allowed_request_fields"]) & set(
-        boundary["forbidden_request_fields"]
-    )
+    assert not set(boundary["allowed_request_fields"]) & set(boundary["forbidden_request_fields"])
     assert all(matrix["rules"].values())
 
 
@@ -225,27 +217,17 @@ def test_encounter_binding_cases_require_explicit_safe_resolution() -> None:
             assert successful is should_bind
 
         if case["mode"] == "manual_demographics" and eligible:
-            complete = bool(
-                case["manual_name_present"] and case["manual_dob_present"]
-            )
+            complete = bool(case["manual_name_present"] and case["manual_dob_present"])
             if not complete or case["idempotency"] == "payload_conflict":
                 assert not successful
-            if (
-                complete
-                and case["possible_match_count"]
-                and case["explicit_resolution"] == "none"
-            ):
+            if complete and case["possible_match_count"] and case["explicit_resolution"] == "none":
                 assert expected["action"] == "wait_for_explicit_resolution"
                 assert not successful
-            if case["explicit_resolution"] == (
-                "create_unscheduled_for_existing_patient"
-            ):
+            if case["explicit_resolution"] == ("create_unscheduled_for_existing_patient"):
                 assert case["possible_match_count"] >= 1
                 assert successful is bool(case["selected_match_authorized"])
 
-    assert by_id["exact_idempotent_replay"]["expected"]["action"] == (
-        "replay_existing_binding"
-    )
+    assert by_id["exact_idempotent_replay"]["expected"]["action"] == ("replay_existing_binding")
     assert by_id["manual_possible_match_unresolved"]["expected"]["action"] == (
         "wait_for_explicit_resolution"
     )

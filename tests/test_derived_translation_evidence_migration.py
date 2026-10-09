@@ -658,21 +658,23 @@ async def test_rejected_review_requires_retryable_translation_state(
         )
         await connection.execute(
             text(
-                "UPDATE scribe_sessions SET status = 'translation_pending' "
-                "WHERE id = :session_id"
+                "UPDATE scribe_sessions SET status = 'translation_pending' WHERE id = :session_id"
             ),
             {"session_id": session_id},
         )
     async with engine.begin() as connection:
-        assert await connection.scalar(
-            text(
-                """
+        assert (
+            await connection.scalar(
+                text(
+                    """
                 SELECT decision FROM normalized_translation_reviews
                 WHERE tenant_id = :tenant_id AND translation_id = :translation_id
                 """
-            ),
-            {"tenant_id": tenant_id, "translation_id": translation_id},
-        ) == "rejected"
+                ),
+                {"tenant_id": tenant_id, "translation_id": translation_id},
+            )
+            == "rejected"
+        )
     await engine.dispose()
 
 
@@ -773,10 +775,13 @@ async def test_purge_marker_is_the_only_content_delete_path(
             "normalized_source_segments",
             *DERIVED_TABLES,
         ):
-            assert await connection.scalar(
-                text(f"SELECT count(*) FROM {table} WHERE tenant_id = :tenant_id"),
-                {"tenant_id": tenant_id},
-            ) == 0
+            assert (
+                await connection.scalar(
+                    text(f"SELECT count(*) FROM {table} WHERE tenant_id = :tenant_id"),
+                    {"tenant_id": tenant_id},
+                )
+                == 0
+            )
         await _reject(
             connection,
             TRANSLATION_INSERT,
@@ -816,15 +821,18 @@ async def test_deferred_database_clock_rejects_late_translation_commit(
             await transaction.rollback()
         await connection.close()
     async with engine.begin() as connection:
-        assert await connection.scalar(
-            text(
-                """
+        assert (
+            await connection.scalar(
+                text(
+                    """
                 SELECT count(*) FROM normalized_translation_attempts
                 WHERE tenant_id = :tenant_id AND session_id = :session_id
                 """
-            ),
-            {"tenant_id": tenant_id, "session_id": session_id},
-        ) == 0
+                ),
+                {"tenant_id": tenant_id, "session_id": session_id},
+            )
+            == 0
+        )
     await engine.dispose()
 
 
@@ -900,18 +908,22 @@ async def test_derived_tables_force_tenant_rls_and_receive_no_runtime_grant(
             text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
             {"tenant_id": str(records[0][0])},
         )
-        assert await connection.scalar(
-            text("SELECT count(*) FROM normalized_translation_attempts")
-        ) == 1
-        assert await connection.scalar(
-            text(
-                """
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM normalized_translation_attempts"))
+            == 1
+        )
+        assert (
+            await connection.scalar(
+                text(
+                    """
                 SELECT count(*) FROM normalized_translation_attempts
                 WHERE translation_id = :translation_id
                 """
-            ),
-            {"translation_id": records[1][1]},
-        ) == 0
+                ),
+                {"translation_id": records[1][1]},
+            )
+            == 0
+        )
     await app.dispose()
 
     migration = (ROOT / "alembic/versions/0012_derived_translation_evidence.py").read_text()

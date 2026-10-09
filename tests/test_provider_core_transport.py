@@ -6,7 +6,7 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -184,6 +184,377 @@ def body(**values):
     }
 
 
+def note_case(wire, template_count=1):
+    """Core receipt metadata for transport orchestration; UI parsing is separate."""
+    source_id = str(uuid4())
+    source = {
+        "kind": "reviewed_english",
+        "source_version": 1,
+        "working_transcript_id": source_id,
+        "working_version": 1,
+    }
+    schema = "doctor_note_schema_" + SUFFIX
+    receipts = {
+        "review": {
+            "schema_version": "1.0",
+            "session_id": SESSION,
+            "status": "transcript_ready",
+            "source": {"source_transcript_version": 1},
+            "working": {
+                "working_transcript_id": source_id,
+                "working_transcript_version": 1,
+                "note_ready": True,
+            },
+        },
+        "templates": {
+            "session_id": SESSION,
+            "templates": [
+                {
+                    "schema_ref": schema[:-1] + str(index),
+                    "note_type": "Synthetic SOAP",
+                    "field_names": ["Subjective"],
+                }
+                for index in range(template_count)
+            ],
+        },
+        "note": {"session_id": SESSION, "schema_ref": schema, "reviewed_source": source},
+    }
+
+    def alter(path, value):
+        phase = (
+            "review"
+            if value.get("operation") == "creator_review"
+            else "templates"
+            if value.get("action") == "templates"
+            else "note"
+            if value.get("action") == "read"
+            else None
+        )
+        return {**value, "receipt": receipts[phase]} if phase else value
+
+    wire.alter = alter
+    return receipts
+
+
+async def test_note_opening_reuses_only_one_local_negotiation(connection):
+    wire, client = connection
+    fixtures = note_case(wire)
+    mount = await client.open()
+    wire.calls.clear()
+    nonce = uuid4()
+    value = await client.open_note(mount, UUID(SESSION), nonce, "offline-open-note")
+    assert len(wire.calls) == 6 and wire.counter == 2
+    assert value["request_nonce"] == str(nonce) and value["operation"] == "note_opening"
+    assert value["receipt"] == {
+        "session_id": SESSION,
+        "review": fixtures["review"],
+        "templates": fixtures["templates"]["templates"],
+        "note": fixtures["note"],
+    }
+    assert len({key for _, _, key in wire.effects}) == 3
+    assert [
+        data.get("action", data.get("operation", {}).get("kind")) for _, data, _ in wire.effects
+    ] == ["creator_review", "templates", "read"]
+    await client.request(
+        mount,
+        ROOT + "capture-notes",
+        body(
+            action="read",
+            expected_session_id=SESSION,
+            schema_ref=fixtures["note"]["schema_ref"],
+        ),
+        "offline-next-note-read",
+    )
+    assert wire.counter == 3 and len(wire.calls) == 10
+    assert USER_TOKEN not in json.dumps(value) and WORKLOAD_TOKEN not in json.dumps(value)
+
+
+@pytest.mark.parametrize("count", [0, 2])
+async def test_note_opening_never_selects_a_template_for_the_provider(connection, count):
+    wire, client = connection
+    fixtures = note_case(wire, count)
+    value = await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+    assert value["receipt"]["templates"] == fixtures["templates"]["templates"]
+    assert value["receipt"]["note"] is None
+    assert len(wire.effects) == 2
+
+
+async def test_note_opening_stops_at_current_unready_review(connection):
+    wire, client = connection
+    fixtures = note_case(wire)
+    fixtures["review"].update(status="capturing", source=None, working=None)
+    value = await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+    assert value["receipt"] == {
+        "session_id": SESSION,
+        "review": fixtures["review"],
+        "templates": None,
+        "note": None,
+    }
+    assert len(wire.effects) == 1
+
+
+@pytest.mark.parametrize("phase", ["review", "templates", "note"])
+async def test_note_opening_rejects_a_different_session_at_every_read(connection, phase):
+    wire, client = connection
+    fixtures = note_case(wire)
+    fixtures[phase]["session_id"] = str(uuid4())
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+    assert len(wire.effects) == ["review", "templates", "note"].index(phase) + 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("working_version", 2),
+        ("source_version", 2),
+        ("working_transcript_id", str(uuid4())),
+        ("capture_continuity", {"synthetic": "changed"}),
+    ],
+)
+async def test_note_opening_rejects_changed_note_lineage(connection, field, value):
+    wire, client = connection
+    fixtures = note_case(wire)
+    fixtures["note"]["reviewed_source"][field] = value
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+
+
+@pytest.mark.parametrize("boundary", range(1, 7))
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_note_opening_rechecks_access_at_each_core_boundary(connection, boundary, change):
+    wire, client = connection
+    note_case(wire)
+    mount = await client.open()
+    wire.calls.clear()
+
+    def after(_path):
+        if len(wire.calls) == boundary:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+
+    wire.after = after
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.open_note(mount, UUID(SESSION), uuid4(), "offline-open-note")
+    assert caught.value.status == 403 and len(wire.calls) == boundary
+
+
+@pytest.mark.parametrize("action", ["prepare", "save", "resolve", "read-with-edit"])
+async def test_note_opening_negotiation_cannot_be_reused_for_writes(connection, action):
+    wire, client = connection
+    current = await client._negotiate(None)
+    with pytest.raises(ProviderCoreUnavailable):
+        await client._request(
+            current.mount,
+            ROOT + "capture-notes",
+            body(
+                action="read" if action == "read-with-edit" else action,
+                expected_session_id=SESSION,
+                schema_ref="doctor_note_schema_" + SUFFIX,
+                edit={"synthetic": "must not reach Core"},
+            ),
+            "offline-forbidden-note-reuse",
+            _negotiated=current,
+        )
+    assert wire.effects == []
+
+
+async def test_note_opening_large_combination_explicitly_uses_separate_reads(
+    connection, monkeypatch
+):
+    wire, client = connection
+    fixtures = note_case(wire)
+    fixtures["note"]["synthetic_padding"] = "x" * 2000
+    monkeypatch.setattr(
+        "cosmaneura_scribe.provider_core_transport.MAX_CORE_CAPTURE_RESPONSE_BYTES", 2000
+    )
+    value = await client.open_note(await client.open(), UUID(SESSION), uuid4(), "offline-open-note")
+    assert value["receipt"] == {"session_id": SESSION, "separate_reads_required": True}
+    assert len(wire.effects) == 3
+
+
+async def test_note_opening_cancellation_cannot_continue_to_note_read(connection):
+    wire, client = connection
+    note_case(wire)
+    mount = await client.open()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(path):
+        if path.endswith("capture-notes"):
+            entered.set()
+            await release.wait()
+
+    wire.before = hold
+    task = asyncio.create_task(client.open_note(mount, UUID(SESSION), uuid4(), "offline-open-note"))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    assert len(wire.effects) == 1
+
+
+async def test_note_opening_total_deadline_does_not_retry_or_continue(connection, monkeypatch):
+    wire, client = connection
+    note_case(wire)
+    mount = await client.open()
+    monkeypatch.setattr(
+        "cosmaneura_scribe.provider_core_transport.NOTE_OPENING_TOTAL_TIMEOUT_SECONDS", 0.02
+    )
+
+    async def hold(path):
+        if path.endswith("capture-notes"):
+            await asyncio.Event().wait()
+
+    wire.before = hold
+    with pytest.raises(ProviderCoreUnavailable, match="^core_provider_request_timeout$"):
+        await client.open_note(mount, UUID(SESSION), uuid4(), "offline-open-note")
+    assert len(wire.effects) == 1
+    assert len([path for path, _ in wire.calls if path.endswith("capture-notes")]) == 1
+
+
+async def test_concurrent_note_openings_keep_their_negotiations_separate(connection):
+    wire, client = connection
+    note_case(wire)
+    mount = await client.open()
+    wire.calls.clear()
+    values = await asyncio.gather(
+        *(client.open_note(mount, UUID(SESSION), uuid4(), "offline-open-note") for _ in range(2))
+    )
+    assert len(wire.calls) == 12 and wire.counter == 3
+    assert values[0]["request_nonce"] != values[1]["request_nonce"]
+    assert len({key for _, _, key in wire.effects}) == 6
+
+
+async def test_open_with_review_reuses_only_its_own_negotiation(connection):
+    wire, client = connection
+    nonce = uuid4()
+    mount, review = await client.open_with_review(nonce, "offline-opening-read")
+    assert mount.binding_ref == BINDING
+    assert review["request_nonce"] == str(nonce)
+    assert review["operation"] == "provider_encounter"
+    assert len(wire.calls) == 4 and wire.counter == 1
+    assert wire.effects == [
+        (
+            ROOT + "capture-operations",
+            body(
+                request_nonce=str(nonce),
+                operation={"kind": "provider_encounter"},
+            ),
+            "offline-opening-read",
+        )
+    ]
+    assert wire.context_calls > len(wire.calls)
+    # Neither a subsequent action nor another opening can reuse this authority.
+    await client.request(
+        mount,
+        ROOT + "capture-operations",
+        body(
+            operation={"kind": "creator_review"},
+        ),
+        "offline-next-read",
+    )
+    assert wire.counter == 2 and len(wire.calls) == 7
+    await client.open_with_review(uuid4(), "offline-another-opening")
+    assert wire.counter == 3 and len(wire.calls) == 11
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "/embed/v1/context-tokens/exchange",
+        "/service/v1/agent/mount-context/resolve",
+        ROOT + "capture-bindings/resolve",
+        ROOT + "capture-operations",
+    ],
+)
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_opening_does_not_publish_access_changed_during_any_core_io(
+    connection,
+    boundary,
+    change,
+):
+    wire, client = connection
+
+    def alter(path):
+        if path == boundary:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+
+    wire.after = alter
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.open_with_review(uuid4(), "offline-opening-read")
+    assert caught.value.status == 403
+    assert wire.calls[-1][0] == boundary
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("binding_ref", "scribe_capture_binding_01j00000000000000000000001"),
+        ("workspace_id", str(uuid4())),
+        ("request_nonce", str(uuid4())),
+        ("operation", "creator_review"),
+        ("checked_at", "2000-01-01T00:00:00Z"),
+    ],
+)
+async def test_opening_validates_existing_core_receipt(connection, field, value):
+    wire, client = connection
+    wire.alter = lambda path, result: (
+        {**result, field: value} if path.endswith("capture-operations") else result
+    )
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.open_with_review(uuid4(), "offline-opening-read")
+
+
+async def test_opening_cannot_reuse_setup_for_a_mutation(connection):
+    wire, client = connection
+    current = await client._negotiate(None)
+    with pytest.raises(ProviderCoreUnavailable):
+        await client._request(
+            current.mount,
+            ROOT + "capture-operations",
+            body(
+                operation={"kind": "decide_translation", "payload": {"decision": "accepted"}},
+            ),
+            "offline-forbidden-reuse",
+            _negotiated=current,
+        )
+    assert wire.effects == []
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "/embed/v1/context-tokens/exchange",
+        "/service/v1/agent/mount-context/resolve",
+        ROOT + "capture-bindings/resolve",
+        ROOT + "capture-operations",
+    ],
+)
+async def test_opening_is_cancelled_before_late_core_read(connection, boundary):
+    wire, client = connection
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(path):
+        if path == boundary:
+            entered.set()
+            await release.wait()
+
+    wire.before = hold
+    task = asyncio.create_task(client.open_with_review(uuid4(), "offline-opening-read"))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    assert wire.effects == []
+
+
 async def test_configured_admission_review_and_existing_note_routes(connection):
     wire, client = connection
     mount = await client.open()
@@ -225,6 +596,620 @@ async def test_configured_admission_review_and_existing_note_routes(connection):
     assert wire.counter == 10  # Fresh exchange for every action, not a cached mount token.
     assert wire.context_calls > len(wire.calls)
     assert USER_TOKEN not in repr(mount) and WORKLOAD_TOKEN not in repr(client)
+
+
+def startup_operations(source="ios_microphone"):
+    lease_id, receipt_id = str(uuid4()), str(uuid4())
+    intent = {
+        "schema_version": "1.0",
+        "attempt_id": str(uuid4()),
+        "source": source,
+        "owner_proof": "d" * 64,
+        "lease_id": lease_id,
+        "lease_receipt_id": receipt_id,
+        "lease_generation": 1,
+        "capture_authorized_until": (NOW + timedelta(minutes=15)).isoformat(),
+    }
+    return [
+        {"kind": "issue_lease", "payload": {"protocol_version": "1.0"}},
+        {
+            "kind": "reserve_chunks",
+            "payload": {
+                "protocol_version": "1.0",
+                "capture_lease_id": lease_id,
+                "capture_lease_generation": 1,
+                "channel": "microphone",
+                "first_sequence_number": 0,
+                "count": 90,
+            },
+        },
+        *(
+            {"kind": "source_start", "action": action, "payload": intent}
+            for action in ("prepare", "authorize", "stop")
+        ),
+    ]
+
+
+def source_sequence_case(wire):
+    def alter(path, value):
+        if value.get("operation") != "source_start_sequence":
+            return value
+        intent = wire.effects[-1][1]["operation"]["payload"]
+        common = {
+            **{key: item for key, item in intent.items() if key != "owner_proof"},
+            "session_id": SESSION,
+            "source_start_id": intent["attempt_id"],
+            "creator_actor_id": SELECTION.actor_ref,
+            "consent_record_id": str(uuid4()),
+            "preparation_expires_at": (NOW + timedelta(seconds=30)).isoformat(),
+            "capability_id": str(uuid4()),
+        }
+        prepared = {**common, "state": "prepared", "issued_at": None, "expires_at": None}
+        issued = {
+            **common,
+            "state": "issued",
+            "issued_at": NOW.isoformat(),
+            "expires_at": (NOW + timedelta(seconds=15)).isoformat(),
+        }
+        return {
+            **value,
+            "receipt": {
+                "preparation": prepared,
+                "authorization": {"receipt": issued, "secret": intent["owner_proof"]},
+            },
+        }
+
+    wire.alter = alter
+    return body(
+        operation=startup_operations()[2],
+        authorize_idempotency_key="offline-authorize-" + str(uuid4()),
+        authorize_request_nonce=str(uuid4()),
+    )
+
+
+async def test_source_sequence_reuses_one_request_local_setup_and_preserves_intents(connection):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    wire.calls.clear()
+    wire.context_calls = 0
+    result = await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert len(wire.calls) == 3 and wire.context_calls == 4 and wire.counter == 2
+    assert len(wire.effects) == 1
+    _, sent, prepare_key = wire.effects[0]
+    assert prepare_key == "offline-prepare-key"
+    assert sent["request_nonce"] == payload["request_nonce"]
+    assert sent["operation"] == {
+        "kind": "source_start_sequence",
+        "payload": payload["operation"]["payload"],
+        "authorize_idempotency_key": payload["authorize_idempotency_key"],
+    }
+    assert result["preparation"]["receipt"]["state"] == "prepared"
+    assert result["authorization"]["receipt"]["receipt"]["state"] == "issued"
+    assert result["preparation"]["request_nonce"] == payload["request_nonce"]
+    assert result["authorization"]["request_nonce"] == payload["authorize_request_nonce"]
+    assert (
+        result["authorization"]["receipt"]["secret"]
+        == payload["operation"]["payload"]["owner_proof"]
+    )
+    assert {item["operation"] for item in result.values()} == {"source_start"}
+    assert USER_TOKEN not in json.dumps(result) and WORKLOAD_TOKEN not in json.dumps(result)
+    await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert wire.counter == 3  # Every subsequent native request negotiates afresh.
+    assert wire.effects[0] == wire.effects[1]  # Explicit retry retains both exact intents.
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "action",
+        "kind",
+        "scope",
+        "key",
+        "same-key",
+        "nonce",
+        "same-nonce",
+        "extra",
+    ],
+)
+async def test_source_sequence_rejects_invalid_pair_before_core(connection, failure):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    wire.calls.clear()
+    if failure == "action":
+        payload["operation"]["action"] = "authorize"
+    elif failure == "kind":
+        payload["operation"]["kind"] = "creator_review"
+    elif failure == "scope":
+        payload["workspace_id"] = str(uuid4())
+    elif failure in {"key", "same-key"}:
+        payload["authorize_idempotency_key"] = "bad" if failure == "key" else "offline-prepare-key"
+    elif failure in {"nonce", "same-nonce"}:
+        payload["authorize_request_nonce"] = (
+            "bad" if failure == "nonce" else payload["request_nonce"]
+        )
+    else:
+        payload["secret_fallback"] = "forbidden"
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert wire.calls == [] and wire.effects == []
+
+
+@pytest.mark.parametrize("boundary", range(1, 5))
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_source_sequence_checks_current_access_before_and_after_all_io(
+    connection,
+    boundary,
+    change,
+):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    wire.calls.clear()
+    wire.context_calls = 0
+
+    async def fresh():
+        if wire.context_calls + 1 == boundary:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+        return await wire.context()
+
+    client._fresh_context = fresh
+    with pytest.raises(ProviderCoreUnavailable) as error:
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert error.value.status == 403 and len(wire.calls) == boundary - 1
+    assert len(wire.effects) == (1 if boundary == 4 else 0)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("state", "issued"),
+        ("attempt_id", str(uuid4())),
+        ("source", "desktop_companion"),
+        ("lease_id", str(uuid4())),
+        ("lease_generation", 2),
+        ("first_sequence_number", 1),
+        ("capture_authorized_until", (NOW + timedelta(minutes=14)).isoformat()),
+        ("creator_actor_id", "foreign-actor"),
+        ("issued_at", NOW.isoformat()),
+        ("preparation_expires_at", (NOW - timedelta(seconds=1)).isoformat()),
+        ("preparation_expires_at", (NOW + timedelta(hours=1)).isoformat()),
+        ("extra_field", "invalid"),
+    ],
+)
+async def test_source_sequence_rejects_invalid_preparation_in_combined_reply(
+    connection,
+    field,
+    value,
+):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    original = wire.alter
+
+    def alter(path, response):
+        response = original(path, response)
+        if response.get("operation") == "source_start_sequence":
+            response["receipt"]["preparation"][field] = value
+        return response
+
+    wire.alter = alter
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert len(wire.effects) == 1
+
+
+@pytest.mark.parametrize(
+    "target,field,value",
+    [
+        ("envelope", "unexpected", "private-sentinel"),
+        ("pair", "unexpected", "private-sentinel"),
+        ("authorization", "unexpected", "private-sentinel"),
+        ("authorization", "secret", "e" * 64),
+        ("authorization", "secret", "\u00e9" * 64),
+        ("issued", "unexpected", "private-sentinel"),
+        ("issued", "session_id", str(uuid4())),
+        ("issued", "source_start_id", str(uuid4())),
+        ("issued", "consent_record_id", str(uuid4())),
+        ("issued", "capability_id", str(uuid4())),
+        ("issued", "first_sequence_number", 1),
+        ("issued", "state", "stopped"),
+        ("issued", "issued_at", None),
+        ("issued", "expires_at", None),
+        ("issued", "issued_at", (NOW + timedelta(seconds=6)).isoformat()),
+        ("issued", "issued_at", (NOW + timedelta(seconds=16)).isoformat()),
+        ("issued", "issued_at", (NOW - timedelta(seconds=1)).isoformat()),
+        ("issued", "expires_at", NOW.isoformat()),
+        ("issued", "expires_at", (NOW + timedelta(seconds=16)).isoformat()),
+    ],
+)
+async def test_source_sequence_rejects_invalid_authorization_without_publishing(
+    connection,
+    target,
+    field,
+    value,
+):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    original = wire.alter
+
+    def alter(path, response):
+        response = original(path, response)
+        if response.get("operation") == "source_start_sequence":
+            targets = {
+                "envelope": response,
+                "pair": response["receipt"],
+                "authorization": response["receipt"]["authorization"],
+                "issued": response["receipt"]["authorization"]["receipt"],
+            }
+            targets[target][field] = value
+        return response
+
+    wire.alter = alter
+    with pytest.raises(ProviderCoreUnavailable) as error:
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert len(wire.effects) == 1
+    assert "private-sentinel" not in str(error.value)
+    assert payload["operation"]["payload"]["owner_proof"] not in str(error.value)
+
+
+@pytest.mark.parametrize("native_start", [False, True])
+async def test_core_sequence_rejects_generic_transport(connection, native_start):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    wire.calls.clear()
+    direct = body(
+        operation={
+            "kind": "source_start_sequence",
+            "payload": payload["operation"]["payload"],
+            "authorize_idempotency_key": payload["authorize_idempotency_key"],
+        }
+    )
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            direct,
+            "offline-prepare-key",
+            native_start=native_start,
+        )
+    assert not wire.calls and not wire.effects
+
+
+async def test_source_sequence_cancellation_after_core_never_publishes_or_retries(connection):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+
+    def cancel(_):
+        if len(wire.effects) == 1:
+            asyncio.current_task().cancel()
+
+    wire.after = cancel
+    task = asyncio.create_task(
+        client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(wire.effects) == 1
+
+
+@pytest.mark.parametrize("fault", ["lost", "rejected", "conflict", "malformed"])
+async def test_source_sequence_uncertain_reply_never_retries_or_falls_back(connection, fault):
+    wire, client = connection
+    mount = await client.open()
+    payload = source_sequence_case(wire)
+    original = wire.alter
+
+    def altered(path, value):
+        if value.get("operation") != "source_start_sequence":
+            return value
+        if fault in {"rejected", "conflict"}:
+            return httpx.Response(422 if fault == "rejected" else 409)
+        if fault == "malformed":
+            return {**value, "receipt": {"preparation": {}}}
+        return original(path, value)
+
+    wire.alter = altered
+    wire.lost = fault == "lost"
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.prepare_and_authorize_source(mount, payload, "offline-prepare-key")
+    assert len(wire.effects) == 1
+    assert wire.effects[0][1]["operation"]["kind"] == "source_start_sequence"
+
+
+async def test_concurrent_source_sequences_keep_their_own_context_and_intents(connection):
+    wire, client = connection
+    mount = await client.open()
+    payloads = [source_sequence_case(wire), source_sequence_case(wire)]
+    entered, release = asyncio.Event(), asyncio.Event()
+    arrivals = 0
+
+    async def before(path):
+        nonlocal arrivals
+        if path.endswith("mount-context/resolve"):
+            arrivals += 1
+            if arrivals == 2:
+                entered.set()
+            await release.wait()
+
+    wire.before = before
+    tasks = [
+        asyncio.create_task(
+            client.prepare_and_authorize_source(
+                mount,
+                payload,
+                "offline-prepare-" + str(index),
+            )
+        )
+        for index, payload in enumerate(payloads)
+    ]
+    await asyncio.wait_for(entered.wait(), 2)
+    release.set()
+    results = await asyncio.gather(*tasks)
+    assert wire.counter == 3 and len(wire.effects) == 2
+    for payload, result in zip(payloads, results, strict=True):
+        assert result["preparation"]["request_nonce"] == payload["request_nonce"]
+        assert result["authorization"]["request_nonce"] == payload["authorize_request_nonce"]
+        assert (
+            result["preparation"]["receipt"]["attempt_id"]
+            == payload["operation"]["payload"]["attempt_id"]
+        )
+
+
+@pytest.mark.parametrize("source", ["ios_microphone", "desktop_companion"])
+async def test_capture_start_and_stop_keep_fresh_authority_without_duplicate_binding_lookup(
+    connection,
+    source,
+):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    wire.context_calls = 0
+    for index, operation in enumerate(startup_operations(source)):
+        payload = body(operation=operation)
+        result = await client.request(
+            mount,
+            ROOT + "capture-operations",
+            payload,
+            f"offline-start-step-{index}",
+            native_start=operation["kind"] == "source_start",
+        )
+        assert result["operation"] == operation["kind"]
+        assert wire.calls[index * 3 :] == [
+            (
+                "/embed/v1/context-tokens/exchange",
+                {
+                    "requested_surface": "provider_assistant",
+                    "record_ref": SELECTION.appointment_ref,
+                },
+            ),
+            ("/service/v1/agent/mount-context/resolve", None),
+            (ROOT + "capture-operations", payload),
+        ]
+        if index == 3:
+            assert len(wire.calls) == 12
+    # First four steps start capture; stop uses its original proof and key.
+    assert len(wire.calls) == 15 and wire.counter == 6
+    assert wire.context_calls == 4 * len(startup_operations(source))
+    assert len(wire.turns) == 6  # Opening and every action have distinct interactions.
+    assert [effect[2] for effect in wire.effects] == [f"offline-start-step-{i}" for i in range(5)]
+
+
+@pytest.mark.parametrize("checkpoint", range(1, 5))
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_start_context_checked_before_and_after_each_core_request(
+    connection,
+    checkpoint,
+    change,
+):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    checks = 0
+
+    async def context():
+        nonlocal checks
+        checks += 1
+        if checks == checkpoint:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+        return await wire.context()
+
+    client._fresh_context = context
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation=startup_operations()[3]),
+            "offline-context-start",
+            native_start=True,
+        )
+    assert caught.value.status == 403 and checks == checkpoint
+    assert len(wire.calls) == checkpoint - 1
+    assert len(wire.effects) == (1 if checkpoint == 4 else 0)
+
+
+async def test_open_exchange_uses_the_immediately_checked_identity(connection):
+    wire, client = connection
+    trace = []
+
+    async def context():
+        trace.append("context")
+        return await wire.context()
+
+    async def before(path):
+        trace.append(path)
+
+    client._fresh_context = context
+    wire.before = before
+    await client.open()
+    assert trace == [
+        "context",
+        "/embed/v1/context-tokens/exchange",
+        "context",
+        "context",
+        "/service/v1/agent/mount-context/resolve",
+        "context",
+        "context",
+        ROOT + "capture-bindings/resolve",
+        "context",
+    ]
+
+
+@pytest.mark.parametrize("boundary", [1, 2, 3])
+@pytest.mark.parametrize("change", ["revoke", "selection"])
+async def test_capture_operation_rechecks_access_at_every_remaining_boundary(
+    connection,
+    boundary,
+    change,
+):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+
+    def change_access(_):
+        if len(wire.calls) == boundary:
+            if change == "revoke":
+                wire.denied = True
+            else:
+                wire.selection = replace(SELECTION, authorization_revision=uuid4())
+
+    wire.after = change_access
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation=startup_operations()[3]),
+            "offline-one-use-start",
+            native_start=True,
+        )
+    assert caught.value.status == 403 and len(wire.calls) == boundary
+    assert len(wire.effects) == (1 if boundary == 3 else 0)
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 410])
+async def test_core_binding_denial_never_resolves_a_replacement_or_retries(connection, status):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    wire.alter = lambda path, value: (
+        httpx.Response(status) if path.endswith("capture-operations") else value
+    )
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation=startup_operations()[0]),
+            "offline-lease-key",
+        )
+    assert caught.value.status == 403 and len(wire.calls) == 3
+    assert len(wire.effects) == 1
+
+
+async def test_cancelled_fresh_capture_negotiation_never_dispatches_the_operation(connection):
+    wire, client = connection
+    mount = await client.open()
+    arrived = asyncio.Event()
+
+    async def hold(path):
+        if path.endswith("mount-context/resolve"):
+            arrived.set()
+            await asyncio.Event().wait()
+
+    wire.before = hold
+    task = asyncio.create_task(
+        client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation=startup_operations()[2]),
+            "offline-cancel-start",
+            native_start=True,
+        )
+    )
+    await asyncio.wait_for(arrived.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not wire.effects
+
+
+async def test_uncertain_native_start_preserves_body_proof_and_key_on_explicit_retry(connection):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    payload = body(operation=startup_operations()[3])
+    wire.lost = True
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount, ROOT + "capture-operations", payload, "offline-original-start", native_start=True
+        )
+    assert len(wire.effects) == 1 and len(wire.calls) == 3
+    wire.lost = False
+    await client.request(
+        mount, ROOT + "capture-operations", payload, "offline-original-start", native_start=True
+    )
+    assert len(wire.calls) == 6 and wire.effects[0] == wire.effects[1]
+    assert wire.counter == 3  # Explicit retry also exchanges a new context token.
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("surface", "patient_assistant"),
+        ("auth_tier", "patient"),
+        ("actor_id", "authority_actor_01j00000000000000000000001"),
+        ("tenant_id", "authority_tenant_01j00000000000000000000001"),
+    ],
+)
+async def test_capture_operation_requires_matching_fresh_mount_identity(connection, field, value):
+    wire, client = connection
+    mount = await client.open()
+    wire.alter = lambda path, result: (
+        {**result, field: value} if path.endswith("mount-context/resolve") else result
+    )
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation=startup_operations()[1]),
+            "offline-reserve",
+        )
+    assert not wire.effects
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("binding_ref", "scribe_capture_binding_01j00000000000000000000001"),
+        ("workspace_id", str(uuid4())),
+        ("request_nonce", str(uuid4())),
+        ("operation", "creator_review"),
+        ("checked_at", "2000-01-01T00:00:00Z"),
+    ],
+)
+async def test_capture_operation_with_known_binding_still_validates_reply(connection, field, value):
+    wire, client = connection
+    mount = await client.open()
+    wire.alter = lambda path, result: (
+        {**result, field: value} if path.endswith("capture-operations") else result
+    )
+    with pytest.raises(ProviderCoreUnavailable):
+        await client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation=startup_operations()[1]),
+            "offline-reserve",
+        )
+    assert len(wire.effects) == 1
 
 
 @pytest.mark.parametrize("status", ["created", "capturing"])
@@ -534,7 +1519,7 @@ async def test_concurrent_requests_keep_their_own_interaction_and_snapshot(conne
 
     async def before(path):
         nonlocal arrivals
-        if path.endswith("capture-bindings/resolve"):
+        if path.endswith("mount-context/resolve"):
             arrivals += 1
             arrived.set()
             if arrivals == 2:
@@ -740,3 +1725,247 @@ async def test_closing_connection_during_final_authorization_withholds_reply():
     finally:
         release.set()
         await client.close()
+
+
+async def test_opening_coalesces_only_adjacent_fresh_boundaries(connection):
+    wire, client = connection
+    order = []
+
+    async def fresh():
+        order.append("fresh")
+        return await wire.context()
+
+    async def workload():
+        order.append("workload")
+        await asyncio.sleep(0)
+        return await wire.workload()
+
+    async def before(path):
+        order.append(path)
+        await asyncio.sleep(0)
+
+    client._fresh_context, client._workload_token, wire.before = fresh, workload, before
+    await client.open_with_review(uuid4(), "offline-coalesced-open")
+    assert order == [
+        "fresh",
+        "/embed/v1/context-tokens/exchange",
+        "workload",
+        "fresh",
+        "/service/v1/agent/mount-context/resolve",
+        "fresh",
+        ROOT + "capture-bindings/resolve",
+        "fresh",
+        ROOT + "capture-operations",
+        "fresh",
+    ]
+    assert wire.context_calls == 5
+    assert len(wire.calls) == 4 and len(wire.effects) == 1
+
+
+@pytest.mark.parametrize("change", ["revoke", "account", "selection", "cancel"])
+async def test_opening_rechecks_after_workload_acquisition(connection, change):
+    wire, client = connection
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def workload():
+        entered.set()
+        await release.wait()
+        return await wire.workload()
+
+    client._workload_token = workload
+    task = asyncio.create_task(client.open_with_review(uuid4(), "offline-workload-boundary"))
+    await entered.wait()
+    if change == "cancel":
+        task.cancel()
+    elif change == "revoke":
+        wire.denied = True
+    else:
+        wire.selection = replace(
+            SELECTION,
+            **{
+                "recovery_scope" if change == "account" else "authorization_revision": uuid4(),
+            },
+        )
+    release.set()
+    with pytest.raises(asyncio.CancelledError if change == "cancel" else ProviderCoreUnavailable):
+        await task
+    assert [path for path, _ in wire.calls] == ["/embed/v1/context-tokens/exchange"]
+    assert not wire.effects
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "/embed/v1/context-tokens/exchange",
+        "/service/v1/agent/mount-context/resolve",
+        ROOT + "capture-bindings/resolve",
+        ROOT + "capture-operations",
+    ],
+)
+async def test_opening_rejects_account_switch_after_each_core_response(connection, boundary):
+    wire, client = connection
+
+    def change_account(path):
+        if path == boundary:
+            wire.selection = replace(SELECTION, recovery_scope=uuid4())
+
+    wire.after = change_account
+    with pytest.raises(ProviderCoreUnavailable) as caught:
+        await client.open_with_review(uuid4(), "offline-switched-account")
+    assert caught.value.status == 403 and wire.calls[-1][0] == boundary
+
+
+async def test_opening_boundary_is_single_use_even_for_another_read(connection):
+    wire, client = connection
+    current = await client._negotiate(None, opening=True)
+    assert current.opening is not None
+    await client._request(
+        current.mount,
+        ROOT + "capture-operations",
+        body(operation={"kind": "provider_encounter"}),
+        "offline-once",
+        _negotiated=current,
+    )
+    count = len(wire.calls)
+    assert current.opening.closed and current.opening.context is None
+    assert current.opening.workload_headers is None
+    with pytest.raises(ProviderCoreUnavailable):
+        await client._request(
+            current.mount,
+            ROOT + "capture-operations",
+            body(operation={"kind": "creator_review"}),
+            "offline-again",
+            _negotiated=current,
+        )
+    assert len(wire.calls) == count
+
+
+async def test_concurrent_openings_have_separate_request_local_boundaries(connection):
+    wire, client = connection
+
+    async def before(_path):
+        await asyncio.sleep(0)
+
+    wire.before = before
+    first, second = uuid4(), uuid4()
+    replies = await asyncio.gather(
+        client.open_with_review(first, "offline-concurrent-one"),
+        client.open_with_review(second, "offline-concurrent-two"),
+    )
+    assert {reply[1]["request_nonce"] for reply in replies} == {str(first), str(second)}
+    assert wire.counter == 2 and wire.context_calls == 10 and len(wire.calls) == 8
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "creator_review",
+        "native_recording_context",
+        "encryption_key",
+        "prepare_recording_window",
+        "authorize_upload",
+        "register_chunk",
+        "complete",
+    ],
+)
+async def test_capture_operation_shares_only_adjacent_checks_and_renegotiates(connection, kind):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    wire.context_calls = 0
+    order = []
+
+    async def fresh():
+        order.append("fresh")
+        return await wire.context()
+
+    async def workload():
+        order.append("workload")
+        await asyncio.sleep(0)
+        return await wire.workload()
+
+    async def before(path):
+        order.append(path)
+        await asyncio.sleep(0)
+
+    client._fresh_context, client._workload_token, wire.before = fresh, workload, before
+    payload = body(operation={"kind": kind})
+    expected = [
+        "fresh",
+        "/embed/v1/context-tokens/exchange",
+        "workload",
+        "fresh",
+        "/service/v1/agent/mount-context/resolve",
+        "fresh",
+        ROOT + "capture-operations",
+        "fresh",
+    ]
+    for attempt in range(2):
+        await client.request(mount, ROOT + "capture-operations", payload, "offline-capture-key")
+        assert order == expected * (attempt + 1)
+    assert wire.context_calls == 8 and len(wire.calls) == 6
+    assert wire.counter == 3 and len(wire.effects) == 2
+    assert wire.effects[0] == wire.effects[1]  # Exact explicit replay, fresh authority.
+
+
+@pytest.mark.parametrize("source_sequence", [False, True])
+@pytest.mark.parametrize("change", ["revoke", "account", "selection", "cancel"])
+async def test_capture_sequence_rechecks_after_workload_await(connection, source_sequence, change):
+    wire, client = connection
+    mount = await client.open()
+    wire.calls.clear()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def workload():
+        entered.set()
+        await release.wait()
+        return await wire.workload()
+
+    client._workload_token = workload
+    operation = (
+        client.prepare_and_authorize_source(mount, source_sequence_case(wire), "offline-source-key")
+        if source_sequence
+        else client.request(
+            mount,
+            ROOT + "capture-operations",
+            body(operation={"kind": "complete"}),
+            "offline-complete-key",
+        )
+    )
+    task = asyncio.create_task(operation)
+    await entered.wait()
+    if change == "cancel":
+        task.cancel()
+    elif change == "revoke":
+        wire.denied = True
+    else:
+        wire.selection = replace(
+            SELECTION,
+            **{
+                "recovery_scope" if change == "account" else "authorization_revision": uuid4(),
+            },
+        )
+    release.set()
+    with pytest.raises(asyncio.CancelledError if change == "cancel" else ProviderCoreUnavailable):
+        await task
+    assert [path for path, _ in wire.calls] == ["/embed/v1/context-tokens/exchange"]
+    assert not wire.effects
+
+
+async def test_capture_adjacent_checks_are_consumed_and_cannot_authorize_later_request(connection):
+    wire, client = connection
+    mount = await client.open()
+    negotiated = await client._negotiate(mount.selection, capture_mount=mount)
+    assert negotiated.opening is not None
+    payload = body(operation={"kind": "creator_review"})
+    await client._request(
+        mount, ROOT + "capture-operations", payload, "offline-first", _negotiated=negotiated
+    )
+    count = len(wire.calls)
+    assert negotiated.opening.closed and negotiated.opening.context is None
+    assert negotiated.opening.workload_headers is None
+    with pytest.raises(ProviderCoreUnavailable):
+        await client._request(
+            mount, ROOT + "capture-operations", payload, "offline-reused", _negotiated=negotiated
+        )
+    assert len(wire.calls) == count

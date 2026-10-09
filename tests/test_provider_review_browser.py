@@ -60,8 +60,12 @@ async def test_rendered_provider_review(flow: Flow, tmp_path: Path, decision: st
                 return Response(status_code=503)  # committed response is lost
         else:
             response = await flow.capture.client.get(path, headers=headers)
-        return Response(response.content, status_code=response.status_code,
-                        media_type="application/json", headers={"Cache-Control": "no-store"})
+        return Response(
+            response.content,
+            status_code=response.status_code,
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def process(_request: Request):
         nonlocal processing
@@ -88,17 +92,20 @@ async def test_rendered_provider_review(flow: Flow, tmp_path: Path, decision: st
             encoded = pending_path.read_bytes()
             current = json.loads(cipher.decrypt(encoded[:12], encoded[12:], scope.encode()))
         if command["method"] == "get":
-            return JSONResponse(current or {"code": "SECURE_QUEUE_NOT_FOUND"},
-                                status_code=200 if current else 404)
+            return JSONResponse(
+                current or {"code": "SECURE_QUEUE_NOT_FOUND"}, status_code=200 if current else 404
+            )
         value = command["value"]
         if (command["method"] == "create" and current is not None) or (
-            command["method"] == "compareAndSwap" and (
-                current is None or value["expectedRevision"] != current["revision"]
-            )
+            command["method"] == "compareAndSwap"
+            and (current is None or value["expectedRevision"] != current["revision"])
         ):
             return JSONResponse({"code": "SECURE_QUEUE_REVISION_CONFLICT"}, status_code=409)
-        stored = {"key": value["key"], "data": value["data"],
-                  "revision": str(int(current["revision"]) + 1) if current else "1"}
+        stored = {
+            "key": value["key"],
+            "data": value["data"],
+            "revision": str(int(current["revision"]) + 1) if current else "1",
+        }
         nonce = os.urandom(12)
         pending_path.write_bytes(
             nonce + cipher.encrypt(nonce, json.dumps(stored).encode(), scope.encode())
@@ -114,14 +121,17 @@ async def test_rendered_provider_review(flow: Flow, tmp_path: Path, decision: st
             return Response(status_code=404)
         return FileResponse(ROOT / "apps/capture/dist/provider" / name)
 
-    application = Starlette(routes=[
-        Route("/", index), Route("/assets/{name}", asset),
-        Route(f"/v1/captured-sessions/{session_id}/review", review, methods=["GET", "POST"]),
-        Route("/trial/process", process, methods=["POST"]),
-        Route("/trial/finish-translation", finish_translation, methods=["POST"]),
-        Route("/trial/revoke", revoke, methods=["POST"]),
-        Route("/trial/journal", journal, methods=["POST"]),
-    ])
+    application = Starlette(
+        routes=[
+            Route("/", index),
+            Route("/assets/{name}", asset),
+            Route(f"/v1/captured-sessions/{session_id}/review", review, methods=["GET", "POST"]),
+            Route("/trial/process", process, methods=["POST"]),
+            Route("/trial/finish-translation", finish_translation, methods=["POST"]),
+            Route("/trial/revoke", revoke, methods=["POST"]),
+            Route("/trial/journal", journal, methods=["POST"]),
+        ]
+    )
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(application, log_level="critical", access_log=False))
@@ -134,9 +144,13 @@ async def test_rendered_provider_review(flow: Flow, tmp_path: Path, decision: st
             await asyncio.sleep(0.01)
         assert server.started
         result = await asyncio.create_subprocess_exec(
-            os.environ["SCRIBE_NODE"], str(ROOT / "tests/browser/provider-review.mjs"),
-            f"http://127.0.0.1:{listener.getsockname()[1]}", decision, str(tmp_path),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            os.environ["SCRIBE_NODE"],
+            str(ROOT / "tests/browser/provider-review.mjs"),
+            f"http://127.0.0.1:{listener.getsockname()[1]}",
+            decision,
+            str(tmp_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(result.communicate(), timeout=90)
         assert result.returncode == 0, stderr.decode()[-4000:]

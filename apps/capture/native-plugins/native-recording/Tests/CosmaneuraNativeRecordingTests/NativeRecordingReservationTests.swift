@@ -73,6 +73,7 @@ import XCTest
         accountDigest: String(repeating: "a", count: 64))
     }
     func configure(_ fault: String) { self.fault = fault }
+    func revoke() { changed = true }
     func recordingScope() throws -> NativeRecordingScope {
       if changed {
         return try NativeRecordingScope(
@@ -135,6 +136,14 @@ import XCTest
     NativeRecordingReservationOwner(
       scope: service.scope, recoveryScope: recovery, service: service, records: records)
   }
+  private func liveLease(_ service: Service, expired: Bool = false) throws -> NativeRecordingLease {
+    let issued = Date().addingTimeInterval(expired ? -1000 : -10)
+    let formatter = ISO8601DateFormatter()
+    return try NativeRecordingLease(
+      receiptID: UUID(), leaseID: service.leaseID, sessionID: service.scope.sessionID,
+      generation: 1, issuedAt: formatter.string(from: issued),
+      expiresAt: formatter.string(from: issued.addingTimeInterval(900)))
+  }
   private func rejected(_ operation: () async throws -> NativeRecordingReservationBatch) async {
     do {
       _ = try await operation()
@@ -170,6 +179,10 @@ import XCTest
     let active = Task { try await owner.reserve(lease: lease, first: 0, count: 3) }
     await service.waitUntilSuspended()
     await rejected { try await owner.reserve(lease: lease, first: 0, count: 3) }
+    do {
+      _ = try await owner.reuseForStart(lease: lease, first: 0)
+      XCTFail("must not reuse during a reservation operation")
+    } catch {}
     active.cancel()
     await service.resume()
     await rejected { try await active.value }
@@ -331,5 +344,130 @@ import XCTest
     }
     let unchanged = await service.calls.count
     XCTAssertEqual(unchanged, 12)
+  }
+
+  func testResumeReusesOnlyUnusedRowsWithoutNetworkOrWrites() async throws {
+    let service = try Service()
+    let records = Records()
+    let lease = try liveLease(service)
+    let owner = owner(service, records)
+    let full = try await owner.reserve(lease: lease, first: 0, count: 90)
+    for reservation in full.reservations.prefix(3) {
+      let key =
+        service.scope.queuePrefix(recoveryScope: recovery)
+        + reservation.objectID.uuidString.lowercased()
+      // Previously committed rows are not eligible for reuse or replacement.
+      records.rows[key] = NativeRecordingStoredRecord(
+        data: Data("retained encrypted row".utf8), revision: 2)
+    }
+    let before = records.rows
+    let reused = try await owner.reuseForStart(lease: lease, first: 3)
+    XCTAssertEqual(reused?.reservations, Array(full.reservations.dropFirst(3)))
+    XCTAssertEqual(reused?.batchID, full.batchID)
+    XCTAssertEqual(reused?.authorizedUntil, lease.expiresAt)
+    let count = await service.calls.count
+    XCTAssertEqual(count, 1)
+    XCTAssertEqual(records.rows.count, before.count)
+    for (key, row) in before {
+      XCTAssertEqual(records.rows[key]?.data, row.data)
+      XCTAssertEqual(records.rows[key]?.revision, row.revision)
+    }
+  }
+
+  func testReuseMissesAfterRestartOrLeaseChangeAndKeepsRefillMargin() async throws {
+    let service = try Service()
+    let records = Records()
+    let lease = try liveLease(service)
+    let owner = owner(service, records)
+    _ = try await owner.reserve(lease: lease, first: 0, count: 90)
+    let restart = try await self.owner(service, records).reuseForStart(lease: lease, first: 1)
+    let changed = try await owner.reuseForStart(lease: liveLease(service), first: 1)
+    let short = try await owner.reuseForStart(lease: lease, first: 78)
+    let outside = try await owner.reuseForStart(lease: lease, first: 90)
+    let margin = try await owner.reuseForStart(lease: lease, first: 77)
+    XCTAssertNil(restart)
+    XCTAssertNil(changed)
+    XCTAssertNil(short)
+    XCTAssertNil(outside)
+    XCTAssertEqual(margin?.reservations.count, 13)
+    let count = await service.calls.count
+    XCTAssertEqual(count, 1)
+    _ = try await owner.reserve(lease: lease, first: 78, count: 90)
+    let refreshed = await service.calls.count
+    XCTAssertEqual(refreshed, 2)
+  }
+
+  func testExpiredLeaseCannotReuseAndHardLimitDoesNotExpand() async throws {
+    let service = try Service()
+    let records = Records()
+    let owner = owner(service, records)
+    let expired = try liveLease(service, expired: true)
+    _ = try await owner.reserve(lease: expired, first: 0, count: 90)
+    let unavailable = try await owner.reuseForStart(lease: expired, first: 1)
+    XCTAssertNil(unavailable)
+    let current = try liveLease(service)
+    _ = try await owner.reserve(lease: current, first: 2040, count: 8)
+    let tail = try await owner.reuseForStart(lease: current, first: 2041)
+    XCTAssertEqual(tail?.reservations.map(\.sequence), Array(2041..<2048))
+    do {
+      _ = try await owner.reuseForStart(lease: current, first: 2048)
+      XCTFail("must retain the visit limit")
+    } catch {}
+  }
+
+  func testReuseRejectsDamagedJournalOrQueueWithoutRepairingIt() async throws {
+    for fault in ["journal", "missing", "encrypted", "reservation", "storage"] {
+      let service = try Service()
+      let records = Records()
+      let lease = try liveLease(service)
+      let owner = owner(service, records)
+      let batch = try await owner.reserve(lease: lease, first: 0, count: 20)
+      let key =
+        service.scope.queuePrefix(recoveryScope: recovery)
+        + batch.reservations[1].objectID.uuidString.lowercased()
+      switch fault {
+      case "journal":
+        let journal = try XCTUnwrap(
+          records.rows.keys.first { $0.hasPrefix("scribe-native-reservations:") })
+        records.rows[journal] = NativeRecordingStoredRecord(data: Data("{}".utf8), revision: 3)
+      case "missing": records.rows.removeValue(forKey: key)
+      case "storage": records.available = 67_108_864
+      default:
+        var row = try JSONSerialization.jsonObject(with: records.rows[key]!.data) as! [String: Any]
+        if fault == "encrypted" {
+          row["state"] = "encrypted"
+        } else {
+          var reservation = row["reservation"] as! [String: Any]
+          reservation["createdAt"] = "2026-09-27T00:00:00Z"
+          row["reservation"] = reservation
+        }
+        records.rows[key] = NativeRecordingStoredRecord(
+          data: try JSONSerialization.data(withJSONObject: row), revision: 1)
+      }
+      let before = records.rows
+      do {
+        _ = try await owner.reuseForStart(lease: lease, first: 1)
+        XCTFail("must reject \(fault)")
+      } catch {}
+      XCTAssertEqual(records.rows.count, before.count)
+      for (key, row) in before { XCTAssertEqual(records.rows[key]?.data, row.data) }
+      let count = await service.calls.count
+      XCTAssertEqual(count, 1)
+    }
+  }
+
+  func testReuseStillRejectsRevokedScope() async throws {
+    let service = try Service()
+    let records = Records()
+    let lease = try liveLease(service)
+    let owner = owner(service, records)
+    _ = try await owner.reserve(lease: lease, first: 0, count: 20)
+    await service.revoke()
+    do {
+      _ = try await owner.reuseForStart(lease: lease, first: 1)
+      XCTFail("must recheck current scope")
+    } catch {}
+    let count = await service.calls.count
+    XCTAssertEqual(count, 1)
   }
 }

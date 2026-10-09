@@ -1,5 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Cosmaneura Capture">
-  <rect width="512" height="512" rx="112" fill="#12372d"/>
-  <circle cx="256" cy="230" r="92" fill="#f6f7f4"/>
-  <rect x="226" y="298" width="60" height="98" rx="30" fill="#f6f7f4"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Scribe"><defs><linearGradient id="b-tn-g1-bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#146F6C"/><stop offset="1" stop-color="#17273C"/></linearGradient><linearGradient id="b-tn-g1-metal" x1="0.1" y1="0" x2="0.9" y2="1"><stop offset="0" stop-color="#E6CA88"/><stop offset="0.32" stop-color="#FFF2CA"/><stop offset="0.63" stop-color="#EBD59C"/><stop offset="1" stop-color="#F8E9B8"/></linearGradient></defs><rect width="1024" height="1024" fill="url(#b-tn-g1-bg)"/><g transform="translate(172 172) scale(6.8)"><rect x="32" y="7" width="36" height="57" rx="18" fill="url(#b-tn-g1-metal)"/><path d="M42 20H58M42 30H58M42 40H58" fill="none" stroke="url(#b-tn-g1-bg)" stroke-width="3.5" stroke-linecap="round"/><path d="M22 46V53C22 69 34 81 50 81S78 69 78 53V46M50 82V96M34 96H66" fill="none" stroke="url(#b-tn-g1-metal)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/></g></svg>

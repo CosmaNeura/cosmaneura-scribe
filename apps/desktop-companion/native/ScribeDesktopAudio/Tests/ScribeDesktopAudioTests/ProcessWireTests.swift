@@ -2,6 +2,47 @@ import Foundation
 import Testing
 @testable import ScribeDesktopAudio
 
+@Test func renewableCommandsHaveExactBoundedMetadata() throws {
+    func command(_ values: [String: Any]) throws -> Data {
+        var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: values)); return data
+    }
+    let run = UUID().uuidString.lowercased()
+    let authorization: [String: Any] = ["runId": run, "generation": 1, "expiresAtMilliseconds": 1_800_000_000_000,
+        "maximumOutputFrames": 16_000, "hardMaximumOutputFrames": 10_800 * 16_000]
+    let start: [String: Any] = ["type": "startRenewable", "application": "com.google.Chrome", "processID": 1,
+        "windowID": 1, "authorization": authorization,
+        "processFence": ["epoch": UUID().uuidString.lowercased(), "coordinatorDevice": "1", "coordinatorInode": "2",
+                         "captureDevice": "1", "captureInode": "3"]]
+    guard case .startRenewable(let selection, let value, _) = try ProcessCommand.parse(command(start)) else {
+        Issue.record("Missing renewable command"); return
+    }
+    #expect(selection.processID == 1 && value.runID == run && value.generation == 1)
+    guard case .extend(let request, let repeated) = try ProcessCommand.parse(command([
+        "type": "extend", "request": 1, "authorization": authorization])) else {
+        Issue.record("Missing extension command"); return
+    }
+    #expect(request == 1 && repeated == value)
+    for (key, invalid) in [("generation", true as Any), ("generation", 1.5), ("expiresAtMilliseconds", 9_007_199_254_740_992),
+                           ("maximumOutputFrames", 0), ("hardMaximumOutputFrames", 1), ("runId", "not-a-run")] {
+        var changed = authorization; changed[key] = invalid
+        #expect(throws: DesktopAudioFailure.self) {
+            try ProcessCommand.parse(command(["type": "extend", "request": 1, "authorization": changed]))
+        }
+    }
+    var extra = authorization; extra["token"] = "disallowed"
+    var missing = authorization; missing.removeValue(forKey: "runId")
+    for changed in [extra, missing] {
+        #expect(throws: DesktopAudioFailure.self) {
+            try ProcessCommand.parse(command(["type": "extend", "request": 1, "authorization": changed]))
+        }
+    }
+    for request: Any in [0, true, 1.5, 1_000_001] {
+        #expect(throws: DesktopAudioFailure.self) {
+            try ProcessCommand.parse(command(["type": "extend", "request": request, "authorization": authorization]))
+        }
+    }
+}
+
 @Test func privateCommandsRejectBooleanAuthorityAndExtraFields() throws {
     func command(_ values: [String: Any]) throws -> Data {
         var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: values)); return data
@@ -66,4 +107,55 @@ import Testing
     }
     #expect(kinds == [1, 2, 2, 2, 2]); #expect(offset == data.count)
     sink.discard()
+}
+
+@Test func actualInputLevelsSeparateSourcesThrottleAndRetainNoSamples() throws {
+    let consent = (id: UUID(), allPartiesAgreed: true)
+    #expect(consent.allPartiesAgreed)
+    var meter = DesktopInputLevels(), now = ContinuousClock.now
+    let microphone = try DesktopAudioFrame(channel: .microphone, sampleRate: 16_000, channels: 1,
+        hostTimeNanoseconds: 1, samples: [0.25, -0.25])
+    let meeting = try DesktopAudioFrame(channel: .systemAudio, sampleRate: 16_000, channels: 1,
+        hostTimeNanoseconds: 1, samples: [0, 0])
+    let firstValue = meter.observe(microphone, now: now)
+    let first = try #require(firstValue)
+    #expect(first.channel == "microphone" && first.level == 0.25 && first.sequence == 1)
+    let secondValue = meter.observe(meeting, now: now)
+    let second = try #require(secondValue)
+    #expect(second.channel == "meetingAudio" && second.level == 0 && second.sequence == 2)
+    let throttled = meter.observe(microphone, now: now.advanced(by: .milliseconds(249)))
+    #expect(throttled == nil)
+    microphone.clear(); meeting.clear()
+    now = now.advanced(by: .milliseconds(250))
+    let thirdValue = meter.observe(microphone, now: now)
+    let third = try #require(thirdValue)
+    #expect(third.level == 0 && third.sequence == 3) // no retained prior PCM or synthetic movement
+}
+
+@Test func inputMetadataRequiresActivationAndStopsAfterDiscard() async throws {
+    let consent = (id: UUID(), allPartiesAgreed: true)
+    #expect(consent.allPartiesAgreed)
+    let pipe = Pipe(), output = ProcessOutput(pipe.fileHandleForWriting)
+    let sink = ProcessPCMSink(output: output, onFailure: { _ in })
+    let frame = try DesktopAudioFrame(channel: .microphone, sampleRate: 16_000, channels: 1,
+        hostTimeNanoseconds: 1, samples: [0.125, -0.125])
+    defer { frame.clear(); try? pipe.fileHandleForReading.close() }
+    sink.observeInput(frame) // no output before native and mixer readiness
+    #expect(sink.started(DesktopPCMStart(hostTimeNanoseconds: 1, microphonePrerollNanoseconds: 0, systemPrerollNanoseconds: 0)))
+    sink.nativeStarted(); #expect(sink.activate())
+    sink.observeInput(frame); sink.discard(); sink.observeInput(frame)
+    await output.drain(); try pipe.fileHandleForWriting.close()
+    let data = try #require(try pipe.fileHandleForReading.readToEnd())
+    var index = 0, messages: [[String: Any]] = []
+    while index < data.count {
+        let count = data[index..<index + 4].reduce(0) { $0 * 256 + Int($1) }
+        #expect(data[index + 4] == 1)
+        let message = try #require(try JSONSerialization.jsonObject(with: data[index + 5..<index + 4 + count]) as? [String: Any])
+        messages.append(message); index += count + 4
+    }
+    #expect(messages.count == 2)
+    #expect(messages[0]["type"] as? String == "ready")
+    #expect(messages[1]["type"] as? String == "inputSignal")
+    #expect(Set(messages[1].keys) == ["type", "sequence", "channel", "level"])
+    #expect(messages[1]["level"] as? Double == 0.125)
 }

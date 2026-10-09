@@ -10,9 +10,13 @@ import XCTest
     let lock = NSLock()
     var rows: [String: NativeRecordingStoredRecord] = [:]
     var failBefore = false, failAfter = false, listFails = false
+    var failRead = false, hideFailedWrite = false
     var additions: [String] = []
     func readBinding(key: String) throws -> NativeRecordingStoredRecord? {
-      lock.withLock { rows[key] }
+      try lock.withLock {
+        if failRead { throw NativeRecordingFailure.storageUnavailable }
+        return rows[key]
+      }
     }
     func read(key: String) throws -> NativeRecordingStoredRecord {
       try XCTUnwrap(readBinding(key: key))
@@ -38,7 +42,10 @@ import XCTest
           throw NativeRecordingBindingFailure.journalConflict
         }
         rows[key] = NativeRecordingStoredRecord(data: data, revision: revision + 1)
-        if failAfter { throw NativeRecordingFailure.storageUnavailable }
+        if failAfter {
+          if hideFailedWrite { failRead = true }
+          throw NativeRecordingFailure.storageUnavailable
+        }
       }
     }
     var flowKey: String { rows.keys.first { $0.hasPrefix("scribe-native-flow:") }! }
@@ -251,6 +258,66 @@ import XCTest
     file: StaticString = #filePath, line: UInt = #line
   ) {
     XCTAssertEqual(actual, expected, file: file, line: line)
+  }
+
+  func testPendingSourceSurvivesRestartAndCannotSealReconciledPrefix() async throws {
+    let f = try Fixture(), owner = f.owner, checkpoint = UUID()
+    let original = try await owner.open()
+    _ = try await owner.beginSource(checkpoint: checkpoint)
+    _ = try await f.record([320_000])
+    let restarted = f.owner
+    let pending = try await restarted.reconcileAfterStop(encryption: f.cipher)
+    XCTAssertEqual(pending.phase, .incomplete)
+    XCTAssertEqual(pending.committedChunks, 1)
+    XCTAssertEqual(pending.completionIntent, original.completionIntent)
+    await rejected { try await restarted.sealForUpload(encryption: f.cipher, lease: f.lease) }
+    await rejected { try await restarted.beginSource(checkpoint: UUID()) }
+    await rejected { try await restarted.finishSource(checkpoint: UUID(), encryption: f.cipher,
+      chunks: 1, plaintextBytes: 320_044) }
+    let reopened = try await restarted.open()
+    XCTAssertEqual(reopened.phase, .incomplete)
+  }
+
+  func testVerifiedSourceClearAllowsNormalReopenAndLegacyJournalShape() async throws {
+    let f = try Fixture(), owner = f.owner, checkpoint = UUID()
+    _ = try await owner.open()
+    _ = try await owner.beginSource(checkpoint: checkpoint)
+    _ = try await f.record([160])
+    await rejected { try await owner.finishSource(checkpoint: checkpoint, encryption: f.cipher,
+      chunks: 2, plaintextBytes: 408) }
+    let closed = try await owner.finishSource(checkpoint: checkpoint, encryption: f.cipher,
+      chunks: 1, plaintextBytes: 204)
+    XCTAssertEqual(closed.phase, .open)
+    let raw = try JSONSerialization.jsonObject(with: f.records.rows[f.records.flowKey]!.data) as! [String: Any]
+    XCTAssertNil(raw["sourceCheckpoint"])
+    XCTAssertEqual(raw["schemaVersion"] as? Int, 1)
+    assertSnapshot(try await f.owner.open(), closed)
+    let sealed = try await f.owner.sealForUpload(encryption: f.cipher, lease: f.lease)
+    XCTAssertEqual(sealed.phase, .sealed)
+  }
+
+  func testCheckpointWriteFailureAndLostClearReplyRemainFailClosed() async throws {
+    let f = try Fixture(), owner = f.owner, checkpoint = UUID()
+    _ = try await owner.open()
+    f.records.failBefore = true
+    await rejected { try await owner.beginSource(checkpoint: checkpoint) }
+    f.records.failBefore = false
+    let notMarked = try await owner.open()
+    XCTAssertEqual(notMarked.phase, .open)
+    _ = try await owner.beginSource(checkpoint: checkpoint)
+    _ = try await f.record([160])
+    f.records.failAfter = true
+    f.records.hideFailedWrite = true
+    await rejected { try await owner.finishSource(checkpoint: checkpoint, encryption: f.cipher,
+      chunks: 1, plaintextBytes: 204) }
+    f.records.failAfter = false
+    f.records.failRead = false
+    await rejected { try await owner.finishSource(checkpoint: UUID(), encryption: f.cipher,
+      chunks: 1, plaintextBytes: 204) }
+    let cleared = try await owner.finishSource(checkpoint: checkpoint, encryption: f.cipher,
+      chunks: 1, plaintextBytes: 204)
+    XCTAssertEqual(cleared.phase, .open)
+    assertSnapshot(try await f.owner.open(), cleared)
   }
 
   func testCreateBeforeKeyWorkAndReopenStableIntent() async throws {

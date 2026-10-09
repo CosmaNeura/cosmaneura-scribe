@@ -3,6 +3,7 @@
 Revision ID: 0023_unstarted_retirement
 Revises: 0022_source_position
 """
+
 from alembic import op
 
 revision = "0023_unstarted_retirement"

@@ -1,4 +1,4 @@
-"""Generate two consented fictional voices and check the native meeting mixer.
+"""Generate two consented fictional voices and check both native audio modes.
 
 Reuses macOS speech synthesis and the existing native test target. No playback,
 microphone, camera, screen capture, meeting, account or network client is opened.
@@ -31,6 +31,13 @@ def check(output: Path) -> None:
     manifest.write_text(json.dumps(consent, indent=2) + "\n")
     phrases = [
         ("provider", "Samantha", 44_100, "Synthetic provider. How did you sleep this week?"),
+        ("provider-48000", "Samantha", 48_000, "Synthetic provider. How did you sleep this week?"),
+        (
+            "patient-44100",
+            "Daniel",
+            44_100,
+            "Synthetic patient. I slept better on Tuesday and Wednesday.",
+        ),
         (
             "patient-48000",
             "Daniel",
@@ -90,7 +97,7 @@ def check(output: Path) -> None:
         "--security-path",
         str(output / "swift-security"),
         "--filter",
-        "generatedSpeechSurvivesNativeMeetingMix",
+        "generatedSpeechSurvivesNative",
     ]
     log = output / "native-speech-check.log"
     with log.open("w") as stream:
@@ -108,9 +115,13 @@ def check(output: Path) -> None:
             timeout=300,
             check=False,
         )
+    log_text = log.read_text()
     cases_passed = (
-        "generatedSpeechSurvivesNativeMeetingMix(systemRate:) with 2 test cases passed"
-        in log.read_text()
+        "generatedSpeechSurvivesNativeMeetingMix(systemRate:) with 2 test cases passed" in log_text
+    )
+    microphone_passed = (
+        "generatedSpeechSurvivesNativeMicrophoneOnlyMix(microphoneRate:) with 2 test cases passed"
+        in log_text
     )
     receipt = {
         "source_commit": subprocess.check_output(
@@ -119,6 +130,7 @@ def check(output: Path) -> None:
         "command": command,
         "exit_code": result.returncode,
         "two_speech_cases_passed": cases_passed,
+        "microphone_only_speech_passed": microphone_passed,
         "working_tree_clean": not subprocess.check_output(
             ["git", "status", "--porcelain"], cwd=repo, text=True
         ).strip(),
@@ -128,7 +140,7 @@ def check(output: Path) -> None:
         "live_zoom_or_chrome": False,
     }
     (output / "CHECKS.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    if result.returncode or not cases_passed:
+    if result.returncode or not cases_passed or not microphone_passed:
         raise RuntimeError("Native synthetic speech check failed; inspect its local log")
     print(json.dumps({"native_speech_check": "passed", "live_meeting_capture": "not_tested"}))
 

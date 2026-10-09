@@ -2,6 +2,7 @@ import type { PluginListenerHandle } from "@capacitor/core";
 import { isUuid } from "../../../review-ui/src/contracts";
 import { mountProviderWorkspace, type ProviderWorkspaceHost } from "./workspace";
 import type { NativeProviderSession, ProviderSessionPhase, ProviderSessionState } from "./native-plugin";
+import scribeIcon from "../../public/icon.svg?raw";
 import "./application.css";
 
 export type { ProviderSessionState } from "./native-plugin";
@@ -37,7 +38,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   let recorderStopUnconfirmed = false;
   let notice = "", polling: Promise<void> | undefined, disposal: Promise<void> | undefined;
   root.classList.add("provider-application");
-  root.innerHTML = `<header class="provider-session-header"><strong>Cosmaneura Scribe</strong><div data-session-actions></div></header>
+  root.innerHTML = `<header class="provider-session-header"><div class="provider-brand"><span class="provider-brand-icon" aria-hidden="true">${scribeIcon}</span><strong>Scribe</strong></div><div data-session-actions></div></header>
     <section class="provider-session-status" aria-live="polite"><h1 data-session-title></h1><p data-session-message></p>
     <div data-session-recovery></div></section><main data-provider-workflow></main>`;
   const actions = root.querySelector<HTMLElement>("[data-session-actions]")!;

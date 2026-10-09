@@ -17,6 +17,11 @@ from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler
 from .canonical_json import canonical_sha256
 from .capture_continuity import CaptureContinuity
 from .captured_source_runtime import CapturedSourceRepository, CapturedSourceRepositoryProvider
+from .creator_edit_contract import (
+    CreatorTranscriptEditBodyV1,
+    CreatorTranscriptEditReceiptV1,
+    CreatorTranscriptEditV1,
+)
 from .creator_review_contract_v1 import (
     CreatorTranslationDecisionRequestV1,
     CreatorTranslationProgressV1,
@@ -28,6 +33,10 @@ from .repository import IdempotencyClaimUnavailableError, IdempotencyConflictErr
 from .service_auth import get_verified_tenant_id
 from .transcript_constraints import MAX_TRANSCRIPT_SEGMENTS
 from .translation_review_persistence import TranslationReviewPersistenceError
+from .working_transcript_persistence import (
+    WorkingTranscriptPersistenceCode,
+    WorkingTranscriptPersistenceError,
+)
 
 _HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _OPERATION = "captured.translation.review"
@@ -46,12 +55,20 @@ class CreatorReviewViewV1(BaseModel):
         default=(), max_length=MAX_TRANSCRIPT_SEGMENTS, repr=False
     )
     capture_continuity: CaptureContinuity | None = None
+    editing_allowed: bool = False
+    review_edits: tuple[CreatorTranscriptEditV1, ...] = Field(
+        default=(), max_length=1024, repr=False
+    )
 
     @model_serializer(mode="wrap")
     def compatible_continuity(self, handler: SerializerFunctionWrapHandler):
         result = handler(self)
         if self.capture_continuity is None:
             result.pop("capture_continuity", None)
+        if not self.review_edits:
+            result.pop("review_edits", None)
+        if not self.editing_allowed:
+            result.pop("editing_allowed", None)
         return result
 
 
@@ -139,7 +156,16 @@ class CreatorReviewRuntime:
                 source_version=current.bundle.source_transcript.source_transcript_version,
             ),
             capture_continuity=await store.capture_continuity(tenant_id, session_id),
+            editing_allowed=True,
+            review_edits=current.creator_edits,
         )
+
+    async def read_in_transaction(
+        self, store: CapturedSourceRepository, tenant_id: UUID, session_id: UUID, actor: str
+    ) -> CreatorReviewViewV1:
+        """Current view within a caller-owned creator preparation transaction."""
+        self.authorize_cohort(tenant_id)
+        return await self._view(store, tenant_id, session_id, actor)
 
     async def read(self, tenant_id: UUID, session_id: UUID, actor: str) -> CreatorReviewViewV1:
         self.authorize_cohort(tenant_id)
@@ -149,6 +175,70 @@ class CreatorReviewRuntime:
             return result
         except Exception:
             pass
+        raise _unavailable()
+
+    async def edit(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        actor: str,
+        key: str,
+        request: CreatorTranscriptEditBodyV1,
+    ) -> CreatorTranscriptEditReceiptV1:
+        self.authorize_cohort(tenant_id)
+        conflict = False
+        try:
+            async with self.repositories.transaction(tenant_id) as store:
+                current = await store.get_creator_working_transcript(
+                    tenant_id,
+                    session_id,
+                    creator_actor_id=actor,
+                )
+                if current is None:
+                    raise _unavailable()
+                edit_id = uuid4()
+                previous = await store.claim_idempotency(
+                    tenant_id=tenant_id,
+                    operation="captured.transcript.edit",
+                    key=key,
+                    request_fingerprint=canonical_sha256(
+                        {
+                            "session": session_id,
+                            "creator": actor,
+                            "request": request,
+                        }
+                    ),
+                    entity_id=edit_id,
+                )
+                if previous is not None:
+                    if not any(item.edit_id == previous for item in current.creator_edits):
+                        raise IdempotencyConflictError()
+                    edit_id = previous
+                result = await store.record_creator_transcript_edit(
+                    tenant_id,
+                    session_id,
+                    actor=actor,
+                    request=request,
+                    edit_id=edit_id,
+                )
+                receipt = CreatorTranscriptEditReceiptV1(
+                    session_id=session_id,
+                    edit_id=edit_id,
+                    working_transcript_id=request.expected_working_transcript_id,
+                    working_transcript_version=result.working_transcript_version,
+                )
+            return receipt
+        except WorkingTranscriptPersistenceError as error:
+            conflict = error.code in {
+                WorkingTranscriptPersistenceCode.STATE_CONFLICT,
+                WorkingTranscriptPersistenceCode.EVIDENCE_INVALID,
+            }
+        except (IdempotencyConflictError, IdempotencyClaimUnavailableError, ValueError):
+            conflict = True
+        except Exception:
+            pass
+        if conflict:
+            raise _conflict()
         raise _unavailable()
 
     async def decide(
@@ -259,3 +349,17 @@ async def decide_creator_review(
         key,
         CreatorTranslationDecisionRequestV1.model_validate(payload.model_dump()),
     )
+
+
+@router.post("/{session_id}/review/edit", response_model=CreatorTranscriptEditReceiptV1)
+async def edit_creator_transcript(
+    session_id: UUID,
+    payload: CreatorTranscriptEditBodyV1,
+    tenant_id: Tenant,
+    actor: Creator,
+    key: Key,
+    runtime: Runtime,
+    response: Response,
+) -> CreatorTranscriptEditReceiptV1:
+    response.headers.update(_HEADERS)
+    return await runtime.edit(tenant_id, session_id, actor, key, payload)

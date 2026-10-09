@@ -3,6 +3,19 @@ import { describe, expect, it } from "vitest";
 import { Pcm16Chunker } from "./pcm-chunker";
 
 describe("Pcm16Chunker", () => {
+  it("extends a partial chunk without resetting its position or exceeding the original hard budget", () => {
+    const chunker = new Pcm16Chunker({ targetFramesPerChunk: 2, maximumChunks: 1, hardMaximumChunks: 3 });
+    expect(chunker.push(Int16Array.of(1))).toEqual([]);
+    chunker.extend(2); chunker.extend(2);
+    expect(chunker.push(Int16Array.of(2, 3, 4, 5))).toEqual([Int16Array.of(1, 2), Int16Array.of(3, 4)]);
+    for (const invalid of [1, 4, NaN, 2.5]) expect(() => chunker.extend(invalid)).toThrow();
+    chunker.extend(3);
+    expect(chunker.finish()).toEqual(Int16Array.of(5));
+    expect(() => chunker.extend(3)).toThrow();
+    const legacy = new Pcm16Chunker({ targetFramesPerChunk: 2, maximumChunks: 1 });
+    expect(() => legacy.extend(2)).toThrow();
+    legacy.discard(); expect(() => legacy.extend(1)).toThrow();
+  });
   it("preserves exact target boundaries across arbitrary worklet packets", () => {
     const chunker = new Pcm16Chunker({ targetFramesPerChunk: 4, maximumChunks: 3 });
     expect(chunker.push(Int16Array.of(1, 2, 3))).toEqual([]);

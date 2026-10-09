@@ -91,14 +91,10 @@ class CompletedTranslationJobV1(BaseModel):
             tenant_id=tenant_id,
             session_id=session_id,
             translation_id=command.translation_id,
-            expected_source_transcript_version=(
-                command.expected_source_transcript_version
-            ),
+            expected_source_transcript_version=(command.expected_source_transcript_version),
             source_segment_id=command.source_segment_id,
             expected_source_segment_version=command.expected_source_segment_version,
-            expected_previous_translation_version=(
-                command.expected_previous_translation_version
-            ),
+            expected_previous_translation_version=(command.expected_previous_translation_version),
             source_locale="es-US",
             target_locale="en-US",
             outcome=command.outcome,
@@ -114,9 +110,7 @@ class CompletedTranslationJobV1(BaseModel):
             expected_source_transcript_version=self.expected_source_transcript_version,
             source_segment_id=self.source_segment_id,
             expected_source_segment_version=self.expected_source_segment_version,
-            expected_previous_translation_version=(
-                self.expected_previous_translation_version
-            ),
+            expected_previous_translation_version=(self.expected_previous_translation_version),
             outcome=self.outcome,
             translation_adapter_id=self.translation_adapter_id,
             translation_model_profile_id=self.translation_model_profile_id,

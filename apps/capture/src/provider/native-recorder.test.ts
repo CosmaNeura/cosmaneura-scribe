@@ -12,7 +12,7 @@ beforeEach(() => {
   vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
 });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function fixture() {
   const f = recordingFixture(), abort = new AbortController();
   const storage = await EncryptedIndexedDbQueueStorage.open({ databaseName: crypto.randomUUID(), indexedDB: new IDBFactory(), crypto });
@@ -27,6 +27,106 @@ async function fixture() {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
 describe("native provider controller", () => {
+  it("reports accepted frames before a chunk is committed and freezes without new frames", async () => {
+    const h = await fixture();
+    h.f.set({ phase: "recording", capturedAudioFrames: 16_000 });
+    const view = await h.open();
+    try {
+      expect(view.controller.snapshot).toMatchObject({ elapsedSeconds: 1, recordedChunks: 0, queuedChunks: 0 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.elapsedSeconds).toBe(1);
+      h.f.set({ capturedAudioFrames: 32_000 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.elapsedSeconds).toBe(2);
+      h.f.set({ phase: "paused", recordedChunks: 1, recordedPlaintextBytes: 64_044 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.elapsedSeconds).toBe(2);
+      await view.controller.resumeRecording!();
+      h.f.set({ capturedAudioFrames: 48_000 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot).toMatchObject({ elapsedSeconds: 3, recordedChunks: 1 });
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("does not label upload before native stop and sealing are confirmed", async () => {
+    const h = await fixture(), held = deferred<unknown>();
+    let sealId = "";
+    h.f.set({ phase: "recording" });
+    const command = h.port.command;
+    h.port.command = request => {
+      if (request.kind !== "seal") return command(request);
+      sealId = request.requestId; h.f.set({ phase: "pausing", busy: true }); return held.promise;
+    };
+    const view = await h.open();
+    try {
+      const stopping = view.controller.stopRecording(), rejected = expect(stopping).rejects.toThrow();
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_stopping");
+      h.f.set({ phase: "sealing" });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_sealing");
+      h.f.set({ phase: "paused", busy: false, failure: "recoveryFailed" });
+      held.resolve(h.f.response(sealId, false)); await rejected;
+      expect(view.controller.snapshot.statusCode).toBe("capture_recovery_pending");
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("keeps an interruption visible without resuming until the provider chooses Resume", async () => {
+    const h = await fixture(), command = h.port.command;
+    h.f.set({ phase: "paused", failure: "captureInterrupted", recordedChunks: 1, recordedPlaintextBytes: 204 });
+    h.port.command = request => {
+      if (request.kind === "start") h.f.set({ failure: null });
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      expect(view.controller.snapshot).toMatchObject({ state: "paused", statusCode: "capture_interrupted", recordedChunks: 1 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_interrupted");
+      expect(h.commands.map(c => c.kind)).toEqual(["read"]);
+      await view.controller.resumeRecording!();
+      expect(view.controller.snapshot.statusCode).toBe("capture_recording");
+      expect(view.controller.snapshot.recordedChunks).toBe(1);
+      expect(h.commands.map(c => c.kind)).toEqual(["read", "start"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("keeps an incomplete native tail visible on repeated reads", async () => {
+    const h = await fixture();
+    h.f.set({ phase: "stopPending", failure: "recordingIncomplete", recordedChunks: 1, recordedPlaintextBytes: 204 });
+    const view = await h.open();
+    try {
+      expect(view.controller.snapshot).toMatchObject({ statusCode: "capture_tail_not_saved", recordedChunks: 1 });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_tail_not_saved");
+      expect(h.commands.map(c => c.kind)).toEqual(["read"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it.each([0, 1])("keeps failed sealing distinct from an ordinary pause with %i saved chunks", async recordedChunks => {
+    const h = await fixture(), command = h.port.command;
+    h.f.set({ phase: "recording", recordedChunks, recordedPlaintextBytes: recordedChunks * 204 });
+    h.port.command = request => {
+      if (request.kind === "seal") {
+        h.commands.push(request);
+        h.f.set({ phase: "paused", failure: "recoveryFailed" });
+        return Promise.resolve(h.f.response(request.requestId, false));
+      }
+      if (request.kind === "start") h.f.set({ failure: null });
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      await expect(view.controller.stopRecording()).rejects.toThrow();
+      expect(view.controller.snapshot).toMatchObject({ state: "paused", statusCode: "capture_recovery_pending", recordedChunks });
+      await view.controller.refreshTranscriptionStatus();
+      expect(view.controller.snapshot.statusCode).toBe("capture_recovery_pending");
+      await view.controller.resumeRecording!();
+      expect(view.controller.snapshot.statusCode).toBe("capture_recording");
+      expect(h.commands.map(c => c.kind)).toEqual(["seal", "read", "start"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
   it("shows Starting immediately, permits cancellation and ignores an older late start response", async () => {
     const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
     let startID = "";
@@ -37,10 +137,91 @@ describe("native provider controller", () => {
       expect(view.controller.snapshot.native?.phase).toBe("starting");
       expect(view.controller.snapshot.state).toBe("ready");
       await view.controller.stopRecording();
+      await starting;
+      expect(view.controller.snapshot.native?.phase).toBe("paused");
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
       const old = { ...h.f.state, revision: 1, phase: "recording" };
       pending.resolve({ requestId: startID, ok: true, recording: old }); await starting;
       expect(view.controller.snapshot.state).toBe("paused");
       expect(h.commands.map(c => c.kind)).toEqual(["pause"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("keeps a newer Resume starting when the cancelled Start fails late", async () => {
+    const h = await fixture(), first = deferred<unknown>(), second = deferred<unknown>();
+    const command = h.port.command;
+    let calls = 0, firstID = "", secondID = "";
+    h.port.command = request => {
+      if (request.kind !== "start") return command(request);
+      if (++calls === 1) { firstID = request.requestId; return first.promise; }
+      secondID = request.requestId;
+      return second.promise;
+    };
+    const view = await h.open();
+    try {
+      const starting = view.controller.startRecording();
+      await view.controller.stopRecording();
+      await starting;
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
+      const resuming = view.controller.resumeRecording!();
+      expect(view.controller.snapshot.statusCode).toBe("capture_starting");
+      first.resolve(h.f.response(firstID, false));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(view.controller.snapshot.statusCode).toBe("capture_starting");
+      expect(view.controller.snapshot.native?.phase).toBe("starting");
+      expect(h.commands.map(c => c.kind)).toEqual(["pause"]);
+      h.f.set({ phase: "recording" });
+      second.resolve(h.f.response(secondID));
+      await resuming;
+      expect(view.controller.snapshot.statusCode).toBe("capture_recording");
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("does not settle Start until native cancellation is confirmed", async () => {
+    const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
+    let startID = "", rejectPause = true, settled = false;
+    h.port.command = request => {
+      if (request.kind === "start") { startID = request.requestId; return pending.promise; }
+      if (request.kind === "pause" && rejectPause) return Promise.resolve(h.f.response(request.requestId, false));
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      const starting = view.controller.startRecording().then(() => { settled = true; });
+      await expect(view.controller.stopRecording()).rejects.toThrow();
+      expect(settled).toBe(false);
+      expect(view.controller.snapshot.statusCode).toBe("capture_starting");
+      rejectPause = false;
+      await view.controller.stopRecording();
+      await starting;
+      expect(settled).toBe(true);
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
+      pending.resolve(h.f.response(startID));
+      await Promise.resolve();
+      expect(h.commands.map(c => c.kind)).toEqual(["pause"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("releases a cancelled Start even when its failure-confirmation read is delayed", async () => {
+    const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
+    let readID = "";
+    h.port.command = request => {
+      if (request.kind === "start") return Promise.resolve(h.f.response(request.requestId, false));
+      if (request.kind === "read") { readID = request.requestId; return pending.promise; }
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      const starting = view.controller.startRecording();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      expect(readID).not.toBe("");
+      await view.controller.stopRecording();
+      await starting;
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
+      pending.resolve(h.f.response(readID));
+      await Promise.resolve();
+      expect(view.controller.snapshot.statusCode).toBe("capture_paused");
     } finally { await view.deactivate(); h.storage.close(); }
   });
 
@@ -56,6 +237,54 @@ describe("native provider controller", () => {
       expect(view.controller.snapshot.statusCode).toBe("capture_recording");
       pending.resolve(h.f.response(startID)); await starting;
     } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("shows Resume starting immediately and cancels it without uploading retained audio", async () => {
+    const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
+    h.f.set({ phase: "paused", recordedChunks: 1, recordedPlaintextBytes: 320_044 });
+    let startID = "";
+    h.port.command = request => { if (request.kind === "start") { startID = request.requestId; return pending.promise; } return command(request); };
+    const view = await h.open();
+    try {
+      const resuming = view.controller.resumeRecording!();
+      expect(view.controller.snapshot.native?.phase).toBe("starting");
+      expect(view.controller.snapshot.statusCode).toBe("capture_starting");
+      await view.controller.stopRecording();
+      pending.resolve(h.f.response(startID)); await resuming;
+      expect(view.controller.snapshot.state).toBe("paused");
+      expect(view.controller.snapshot.recordedChunks).toBe(1);
+      expect(h.commands.map(c => c.kind)).toEqual(["pause"]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("confirms native start within 250ms and stops redundant or hidden polling", async () => {
+    const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
+    let startID = "";
+    h.port.command = request => { if (request.kind === "start") { startID = request.requestId; return pending.promise; } return command(request); };
+    vi.useFakeTimers();
+    const view = await h.open();
+    try {
+      const starting = view.controller.startRecording();
+      h.f.set({ phase: "recording" });
+      await vi.advanceTimersByTimeAsync(249);
+      expect(view.controller.snapshot.native?.phase).toBe("starting");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(view.controller.snapshot.state).toBe("recording");
+      pending.resolve(h.f.response(startID)); await starting;
+      for (let i = 0; i < 4; i += 1) {
+        await view.controller.getCaptureSignal!();
+        await vi.advanceTimersByTimeAsync(250);
+      }
+      expect(h.commands.filter(c => c.kind === "read")).toHaveLength(5);
+      Object.assign(document, { visibilityState: "hidden" });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.commands.filter(c => c.kind === "read")).toHaveLength(5);
+      Object.assign(document, { visibilityState: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve(); await Promise.resolve();
+      expect(h.commands.filter(c => c.kind === "read")).toHaveLength(6);
+    } finally { await view.deactivate(); h.storage.close(); }
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("retains the exact handle across failed close and never requests renderer key or lease work", async () => {
@@ -90,30 +319,47 @@ describe("native provider controller", () => {
   });
 
   it("reuses registered ciphertext receipts and the frozen completion intent after a lost response and reopen", async () => {
-    const h = await fixture(), queue = new CaptureQueue(h.storage), objectId = crypto.randomUUID();
-    const reservation: ChunkReservation = { protocolVersion: PROTOCOL_VERSION, objectId, sessionId, channel: "microphone" as const,
-      sequenceNumber: 0, createdAt: "2026-09-26T12:00:00.000Z", additionalAuthenticatedData:
-        encodeChunkAdditionalDataBase64Url({ tenantId: crypto.randomUUID(), objectId, sessionId, channel: "microphone", sequenceNumber: 0 }) };
-    await queue.reserve(reservation, crypto.randomUUID());
-    const encrypted = await queue.encrypt(objectId, encodeEnvelope({ schema_version: PROTOCOL_VERSION,
-      content_encryption: "A256GCM", nonce: base64UrlEncode(new Uint8Array(12)), media_type: "audio/wav" }, new Uint8Array(48)));
-    const receipt = { chunkId: crypto.randomUUID(), sha256: encrypted.sha256, byteLength: encrypted.byteLength, registeredAt: reservation.createdAt };
-    const getChunkReceipt = vi.fn<CaptureBff["getChunkReceipt"]>(async () => ({ state: "registered", reservation: { protocol_version: PROTOCOL_VERSION,
-      object_id: objectId, session_id: sessionId, channel: "microphone", sequence_number: 0,
-      additional_authenticated_data: reservation.additionalAuthenticatedData, created_at: reservation.createdAt },
-    registration: { chunk_id: receipt.chunkId, sha256: receipt.sha256, ciphertext_size_bytes: receipt.byteLength, registered_at: receipt.registeredAt } }));
+    const h = await fixture(), queue = new CaptureQueue(h.storage), held = deferred<void>();
+    const receipts = new Map<string, Awaited<ReturnType<CaptureBff["getChunkReceipt"]>>>();
+    const objectIds: string[] = [], createdAt = "2026-09-26T12:00:00.000Z";
+    for (let sequenceNumber = 0; sequenceNumber < 3; sequenceNumber += 1) {
+      const objectId = crypto.randomUUID(); objectIds.push(objectId);
+      const reservation: ChunkReservation = { protocolVersion: PROTOCOL_VERSION, objectId, sessionId, channel: "microphone",
+        sequenceNumber, createdAt, additionalAuthenticatedData:
+          encodeChunkAdditionalDataBase64Url({ tenantId: crypto.randomUUID(), objectId, sessionId, channel: "microphone", sequenceNumber }) };
+      await queue.reserve(reservation, crypto.randomUUID());
+      const encrypted = await queue.encrypt(objectId, encodeEnvelope({ schema_version: PROTOCOL_VERSION,
+        content_encryption: "A256GCM", nonce: base64UrlEncode(new Uint8Array(12)), media_type: "audio/wav" }, new Uint8Array(48)));
+      receipts.set(objectId, { state: "registered", reservation: { protocol_version: PROTOCOL_VERSION,
+        object_id: objectId, session_id: sessionId, channel: "microphone", sequence_number: sequenceNumber,
+        additional_authenticated_data: reservation.additionalAuthenticatedData, created_at: createdAt },
+      registration: { chunk_id: crypto.randomUUID(), sha256: encrypted.sha256,
+        ciphertext_size_bytes: encrypted.byteLength, registered_at: createdAt } });
+    }
+    const getChunkReceipt = vi.fn<CaptureBff["getChunkReceipt"]>(async (_session, objectId) => {
+      if (objectId === objectIds[2]) await held.promise;
+      return receipts.get(objectId)!;
+    });
     h.bff.getChunkReceipt = getChunkReceipt;
-    const completion = { idempotencyKey: crypto.randomUUID(), leaseId: crypto.randomUUID(), leaseGeneration: 14, finalSequence: 0 };
-    h.f.set({ phase: "sealed", recordedChunks: 1, recordedPlaintextBytes: 204, completion });
+    const completion = { idempotencyKey: crypto.randomUUID(), leaseId: crypto.randomUUID(), leaseGeneration: 14, finalSequence: 2 };
+    h.f.set({ phase: "sealed", recordedChunks: 3, recordedPlaintextBytes: 612, completion });
     const complete = vi.fn<CaptureBff["completeCapture"]>().mockRejectedValueOnce(new Error("Lost completion response"))
       .mockResolvedValue({ id: sessionId, appointment_id: crypto.randomUUID(), consent_record_id: crypto.randomUUID(),
-        created_at: reservation.createdAt, ingest_mode: "chunk_upload", modality: "in_person",
+        created_at: createdAt, ingest_mode: "chunk_upload", modality: "in_person",
         patient_id: crypto.randomUUID(), practitioner_id: crypto.randomUUID(), status: "uploaded" });
     h.bff.completeCapture = complete;
     const first = await h.open();
-    await expect(first.resumePendingWork()).rejects.toThrow("Lost completion response");
+    const uploading = first.resumePendingWork();
+    const rejected = expect(uploading).rejects.toThrow("Lost completion response");
+    await vi.waitFor(() => expect(first.controller.snapshot.native?.uploadProgress).toEqual({ total: 3, registered: 2 }));
+    expect(first.controller.snapshot.queuedChunks).toBe(1);
+    expect(first.controller.snapshot.state).toBe("uploading");
+    expect(complete).not.toHaveBeenCalled();
+    held.resolve(); await rejected;
     expect(first.controller.snapshot.statusCode).toBe("capture_upload_pending");
-    expect((await queue.get(objectId))?.state).toBe("purged");
+    expect(first.controller.snapshot.native?.uploadProgress).toEqual({ total: 3, registered: 3 });
+    expect(first.controller.snapshot.state).toBe("uploading");
+    for (const objectId of objectIds) expect((await queue.get(objectId))?.state).toBe("purged");
     await first.deactivate();
     const reopened = await h.open();
     try {
@@ -121,7 +367,7 @@ describe("native provider controller", () => {
       expect(complete.mock.calls[0]).toEqual(complete.mock.calls[1]);
       expect(complete.mock.calls[1]![2]).toEqual({ idempotencyKey: completion.idempotencyKey });
       expect(reopened.controller.snapshot.state).toBe("processing");
-      expect(getChunkReceipt).toHaveBeenCalledTimes(1);
+      expect(getChunkReceipt).toHaveBeenCalledTimes(3);
       expect(h.commands.every(c => c.kind === "close")).toBe(true);
     } finally { await reopened.deactivate(); h.storage.close(); }
   });
@@ -136,11 +382,14 @@ describe("native provider controller", () => {
       expect(view.controller.snapshot.remainingBudgetSeconds).toBeGreaterThan(1700);
       await expect(view.resumePendingWork()).rejects.toThrow();
       expect(view.controller.snapshot.statusCode).toBe("capture_upload_pending");
+      expect(view.controller.snapshot.native?.uploadProgress).toBeUndefined();
     } finally { await view.deactivate(); h.storage.close(); }
   });
 
   it.each([{ phase: {} }, { failure: {} }, { recordedChunks: 2049 }, { recordedPlaintextBytes: 1 },
-    { maximumPlaintextBytes: 1 }, { revision: -1 }, { completion: { finalSequence: 3 } }, { secret: "excluded" }])(
+    { maximumPlaintextBytes: 1 }, { revision: -1 }, { completion: { finalSequence: 3 } }, { secret: "excluded" },
+    ...[-1, 0.5, NaN, Infinity, 327_680_001].map(capturedAudioFrames => ({ capturedAudioFrames })),
+    { recordedChunks: 1, recordedPlaintextBytes: 320_044, capturedAudioFrames: 159_999 }])(
   "rejects malformed native metadata %j", update => {
     expect(() => parseNativeRecordingState({ ...recordingFixture().state, ...update })).toThrow();
   });

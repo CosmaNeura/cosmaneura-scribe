@@ -49,17 +49,17 @@ try {
   assert.equal(root.textContent.includes("interrupted — stopped"), false);
   snapshot = { ...snapshot, statusCode: "audio_capture_native_stop_failed" };
   listener(snapshot); await app.updateComplete;
-  assert.ok(root.textContent.includes("Recording stop is unconfirmed"));
+  assert.ok(root.textContent.includes("Recording may still be active. Choose Retry finish recording to confirm it has stopped."));
   const stop = root.querySelector('[data-testid="stop-button"]');
-  assert.ok(stop.textContent.includes("Retry stop and upload"));
+  assert.ok(stop.textContent.includes("Retry finish recording"));
   assert.equal(stop.disabled, false);
   assert.equal(root.querySelector('[data-testid="record-button"]').disabled, true);
   stop.click(); await app.updateComplete; await Promise.resolve(); await app.updateComplete;
   assert.equal(stops, 1);
-  assert.ok(root.textContent.includes("Recording stop is unconfirmed"));
+  assert.ok(root.textContent.includes("Recording may still be active"));
   assert.equal(root.textContent.includes("Recording uploaded"), false);
   abort.abort(); await app.updateComplete; await Promise.resolve(); await app.updateComplete;
-  assert.equal(root.textContent.includes("Retry stop and upload"), false);
+  assert.equal(root.textContent.includes("Retry finish recording"), false);
   assert.equal(closed, 1);
   console.log("Built provider entry keeps unconfirmed stop visible/retryable, blocks recording, clears on revocation, and rejects absent native iOS capture.");
 } finally { dispose(); dom.window.close(); }

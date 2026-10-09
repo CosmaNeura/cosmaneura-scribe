@@ -23,6 +23,11 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
   private var committedBytes = 0
   private var reservations: [Int: NativeRecordingReservation] = [:]
   private var phase: NativeRecordingPCMState.Phase = .accepting
+  private var storageFailed = false
+  var hasStorageFailure: Bool { lock.withLock { storageFailed } }
+  private var closeReason: PCMWindowCloseReason?
+  var windowCloseReason: PCMWindowCloseReason? { lock.withLock { closeReason } }
+  private var closureObserver: (@Sendable () -> Void)?
 
   public init(
     encryption: NativeRecordingEncryption, recoveryScope: UUID,
@@ -45,6 +50,26 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
         committedChunks: nextSequence - firstSequence,
         committedPlaintextBytes: committedBytes, pendingReservations: reservations.count)
     }
+  }
+
+  /// One native continuation observes this sink. Registration also catches a
+  /// closure that already happened; callbacks never run while holding the lock.
+  func observeClosure(_ observer: @escaping @Sendable () -> Void) {
+    lock.withLock { closureObserver = observer }
+    notifyClosure()
+  }
+
+  func clearClosureObserver() {
+    lock.withLock { closureObserver = nil }
+  }
+
+  private func notifyClosure() {
+    let observer = lock.withLock { () -> (@Sendable () -> Void)? in
+      guard phase != .accepting else { return nil }
+      defer { closureObserver = nil }
+      return closureObserver
+    }
+    observer?()
   }
 
   /// Allocations come from NativeRecordingReservationOwner's durable queue write.
@@ -82,10 +107,14 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
   }
 
   public func emit(_ packet: PCMEncodedPacket) throws -> any PCMAcknowledging {
-    defer { packet.bytes.zeroize() }
+    defer {
+      packet.bytes.zeroize()
+      notifyClosure()
+    }
     try lock.withLock {
       guard phase == .accepting else { throw NativeRecordingFailure.invalidPacket }
       do { _ = try persist(packet) } catch {
+        storageFailed = true
         fail()
         throw error
       }
@@ -98,7 +127,10 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
   /// Call only after the source's confirmed drain. The caller's partial packet
   /// is cleared even on rejection; it can be committed at most once.
   @discardableResult public func finish(_ stopped: PCMStopResult) throws -> NativeRecordingCommit? {
-    defer { stopped.finalPacket?.bytes.zeroize() }
+    defer {
+      stopped.finalPacket?.bytes.zeroize()
+      notifyClosure()
+    }
     return try lock.withLock {
       guard phase == .accepting || phase == .draining else {
         throw NativeRecordingFailure.invalidPacket
@@ -109,6 +141,7 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
         reservations.removeAll()
         return commit
       } catch {
+        storageFailed = true
         fail()
         throw error
       }
@@ -117,10 +150,12 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
 
   public func terminated(_ code: PCMTerminationCode) {
     lock.withLock { if phase != .closed { fail() } }
+    notifyClosure()
   }
 
   public func windowClosed(_ reason: PCMWindowCloseReason) {
-    lock.withLock { if phase == .accepting { phase = .draining } }
+    lock.withLock { if phase == .accepting { phase = .draining; closeReason = reason } }
+    notifyClosure()
   }
 
   private func persist(_ packet: PCMEncodedPacket) throws -> NativeRecordingCommit {

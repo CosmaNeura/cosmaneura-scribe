@@ -110,9 +110,7 @@ def _run(
         started_at=STARTED_AT,
         ended_at=ended_at,
         scenario_results=(
-            _passed_results(current_artifacts)
-            if scenario_results is None
-            else scenario_results
+            _passed_results(current_artifacts) if scenario_results is None else scenario_results
         ),
         findings=findings,
         founder_decision=founder_decision,
@@ -128,10 +126,7 @@ def test_exact_artifact_set_round_trips_and_has_stable_fingerprints() -> None:
     assert replay.fingerprint() == artifacts.fingerprint()
     assert len(artifacts.fingerprint()) == 64
     assert len(
-        {
-            artifacts.component_fingerprint(component)
-            for component in BetaArtifactComponent
-        }
+        {artifacts.component_fingerprint(component) for component in BetaArtifactComponent}
     ) == len(BetaArtifactComponent)
     assert str(TENANT_ID) not in repr(artifacts)
     assert str(PRACTICE_ID) not in str(artifacts)
@@ -212,10 +207,13 @@ def test_missing_failed_and_open_control_findings_block_acceptance() -> None:
         for result in _passed_results(artifacts)
         if result.scenario_id != failed_result.scenario_id
     ) + (failed_result,)
-    assert BetaTechnicalBlocker.SCENARIO_NOT_PASSING in _run(
-        artifacts=artifacts,
-        scenario_results=failed_results,
-    ).technical_blockers()
+    assert (
+        BetaTechnicalBlocker.SCENARIO_NOT_PASSING
+        in _run(
+            artifacts=artifacts,
+            scenario_results=failed_results,
+        ).technical_blockers()
+    )
 
     open_auth_finding = BetaFindingV1(
         schema_version="1.0",
@@ -228,9 +226,7 @@ def test_missing_failed_and_open_control_findings_block_acceptance() -> None:
         detected_at=STARTED_AT,
     )
     blocked = _run(findings=(open_auth_finding,))
-    assert blocked.technical_blockers() == (
-        BetaTechnicalBlocker.OPEN_CRITICAL_CONTROL_FINDING,
-    )
+    assert blocked.technical_blockers() == (BetaTechnicalBlocker.OPEN_CRITICAL_CONTROL_FINDING,)
     with pytest.raises(ValidationError, match="cannot accept incomplete beta evidence"):
         _run(
             findings=(open_auth_finding,),

@@ -87,6 +87,82 @@ public actor NativeRecordingLeaseOwner {
   /// An explicit continuation renews the same lease using its last generation.
   public func renew() async throws -> NativeRecordingLease { try await advance(renew: true) }
 
+  /// Before selecting the aggregate protocol, require the already-settled
+  /// current lease. A legacy pending request must recover on its original path.
+  public func requireSettled(_ lease: NativeRecordingLease) async throws {
+    guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
+    busy = true
+    defer { busy = false }
+    try await checkScope()
+    guard let saved = try records.readLease(key: key) else {
+      throw NativeRecordingBindingFailure.invalidJournal
+    }
+    let journal = try decode(saved)
+    guard journal.pending == nil, journal.lease == lease else {
+      throw NativeRecordingBindingFailure.journalConflict
+    }
+  }
+
+  /// Adopt the exact first lease returned by the frozen aggregate request.
+  public func adoptInitial(_ receipt: NativeRecordingLease, intent: UUID) async throws {
+    guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
+    busy = true
+    defer { busy = false }
+    try await checkScope()
+    _ = try receipt.validated()
+    guard receipt.sessionID == scope.sessionID, receipt.generation == 1 else {
+      throw NativeRecordingBindingFailure.receiptMismatch
+    }
+    var journal: Journal
+    if let saved = try records.readLease(key: key) {
+      journal = try decode(saved)
+      if journal.pending == nil, journal.lease == receipt { return }
+      guard saved.revision == 1, journal.lease == nil, journal.pending == intent else {
+        throw NativeRecordingBindingFailure.journalConflict
+      }
+    } else {
+      journal = Journal(schemaVersion: 1, account: scope.keyAccount, pending: intent)
+      try commit(journal, after: 0)
+    }
+    journal.lease = receipt
+    journal.pending = nil
+    try commit(journal, after: 1)
+  }
+
+  /// An aggregate owns this exact renewal before dispatch; adopt its receipt
+  /// without replacing an older pending lease intent or issuing another one.
+  public func adoptRenewal(
+    _ receipt: NativeRecordingLease, previous: NativeRecordingLease, intent: UUID
+  ) async throws {
+    guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
+    busy = true
+    defer { busy = false }
+    try await checkScope()
+    _ = try previous.validated()
+    _ = try receipt.validated()
+    guard previous.sessionID == scope.sessionID, receipt.sessionID == scope.sessionID,
+      receipt.leaseID == previous.leaseID, receipt.generation == previous.generation + 1,
+      receipt.receiptID != previous.receiptID,
+      let next = NativeRecordingLease.date(receipt.expiresAt),
+      let old = NativeRecordingLease.date(previous.expiresAt), next > old,
+      let saved = try records.readLease(key: key)
+    else { throw NativeRecordingBindingFailure.receiptMismatch }
+    var journal = try decode(saved)
+    if journal.pending == nil, journal.lease == receipt { return }
+    guard journal.lease == previous, journal.pending == nil || journal.pending == intent else {
+      throw NativeRecordingBindingFailure.journalConflict
+    }
+    var revision = saved.revision
+    if journal.pending == nil {
+      journal.pending = intent
+      try commit(journal, after: revision)
+      revision += 1
+    }
+    journal.lease = receipt
+    journal.pending = nil
+    try commit(journal, after: revision)
+  }
+
   private func advance(renew: Bool) async throws -> NativeRecordingLease {
     guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
     busy = true

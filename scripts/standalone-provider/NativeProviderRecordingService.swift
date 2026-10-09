@@ -6,15 +6,18 @@ import Foundation
 /// app. Construction requires a context minted by a verified Core response.
 @MainActor
 final class NativeProviderRecordingService: NativeRecordingBindingService,
-  NativeRecordingLeaseService, NativeRecordingReservationService
+  NativeRecordingLeaseService, NativeRecordingReservationService, NativeRecordingWindowService,
+  NativeRecordingResumeWindowService
 {
   private let connection: NativeProviderConnection
   private let context: NativeProviderRecordingContext
+  private var preparedPublicKey: NativeProviderRecordingPublicKey?
   private var bindingRef: String { context.bindingRef }
 
   init(connection: NativeProviderConnection, context: NativeProviderRecordingContext) {
     self.connection = connection
     self.context = context
+    self.preparedPublicKey = context.preparedPublicKey
   }
 
   func recordingScope() async throws -> NativeRecordingScope {
@@ -29,6 +32,17 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
   }
 
   func publishedKey() async throws -> NativeRecordingPublicKey {
+    try Task.checkCancellation()
+    if let prepared = preparedPublicKey {
+      preparedPublicKey = nil
+      // Single-use native metadata only. Expiry or a new SDK revision requires
+      // the original fresh key read; no source permission is cached here.
+      if try connection.recordingPreparationKeyIsCurrent(context) {
+        try Task.checkCancellation()
+        return try NativeRecordingPublicKey(
+          version: prepared.version, modulusBase64URL: prepared.modulusBase64URL)
+      }
+    }
     let value = try await operation(kind: "encryption_key", intent: UUID())
     guard Set(value.keys) == ["key_version", "algorithm", "public_jwk"],
       let version = value["key_version"] as? String, Self.validVersion(version),
@@ -81,6 +95,12 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
     let value = try await operation(
       kind: previous == nil ? "issue_lease" : "renew_lease",
       intent: intent, payload: payload, leaseID: previous?.leaseID)
+    return try parseLease(value, previous: previous)
+  }
+
+  private func parseLease(_ value: [String: Any], previous: NativeRecordingLease?) throws
+    -> NativeRecordingLease
+  {
     guard
       Set(value.keys) == [
         "protocol_version", "receipt_id", "lease_id", "session_id",
@@ -115,6 +135,12 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
         "capture_lease_generation": lease.generation, "channel": "microphone",
         "first_sequence_number": first, "count": count,
       ], maximumResponseBytes: 131_072)
+    return try parseReservations(receipt, lease: lease, first: first, count: count)
+  }
+
+  private func parseReservations(
+    _ receipt: [String: Any], lease: NativeRecordingLease, first: Int, count: Int
+  ) throws -> NativeRecordingReservationBatch {
     guard
       Set(receipt.keys) == [
         "protocol_version", "batch_id", "session_id", "capture_authorized_until", "reservations",
@@ -156,6 +182,69 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       authorizedUntil: lease.expiresAt, reservations: reservations)
   }
 
+  func prepareInitialWindow(_ request: NativeRecordingWindowRequest) async throws
+    -> NativeRecordingWindowReceipt
+  {
+    guard request.count == 30, Self.validVersion(request.keyVersion),
+      request.wrappedDEK.range(of: "^[A-Za-z0-9_-]{512}$", options: .regularExpression) != nil
+    else { throw ProviderNativeError.invalidRequest }
+    let value = try await operation(
+      kind: "prepare_recording_window", intent: request.bindIntent,
+      payload: [
+        "schema_version": "1.0",
+        "binding": ["key_version": request.keyVersion, "wrapped_dek": request.wrappedDEK],
+        "bind_idempotency_key": request.bindIntent.uuidString.lowercased(),
+        "lease_idempotency_key": request.leaseIntent.uuidString.lowercased(),
+        "reserve_idempotency_key": request.reserveIntent.uuidString.lowercased(),
+        "channel": "microphone", "reservation_count": request.count,
+      ], maximumResponseBytes: 131_072)
+    guard Set(value.keys) == ["schema_version", "binding", "lease", "reservations"],
+      value["schema_version"] as? String == "1.0",
+      let binding = value["binding"] as? [String: Any],
+      Set(binding.keys) == ["session_id", "key_version", "created_at"],
+      binding["session_id"] as? String == context.sessionID.uuidString.lowercased(),
+      binding["key_version"] as? String == request.keyVersion,
+      let created = binding["created_at"] as? String, Self.date(created) != nil,
+      let rawLease = value["lease"] as? [String: Any],
+      let rawReservations = value["reservations"] as? [String: Any]
+    else { throw NativeRecordingBindingFailure.receiptMismatch }
+    let lease = try parseLease(rawLease, previous: nil)
+    let batch = try parseReservations(rawReservations, lease: lease, first: 0, count: request.count)
+    return NativeRecordingWindowReceipt(
+      sessionID: context.sessionID,
+      keyVersion: request.keyVersion, lease: lease, batch: batch)
+  }
+
+  func prepareResumeWindow(_ request: NativeRecordingResumeWindowRequest) async throws
+    -> NativeRecordingResumeWindowReceipt
+  {
+    guard request.previous.sessionID == context.sessionID, (0..<2048).contains(request.first),
+      (1..<9_007_199_254_740_990).contains(request.previous.generation)
+    else { throw ProviderNativeError.invalidRequest }
+    let value = try await operation(
+      kind: "prepare_continuation_window", intent: request.intent,
+      payload: [
+        "schema_version": "1.0", "channel": "microphone",
+        "first_sequence_number": request.first,
+        "previous_lease_id": request.previous.leaseID.uuidString.lowercased(),
+        "previous_lease_generation": request.previous.generation,
+        "renew_idempotency_key": request.renewIntent.uuidString.lowercased(),
+        "reservation_idempotency_key": request.reserveIntent.uuidString.lowercased(),
+      ],
+      maximumResponseBytes: 131_072)
+    guard Set(value.keys) == ["schema_version", "lease", "reservations"],
+      value["schema_version"] as? String == "1.0",
+      let rawLease = value["lease"] as? [String: Any],
+      let rawReservations = value["reservations"] as? [String: Any],
+      let rows = rawReservations["reservations"] as? [[String: Any]],
+      (1...90).contains(rows.count), rows.count <= 2048 - request.first
+    else { throw NativeRecordingBindingFailure.receiptMismatch }
+    let lease = try parseLease(rawLease, previous: request.previous)
+    let batch = try parseReservations(
+      rawReservations, lease: lease, first: request.first, count: rows.count)
+    return NativeRecordingResumeWindowReceipt(lease: lease, batch: batch)
+  }
+
   private static func uuid(_ value: Any?) -> UUID? {
     guard let value = value as? String, let parsed = UUID(uuidString: value),
       parsed.uuidString.lowercased() == value
@@ -178,9 +267,16 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       "workspace_id": context.workspaceID.uuidString.lowercased(), "binding_ref": bindingRef,
       "request_nonce": nonce, "operation": operation,
     ])
+    // Core requires the aggregate request key to differ from every component.
+    // Derive it from the retained bind intent so existing pending journals can
+    // reopen with the same recipe, without replacing keys or component intents.
+    let operationKey =
+      kind == "prepare_recording_window"
+      ? "native-initial-window-v1:\(intent.uuidString.lowercased())"
+      : intent.uuidString.lowercased()
     let request = try ProviderNativeRequest(
       id: UUID().uuidString.lowercased(), revision: revision,
-      action: "capture-operations", key: intent.uuidString.lowercased(),
+      action: "capture-operations", key: operationKey,
       body: String(decoding: body, as: UTF8.self))
     let reply: ProviderNativeReply
     do { reply = try await connection.send(request) } catch ProviderNativeError.response {

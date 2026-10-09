@@ -11,7 +11,7 @@ def test_delivery_reconciler_job_is_manual_bounded_and_false_by_default() -> Non
     configuration = JOB_CONFIGURATION.read_text(encoding="utf-8")
 
     assert configuration.count("default     = false") == 2
-    assert 'manual_trigger_config {' in configuration
+    assert "manual_trigger_config {" in configuration
     assert "parallelism              = 1" in configuration
     assert "replica_completion_count = 1" in configuration
     assert "replica_retry_limit          = 0" in configuration
@@ -21,7 +21,7 @@ def test_delivery_reconciler_job_is_manual_bounded_and_false_by_default() -> Non
         in configuration
     )
     for forbidden in (
-        'args    =',
+        "args    =",
         "scheduled_trigger_config",
         "event_trigger_config",
         "ingress",
@@ -54,8 +54,6 @@ def test_delivery_reconciler_identity_gets_only_acr_pull_from_this_stack() -> No
 def test_database_principal_values_exist_only_behind_enable_gate() -> None:
     configuration = POSTGRES_CONFIGURATION.read_text(encoding="utf-8")
 
-    assert configuration.count(
-        "for_each = var.enable_delivery_reconciler_job ? [1] : []"
-    ) == 2
+    assert configuration.count("for_each = var.enable_delivery_reconciler_job ? [1] : []") == 2
     assert "COSMANEURA_SCRIBE_DATABASE_DELIVERY_RECONCILER_PRINCIPAL_NAME" in configuration
     assert "COSMANEURA_SCRIBE_DATABASE_DELIVERY_RECONCILER_PRINCIPAL_OBJECT_ID" in configuration

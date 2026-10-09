@@ -45,7 +45,11 @@ from .capture_responses import (
 from .captured_admission_routes import router as captured_admission_router
 from .consent import ConsentError, ConsentPolicy
 from .consent_routes import build_consent_router
+from .creator_continuation_routes import router as creator_continuation_router
+from .creator_preparation_routes import router as creator_preparation_router
+from .creator_recording_routes import router as creator_recording_router
 from .creator_review_routes import router as creator_review_router
+from .creator_window_routes import router as creator_window_router
 from .delivery_reconciler import (
     complete_delivery_failure,
     complete_delivery_success,
@@ -93,6 +97,7 @@ from .schemas import (
     CaptureLeaseIssueRequest,
     CaptureLeaseReceipt,
     CaptureLeaseRenewRequest,
+    CaptureLeaseState,
     CaptureMediaCapabilities,
     CaptureSession,
     ChunkReceipt,
@@ -122,6 +127,7 @@ from .service_auth import (
 )
 from .session_state_v1 import SessionIngestMode, can_transition_session
 from .settings import Settings, get_settings
+from .source_extension_routes import router as source_extension_router
 from .source_start_routes import router as source_start_router
 from .storage import AudioStorage, build_audio_storage
 
@@ -167,9 +173,7 @@ app = FastAPI(
 )
 consent_policy = ConsentPolicy()
 _EXTERNAL_TRANSCRIPT_SESSION_CREATE_OPERATION = "session.external_transcript.create"
-_EXTERNAL_TRANSCRIPT_SESSION_UNAVAILABLE = (
-    "External transcript session creation is unavailable."
-)
+_EXTERNAL_TRANSCRIPT_SESSION_UNAVAILABLE = "External transcript session creation is unavailable."
 
 
 @app.middleware("http")
@@ -299,7 +303,10 @@ Repository = Annotated[RepositoryContract, Depends(get_repository)]
 
 
 async def get_capture_protocol_provider(
-    session_id: UUID, tenant_id: TenantId, provider: Provider, settings: RuntimeSettings,
+    session_id: UUID,
+    tenant_id: TenantId,
+    provider: Provider,
+    settings: RuntimeSettings,
 ) -> RepositoryProvider:
     from .configured_capture_service import select_capture_protocol_provider
 
@@ -310,7 +317,8 @@ CaptureProvider = Annotated[RepositoryProvider, Depends(get_capture_protocol_pro
 
 
 async def get_capture_protocol_repository(
-    tenant_id: TenantId, provider: CaptureProvider,
+    tenant_id: TenantId,
+    provider: CaptureProvider,
 ) -> AsyncIterator[RepositoryContract]:
     async with provider.transaction(tenant_id) as transaction:
         yield transaction
@@ -447,12 +455,38 @@ async def _capture_context_or_404(
     policy: ConsentPolicy,
     *,
     require_audio_key: bool = True,
+    creator_actor_id: str | None = None,
 ) -> CaptureContext:
     context = await store.lock_capture_context(tenant_id, session_id)
     if context is None:
         raise HTTPException(status_code=404, detail="Capture session not found.")
     _assert_capture_context(context, policy, require_audio_key=require_audio_key)
+    if creator_actor_id is not None:
+        from .captured_source_runtime import CapturedSourceRepository, CapturedSourceUnavailable
+        from .normalized_source_persistence import NormalizedSourcePersistenceError
+
+        # Preserve idempotency -> consent -> session lock order. The original
+        # creator/consent check now shares the mutation's transaction and runs
+        # before both a new write and an exact receipt replay.
+        try:
+            if not isinstance(store, CapturedSourceRepository):
+                raise CapturedSourceUnavailable()
+            selected = await store.lock_live_capture(tenant_id, session_id)
+            if selected.creator_actor_id != creator_actor_id:
+                raise CapturedSourceUnavailable()
+        except (CapturedSourceUnavailable, NormalizedSourcePersistenceError):
+            raise HTTPException(
+                404, "Configured capture is unavailable.", headers={"Cache-Control": "no-store"}
+            ) from None
     return context
+
+
+# Shared transaction-level gates for creator-authorized composite operations.
+# Keep legacy private spellings for existing route helpers and digest fixtures.
+capture_request_fingerprint = _fingerprint
+require_capture_protocol = _require_capture_protocol
+claim_capture_operation = _idempotent_entity
+capture_context_for_creator = _capture_context_or_404
 
 
 def _require_chunk_upload_session(session: CaptureSession) -> None:
@@ -469,8 +503,13 @@ app.include_router(
     )
 )
 app.include_router(creator_review_router)
+app.include_router(creator_recording_router)
+app.include_router(creator_preparation_router)
 app.include_router(captured_admission_router)
 app.include_router(source_start_router)
+app.include_router(source_extension_router)
+app.include_router(creator_continuation_router)
+app.include_router(creator_window_router)
 
 
 @app.get(
@@ -593,10 +632,7 @@ async def create_external_transcript_session(
     )
     if previous_id is not None:
         previous = await store.get_session(tenant_id, previous_id)
-        if (
-            previous is None
-            or previous.ingest_mode != SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT
-        ):
+        if previous is None or previous.ingest_mode != SessionIngestMode.EXTERNAL_ASYNC_TRANSCRIPT:
             raise HTTPException(
                 status_code=500,
                 detail="Idempotent external transcript session is unavailable.",
@@ -729,6 +765,13 @@ async def get_capture_capabilities(
         )
         usage = await store.capture_reservation_usage(tenant_id, session_id)
     response.headers["Cache-Control"] = "no-store"
+    return capture_capabilities_from_usage(usage.plaintext_budget_bytes, settings)
+
+
+def capture_capabilities_from_usage(
+    plaintext_budget_bytes: int, settings: Settings
+) -> CaptureCapabilities:
+    """One capability projection shared by direct and creator preparation reads."""
     return CaptureCapabilities(
         protocol_version=PROTOCOL_VERSION,
         media=CaptureMediaCapabilities(
@@ -743,7 +786,7 @@ async def get_capture_capabilities(
         remaining_aggregate_plaintext_bytes=max(
             0,
             min(MAX_AGGREGATE_PLAINTEXT_BYTES, settings.audio_assembly_max_plaintext_bytes)
-            - usage.plaintext_budget_bytes,
+            - plaintext_budget_bytes,
         ),
         capture_lease_ttl_seconds=CAPTURE_LEASE_TTL_SECONDS,
         reservation_window_seconds=RESERVATION_WINDOW_SECONDS,
@@ -766,6 +809,22 @@ async def issue_capture_lease(
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureLeaseReceipt:
+    return await execute_capture_lease_issue(
+        session_id, payload, tenant_id, idempotency_key, provider, policy, settings
+    )
+
+
+async def execute_capture_lease_issue(
+    session_id: UUID,
+    payload: CaptureLeaseIssueRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: CaptureProvider,
+    policy: Policy,
+    settings: Settings,
+    *,
+    creator_actor_id: str | None = None,
+) -> CaptureLeaseReceipt:
     _require_capture_protocol(settings)
     receipt_id = uuid4()
     lease_id = uuid4()
@@ -778,7 +837,9 @@ async def issue_capture_lease(
             _fingerprint(payload),
             receipt_id,
         )
-        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        context = await _capture_context_or_404(
+            store, tenant_id, session_id, policy, creator_actor_id=creator_actor_id
+        )
         if previous_id is not None:
             previous = await store.get_capture_lease_receipt(tenant_id, previous_id)
             if previous is None or previous.session_id != session_id:
@@ -820,6 +881,23 @@ async def renew_capture_lease(
     policy: Policy,
     settings: RuntimeSettings,
 ) -> CaptureLeaseReceipt:
+    return await execute_capture_lease_renewal(
+        session_id, lease_id, payload, tenant_id, idempotency_key, provider, policy, settings
+    )
+
+
+async def execute_capture_lease_renewal(
+    session_id: UUID,
+    lease_id: UUID,
+    payload: CaptureLeaseRenewRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: CaptureProvider,
+    policy: Policy,
+    settings: Settings,
+    *,
+    creator_actor_id: str | None = None,
+) -> CaptureLeaseReceipt:
     _require_capture_protocol(settings)
     receipt_id = uuid4()
     async with provider.transaction(tenant_id) as store:
@@ -831,7 +909,9 @@ async def renew_capture_lease(
             _fingerprint(payload),
             receipt_id,
         )
-        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        context = await _capture_context_or_404(
+            store, tenant_id, session_id, policy, creator_actor_id=creator_actor_id
+        )
         if previous_id is not None:
             previous = await store.get_capture_lease_receipt(tenant_id, previous_id)
             if (
@@ -862,6 +942,47 @@ async def renew_capture_lease(
         return capture_lease_response(receipt)
 
 
+@app.get("/v1/sessions/{session_id}/capture-lease-state", response_model=CaptureLeaseState)
+async def get_capture_lease_state(
+    session_id: UUID,
+    tenant_id: TenantId,
+    provider: CaptureProvider,
+    policy: Policy,
+    settings: RuntimeSettings,
+) -> CaptureLeaseState:
+    """Observe capture authority, including untouched setup; never issue or renew it."""
+    _require_capture_protocol(settings)
+    async with provider.transaction(tenant_id) as store:
+        context = await _capture_context_or_404(
+            store, tenant_id, session_id, policy, require_audio_key=False
+        )
+        receipt = None
+        if context.lease is not None:
+            receipt = await store.capture_lease_receipt_for_generation(
+                tenant_id,
+                session_id,
+                context.lease.generation,
+            )
+            if (
+                receipt is None
+                or receipt.lease_id != context.lease.lease_id
+                or receipt.expires_at != context.lease.expires_at
+            ):
+                raise HTTPException(status_code=503, detail="Capture lease state is unavailable.")
+        await store.audit(
+            tenant_id=tenant_id,
+            action="capture_lease.read",
+            entity_type="capture_session",
+            entity_id=session_id,
+        )
+        return CaptureLeaseState(
+            session_id=session_id,
+            current_lease=capture_lease_response(receipt) if receipt else None,
+            lease_closed=context.lease is not None and context.lease.closed_at is not None,
+            session_status=context.session.status,
+        )
+
+
 @app.post(
     "/v1/sessions/{session_id}/chunk-reservations",
     response_model=ChunkReservationBatchReceipt,
@@ -875,6 +996,22 @@ async def reserve_audio_chunks(
     provider: CaptureProvider,
     policy: Policy,
     settings: RuntimeSettings,
+) -> ChunkReservationBatchReceipt:
+    return await execute_chunk_reservation(
+        session_id, payload, tenant_id, idempotency_key, provider, policy, settings
+    )
+
+
+async def execute_chunk_reservation(
+    session_id: UUID,
+    payload: ChunkReservationBatchRequest,
+    tenant_id: TenantId,
+    idempotency_key: IdempotencyKey,
+    provider: CaptureProvider,
+    policy: Policy,
+    settings: Settings,
+    *,
+    creator_actor_id: str | None = None,
 ) -> ChunkReservationBatchReceipt:
     _require_capture_protocol(settings)
     if payload.count > MAX_RESERVATIONS_PER_BATCH:
@@ -909,7 +1046,9 @@ async def reserve_audio_chunks(
             _fingerprint(payload),
             batch_id,
         )
-        context = await _capture_context_or_404(store, tenant_id, session_id, policy)
+        context = await _capture_context_or_404(
+            store, tenant_id, session_id, policy, creator_actor_id=creator_actor_id
+        )
         if previous_id is not None:
             previous = await store.get_chunk_reservation_batch(tenant_id, previous_id)
             if previous is None or previous.session_id != session_id:
@@ -1336,9 +1475,9 @@ async def _complete_capture_protocol_session(
         raise HTTPException(status_code=409, detail="Capture lease fence does not match.")
     if context.session.status == SessionStatus.UPLOADED:
         existing = await store.capture_finalizations_for(tenant_id, session_id)
-        if {
-            item.channel: item.last_sequence_number for item in existing
-        } != {item.channel: item.last_sequence_number for item in declarations}:
+        if {item.channel: item.last_sequence_number for item in existing} != {
+            item.channel: item.last_sequence_number for item in declarations
+        }:
             raise HTTPException(status_code=409, detail="Capture completion is immutable.")
         return context.session
     if context.session.status != SessionStatus.CAPTURING:
@@ -1595,8 +1734,7 @@ async def deliver_transcript_to_master_platform(
             if previous_delivery.status == DeliveryStatus.DELIVERED:
                 if (
                     previous_delivery.session_id != session_id
-                    or previous_idempotency.request_fingerprint
-                    != previous_delivery.payload_sha256
+                    or previous_idempotency.request_fingerprint != previous_delivery.payload_sha256
                 ):
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,

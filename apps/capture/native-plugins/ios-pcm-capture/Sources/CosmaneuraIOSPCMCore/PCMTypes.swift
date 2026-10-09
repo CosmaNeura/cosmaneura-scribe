@@ -69,13 +69,16 @@ public struct PCMConfiguration: Equatable, Sendable {
   public let maximumInputFramesPerBuffer: Int
   public let heartbeatTimeoutNanoseconds: UInt64
   public let authority: PCMSourceAuthority?
+  /// Native encrypted owner only; the legacy/JavaScript bridge keeps discard.
+  public let preserveInterruptedTail: Bool
 
   public init(
     targetFramesPerChunk: Int,
     maximumChunks: Int,
     maximumInputFramesPerBuffer: Int = 4_096,
     heartbeatTimeoutNanoseconds: UInt64 = 15_000_000_000,
-    authority: PCMSourceAuthority? = nil
+    authority: PCMSourceAuthority? = nil,
+    preserveInterruptedTail: Bool = false
   ) throws {
     guard targetFramesPerChunk > 0,
       targetFramesPerChunk <= Self.maximumTargetFramesPerChunk,
@@ -87,7 +90,8 @@ public struct PCMConfiguration: Equatable, Sendable {
       heartbeatTimeoutNanoseconds > 0,
       targetFramesPerChunk <= Int.max / 2,
       maximumChunks <= Int.max / targetFramesPerChunk,
-      authority == nil || maximumChunks <= authority!.hardMaximumChunks
+      authority == nil || maximumChunks <= authority!.hardMaximumChunks,
+      !preserveInterruptedTail || authority != nil
     else {
       throw PCMFailure(.invalidConfiguration)
     }
@@ -96,6 +100,7 @@ public struct PCMConfiguration: Equatable, Sendable {
     self.maximumInputFramesPerBuffer = maximumInputFramesPerBuffer
     self.heartbeatTimeoutNanoseconds = heartbeatTimeoutNanoseconds
     self.authority = authority
+    self.preserveInterruptedTail = preserveInterruptedTail
   }
 }
 
@@ -252,13 +257,17 @@ public protocol MicrophonePermissionAuthorizing: Sendable {
 public struct PCMAudioCallbacks: Sendable {
   public let frames: @Sendable (OwnedAudioFrames) -> PCMFrameAdmission
   public let event: @Sendable (PCMAudioEvent) async -> Void
+  /// Synchronous hard-invalidation fence, independent of pending actor delivery.
+  public let invalidate: (@Sendable (PCMAudioEvent) -> Void)?
 
   public init(
     frames: @escaping @Sendable (OwnedAudioFrames) -> PCMFrameAdmission,
-    event: @escaping @Sendable (PCMAudioEvent) async -> Void
+    event: @escaping @Sendable (PCMAudioEvent) async -> Void,
+    invalidate: (@Sendable (PCMAudioEvent) -> Void)? = nil
   ) {
     self.frames = frames
     self.event = event
+    self.invalidate = invalidate
   }
 }
 

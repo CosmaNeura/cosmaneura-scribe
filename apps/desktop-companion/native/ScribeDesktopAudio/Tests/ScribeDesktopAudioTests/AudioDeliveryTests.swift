@@ -31,6 +31,27 @@ private final class Sink: DesktopAudioSink, @unchecked Sendable {
     var times: [UInt64] { lock.withLock { timestamps } }
 }
 
+private final class WindowValidity: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+    func expire() { lock.withLock { valid = false } }
+    var isValid: Bool { lock.withLock { valid } }
+}
+
+@Test func expiredWindowClearsPreviouslyQueuedAndNewAudio() async throws {
+    let consent = ConsentedFixture(), sink = Sink(), validity = WindowValidity()
+    let queue = DispatchQueue(label: "synthetic.window-expiry")
+    queue.suspend()
+    let gate = AudioDelivery(sink: sink, queue: queue, validate: { validity.isValid }, onFailure: { _ in })
+    let queued = try consent.frame(1), late = try consent.frame(2)
+    gate.offer(queued)
+    validity.expire()
+    queue.resume(); await gate.drain()
+    gate.offer(late); await gate.drain()
+    #expect(sink.times.isEmpty && sink.errors == [.windowExpired])
+    #expect(queued.isClear && late.isClear)
+}
+
 @Test func boundedDeliveryClearsAcceptedNativeSamples() async throws {
     let consent = ConsentedFixture(), sink = Sink(), gate = AudioDelivery(sink: sink, onFailure: { _ in })
     let a = try consent.frame(1), b = try consent.frame(2)
@@ -159,6 +180,21 @@ private final class Sink: DesktopAudioSink, @unchecked Sendable {
     }
     #expect(throws: DesktopAudioFailure.selectionChanged) {
         try MeetingAudioSelection(application: .zoom, processID: 1, windowID: 0)
+    }
+}
+
+@available(macOS 14.2, *)
+@Test func deniedPermissionPreventsNativeSourceSetupWithoutProbeProcess() async throws {
+    let source = MacMeetingAudio(enabled: true, checkPermissions: { false })
+    let selection = try MeetingAudioSelection(application: .zoom, processID: 123, windowID: 456)
+    // Permission denial precedes SCShareableContent, window lookup and audio
+    // setup. This exact public start path must perform no OS capture work.
+    await #expect(throws: DesktopAudioFailure.permissionRequired) {
+        try await source.start(selection: selection, maximumDurationSeconds: 30, sink: Sink())
+    }
+    try await source.stop()
+    await #expect(throws: DesktopAudioFailure.unavailable) {
+        try await source.start(selection: selection, maximumDurationSeconds: 30, sink: Sink())
     }
 }
 

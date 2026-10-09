@@ -1,8 +1,11 @@
-// INERT PROPOSAL: not part of any selected app or source package.
-// Callers must bind a fixed private directory and persist the anchor in the
-// native-only Keychain. This file never accesses Keychain or captures audio.
-import Darwin
+// Shared serialized source-fence identities and desktop process ownership.
+// macOS callers bind a fixed private directory and persist the anchor in the
+// native-only Keychain. iOS compiles only the shared value types. This file
+// itself never accesses Keychain or captures audio.
 import Foundation
+#if os(macOS)
+import Darwin
+#endif
 
 enum NativeFenceError: Error { case unavailable }
 
@@ -14,13 +17,31 @@ struct NativeFenceFileIdentity: Codable, Equatable, Sendable {
 struct NativeFenceAnchor: Codable, Equatable, Sendable {
     let coordinator: NativeFenceFileIdentity
     let capture: NativeFenceFileIdentity
+    // st_dev identifies this mount, not this volume across a macOS restart.
+    // Optional only to read the original journal without discarding custody.
+    let volumeID: String?
+
+    init(coordinator: NativeFenceFileIdentity, capture: NativeFenceFileIdentity, volumeID: String? = nil) {
+        self.coordinator = coordinator; self.capture = capture; self.volumeID = volumeID
+    }
+
+    func matchesMountedFiles(_ current: NativeFenceAnchor, allowLegacyRemount: Bool) -> Bool {
+        guard coordinator.inode == current.coordinator.inode, capture.inode == current.capture.inode,
+              let currentVolume = current.volumeID else { return false }
+        if let volumeID { return volumeID == currentVolume }
+        return (coordinator == current.coordinator && capture == current.capture) || allowLegacyRemount
+    }
 }
 
+#if os(macOS)
+// Cross-process filesystem custody is desktop-only. iOS owns capture through
+// NativeCaptureStartGate and must not link unused filesystem metadata APIs.
 private final class NativeFenceFile {
     private let directory: Int32
     private let descriptor: Int32
     private let name: String
     let identity: NativeFenceFileIdentity
+    let volumeID: String
 
     init(directoryPath: String, name: String, create: Bool) throws {
         let directory = try nativeFenceDirectory(directoryPath)
@@ -38,8 +59,12 @@ private final class NativeFenceFile {
               fileStat.st_nlink == 1 else {
             Darwin.close(descriptor); Darwin.close(directory); throw NativeFenceError.unavailable
         }
+        let stableVolume: String
+        do { stableVolume = try nativeFenceVolumeID(descriptor) }
+        catch { Darwin.close(descriptor); Darwin.close(directory); throw error }
         self.directory = directory; self.descriptor = descriptor; self.name = name
         identity = NativeFenceFileIdentity(device: Int64(fileStat.st_dev), inode: UInt64(fileStat.st_ino))
+        volumeID = stableVolume
         try verifyPath()
         guard fsync(descriptor) == 0, fsync(directory) == 0 else { throw NativeFenceError.unavailable }
     }
@@ -54,6 +79,7 @@ private final class NativeFenceFile {
               Int64(value.st_dev) == identity.device, UInt64(value.st_ino) == identity.inode else {
             throw NativeFenceError.unavailable
         }
+        guard try nativeFenceVolumeID(descriptor) == volumeID else { throw NativeFenceError.unavailable }
     }
 
     func lock(_ operation: Int32) throws {
@@ -102,14 +128,17 @@ final class NativeCaptureProcessCoordinator {
     let anchor: NativeFenceAnchor
     let epoch: String
 
-    init(privateDirectory: String, expectedAnchor: NativeFenceAnchor?) throws {
+    init(privateDirectory: String, expectedAnchor: NativeFenceAnchor?, allowLegacyRemount: Bool = false) throws {
         coordinator = try NativeFenceFile(directoryPath: privateDirectory, name: "coordinator.lock", create: expectedAnchor == nil)
         try coordinator.lock(LOCK_EX)
         capture = try NativeFenceFile(directoryPath: privateDirectory, name: "capture.lock", create: expectedAnchor == nil)
         try capture.lock(LOCK_EX)
-        anchor = NativeFenceAnchor(coordinator: coordinator.identity, capture: capture.identity)
+        guard coordinator.volumeID == capture.volumeID else { throw NativeFenceError.unavailable }
+        anchor = NativeFenceAnchor(coordinator: coordinator.identity, capture: capture.identity, volumeID: coordinator.volumeID)
         if let expectedAnchor {
-            guard expectedAnchor == anchor else { throw NativeFenceError.unavailable }
+            guard expectedAnchor.matchesMountedFiles(anchor, allowLegacyRemount: allowLegacyRemount) else {
+                throw NativeFenceError.unavailable
+            }
         } else {
             // Never infer a fresh installation from a missing Keychain anchor
             // when a prior coordinator has already written its durable epoch.
@@ -149,6 +178,7 @@ final class NativeCaptureProcessLease {
         }
     }
 }
+#endif
 
 struct NativeFenceTicket: Sendable {
     let anchor: NativeFenceAnchor
@@ -176,6 +206,23 @@ struct NativeFenceTicket: Sendable {
 
 /// Open every component without following symlinks, including ancestors. The
 /// final directory's private ownership/mode is checked by NativeFenceFile.
+#if os(macOS)
+// Read the volume UUID from the already-open descriptor. A path-based resource
+// lookup could race replacement; an unavailable UUID never becomes permission.
+private func nativeFenceVolumeID(_ descriptor: Int32) throws -> String {
+    var attributes = attrlist()
+    attributes.bitmapcount = UInt16(ATTR_BIT_MAP_COUNT)
+    attributes.volattr = ATTR_VOL_INFO | UInt32(ATTR_VOL_UUID)
+    var bytes = [UInt8](repeating: 0, count: 20)
+    let result = bytes.withUnsafeMutableBytes {
+        fgetattrlist(descriptor, &attributes, $0.baseAddress, $0.count, 0)
+    }
+    guard result == 0, bytes.withUnsafeBytes({ $0.loadUnaligned(as: UInt32.self) }) == 20,
+          bytes.dropFirst(4).contains(where: { $0 != 0 }) else { throw NativeFenceError.unavailable }
+    let uuid = bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: uuid_t.self) }
+    return UUID(uuid: uuid).uuidString.lowercased()
+}
+
 private func nativeFenceDirectory(_ path: String) throws -> Int32 {
     guard path.hasPrefix("/") else { throw NativeFenceError.unavailable }
     var fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
@@ -216,3 +263,4 @@ func nativeDesktopFenceDirectory() throws -> String {
     }
     return path
 }
+#endif
