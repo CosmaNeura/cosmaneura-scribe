@@ -140,6 +140,15 @@ cosmaneura-capture .recording-progress { display: grid; gap: 0.75rem; }
 cosmaneura-capture .recording-progress > p { margin: 0; }
 cosmaneura-capture .recording-progress > [role="status"] { color: #12372d; font-size: 1.15rem; font-weight: 650; }
 cosmaneura-capture .recording-state-detail { display: block; font-size: .9rem; font-weight: 400; margin-top: 4px; }
+cosmaneura-capture .meeting-window-required {
+  grid-column: 1 / -1;
+  background: #fff4d6;
+  border: 2px solid #946200;
+  border-radius: .75rem;
+  color: #4f3500;
+  padding: 1rem;
+}
+cosmaneura-capture .meeting-window-required strong { display: block; margin-bottom: .35rem; }
 cosmaneura-capture .recording-progress .recording-duration { display: grid; gap: 0.1rem; }
 cosmaneura-capture .recording-progress .recording-duration strong {
   color: #12372d;
