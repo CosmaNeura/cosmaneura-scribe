@@ -24,7 +24,9 @@ class HandoffWire(Wire):
         if request.url.path != PATH or data["action"] != "prepared_window":
             return await super().handle(request)
         self.calls.append((request.url.path, data, request.headers["idempotency-key"]))
-        assert request.headers["authorization"] == "Bearer invented-user-session-token"
+        assert request.headers["authorization"] == "Bearer " + getattr(
+            self, "expected_user_token", "invented-user-session-token"
+        )
         assert (
             request.headers["x-cosmaneura-workload-authorization"]
             == "Bearer invented-workload-token"
@@ -89,6 +91,89 @@ class Sequence:
             transport=httpx.MockTransport(self.wire.handle),
             handoff=self.pending,
         )
+
+
+async def test_verified_session_survives_token_refresh_without_reusing_access():
+    s = Sequence()
+    s.wire.account = replace(ACCOUNT, session_fingerprint=b"s" * 32)
+    # This wire's fresh() method uses its configured account. Every original
+    # current-account check still executes around each native mutation.
+    original = s.wire.fresh
+
+    async def current():
+        await original()
+        return s.wire.account
+
+    s.wire.fresh = current
+    await s.call(admission=True)
+    s.wire.account = replace(s.wire.account, user_token=SecretStr("refreshed-user-session-token"))
+    s.wire.expected_user_token = "refreshed-user-session-token"
+    s.wire.calls.clear()
+    s.wire.checks = 0
+    answer = await s.call()
+    assert answer["operation"] == "prepare_recording_window"
+    assert s.wire.checks == 6
+    assert len(s.wire.calls) == 1 and s.wire.calls[0][1]["action"] == "prepared_window"
+    assert not s.pending._pending
+
+
+@pytest.mark.parametrize(
+    "fault", ["session", "account", "actor", "tenant", "recovery", "missing_session"]
+)
+async def test_verified_session_keeps_all_other_handoff_boundaries(fault):
+    s = Sequence()
+    initial = replace(ACCOUNT, session_fingerprint=b"s" * 32)
+    from uuid import UUID
+
+    from cosmaneura_scribe.provider_core_transport import CoreProviderMount, CoreProviderSelection
+    from cosmaneura_scribe.provider_preparation_handoff import PreparedContext
+
+    selection = CoreProviderSelection(
+        initial.recovery_scope,
+        uuid4(),
+        UUID(s.workspace),
+        "appointment_01j00000000000000000000000",
+        initial.actor_ref,
+        initial.tenant_ref,
+    )
+    context = PreparedContext(
+        CoreProviderMount(selection, s.binding),
+        SecretStr("invented-context-token"),
+        "invented-interaction-123",
+        uuid4(),
+        s.now,
+        "admission",
+    )
+    s.pending.retain(s.origin, initial, s.revision, s.workspace, s.binding, context)
+    changes = {
+        "session": {"session_fingerprint": b"t" * 32},
+        "account": {"account_id": "another-account"},
+        "actor": {"actor_ref": "another-actor"},
+        "tenant": {"tenant_ref": "another-tenant"},
+        "recovery": {"recovery_scope": uuid4()},
+        "missing_session": {"session_fingerprint": None},
+    }
+    assert (
+        s.pending.take(
+            s.origin,
+            replace(initial, **changes[fault]),
+            s.revision,
+            s.workspace,
+            s.binding,
+            "admission",
+        )
+        is None
+    )
+    assert (
+        s.pending.take(s.origin, initial, s.revision, s.workspace, s.binding, "admission")
+        == context
+    )
+
+
+@pytest.mark.parametrize("value", [b"", b"x" * 31, b"x" * 33, "x" * 32, bytearray(b"x" * 32)])
+async def test_session_fingerprint_requires_fixed_digest_bytes(value):
+    with pytest.raises(ValueError, match="provider_session_fingerprint_invalid"):
+        replace(ACCOUNT, session_fingerprint=value)
 
 
 async def test_one_window_omits_setup_but_keeps_all_six_fresh_registry_checks():

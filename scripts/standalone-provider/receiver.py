@@ -10,6 +10,7 @@ synthetic identity mode, credential fallback, seeding, schema change or listener
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
@@ -558,12 +559,33 @@ class ProviderReceiver:
                 self.profile.environment_id,
                 f"{identity.box_id}:{identity.principal_id}:{account.id}",
             )
+            session_fingerprint = None
+            if self.profile.allows_provider_trace():
+                # A fresh JWT changes its iat/signature without changing the
+                # authenticated Clerk session. Derive this scope only from the
+                # existing actual verifier, after current account checks; never
+                # use unverified JWT decoding or a renderer-supplied session.
+                if not isinstance(self.verifier, ClerkTokenVerifier):
+                    raise AuthenticationFailed()
+                claims = self.verifier.verify(authorization[7:])
+                session_id = claims.get("sid")
+                if not isinstance(session_id, str) or not re.fullmatch(
+                    r"sess_[A-Za-z0-9_]{1,250}", session_id
+                ):
+                    raise AuthenticationFailed()
+                session_fingerprint = hashlib.sha256(
+                    json.dumps(
+                        [claims["iss"], claims["sub"], session_id],
+                        separators=(",", ":"),
+                    ).encode()
+                ).digest()
             return ProviderEncounterAccount(
                 str(account.id),
                 recovery,
                 account.core_actor_ref,
                 account.core_tenant_ref,
                 SecretStr(authorization[7:]),
+                session_fingerprint,
             )
 
     async def encounters(self, authorization, body, key):

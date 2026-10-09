@@ -32,6 +32,15 @@ class ProviderEncounterAccount:
     actor_ref: str
     tenant_ref: str
     user_token: SecretStr
+    # Server-only digest of the freshly verified issuer/subject/session. General
+    # receivers and older callers retain the exact-token match by leaving None.
+    session_fingerprint: bytes | None = None
+
+    def __post_init__(self) -> None:
+        if self.session_fingerprint is not None and (
+            type(self.session_fingerprint) is not bytes or len(self.session_fingerprint) != 32
+        ):
+            raise ValueError("provider_session_fingerprint_invalid")
 
 
 class ProviderEncounterTransport:
