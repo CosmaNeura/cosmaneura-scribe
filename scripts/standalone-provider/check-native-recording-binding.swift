@@ -405,7 +405,7 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     let receipt = NativeRecordingKeyReceipt(
       keyVersion: "synthetic-v1", wrappedDEK: String(repeating: "A", count: 512))
     var checks = 0
-    for fault in ["none", "expired", "revision", "account"] {
+    for fault in ["none", "expired", "revision", "account", "cancelled"] {
       var instant = ContinuousClock.now
       let (auth, driver, wire, connection, service) = try await make(modulus, combined: true, contextNow: { instant })
       let before = await wire.requests.count
@@ -415,7 +415,12 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
         _ = auth.state()
       }
       if fault == "account" { driver.identity = nil; _ = auth.state() }
-      if fault == "account" {
+      if fault == "cancelled" {
+        let pending = Task { try await service.publishedKey() }
+        pending.cancel()
+        try await CheckNativeProvider.rejected(pending)
+        try require(await wire.requests.count == before)
+      } else if fault == "account" {
         try await CheckNativeProvider.rejected(Task { try await service.publishedKey() })
         try require(await wire.requests.count == before)
       } else {

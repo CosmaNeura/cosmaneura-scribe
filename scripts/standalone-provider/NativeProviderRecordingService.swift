@@ -32,11 +32,13 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
   }
 
   func publishedKey() async throws -> NativeRecordingPublicKey {
+    try Task.checkCancellation()
     if let prepared = preparedPublicKey {
       preparedPublicKey = nil
       // Single-use native metadata only. Expiry or a new SDK revision requires
       // the original fresh key read; no source permission is cached here.
       if try connection.recordingPreparationKeyIsCurrent(context) {
+        try Task.checkCancellation()
         return try NativeRecordingPublicKey(
           version: prepared.version, modulusBase64URL: prepared.modulusBase64URL)
       }
