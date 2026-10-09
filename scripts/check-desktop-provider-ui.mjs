@@ -226,14 +226,24 @@ try {
   try {
     assert.equal(button("record-button").disabled, true);
     assert.equal(button("show-window-chooser"), null);
+    assert.match(root.querySelector(".recording-progress").textContent, /Choose your meeting window/u);
+    assert.doesNotMatch(root.querySelector(".recording-progress").textContent, /Ready to record/u);
+    assert.match(root.querySelector(".meeting-window-required").textContent, /enable Start recording/u);
+    assert.match(root.querySelector(".meeting-window-required").textContent, /Recording has not started/u);
+    button("record-button").click();
+    assert.deepEqual(inline.calls, ["read"], "An unselected meeting window cannot start capture");
     const choice = button("meeting-window");
     assert.equal(choice.value, ""); choice.value = windowId;
     choice.dispatchEvent(new window.Event("change", { bubbles: true }));
     await until(() => !button("record-button").disabled);
+    assert.match(root.querySelector(".recording-progress").textContent, /Ready to record/u);
+    assert.equal(root.querySelector(".meeting-window-required"), null);
     assert.equal(button("meeting-window").selectedOptions[0].textContent.trim(), "Zoom — Invented visit");
     assert.deepEqual(inline.calls, ["read", "meeting_window"]);
     button("refresh-meeting-windows").click(); await until(() => button("record-button").disabled && !button("meeting-window").disabled);
     assert.equal(button("meeting-window").value, "");
+    assert.match(root.querySelector(".recording-progress").textContent, /Choose your meeting window/u);
+    assert.match(root.querySelector(".meeting-window-required").textContent, /enable Start recording/u);
     button("meeting-window").value = windowId;
     button("meeting-window").dispatchEvent(new window.Event("change", { bubbles: true }));
     await until(() => !button("record-button").disabled);

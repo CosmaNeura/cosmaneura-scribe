@@ -1,6 +1,27 @@
 /* global window, document */
 import { expect, test } from "@playwright/test";
 
+test("inline meeting selection explains disabled Start and clears the instruction after selection", async ({ page }) => {
+  await page.goto("/e2e/fixtures/desktop-controls.html?inline-meeting");
+  const start = page.getByRole("button", { name: "Start recording", exact: true });
+  const progress = page.getByRole("region", { name: "Recording progress", exact: true });
+  const required = page.locator(".meeting-window-required");
+  await expect(start).toBeDisabled();
+  await expect(progress).toContainText("Choose your meeting window");
+  await expect(progress).not.toContainText("Ready to record");
+  await expect(required).toContainText("enable Start recording");
+  await page.getByTestId("meeting-window").selectOption({ label: "Zoom — Invented visit" });
+  await expect(start).toBeEnabled();
+  await expect(progress).toContainText("Ready to record");
+  await expect(required).toHaveCount(0);
+  expect(await page.evaluate(() => window.desktopControlsLab.commands)).toEqual(["meeting_window"]);
+  await page.getByRole("button", { name: "Refresh windows", exact: true }).click();
+  await expect(start).toBeDisabled();
+  await expect(required).toBeVisible();
+  await expect(progress).toContainText("Choose your meeting window");
+  await page.evaluate(() => window.desktopControlsLab.close());
+});
+
 test("interruption confirmation hides Resume until settled and keeps lost-reply recovery visible", async ({ page }) => {
   await page.setViewportSize({ width: 480, height: 332 });
   await page.goto("/e2e/fixtures/desktop-controls.html");

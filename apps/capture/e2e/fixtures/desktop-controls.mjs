@@ -8,12 +8,19 @@ import "../../src/provider/application.css";
 import scribeIcon from "../../public/icon.svg?raw";
 
 const sessionId = "40000000-0000-4000-8000-000000000004";
+const inlineMeeting = new URLSearchParams(window.location.search).has("inline-meeting");
+const meetingWindowId = "50000000-0000-4000-8000-000000000005";
 const abort = new AbortController(), listeners = new Set(), commands = [];
 let finishChoice;
 let snapshot = { sessionId, state: "ready", statusCode: "capture_ready", recordedChunks: 0,
   queuedChunks: 0, elapsedSeconds: 0, remainingBudgetSeconds: null, remainingAuthoritySeconds: 900,
   transcript: null, transcriptionStatus: null,
   desktop: { phase: "ready", coverage: "not_started", trimmedStartMs: 0, trimmedEndMs: null } };
+if (inlineMeeting) {
+  snapshot.desktop.audioMode = "meeting";
+  snapshot.desktop.meetingWindows = { state: "ready", selectedId: null,
+    windows: [{ id: meetingWindowId, title: "Zoom — Invented visit" }] };
+}
 const emit = (fields, desktop = {}) => {
   snapshot = { ...snapshot, ...fields, desktop: { ...snapshot.desktop, ...desktop } };
   for (const listener of listeners) listener(structuredClone(snapshot));
@@ -39,6 +46,15 @@ const controller = {
     emit({ state: "paused", statusCode: "capture_start_unconfirmed" }, { phase: "stop_unconfirmed" });
   },
   async showWindowChooser() { commands.push("show_chooser"); },
+  async selectMeetingWindow(id) {
+    if (id !== meetingWindowId) forbidden();
+    commands.push("meeting_window");
+    emit({}, { meetingWindows: { ...snapshot.desktop.meetingWindows, selectedId: id } });
+  },
+  async refreshMeetingWindows() {
+    commands.push("meeting_windows");
+    emit({}, { meetingWindows: { ...snapshot.desktop.meetingWindows, selectedId: null } });
+  },
   refreshTranscriptionStatus: forbidden,
 };
 const app = document.createElement("cosmaneura-capture");
