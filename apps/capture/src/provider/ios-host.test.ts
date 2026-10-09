@@ -105,6 +105,13 @@ const preparation = { mode: "configured_core" as const, schemaVersion: 2 as cons
   leaseIdempotencyKey: null, leaseRequest: null };
 
 describe("native provider host composition", () => {
+  it.each([undefined, true])("retains only the mount's trusted acquisition-review capability %s", async capability => {
+    const service = connection(capability ? { recorderRechecksReview: true } : {});
+    const encounter = await service.openAny();
+    expect(encounter.recorderRechecksReview).toBe(capability);
+    expect(service.mount.reauthorizeRecorder).not.toHaveBeenCalled();
+    service.abort.abort();
+  });
   it("gets native volume capacity and rejects a result after encounter revocation", async () => {
     const service = connection(), resources = await (await service.open()).recorder(session, service.abort.signal);
     try {

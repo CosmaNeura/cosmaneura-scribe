@@ -39,9 +39,10 @@ for (const platform of ["desktop", "ios"]) {
   const scope = { workspaceId: "20000000-0000-4000-8000-000000000002", appointmentRef: "appointment_01j00000000000000000000000",
     bindingRef: "scribe_capture_binding_01j00000000000000000000000" };
   const encounter = { appointmentRef: scope.appointmentRef, title: "Invented recording entry", detail: "Synthetic all-party consent only" };
-  for (const mode of ["fresh", "in-person", "options", "recovered", "revoked", "permission", "journal-failure"]) {
+  for (const mode of ["fresh", "in-person", "options", "recovered", "revoked", "permission", "journal-failure", "native-recheck", "native-recheck-denied"]) {
     const abort = new window.AbortController(), gate = deferred(), acquisition = deferred(), listeners = new Set();
-    let starts = 0, closes = 0, admissions = 0, acquiring = false;
+    let starts = 0, closes = 0, admissions = 0, reviews = 0, acquiring = false;
+    const rechecksReview = mode.startsWith("native-recheck");
     const admission = { key: webcrypto.randomUUID(), languageMode: "en-US", attestation: { modality: "virtual", participant_regions: [],
       method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } };
     let saved = mode === "recovered" ? { revision: "1", progress: { admission, sessionId, uploaded: false, pendingSave: null } } : { revision: null, progress: null };
@@ -64,6 +65,7 @@ for (const platform of ["desktop", "ios"]) {
     };
     const dispose = module.namespace.mountProviderWorkspace(root, { signal: abort.signal, listEncounters: async () => [encounter], createEncounter: forbidden,
       openEncounter: async () => ({ encounter, scope, signal: abort.signal,
+        ...(rechecksReview ? { recorderRechecksReview: true } : {}),
         journal: { load: async () => saved, save: async (_prior, progress) => {
           if (mode === "journal-failure") throw new Error("Invented private storage unavailable");
           saved = { revision: String(Number(saved.revision ?? 0) + 1), progress }; return saved;
@@ -79,12 +81,14 @@ for (const platform of ["desktop", "ios"]) {
               consent_record_id: sessionId, session_id: sessionId });
           }
           assert.ok(["provider_encounter", "creator_review"].includes(body.operation.kind));
+          if (body.operation.kind === "creator_review") reviews++;
           return Response.json({ ...base, operation: body.operation.kind, receipt: body.operation.kind === "provider_encounter"
             ? { schema_version: "1.0", status: "not_prepared", review: null }
             : { schema_version: "1.0", session_id: sessionId, status: "created", source: null, working: null, review_queue: null } });
         },
         recorder: async () => {
           acquiring = true; if (mode === "revoked") await acquisition.promise;
+          if (mode === "native-recheck-denied") throw new Error("Invented native current-status denial");
           return { controller, sourceKind: "microphone", ...(platform === "desktop" ? { captureMode: "desktop_meeting" } : {}),
             deactivate: async () => { closes++; }, resumePendingWork: forbidden, releaseUploadedCapture: forbidden };
         },
@@ -135,6 +139,12 @@ for (const platform of ["desktop", "ios"]) {
         assert.equal(admissions, 0); assert.equal(saved.progress, null); checks++; continue;
       }
       await until(() => acquiring);
+      assert.equal(reviews, rechecksReview ? 0 : 1);
+      if (mode === "native-recheck-denied") {
+        await until(() => root.getAttribute("aria-busy") !== "true");
+        assert.equal(starts, 0); assert.equal(admissions, 1);
+        assert.equal(root.querySelector('[data-testid="record-button"]'), null); checks++; continue;
+      }
       if (mode === "revoked") {
         abort.abort(); acquisition.resolve(); await until(() => closes > 0);
         assert.equal(starts, 0); assert.equal(root.textContent.includes(encounter.title), false); checks++; continue;
@@ -183,6 +193,7 @@ for (const platform of ["desktop", "ios"]) {
       root.querySelector('[data-workspace-action="open"]').click();
       await until(() => root.querySelector('[data-testid="record-button"]'));
       assert.equal(starts, 1, "Reopening cannot replay the Start action"); checks++;
+      if (rechecksReview) assert.equal(reviews, 1, "Reopening retains its fresh status read");
     } finally { acquisition.resolve(); gate.resolve(); await dispose(); }
   }
   dom.window.close();
