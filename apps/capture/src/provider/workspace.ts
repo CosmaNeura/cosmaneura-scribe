@@ -62,7 +62,6 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const listedDraftRefs = new Set<string>();
   const hiddenVisits = new Set<string>();
   let listQuery = "", listFilter = "all";
-  let selectedCreationPatient: EncounterDraft["patient"] | null = null;
   let preferredDesktopAudio: "microphone" | "meeting" = "microphone";
   let preferredLanguage: LanguageMode = "en-US"; // This authorized workspace's lifetime only.
   let preferredModality: "in_person" | "virtual" | "phone" = "in_person";
@@ -321,6 +320,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     show('<h1>Creating your encounter…</h1><p>Saving to Core. Recording has not started.</p>');
     const created = await host.encounterSetup.submit(draft, host.signal);
     if (!current(n)) return;
+    if (draft) requireValue(draft.patient.kind === "existing"
+      ? created.patientRef === draft.patient.patientRef : created.patientName === draft.patient.name);
     setupState = null;
     await open(created.appointmentRef);
   };
@@ -348,7 +349,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (!newPatient?.reportValidity() || input("patient-query").trim() !== setupQuery) return;
       const name = input("new-patient-name").trim(), dateOfBirth = input("new-patient-dob") || null;
       if (!name) { notice.textContent = "Enter the patient's name."; return; }
-      selectedCreationPatient = { kind: "new", name, dateOfBirth }; confirmCreation(name);
+      void run(() => create({ kind: "new", name, dateOfBirth }), "create-visit");
     };
     const searchInput = search?.querySelector<HTMLInputElement>("input");
     const updateResults = (): void => {
@@ -357,9 +358,6 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     };
     search?.addEventListener("submit", onSearch); searchInput?.addEventListener("input", updateResults); newPatient?.addEventListener("submit", onNew);
     disposeContent = () => { search?.removeEventListener("submit", onSearch); searchInput?.removeEventListener("input", updateResults); newPatient?.removeEventListener("submit", onNew); };
-  };
-  const confirmCreation = (name: string): void => {
-    show(`<section class="provider-setup"><h1>Start a visit for ${escape(name)}</h1><p>This will create a visit in the patient chart. ${isIOS ? "Recording starts after you confirm consent on the next screen." : "Confirm consent next, then choose Start in the recording controls."}</p><button data-workspace-action="confirm-create">Create visit &amp; continue</button><button data-workspace-action="patient-results">Back</button><button data-workspace-action="encounters">Cancel</button></section>`);
   };
   const renderPatientDetails = (encounter: AuthorizedProviderEncounter["encounter"]): void => {
     patientDetail.replaceChildren();
@@ -416,16 +414,16 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       <label>Spoken language<select name="language"><option value="en-US"${preferredLanguage === "en-US" ? " selected" : ""}>English</option><option value="en-US+es-US"${preferredLanguage === "en-US+es-US" ? " selected" : ""}>English and Spanish</option></select></label>
       </div>
       <p class="provider-start-help" data-recording-guidance role="status"></p>
-      <details class="provider-recording-options"${isIOS ? "" : " open"}><summary>Audio source<small data-recording-summary></small></summary>
+      <details class="provider-recording-options"${!isIOS && preferredDesktopAudio === "meeting" ? " open" : ""}><summary>Audio source<small data-recording-summary></small></summary>
       ${isIOS ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
       ${isIOS ? "" : `<label>Record audio from<select name="desktop-audio"><option value="microphone"${preferredDesktopAudio === "microphone" ? " selected" : ""}>Microphone only · room or speakerphone</option><option value="meeting"${preferredDesktopAudio === "meeting" ? " selected" : ""}>Microphone + Zoom or Chrome audio</option></select></label><p>Microphone only captures voices audible to this Mac. Application audio also captures the selected app; Chrome can include other tabs and windows.</p>`}
       </details>
-      <button data-workspace-action="prepare" aria-describedby="provider-start-consent">${isIOS ? "Confirm consent &amp; record" : "Confirm consent &amp; continue"}</button>
+      <button data-workspace-action="prepare" aria-describedby="provider-start-consent">${isIOS ? "Confirm consent &amp; record" : "Confirm consent &amp; prepare recording"}</button>
       <p class="provider-consent-explanation" id="provider-start-consent">Everyone has agreed to recording and transcription.${isIOS ? "" : " You’ll choose Start when the recording is ready."}</p>
       </section>`);
     const options = content.querySelector<HTMLDetailsElement>(".provider-recording-options")!;
     const summarize = (): void => {
-      content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!.textContent = isIOS ? "Confirm consent & record" : "Confirm consent & continue";
+      content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!.textContent = isIOS ? "Confirm consent & record" : "Confirm consent & prepare recording";
       options.querySelector<HTMLElement>("[data-recording-summary]")!.textContent = isIOS
         ? content.querySelector<HTMLSelectElement>('[name="microphone"]')!.selectedOptions[0]!.textContent
         : input("desktop-audio") === "microphone" ? "Microphone only" : "Microphone + application audio";
@@ -439,6 +437,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (!isIOS && (event.target as HTMLElement).getAttribute("name") === "modality") {
         const mode = content.querySelector<HTMLSelectElement>('[name="desktop-audio"]')!;
         mode.value = input("modality") === "virtual" ? "meeting" : "microphone";
+        options.open = mode.value === "meeting";
       }
       summarize();
     };
@@ -1061,8 +1060,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "new-encounter": await setup(); break;
         case "add-dob": addDateOfBirth(); break;
         case "new-patient": showSetup(setupQuery, true); break;
-        case "patient-results": selectedCreationPatient = null; showSetup(setupQuery); break;
-        case "confirm-create": { requireValue(selectedCreationPatient); const patient = selectedCreationPatient; selectedCreationPatient = null; await create(patient); break; }
+        case "patient-results": showSetup(setupQuery); break;
         case "hide-visit": {
           const ref = button.dataset.appointment; requireValue(ref && reference(ref, "appointment"));
           const hidden = !hiddenVisits.has(ref);
@@ -1075,7 +1073,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "select-patient": {
           requireValue(setupState && !setupState.pending);
           const patient = setupState.patients.find(p => p.patientRef === button.dataset.patient);
-          requireValue(patient); selectedCreationPatient = { kind: "existing", patientRef: patient.patientRef }; confirmCreation(patient.name); break;
+          requireValue(patient);
+          if (button.disabled || button !== content.querySelector<HTMLButtonElement>(`[data-workspace-action="select-patient"][data-patient="${patient.patientRef}"]`)) return;
+          await create({ kind: "existing", patientRef: patient.patientRef }); break;
         }
         case "open": await open(button.dataset.appointment!); break;
         case "open-draft": {

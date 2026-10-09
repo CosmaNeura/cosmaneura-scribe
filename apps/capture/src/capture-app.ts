@@ -123,7 +123,15 @@ export class CaptureApp extends LitElement {
     return this;
   }
 
+  readonly #onWindowResize = (): void => { this.requestUpdate(); };
+
+  public override connectedCallback(): void {
+    super.connectedCallback();
+    window.addEventListener("resize", this.#onWindowResize);
+  }
+
   public override disconnectedCallback(): void {
+    window.removeEventListener("resize", this.#onWindowResize);
     this.#clearStartupProgress();
     if (this.#provider) this.#closeProvider();
     this.#unsubscribe?.();
@@ -347,7 +355,10 @@ export class CaptureApp extends LitElement {
             ${desktopProvider && this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows
               && !this.#isStarting() && ["preparing", "ready", "permission_required", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase)
               ? html`<div class="meeting-window-selection">
-                <label>Meeting window<select data-testid="meeting-window"
+                ${this.#meetingWindowRequired() ? html`<p class="meeting-window-required" role="status">
+                  <strong>Choose your meeting window below to enable Start recording.</strong>
+                  Recording has not started. Select the Zoom or Chrome window for this visit.</p>` : ""}
+                <label>Meeting window<select data-testid="meeting-window" aria-describedby="meeting-window-help"
                   ?disabled=${this.#busy || this.#stopping || this.#snapshot.desktop.phase === "preparing"} @change=${this.#changeMeetingWindow}>
                   <option value="" ?selected=${this.#snapshot.desktop.meetingWindows.selectedId === null}>Choose the window for this visit</option>
                   ${this.#snapshot.desktop.meetingWindows.windows.map(row => html`<option value=${row.id}
@@ -355,7 +366,7 @@ export class CaptureApp extends LitElement {
                 </select></label>
                 <button class="secondary" data-testid="refresh-meeting-windows" ?disabled=${this.#busy || this.#stopping || this.#snapshot.desktop.phase === "preparing"}
                   @click=${this.#refreshMeetingWindows}>Refresh windows</button>
-                <small>${this.#snapshot.desktop.phase === "preparing" ? "Your meeting windows will appear when preparation finishes."
+                <small id="meeting-window-help">${this.#snapshot.desktop.phase === "preparing" ? "Your meeting windows will appear when preparation finishes."
                   : this.#snapshot.desktop.meetingWindows.state === "unavailable"
                   ? "Windows could not be loaded. Check recording access, then refresh."
                   : this.#snapshot.desktop.meetingWindows.windows.length === 0
@@ -515,7 +526,14 @@ export class CaptureApp extends LitElement {
   }
 
   #isDesktopCompact(): boolean {
-    return false; // Window geometry stays under the provider’s control.
+    // Adapt content to the provider's chosen height; never resize their window.
+    return window.innerHeight <= 420;
+  }
+
+  #meetingWindowRequired(): boolean {
+    const desktop = this.#snapshot.desktop;
+    return desktop?.audioMode === "meeting" && desktop.phase === "ready"
+      && desktop.meetingWindows !== undefined && desktop.meetingWindows.selectedId === null;
   }
 
   #isCancelledEmptyStart(): boolean {
@@ -611,6 +629,7 @@ export class CaptureApp extends LitElement {
               : this.#snapshot.statusCode === "audio_capture_native_stop_failed"
                 ? "Recording may still be active. Choose Retry finish recording to confirm it has stopped."
               : this.#snapshot.state === "paused" ? "Recording interrupted. Confirm stop before uploading."
+              : this.#meetingWindowRequired() ? "Choose your meeting window"
               : "Ready to record"}</p>
             ${this.#isStarting() && !this.#stopping ? html`<p data-testid="startup-progress" aria-live="off">
               ${this.#snapshot.statusCode === "capture_window_selection_pending" ? "Waiting for window selection" : "Connecting"}

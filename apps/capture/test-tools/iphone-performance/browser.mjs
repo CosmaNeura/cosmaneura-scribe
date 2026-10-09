@@ -77,7 +77,7 @@ try {
             const unused = () => { throw Error('Unrequested service/audio operation'); };
             const marks = {}, RPC = [];
             const mark = name => marks[name] = now();
-            const button = (label, scope = root) => [...(scope?.querySelectorAll('button') ?? [])].find(b => (b.getAttribute('aria-label') === label || b.textContent.trim() === ({ 'Pause': 'Pause recording', 'Resume': 'Resume recording' }[label] ?? label)));
+            const button = (label, scope = root) => [...(scope?.querySelectorAll('button') ?? [])].find(b => !b.hidden && (b.getAttribute('aria-label') === label || b.textContent.trim() === label));
             let completedAt, outcome;
             if (cfg.type === 'startup') {
                 const dispose = L.mountProviderStartup(root, { configuration: async () => {
@@ -156,11 +156,11 @@ try {
                 mark('catalogReady');
                 if (cfg.retained) {
                     mark('newEncounterClick');
-                    button('New encounter').click();
-                    await wait(() => button('Check and open encounter'));
+                    button('New visit').click();
+                    await wait(() => button('Check and open visit'));
                     await frame();
                     mark('retainedReady');
-                    button('Check and open encounter').click();
+                    button('Check and open visit').click();
                     mark('retryClick');
                 }
                 else {
@@ -254,7 +254,7 @@ try {
                     await delay(250);
                     mark('cancelClick');
                     button('Cancel start', shadow()).click();
-                    await wait(() => button('Resume', shadow()) && !button('Resume', shadow()).disabled);
+                    await wait(() => button('Start recording', shadow()) && !button('Start recording', shadow()).disabled);
                     await frame();
                     mark('cancelSettled');
                     outcome = 'cancelled-ready';

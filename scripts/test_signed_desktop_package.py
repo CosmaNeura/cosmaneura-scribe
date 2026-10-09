@@ -17,8 +17,14 @@ def signature(
     pretty: bool = False,
     duplicate: bool = False,
     der: bool = True,
+    adhoc: bool = False,
+    cms: bool = True,
 ) -> bytes:
-    entries: list[tuple[int, bytes]] = []
+    entries: list[tuple[int, bytes]] = [
+        (0, struct.pack(">4I", 0xFADE0C02, 16, 0x20400, 2 if adhoc else 0))
+    ]
+    if cms:
+        entries.append((0x10000, struct.pack(">II", 0xFADE0B01, 9) + b"x"))
     if claims is not None:
         value = b"[Dict]\n\t[Key] keychain-access-groups\n" if pretty else plistlib.dumps(claims)
         entries.append((5, struct.pack(">II", 0xFADE7171, len(value) + 8) + value))
@@ -44,6 +50,14 @@ class SignedDesktopPackageTests(unittest.TestCase):
     def test_dropped_claims_cannot_pass_as_empty(self) -> None:
         with self.assertRaises(ValueError):
             provider_claims(signature())
+
+    def test_adhoc_or_missing_cms_signature_is_refused(self) -> None:
+        for data in (
+            signature(PROVIDER_CLAIMS, adhoc=True),
+            signature(PROVIDER_CLAIMS, cms=False),
+        ):
+            with self.subTest(size=len(data)), self.assertRaises(ValueError):
+                provider_claims(data)
 
     def test_pretty_codesign_output_is_not_a_plist(self) -> None:
         with self.assertRaises(ValueError):

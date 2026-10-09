@@ -1,6 +1,31 @@
 /* global window, document */
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  page.on("pageerror", error => { throw error; });
+});
+
+test("inline meeting selection explains disabled Start and clears the instruction after selection", async ({ page }) => {
+  await page.goto("/e2e/fixtures/desktop-controls.html?inline-meeting");
+  const start = page.getByRole("button", { name: "Start recording", exact: true });
+  const progress = page.getByRole("region", { name: "Recording progress", exact: true });
+  const required = page.locator(".meeting-window-required");
+  await expect(start).toBeDisabled();
+  await expect(progress).toContainText("Choose your meeting window");
+  await expect(progress).not.toContainText("Ready to record");
+  await expect(required).toContainText("enable Start recording");
+  await page.getByTestId("meeting-window").selectOption({ label: "Zoom — Invented visit" });
+  await expect(start).toBeEnabled();
+  await expect(progress).toContainText("Ready to record");
+  await expect(required).toHaveCount(0);
+  expect(await page.evaluate(() => window.desktopControlsLab.commands)).toEqual(["meeting_window"]);
+  await page.getByRole("button", { name: "Refresh windows", exact: true }).click();
+  await expect(start).toBeDisabled();
+  await expect(required).toBeVisible();
+  await expect(progress).toContainText("Choose your meeting window");
+  await page.evaluate(() => window.desktopControlsLab.close());
+});
+
 test("interruption confirmation hides Resume until settled and keeps lost-reply recovery visible", async ({ page }) => {
   await page.setViewportSize({ width: 480, height: 332 });
   await page.goto("/e2e/fixtures/desktop-controls.html");
@@ -51,21 +76,22 @@ for (const width of [1280, 640, 480]) {
     const stop = controls.getByRole("button", { name: "Finish recording", exact: true });
     await expect(pause).toBeEnabled();
     await expect(controls.getByRole("meter", { name: "Microphone", exact: true })).toHaveAttribute("value", "70");
-    await expect(controls.getByRole("meter", { name: "Meeting audio", exact: true })).toHaveAttribute("value", "80");
+    await expect(controls.getByRole("meter", { name: "Application audio", exact: true })).toHaveAttribute("value", "80");
     await expect(pause).toBeInViewport();
     await expect(stop).toBeInViewport();
     await expect(controls.getByRole("region", { name: "Recording progress" })).toHaveCount(1);
     await expect(start).toBeHidden();
     await page.screenshot({ path: testInfo.outputPath("recording.png") });
     await pause.click();
-    await expect(controls.getByRole("status")).toHaveText("PausedNo audio is being recorded.");
+    await expect(controls.getByRole("status")).toContainText(width === 480
+      ? "No audio is being recorded." : "Recording is paused.");
     await expect(pause).toHaveCount(0);
     const resume = controls.getByRole("button", { name: "Resume", exact: true });
     await expect(resume).toBeEnabled();
     await expect(resume).toBeInViewport();
     await expect(stop).toBeEnabled();
     await expect(stop).toBeInViewport();
-    await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeHidden();
+    await expect(page.getByRole("button", { name: "Sign out", exact: true, includeHidden: true })).toBeDisabled();
     if (width === 480) {
       expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(332);
       await expect(controls.locator(".recording-source-help")).toBeInViewport();
@@ -79,11 +105,11 @@ for (const width of [1280, 640, 480]) {
     await expect(page.getByText("Recording coverage is incomplete.", { exact: false })).toBeVisible();
     await stop.click();
 
-    await expect(controls).toContainText("Recording stop is unconfirmed.");
+    await expect(controls).toContainText("Recording may still be active.");
     await expect(controls.getByRole("button", { name: "Retry finish recording", exact: true })).toBeEnabled();
     await expect(resume).toHaveCount(0);
     await expect(start).toBeHidden();
-    await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeHidden();
+    await expect(page.getByRole("button", { name: "Sign out", exact: true, includeHidden: true })).toBeDisabled();
     await expect(controls.getByRole("button", { name: "Retry finish recording", exact: true })).toBeInViewport();
     expect(await page.evaluate(() => window.desktopControlsLab.commands))
       .toEqual(width === 1280 ? ["start", "show_chooser", "pause", "resume", "stop"] : ["start", "show_chooser", "pause", "stop"]);
@@ -97,7 +123,7 @@ test("desktop meters expire stale IPC and never invent activity for silence or a
   await page.getByRole("button", { name: "Start recording", exact: true }).click();
   await page.evaluate(() => window.desktopControlsLab.choose());
   const mic = page.getByRole("meter", { name: "Microphone", exact: true });
-  const meeting = page.getByRole("meter", { name: "Meeting audio", exact: true });
+  const meeting = page.getByRole("meter", { name: "Application audio", exact: true });
   await expect(mic).toHaveAttribute("value", "70");
   await expect(mic).toHaveAttribute("value", "0", { timeout: 2500 });
   await expect(meeting).toHaveAttribute("value", "0");

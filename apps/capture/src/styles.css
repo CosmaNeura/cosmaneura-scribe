@@ -140,6 +140,15 @@ cosmaneura-capture .recording-progress { display: grid; gap: 0.75rem; }
 cosmaneura-capture .recording-progress > p { margin: 0; }
 cosmaneura-capture .recording-progress > [role="status"] { color: #12372d; font-size: 1.15rem; font-weight: 650; }
 cosmaneura-capture .recording-state-detail { display: block; font-size: .9rem; font-weight: 400; margin-top: 4px; }
+cosmaneura-capture .meeting-window-required {
+  grid-column: 1 / -1;
+  background: #fff4d6;
+  border: 2px solid #946200;
+  border-radius: .75rem;
+  color: #4f3500;
+  padding: 1rem;
+}
+cosmaneura-capture .meeting-window-required strong { display: block; margin-bottom: .35rem; }
 cosmaneura-capture .recording-progress .recording-duration { display: grid; gap: 0.1rem; }
 cosmaneura-capture .recording-progress .recording-duration strong {
   color: #12372d;
@@ -177,3 +186,6 @@ cosmaneura-capture [data-testid="stop-button"] { background: #a52026; color: whi
 cosmaneura-capture .provider-desktop-compact .recording-patient { gap: 2px; }
 cosmaneura-capture .provider-desktop-compact .recording-patient strong { font-size: 16px; }
 cosmaneura-capture .provider-desktop-compact .recording-patient span { font-size: 12px; }
+cosmaneura-capture .shell.provider-desktop-compact { padding-block: 8px; }
+cosmaneura-capture .provider-desktop-compact main { gap: 8px; }
+cosmaneura-capture .provider-desktop-compact scribe-desktop-input-meter { order: 1; }

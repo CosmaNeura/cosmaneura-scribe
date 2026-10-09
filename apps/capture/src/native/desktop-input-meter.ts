@@ -24,7 +24,11 @@ export class DesktopInputMeter extends LitElement {
     p { margin: 6px 0 0; line-height: 1.4; }
   `;
   static override properties = { microphoneOnly: { type: Boolean } };
-  microphoneOnly = false;
+  declare microphoneOnly: boolean;
+  constructor() {
+    super();
+    this.microphoneOnly = false;
+  }
   #signal: DesktopInputFeedback | undefined;
   #receivedAt = -Infinity;
   #timer: ReturnType<typeof setInterval> | undefined;
