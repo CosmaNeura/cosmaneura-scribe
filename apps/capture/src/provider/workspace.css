@@ -168,6 +168,7 @@
   .provider-save-recovery button { max-width: 136px; padding: 8px 10px; font-size: .85rem; }
 }
 .provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-header { display: none; }
+.provider-workspace cosmaneura-capture .shell.provider-desktop-compact { padding-block: 8px; }
 
 /* Keep source choice and Start visible together in the normal desktop window. */
 .provider-workspace:has(.provider-desktop-capture) .provider-header [data-provider-encounter] { display: none; }
@@ -232,3 +233,4 @@
 .provider-workspace button[data-workspace-action="finish-note"] { color: white; background: #17352f; }
 @media (min-width: 900px) { .provider-note-evidence { position: sticky; top: calc(var(--provider-header-height, 76px) + 86px); height: min(70dvh, 680px); } }
 @media (max-width: 600px) { .provider-list-filters { grid-template-columns: 1fr; gap: 0; } }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recorder { padding: 0; }

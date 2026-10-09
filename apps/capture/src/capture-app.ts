@@ -123,7 +123,15 @@ export class CaptureApp extends LitElement {
     return this;
   }
 
+  readonly #onWindowResize = (): void => { this.requestUpdate(); };
+
+  public override connectedCallback(): void {
+    super.connectedCallback();
+    window.addEventListener("resize", this.#onWindowResize);
+  }
+
   public override disconnectedCallback(): void {
+    window.removeEventListener("resize", this.#onWindowResize);
     this.#clearStartupProgress();
     if (this.#provider) this.#closeProvider();
     this.#unsubscribe?.();
@@ -518,7 +526,8 @@ export class CaptureApp extends LitElement {
   }
 
   #isDesktopCompact(): boolean {
-    return false; // Window geometry stays under the provider’s control.
+    // Adapt content to the provider's chosen height; never resize their window.
+    return window.innerHeight <= 420;
   }
 
   #meetingWindowRequired(): boolean {

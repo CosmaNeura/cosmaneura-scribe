@@ -186,3 +186,6 @@ cosmaneura-capture [data-testid="stop-button"] { background: #a52026; color: whi
 cosmaneura-capture .provider-desktop-compact .recording-patient { gap: 2px; }
 cosmaneura-capture .provider-desktop-compact .recording-patient strong { font-size: 16px; }
 cosmaneura-capture .provider-desktop-compact .recording-patient span { font-size: 12px; }
+cosmaneura-capture .shell.provider-desktop-compact { padding-block: 8px; }
+cosmaneura-capture .provider-desktop-compact main { gap: 8px; }
+cosmaneura-capture .provider-desktop-compact scribe-desktop-input-meter { order: 1; }
