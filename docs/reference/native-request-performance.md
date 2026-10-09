@@ -62,6 +62,33 @@ tap-to-visible-review or tap-to-live-microphone interval. Do not weaken fresh
 authorization or infer a 50% UX improvement from these narrower measurements.
 If receiver time dominates, measure the server phases before changing them.
 
+Fresh Clerk token retrieval also emits a `provider_token` event in category
+`token`. This invocation-local observer contains only bounded total and HTTP
+milliseconds, request/response counts, retryable-response count, pending-request
+count and completion. Middleware increments numeric counters without retaining
+the request, response, headers, body, URL, credential or exception. It does not
+change `skipCache: true`, SDK retry behavior, account checks or token policy.
+
+HTTP time covers the union of outgoing SDK request intervals until their
+responses, including requests made by child tasks in that token invocation.
+It excludes response processing and backoff between completed HTTP attempts.
+A network failure has no response callback: its pending interval remains open
+until the token call ends, so that HTTP duration may also include later backoff.
+Pending requests make this limitation visible. Counts do not identify endpoint
+paths or prove that every SDK request was a token-mint request. Detached SDK
+tasks have no invocation observer. Closing freezes the numeric ledger; late
+responses are ignored. Total minus HTTP therefore is not a universal measure
+of SDK CPU time. No DNS/TLS breakdown or remote credential telemetry is added.
+
+Run `python scripts/check-native-transport.py --output /absolute/new/directory`
+for the offline token timing, native auth and transport regressions. Compile
+the actual helper with the exact retained Clerk dependency to verify middleware
+compatibility separately; the offline numeric tests alone do not prove runtime
+task inheritance in that SDK. Use a short approved synthetic preparation and
+filter only category `token` to compare actual request counts with the existing
+native token totals. Timing cannot establish successful recording or replace
+visible consent-to-Ready measurement.
+
 The standalone receiver also emits cumulative request phase durations through
 Scribe's existing safe event logger. Labels have the form
 `provider.<fixed-phase>`, followed by `provider.<fixed-action>.total` in the same
