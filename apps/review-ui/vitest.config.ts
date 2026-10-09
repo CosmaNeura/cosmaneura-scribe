@@ -7,5 +7,11 @@ export default defineConfig({
     include: ["src/**/*.test.ts"],
     passWithNoTests: false,
     restoreMocks: true,
+    coverage: {
+      include: ["src/**/*.ts"],
+      exclude: ["src/**/*.test.ts"],
+      reporter: ["text-summary"],
+      thresholds: { statements: 54, branches: 54, functions: 76, lines: 57 },
+    },
   },
 });

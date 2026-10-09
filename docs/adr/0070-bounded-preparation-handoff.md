@@ -1,4 +1,4 @@
-# Decision: reuse credentials, authorize each operation afresh
+# ADR 0070: reuse credentials, authorize each operation afresh
 
 Accepted for the existing personal staging cohort. Issuing a new mount context
 for each adjacent preparation step repeats synchronous policy/interaction setup.

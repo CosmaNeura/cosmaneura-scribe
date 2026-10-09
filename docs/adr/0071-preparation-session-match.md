@@ -1,4 +1,4 @@
-# Match opaque preparation to a verified session across token refresh
+# ADR 0071: match opaque preparation to a verified session across token refresh
 
 The native driver deliberately obtains a fresh Clerk JWT for each request. A full
 token digest consequently cannot identify a stable authenticated session. Use a

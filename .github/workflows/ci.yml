@@ -83,7 +83,10 @@ jobs:
       - run: npm run test:golden
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:tooling
+      - run: npm run test:tools --workspace @cosmaneura-scribe/capture
+      - run: npm test --workspace @cosmaneura-scribe/capacitor-secure-queue
+      - run: npm run test:coverage
       - run: npm run build
       - run: npm run build:capture-preview-api
       - name: Select the supported preview Function runtime

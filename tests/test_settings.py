@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from cosmaneura_scribe.captured_worker_settings import CapturedWorkerSettings
 from cosmaneura_scribe.settings import Settings
 from pydantic import ValidationError
+from test_captured_worker_job_runner import _settings as _captured_worker_settings
 
 
 def test_azure_storage_requires_an_account_url() -> None:
@@ -376,3 +379,23 @@ def test_worker_capacity_matches_protocol_ceiling() -> None:
     assert Settings().audio_assembly_max_plaintext_bytes == 402_653_184
     with pytest.raises(ValidationError):
         Settings(audio_assembly_max_plaintext_bytes=402_653_185)
+
+
+@pytest.mark.parametrize("stage", ["speech", "translation"])
+def test_worker_settings_are_false_default_and_stage_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stage: str
+) -> None:
+    for name in list(os.environ):
+        if name.startswith("COSMANEURA_SCRIBE_"):
+            monkeypatch.delenv(name)
+    defaults = CapturedWorkerSettings()
+    assert defaults.captured_worker_enabled is False
+    assert defaults.captured_worker_stage is None
+
+    settings = _captured_worker_settings(tmp_path, stage=stage)
+    assert settings.captured_worker_stage == stage
+
+    invalid = settings.model_dump()
+    invalid["database_user"] = "wrong-principal"
+    with pytest.raises(ValueError, match="captured_worker_bindings_invalid"):
+        CapturedWorkerSettings(**invalid)
