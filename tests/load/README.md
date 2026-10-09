@@ -66,3 +66,10 @@ machine profile.
 The soak profile is deliberately not a PR gate. It is an operator-run endurance
 test whose evidence should include memory/CPU/database observations alongside
 the Locust results.
+
+For full-suite coverage, propagate the branch setting and repository configuration
+to the harness's child processes:
+
+```sh
+uv run pytest --cov=cosmaneura_scribe --cov-branch --cov-config=pyproject.toml
+```
