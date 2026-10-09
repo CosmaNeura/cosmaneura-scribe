@@ -216,13 +216,16 @@ struct NativeProviderRecordingContext: Equatable, Sendable {
     let preparedPublicKey: NativeProviderRecordingPublicKey?
     let preparedRevision: String
     let preparedKeyExpires: ContinuousClock.Instant
+    fileprivate let preparedGeneration: UUID
     fileprivate init(bindingRef: String, workspaceID: UUID, tenantID: UUID, sessionID: UUID, accountDigest: String, checkedAt: Date,
-                     preparedPublicKey: NativeProviderRecordingPublicKey?, preparedRevision: String, preparedKeyExpires: ContinuousClock.Instant) {
+                     preparedPublicKey: NativeProviderRecordingPublicKey?, preparedRevision: String, preparedKeyExpires: ContinuousClock.Instant,
+                     preparedGeneration: UUID) {
         self.bindingRef = bindingRef
         self.workspaceID = workspaceID; self.tenantID = tenantID
         self.sessionID = sessionID; self.accountDigest = accountDigest; self.checkedAt = checkedAt
         self.preparedPublicKey = preparedPublicKey; self.preparedRevision = preparedRevision
         self.preparedKeyExpires = preparedKeyExpires
+        self.preparedGeneration = preparedGeneration
     }
 }
 
@@ -398,12 +401,14 @@ protocol ProviderNativeWire: Sendable {
         return NativeProviderRecordingContext(bindingRef: bindingRef, workspaceID: workspaceID, tenantID: tenantID,
             sessionID: sessionID, accountDigest: account, checkedAt: checkedAt,
             preparedPublicKey: publicKey, preparedRevision: revision,
-            preparedKeyExpires: contextNow().advanced(by: .seconds(max(0, min(5, 30 - Date().timeIntervalSince(checkedAt))))))
+            preparedKeyExpires: contextNow().advanced(by: .seconds(max(0, min(5, 30 - Date().timeIntervalSince(checkedAt))))),
+            preparedGeneration: recordingGeneration)
     }
 
     func recordingPreparationKeyIsCurrent(_ context: NativeProviderRecordingContext) throws -> Bool {
         let revision = try recordingRevision(accountDigest: context.accountDigest)
-        return revision == context.preparedRevision && contextNow() < context.preparedKeyExpires
+        return revision == context.preparedRevision && recordingGeneration == context.preparedGeneration
+            && contextNow() < context.preparedKeyExpires
     }
 
     /// Reuse the same fresh Core check before renderer custody inspection and

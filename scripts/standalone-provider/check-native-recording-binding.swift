@@ -405,7 +405,7 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     let receipt = NativeRecordingKeyReceipt(
       keyVersion: "synthetic-v1", wrappedDEK: String(repeating: "A", count: 512))
     var checks = 0
-    for fault in ["none", "expired", "revision", "account", "cancelled"] {
+    for fault in ["none", "expired", "revision", "account", "cancelled", "remount"] {
       var instant = ContinuousClock.now
       let (auth, driver, wire, connection, service) = try await make(modulus, combined: true, contextNow: { instant })
       let before = await wire.requests.count
@@ -415,6 +415,10 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
         _ = auth.state()
       }
       if fault == "account" { driver.identity = nil; _ = auth.state() }
+      if fault == "remount" {
+        _ = try await connection.send(CheckNativeProvider.request(auth, action: "mount", body:
+          String(decoding: JSONSerialization.data(withJSONObject: ["workspace_id": wire.workspace.uuidString.lowercased()]), as: UTF8.self)))
+      }
       if fault == "cancelled" {
         let pending = Task { try await service.publishedKey() }
         pending.cancel()
@@ -425,9 +429,9 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
         try require(await wire.requests.count == before)
       } else {
         try require(try await service.publishedKey().version == "synthetic-v1")
-        try require(await wire.requests.count == before + (fault == "none" ? 0 : 1))
+        try require(await wire.requests.count == before + (fault == "none" ? 0 : fault == "remount" ? 2 : 1))
         _ = try await service.publishedKey()
-        try require(await wire.requests.count == before + (fault == "none" ? 1 : 2))
+        try require(await wire.requests.count == before + (fault == "none" ? 1 : fault == "remount" ? 3 : 2))
       }
       connection.close(); checks += 1
     }
