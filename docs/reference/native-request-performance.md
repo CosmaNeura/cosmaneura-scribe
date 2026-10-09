@@ -11,7 +11,8 @@ python scripts/check_signed_desktop_package.py '/absolute/path/Cosmaneura Scribe
 
 It verifies all three final helper hashes against `provider-profile.json`, the
 existing provider identity and exact existing Keychain claims, an embedded DER
-claims slot, and Apple's strict deep signature validation. It neither launches
+claims slot, a non-ad-hoc code directory and CMS signature slot, and Apple's
+strict deep signature validation. It neither launches
 the app nor accesses data keys. A successful check qualifies these package
 properties; it does not prove launch, network access or recording readiness.
 
@@ -23,6 +24,13 @@ existing provider claims during re-signing. Preserve the verified existing
 claims, then check the actual signed Mach-O data; do not broaden access or accept
 empty claims. Run `python scripts/test_signed_desktop_package.py` for the local
 regressions covering these two observed failures.
+
+Read the existing helper's signing options before replacing its executable.
+A newly linked Swift executable carries an ad-hoc linker signature; copying
+its `adhoc` flags into a release signing command can preserve an ad-hoc signature
+despite the requested identity. Embedded team/keychain claims and strict deep
+verification alone do not authenticate that helper. Reject the actual signed
+Mach-O's ad-hoc flag or absent CMS slot, then confirm normal launch separately.
 
 Keep a known working package for recovery. Follow package verification with an
 authorized normal launch and a synthetic visit-to-Ready check. Record those
