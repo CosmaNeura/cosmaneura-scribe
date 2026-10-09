@@ -8,6 +8,7 @@ for (const width of [390, 780]) {
     await page.locator('[data-review-action="edit"]').click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
+    await dialog.locator(".creator-speaker-details > summary").click();
     await expect(dialog.locator('[name="role"]')).toHaveValue("unknown");
     await expect(dialog.locator('[name="display_name"]')).toBeDisabled();
     const provider = dialog.locator('[data-speaker-role="clinician"]');
