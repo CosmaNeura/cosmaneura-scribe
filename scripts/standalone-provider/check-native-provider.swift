@@ -31,7 +31,8 @@ import CosmasNativeAuth
         let now = Int(Date().timeIntervalSince1970)
         let header: [String: Any] = ["alg": "RS256", "kid": "offline"]
         let claims: [String: Any] = ["iss": "https://identity.clerk.accounts.dev", "aud": "offline-provider",
-            "sub": "user_offline", "sid": "sess_offline", "org_id": "org_offline",
+            "sub": identity?.userID ?? "user_offline", "sid": identity?.sessionID ?? "sess_offline",
+            "org_id": identity?.organizationID ?? "org_offline",
             "iat": now - 10, "nbf": now - 10, "exp": now + (expired ? -10 : 120)]
         func encode(_ data: Data) -> String {
             data.base64EncodedString().replacingOccurrences(of: "=", with: "")
