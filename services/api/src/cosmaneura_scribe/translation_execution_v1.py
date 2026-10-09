@@ -58,9 +58,7 @@ class DurableTranslationJobRecordV1:
             )
             or (
                 self.completed_job is not None
-                and not isinstance(
-                    cast(object, self.completed_job), CompletedTranslationJobV1
-                )
+                and not isinstance(cast(object, self.completed_job), CompletedTranslationJobV1)
             )
         ):
             raise ValueError("durable translation job field type is invalid")
@@ -71,8 +69,7 @@ class DurableTranslationJobRecordV1:
             self.attempt_committed_at,
         )
         if any(
-            value is not None
-            and (value.tzinfo is None or value.utcoffset() is None)
+            value is not None and (value.tzinfo is None or value.utcoffset() is None)
             for value in timestamps
         ):
             raise ValueError("durable translation job timestamp requires an offset")
@@ -81,20 +78,14 @@ class DurableTranslationJobRecordV1:
             and self.provider_call_started_at < self.reserved_at
         ):
             raise ValueError("translation provider call precedes reservation")
-        if (
-            self.provider_result_stored_at is not None
-            and (
-                self.provider_call_started_at is None
-                or self.provider_result_stored_at < self.provider_call_started_at
-            )
+        if self.provider_result_stored_at is not None and (
+            self.provider_call_started_at is None
+            or self.provider_result_stored_at < self.provider_call_started_at
         ):
             raise ValueError("translation result precedes provider call")
-        if (
-            self.attempt_committed_at is not None
-            and (
-                self.provider_result_stored_at is None
-                or self.attempt_committed_at < self.provider_result_stored_at
-            )
+        if self.attempt_committed_at is not None and (
+            self.provider_result_stored_at is None
+            or self.attempt_committed_at < self.provider_result_stored_at
         ):
             raise ValueError("translation commit precedes stored result")
 
@@ -120,9 +111,9 @@ class DurableTranslationJobRecordV1:
             stored_expected,
         ):
             raise ValueError("durable translation job state is inconsistent")
-        if (
-            self.status == DurableTranslationJobStatus.ATTEMPT_COMMITTED
-        ) != (self.attempt_committed_at is not None):
+        if (self.status == DurableTranslationJobStatus.ATTEMPT_COMMITTED) != (
+            self.attempt_committed_at is not None
+        ):
             raise ValueError("durable translation commit state is inconsistent")
         if self.completed_job is not None:
             completed = self.completed_job
@@ -155,9 +146,7 @@ class DurableTranslationJobRecordV1:
                     reservation.expected_source_transcript_version
                 ),
                 "source_segment_id": reservation.source_segment_id,
-                "expected_source_segment_version": (
-                    reservation.expected_source_segment_version
-                ),
+                "expected_source_segment_version": (reservation.expected_source_segment_version),
                 "expected_previous_translation_version": (
                     reservation.expected_previous_translation_version
                 ),

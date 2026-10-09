@@ -5,7 +5,8 @@ import { type DesktopRecordNamespace, type DesktopStoredRecord, failure, uuid } 
 
 /** One authorized session's existing queue format, sealed again for local storage. */
 export class DurableDesktopQueueStorage implements CaptureQueueStorage {
-  constructor(private readonly records: DesktopRecordNamespace, private readonly sessionId: string) { uuid(sessionId); }
+  constructor(private readonly records: DesktopRecordNamespace, private readonly sessionId: string,
+    private readonly retainForPlayback?: (record: CaptureChunkRecord) => Promise<void>) { uuid(sessionId); }
   async create(record: ReservedChunkRecord): Promise<boolean> {
     this.check(record);
     if (record.state !== "reserved" || record.revision !== 1) throw failure();
@@ -35,6 +36,7 @@ export class DurableDesktopQueueStorage implements CaptureQueueStorage {
     return this.save(replacement, stored.revision);
   }
   private async save(record: CaptureChunkRecord, previous: number | null): Promise<boolean> {
+    if (record.state === "encrypted") await this.retainForPlayback?.(record);
     const bytes = new TextEncoder().encode(encodeCaptureRecord(record));
     try { await this.records.save(uuid(record.reservation.objectId), previous, bytes); return true; }
     catch (error) { if (error instanceof Error && error.message === "desktop_storage_conflict") return false; throw failure(); }

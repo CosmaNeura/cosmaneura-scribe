@@ -43,13 +43,7 @@ export class CoreCaptureClient {
   /** Discover server work when this device has no journal; never infer absence from an error. */
   async discoverEncounter(): Promise<CreatorReviewView | null> {
     const value = await this.send("capture-operations", { operation: { kind: "provider_encounter" } }, crypto.randomUUID());
-    requireValue(value.operation === "provider_encounter" && record(value.receipt));
-    const receipt = value.receipt;
-    requireValue(Object.keys(receipt).sort().join(",") === "review,schema_version,status"
-      && receipt.schema_version === "1.0");
-    if (receipt.status === "not_prepared") { requireValue(receipt.review === null); return null; }
-    requireValue(receipt.status === "available" && record(receipt.review) && isUuid(receipt.review.session_id));
-    return parseCreatorReview(receipt.review, receipt.review.session_id);
+    return parseProviderEncounter(value);
   }
 
   /** Resume server custody before considering another consent submission. */
@@ -90,7 +84,7 @@ export class CoreCaptureClient {
     return receipt;
   }
 
-  async note(sessionId: string, action: "templates" | "read" | "prepare" | "save" | "resolve",
+  async note(sessionId: string, action: "templates" | "read" | "prepare" | "save" | "resolve" | "save_status",
     schema?: string, edit?: unknown, key: string = crypto.randomUUID()): Promise<unknown> {
     requireValue(isUuid(sessionId) && (action === "templates" || reference(schema, "doctor_note_schema")));
     const value = await this.send("capture-notes", { expected_session_id: sessionId, action,
@@ -99,16 +93,24 @@ export class CoreCaptureClient {
     return value.receipt;
   }
 
+  /** Optional native receiver coordination; subsequent edits still authorize afresh. */
+  async openNote(sessionId: string): Promise<unknown> {
+    requireValue(isUuid(sessionId));
+    const value = await this.send("note-opening", { expected_session_id: sessionId }, crypto.randomUUID());
+    requireValue(value.operation === "note_opening" && record(value.receipt) && value.receipt.session_id === sessionId);
+    return value.receipt;
+  }
+
   reviewRequest(sessionId: string): AuthorizedReviewRequest {
     requireValue(isUuid(sessionId));
     const expectedPath = `/v1/captured-sessions/${sessionId}/review`;
     return async (path, request) => {
-      requireValue(path === expectedPath && (request.method === "GET"
-        ? request.body === undefined && request.key === undefined
+      requireValue((path === expectedPath || path === expectedPath + "/edit") && (request.method === "GET"
+        ? path === expectedPath && request.body === undefined && request.key === undefined
         : request.body !== undefined && request.key !== undefined));
       try {
         const value = await this.operation(sessionId, request.method === "GET"
-          ? { kind: "creator_review" } : { kind: "decide_translation", payload: request.body }, request.key);
+          ? { kind: "creator_review" } : { kind: path === expectedPath + "/edit" ? "edit_transcript" : "decide_translation", payload: request.body }, request.key, request.signal);
         return Response.json(value);
       } catch (error) {
         if (error instanceof BffResponseError && error.status === 409) return new Response(null, { status: 409 });
@@ -162,6 +164,17 @@ export class CoreCaptureClient {
   }
 }
 
+/** The same closed receipt is used by discovery and the combined opening read. */
+export function parseProviderEncounter(value: Record<string, unknown>): CreatorReviewView | null {
+  requireValue(value.operation === "provider_encounter" && record(value.receipt));
+  const receipt = value.receipt;
+  requireValue(Object.keys(receipt).sort().join(",") === "review,schema_version,status"
+    && receipt.schema_version === "1.0");
+  if (receipt.status === "not_prepared") { requireValue(receipt.review === null); return null; }
+  requireValue(receipt.status === "available" && record(receipt.review) && isUuid(receipt.review.session_id));
+  return parseCreatorReview(receipt.review, receipt.review.session_id);
+}
+
 /** Reuses the recorder/queue protocol after Core's configured admission. */
 export class CoreCaptureBff implements Bff.CaptureBff {
   constructor(private readonly client: CoreCaptureClient, private readonly sessionId: string) {}
@@ -171,6 +184,12 @@ export class CoreCaptureBff implements Bff.CaptureBff {
       options && "idempotencyKey" in options ? options.idempotencyKey : undefined, options?.signal);
     requireValue(!options?.signal?.aborted);
     return result as T;
+  }
+  prepareRecordingWindow(id: string, payload: Bff.PrepareRecordingWindowRequest, options: Bff.MutationOptions) {
+    return this.send<Bff.PreparedRecordingWindow>({ kind: "prepare_recording_window", payload }, id, options);
+  }
+  prepareContinuationWindow(id: string, payload: Bff.PrepareContinuationWindowRequest, options: Bff.MutationOptions) {
+    return this.send<Bff.PreparedContinuationWindow>({ kind: "prepare_continuation_window", payload }, id, options);
   }
   getAudioEncryptionKey(options?: Bff.RequestOptions) {
     return this.send<Bff.AudioEncryptionPublicKey>({ kind: "encryption_key" }, this.sessionId, options);

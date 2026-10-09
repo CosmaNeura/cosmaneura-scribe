@@ -17,12 +17,18 @@ const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "app://cosm
 const window = dom.window, root = window.document.getElementById("root");
 Object.defineProperty(window, "crypto", { value: webcrypto });
 Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone, AbortController, AbortSignal });
+window.ResizeObserver = class { observe() {} disconnect() {} };
+window.matchMedia = () => ({ matches: false });
+window.scrollTo = () => {}; window.scrollBy = () => {};
+window.HTMLElement.prototype.scrollIntoView = () => {};
+window.HTMLDialogElement.prototype.showModal = function() { this.setAttribute("open", ""); };
+window.HTMLDialogElement.prototype.close = function() { this.removeAttribute("open"); };
 window.fetch = () => { throw new Error("Unexpected renderer network"); };
 const module = new SourceTextModule(await readFile(bundle, "utf8"), { context: dom.getInternalVMContext() });
 await module.link(() => { throw new Error("Unexpected external module"); }); await module.evaluate();
-const until = async predicate => {
+const until = async (predicate, duringAction = false) => {
   for (let i = 0; i < 100; i++) {
-    if (predicate() && root.querySelector(".provider-workspace")?.getAttribute("aria-busy") !== "true") return;
+    if (predicate() && (duringAction || root.querySelector(".provider-workspace")?.getAttribute("aria-busy") !== "true")) return;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error("Expected desktop workspace view did not arrive");
@@ -40,8 +46,9 @@ const schema = "doctor_note_schema_01j00000000000000000000000", transcriptRef = 
 const firstNote = "visit_note_01j00000000000000000000000", savedNote = "visit_note_01j00000000000000000000001";
 const english = "Invented test visit.", spanish = "Consulta de prueba inventada.";
 const now = new Date().toISOString(), methods = [], wire = [], authObservers = new Set();
-let accepted = false, prepared = false, pendingReview = null, creates = 0, closes = 0, authReads = 0, failListener = true, reviewReads = 0, discoveryReads = 0, notePrepares = 0;
+let accepted = false, prepared = false, pendingReview = null, creates = 0, closes = 0, authReads = 0, failListener = true, reviewReads = 0, discoveryReads = 0, notePrepares = 0, noteReads = 0, templateCount = 1;
 let fields = { Subjective: english, Assessment: "Invented fixture only." }, noteRef = firstNote;
+let holdReviewNumber = 0, reviewGate, noteGate, draftWorkingVersion = 2;
 let state = { phase: "ready", revision: webcrypto.randomUUID() };
 let journal = { revision: "1", progress: { sessionId, uploaded: true, pendingSave: null,
   admission: { key: webcrypto.randomUUID(), languageMode: "en-US+es-US", attestation: { modality: "virtual", participant_regions: ["US-NY"],
@@ -55,7 +62,7 @@ const review = () => ({ schema_version: "1.0", session_id: sessionId, status: ac
   working: { source_transcript_version: 1, working_transcript_id: workingId, working_transcript_version: accepted ? 2 : 1,
     note_ready: accepted, segments: [{ source_segment_id: segmentId, source_segment_version: 1,
       resolution: accepted ? "spanish_translation" : "unresolved", content: accepted ? english : null }],
-    blockers: accepted ? [] : [{ source_segment_id: segmentId, code: "review_required" }] },
+    blockers: accepted ? [] : [{ source_segment_id: segmentId, code: "translation_review_required" }] },
   review_queue: { schema_version: "1.0", session_id: sessionId, source_transcript_version: 1,
     working_transcript_id: workingId, working_transcript_version: accepted ? 2 : 1, status: accepted ? "complete" : "review_required",
     items: accepted ? [] : [{ source_segment_id: segmentId, source_segment_version: 1, source_locale: "es-US", target_locale: "en-US",
@@ -66,7 +73,7 @@ const draft = () => ({ session_id: sessionId, scribe_source_id: workingId, sourc
   field_order: prepared ? Object.keys(fields) : null,
   note_sha256: prepared ? createHash("sha256").update(JSON.stringify(Object.entries(fields))).digest("hex") : null,
   created_at: prepared ? now : null, review_required: true,
-  reviewed_source: { kind: "reviewed_english", source_version: 1, working_transcript_id: workingId, working_version: 2 } });
+  reviewed_source: { kind: "reviewed_english", source_version: 1, working_transcript_id: workingId, working_version: draftWorkingVersion } });
 const encounter = { appointmentRef: scope.appointmentRef, title: "Invented desktop visit", detail: "Invented all-party consent" };
 const host = {
   session: {
@@ -102,7 +109,11 @@ const host = {
                 return Response.json({ ...envelope, operation: kind,
                   receipt: { schema_version: "1.0", status: "available", review: review() } });
               }
-              if (kind === "creator_review") { reviewReads++; return Response.json({ ...envelope, operation: kind, receipt: review() }); }
+              if (kind === "creator_review") {
+                reviewReads++; const receipt = review();
+                if (reviewReads === holdReviewNumber) await reviewGate.promise;
+                return Response.json({ ...envelope, operation: kind, receipt });
+              }
               assert.equal(kind, "decide_translation"); assert.equal(key, pendingReview.key);
               assert.deepEqual(body.operation.payload, pendingReview.request); assert.equal(body.operation.payload.decision, "accepted");
               decisions.push(key); accepted = true;
@@ -110,16 +121,20 @@ const host = {
             }
             assert.equal(path, "/service/v1/agent/scribe/capture-notes"); assert.equal(body.expected_session_id, sessionId); assert.equal(accepted, true);
             if (body.action === "templates") return Response.json({ ...envelope, action: body.action, receipt: {
-              session_id: sessionId, templates: [{ schema_ref: schema, note_type: "Invented SOAP", field_names: Object.keys(fields) }] } });
+              session_id: sessionId, templates: Array.from({ length: templateCount }, (_, index) => ({ schema_ref: index ? "doctor_note_schema_01j00000000000000000000001" : schema,
+                note_type: index ? "Other invented template" : "Invented SOAP", field_names: Object.keys(fields) })) } });
             assert.equal(body.schema_ref, schema);
             if (body.action === "prepare") { prepared = true; notePrepares++; }
             else if (body.action === "save") {
               assert.deepEqual(body.edit, journal.progress.pendingSave.edit); assert.equal(key, body.edit.client_key);
               assert.equal(body.edit.expected_note_ref, noteRef); assert.equal(body.edit.expected_note_sha256, draft().note_sha256);
               fields = body.edit.fields; noteRef = savedNote;
-            } else assert.equal(body.action, "read");
-            return Response.json({ ...envelope, action: body.action, receipt: draft() });
+            } else { assert.equal(body.action, "read"); noteReads++; }
+            const receipt = draft();
+            if (body.action === "read" && noteGate) await noteGate.promise;
+            return Response.json({ ...envelope, action: body.action, receipt });
           },
+          editJournal: () => ({ async load() { return null; }, async save() { throw new Error("not used"); }, async clear() {} }),
           async recorder() { throw new Error("No source activation in review/save check"); },
           async openInCore(ref) { navigation.push(ref); },
         };
@@ -143,13 +158,13 @@ const rendererPort = {
 const exposed = {}, boundary = new DesktopProviderWorkspaceIpc(ipc, renderer, host); boundary.install();
 const contextBridge = { exposeInMainWorld(name, value) { exposed[name] = value; } };
 if (preloadBundle) {
-  runInNewContext(await readFile(preloadBundle, "utf8"), { TextEncoder, require(name) {
+  runInNewContext(await readFile(preloadBundle, "utf8"), { TextEncoder, TextDecoder, require(name) {
     assert.equal(name, "electron"); return { contextBridge, ipcRenderer: rendererPort };
   } }, { timeout: 1000 });
 } else installDesktopProviderPreload(contextBridge, rendererPort);
 let dispose;
 try {
-  assert.deepEqual(Object.keys(exposed).sort(), ["scribeProvider", "scribeRecorder"]);
+  assert.deepEqual(Object.keys(exposed).sort(), ["scribeApplication", "scribeProvider", "scribeRecorder"]);
   const invoke = handlers.get("scribe:provider:workspace:v1"), read = { method: "session_read", requestId: webcrypto.randomUUID(), connectionId: null, encounterId: null, payload: {} };
   await assert.rejects(invoke({ ...event, senderFrame: { url: renderer.mainFrame.url } }, read), /unavailable/);
   await assert.rejects(invoke({ ...event, sender: { ...renderer, id: 78 } }, read), /unavailable/);
@@ -170,11 +185,21 @@ try {
   click('[data-review-action="accepted"]'); await until(() => root.querySelector('[data-review-action="continue"]'));
   assert.equal(reviewReads, 3, "Saving a decision must read the current review");
   assert.equal(decisions.length, 1); assert.equal(pendingReview, null);
-  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
-  assert.equal(reviewReads, 4, "Continue must use one fresh authorized read, without a duplicate at template selection");
-  root.querySelector('[name="schema"]').value = schema; click(action("read")); await until(() => root.querySelector(action("generate")));
-  assert.equal(reviewReads, 5, "Opening the selected note must read the current review again");
-  click(action("generate")); await until(() => root.querySelector('[name="note-0"]'));
+  holdReviewNumber = 5; reviewGate = Promise.withResolvers(); noteGate = Promise.withResolvers();
+  click('[data-review-action="continue"]');
+  await until(() => reviewReads === 5 && noteReads === 1, true);
+  assert.equal(root.querySelector(action("generate")), null, "Both independent reads must finish before showing a note");
+  noteGate.resolve(); noteGate = undefined;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(root.querySelector(action("generate")), null, "An early note response cannot bypass the fresh review");
+  reviewGate.resolve(); await until(() => root.querySelector(action("generate")));
+  assert.equal(root.querySelector('[name="schema"]'), null, "The sole template needs no separate selection");
+  assert.equal(reviewReads, 5, "Continue and opening the sole note must each recheck the current review");
+  assert.equal(noteReads, 1); assert.equal(notePrepares, 0, "Opening must not prepare a note implicitly");
+  holdReviewNumber = 6; reviewGate = Promise.withResolvers();
+  click(action("generate")); await until(() => reviewReads === 6, true);
+  assert.equal(notePrepares, 0, "Generation must not run concurrently with its readiness check");
+  reviewGate.resolve(); await until(() => root.querySelector('[name="note-0"]'));
   assert.equal(reviewReads, 6, "Preparing a note must read its current source again");
   const editor = root.querySelector('[name="note-0"]');
   editor.value = "Invented clinician edit.";
@@ -210,35 +235,68 @@ try {
   click(action("discard-edits")); await until(() => root.querySelector('[data-review-action="continue"]'));
   assert.equal(fields.Subjective, english);
   assert.equal(root.querySelector(action("discard-edits")), null);
-  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
-  root.querySelector('[name="schema"]').value = schema; click(action("read"));
-  await until(() => root.querySelector('[name="note-0"]'));
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="note-0"]'));
   // Reverting an edit to the displayed baseline does not require a discard.
   root.querySelector('[name="note-0"]').value = "Temporary invented edit.";
   root.querySelector('[name="note-0"]').value = english;
   click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
   assert.equal(root.querySelector(action("discard-edits")), null);
-  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
-  root.querySelector('[name="schema"]').value = schema; click(action("read"));
-  await until(() => root.querySelector('[name="note-0"]'));
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="note-0"]'));
   root.querySelector('[name="note-0"]').value = "Invented clinician edit.";
   click(action("encounters")); await until(() => root.querySelector(action("discard-edits")));
   click(action("save"));
-  await until(() => /Edits saved to Core/u.test(root.textContent)); assert.equal(journal.progress.pendingSave, null);
+  await until(() => /Saved · Not clinically reviewed/u.test(root.textContent)); assert.equal(journal.progress.pendingSave, null);
   assert.equal(root.querySelector(action("discard-edits")), null, "Saving must cancel the old navigation request");
   assert.ok(journalSaves.some(progress => progress.pendingSave)); assert.equal(fields.Subjective, "Invented clinician edit.");
   click(action("encounters")); await until(() => root.querySelector(action("open")));
   click(action("open")); await until(() => root.querySelector('[data-review-action="continue"]'));
-  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
-  root.querySelector('[name="schema"]').value = schema; click(action("read"));
-  await until(() => root.querySelector('[name="note-0"]'));
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="note-0"]'));
   assert.equal(root.querySelector('[name="note-0"]').value, "Invented clinician edit.");
   assert.equal(noteRef, savedNote); assert.equal(notePrepares, 1, "Reopening must not generate a duplicate note");
   assert.equal(discoveryReads, recoveryMode ? 1 : 0, "Reopening must reuse the durable journal");
   click(action("core")); await until(() => navigation.length === 1); assert.equal(navigation[0], savedNote);
+  // Several templates still require an explicit choice; no template offers only recovery actions.
+  click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  templateCount = 2;
+  const readsBeforeChoice = noteReads;
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="schema"]'));
+  assert.equal(noteReads, readsBeforeChoice);
+  assert.equal(root.querySelector('[name="schema"]').value, "");
+  root.querySelector('[name="schema"]').value = schema;
+  for (const failure of ["stale_lineage", "review_failure", "note_failure"]) {
+    holdReviewNumber = reviewReads + 1; reviewGate = Promise.withResolvers(); noteGate = Promise.withResolvers();
+    draftWorkingVersion = failure === "stale_lineage" ? 3 : 2;
+    const beforeRead = noteReads; click(action("read"));
+    await until(() => reviewReads === holdReviewNumber && noteReads === beforeRead + 1, true);
+    if (failure === "review_failure") reviewGate.reject(new Error("Invented read failure")); else reviewGate.resolve();
+    if (failure === "note_failure") noteGate.reject(new Error("Invented read failure")); else noteGate.resolve();
+    noteGate = undefined;
+    await until(() => root.textContent.includes("could not be confirmed"));
+    assert.equal(root.querySelector('[name="note-0"]'), null, "Failed or mismatched reads must not display an editor");
+    assert.equal(notePrepares, 1, "Read failures must never generate another note");
+  }
+  draftWorkingVersion = 2; click(action("read"));
+  await until(() => root.querySelector('[name="note-0"]'));
+  assert.equal(noteReads, readsBeforeChoice + 4);
+  click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  templateCount = 0;
+  click('[data-review-action="continue"]'); await until(() => root.textContent.includes("No templates are available"));
+  assert.equal(root.querySelector('[name="schema"]'), null); assert.equal(root.querySelector(action("read")), null);
+  assert.equal(noteReads, readsBeforeChoice + 4); assert.equal(notePrepares, 1);
+  click(action("review")); await until(() => root.querySelector('[data-review-action="continue"]'));
+  templateCount = 1;
+  click('[data-review-action="continue"]'); await until(() => root.querySelector('[name="note-0"]'));
+  assert.equal(root.querySelector('[name="note-0"]').value, "Invented clinician edit.");
   root.querySelector('[name="note-0"]').value = "Unsaved edit before revocation.";
   click(action("review")); await until(() => root.querySelector(action("discard-edits")));
-  change("signedOut"); assert.equal(root.textContent.includes("Invented clinician edit."), false);
+  if (recoveryMode) {
+    click(action("discard-edits")); await until(() => root.querySelector('[data-review-action="continue"]'));
+    holdReviewNumber = reviewReads + 2; reviewGate = Promise.withResolvers(); noteGate = Promise.withResolvers();
+    const beforeRead = noteReads; click('[data-review-action="continue"]');
+    await until(() => reviewReads === holdReviewNumber && noteReads === beforeRead + 1, true);
+    change("signedOut"); reviewGate.resolve(); noteGate.resolve(); noteGate = undefined;
+  } else change("signedOut");
+  assert.equal(root.textContent.includes("Invented clinician edit."), false);
   assert.equal(root.querySelector('[name="note-0"]'), null, "Unsaved edits must never delay access revocation");
   assert.equal(root.querySelector("[data-note-transcript]"), null, "Revocation must also clear the source comparison");
   assert.equal(root.querySelector(action("discard-edits")), null);
@@ -248,8 +306,9 @@ try {
   await dispose(); dispose = null; await boundary.dispose();
   assert.equal(authObservers.size, 0); assert.equal(handlers.size, 0); assert.equal(rendererEvents.eventNames().length, 0);
   process.stdout.write(JSON.stringify({ checks: 3, compiled_provider_ui: true, actual_main_preload_mapping: true, compiled_preload: Boolean(preloadBundle), sender_rejection_before_native_access: true,
-    explicit_review_before_note: true, journaled_note_edit_and_core_navigation: true, unsaved_note_navigation_guard: true,
-    cross_device_discovery: Boolean(recoveryMode), saved_note_reopened: true,
+    explicit_review_before_note: true, concurrent_note_reads_wait_for_both: true, failed_or_mismatched_note_reads_rejected: true, generation_waits_for_review: true,
+    sole_template_opens_without_generation: true, multiple_and_missing_templates: true, journaled_note_edit_and_core_navigation: true, unsaved_note_navigation_guard: true,
+    cross_device_discovery: Boolean(recoveryMode), revocation_during_note_reads: Boolean(recoveryMode), saved_note_reopened: true,
     explicit_discard_and_keep_editing: true, in_place_transcript_comparison: true, revocation_clears_content: true,
     actual_electron: false, real_backend: false, physical_recording: false }) + "\n");
 } finally { await dispose?.(); await boundary.dispose(); dom.window.close(); }

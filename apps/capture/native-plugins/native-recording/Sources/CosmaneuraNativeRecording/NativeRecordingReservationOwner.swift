@@ -26,6 +26,7 @@ public actor NativeRecordingReservationOwner {
   private let service: any NativeRecordingReservationService
   private let records: any NativeRecordingBindingRecordStore & NativeRecordingRecordStore
   private var busy = false
+  private var completedWindowKey: String?
 
   public init(
     scope: NativeRecordingScope, recoveryScope: UUID,
@@ -41,9 +42,27 @@ public actor NativeRecordingReservationOwner {
   public func reserve(lease: NativeRecordingLease, first: Int, count: Int) async throws
     -> NativeRecordingReservationBatch
   {
+    try await advance(lease: lease, first: first, count: count, prepared: nil)
+  }
+
+  public func adoptPrepared(
+    lease: NativeRecordingLease, batch: NativeRecordingReservationBatch, intent: UUID
+  ) async throws -> NativeRecordingReservationBatch {
+    guard let first = batch.reservations.first?.sequence else {
+      throw NativeRecordingBindingFailure.receiptMismatch
+    }
+    return try await advance(
+      lease: lease, first: first, count: batch.reservations.count, prepared: (intent, batch))
+  }
+
+  private func advance(
+    lease: NativeRecordingLease, first: Int, count: Int,
+    prepared: (UUID, NativeRecordingReservationBatch)?
+  ) async throws -> NativeRecordingReservationBatch {
     guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
     busy = true
     defer { busy = false }
+    completedWindowKey = nil
     _ = try lease.validated()
     guard lease.sessionID == scope.sessionID, (0..<2048).contains(first), (1...90).contains(count),
       first <= 2048 - count
@@ -57,15 +76,25 @@ public actor NativeRecordingReservationOwner {
     } else {
       journal = Journal(
         schemaVersion: 1, account: scope.keyAccount, recovery: recovery,
-        lease: lease, first: first, count: count, intent: UUID(), done: false)
+        lease: lease, first: first, count: count, intent: prepared?.0 ?? UUID(), done: false)
       try commit(journal, key: key, after: 0)
     }
     guard journal.lease == lease, journal.first == first, journal.count == count else {
       throw NativeRecordingBindingFailure.journalConflict
     }
+    if let prepared {
+      guard journal.intent == prepared.0, journal.batch == nil || journal.batch == prepared.1 else {
+        throw NativeRecordingBindingFailure.journalConflict
+      }
+    }
     if journal.batch == nil {
-      let batch = try await service.reserve(
-        lease: lease, first: first, count: count, intent: journal.intent)
+      let batch: NativeRecordingReservationBatch
+      if let prepared {
+        batch = prepared.1
+      } else {
+        batch = try await service.reserve(
+          lease: lease, first: first, count: count, intent: journal.intent)
+      }
       try await checkScope()
       try batch.validate(scope: scope, lease: lease, first: first, count: count)
       journal.batch = batch
@@ -75,7 +104,10 @@ public actor NativeRecordingReservationOwner {
     guard let batch = journal.batch, let keys = journal.keys else {
       throw NativeRecordingBindingFailure.invalidJournal
     }
-    if journal.done { return batch }
+    if journal.done {
+      completedWindowKey = key
+      return batch
+    }
     // Bounded metadata writes retain the existing 64 MiB recovery reserve.
     guard try records.availableBytes() >= 67_108_864 + count * 16_384 * 4 else {
       throw NativeRecordingFailure.storageUnavailable
@@ -87,7 +119,65 @@ public actor NativeRecordingReservationOwner {
     try await checkScope()
     journal.done = true
     try commit(journal, key: key, after: 2)
+    completedWindowKey = key
     return batch
+  }
+
+  /// Reuse only the unused tail of a completed window in this retained host.
+  /// The current lease and fresh source-start admission still govern capture.
+  /// Restart, lease changes and short tails use the existing durable reserve path.
+  public func reuseForStart(lease: NativeRecordingLease, first: Int) async throws
+    -> NativeRecordingReservationBatch?
+  {
+    guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
+    busy = true
+    defer { busy = false }
+    _ = try lease.validated()
+    guard lease.sessionID == scope.sessionID, (0..<2048).contains(first) else {
+      throw NativeRecordingFailure.invalidBinding
+    }
+    try await checkScope()
+    guard let key = completedWindowKey,
+      let expiry = NativeRecordingLease.date(lease.expiresAt), expiry > Date()
+    else { return nil }
+    guard let stored = try records.readBinding(key: key) else {
+      throw NativeRecordingBindingFailure.invalidJournal
+    }
+    let journal = try decode(stored)
+    guard journal.done, let batch = journal.batch else {
+      throw NativeRecordingBindingFailure.invalidJournal
+    }
+    guard journal.lease == lease, first >= journal.first else { return nil }
+    let unused = batch.reservations.filter { $0.sequence >= first }
+    // Keep more than the existing twelve-slot continuation refill threshold,
+    // except at the hard visit limit where no additional slots can be issued.
+    guard unused.count >= min(13, 2048 - first), unused.first?.sequence == first else {
+      return nil
+    }
+    let retained = NativeRecordingReservationBatch(
+      batchID: batch.batchID, sessionID: batch.sessionID,
+      authorizedUntil: batch.authorizedUntil, reservations: unused)
+    try retained.validate(scope: scope, lease: lease, first: first, count: unused.count)
+    guard try records.availableBytes() >= 67_108_864 + unused.count * 16_384 * 4 else {
+      throw NativeRecordingFailure.storageUnavailable
+    }
+    for reservation in unused {
+      try Task.checkCancellation()
+      let queueKey =
+        scope.queuePrefix(recoveryScope: recovery)
+        + reservation.objectID.uuidString.lowercased()
+      guard let record = try records.readBinding(key: queueKey) else {
+        throw NativeRecordingBindingFailure.journalConflict
+      }
+      let decoded = try nativeRecordingReservedRecord(
+        record, scope: scope, objectID: reservation.objectID, sequence: reservation.sequence)
+      guard let prior = decoded.record["reservation"] as? [String: Any],
+        NSDictionary(dictionary: prior).isEqual(to: reservation.queueValue)
+      else { throw NativeRecordingBindingFailure.journalConflict }
+    }
+    try await checkScope()
+    guard expiry > Date() else { return nil }
+    return retained
   }
 
   private func ensureReserved(_ reservation: NativeRecordingReservation, keys: Keys, intent: UUID)

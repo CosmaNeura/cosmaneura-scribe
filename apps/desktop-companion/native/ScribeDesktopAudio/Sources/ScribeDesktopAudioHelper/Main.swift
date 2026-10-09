@@ -11,7 +11,8 @@ struct ScribeDesktopAudioHelper {
         signal(SIGPIPE, SIG_IGN)
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard arguments == ["--availability-v1"] || arguments == ["--request-permissions-v1"]
-            || arguments == ["--capture-v2"] else { _exit(64) }
+            || arguments == ["--microphone-availability-v1"] || arguments == ["--microphone-permissions-v1"]
+            || arguments == ["--capture-v2"] || arguments == ["--capture-v3"] else { _exit(64) }
         // This headless helper still uses AppKit/WindowServer through
         // ScreenCaptureKit. Establish its application on the OS main thread
         // and keep that runloop alive across Swift concurrency suspensions.
@@ -24,17 +25,17 @@ struct ScribeDesktopAudioHelper {
     }
 
     private static func run(_ arguments: [String]) async {
-        if arguments == ["--availability-v1"] {
-            await DesktopAudioProcess.writeAvailability(MacMeetingAudio.permissionsGranted())
+        if arguments == ["--availability-v1"] || arguments == ["--microphone-availability-v1"] {
+            await DesktopAudioProcess.writeAvailability(MacMeetingAudio.permissionsGranted(microphoneOnly: arguments == ["--microphone-availability-v1"]))
             _exit(0)
         }
-        if arguments == ["--request-permissions-v1"] {
-            await DesktopAudioProcess.writeAvailability(await requestPermissions())
+        if arguments == ["--request-permissions-v1"] || arguments == ["--microphone-permissions-v1"] {
+            await DesktopAudioProcess.writeAvailability(await requestPermissions(microphoneOnly: arguments == ["--microphone-permissions-v1"]))
             _exit(0)
         }
         // The packaged main process selects this explicit mode only after its
         // existing fresh capture authority, selection, lease and indicator gate.
-        let result = await DesktopAudioProcess.run(source: MacMeetingAudio(enabled: true))
+        let result = await DesktopAudioProcess.run(source: MacMeetingAudio(enabled: true), allowsRenewal: arguments == ["--capture-v3"])
         _exit(result)
     }
 
@@ -42,14 +43,14 @@ struct ScribeDesktopAudioHelper {
     /// or capture start. The user decides each normal macOS permission prompt.
     /// No stream, audio engine, selected window or recording authority is created.
     @MainActor
-    private static func requestPermissions() async -> Bool {
+    private static func requestPermissions(microphoneOnly: Bool) async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: break
         case .notDetermined:
             guard await AVCaptureDevice.requestAccess(for: .audio) else { return false }
         default: return false
         }
-        if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
-        return MacMeetingAudio.permissionsGranted()
+        if !microphoneOnly && !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+        return MacMeetingAudio.permissionsGranted(microphoneOnly: microphoneOnly)
     }
 }

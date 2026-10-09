@@ -13,6 +13,12 @@ import CosmasNativeAuth
     var loaded = true
     var identity: NativeAuthIdentity? = try! .init(userID: "user_offline", sessionID: "sess_offline", organizationID: "org_offline")
     var tokens = 0, expired = false, holdToken = false
+    var displayName: String?
+    var beforeNameRead: (() -> Void)?
+    var providerDisplayName: String? {
+        let before = beforeNameRead; beforeNameRead = nil; before?()
+        return displayName
+    }
     var tokenWait: CheckedContinuation<String?, Never>?
     func signIn() async throws { throw NativeAuthError.signInFailed }
     func signOut() async throws { identity = nil }
@@ -25,7 +31,8 @@ import CosmasNativeAuth
         let now = Int(Date().timeIntervalSince1970)
         let header: [String: Any] = ["alg": "RS256", "kid": "offline"]
         let claims: [String: Any] = ["iss": "https://identity.clerk.accounts.dev", "aud": "offline-provider",
-            "sub": "user_offline", "sid": "sess_offline", "org_id": "org_offline",
+            "sub": identity?.userID ?? "user_offline", "sid": identity?.sessionID ?? "sess_offline",
+            "org_id": identity?.organizationID ?? "org_offline",
             "iat": now - 10, "nbf": now - 10, "exp": now + (expired ? -10 : 120)]
         func encode(_ data: Data) -> String {
             data.base64EncodedString().replacingOccurrences(of: "=", with: "")
@@ -55,18 +62,26 @@ actor Wire: ProviderNativeWire {
     }
 }
 enum CheckFailure: Error { case failed }
-func require(_ value: Bool) throws { if !value { throw CheckFailure.failed } }
+func require(_ value: Bool, file: StaticString = #fileID, line: UInt = #line) throws {
+    if !value {
+        FileHandle.standardError.write(Data("Synthetic check failed at \(file):\(line)\n".utf8))
+        throw CheckFailure.failed
+    }
+}
 
 #if !NATIVE_BINDING_CHECKS
 @main
 #endif
 struct CheckNativeProvider {
-    @MainActor static func make() throws -> (NativeWorkspaceAuth, Driver, Wire, NativeProviderConnection) {
+    @MainActor static func make(contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+                               timingNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+                               requestTiming: @escaping @MainActor (ProviderNativeRequestTiming) -> Void = { _ in }) throws -> (NativeWorkspaceAuth, Driver, Wire, NativeProviderConnection) {
         let driver = Driver(), wire = Wire()
         let policy = try NativeTokenPolicy(issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider")
         let auth = NativeWorkspaceAuth(enabled: true, organizationID: "org_offline", tokenPolicy: policy,
             driver: { driver }, accessBlock: { Block() })
-        let connection = NativeProviderConnection(auth: auth, wire: wire)
+        let connection = NativeProviderConnection(auth: auth, wire: wire, contextNow: contextNow,
+                                                  timingNow: timingNow, requestTiming: requestTiming)
         auth.onChange = { [weak connection] state in connection?.authChanged(state) }
         return (auth, driver, wire, connection)
     }
@@ -82,13 +97,135 @@ struct CheckNativeProvider {
         }
         throw CheckFailure.failed
     }
-    static func rejected<T: Sendable>(_ operation: Task<T, Error>) async throws {
-        do { _ = try await operation.value; throw CheckFailure.failed }
+    static func rejected<T: Sendable>(_ operation: Task<T, Error>, file: StaticString = #fileID, line: UInt = #line) async throws {
+        do { _ = try await operation.value; try require(false, file: file, line: line) }
         catch is CheckFailure { throw CheckFailure.failed }
         catch { }
     }
     @MainActor static func main() async throws {
         var checks = 0
+        // Profile suggestions never request credentials or change custody/authority.
+        do {
+            let (auth, driver, _, connection) = try make()
+            let state = auth.state(), digest = try auth.recordingAccountDigest(expectedRevision: state.revision)
+            driver.displayName = NativeProviderDisplayName.joined(firstName: " Fictional Lucía ", lastName: " Rivera ")
+            try require(auth.providerDisplayName(expectedRevision: state.revision) == "Fictional Lucía Rivera")
+            driver.displayName = "Fictional edited profile"
+            try require(auth.providerDisplayName(expectedRevision: state.revision) == driver.displayName)
+            try require(auth.state() == state && driver.tokens == 0)
+            try require(try auth.recordingAccountDigest(expectedRevision: state.revision) == digest)
+            try require(auth.providerDisplayName(expectedRevision: UUID().uuidString.lowercased()) == nil)
+            for invalid in [nil, "", " ", "bad\0name", "bad\nname", String(repeating: "x", count: 121), String(repeating: "🩺", count: 61)] as [String?] {
+                driver.displayName = invalid
+                try require(auth.providerDisplayName(expectedRevision: state.revision) == nil)
+                try require(auth.state() == state && driver.tokens == 0)
+            }
+            try require(NativeProviderDisplayName.joined(firstName: nil, lastName: "Fictional River") == "Fictional River")
+            try require(NativeProviderDisplayName.joined(firstName: nil, lastName: nil) == nil)
+            driver.displayName = "Fictional Avery"
+            _ = try await auth.signOut()
+            try require(auth.providerDisplayName(expectedRevision: state.revision) == nil && driver.tokens == 0)
+            connection.close(); checks += 1
+        }
+        do {
+            let driver = Driver(), block = Block()
+            let policy = try NativeTokenPolicy(issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider")
+            let auth = NativeWorkspaceAuth(enabled: true, organizationID: "org_offline", tokenPolicy: policy,
+                driver: { driver }, accessBlock: { block })
+            let revision = auth.state().revision
+            driver.displayName = "Fictional Avery"
+            block.blocked = true
+            try require(auth.providerDisplayName(expectedRevision: revision) == nil)
+            block.blocked = false; driver.loaded = false
+            try require(auth.providerDisplayName(expectedRevision: revision) == nil)
+            driver.loaded = true
+            let ready = auth.state()
+            driver.beforeNameRead = { driver.identity = try! .init(userID: "user_other", sessionID: "sess_other", organizationID: "org_offline") }
+            try require(auth.providerDisplayName(expectedRevision: ready.revision) == nil)
+            try require(auth.state().revision != ready.revision && driver.tokens == 0)
+            let current = auth.state()
+            driver.identity = try! .init(userID: "user_other", sessionID: "sess_other", organizationID: "org_other")
+            try require(auth.providerDisplayName(expectedRevision: current.revision) == nil)
+            checks += 1
+        }
+        // Exercise the actual iPhone bridge parser, not a JavaScript RPC mock.
+        // Both patient discovery and creation must reach the existing wire.
+        for operation in ["patients", "create"] {
+            let (auth, driver, wire, connection) = try make()
+            let body = "{\"action\":\"\(operation)\"}"
+            let input = try request(auth, action: "encounters", body: body)
+            await wire.setResponder { received in
+                try require(received.action == .encounters && received.body == Data(body.utf8))
+                return ProviderNativeReply(status: 200, body: Data("{}".utf8))
+            }
+            let reply = try await connection.send(input)
+            let count = await wire.count
+            try require(reply.status == 200 && count == 1 && driver.tokens == 1)
+            try require(input.action.bodyLimit == 4096 && input.action.responseLimit == 1_048_576)
+            connection.close(); checks += 1
+        }
+        do {
+            let (auth, _, wire, connection) = try make()
+            try await rejected(Task { try request(auth, action: "encounters", body: "{\"padding\":\"" + String(repeating: "x", count: 4096) + "\"}") })
+            await wire.setResponse(ProviderNativeReply(status: 200,
+                body: Data(("{\"padding\":\"" + String(repeating: "x", count: 1_048_576) + "\"}").utf8)))
+            try await rejected(Task { try await connection.send(request(auth, action: "encounters")) })
+            let count = await wire.count
+            try require(count == 1)
+            connection.close(); checks += 1
+        }
+        // A response's typed timing remains local to its request; absent
+        // metadata cannot inherit the preceding response's diagnostic values.
+        do {
+            var timings: [ProviderNativeRequestTiming] = []
+            let (auth, _, wire, connection) = try make(requestTiming: { timings.append($0) })
+            let header = ProviderServerTiming.Phase.allCases.map { "scribe_\($0.rawValue);dur=12.345" }.joined(separator: ", ")
+            let measured = ProviderServerTiming.parse([header])
+            try require(measured != nil)
+            for metadata in [measured, nil] {
+                await wire.setResponse(ProviderNativeReply(status: 200, body: Data("{}".utf8), serverTiming: metadata))
+                _ = try await connection.send(request(auth))
+                try require(timings.last?.serverTiming == metadata)
+            }
+            try require(timings.count == 2 && timings.allSatisfy { $0.completed })
+            connection.close(); checks += 1
+        }
+        for outcome in ["success", "denied", "token-failure", "invalid-reply", "cancelled"] {
+            var instant = ContinuousClock.now
+            var timings: [ProviderNativeRequestTiming] = []
+            let (auth, driver, wire, connection) = try make(timingNow: {
+                defer { instant = instant.advanced(by: .milliseconds(10)) }
+                return instant
+            }, requestTiming: { timings.append($0) })
+            driver.expired = outcome == "token-failure"
+            await wire.setResponse(ProviderNativeReply(status: outcome == "denied" ? 403 : 200,
+                body: Data((outcome == "invalid-reply" ? "[]" : "{}").utf8)))
+            if outcome == "cancelled" {
+                await wire.hold()
+                let input = try request(auth)
+                let operation = Task { try await connection.send(input) }
+                try await wait { await wire.count == 1 }
+                try require(timings.isEmpty)
+                connection.cancel(input.id)
+                await wire.resume()
+                try await rejected(operation)
+            } else if ["token-failure", "invalid-reply"].contains(outcome) {
+                try await rejected(Task { try await connection.send(request(auth)) })
+            } else {
+                let reply = try await connection.send(request(auth))
+                try require(reply.status == (outcome == "denied" ? 403 : 200))
+            }
+            try require(timings.count == 1)
+            let timing = timings[0]
+            try require(timing.action == .catalog && timing.tokenMilliseconds == 10)
+            try require(timing.receiverMilliseconds == (outcome == "token-failure" ? nil : 10))
+            try require(timing.totalMilliseconds == (outcome == "token-failure" ? 10 : 40))
+            try require(timing.status == (outcome == "token-failure" ? nil : outcome == "denied" ? 403 : 200))
+            try require(timing.completed == ["success", "denied"].contains(outcome))
+            let calls = await wire.count
+            try require(calls == (outcome == "token-failure" ? 0 : 1))
+            connection.close(); checks += 1
+        }
         for fault in ["none", "workspace", "revision", "recovery", "binding", "appointment", "extra", "denied", "malformed", "oversized"] {
             let (auth, _, wire, connection) = try make()
             let workspace = UUID(), recovery = UUID()
@@ -97,7 +234,7 @@ struct CheckNativeProvider {
             let revision = auth.state().revision
             var value: [String: Any] = ["revision": revision, "workspaceId": workspace.uuidString.lowercased(),
                 "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
-                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment]]
+                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment, "admission_metadata_v1": true]]
             let body = String(decoding: try JSONSerialization.data(withJSONObject: ["workspace_id": workspace.uuidString.lowercased()]), as: UTF8.self)
             await wire.setResponse(ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: value)))
             _ = try await connection.send(request(auth, action: "mount", body: body))
@@ -124,17 +261,53 @@ struct CheckNativeProvider {
             }
             do {
                 _ = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
-                throw CheckFailure.failed
+                try require(false)
             } catch is CheckFailure { throw CheckFailure.failed } catch {}
+            connection.close(); checks += 1
+        }
+        for fault in ["none", "missing", "nonce", "workspace", "binding", "operation"] {
+            let (auth, _, wire, connection) = try make()
+            let workspace = UUID(), recovery = UUID(), nonce = UUID().uuidString.lowercased()
+            let binding = "scribe_capture_binding_01j00000000000000000000000"
+            let appointment = "appointment_01j00000000000000000000000", revision = auth.state().revision
+            let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "workspace_id": workspace.uuidString.lowercased(), "opening_nonce": nonce,
+            ]), as: UTF8.self)
+            var review: [String: Any] = ["contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
+                "binding_ref": binding, "request_nonce": nonce, "operation": "provider_encounter"]
+            switch fault {
+            case "nonce": review["request_nonce"] = UUID().uuidString.lowercased()
+            case "workspace": review["workspace_id"] = UUID().uuidString.lowercased()
+            case "binding": review["binding_ref"] = "scribe_capture_binding_01j00000000000000000000001"
+            case "operation": review["operation"] = "creator_review"
+            default: break
+            }
+            var value: [String: Any] = ["revision": revision, "workspaceId": workspace.uuidString.lowercased(),
+                "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
+                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment, "admission_metadata_v1": true]]
+            if fault != "missing" { value["openingReview"] = review }
+            await wire.setResponse(ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: value)))
+            let input = try request(auth, action: "mount", body: body)
+            try require(input.responseLimit == 32 * 1024 * 1024 + 16_384)
+            _ = try await connection.send(input)
+            if fault == "none" {
+                let mounted = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
+                try require(mounted.recoveryScope == recovery)
+            } else {
+                do {
+                    _ = try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision)
+                    try require(false)
+                } catch is CheckFailure { throw CheckFailure.failed } catch {}
+            }
             connection.close(); checks += 1
         }
         do {
             let (auth, driver, wire, connection) = try make()
-            for action in ["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes"] {
+            for action in ["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes", "note-opening"] {
                 _ = try await connection.send(request(auth, action: action))
             }
             let calls = await wire.count
-            try require(driver.tokens == 6 && calls == 6)
+            try require(driver.tokens == 7 && calls == 7)
             connection.close(); checks += 1
         }
         do {
@@ -150,6 +323,22 @@ struct CheckNativeProvider {
             data.append(32)
             await wire.setResponse(ProviderNativeReply(status: 200, body: data))
             try await rejected(Task { try await connection.send(request(auth, action: "capture-operations")) })
+            connection.close(); checks += 1
+        }
+        do {
+            let (auth, _, wire, connection) = try make()
+            let body = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "workspace_id": UUID().uuidString.lowercased(), "opening_nonce": UUID().uuidString.lowercased(),
+            ]), as: UTF8.self)
+            let input = try request(auth, action: "mount", body: body), limit = input.responseLimit
+            var data = Data("{\"padding\":\"".utf8)
+            data.append(Data(repeating: 120, count: limit - data.count - 2)); data.append(Data("\"}".utf8))
+            await wire.setResponse(ProviderNativeReply(status: 200, body: data))
+            let response = try await connection.send(input)
+            try require(response.body.count == limit)
+            try await rejected(Task { try await connection.send(request(auth, action: "mount")) })
+            data.append(32); await wire.setResponse(ProviderNativeReply(status: 200, body: data))
+            try await rejected(Task { try await connection.send(request(auth, action: "mount", body: body)) })
             connection.close(); checks += 1
         }
         do {
@@ -232,7 +421,181 @@ struct CheckNativeProvider {
             checks += 1
         }
         checks += try await recordingContextChecks()
+        checks += try await preparedContextChecks()
+        checks += try await combinedRecordingContextChecks()
         print("Passed \(checks) native provider checks with retained native session policy, offline driver/wire and in-memory access block. No network, Keychain, app, device or microphone was accessed.")
+    }
+
+    @MainActor static func preparedContextChecks() async throws -> Int {
+        var checks = 0
+        for fault in ["none", "expired", "freshness_expired", "early_cancel", "nonce", "session", "binding", "workspace", "revision",
+                      "account", "cancelled", "mount", "replacement", "closed", "late_cancel",
+                      "late_account", "invalid_body", "forwarded"] {
+            var instant = ContinuousClock.now
+            let (auth, driver, wire, connection) = try make(contextNow: { instant })
+            let workspace = UUID(), session = UUID(), tenant = UUID(), recovery = UUID(), nonce = UUID()
+            let binding = "scribe_capture_binding_01j00000000000000000000000"
+            let revision = auth.state().revision
+            await wire.setResponder { request in
+                if request.action == .mount {
+                    let appointment = "appointment_01j00000000000000000000000"
+                    return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
+                        "revision": revision, "workspaceId": workspace.uuidString.lowercased(),
+                        "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
+                        "appointmentRef": appointment, "encounter": ["appointmentRef": appointment],
+                    ]))
+                }
+                try require(request.action == .operation)
+                let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
+                try require((body["operation"] as? [String: String]) == ["kind": "native_recording_context"])
+                return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
+                    "contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
+                    "binding_ref": binding, "request_nonce": body["request_nonce"]!,
+                    "checked_at": ISO8601DateFormatter().string(from: Date().addingTimeInterval(fault == "freshness_expired" ? -29 : 0)),
+                    "operation": "native_recording_context", "receipt": [
+                        "schema_version": "1.0", "workspace_id": workspace.uuidString.lowercased(),
+                        "tenant_id": tenant.uuidString.lowercased(), "session_id": session.uuidString.lowercased(),
+                        "status": "created",
+                    ],
+                ]))
+            }
+            let mount = try request(auth, action: "mount", body: String(decoding:
+                JSONSerialization.data(withJSONObject: ["workspace_id": workspace.uuidString.lowercased()]), as: UTF8.self))
+            _ = try await connection.send(mount)
+            var body = ["workspace_id": workspace.uuidString.lowercased(), "binding_ref": binding,
+                        "session_id": session.uuidString.lowercased(), "request_nonce": nonce.uuidString.lowercased()]
+            if fault == "invalid_body" { body["tenant_id"] = tenant.uuidString.lowercased() }
+            let preparation = try request(auth, action: "recorder-context", body: String(decoding:
+                JSONSerialization.data(withJSONObject: body), as: UTF8.self))
+            if fault == "forwarded" {
+                try await rejected(Task { try await connection.send(preparation) })
+                try require(await wire.count == 1)
+                connection.close(); checks += 1; continue
+            }
+            if fault == "invalid_body" {
+                try await rejected(Task { try await connection.prepareRecordingContext(preparation) })
+                try require(await wire.count == 1)
+                connection.close(); checks += 1; continue
+            }
+            if fault == "early_cancel" {
+                connection.cancel(preparation.id)
+                try await rejected(Task { try await connection.prepareRecordingContext(preparation) })
+                try require(await wire.count == 1)
+            } else if fault.hasPrefix("late_") {
+                await wire.hold()
+                let pending = Task { try await connection.prepareRecordingContext(preparation) }
+                try await wait { await wire.count == 2 }
+                if fault == "late_cancel" { connection.cancel(preparation.id) }
+                else { driver.identity = nil; _ = auth.state() }
+                await wire.resume(); try await rejected(pending)
+            } else {
+                let ack = try await connection.prepareRecordingContext(preparation)
+                let fields = try JSONSerialization.jsonObject(with: ack.body) as! [String: String]
+                try require(ack.status == 200 && fields == ["revision": revision,
+                    "session_id": session.uuidString.lowercased(), "authorization_id": nonce.uuidString.lowercased()])
+            }
+            switch fault {
+            case "expired": instant = instant.advanced(by: .seconds(6))
+            case "freshness_expired": instant = instant.advanced(by: .seconds(2))
+            case "account": driver.identity = nil; _ = auth.state()
+            case "cancelled": connection.cancel(preparation.id)
+            case "mount": _ = try await connection.send(mount)
+            case "replacement":
+                body["request_nonce"] = UUID().uuidString.lowercased()
+                _ = try await connection.prepareRecordingContext(request(auth, action: "recorder-context",
+                    body: String(decoding: JSONSerialization.data(withJSONObject: body), as: UTF8.self)))
+            case "closed": connection.close()
+            default: break
+            }
+            let take = Task { @MainActor in
+                try connection.takePreparedRecordingContext(nonce: fault == "nonce" ? UUID() : nonce,
+                    workspaceID: fault == "workspace" ? UUID() : workspace,
+                    bindingRef: fault == "binding" ? "scribe_capture_binding_01j00000000000000000000001" : binding,
+                    sessionID: fault == "session" ? UUID() : session,
+                    revision: fault == "revision" ? UUID().uuidString.lowercased() : revision)
+            }
+            if fault == "none" {
+                let value = try await take.value
+                try require(value?.tenantID == tenant && value?.sessionID == session && value?.workspaceID == workspace)
+                try require(await wire.count == 2 && driver.tokens == 2)
+            } else if fault == "expired" || fault == "freshness_expired" { try require(try await take.value == nil) }
+            else { try await rejected(take) }
+            // Even failed/expired consumption cannot reuse or substitute a ticket.
+            try await rejected(Task { try connection.takePreparedRecordingContext(nonce: nonce,
+                workspaceID: workspace, bindingRef: binding, sessionID: session, revision: revision) })
+            connection.close(); checks += 1
+        }
+        return checks
+    }
+
+    @MainActor static func combinedRecordingContextChecks() async throws -> Int {
+        let bytes = Data([0x80] + Array(repeating: UInt8(0), count: 382) + [1])
+        let modulus = bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        var checks = 0
+        for fault in ["none", "private", "modulus", "exponent", "numeric_ext", "false_ext", "operations",
+                      "context_session", "context_tenant", "context_status", "extra", "missing", "old", "nonce", "denied",
+                      "expired", "account", "numeric_capability", "false_capability"] {
+            var instant = ContinuousClock.now
+            let (auth, driver, wire, connection) = try make(contextNow: { instant })
+            let workspace = UUID(), session = UUID(), tenant = UUID(), recovery = UUID()
+            let binding = "scribe_capture_binding_01j00000000000000000000000", revision = auth.state().revision
+            await wire.setResponder { request in
+                if request.action == .mount {
+                    let appointment = "appointment_01j00000000000000000000000"
+                    return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
+                        "revision": revision, "workspaceId": workspace.uuidString.lowercased(),
+                        "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
+                        "appointmentRef": appointment, "encounter": ["appointmentRef": appointment,
+                            "native_recording_preparation_v1": fault == "numeric_capability" ? 1 as Any : fault != "false_capability"],
+                    ]))
+                }
+                let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
+                try require((body["operation"] as? [String: String]) == ["kind": "native_recording_preparation"])
+                var key: [String: Any] = ["kty": "RSA", "n": modulus, "e": "AQAB", "alg": "RSA-OAEP-256",
+                    "ext": true, "key_ops": ["wrapKey"]]
+                var context: [String: Any] = ["schema_version": "1.0", "workspace_id": workspace.uuidString.lowercased(),
+                    "tenant_id": tenant.uuidString.lowercased(), "session_id": session.uuidString.lowercased(), "status": "created"]
+                switch fault {
+                case "private": key["d"] = "invented"
+                case "modulus": key["n"] = "bad"
+                case "exponent": key["e"] = "Aw"
+                case "numeric_ext": key["ext"] = 1
+                case "false_ext": key["ext"] = false
+                case "operations": key["key_ops"] = ["unwrapKey"]
+                case "context_session": context["session_id"] = UUID().uuidString.lowercased()
+                case "context_tenant": context["tenant_id"] = "authority_tenant_01j00000000000000000000000"
+                case "context_status": context["status"] = "uploaded"
+                default: break
+                }
+                var receipt: [String: Any] = ["schema_version": "1.0", "context": context,
+                    "encryption_key": ["key_version": "synthetic-v1", "algorithm": "RSA-OAEP-256", "public_jwk": key]]
+                if fault == "extra" { receipt["capture_permission"] = true }
+                if fault == "missing" { receipt.removeValue(forKey: "encryption_key") }
+                return ProviderNativeReply(status: fault == "denied" ? 403 : 200,
+                    body: try JSONSerialization.data(withJSONObject: ["contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
+                        "binding_ref": binding, "request_nonce": fault == "nonce" ? UUID().uuidString.lowercased() : body["request_nonce"]!,
+                        "operation": "native_recording_preparation", "checked_at": ISO8601DateFormatter().string(from: Date().addingTimeInterval(fault == "old" ? -60 : 0)),
+                        "receipt": receipt]))
+            }
+            _ = try await connection.send(request(auth, action: "mount", body: String(decoding: JSONSerialization.data(withJSONObject: ["workspace_id": workspace.uuidString.lowercased()]), as: UTF8.self)))
+            if fault == "numeric_capability" {
+                try await rejected(Task { try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision) })
+            } else if fault == "false_capability" {
+                try require(try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision).recordingPreparationSupported == false)
+            } else {
+                let pending = Task { try await connection.recordingContext(workspaceID: workspace, bindingRef: binding, sessionID: session, revision: revision) }
+                if ["none", "expired", "account"].contains(fault) {
+                    let context = try await pending.value
+                    try require(context.preparedPublicKey?.modulusBase64URL == modulus)
+                    if fault == "expired" { instant = instant.advanced(by: .seconds(6)) }
+                    if fault == "account" { driver.identity = nil; _ = auth.state() }
+                    if fault == "account" { try await rejected(Task { try connection.recordingPreparationKeyIsCurrent(context) }) }
+                    else { try require(try connection.recordingPreparationKeyIsCurrent(context) == (fault == "none")) }
+                } else { try await rejected(pending) }
+            }
+            connection.close(); checks += 1
+        }
+        return checks
     }
 
     @MainActor static func recordingContextChecks() async throws -> Int {

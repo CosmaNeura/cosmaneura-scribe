@@ -8,7 +8,7 @@ export const RENDERER_CONTENT_SECURITY_POLICY = [
   "form-action 'none'",
   "frame-ancestors 'none'",
   "img-src 'self' data:",
-  "media-src 'none'",
+  "media-src blob:",
   "object-src 'none'",
   "script-src 'self'",
   "style-src 'self'",
@@ -41,6 +41,7 @@ export interface SecureBrowserWindowOptions {
     readonly webviewTag: false;
     readonly devTools: false;
     readonly navigateOnDragDrop: false;
+    readonly backgroundThrottling: false;
   };
 }
 
@@ -80,6 +81,9 @@ export function createSecureBrowserWindowOptions(
       webviewTag: false,
       devTools: false,
       navigateOnDragDrop: false,
+      // Recording preparation and stop/recovery must keep updating when a
+      // native picker or another application takes focus from the provider.
+      backgroundThrottling: false,
     }),
   });
 }

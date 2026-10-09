@@ -1149,9 +1149,7 @@ def downgrade() -> None:
         "normalized_translation_attempts",
         "normalized_translation_reviews",
     ):
-        op.execute(
-            f"DROP TRIGGER IF EXISTS {table}_current_working_membership ON public.{table}"
-        )
+        op.execute(f"DROP TRIGGER IF EXISTS {table}_current_working_membership ON public.{table}")
     op.execute(
         "DROP TRIGGER IF EXISTS scribe_sessions_working_projection ON public.scribe_sessions"
     )

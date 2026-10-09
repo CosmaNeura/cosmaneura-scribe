@@ -22,7 +22,8 @@ import Foundation
             watchConnectivityEnabled: false,
             sharedSessionSync: nil,
             loggerHandler: nil,
-            middleware: .init(request: [NativeOriginMiddleware(configuration: configuration)])
+            middleware: .init(request: [NativeOriginMiddleware(configuration: configuration)],
+                              response: [NativeTokenResponseMiddleware()])
         ))
     }
 
@@ -37,6 +38,11 @@ import Foundation
                                            organizationID: organizationID)
         }
         return try? NativeAuthIdentity(coreUserID: user.id, sessionID: session.id)
+    }
+
+    public var providerDisplayName: String? {
+        guard let current = identity, let user = clerk.user, user.id == current.userID else { return nil }
+        return NativeProviderDisplayName.joined(firstName: user.firstName, lastName: user.lastName)
     }
 
     public func signIn() async throws {
@@ -54,7 +60,14 @@ import Foundation
     }
 
     public func freshToken() async throws -> String? {
-        try await clerk.auth.getToken(.init(skipCache: true))
+        let timing = NativeTokenRequestTiming()
+        return try await NativeTokenRequestObservation.$current.withValue(timing) {
+            var completed = false
+            defer { timing.finish(completed: completed).log() }
+            let token = try await clerk.auth.getToken(.init(skipCache: true))
+            completed = token != nil
+            return token
+        }
     }
 
     public func signOut() async throws {
@@ -66,6 +79,13 @@ private struct NativeOriginMiddleware: ClerkRequestMiddleware {
     let configuration: NativeClerkConfiguration
     func prepare(_ request: inout URLRequest) async throws {
         try configuration.prepareFrontendRequest(&request)
+        NativeTokenRequestObservation.current?.requestStarted()
+    }
+}
+
+private struct NativeTokenResponseMiddleware: ClerkResponseMiddleware {
+    func validate(_ response: HTTPURLResponse, data: Data, for request: URLRequest) async throws {
+        NativeTokenRequestObservation.current?.responseReceived(status: response.statusCode)
     }
 }
 #endif

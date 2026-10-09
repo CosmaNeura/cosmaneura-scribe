@@ -1,9 +1,9 @@
 import CosmaneuraIOSAVFoundationDriver
-import CosmaneuraIOSPCMCore
 import CosmasNativeAuth
 import Foundation
 import Security
 
+@testable import CosmaneuraIOSPCMCore
 @testable import CosmaneuraNativeRecording
 @testable import CosmaneuraNativeRecordingPCM
 
@@ -27,20 +27,40 @@ import Security
   }
   private final class Records: NativeProviderRecordingHost.Records, @unchecked Sendable {
     var rows: [String: NativeRecordingStoredRecord] = [:]
+    var failSeal = false, failInventory = false, loseSealReply = false
+    var failCheckpoint = false
     func read(key: String) throws -> NativeRecordingStoredRecord {
       guard let row = rows[key] else { throw NativeRecordingFailure.storageUnavailable }
       return row
     }
-    func readBinding(key: String) -> NativeRecordingStoredRecord? { rows[key] }
+    func readBinding(key: String) throws -> NativeRecordingStoredRecord? {
+      if loseSealReply, let row = rows[key],
+        let value = try JSONSerialization.jsonObject(with: row.data) as? [String: Any],
+        value["completionLease"] != nil
+      {
+        throw NativeRecordingFailure.storageUnavailable
+      }
+      return rows[key]
+    }
     func readLease(key: String) -> NativeRecordingStoredRecord? { rows[key] }
     func availableBytes() -> Int { 2_000_000_000 }
-    func listRecordingKeys(prefix: String) -> [String] { rows.keys.filter { $0.hasPrefix(prefix) } }
+    func listRecordingKeys(prefix: String) throws -> [String] {
+      if failInventory { throw NativeRecordingFailure.storageUnavailable }
+      return rows.keys.filter { $0.hasPrefix(prefix) }
+    }
     func createBinding(key: String, data: Data) throws {
       try compareAndSwap(key: key, expectedRevision: 0, data: data)
     }
     func createLease(key: String, data: Data) throws { try createBinding(key: key, data: data) }
     func compareAndSwapBinding(key: String, expectedRevision: UInt64, data: Data) throws {
+      let value = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+      let sealing = value?["completionLease"] != nil
+      if failCheckpoint && value?["sourceCheckpoint"] != nil {
+        throw NativeRecordingFailure.storageUnavailable
+      }
+      if failSeal && sealing { throw NativeRecordingFailure.storageUnavailable }
       try compareAndSwap(key: key, expectedRevision: expectedRevision, data: data)
+      if loseSealReply && sealing { throw NativeRecordingFailure.storageUnavailable }
     }
     func compareAndSwapLease(key: String, expectedRevision: UInt64, data: Data) throws {
       try compareAndSwap(key: key, expectedRevision: expectedRevision, data: data)
@@ -64,17 +84,27 @@ import Security
     let scope: NativeRecordingScope, published: NativeRecordingPublicKey
     let leaseID = UUID()
     var objects: [Int: NativeRecordingReservation] = [:]
-    var bindings = 0, issues = 0, renewals = 0
+    var bindings = 0, issues = 0, renewals = 0, reservations = 0
+    var reservationSizes: [Int] = []
+    var leaseIntents: [UUID] = []
+    var leaseReceipts: [UUID: NativeRecordingLease] = [:]
+    var loseLeaseReply = false
+    var now: Date?
     var failAll = false, hold = false, expired = false
     var pending: CheckedContinuation<Void, Never>?
     init(scope: NativeRecordingScope, published: NativeRecordingPublicKey) {
       self.scope = scope
       self.published = published
     }
-    func configure(hold: Bool = false, expired: Bool = false, failAll: Bool = false) {
+    func configure(
+      hold: Bool = false, expired: Bool = false, failAll: Bool = false,
+      loseLeaseReply: Bool = false, now: Date? = nil
+    ) {
       self.hold = hold
       self.expired = expired
       self.failAll = failAll
+      self.loseLeaseReply = loseLeaseReply
+      self.now = now
     }
     func release() {
       hold = false
@@ -100,20 +130,30 @@ import Security
     func requestLease(previous: NativeRecordingLease?, intent: UUID) async throws
       -> NativeRecordingLease
     {
+      leaseIntents.append(intent)
       if hold { await withCheckedContinuation { pending = $0 } }
       _ = try recordingScope()
+      if let receipt = leaseReceipts[intent] { return receipt }
       if previous == nil { issues += 1 } else { renewals += 1 }
-      let issued = Date().addingTimeInterval(previous == nil && expired ? -1800 : -2)
-      return try NativeRecordingLease(
+      let issued = (now ?? Date()).addingTimeInterval(previous == nil && expired ? -1800 : -2)
+      let receipt = try NativeRecordingLease(
         receiptID: UUID(), leaseID: leaseID, sessionID: scope.sessionID,
         generation: (previous?.generation ?? 0) + 1,
         issuedAt: ISO8601DateFormatter().string(from: issued),
         expiresAt: ISO8601DateFormatter().string(from: issued.addingTimeInterval(900)))
+      leaseReceipts[intent] = receipt
+      if loseLeaseReply {
+        loseLeaseReply = false
+        throw Failed(line: #line)
+      }
+      return receipt
     }
     func reserve(lease: NativeRecordingLease, first: Int, count: Int, intent: UUID) throws
       -> NativeRecordingReservationBatch
     {
       _ = try recordingScope()
+      reservations += 1
+      reservationSizes.append(count)
       let rows = try (first..<(first + count)).map { sequence in
         if let row = objects[sequence] { return row }
         let object = UUID()
@@ -136,6 +176,8 @@ import Security
     func prepare() throws -> NativeSourceGrant { throw Failed(line: #line) }
     func consumeForMicrophone() throws -> NativeCapturePermit { throw Failed(line: #line) }
     func requireActiveMicrophone(runID: String) throws { throw Failed(line: #line) }
+    func requireMicrophoneFinalization(runID: String) throws { throw Failed(line: #line) }
+    func retireForStop() {}
     func retireForAuthenticationChange() {}
     func confirmStopped() throws {
       if confirmed { throw Failed(line: #line) }
@@ -145,11 +187,13 @@ import Security
     }
   }
   private final class Interval: NativeProviderRecordingInterval {
-    let writer: NativeRecordingQueueWriter, reservation: NativeRecordingReservation
+    let sink: NativeRecordingPCMSink
     let source: Source
     let first: Int, prior: Int
     var phase: NativeProviderRecordingRun.Phase = .ready
     var isPhysicallyIdle = true, failStop = false, empty = false, committed = false
+    var incomplete = false
+    var stopCalls = 0
     let meter = PCMSignalMonitor()
     init(
       source: Source, cipher: NativeRecordingEncryption, recovery: UUID, records: Records,
@@ -157,18 +201,23 @@ import Security
     ) throws {
       self.source = source
       self.prior = prior
-      reservation = batch.reservations[0]
-      first = reservation.sequence
-      writer = try NativeRecordingQueueWriter(
-        encryption: cipher, recoveryScope: recovery, store: records,
+      first = batch.reservations[0].sequence
+      sink = try NativeRecordingPCMSink(
+        encryption: cipher, recoveryScope: recovery, records: records,
         firstSequence: first, priorPlaintextBytes: prior,
         maximumPlaintextBytes: NativeRecordingFlowOwner.maximumPlaintextBytes)
+      try sink.stage(batch)
     }
-    var captureState: NativeRecordingPCMState {
-      NativeRecordingPCMState(
-        phase: isPhysicallyIdle ? .closed : .accepting,
-        nextSequence: first + (committed ? 1 : 0), committedChunks: committed ? 1 : 0,
-        committedPlaintextBytes: prior + (committed ? 204 : 0), pendingReservations: 0)
+    var captureState: NativeRecordingPCMState { sink.state }
+    var capturedAudioFrames = 0
+    func emit(_ byteCount: Int = 160) throws {
+      let pcm = OwnedPCMBytes([UInt8](repeating: 4, count: byteCount))
+      _ = try sink.emit(
+        PCMEncodedPacket(
+          sequenceNumber: UInt64(sink.state.committedChunks), bytes: pcm))
+      capturedAudioFrames += byteCount / 2
+      try check(pcm.withUnsafeBytes { $0.allSatisfy { $0 == 0 } })
+      committed = true
     }
     func captureSignal() -> PCMSignalMonitor.Snapshot { meter.snapshot() }
     func start() {
@@ -176,14 +225,19 @@ import Security
       isPhysicallyIdle = false
     }
     func stop() throws {
+      stopCalls += 1
+      if incomplete {
+        isPhysicallyIdle = true
+        phase = .stopped
+        throw NativeRecordingFinalizationFailure.storageFailed
+      }
       if phase == .stopped { return }
       isPhysicallyIdle = true
       if !committed && !empty {
-        var pcm = Data(repeating: 4, count: 160)
-        _ = try writer.persist(
-          pcm16: &pcm, objectID: reservation.objectID, sequence: reservation.sequence)
-        try check(pcm.allSatisfy { $0 == 0 })
-        committed = true
+        try emit()
+      }
+      if sink.state.phase != .closed {
+        try sink.finish(PCMStopResult(finalPacket: nil))
       }
       if failStop {
         phase = .stopPending
@@ -217,9 +271,13 @@ import Security
           version: "synthetic-v1",
           modulusBase64URL: nativeBase64URL(data.subdata(in: 9..<393))))
     }
-    func host() -> NativeProviderRecordingHost {
+    func host(
+      service override: (any NativeProviderRecordingHost.Service)? = nil,
+      now: @escaping @MainActor () -> Date = { Date() }
+    ) -> NativeProviderRecordingHost {
       NativeProviderRecordingHost(
-        scope: scope, recoveryScope: recovery, service: service, records: records, keys: keys,
+        scope: scope, recoveryScope: recovery, service: override ?? service, records: records,
+        keys: keys,
         requireCurrent: { if self.deny { throw NativeRecordingBindingFailure.authorityChanged } },
         recoverSources: {},
         makeSource: { lease, batch in
@@ -243,7 +301,7 @@ import Security
             records: self.records, prior: prior, batch: batch)
           self.runs.append(run)
           return run
-        })
+        }, now: now)
     }
   }
 
@@ -252,13 +310,278 @@ import Security
     do {
       let f = try Fixture()
       let host = f.host()
+      await f.service.configure(hold: true)
+      try await host.open()
+      try await wait { await f.service.pending != nil }
+      let key = f.keys.value
+      let intent = host.saved!.completionIntent
+      var settled = false
+      let start = Task {
+        defer { settled = true }
+        do {
+          try await host.start()
+          return true
+        } catch { return false }
+      }
+      try await wait { host.phase == .starting }
+      try await host.pause()
+      // The held service deliberately ignores cancellation. Cancel must settle
+      // the visible Start while the original preparation remains in custody.
+      try await wait { settled && !host.busy }
+      try check(await start.value == false)
+      try check(host.phase == .paused && host.failure == nil)
+      try check(await f.service.pending != nil)
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      // Retrying waits behind the same retained request, never overlaps it or
+      // changes its idempotency key. Late completion cannot start the old run.
+      let retry = Task { try await host.start() }
+      try await wait { host.phase == .starting }
+      try check(await f.service.leaseIntents.count == 1)
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      await f.service.release()
+      try await retry.value
+      let intents = await f.service.leaseIntents
+      try check(intents.count == 2 && Set(intents).count == 1)
+      try check(await f.service.issues == 1)
+      try check(host.phase == .recording && f.runs.count == 1)
+      try check(f.keys.value == key && host.saved!.completionIntent == intent)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      await f.service.configure(hold: true)
+      try await host.open()
+      try await wait { await f.service.pending != nil }
+      try check(host.phase == .ready && !host.busy && f.sources.isEmpty && f.runs.isEmpty)
+      let key = f.keys.value
+      let start = Task { try await host.start() }
+      await Task.yield()
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      await f.service.release()
+      try await start.value
+      try check(await f.service.leaseIntents.count == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(host.phase == .recording && f.runs.count == 1 && f.keys.value == key)
+      try await host.pause()
+      try await host.start()
+      try check(await f.service.leaseIntents.count == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(f.runs.count == 2 && f.runs[1].first == 1 && f.keys.value == key)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      await f.service.configure(loseLeaseReply: true)
+      try await host.open()
+      try await wait { await f.service.leaseIntents.count == 1 }
+      for _ in 0..<10 { await Task.yield() }
+      try check(await f.service.leaseIntents.count == 1)
+      try check(host.phase == .ready && host.failure == nil && f.sources.isEmpty)
+      try await host.start()
+      let intents = await f.service.leaseIntents
+      try check(intents.count == 2 && Set(intents).count == 1)
+      try check(await f.service.issues == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(host.phase == .recording && f.runs.count == 1)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      var now = Date()
+      let host = f.host(now: { now })
+      await f.service.configure(now: now)
+      try await host.open()
+      try await wait { await f.service.reservations == 1 }
+      try check(host.phase == .ready && f.sources.isEmpty)
+      now = now.addingTimeInterval(901)
+      await f.service.configure(now: now)
+      try await host.start()
+      try check(await f.service.renewals == 1)
+      try check(await f.service.reservationSizes == [30, 30])
+      try check(f.sources[0].recordingPreparation.leaseGeneration == 2)
+      try check(host.phase == .recording)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      await f.service.configure(hold: true)
+      try await host.open()
+      try await wait { await f.service.pending != nil }
+      let close = Task { try await host.close() }
+      try await wait { host.requiresReopen }
+      let other = f.host()
+      try await rejects { try await other.open() }
+      try await other.close()
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      await f.service.release()
+      try await close.value
+      try check(host.phase == .closed)
+      let reopened = f.host()
+      try await reopened.open()
+      try await reopened.start()
+      let intents = await f.service.leaseIntents
+      try check(intents.count == 2 && Set(intents).count == 1)
+      try check(await f.service.issues == 1)
+      try check(f.runs.count == 1)
+      try await reopened.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      var now = Date()
+      let host = f.host(now: { now })
+      await f.service.configure(now: now)
+      try await host.open()
+      try await host.start()
+      let key = f.keys.value
+      let intent = host.saved!.completionIntent
+      now = now.addingTimeInterval(901)
+      await f.service.configure(hold: true, now: now)
+      try await host.pause()
+      try await wait { await f.service.pending != nil }
+      try check(f.runs[0].isPhysicallyIdle && host.saved!.committedChunks == 1)
+      let seal = Task { try await host.sealForUpload() }
+      try await wait { f.runs[0].stopCalls == 2 }
+      try check(f.sources.count == 1 && f.runs.count == 1)
+      await f.service.release()
+      try await seal.value
+      let intents = await f.service.leaseIntents
+      try check(intents.count == 3 && intents[1] == intents[2])
+      try check(await f.service.renewals == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(host.phase == .sealed && host.saved!.committedChunks == 1)
+      try check(host.saved!.completionIntent == intent && f.keys.value == key)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      try await host.open()
+      let key = f.keys.value
+      let intent = host.saved!.completionIntent
+      try await host.start()
+      f.records.failSeal = true
+      try await rejects { try await host.sealForUpload() }
+      try check(host.phase == .paused && host.failure == .recoveryFailed)
+      try check(host.saved!.committedChunks == 1 && f.runs[0].captureState.committedChunks == 1)
+      let retained = f.records.rows
+      f.records.failSeal = false
+      f.records.failInventory = true
+      try await rejects { try await host.start() }
+      try check(host.phase == .paused && host.failure == .recoveryFailed && f.runs.count == 1)
+      try check(f.sources.count == 1)
+      f.records.failInventory = false
+      try await host.start()
+      try check(host.phase == .recording && f.runs[1].first == 1 && f.runs[1].prior == 204)
+      try check(f.keys.value == key && host.saved!.completionIntent == intent)
+      for (name, row) in retained where name.hasPrefix("scribe-provider-queue:") {
+        try check(f.records.rows[name]?.data == row.data)
+      }
+      try await host.sealForUpload()
+      try check(host.phase == .sealed && host.saved!.committedChunks == 2)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      try await host.open()
+      let intent = host.saved!.completionIntent
+      let key = f.keys.value
+      try await host.start()
+      f.records.loseSealReply = true
+      try await rejects { try await host.sealForUpload() }
+      try check(host.phase == .paused && host.failure == .recoveryFailed)
+      f.records.loseSealReply = false
+      try await rejects { try await host.start() }
+      try check(host.phase == .sealed && f.runs.count == 1 && f.sources.count == 1)
+      try check(host.saved!.completionIntent == intent && f.keys.value == key)
+      let sealed = host.saved
+      try await host.sealForUpload()
+      try check(host.saved == sealed && host.saved!.committedChunks == 1)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      // Use the real PCM sink: its byte count is local to the current interval.
+      // A shorter resumed interval must add to, not replace, the saved visit.
+      let f = try Fixture()
+      let bridge = NativeProviderRecordingBridge()
+      let revision = UUID().uuidString.lowercased()
+      let selection = try NativeProviderRecordingSelection([
+        "requestId": UUID().uuidString.lowercased(), "revision": revision,
+        "workspaceId": f.scope.workspaceID.uuidString.lowercased(),
+        "sessionId": f.scope.sessionID.uuidString.lowercased(),
+        "bindingRef": "scribe_capture_binding_01j00000000000000000000000",
+      ])
+      let opened = try await bridge.open(
+        selection, current: {}, make: { f.host() }, inputMuted: { false })
+      let id = (opened["recording"] as! [String: Any])["recorderId"] as! String
+      let key = f.keys.value
+      func command(_ kind: String, bytes: Int, chunks: Int, ok: Bool = true) async throws {
+        let reply = try await bridge.command(
+          NativeProviderRecordingCommand([
+            "requestId": UUID().uuidString.lowercased(), "revision": revision,
+            "recorderId": id, "kind": kind,
+          ]), current: {}, inputMuted: { false })
+        try check(reply["ok"] as? Bool == ok)
+        if kind == "close" { return }
+        let state = reply["recording"] as! [String: Any]
+        try check(state["recordedPlaintextBytes"] as? Int == bytes)
+        try check(state["recordedChunks"] as? Int == chunks)
+        try check(state["capturedAudioFrames"] as? Int == (bytes - chunks * 44) / 2)
+      }
+      try await command("start", bytes: 0, chunks: 0)
+      try f.runs[0].emit(320_000)
+      try await command("read", bytes: 320_044, chunks: 1)
+      try await command("pause", bytes: 320_044, chunks: 1)
+      let retained = try f.records.rows.filter { row in
+        guard row.key.hasPrefix("scribe-provider-queue:") else { return false }
+        return (try JSONSerialization.jsonObject(with: row.value.data) as? [String: Any])?["state"]
+          as? String == "encrypted"
+      }
+      try check(retained.count == 1)
+      try await command("start", bytes: 320_044, chunks: 1)
+      try f.runs[1].emit(64_000)
+      try await command("read", bytes: 384_088, chunks: 2)
+      f.runs[1].failStop = true
+      try await command("pause", bytes: 384_088, chunks: 2, ok: false)
+      f.runs[1].failStop = false
+      try await command("pause", bytes: 384_088, chunks: 2)
+      try await command("read", bytes: 384_088, chunks: 2)
+      try await command("start", bytes: 384_088, chunks: 2)
+      try check(await f.service.reservations == 1)
+      try check(await f.service.reservationSizes == [30])
+      try check(f.sources.count == 3 && f.sources[0].confirmed && f.sources[1].confirmed)
+      try f.runs[2].emit(32_000)
+      try await command("read", bytes: 416_132, chunks: 3)
+      try await command("seal", bytes: 416_132, chunks: 3)
+      try await command("read", bytes: 416_132, chunks: 3)
+      try check(f.keys.value == key)
+      for (name, row) in retained {
+        try check(
+          f.records.rows[name]?.data == row.data && f.records.rows[name]?.revision == row.revision)
+      }
+      try await command("close", bytes: 0, chunks: 0)
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
       try await host.open()
       let key = f.keys.value
       let intent = host.saved!.completionIntent
       try check(host.phase == .ready && f.sources.isEmpty && f.runs.isEmpty)
       let bindings = await f.service.bindings
-      let issues = await f.service.issues
-      try check(bindings == 1 && issues == 0)
+      try check(bindings == 1)
       let other = f.host()
       try await rejects { try await other.open() }
       try await other.close()
@@ -293,8 +616,8 @@ import Security
     do {
       let f = try Fixture()
       let host = f.host()
-      try await host.open()
       await f.service.configure(hold: true)
+      try await host.open()
       let first = Task { try await host.start() }
       let duplicate = Task { try await host.start() }
       try await wait { await f.service.pending != nil }
@@ -309,8 +632,8 @@ import Security
     do {
       let f = try Fixture()
       let host = f.host()
-      try await host.open()
       await f.service.configure(expired: true)
+      try await host.open()
       try await host.start()
       try check(await f.service.renewals == 1)
       try await host.close()
@@ -340,7 +663,7 @@ import Security
       f.runs[0].failStop = true
       try await rejects { try await host.sealForUpload() }
       try check(
-        host.phase == .stopPending && host.saved!.phase == .open && f.runs[0].isPhysicallyIdle)
+        host.phase == .stopPending && host.saved!.phase == .incomplete && f.runs[0].isPhysicallyIdle)
       try await rejects { try await host.start() }
       f.runs[0].failStop = false
       try await host.sealForUpload()
@@ -356,14 +679,18 @@ import Security
       f.runs[0].empty = true
       try await rejects { try await host.sealForUpload() }
       try check(host.saved!.phase == .open && host.phase == .paused)
+      try await host.start()
+      try check(host.phase == .recording && f.runs[1].first == 0)
+      try await host.sealForUpload()
+      try check(host.phase == .sealed && host.saved!.committedChunks == 1)
       try await host.close()
       checks += 1
     }
     do {
       let f = try Fixture()
       let host = f.host()
-      try await host.open()
       await f.service.configure(hold: true)
+      try await host.open()
       let start = Task { try await host.start() }
       try await wait { await f.service.pending != nil }
       host.retire()
@@ -379,9 +706,73 @@ import Security
       let host = f.host()
       try await host.open()
       try await host.start()
-      try f.runs[0].stop()
+      try f.runs[0].emit()
+      let retained = f.records.rows
+      f.runs[0].incomplete = true
+      try await rejects { try await host.pause() }
+      try check(host.failure == .recordingIncomplete && host.phase == .stopPending)
+      for _ in 0..<2 { try await rejects { try await host.sealForUpload() } }
+      try await rejects { try await host.start() }
+      try check(host.failure == .recordingIncomplete && host.saved!.phase == .incomplete)
+      try check(f.runs.count == 1 && f.runs[0].captureState.committedChunks == 1)
+      for (key, row) in retained { try check(f.records.rows[key]?.data == row.data) }
+      try await host.close()
+      let reopened = f.host()
+      try await reopened.open()
+      try check(reopened.failure == .recordingIncomplete && reopened.saved!.phase == .incomplete)
+      try check(reopened.saved!.committedChunks == 1)
+      try await rejects { try await reopened.start() }
+      try await rejects { try await reopened.sealForUpload() }
+      try check(f.runs.count == 1)
+      try await reopened.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture(), host = f.host()
+      try await host.open()
+      f.records.failCheckpoint = true
+      try await rejects { try await host.start() }
+      try check(f.sources.isEmpty && f.runs.isEmpty)
+      f.records.failCheckpoint = false
+      try await host.close()
+      let reopened = f.host()
+      try await reopened.open()
+      try await reopened.start()
+      try await reopened.pause()
+      try await reopened.close()
+      let successful = f.host()
+      try await successful.open()
+      try check(successful.failure == nil && successful.saved!.phase == .open)
+      try await successful.sealForUpload()
+      try await successful.close()
+      checks += 1
+    }
+    for retryStop in [false, true] {
+      let f = try Fixture()
+      let host = f.host()
+      try await host.open()
+      try await host.start()
+      let key = f.keys.value
+      f.runs[0].failStop = retryStop
+      if retryStop {
+        try await rejects { try f.runs[0].stop() }
+        try await rejects { try await host.refresh() }
+        try check(host.phase == .stopPending && host.failure == .stopPending)
+        f.runs[0].failStop = false
+        try await host.pause()
+      } else {
+        try f.runs[0].stop()
+        try await host.refresh()
+      }
+      try check(host.phase == .paused && host.failure == .captureInterrupted)
+      try check(host.saved!.committedChunks == 1 && f.runs.count == 1 && f.keys.value == key)
       try await host.refresh()
-      try check(host.phase == .paused && host.saved!.committedChunks == 1)
+      try check(host.failure == .captureInterrupted && f.runs.count == 1)
+      try await host.start()
+      try check(host.phase == .recording && host.failure == nil && f.runs.count == 2)
+      try await host.pause()
+      try check(host.phase == .paused && host.failure == nil)
+      try check(host.saved!.committedChunks == 2 && f.keys.value == key)
       try await host.close()
       checks += 1
     }

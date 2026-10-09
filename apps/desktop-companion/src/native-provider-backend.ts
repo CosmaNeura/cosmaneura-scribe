@@ -1,3 +1,6 @@
+import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
+import { parseEncounterDisplay } from "../../capture/src/provider/encounter-display";
+import { openingReviewFromCore } from "../../capture/src/provider/opening-review";
 import type { CiphertextUploadTarget } from "../../capture/src/bff/contracts";
 import type { ProviderEncounter } from "../../capture/src/provider/workspace-contracts";
 import { exact, object, uuid } from "../../capture/src/provider/desktop-host-protocol";
@@ -6,18 +9,29 @@ import type { DesktopProviderBackend } from "./provider-workspace-factory.js";
 import { parseBackendCaptureGrant } from "./protocol.js";
 import { parseNativeProcessFence, type NativeProcessFence } from "./native-process-fence.js";
 import type { NativeProviderClient } from "./native-provider-client.js";
+import { parseProviderAccount, type ProviderAccount, createEncounterSetup, type CreationRecords } from "../../capture/src/provider/encounter-setup";
 
 /** Real native RPC/receiver backend. The helper owns fresh SDK tokens and all
  * source-start proofs; the main process receives only the checked grant/decision. */
 export async function connectDesktopNativeBackend(native: NativeProviderClient, options: {
   signal: AbortSignal;
+  diagnostics?: RuntimeDiagnostic;
   uploadTarget: CiphertextUploadTarget;
   openCore(appointmentRef: string | null): Promise<void>;
+  creationRecords?: (scope: string, signal: AbortSignal) => Promise<{ records: CreationRecords; close(): Promise<void> }>;
 }): Promise<DesktopProviderBackend> {
+  const diagnostics = options.diagnostics ?? NO_DIAGNOSTICS;
+  const timed = async <T>(event: RuntimeTimingEvent, run: () => Promise<T>): Promise<T> => {
+    const began = performance.now();
+    try { return await run(); }
+    finally { try { diagnostics(event, Math.max(0, performance.now() - began)); } catch { /* Observation cannot affect authority. */ } }
+  };
   const state = await native.getState();
   if (state.phase !== "ready" || options.signal.aborted || native.signal.aborted) throw unavailable();
   const revision = state.revision, abort = new AbortController();
   const lifetime = AbortSignal.any([options.signal, native.signal, abort.signal]);
+  let openingReviewSupported = false, noteOpeningSupported = false, creationSupported = false;
+  let account: ProviderAccount | undefined;
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const sources = new Map<string, { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence }>();
   const releasePreparation = async (preparationId: string, stopped: boolean): Promise<void> => {
@@ -43,11 +57,17 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   const request = async (action: string, body: Record<string, unknown>, key: string,
     signal: AbortSignal): Promise<Response> => {
     current(signal);
-    if (!["catalog", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes"].includes(action)) throw unavailable();
-    const value = exact(await native.request("providerRequest", {
+    if (!["catalog", "encounters", "mount", "recorder", "capture-admissions", "capture-operations", "capture-notes", "note-opening"].includes(action)) throw unavailable();
+    const operation = typeof body.operation === "object" && body.operation !== null && "kind" in body.operation ? body.operation.kind : null;
+    const event: RuntimeTimingEvent = action === "catalog" ? "provider_catalog" : action === "mount" ? "provider_mount"
+      : action === "capture-admissions" ? "provider_admission" : operation === "creator_review" ? "provider_review"
+      : operation === "capabilities" ? "provider_capabilities" : operation === "encryption_key" ? "provider_encryption_key"
+      : operation === "prepare_recording_window" ? "provider_recording_window"
+      : operation === "preparation_metadata" ? "provider_preparation_metadata" : "provider_other_operation";
+    const value = exact(await timed(event, () => native.request("providerRequest", {
       revision, action, key, body: JSON.stringify(body),
     }, AbortSignal.any([lifetime, signal]), action === "capture-admissions" ? 220_000
-      : action === "capture-notes" ? 125_000 : 35_000), ["status", "body"]);
+      : ["capture-notes", "note-opening"].includes(action) ? 125_000 : 35_000)), ["status", "body"]);
     current(signal);
     if (typeof value.status !== "number" || typeof value.body !== "string"
       || ![200, 401, 403, 409, 422, 503].includes(value.status)) throw unavailable();
@@ -63,16 +83,31 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
     if (value.revision !== revision) throw unavailable();
     return value;
   };
+  const encounterSetup = options.creationRecords ? createEncounterSetup({
+    current, records: options.creationRecords,
+    canHide: appointmentRef => encounters.has(appointmentRef),
+    created: entry => { encounters.set(entry.appointmentRef, { workspaceId: entry.workspaceId, encounter: entry }); },
+    request: async (body, key, signal) => {
+      const response = await request("encounters", body, key, signal);
+      if (response.status !== 200) throw unavailable();
+      const value = object(await response.json()); current(signal);
+      if (value.revision !== revision) throw unavailable();
+      return value;
+    },
+  }) : undefined;
   return {
+    get encounterSetup() { return creationSupported ? encounterSetup : undefined; },
+    get account() { return account; },
     signal: lifetime,
     dispose: () => disposal ??= (async () => {
       abort.abort(); await observer.remove();
       for (const preparationId of sources.keys()) await releasePreparation(preparationId, false);
       sources.clear(); encounters.clear();
+      await encounterSetup?.dispose();
     })().catch(error => { disposal = undefined; throw error; }),
     listEncounters: async signal => {
       const value = await json("catalog", {}, signal);
-      if (!Array.isArray(value.encounters) || value.encounters.length > 100) throw unavailable();
+      if (!Array.isArray(value.encounters) || value.encounters.length > 1000) throw unavailable();
       const next = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
       for (const input of value.encounters) {
         const row = object(input), encounter = parseEncounter(row);
@@ -80,6 +115,10 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
         next.set(encounter.appointmentRef, { workspaceId: uuid(row.workspaceId), encounter });
       }
       current(signal); encounters.clear();
+      openingReviewSupported = value.opening_review_v1 === true;
+      noteOpeningSupported = value.note_opening_v1 === true;
+      creationSupported = value.encounter_creation_v1 === true;
+      account = creationSupported ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }) : undefined;
       for (const [id, value] of next) encounters.set(id, value);
       return [...next.values()].map(value => value.encounter);
     },
@@ -87,7 +126,10 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
     openEncounter: async (appointmentRef, signal) => {
       current(signal);
       const row = encounters.get(appointmentRef); if (!row) throw unavailable();
-      const value = await json("mount", { workspace_id: row.workspaceId }, signal);
+      const supportsNoteOpening = noteOpeningSupported;
+      const openingNonce = openingReviewSupported ? crypto.randomUUID() : undefined;
+      const value = await json("mount", { workspace_id: row.workspaceId,
+        ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
       if (value.workspaceId !== row.workspaceId || value.appointmentRef !== appointmentRef
         || !reference(value.bindingRef, "scribe_capture_binding")) throw unavailable();
       const encounter = parseEncounter(object(value.encounter));
@@ -108,12 +150,15 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       };
       return {
         release, retireSource, encounter, scope, signal: AbortSignal.any([lifetime, signal]), recoveryScope: uuid(value.recoveryScope),
+        ...(object(value.encounter).admission_metadata_v1 === true ? { admissionMetadataSupported: true as const } : {}),
+        ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
+        ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,
         request: (path, body, key, operationSignal) => {
           current(signal);
           const action = path.slice("/service/v1/agent/scribe/".length);
           if (path !== "/service/v1/agent/scribe/" + action
-            || !["capture-admissions", "capture-operations", "capture-notes"].includes(action)
+            || !["capture-admissions", "capture-operations", "capture-notes", ...(supportsNoteOpening ? ["note-opening"] : [])].includes(action)
             || body.workspace_id !== scope.workspaceId || body.binding_ref !== scope.bindingRef) throw unavailable();
           return request(action, { ...body }, key, AbortSignal.any([signal, operationSignal]));
         },
@@ -128,13 +173,16 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
           current(signal); current(operationSignal);
           const preparationId = crypto.randomUUID(), source: { sourceLeaseId?: string; retiringPreparation: boolean; processFence?: NativeProcessFence } = { retiringPreparation: false };
           sources.set(preparationId, source); ownedSources.add(preparationId);
-          const raw = await native.request("sourcePrepare", {
+          // Called after deliberate Start and window selection. The native
+          // owner keeps the short-lived decision until sourceAuthorize consumes
+          // it; this reply exposes only the original grant and process fence.
+          const raw = await timed("provider_source_prepare", () => native.request("sourcePrepareForStart", {
             revision, preparationId, workspaceId: scope.workspaceId, bindingRef: scope.bindingRef,
             sessionId: prepared.sessionId, leaseId: prepared.captureLeaseId,
             leaseReceiptId: prepared.leaseReceiptId, leaseGeneration: prepared.captureLeaseGeneration,
             captureAuthorizedUntil: prepared.captureAuthorizedUntil,
             ...(prepared.firstSequenceNumber ? { firstSequenceNumber: prepared.firstSequenceNumber } : {}),
-          }, AbortSignal.any([lifetime, signal, operationSignal]));
+          }, AbortSignal.any([lifetime, signal, operationSignal])));
           const value = exact(raw, ["grant", "processFence"]);
           const grant = parseBackendCaptureGrant(value.grant);
           const processFence = parseNativeProcessFence(value.processFence);
@@ -153,8 +201,8 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
         authority: { authorizeStart: async (grant, operationSignal) => {
           current(signal); current(operationSignal);
           if (![...ownedSources].some(id => sources.get(id)?.sourceLeaseId === grant.sourceLeaseId)) throw unavailable();
-          const decision = await native.request("sourceAuthorize", { sourceLeaseId: grant.sourceLeaseId },
-            AbortSignal.any([lifetime, signal, operationSignal]));
+          const decision = await timed("provider_source_authorize", () => native.request("sourceAuthorize", { sourceLeaseId: grant.sourceLeaseId },
+            AbortSignal.any([lifetime, signal, operationSignal])));
           current(signal); current(operationSignal);
           return decision; // Existing protected validator binds every grant field and consumes once.
         } },
@@ -170,9 +218,11 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   };
 }
 
-function parseEncounter(value: Record<string, unknown>): ProviderEncounter {
-  if (!reference(value.appointmentRef, "appointment") || typeof value.title !== "string"
-    || value.title.length > 300 || typeof value.detail !== "string" || value.detail.length > 1000) throw unavailable();
-  return Object.freeze({ appointmentRef: value.appointmentRef, title: value.title, detail: value.detail });
-}
+const parseEncounter = parseEncounterDisplay;
+
 function unavailable(): Error { return new Error("provider_native_connection_unavailable"); }
+
+function objectAccount(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable();
+  return value as Record<string, unknown>;
+}

@@ -9,18 +9,33 @@ import {
   type PendingReviewDecision,
 } from "./creator-review-journal";
 import "./creator-review.css";
+import { isUuid } from "./contracts";
+import { bindTranscriptTools } from "./transcript-tools";
+export { bindTranscriptTools, renderTranscriptEvidenceLinks } from "./transcript-tools";
+import { currentSpeakerConfirmations, parsePendingCreatorEdit, speakerNameSuggestion, type CreatorEditJournal, type PendingCreatorEdit } from "./creator-edit";
+import { creatorEditFromForm, renderCreatorEditDialog, type SpeakerNameSuggestions } from "./creator-edit-view";
+import { AutomaticProgress, canApplyReviewProgress, hasPendingReviewProgress } from "./automatic-progress";
 
-type Phase = "loading" | "ready" | "saving" | "retry" | "unavailable";
+type Phase = "loading" | "ready" | "saving" | "retry" | "edit-retry" | "unavailable";
 export interface CreatorReviewState {
   readonly phase: Phase;
   readonly view: CreatorReviewView | null;
   readonly notice: string;
+  readonly editable?: boolean;
 }
 
 export interface CreatorReviewOptions {
+  /** One explicit catalog click, consumed by the first load even if recovery wins. Never persist. */
+  readonly initialAction?: "open-draft";
+  /** Current authorized encounter/profile display values; assignment still needs confirmation. */
+  readonly speakerNameSuggestions?: SpeakerNameSuggestions;
+  readonly playPassage?: (sessionId: string, segmentId: string, signal: AbortSignal) => Promise<{ wavBase64: string } | null>;
   readonly journal?: CreatorReviewJournal;
+  readonly editJournal?: CreatorEditJournal;
   /** Open the host's existing Core note flow with this action's fresh authorized read. */
   readonly continueToNote?: (view: CreatorReviewView) => Promise<void>;
+  /** Coordinated fresh read, consumed only by this still-current explicit action. */
+  readonly prepareNoteOpening?: () => Promise<{ view: CreatorReviewView; open: () => Promise<void> }>;
 }
 
 /** Mount in the authenticated standalone or OS shell; dispose on logout/session change. */
@@ -29,25 +44,122 @@ export function mountCreatorReview(
 ): () => void {
   let state: CreatorReviewState = { phase: "loading", view: null, notice: "" };
   let pending: PendingReviewDecision | null = null;
+  let pendingEdit: PendingCreatorEdit | null = null;
+  let editingSegment: string | null = null;
   let disposed = false;
   let generation = 0;
   let recovered = false;
   let continuing = false;
+  let refreshing = false;
+  let initialAction = options.initialAction;
+  let playbackAbort: AbortController | null = null, playbackUrl: string | null = null;
+  let playbackAudio: HTMLAudioElement | null = null;
+  const stopPlayback = (): void => {
+    playbackAbort?.abort(); playbackAbort = null;
+    if (playbackAudio) { playbackAudio.pause(); playbackAudio.removeAttribute("src"); playbackAudio.load(); playbackAudio = null; }
+    if (playbackUrl) URL.revokeObjectURL(playbackUrl); playbackUrl = null;
+  };
+  const disposeTranscriptTools = bindTranscriptTools(root);
+  const waitingForTranscript = (): boolean => state.phase === "ready" && pending === null && pendingEdit === null
+    && editingSegment === null && !continuing && !refreshing && hasPendingReviewProgress(state.view);
+  const progress = new AutomaticProgress({
+    active: () => !disposed && state.phase === "ready" && pending === null && pendingEdit === null && editingSegment === null && !continuing && !refreshing,
+    pending: waitingForTranscript, visible: () => document.visibilityState === "visible",
+    read: signal => api.read(signal),
+    apply: view => {
+      const previous = state.view;
+      if (!canApplyReviewProgress(previous, view)) throw new CreatorReviewError("invalid_response");
+      if (JSON.stringify(previous) === JSON.stringify(view)) return;
+      state = { ...state, view, notice: "" }; renderPreservingReading();
+    },
+    stopped: reason => {
+      state = { ...state, notice: reason === "deadline"
+        ? "Automatic checking paused. Choose Check status to look again. Your saved work is retained."
+        : "The status check could not be confirmed. Check your connection, then choose Check status. Your saved work is retained." };
+      renderPreservingReading();
+    },
+  });
+  const clearRefresh = (): void => progress.pause();
+  const scheduleRefresh = (): void => progress.schedule();
   const render = (): void => {
     if (disposed) return;
-    root.innerHTML = renderCreatorReview(state);
+    stopPlayback();
+    root.innerHTML = renderCreatorReview({ ...state, editable: Boolean(api.edit && options.editJournal) });
+    if (options.playPassage && state.view?.source) {
+      for (const row of root.querySelectorAll<HTMLElement>("[data-transcript-segment]")) {
+        const segment = state.view.source.segments.find(item => item.source_segment_id === row.dataset.transcriptSegment);
+        if (!segment) continue;
+        const button = document.createElement("button"); button.type = "button";
+        button.dataset.reviewAction = "play-passage"; button.dataset.segment = segment.source_segment_id;
+        button.textContent = "Listen to passage"; row.append(button);
+      }
+    }
+    if (editingSegment && state.view) {
+      root.insertAdjacentHTML("beforeend", renderCreatorEditDialog(state.view, editingSegment, options.speakerNameSuggestions));
+      const dialog = root.querySelector<HTMLDialogElement>("[data-creator-edit-dialog]");
+      dialog?.showModal();
+      dialog?.addEventListener("cancel", event => { event.preventDefault(); editingSegment = null; render(); scheduleRefresh(); });
+    }
     if (state.phase === "ready" && state.view?.working?.note_ready && options.continueToNote) {
       const button = document.createElement("button");
       button.type = "button";
       button.dataset.reviewAction = "continue";
       button.disabled = continuing;
-      button.textContent = continuing ? "Opening note…" : "Continue to note";
+      button.textContent = continuing ? "Opening note…" : "Review draft note";
       root.querySelector(".creator-status")?.append(button);
     }
   };
 
+  const play = (event: Event): void => {
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button[data-review-action="play-passage"]') : null;
+    if (!button || !root.contains(button) || !options.playPassage || !state.view || !button.dataset.segment) return;
+    stopPlayback(); const controller = new AbortController(); playbackAbort = controller;
+    const view = state.view, row = button.parentElement; if (!row) return;
+    row.querySelector("[data-playback-result]")?.remove();
+    const result = document.createElement("div"); result.dataset.playbackResult = ""; result.setAttribute("role", "status");
+    result.textContent = "Opening saved audio…"; row.append(result); button.disabled = true;
+    void options.playPassage(view.session_id, button.dataset.segment, controller.signal).then(value => {
+      if (disposed || controller.signal.aborted || state.view !== view || !result.isConnected) return;
+      if (!value) { result.textContent = "Audio playback is unavailable for this passage on this device. The transcript is retained."; return; }
+      if (value.wavBase64.length > 1_300_000 || !/^[A-Za-z0-9+/]+={0,2}$/u.test(value.wavBase64)) throw new Error("Invalid passage audio");
+      const bytes = Uint8Array.from(atob(value.wavBase64), char => char.charCodeAt(0));
+      try { playbackUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" })); } finally { bytes.fill(0); }
+      const audio = document.createElement("audio"); audio.controls = true; audio.preload = "none";
+      playbackAudio = audio; audio.src = playbackUrl; audio.setAttribute("aria-label", "Recorded passage, up to 30 seconds"); result.replaceChildren(audio);
+      void audio.play().catch(() => undefined);
+    }).catch(() => {
+      if (!controller.signal.aborted && result.isConnected) result.textContent = "Audio could not open. Check your connection and try again.";
+    }).finally(() => { if (button.isConnected) button.disabled = false; });
+  };
+  root.addEventListener("click", play);
+
+  const renderPreservingReading = (): void => {
+    const input = root.querySelector<HTMLInputElement>("[data-transcript-search]");
+    const query = input?.value;
+    const focusedSearch = document.activeElement === input;
+    const start = input?.selectionStart, end = input?.selectionEnd;
+    const row = [...root.querySelectorAll<HTMLElement>("[data-transcript-segment]")]
+      .find(item => !item.hidden && item.getBoundingClientRect().bottom > 0);
+    const position = row ? { id: row.dataset.transcriptSegment, top: row.getBoundingClientRect().top } : null;
+    const scroll = window.scrollY;
+    render();
+    const next = root.querySelector<HTMLInputElement>("[data-transcript-search]");
+    if (next && query !== undefined) {
+      next.value = query; next.dispatchEvent(new Event("input", { bubbles: true }));
+      if (focusedSearch) { next.focus({ preventScroll: true }); if (start !== null && start !== undefined && end !== null && end !== undefined) next.setSelectionRange(start, end); }
+    }
+    const same = position && [...root.querySelectorAll<HTMLElement>("[data-transcript-segment]")]
+      .find(item => item.dataset.transcriptSegment === position.id);
+    if (same && position) window.scrollBy(0, same.getBoundingClientRect().top - position.top);
+    else window.scrollTo(0, scroll);
+  };
+
   const refresh = async (): Promise<void> => {
-    if (disposed || pending !== null) return;
+    if (disposed || pending !== null || pendingEdit !== null || editingSegment !== null || refreshing) return;
+    const openDraft = initialAction === "open-draft";
+    initialAction = undefined;
+    clearRefresh();
+    refreshing = true;
     const request = ++generation;
     state = { ...state, phase: "loading", view: null };
     render();
@@ -60,26 +172,44 @@ export function mountCreatorReview(
         if (disposed || request !== generation) return;
         pending = saved === null ? null : parsePendingReviewDecision(saved);
       }
+      if (!recovered && options.editJournal) {
+        const saved = await options.editJournal.load();
+        if (disposed || request !== generation) return;
+        pendingEdit = saved === null ? null : parsePendingCreatorEdit(saved);
+      }
       recovered = true;
+      if (pendingEdit !== null) {
+        state = { phase: "edit-retry", view: null,
+          notice: "A transcript correction needs confirmation. Check that same save before making another change." };
+        return;
+      }
       if (pending !== null) {
         state = { phase: "retry", view: null,
           notice: "A previous decision needs confirmation. Retry that same decision to recover its result." };
-        render();
         return;
       }
       state = { ...state, phase: "ready", view };
+      if (openDraft && view.working?.note_ready !== true) {
+        state = { ...state, notice: "The saved draft is not available yet. Review this recording’s current status." };
+      }
     } catch {
       if (disposed || request !== generation) return;
       state = {
         phase: "unavailable", view: null,
         notice: "This recording is unavailable. Check your session or access, then refresh.",
       };
+    } finally {
+      refreshing = false;
+      if (!disposed && request === generation) { render(); progress.restart(); }
     }
-    render();
+    if (openDraft && !disposed && request === generation && state.phase === "ready" && state.view?.working?.note_ready) {
+      await continueToNote();
+    }
   };
 
   const save = async (): Promise<void> => {
     if (disposed || pending === null || state.phase === "saving") return;
+    clearRefresh();
     const operation = pending;
     state = { ...state, phase: "saving", notice: "Saving your decision…" };
     render();
@@ -117,19 +247,60 @@ export function mountCreatorReview(
     }
   };
 
-  const continueToNote = async (): Promise<void> => {
-    if (continuing || disposed || pending !== null || state.phase !== "ready" || !options.continueToNote) return;
-    const request = ++generation;
-    continuing = true;
+  const saveEdit = async (): Promise<void> => {
+    if (disposed || !api.edit || !options.editJournal || pendingEdit === null || state.phase === "saving") return;
+    clearRefresh();
+    const operation = pendingEdit;
+    editingSegment = null;
+    state = { phase: "saving", view: null, notice: "Saving transcript correction…" };
     render();
     try {
-      const view = await api.read();
+      await options.editJournal.save(operation);
+      if (disposed) return;
+      const receipt = await api.edit(operation.request, operation.key);
+      if (disposed) return;
+      await options.editJournal.clear(operation.key);
+      if (disposed) return;
+      pendingEdit = null;
+      state = { phase: "ready", view: null,
+        notice: `Correction saved as transcript version ${receipt.working_transcript_version}. Review the draft note against this version.` };
+      await refresh();
+    } catch (error) {
+      if (disposed) return;
+      if (error instanceof CreatorReviewError && error.kind === "conflict") {
+        try {
+          await options.editJournal.clear(operation.key);
+          if (disposed) return;
+          pendingEdit = null;
+          state = { phase: "ready", view: null, notice: "The transcript changed. Reopen the current passage before correcting it." };
+          await refresh();
+          return;
+        } catch { /* Retain the exact operation if its encrypted journal cannot be cleared. */ }
+      }
+      state = { phase: "edit-retry", view: null,
+        notice: "The correction save is unconfirmed. Check the same save; a different correction will not be sent." };
+      render();
+    }
+  };
+
+  const continueToNote = async (): Promise<void> => {
+    if (continuing || disposed || pending !== null || pendingEdit !== null || editingSegment !== null || state.phase !== "ready" || !options.continueToNote) return;
+    clearRefresh();
+    const request = ++generation;
+    continuing = true;
+    const previous = state.view;
+    render();
+    try {
+      const opening = options.prepareNoteOpening ? await options.prepareNoteOpening() : undefined;
+      const view = opening?.view ?? await api.read();
       if (disposed || request !== generation) return;
+      if (!canApplyReviewProgress(previous, view)) throw new CreatorReviewError("invalid_response");
       state = { ...state, view };
       if (view.working?.note_ready !== true) {
         state = { ...state, notice: "The transcript changed. Complete its current review before preparing a note." };
       } else {
-        await options.continueToNote(view);
+        if (opening) await opening.open();
+        else await options.continueToNote(view);
       }
     } catch {
       if (disposed || request !== generation) return;
@@ -137,6 +308,7 @@ export function mountCreatorReview(
     } finally {
       continuing = false;
       render();
+      scheduleRefresh();
     }
   };
 
@@ -146,6 +318,42 @@ export function mountCreatorReview(
     const button = target.closest<HTMLButtonElement>("button[data-review-action]");
     if (button === null || !root.contains(button) || button.disabled) return;
     const action = button.dataset.reviewAction;
+    if (action === "use-speaker-name") {
+      if (disposed || state.phase !== "ready" || editingSegment === null || pendingEdit !== null) return;
+      const selectedRole = button.dataset.speakerRole;
+      if (selectedRole !== "patient" && selectedRole !== "clinician") return;
+      const suggested = speakerNameSuggestion(options.speakerNameSuggestions?.[selectedRole]);
+      const form = button.closest<HTMLFormElement>("[data-creator-edit-form]");
+      const role = form?.querySelector<HTMLSelectElement>('[name="role"]');
+      const name = form?.querySelector<HTMLInputElement>('[name="display_name"]');
+      if (suggested === undefined || !role || !name) return;
+      role.value = selectedRole; name.disabled = false; name.value = suggested;
+      // This explicit choice only edits the form. The existing Save correction
+      // action owns its version checks, encrypted journal and server mutation.
+      name.focus(); return;
+    }
+    if (action === "retry-edit") { void saveEdit(); return; }
+    if (action === "cancel-edit") { editingSegment = null; render(); scheduleRefresh(); return; }
+    if (action === "save-edit") {
+      const form = root.querySelector<HTMLFormElement>("[data-creator-edit-form]");
+      if (!form || !state.view || pendingEdit !== null) return;
+      try {
+        pendingEdit = { key: `transcript-edit-${crypto.randomUUID()}`, request: creatorEditFromForm(state.view, form) };
+        void saveEdit();
+      } catch (error) {
+        const alert = form.querySelector<HTMLElement>("[data-edit-validation]");
+        if (alert) alert.textContent = error instanceof Error ? error.message : "Check the wording and speaker before saving.";
+      }
+      return;
+    }
+    if (action === "edit") {
+      if (state.phase !== "ready" || !api.edit || !options.editJournal || state.view?.editing_allowed !== true
+        || pending !== null || pendingEdit !== null || continuing) return;
+      const segment = state.view.source?.segments.find(item => item.source_segment_id === button.dataset.segment);
+      if (segment) { editingSegment = segment.source_segment_id; clearRefresh(); render(); }
+      return;
+    }
+    if (editingSegment !== null || pendingEdit !== null) return;
     if (action === "continue") { void continueToNote(); return; }
     if (action === "refresh") { void refresh(); return; }
     if (action === "retry") { void save(); return; }
@@ -170,15 +378,40 @@ export function mountCreatorReview(
     void save();
   };
 
+  const visibilityChanged = (): void => {
+    clearRefresh();
+    if (document.visibilityState === "visible" && waitingForTranscript()) progress.schedule(true);
+  };
+  const onChange = (event: Event): void => {
+    if (!(event.target instanceof HTMLSelectElement) || event.target.name !== "role") return;
+    const form = event.target.closest<HTMLFormElement>("[data-creator-edit-form]");
+    const name = form?.querySelector<HTMLInputElement>("[name=display_name]");
+    if (name) name.disabled = event.target.value === "unknown";
+  };
+  const onSubmit = (event: SubmitEvent): void => {
+    if (!(event.target instanceof HTMLFormElement) || !event.target.matches("[data-creator-edit-form]")) return;
+    event.preventDefault();
+    event.target.querySelector<HTMLButtonElement>('[data-review-action="save-edit"]')?.click();
+  };
   root.addEventListener("click", onClick);
+  root.addEventListener("change", onChange);
+  root.addEventListener("submit", onSubmit);
+  document.addEventListener("visibilitychange", visibilityChanged);
   render();
   void refresh();
   return () => {
-    disposed = true;
+    disposed = true; stopPlayback(); root.removeEventListener("click", play);
+    progress.dispose();
     generation += 1;
     pending = null;
+    pendingEdit = null;
+    editingSegment = null;
     state = { phase: "unavailable", view: null, notice: "" };
     root.removeEventListener("click", onClick);
+    root.removeEventListener("change", onChange);
+    root.removeEventListener("submit", onSubmit);
+    disposeTranscriptTools();
+    document.removeEventListener("visibilitychange", visibilityChanged);
     root.replaceChildren();
   };
 }
@@ -187,6 +420,10 @@ export function renderCreatorReview(state: CreatorReviewState): string {
   const view = state.view;
   const ready = view?.working?.note_ready === true;
   const sourceSegments = view?.source?.segments ?? [];
+  const translationNeedsHelp = view !== null && needsTranslationHelp(view);
+  const retainedOriginal = sourceSegments.some(segment => segment.source_locale === "es-US")
+    ? "Your original Spanish transcript is retained." : "Your original transcript is retained.";
+  const translationHelp = `${retainedOriginal} Keep this visit and contact your practice administrator for help. Check status only looks for updates; it does not retry translation. A note cannot be prepared yet.`;
   const languageLabel = sourceSegments.some(segment => segment.source_locale === "es-US")
     ? "Spanish → English · "
     : sourceSegments.length > 0 && sourceSegments.every(segment => segment.source_locale === "en-US")
@@ -196,23 +433,29 @@ export function renderCreatorReview(state: CreatorReviewState): string {
     : view === null ? "Your recording" : reviewStatusCopy(view);
   return `<section class="creator-review" aria-label="Your recording and transcript">
     <header class="creator-review-header">
-      <div><p class="creator-eyebrow">Cosmaneura Scribe</p><h1>Review your recording</h1>
-      <p>${languageLabel}Original speech preserved</p></div>
+      <div><h1>Transcript</h1><p>${languageLabel}Original retained</p></div>
       <button type="button" data-review-action="refresh"
-        ${["loading", "saving", "retry"].includes(state.phase) ? "disabled" : ""}>Refresh</button>
+        ${["loading", "saving", "retry", "edit-retry"].includes(state.phase) ? "disabled" : ""}>Check status</button>
     </header>
     <div class="creator-status ${ready ? "creator-ready" : ""}" role="status">
       <strong>${escape(subtitle)}</strong>
       <p>${escape(state.notice || (ready
-        ? "Review is complete. Your transcript is ready for note preparation."
+        ? "Needs accuracy review. Check the wording and speakers before using the draft note."
+        : translationNeedsHelp
+          ? translationHelp
+        : view?.status === "uploaded" || view?.status === "processing"
+          ? "Your transcript will appear here automatically when it is ready."
         : view?.status === "translation_pending"
-          ? "The transcript is not ready for a note. Check the messages below for what is still needed."
+          ? hasPendingReviewProgress(view) ? "Checking translation automatically. The transcript is not ready for a note yet."
+            : "The transcript is not ready for a note. Check the messages below for what is still needed."
           : "Review the proposed English before it is used for a note."))}</p>
+      ${translationNeedsHelp && state.notice ? `<p>${escape(translationHelp)}</p>` : ""}
     </div>
     ${view?.capture_continuity ? '<p class="creator-blocker" role="status">Recording continuity is unconfirmed. Review for missing speech before using a note. Gap lengths are unknown.</p>' : ""}
     ${state.phase === "retry" ? `<button type="button" data-review-action="retry">Retry the same decision</button>` : ""}
+    ${state.phase === "edit-retry" ? `<button type="button" data-review-action="retry-edit">Check correction save</button>` : ""}
     ${state.phase === "loading" ? '<p aria-busy="true">Loading the current recording…</p>' : ""}
-    ${view?.source != null && view.working != null ? renderTranscript(view, state.phase) : ""}
+    ${view?.source != null && view.working != null ? renderTranscript(view, state.phase, false, state.editable) : ""}
   </section>`;
 }
 
@@ -223,7 +466,7 @@ export function renderNoteTranscript(view: CreatorReviewView): string {
     ${renderTranscript(view, "ready", true)}</details>`;
 }
 
-function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = false): string {
+function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = false, editable = false): string {
   const working = view.working;
   const source = view.source;
   if (working == null || source == null) return "";
@@ -232,12 +475,24 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
   const blockers = working.blockers ?? [];
   const hasSpanish = source.segments.some(segment => segment.source_locale === "es-US");
   const progress = new Map((view.translation_progress ?? []).map((item) => [item.source_segment_id, item.state]));
-  return `<div class="creator-transcript-heading"><h2>Transcript</h2>
-    <span>Version ${working.working_transcript_version}</span></div>
-    <p class="creator-help">${hasSpanish ? "English speech stays in English. Spanish is shown beside its translation." : "Original speech is shown below."}
+  const confirmations = currentSpeakerConfirmations(view.review_edits ?? []);
+  const correctedIds = new Set((view.review_edits ?? []).flatMap(edit => (edit.request.corrections ?? []).map(item => item.source_segment_id)));
+  const speakers = new Map<string, number>();
+  for (const segment of source.segments) {
+    if (isUuid(segment.speaker_id) && !speakers.has(segment.speaker_id)) speakers.set(segment.speaker_id, speakers.size + 1);
+  }
+  return `<div data-transcript-surface><div class="creator-transcript-heading"><h2>Transcript</h2>
+    <details class="creator-transcript-details"><summary>Transcript details</summary><p>Version ${working.working_transcript_version}</p></details></div>
+    <p class="creator-help">${hasSpanish ? "Compare Spanish speech with the English translation." : "Review the wording and who is speaking."}
     ${readOnly ? "Compare the wording with your draft. Expanding this transcript keeps your unsaved edits in place."
-    : hasSpanish ? "Accept only a faithful translation; reject one that changes the meaning."
-      : "Review the transcript for accuracy before preparing your note."}</p>
+    : hasSpanish && reviews.size > 0 ? "Accept a faithful translation; reject one that changes the meaning." : ""}</p>
+    <div class="creator-transcript-search" role="search" aria-label="Search this transcript">
+      <label>Find in transcript<input type="search" data-transcript-search placeholder="Search words or a speaker" autocomplete="off"></label>
+      <div class="creator-search-navigation"><span data-transcript-search-status role="status">${source.segments.length} transcript ${source.segments.length === 1 ? "passage" : "passages"}</span>
+      <button type="button" data-transcript-match="previous" disabled aria-label="Previous matching passage">Previous</button>
+      <button type="button" data-transcript-match="next" disabled aria-label="Next matching passage">Next</button>
+      <button type="button" data-transcript-clear>Clear</button></div>
+    </div>
     <ol class="creator-segments">${source.segments.map((segment) => {
       const review = reviews.get(segment.source_segment_id);
       const english = resolved.get(segment.source_segment_id);
@@ -245,45 +500,89 @@ function renderTranscript(view: CreatorReviewView, phase: Phase, readOnly = fals
       const pending = progress.get(segment.source_segment_id);
       const englishText = review?.translated_content ?? english?.content;
       const spanish = segment.source_locale === "es-US";
-      return `<li class="creator-segment">
-        <div class="creator-segment-heading"><strong>${speakerCopy(segment.speaker_role)}</strong>
+      const speaker = speakers.get(segment.speaker_id);
+      const confirmation = confirmations.get(segment.speaker_id);
+      const speakerLabel = confirmation ? `${confirmation.detail === "interpreter" ? "Interpreter" : speakerCopy(confirmation.role)}${confirmation.display_name ? ` · ${confirmation.display_name}` : ""}${confirmation.role === "unknown" ? "" : " · confirmed"}`
+        : segment.speaker_role === "unknown" && speaker ? `Speaker ${speaker} · not identified` : speakerCopy(segment.speaker_role);
+      const corrected = correctedIds.has(segment.source_segment_id);
+      const displayText = !spanish && corrected ? englishText ?? segment.content : segment.content;
+      return `<li class="creator-segment" data-transcript-segment="${escape(segment.source_segment_id)}" tabindex="-1">
+        <div class="creator-segment-heading"><strong>${escape(speakerLabel)}</strong>
           <span>${time(segment.start_ms)}–${time(segment.end_ms)}</span></div>
         <div class="creator-language-grid ${spanish ? "creator-bilingual" : ""}">
-          <div><h3>${spanish ? "Spanish · original" : segment.source_locale === "en-US" ? "English · original" : "Original · language unconfirmed"}</h3>
-            <p lang="${spanish ? "es" : segment.source_locale === "en-US" ? "en" : "und"}">${escape(segment.content)}</p></div>
-          ${spanish ? `<div><h3>English · ${review ? "proposed translation" : english?.resolution === "spanish_translation" ? "accepted translation" : "not ready"}</h3>
-            <p lang="en">${englishText == null ? "Translation is not ready for use." : escape(englishText)}</p></div>` : ""}
+          <div>${segment.source_locale === "en-US" ? (corrected ? "<h3>English · corrected</h3>" : "") : `<h3>${spanish ? "Spanish · original" : "Original · language unconfirmed"}</h3>`}
+            ${transcriptParagraphs(displayText).map(part => `<p lang="${spanish ? "es" : segment.source_locale === "en-US" ? "en" : "und"}">${escape(part)}</p>`).join("")}</div>
+          ${spanish ? `<div><h3>English · ${corrected ? "corrected translation" : review ? "proposed translation" : english?.resolution === "spanish_translation" ? "accepted translation" : "not ready"}</h3>
+            ${transcriptParagraphs(englishText ?? "Translation is not ready for use.").map(part => `<p lang="en">${escape(part)}</p>`).join("")}</div>` : ""}
         </div>
+        ${corrected && !spanish ? `<details class="creator-original"><summary>Original wording</summary><p>${escape(segment.content)}</p></details>` : ""}
+        ${!readOnly && editable && view.editing_allowed === true ? `<button type="button" class="creator-edit-turn" data-review-action="edit" data-segment="${escape(segment.source_segment_id)}" ${phase !== "ready" ? "disabled" : ""}>Correct wording or speaker</button>` : ""}
         ${readOnly ? "" : review === undefined ? (pending === undefined
           ? issues.map((issue) => `<p class="creator-blocker">${escape(blockerCopy(issue.code))}</p>`).join("")
-          : `<p class="creator-blocker">${escape(progressCopy(pending))}</p>`) : `
+          : `<p class="creator-blocker">${escape(progressCopy(pending, hasPendingReviewProgress(view)))}</p>`) : `
           <div class="creator-review-actions">
             <button type="button" data-review-action="accepted" data-segment="${escape(segment.source_segment_id)}" ${phase === "saving" ? "disabled" : ""}>Accept English translation</button>
             <button type="button" class="creator-reject" data-review-action="rejected" data-segment="${escape(segment.source_segment_id)}" ${phase === "saving" ? "disabled" : ""}>Reject translation</button>
           </div>`}
       </li>`;
-    }).join("")}</ol>`;
+    }).join("")}</ol>${renderEditHistory(view)}</div>`;
+}
+
+function renderEditHistory(view: CreatorReviewView): string {
+  if (!view.review_edits?.length) return "";
+  return `<details class="creator-edit-history"><summary>Correction history · ${view.review_edits.length} saved ${view.review_edits.length === 1 ? "change" : "changes"}</summary>
+    <p>Original speech is unchanged. These explicit corrections produced new transcript versions.</p>
+    ${[...view.review_edits].reverse().map(edit => `<article><h3>Version ${edit.working_transcript_version} · ${escape(new Date(edit.created_at).toLocaleString())}</h3>
+      ${(edit.request.corrections ?? []).map(item => {
+        const source = view.source?.segments.find(segment => segment.source_segment_id === item.source_segment_id);
+        return `<p><strong>${source ? time(source.start_ms) : "Passage"} · English correction</strong></p><p>${escape(item.content)}</p>`;
+      }).join("")}
+      ${(edit.request.speakers ?? []).map(item => `<p>Speaker confirmation: ${escape(item.detail === "interpreter" ? "Interpreter" : speakerCopy(item.role))}${item.display_name ? ` · ${escape(item.display_name)}` : ""}</p>`).join("")}
+    </article>`).join("")}</details>`;
+}
+
+/** Reading breaks only: every source character remains in its original order.
+ * A paragraph is not a new speaker turn or a stored transcript edit. */
+export function transcriptParagraphs(text: string): string[] {
+  const paragraphs: string[] = [];
+  let pending = "", count = 0;
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: "sentence" }).segment(text)) {
+    if (pending && (pending.length + segment.length > 400 || count >= 2)) {
+      paragraphs.push(pending); pending = ""; count = 0;
+    }
+    pending += segment; count += 1;
+    while (pending.length > 400) {
+      let split = pending.lastIndexOf(" ", 400);
+      if (split <= 0) split = pending.indexOf(" ", 400);
+      if (split < 0) break;
+      paragraphs.push(pending.slice(0, split + 1)); pending = pending.slice(split + 1); count = 0;
+    }
+  }
+  if (pending) paragraphs.push(pending);
+  return paragraphs;
+}
+
+function needsTranslationHelp(view: CreatorReviewView): boolean {
+  const progressing = new Set((view.translation_progress ?? []).map(item => item.source_segment_id));
+  return view.working?.blockers.some(item => !progressing.has(item.source_segment_id)
+    && ["translation_retry_required", "translation_failed"].includes(item.code)) === true;
 }
 
 function reviewStatusCopy(view: CreatorReviewView): string {
   if (view.status === "quality_blocked") return statusCopy(view.status);
   const progress = view.translation_progress ?? [];
   if (progress.some((item) => item.state === "unconfirmed")) return "Translation result unconfirmed";
-  const progressing = new Set(progress.map((item) => item.source_segment_id));
-  if (view.working?.blockers.some((item) => !progressing.has(item.source_segment_id)
-    && ["translation_retry_required", "translation_failed"].includes(item.code))) {
-    return "Translation needs a new attempt";
-  }
+  if (needsTranslationHelp(view)) return "English translation needs help";
   if (progress.length > 0 && progress.every((item) => item.state === "result_saved")) {
     return "Preparing translation review";
   }
   return statusCopy(view.status);
 }
 
-function progressCopy(state: "queued" | "unconfirmed" | "result_saved"): string {
+function progressCopy(state: "queued" | "unconfirmed" | "result_saved", automatic: boolean): string {
   return {
-    queued: "Waiting for this translation to start. Refresh to check progress.",
-    unconfirmed: "This translation request has no confirmed result yet. Refresh later; a second request will not be sent automatically.",
+    queued: automatic ? "Waiting for this translation to start. Status is checked automatically." : "Waiting for this translation to start. Choose Check status to look again.",
+    unconfirmed: "This translation request has no confirmed result yet. Choose Check status later; a second request will not be sent automatically.",
     result_saved: "The translation result is saved and is being prepared for your review.",
   }[state];
 }
@@ -301,10 +600,10 @@ function blockerCopy(code: string): string {
   return ({
     source_locale_unknown: "The spoken language could not be confirmed. This segment blocks note preparation.",
     source_overlap: "Overlapping speech needs attention before note preparation.",
-    translation_missing: "Waiting for the English translation. Refresh to check progress.",
+    translation_missing: "Waiting for the English translation. Choose Check status if progress is not confirmed.",
     translation_review_required: "An English translation is waiting for your review.",
-    translation_retry_required: "The translation was rejected. A new translation attempt is required; it will not retry automatically.",
-    translation_failed: "Translation could not complete. This recording is not ready for a note.",
+    translation_retry_required: "The English translation for this passage was rejected. It cannot be used for a note.",
+    translation_failed: "English translation could not complete for this passage. It cannot be used for a note.",
   } as Record<string, string>)[code] ?? "This segment needs attention before note preparation.";
 }
 function speakerCopy(role: string): string {

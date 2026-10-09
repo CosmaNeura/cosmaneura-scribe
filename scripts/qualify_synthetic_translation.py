@@ -25,11 +25,20 @@ from cosmaneura_scribe.translation_fidelity import SYNTHETIC_CASES, qualify_synt
 _ENDPOINT = "https://cosmascode.services.ai.azure.com/openai/v1"
 _DEPLOYMENT = "gpt-4.1"
 _MAX_ERROR_BYTES = 16_384
-_ERROR_CODES = frozenset({
-    "content_filter", "ResponsibleAIPolicyViolation", "invalid_request_error",
-    "InvalidRequest", "context_length_exceeded", "DeploymentNotFound",
-    "OperationNotSupported", "Unauthorized", "PermissionDenied", "RateLimitExceeded",
-})
+_ERROR_CODES = frozenset(
+    {
+        "content_filter",
+        "ResponsibleAIPolicyViolation",
+        "invalid_request_error",
+        "InvalidRequest",
+        "context_length_exceeded",
+        "DeploymentNotFound",
+        "OperationNotSupported",
+        "Unauthorized",
+        "PermissionDenied",
+        "RateLimitExceeded",
+    }
+)
 _FILTER_CATEGORIES = ("hate", "self_harm", "sexual", "violence", "jailbreak", "indirect_attack")
 
 
@@ -54,8 +63,10 @@ def _error_metadata(raw: bytes) -> dict[str, object]:
         if not isinstance(inner, dict):
             inner = {}
         result: dict[str, object] = {"diagnostic": "parsed"}
-        for output_key, value in (("error_code", error.get("code")),
-                                  ("inner_code", inner.get("code"))):
+        for output_key, value in (
+            ("error_code", error.get("code")),
+            ("inner_code", inner.get("code")),
+        ):
             result[output_key] = (
                 value if isinstance(value, str) and value in _ERROR_CODES else "other_or_absent"
             )
@@ -66,8 +77,7 @@ def _error_metadata(raw: bytes) -> dict[str, object]:
             f"{category}_{flag}"
             for category in _FILTER_CATEGORIES
             for flag in ("detected", "filtered")
-            if isinstance(filters.get(category), dict)
-            and filters[category].get(flag) is True
+            if isinstance(filters.get(category), dict) and filters[category].get(flag) is True
         ]
         return result
     except (ValueError, TypeError, UnicodeError, RecursionError):
@@ -93,9 +103,9 @@ async def _read_error_metadata(response: httpx.Response) -> dict[str, object]:
 class _SelectedSyntheticEndpoint:
     """Only this fixed non-PHI probe permits the selected public model endpoint.
 
-The clinical runtime must supply its approved private endpoint guard instead.
-No application route imports or constructs this guard.
-"""
+    The clinical runtime must supply its approved private endpoint guard instead.
+    No application route imports or constructs this guard.
+    """
 
     def __init__(self, profile: AzureTranslationProfile) -> None:
         self.profile = profile
@@ -119,11 +129,13 @@ class _StatusOnlyTransport(httpx.AsyncBaseTransport):
         response = await self.inner.handle_async_request(request)
         self.statuses.append(response.status_code)
         if response.status_code != 200:
-            self.errors.append({
-                "request_index": len(self.statuses) - 1,
-                "http_status": response.status_code,
-                **await _read_error_metadata(response),
-            })
+            self.errors.append(
+                {
+                    "request_index": len(self.statuses) - 1,
+                    "http_status": response.status_code,
+                    **await _read_error_metadata(response),
+                }
+            )
         return response
 
     async def aclose(self) -> None:
@@ -137,7 +149,9 @@ async def run(case_id: str | None) -> dict[str, object]:
     transport = _StatusOnlyTransport()
     async with AzureCliCredential(process_timeout=20) as credential:
         adapter = AzureGPT41TranslationAdapter(
-            profile, credential=credential, endpoint_guard=_SelectedSyntheticEndpoint(profile),
+            profile,
+            credential=credential,
+            endpoint_guard=_SelectedSyntheticEndpoint(profile),
             transport=transport,
         )
         result = await qualify_synthetic_translation(adapter, case_id=case_id)

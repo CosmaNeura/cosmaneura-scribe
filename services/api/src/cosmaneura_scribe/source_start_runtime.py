@@ -54,14 +54,24 @@ class SourceStartRepository(CapturedSourceRepository):
         if action == "stop":
             return await self._stop(tenant_id, session_id, actor, key, intent)
         session = await self.lock_live_capture(tenant_id, session_id)
-        if session.creator_actor_id != actor or session.status.value != "created":
+        # Registering the first background-uploaded chunk moves the session to
+        # capturing. A later native interval still needs this same start gate;
+        # finalization, active ownership and current lease checks remain below.
+        if session.creator_actor_id != actor or session.status.value not in {
+            "created",
+            "capturing",
+        }:
             raise SourceStartUnavailable()
         await self._lock_attempt(tenant_id, intent.attempt_id)
-        if await self._one_or_none(
-            "SELECT id FROM source_start_retirements "
-            "WHERE tenant_id = :tenant AND attempt_id = :attempt",
-            tenant=tenant_id, attempt=intent.attempt_id,
-        ) is not None:
+        if (
+            await self._one_or_none(
+                "SELECT id FROM source_start_retirements "
+                "WHERE tenant_id = :tenant AND attempt_id = :attempt",
+                tenant=tenant_id,
+                attempt=intent.attempt_id,
+            )
+            is not None
+        ):
             raise SourceStartConflict()
         context = await self.lock_capture_context(tenant_id, session_id)
         receipt = await self.get_capture_lease_receipt(tenant_id, intent.lease_receipt_id)
@@ -303,52 +313,90 @@ class SourceStartRepository(CapturedSourceRepository):
         return self._receipt(row)
 
     async def _lock_attempt(self, tenant_id: UUID, attempt_id: UUID) -> None:
-        await self._session.execute(text(
-            "SELECT pg_advisory_xact_lock(hashtextextended('scribe-native-attempt:' "
-            "|| CAST(:tenant AS text) || ':' || CAST(:attempt AS text), 0))"
-        ), {"tenant": str(tenant_id), "attempt": str(attempt_id)})
+        await self._session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtextextended('scribe-native-attempt:' "
+                "|| CAST(:tenant AS text) || ':' || CAST(:attempt AS text), 0))"
+            ),
+            {"tenant": str(tenant_id), "attempt": str(attempt_id)},
+        )
 
     async def _retire_unstarted(
-        self, tenant_id: UUID, session_id: UUID, actor: str, key: str,
-        intent: SourceStartIntent, consent_record_id: UUID,
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        actor: str,
+        key: str,
+        intent: SourceStartIntent,
+        consent_record_id: UUID,
     ) -> SourceStartRetirementReceipt:
         row = await self._one_or_none(
             "SELECT * FROM source_start_retirements "
             "WHERE tenant_id = :tenant AND attempt_id = :attempt",
-            tenant=tenant_id, attempt=intent.attempt_id,
+            tenant=tenant_id,
+            attempt=intent.attempt_id,
         )
         if row is None:
             # The database checks immutable historical receipt/reservation scope
             # and the same attempt lock used by every start. No live preparation
             # or backdated timestamps/capability are manufactured.
             params = dict(
-                tenant=tenant_id, session=session_id, id=uuid4(), attempt=intent.attempt_id,
-                actor=actor, consent=consent_record_id, source=intent.source,
-                proof=intent.proof_digest, lease=intent.lease_id, receipt=intent.lease_receipt_id,
-                generation=intent.lease_generation, deadline=intent.capture_authorized_until,
-                position=intent.first_sequence_number)
-            row = dict((await self._session.execute(text("""
+                tenant=tenant_id,
+                session=session_id,
+                id=uuid4(),
+                attempt=intent.attempt_id,
+                actor=actor,
+                consent=consent_record_id,
+                source=intent.source,
+                proof=intent.proof_digest,
+                lease=intent.lease_id,
+                receipt=intent.lease_receipt_id,
+                generation=intent.lease_generation,
+                deadline=intent.capture_authorized_until,
+                position=intent.first_sequence_number,
+            )
+            row = dict(
+                (
+                    await self._session.execute(
+                        text("""
                 INSERT INTO source_start_retirements (
                     tenant_id, session_id, id, attempt_id, creator_actor_id, consent_record_id,
                     source, owner_proof_sha256, lease_id, lease_receipt_id, lease_generation,
                     capture_authorized_until, first_sequence_number
                 ) VALUES (:tenant, :session, :id, :attempt, :actor, :consent, :source, :proof,
                     :lease, :receipt, :generation, :deadline, :position) RETURNING *
-            """), params)).mappings().one())
-            await self.audit(tenant_id=tenant_id, action="source_start.retired_unstarted",
-                entity_type="source_retirement", entity_id=row["id"])
+            """),
+                        params,
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await self.audit(
+                tenant_id=tenant_id,
+                action="source_start.retired_unstarted",
+                entity_type="source_retirement",
+                entity_id=row["id"],
+            )
         self._match(row, session_id, actor, intent)
         if row["consent_record_id"] != consent_record_id:
             raise SourceStartConflict()
-        previous = await self.claim_idempotency(tenant_id=tenant_id, operation="source_start.stop",
-            key=key, request_fingerprint=intent.fingerprint(session_id, actor), entity_id=row["id"])
+        previous = await self.claim_idempotency(
+            tenant_id=tenant_id,
+            operation="source_start.stop",
+            key=key,
+            request_fingerprint=intent.fingerprint(session_id, actor),
+            entity_id=row["id"],
+        )
         if previous is not None and previous != row["id"]:
             raise SourceStartConflict()
-        return SourceStartRetirementReceipt.model_validate({
-            key: row["id" if key == "retirement_id" else key]
-            for key in SourceStartRetirementReceipt.model_fields
-            if key not in {"schema_version", "state"}
-        })
+        return SourceStartRetirementReceipt.model_validate(
+            {
+                key: row["id" if key == "retirement_id" else key]
+                for key in SourceStartRetirementReceipt.model_fields
+                if key not in {"schema_version", "state"}
+            }
+        )
 
     async def _transition(
         self,
@@ -426,6 +474,8 @@ class SourceStartRepository(CapturedSourceRepository):
 class SourceStartRepositoryProvider:
     """Borrows the explicitly supplied existing engine; never closes its owner."""
 
+    repository_type: type[SourceStartRepository] = SourceStartRepository
+
     def __init__(self, engine: AsyncEngine) -> None:
         self._sessions = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -438,7 +488,7 @@ class SourceStartRepositoryProvider:
                 text("SELECT set_config('app.tenant_id', :tenant, true)"),
                 {"tenant": str(tenant_id)},
             )
-            yield SourceStartRepository(session)
+            yield self.repository_type(session)
 
 
 class SourceStartRuntime:

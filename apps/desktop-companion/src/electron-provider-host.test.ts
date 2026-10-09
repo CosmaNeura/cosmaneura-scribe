@@ -27,7 +27,7 @@ async function fixture() {
   class MockWindow extends EventEmitter {
     readonly webContents = Object.assign(new EventEmitter(), { id: 77, mainFrame: { url: "about:blank" }, session,
       isDestroyed: () => this.destroyed, send: (_channel: string, value: unknown) => { sent.push(value); },
-      setWindowOpenHandler: vi.fn() });
+      setWindowOpenHandler: vi.fn(), executeJavaScript: vi.fn(() => Promise.resolve(0)) });
     destroyed = false;
     constructor(readonly options: ConstructorParameters<DesktopElectronRuntime["BrowserWindow"]>[0]) { super(); windows.push(this); events.push("window"); }
     async loadURL(url: string) {
@@ -37,6 +37,12 @@ async function fixture() {
       this.webContents.mainFrame.url = url; events.push("load");
     }
     show() { events.push("show"); } focus() { events.push("focus"); }
+    showInactive() { events.push("showInactive"); }
+    isVisible() { return true; } isMinimized() { return false; }
+    getMediaSourceId() { return "window:73:0"; }
+    getMinimumSize(): [number, number] { return [520, 520]; }
+    getBounds() { return { x: 0, y: 0, width: 1100, height: 800 }; }
+    setBounds() {} setMinimumSize() {} setAlwaysOnTop() {} setVisibleOnAllWorkspaces() {}
     isDestroyed() { return this.destroyed; }
     destroy() { this.destroyed = true; events.push("destroy"); this.webContents.emit("destroyed"); }
   }
@@ -44,6 +50,7 @@ async function fixture() {
     app: Object.assign(app, { isPackaged: true, getName: () => "Cosmaneura Scribe Beta", getAppPath: () => directory,
       getPath: () => join(directory, "user-data"), requestSingleInstanceLock: vi.fn(() => true),
       whenReady: () => ready, quit: vi.fn(() => { events.push("quit"); }) }),
+    screen: { getDisplayMatching: () => ({ workArea: { x: 0, y: 24, width: 1440, height: 860 } }) },
     protocol: { registerSchemesAsPrivileged: vi.fn() }, session: { fromPartition: vi.fn(() => session) }, BrowserWindow: MockWindow,
     ipcMain: { handle: (channel: string, callback: unknown) => { handlers.set(channel, callback); }, removeHandler: (channel: string) => { handlers.delete(channel); } },
     dialog: { showMessageBox: vi.fn(async () => ({ response: 1 })) },
@@ -67,7 +74,7 @@ describe("packaged desktop provider host", () => {
     const f = await fixture();
     try {
       const assets = await loadPackagedProvider(f.rendererDirectory), response = assets.respond({ url: PROVIDER_ENTRY, method: "GET" });
-      expect(response.status).toBe(200); expect(response.headers.get("content-security-policy")).toContain("media-src 'none'");
+      expect(response.status).toBe(200); expect(response.headers.get("content-security-policy")).toContain("media-src blob:");
       for (const url of ["https://example.invalid/", "app://cosmas/../preload.cjs", "app://cosmas/%70rovider.html", PROVIDER_ENTRY + "?path=preload.cjs", "app://cosmas/renderer-manifest.json"]) {
         expect(assets.respond({ url, method: "GET" }).status).toBe(404);
       }
@@ -90,7 +97,7 @@ describe("packaged desktop provider host", () => {
     const f = await fixture();
     try {
       const application = await startElectronProvider(f.runtime, f.factory); expect(application).not.toBeNull();
-      expect(f.window!.options.webPreferences).toMatchObject({ sandbox: true, contextIsolation: true, nodeIntegration: false });
+      expect(f.window!.options.webPreferences).toMatchObject({ sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false });
       expect(f.events).toEqual(["window", "load", "show"]);
       await application!.close();
       expect(f.events.slice(-3)).toEqual(["stop", "destroy", "quit"]);
@@ -106,6 +113,45 @@ describe("packaged desktop provider host", () => {
       expect(f.window!.destroyed).toBe(false); expect(f.runtime.app.quit).not.toHaveBeenCalled();
       f.refuseClose(false); await application!.close(); expect(f.dispose).toHaveBeenCalledTimes(2);
       expect(f.factory.open).toHaveBeenCalledOnce(); expect(f.window!.destroyed).toBe(true);
+    } finally { f.refuseClose(false); await f.cleanup(); }
+  });
+  it("defers a window close event until the existing owner confirms shutdown", async () => {
+    const f = await fixture(), gate = deferred();
+    try {
+      await startElectronProvider(f.runtime, f.factory);
+      f.dispose.mockImplementationOnce(async () => { await gate.promise; });
+      const preventDefault = vi.fn(); f.window!.emit("close", { preventDefault });
+      await vi.waitFor(() => expect(f.dispose).toHaveBeenCalledOnce());
+      expect(preventDefault).toHaveBeenCalledOnce(); expect(f.window!.destroyed).toBe(false);
+      expect(f.runtime.app.quit).not.toHaveBeenCalled();
+      gate.resolve(); await vi.waitFor(() => expect(f.runtime.app.quit).toHaveBeenCalledOnce());
+      expect(f.window!.destroyed).toBe(true);
+    } finally { gate.resolve(); await f.cleanup(); }
+  });
+  it("keeps an unconfirmed-stop window close retryable without replacing its owner", async () => {
+    const f = await fixture();
+    try {
+      await startElectronProvider(f.runtime, f.factory); f.refuseClose(true);
+      const preventDefault = vi.fn(); f.window!.emit("close", { preventDefault });
+      await vi.waitFor(() => expect(f.runtime.dialog.showMessageBox).toHaveBeenCalledOnce());
+      expect(preventDefault).toHaveBeenCalledOnce(); expect(f.window!.destroyed).toBe(false);
+      expect(f.runtime.app.quit).not.toHaveBeenCalled(); expect(f.factory.open).toHaveBeenCalledOnce();
+      f.refuseClose(false); f.window!.emit("close", { preventDefault });
+      await vi.waitFor(() => expect(f.runtime.app.quit).toHaveBeenCalledOnce());
+      expect(f.dispose).toHaveBeenCalledTimes(2); expect(f.factory.open).toHaveBeenCalledOnce();
+    } finally { f.refuseClose(false); await f.cleanup(); }
+  });
+  it("stops an unresponsive renderer before allowing its window to disappear", async () => {
+    const f = await fixture();
+    try {
+      const application = await startElectronProvider(f.runtime, f.factory);
+      f.refuseClose(true); f.window!.emit("unresponsive");
+      await vi.waitFor(() => expect(f.dispose).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(f.runtime.dialog.showMessageBox).toHaveBeenCalledOnce());
+      expect(f.window!.destroyed).toBe(false); expect(f.runtime.app.quit).not.toHaveBeenCalled();
+      f.refuseClose(false); await application!.close();
+      expect(f.events.indexOf("stop")).toBeLessThan(f.events.indexOf("destroy"));
+      expect(f.dispose).toHaveBeenCalledTimes(2);
     } finally { f.refuseClose(false); await f.cleanup(); }
   });
   it("owns a late native host when quit arrives during startup", async () => {

@@ -107,6 +107,7 @@ class SourceStartCapability(BaseModel):
 
 class SourceStartRetirementReceipt(BaseModel):
     """Terminal closure of an attempt which never became a prepared source."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     schema_version: Literal["1.0"] = "1.0"

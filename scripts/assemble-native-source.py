@@ -36,11 +36,11 @@ def assemble(output: Path, clerk_source: Path) -> None:
     if inventory(clerk_source) != expected:
         raise ValueError("Retained Clerk dependency does not match the committed lock")
     # Both installed platforms use the same wire/consent/error contract.
-    shared = "ProviderNativeTransport.swift"
-    if (plugins / "cosmas-native-auth/Bridge" / shared).read_bytes() != (
-        repo / "scripts/standalone-provider" / shared
-    ).read_bytes():
-        raise ValueError("Desktop and mobile transport sources differ")
+    for shared in ("ProviderNativeTransport.swift", "NativeProviderConnection.swift"):
+        if (plugins / "cosmas-native-auth/Bridge" / shared).read_bytes() != (
+            repo / "scripts/standalone-provider" / shared
+        ).read_bytes():
+            raise ValueError(f"Desktop and mobile native contract differs: {shared}")
     output.mkdir(parents=True, exist_ok=False)
     for name in (
         "cosmas-native-auth",

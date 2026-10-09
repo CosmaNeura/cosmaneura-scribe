@@ -41,24 +41,34 @@ export function parseInputSignal(value: unknown): IosInputSignal | null {
 }
 
 export function presentInputSignal(signal: IosInputSignal | null, responseAgeMs: number): {
-  level: number; route: string; message: string;
+  level: number; route: string; message: string; title: string; attention: boolean;
 } {
   if (!signal || responseAgeMs > 1_500) return { level: 0, route: "Microphone",
-    message: "Waiting for microphone signal…" };
+    title: "Checking microphone", attention: true,
+    message: "Waiting for microphone signal. Say a few words and watch the bars. Audio input is not confirmed yet." };
   const route = ROUTES[signal.route];
   if (signal.inputMuted) return { level: 0, route,
+    title: "Microphone muted", attention: true,
     message: "Microphone is muted by iOS. Pause and unmute the microphone before resuming." };
   if (signal.inputAgeMs === null || signal.inputAgeMs + responseAgeMs > 1_500
     || signal.convertedAgeMs === null || signal.convertedAgeMs + responseAgeMs > 1_500) {
-    return { level: 0, route, message: "Microphone signal is unavailable. If you’re speaking, pause and check the input." };
+    return { level: 0, route, title: "Check microphone", attention: true,
+      message: "Microphone signal is unavailable. If you’re speaking, pause and check the input." };
   }
   // Exact digital zero and conversational quiet are advisory states, never a stop or fatal error.
   if (signal.zeroInputMs >= 3_000) return { level: 0, route,
-    message: "No input detected. If you’re speaking, pause and check the microphone." };
+    title: "No sound detected", attention: true,
+    message: "Say a few words and watch the bars. If they stay still, pause, stop phone screen sharing or other audio use, then resume." };
   if (signal.inputLevel >= 0.001 && !signal.convertedEverNonzero && signal.inputBuffers >= 10) {
-    return { level: 0, route, message: "Audio has not reached the recording yet. If you’re speaking, pause and retry." };
+    return { level: 0, route, title: "Check recording input", attention: true,
+      message: "Audio has not reached the recording yet. If you’re speaking, pause and retry." };
   }
   const rms = signal.convertedLevel;
   const level = rms > 0 ? Math.min(1, Math.max(0, (20 * Math.log10(rms) + 60) / 60)) : 0;
-  return { level, route, message: level > 0 ? "Microphone activity" : "Quiet input" };
+  // An armed engine and advancing timer do not establish that audio reached the recorder.
+  if (!signal.convertedEverNonzero) return { level: 0, route,
+    title: "Checking microphone", attention: true,
+    message: "Say a few words and watch the bars. Audio input is not confirmed yet." };
+  return { level, route, title: "Recording", attention: false,
+    message: level > 0 ? "Microphone activity" : "Quiet input" };
 }

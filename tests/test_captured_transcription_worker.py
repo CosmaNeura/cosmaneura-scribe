@@ -10,18 +10,21 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 import pytest_asyncio
 from conftest import verified_test_tenant
+from cosmaneura_scribe import captured_worker_job_runner as worker_runner
 from cosmaneura_scribe.audio_assembly import (
     EncryptedBlobAudioTrackAssembler,
     RepositoryAudioAssemblyManifestProvider,
 )
 from cosmaneura_scribe.captured_source_runtime import CapturedSourceRepositoryProvider
 from cosmaneura_scribe.captured_transcription_worker import CapturedTranscriptionWorker
+from cosmaneura_scribe.captured_worker_settings import CapturedWorkerSettings
 from cosmaneura_scribe.external_transcript_v1 import TranscriptLanguageMode
 from cosmaneura_scribe.main import (
     app,
@@ -304,6 +307,32 @@ async def test_protocol_encrypted_wave_worker_and_completed_recovery(capture: Ca
         assert ready is not None and ready.status.value == "transcript_ready"
 
 
+async def test_scheduled_pickup_discovers_later_upload_and_uses_encrypted_worker(
+    capture: CaptureHarness,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings = CapturedWorkerSettings(captured_worker_stage="speech", captured_worker_batch_size=1)
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(worker_runner, "time", SimpleNamespace(monotonic=lambda: clock.now))
+
+    async def upload_between_scans(delay):
+        assert delay == 5 and clock.now == 0
+        assert capture.speech.calls == 0 and not capture.reader.calls
+        clock.now += delay
+        await capture.record()
+
+    # Replace only this module's sleeper; the real database/HTTP stack keeps its clock.
+    monkeypatch.setattr(worker_runner, "asyncio", SimpleNamespace(sleep=upload_between_scans))
+    await worker_runner._dispatch(
+        capture.trial.provider, settings, capture.trial.tenant, None, capture.worker()
+    )
+    assert clock.now == 5
+    assert capture.speech.calls == 1 and len(capture.reader.calls) == 2
+    assert await capture.trial.counts() == (1, 1, 1)
+    assert not list(capture.temp.iterdir())
+    assert (await capture.process()).already_completed and capture.speech.calls == 1
+
+
 @pytest.mark.parametrize(
     "fault", ["disabled", "tenant", "session", "revoked", "unstarted", "legacy", "adapter"]
 )
@@ -382,7 +411,8 @@ async def test_retryable_provider_error_then_success(capture: CaptureHarness):
 
 
 async def test_publication_failure_is_distinct_and_retryable(
-    capture: CaptureHarness, monkeypatch: pytest.MonkeyPatch,
+    capture: CaptureHarness,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     await capture.record()
     worker = capture.worker()

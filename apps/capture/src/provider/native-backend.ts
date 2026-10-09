@@ -1,3 +1,6 @@
+import { parseEncounterDisplay } from "./encounter-display";
+import { speakerNameSuggestion } from "../../../review-ui/src/creator-edit";
+import { openingReviewFromCore } from "./opening-review";
 import { MAX_CHUNKS } from "@cosmaneura-scribe/capture-protocol";
 import { Capacitor, type PluginListenerHandle } from "@capacitor/core";
 import type { CiphertextUploadTarget } from "../bff/contracts";
@@ -11,8 +14,10 @@ import { nativeProviderPlugin, type ProviderAction as Action, type NativeProvide
   type ProviderNativePlugin } from "./native-plugin";
 import type { NativeRecordingPort } from "./native-recorder";
 import type { ProviderEncounter } from "./workspace";
+import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
+import { parseProviderAccount, type ProviderAccount, createEncounterSetup } from "./encounter-setup";
 
-const limits: Record<Action, number> = { catalog: 2, mount: 256, recorder: 1024,
+const limits: Record<Action, number> = { catalog: 2, encounters: 4096, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
 type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
 export type { ProviderNativePlugin } from "./native-plugin";
@@ -37,9 +42,14 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     || !Capacitor.isPluginAvailable("CosmasWorkspaceAuth")) throw unavailable();
   const abort = new AbortController();
   let nativeRecording = false;
+  let nativeContextReuse = false;
   let revision: string | null = null, observed: NativeState | null = null;
   let listener: PluginListenerHandle | undefined, timer: ReturnType<typeof setInterval> | undefined;
   let checking: Promise<void> | null = null, disposal: Promise<void> | null = null;
+  let openingReviewSupported = false, noteOpeningSupported = false, creationSupported = false;
+  let account: ProviderAccount | undefined;
+  let providerDisplayName: string | undefined;
+  const owners: { setup?: ReturnType<typeof createEncounterSetup> } = {};
   const encounters = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
   const inheritedAbort = (): void => abort.abort();
   options.signal.addEventListener("abort", inheritedAbort, { once: true });
@@ -60,7 +70,9 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     if (timer !== undefined) clearInterval(timer);
     options.signal.removeEventListener("abort", inheritedAbort);
     encounters.clear();
+    providerDisplayName = undefined;
     await listener?.remove();
+    await owners.setup?.dispose();
   })();
   const refresh = (): Promise<void> => {
     if (abort.signal.aborted) return Promise.resolve();
@@ -68,7 +80,11 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       try {
         const state = await plugin.getProviderState();
         if (state.providerReady !== true) abort.abort();
-        else accept(state);
+        else {
+          accept(state);
+          providerDisplayName = !abort.signal.aborted && state.phase === "ready"
+            ? speakerNameSuggestion(state.providerDisplayName) : undefined;
+        }
       } catch { abort.abort(); }
       finally { checking = null; }
     })();
@@ -94,8 +110,10 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     if (!record(state) || state.phase !== "ready" || state.providerReady !== true || !isUuid(state.revision)
       || duringRead && (duringRead.phase !== state.phase || duringRead.revision !== state.revision)) throw unavailable();
     revision = state.revision;
-    nativeRecording = state.nativeRecordingVersion === 1 && typeof plugin.openProviderRecording === "function"
+    providerDisplayName = speakerNameSuggestion(state.providerDisplayName);
+    nativeRecording = [1, 2].includes(state.nativeRecordingVersion ?? 0) && typeof plugin.openProviderRecording === "function"
       && typeof plugin.providerRecordingCommand === "function";
+    nativeContextReuse = nativeRecording && state.nativeRecordingVersion === 2;
     document.addEventListener("visibilitychange", resume);
     timer = setInterval(() => { void refresh(); }, 5000); // Existing native state check, no SDK token request.
   } catch (error) { await dispose(); throw error; }
@@ -150,11 +168,26 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     return value;
   };
 
+  const encounterSetup = owners.setup = createEncounterSetup({
+    current,
+    records: () => Promise.resolve({ records: SecureQueue, close: () => Promise.resolve() }),
+    created: entry => { encounters.set(entry.appointmentRef, { workspaceId: entry.workspaceId, encounter: entry }); },
+    request: async (body, key, signal) => {
+      const response = await request("encounters", body, key, [signal]);
+      if (response.status !== 200) throw unavailable();
+      const value: unknown = await response.json(); current(signal);
+      if (!record(value) || value.revision !== revision) throw unavailable();
+      return value;
+    },
+  });
   return {
+    get providerDisplayName() { return !abort.signal.aborted && !options.signal.aborted ? providerDisplayName : undefined; },
+    get encounterSetup() { return creationSupported ? encounterSetup : undefined; },
+    get account() { return account; },
     signal: abort.signal, dispose,
     listEncounters: async signal => {
       const value = await json("catalog", {}, signal);
-      if (!Array.isArray(value.encounters) || value.encounters.length > 100) throw unavailable();
+      if (!Array.isArray(value.encounters) || value.encounters.length > 1000) throw unavailable();
       const next = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
       for (const row of value.encounters) {
         if (!record(row) || !isUuid(row.workspaceId)) throw unavailable();
@@ -163,6 +196,10 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
         next.set(entry.appointmentRef, { workspaceId: row.workspaceId, encounter: entry });
       }
       current(signal); encounters.clear();
+      openingReviewSupported = value.opening_review_v1 === true;
+      noteOpeningSupported = value.note_opening_v1 === true;
+      creationSupported = value.encounter_creation_v1 === true;
+      account = creationSupported ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }) : undefined;
       for (const [key, row] of next) encounters.set(key, row);
       return [...next.values()].map(row => row.encounter);
     },
@@ -174,22 +211,32 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       current(signal);
       const row = encounters.get(appointmentRef);
       if (!row) throw unavailable();
-      const value = await json("mount", { workspace_id: row.workspaceId }, signal);
+      const supportsNoteOpening = noteOpeningSupported;
+      const openingNonce = openingReviewSupported ? crypto.randomUUID() : undefined;
+      const value = await json("mount", { workspace_id: row.workspaceId,
+        ...(openingNonce ? { opening_nonce: openingNonce } : {}) }, signal);
       if (!isUuid(value.recoveryScope) || value.workspaceId !== row.workspaceId || value.appointmentRef !== appointmentRef
         || !reference(value.bindingRef, "scribe_capture_binding") || !record(value.encounter)) throw unavailable();
       const displayed = encounter(value.encounter);
       if (displayed.appointmentRef !== appointmentRef) throw unavailable();
       const scope = Object.freeze({ workspaceId: row.workspaceId, appointmentRef, bindingRef: value.bindingRef });
+      let recordingAuthorization: string | null = null;
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
+        ...(nativeContextReuse ? { recorderRechecksReview: true as const } : {}),
+        ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
+        ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,
         ...(nativeRecording ? { nativeRecording: {
           open: (sessionId: string, requestId: string) => {
             current(signal);
             if (!revision || !isUuid(sessionId) || !isUuid(requestId)) throw unavailable();
+            const authorizationId = recordingAuthorization;
+            recordingAuthorization = null;
+            if (nativeContextReuse && !authorizationId) throw unavailable();
             // Deliver late ownership handles so workspace teardown can close them.
             return plugin.openProviderRecording!({ requestId, revision, workspaceId: scope.workspaceId,
-              bindingRef: scope.bindingRef, sessionId });
+              bindingRef: scope.bindingRef, sessionId, ...(authorizationId ? { authorizationId } : {}) });
           },
           command: (command: Parameters<NativeRecordingPort["command"]>[0]) => {
             if (command.kind !== "close") current(signal);
@@ -201,20 +248,27 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
           current(signal);
           const action = path.slice("/service/v1/agent/scribe/".length);
           if (path !== "/service/v1/agent/scribe/" + action
-            || !["capture-admissions", "capture-operations", "capture-notes"].includes(action)
+            || !["capture-admissions", "capture-operations", "capture-notes", ...(supportsNoteOpening ? ["note-opening"] : [])].includes(action)
             || body.workspace_id !== scope.workspaceId || body.binding_ref !== scope.bindingRef) throw unavailable();
           return request(action as Action, body, key, [signal, operationSignal]);
         },
         reauthorizeRecorder: async (sessionId, recorderSignal) => {
           current(signal);
           if (!isUuid(sessionId)) throw unavailable();
-          const response = await request("recorder", { workspace_id: scope.workspaceId,
-            binding_ref: scope.bindingRef, session_id: sessionId, request_nonce: crypto.randomUUID() },
+          recordingAuthorization = null;
+          const nonce = crypto.randomUUID();
+          const response = await request(nativeContextReuse ? "recorder-context" : "recorder", { workspace_id: scope.workspaceId,
+            binding_ref: scope.bindingRef, session_id: sessionId, request_nonce: nonce },
           crypto.randomUUID(), [signal, recorderSignal]);
           if (response.status !== 200) throw unavailable();
           const receipt: unknown = await response.json();
           current(signal); current(recorderSignal);
           if (!record(receipt) || receipt.revision !== revision || receipt.session_id !== sessionId) throw unavailable();
+          if (nativeContextReuse) {
+            if (Object.keys(receipt).sort().join(",") !== "authorization_id,revision,session_id"
+              || receipt.authorization_id !== nonce) throw unavailable();
+            recordingAuthorization = nonce;
+          }
         },
         prepareNativeSource: async (prepared, sourceSignal) => {
           current(signal); current(sourceSignal);
@@ -241,9 +295,11 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   };
 }
 
-function encounter(value: Record<string, unknown>): ProviderEncounter {
-  if (!reference(value.appointmentRef, "appointment") || typeof value.title !== "string" || value.title.length > 300
-    || typeof value.detail !== "string" || value.detail.length > 1000) throw unavailable();
-  return Object.freeze({ appointmentRef: value.appointmentRef, title: value.title, detail: value.detail });
-}
+const encounter = parseEncounterDisplay;
+
 function unavailable(): QueueInvariantError { return new QueueInvariantError("provider_native_connection_unavailable"); }
+
+function objectAccount(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw unavailable();
+  return value as Record<string, unknown>;
+}

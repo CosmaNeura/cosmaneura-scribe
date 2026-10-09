@@ -59,7 +59,9 @@ def capture_client(client: TestClient) -> TestClient:
     return client
 
 
-def _create_capture_session(client: TestClient, tenant_id: UUID, suffix: str) -> dict[str, object]:
+def _create_capture_session(
+    client: TestClient, tenant_id: UUID, suffix: str, *, register_audio_key: bool = True
+) -> dict[str, object]:
     identity = {
         "appointment_id": f"appointment-{suffix}",
         "practitioner_id": f"practitioner-{suffix}",
@@ -84,6 +86,8 @@ def _create_capture_session(client: TestClient, tenant_id: UUID, suffix: str) ->
         json={**identity, "consent_record_id": consent.json()["id"]},
     )
     assert session.status_code == 201
+    if not register_audio_key:
+        return session.json()
     audio_key = client.post(
         f"/v1/sessions/{session.json()['id']}/audio-key",
         headers=_headers(tenant_id, f"audio-key-{suffix}-0001"),
@@ -308,8 +312,7 @@ def test_upload_refresh_registration_receipt_and_contiguous_completion(
     )
     reservation = batch["reservations"][0]
     authorization_url = (
-        f"/v1/sessions/{session['id']}/chunks/{reservation['object_id']}"
-        "/upload-authorization"
+        f"/v1/sessions/{session['id']}/chunks/{reservation['object_id']}/upload-authorization"
     )
     authorization = capture_client.post(
         authorization_url,
@@ -460,8 +463,7 @@ def test_expired_authorization_refresh_keeps_the_reservation_binding(
 
     repository_backend.run(seed_expired_authorization)
     refreshed = capture_client.post(
-        f"/v1/sessions/{session['id']}/chunks/{reservation['object_id']}"
-        "/upload-authorization",
+        f"/v1/sessions/{session['id']}/chunks/{reservation['object_id']}/upload-authorization",
         headers=_headers(tenant_id, "authorize-expired-authorization-0001"),
         json={"protocol_version": "1.0"},
     )
@@ -530,8 +532,7 @@ def test_protocol_rejects_gaps_cross_tenant_receipts_and_legacy_allocator(
     )
     assert unauthorized_registration.status_code == 409
     second_authorization = capture_client.post(
-        f"/v1/sessions/{session['id']}/chunks/{second['object_id']}"
-        "/upload-authorization",
+        f"/v1/sessions/{session['id']}/chunks/{second['object_id']}/upload-authorization",
         headers=_headers(tenant_id, "authorize-negative-0001"),
         json={"protocol_version": "1.0"},
     )
@@ -581,8 +582,7 @@ def test_openapi_declares_the_versioned_capture_surface_and_mutation_headers() -
     for path, method in mutation_operations:
         operation = document["paths"][path][method]
         parameters = {
-            (parameter["in"], parameter["name"]): parameter
-            for parameter in operation["parameters"]
+            (parameter["in"], parameter["name"]): parameter for parameter in operation["parameters"]
         }
         assert parameters[("header", "Idempotency-Key")]["required"] is True
         assert parameters[("header", "X-Tenant-ID")]["required"] is True
@@ -605,28 +605,57 @@ def test_three_hour_capacity_and_partial_chunk_headroom(capture_client: TestClie
     assert original["max_chunks"] == 2048
     assert original["remaining_aggregate_plaintext_bytes"] == 402_653_184
     for first in range(0, 1080, 90):
-        batch = _reserve(capture_client, tenant_id, session["id"], lease,
-                         key=f"long-reserve-{first:04d}", first=first, count=90)
+        batch = _reserve(
+            capture_client,
+            tenant_id,
+            session["id"],
+            lease,
+            key=f"long-reserve-{first:04d}",
+            first=first,
+            count=90,
+        )
         assert batch["reservations"][-1]["sequence_number"] == first + 89
     remaining = capture_client.get(url, headers=_headers(tenant_id)).json()
     assert remaining["remaining_aggregate_plaintext_bytes"] == 48_758_784
     # Use the remaining allocation for short pause/route-change chunks, then stop
     # at the byte budget before the independent sequence ceiling.
-    _reserve(capture_client, tenant_id, session["id"], lease,
-             key="long-reserve-1080", first=1080, count=90)
-    _reserve(capture_client, tenant_id, session["id"], lease,
-             key="long-reserve-1170", first=1170, count=58)
+    _reserve(
+        capture_client,
+        tenant_id,
+        session["id"],
+        lease,
+        key="long-reserve-1080",
+        first=1080,
+        count=90,
+    )
+    _reserve(
+        capture_client,
+        tenant_id,
+        session["id"],
+        lease,
+        key="long-reserve-1170",
+        first=1170,
+        count=58,
+    )
     response = capture_client.post(
         f"/v1/sessions/{session['id']}/chunk-reservations",
         headers=_headers(tenant_id, "long-reserve-exhausted"),
-        json={"protocol_version": "1.0", "capture_lease_id": lease["lease_id"],
-              "capture_lease_generation": lease["generation"], "channel": "microphone",
-              "first_sequence_number": 1228, "count": 1},
+        json={
+            "protocol_version": "1.0",
+            "capture_lease_id": lease["lease_id"],
+            "capture_lease_generation": lease["generation"],
+            "channel": "microphone",
+            "first_sequence_number": 1228,
+            "count": 1,
+        },
     )
     assert response.status_code == 409
-    assert capture_client.get(url, headers=_headers(tenant_id)).json()[
-        "remaining_aggregate_plaintext_bytes"
-    ] == 262_144
+    assert (
+        capture_client.get(url, headers=_headers(tenant_id)).json()[
+            "remaining_aggregate_plaintext_bytes"
+        ]
+        == 262_144
+    )
 
 
 def test_lower_worker_capacity_also_bounds_admission(capture_client: TestClient) -> None:
@@ -638,19 +667,29 @@ def test_lower_worker_capacity_also_bounds_admission(capture_client: TestClient)
     session = _create_capture_session(capture_client, tenant_id, "low-capacity")
     lease = _issue_lease(capture_client, tenant_id, session["id"], "low-capacity")
     url = f"/v1/sessions/{session['id']}/capture-capabilities"
-    assert capture_client.get(url, headers=_headers(tenant_id)).json()[
-        "remaining_aggregate_plaintext_bytes"
-    ] == 1_000_000
-    _reserve(capture_client, tenant_id, session["id"], lease,
-             key="low-capacity-reserve", count=3)
+    assert (
+        capture_client.get(url, headers=_headers(tenant_id)).json()[
+            "remaining_aggregate_plaintext_bytes"
+        ]
+        == 1_000_000
+    )
+    _reserve(capture_client, tenant_id, session["id"], lease, key="low-capacity-reserve", count=3)
     response = capture_client.post(
         f"/v1/sessions/{session['id']}/chunk-reservations",
         headers=_headers(tenant_id, "low-capacity-denied"),
-        json={"protocol_version": "1.0", "capture_lease_id": lease["lease_id"],
-              "capture_lease_generation": lease["generation"], "channel": "microphone",
-              "first_sequence_number": 3, "count": 1},
+        json={
+            "protocol_version": "1.0",
+            "capture_lease_id": lease["lease_id"],
+            "capture_lease_generation": lease["generation"],
+            "channel": "microphone",
+            "first_sequence_number": 3,
+            "count": 1,
+        },
     )
     assert response.status_code == 409
-    assert capture_client.get(url, headers=_headers(tenant_id)).json()[
-        "remaining_aggregate_plaintext_bytes"
-    ] == 16_960
+    assert (
+        capture_client.get(url, headers=_headers(tenant_id)).json()[
+            "remaining_aggregate_plaintext_bytes"
+        ]
+        == 16_960
+    )

@@ -440,6 +440,13 @@ class Repository(Protocol):
         receipt_id: UUID,
     ) -> CaptureLeaseReceipt | None: ...
 
+    async def capture_lease_receipt_for_generation(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        generation: int,
+    ) -> CaptureLeaseReceipt | None: ...
+
     async def issue_capture_lease(
         self,
         tenant_id: UUID,
@@ -2038,6 +2045,21 @@ class InMemoryRepository:
         if receipt is None or (tenant_id, receipt.session_id) not in self.sessions:
             return None
         return receipt
+
+    async def capture_lease_receipt_for_generation(
+        self,
+        tenant_id: UUID,
+        session_id: UUID,
+        generation: int,
+    ) -> CaptureLeaseReceipt | None:
+        if (tenant_id, session_id) not in self.sessions:
+            return None
+        receipts = [
+            row
+            for (tenant, _), row in self.capture_lease_receipts.items()
+            if tenant == tenant_id and row.session_id == session_id and row.generation == generation
+        ]
+        return receipts[0] if len(receipts) == 1 else None
 
     async def issue_capture_lease(
         self,

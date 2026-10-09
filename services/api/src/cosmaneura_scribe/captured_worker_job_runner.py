@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -31,6 +32,10 @@ from .transcription_job_runner import (
 from .translation_job_encryption import TranslationJobCipher
 
 _ENABLED = "COSMANEURA_SCRIBE_CAPTURED_WORKER_ENABLED"
+# Scheduled jobs start once per minute. Reuse their initialized clients across
+# a bounded pickup window instead of leaving uploads waiting for the next start.
+PENDING_PICKUP_SECONDS = 65.0
+PENDING_POLL_SECONDS = 5.0
 WorkerExecution = Callable[[CapturedWorkerSettings, UUID, UUID | None], Awaitable[None]]
 
 
@@ -39,7 +44,9 @@ class CapturedWorkerError(RuntimeError):
 
 
 async def run_captured_worker(
-    *, arguments: Sequence[str] | None = None, environ: Mapping[str, str] | None = None,
+    *,
+    arguments: Sequence[str] | None = None,
+    environ: Mapping[str, str] | None = None,
     settings_factory: Callable[[], CapturedWorkerSettings] | None = None,
     execute: WorkerExecution | None = None,
 ) -> bool:
@@ -69,14 +76,17 @@ async def run_captured_worker(
         raise
     except Exception:
         pass
-    log_event(action="captured_worker.failed", tenant_id=tenant_id,
-              error_class="CapturedWorkerError")
+    log_event(
+        action="captured_worker.failed", tenant_id=tenant_id, error_class="CapturedWorkerError"
+    )
     raise CapturedWorkerError("captured_worker_execution_failed") from None
 
 
 async def _targets(
-    repositories: CapturedSourceRepositoryProvider, settings: CapturedWorkerSettings,
-    tenant_id: UUID, session_id: UUID | None,
+    repositories: CapturedSourceRepositoryProvider,
+    settings: CapturedWorkerSettings,
+    tenant_id: UUID,
+    session_id: UUID | None,
 ) -> tuple[UUID, ...]:
     if session_id is not None:
         return (session_id,)
@@ -91,9 +101,11 @@ async def _targets(
     # claims and a maximum of three attempts still gate each selected session.
     async with repositories.engine.begin() as connection:
         await connection.execute(text("SET LOCAL statement_timeout = '60s'"))
-        await connection.execute(text("SELECT set_config('app.tenant_id', :tenant, true)"),
-                                 {"tenant": str(tenant_id)})
-        rows = await connection.execute(text("""
+        await connection.execute(
+            text("SELECT set_config('app.tenant_id', :tenant, true)"), {"tenant": str(tenant_id)}
+        )
+        rows = await connection.execute(
+            text("""
             SELECT s.id FROM scribe_sessions s
             JOIN consent_records c ON c.tenant_id=s.tenant_id AND c.id=s.consent_record_id
             LEFT JOIN transcription_jobs j ON j.tenant_id=s.tenant_id AND j.session_id=s.id
@@ -106,7 +118,9 @@ async def _targets(
               AND (j.id IS NULL OR j.status='retryable'
                    OR (j.status='processing' AND j.lease_until<=clock_timestamp()))
             ORDER BY s.id LIMIT :maximum
-        """), {"tenant": tenant_id, "maximum": settings.captured_worker_batch_size})
+        """),
+            {"tenant": tenant_id, "maximum": settings.captured_worker_batch_size},
+        )
         return tuple(rows.scalars())
 
 
@@ -122,8 +136,10 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
             transcriber = build_speech_to_text_provider(settings)
             closers.insert(0, transcriber.close)
             worker = CapturedTranscriptionWorker(
-                repositories=repositories, assembler=assembler,
-                transcriber=transcriber, enabled=True,
+                repositories=repositories,
+                assembler=assembler,
+                transcriber=transcriber,
+                enabled=True,
             )
         else:
             if (
@@ -147,31 +163,62 @@ async def _execute(settings: CapturedWorkerSettings, tenant: UUID, session: UUID
             )
             closers.insert(0, unwrapper.close)
             translator = AzureGPT41TranslationAdapter(
-                AzureTranslationProfile(settings.azure_translation_endpoint,
-                                        settings.azure_translation_deployment),
-                credential=credential, endpoint_guard=PrivateSpeechEndpointGuard(
+                AzureTranslationProfile(
+                    settings.azure_translation_endpoint, settings.azure_translation_deployment
+                ),
+                credential=credential,
+                endpoint_guard=PrivateSpeechEndpointGuard(
                     urlsplit(settings.azure_translation_endpoint).hostname or "",
                     settings.azure_translation_private_endpoint_cidrs,
                 ),
             )
             worker = CapturedTranslationWorker(
-                repositories=repositories, translator=translator,
-                job_cipher=TranslationJobCipher(keys, unwrapper), enabled=True,
+                repositories=repositories,
+                translator=translator,
+                job_cipher=TranslationJobCipher(keys, unwrapper),
+                enabled=True,
                 limit=settings.captured_worker_batch_size,
             )
-        failed = False
+        await _dispatch(repositories, settings, tenant, session, worker)
+    finally:
+        await close_job_resources(closers)
+
+
+async def _dispatch(
+    repositories: CapturedSourceRepositoryProvider,
+    settings: CapturedWorkerSettings,
+    tenant: UUID,
+    session: UUID | None,
+    worker: CapturedTranscriptionWorker | CapturedTranslationWorker,
+) -> None:
+    deadline = time.monotonic() + PENDING_PICKUP_SECONDS
+    seen: set[UUID] = set()
+    failed = False
+    while True:
         for target in await _targets(repositories, settings, tenant, session):
+            if target in seen:
+                continue  # A failed target is never retried within this execution.
+            seen.add(target)
             try:
                 if settings.captured_worker_stage == "speech":
                     async with repositories.transaction(tenant) as store:
                         await store.reconcile_exhausted_speech(tenant, target, max_attempts=3)
+                # Existing durable claims arbitrate overlapping scheduled runs.
                 await worker.process(tenant_id=tenant, session_id=target)
             except Exception:
                 failed = True
-        if failed:
-            raise CapturedWorkerError("captured_worker_target_unavailable")
-    finally:
-        await close_job_resources(closers)
+            if len(seen) >= settings.captured_worker_batch_size:
+                break
+        if session is not None or len(seen) >= settings.captured_worker_batch_size:
+            break  # Preserve explicit one-target runs and the existing work budget.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(PENDING_POLL_SECONDS, remaining))
+        if time.monotonic() >= deadline:
+            break  # Pickup expires; accepted work was allowed to finish normally.
+    if failed:
+        raise CapturedWorkerError("captured_worker_target_unavailable")
 
 
 def main() -> None:

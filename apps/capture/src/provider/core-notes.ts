@@ -38,8 +38,11 @@ export function sameSource(left: ReviewedSource, right: ReviewedSource): boolean
     && canonical(left.capture_continuity ?? null) === canonical(right.capture_continuity ?? null);
 }
 export async function noteTemplates(client: CoreCaptureClient, session: string): Promise<CoreNoteTemplate[]> {
-  const value = await client.note(session, "templates");
-  requireValue(closed(value, "session_id,templates") && Array.isArray(value.templates) && value.templates.length <= 100);
+  return parseNoteTemplates(await client.note(session, "templates"), session);
+}
+export function parseNoteTemplates(value: unknown, session: string): CoreNoteTemplate[] {
+  requireValue(closed(value, "session_id,templates") && value.session_id === session
+    && Array.isArray(value.templates) && value.templates.length <= 100);
   const ids = new Set<string>();
   for (const item of value.templates) {
     requireValue(closed(item, "schema_ref,note_type,field_names") && reference(item.schema_ref, "doctor_note_schema")
@@ -99,6 +102,23 @@ export async function resolveNote(client: CoreCaptureClient, session: string, pe
     requireValue(reference(value.result_note_ref, "visit_note") && value.result_note_ref !== pending.edit.expected_note_ref
       && value.result_sha256 === await sha256(JSON.stringify(pending.fieldOrder.map(key => [key, pending.edit.fields[key]]))));
   } else requireValue(value.status === "closed" && value.result_note_ref === null && value.result_sha256 === null);
+  return value.status;
+}
+
+/** Read-only receipt check. A missing receipt never closes the pending save. */
+export async function checkNoteSave(client: CoreCaptureClient, session: string,
+  pending: PendingNoteSave): Promise<"saved" | "closed" | "pending"> {
+  const value = await client.note(session, "save_status", pending.schema, pending.edit, pending.edit.client_key);
+  requireValue(closed(value, "session_id,schema_ref,client_key,request_sha256,status,result_note_ref,result_sha256")
+    && value.session_id === session && value.schema_ref === pending.schema
+    && value.client_key === pending.edit.client_key
+    && value.request_sha256 === await sha256(canonical({ edit: pending.edit, schema: pending.schema,
+      session, workspace: client.scope.workspaceId })));
+  if (value.status === "saved") {
+    requireValue(reference(value.result_note_ref, "visit_note") && value.result_note_ref !== pending.edit.expected_note_ref
+      && value.result_sha256 === await sha256(JSON.stringify(pending.fieldOrder.map(key => [key, pending.edit.fields[key]]))));
+  } else requireValue((value.status === "pending" || value.status === "closed")
+    && value.result_note_ref === null && value.result_sha256 === null);
   return value.status;
 }
 

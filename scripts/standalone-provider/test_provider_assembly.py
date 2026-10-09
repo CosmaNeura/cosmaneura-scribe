@@ -56,3 +56,31 @@ def test_audio_declaration_preserves_disabled_profile_and_identity(tmp_path: Pat
     assert (tmp_path / "profile.plist").read_bytes() == original
     with pytest.raises(FileExistsError):
         module.assemble(args)
+
+
+@pytest.mark.parametrize(
+    "changed", ["ProviderNativeTransport.swift", "NativeProviderConnection.swift"]
+)
+def test_native_assembly_rejects_mobile_desktop_contract_drift(tmp_path: Path, changed):
+    assembler = ASSEMBLER.with_name("assemble-native-source.py")
+    spec = importlib.util.spec_from_file_location("native_assembly", assembler)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    repo = tmp_path / "repo"
+    plugin = repo / "apps/capture/native-plugins/cosmas-native-auth"
+    bridge = plugin / "Bridge"
+    standalone = repo / "scripts/standalone-provider"
+    bridge.mkdir(parents=True)
+    standalone.mkdir(parents=True)
+    clerk = tmp_path / "empty-synthetic-sdk"
+    clerk.mkdir()
+    (plugin / "clerk-source-lock.json").write_text('{"files": {}}')
+    for name in ("ProviderNativeTransport.swift", "NativeProviderConnection.swift"):
+        (bridge / name).write_text("synthetic mobile contract")
+        (standalone / name).write_text("drift" if name == changed else "synthetic mobile contract")
+    module.__file__ = str(repo / "scripts/assemble-native-source.py")
+    output = tmp_path / "candidate"
+    with pytest.raises(ValueError, match=changed):
+        module.assemble(output, clerk)
+    assert not output.exists()

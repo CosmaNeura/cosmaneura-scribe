@@ -86,9 +86,7 @@ def test_reservation_and_batch_responses_preserve_order_and_encode_aad() -> None
     assert reservation.session_id == first.session_id
     assert reservation.channel == first.channel
     assert reservation.sequence_number == first.sequence_number
-    assert reservation.additional_authenticated_data == base64url_encode(
-        first.additional_data
-    )
+    assert reservation.additional_authenticated_data == base64url_encode(first.additional_data)
     assert reservation.created_at == first.created_at
     assert response.protocol_version == PROTOCOL_VERSION
     assert response.batch_id == batch.id

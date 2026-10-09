@@ -87,39 +87,64 @@ extension NativeSourceProofRecord {
     let journal: NativeSourceProofJournal
     private var ready = false
     private var recovering = false
+    #if os(macOS)
     private var coordinator: NativeCaptureProcessCoordinator?
+    #endif
     private let desktopDirectory: String?
     init(journal: NativeSourceProofJournal, desktopDirectory: String? = nil) {
         self.journal = journal; self.desktopDirectory = desktopDirectory
     }
     func recover(connection: NativeProviderConnection) async throws {
+        #if !os(macOS)
+        // A desktop path never substitutes for the mobile process's idle gate.
+        guard desktopDirectory == nil else { throw ProviderNativeError.unavailable }
+        #endif
         try journal.requireUsable()
         if ready { return }
         guard !recovering else { throw ProviderNativeError.unavailable }
         recovering = true; defer { recovering = false }
+        #if os(macOS)
         if let desktopDirectory {
             if coordinator == nil {
                 let expected = journal.anchor
-                let acquired = try NativeCaptureProcessCoordinator(privateDirectory: desktopDirectory, expectedAnchor: expected)
+                let acquired = try NativeCaptureProcessCoordinator(privateDirectory: desktopDirectory, expectedAnchor: expected,
+                    allowLegacyRemount: journal.pending.isEmpty)
                 try journal.reloadWhileExclusive(expectedAnchor: expected)
+                // The first journal read may precede an old owner's final
+                // write. Recheck legacy eligibility with the locked fresh read.
+                guard expected?.matchesMountedFiles(acquired.anchor, allowLegacyRemount: journal.pending.isEmpty) != false
+                else { throw NativeSourceJournalError.unavailable }
+                // Preserve stop-only recovery before upgrading an original
+                // journal. Never clear a saved owner to repair a mount number.
+                if expected?.volumeID == nil { try await retireSavedOwners(connection) }
                 try journal.initializeAnchor(acquired.anchor)
                 coordinator = acquired
             }
             try await retireSavedOwners(connection)
             try coordinator!.allowCaptureAfterConfirmedRecovery()
         } else {
-            try await NativeCaptureStartGate.recoverWhileIdle {
-                try await self.retireSavedOwners(connection)
-            }
+            try await recoverWhileIdle(connection)
         }
+        #else
+        try await recoverWhileIdle(connection)
+        #endif
         ready = true
     }
     func requireReady() throws { guard ready else { throw ProviderNativeError.unavailable }; try journal.requireUsable() }
     var processFence: [String: Any] {
         get throws {
             try requireReady()
+            #if os(macOS)
             guard let coordinator else { throw ProviderNativeError.unavailable }
             return coordinator.wireValue
+            #else
+            throw ProviderNativeError.unavailable
+            #endif
+        }
+    }
+    private func recoverWhileIdle(_ connection: NativeProviderConnection) async throws {
+        try await NativeCaptureStartGate.recoverWhileIdle {
+            try await self.retireSavedOwners(connection)
         }
     }
     private func retireSavedOwners(_ connection: NativeProviderConnection) async throws {

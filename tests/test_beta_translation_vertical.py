@@ -61,9 +61,7 @@ from test_normalized_source_persistence import (
 )
 from test_translation_attempt_persistence import _seed_pending
 
-_FIXTURE_PATH = (
-    Path(__file__).parent / "fixtures" / "beta" / "bilingual_source_to_handoff_v1.json"
-)
+_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "beta" / "bilingual_source_to_handoff_v1.json"
 
 
 class _SyntheticSpanishEnglishAdapter:
@@ -176,9 +174,7 @@ async def test_synthetic_bilingual_source_reaches_reviewed_english_note_handoff(
     for index, item in enumerate(review_queue.items):
         decision = CreatorTranslationDecisionRequestV1(
             schema_version="1.0",
-            expected_source_transcript_version=(
-                review_queue.source_transcript_version
-            ),
+            expected_source_transcript_version=(review_queue.source_transcript_version),
             source_segment_id=item.source_segment_id,
             expected_source_segment_version=item.source_segment_version,
             translation_id=item.translation_id,
@@ -224,16 +220,12 @@ async def test_synthetic_bilingual_source_reaches_reviewed_english_note_handoff(
     assert [segment.model_dump(mode="json") for segment in handoff.segments] == (
         expected_handoff["segments"]
     )
-    assert all(
-        spanish.content not in handoff.model_dump_json() for spanish in spanish_segments
-    )
+    assert all(spanish.content not in handoff.model_dump_json() for spanish in spanish_segments)
     assert {
         "normalized_translation_attempt.recorded",
         "normalized_translation_review.recorded",
         "normalized_working_transcript.published",
-    }.issubset(
-        {event.action for event in provider.audit_events if event.tenant_id == tenant_id}
-    )
+    }.issubset({event.action for event in provider.audit_events if event.tenant_id == tenant_id})
 
 
 @pytest.mark.asyncio
@@ -276,11 +268,14 @@ async def test_ambiguous_database_commit_replays_command_without_recalling_provi
     assert publication.disposition == TranslationAttemptWriteDisposition.REPLAYED
     assert retrying_provider.transaction_calls == 2
     assert adapter.call_count == 1
-    assert sum(
-        1
-        for key in provider.normalized_translation_attempts
-        if key[:2] == (tenant_id, draft.id)
-    ) == 1
+    assert (
+        sum(
+            1
+            for key in provider.normalized_translation_attempts
+            if key[:2] == (tenant_id, draft.id)
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -341,8 +336,7 @@ async def test_completed_provider_result_fails_closed_after_authority_or_lineage
     assert caught.value.code == expected_code
     assert adapter.call_count == 1
     assert not any(
-        key[:2] == (tenant_id, draft.id)
-        for key in provider.normalized_translation_attempts
+        key[:2] == (tenant_id, draft.id) for key in provider.normalized_translation_attempts
     )
 
 
@@ -356,7 +350,9 @@ async def test_content_filter_rejection_preserves_source_and_blocks_note_handoff
     await _seed_configured_session(provider, tenant_id, consent, draft)
     async with provider.transaction(tenant_id) as store:
         assert await store.accept_normalized_source_transcript(
-            tenant_id, draft.id, idempotency_key="synthetic-filter-source",
+            tenant_id,
+            draft.id,
+            idempotency_key="synthetic-filter-source",
             request=_request(spanish_content=case.source),
         )
         source = await store.get_current_normalized_source_transcript(tenant_id, draft.id)
@@ -371,38 +367,56 @@ async def test_content_filter_rejection_preserves_source_and_blocks_note_handoff
         nonlocal calls
         calls += 1
         assert case.source in request.content.decode()
-        return httpx.Response(400, json={"error": {
-            "code": "content_filter", "innererror": {
-                "code": "ResponsibleAIPolicyViolation",
-                "content_filter_result": {"jailbreak": {"detected": True, "filtered": True}},
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "content_filter",
+                    "innererror": {
+                        "code": "ResponsibleAIPolicyViolation",
+                        "content_filter_result": {
+                            "jailbreak": {"detected": True, "filtered": True}
+                        },
+                    },
+                }
             },
-        }})
+        )
 
     prepared = await prepare_spanish_to_english_attempt(
         _azure_adapter(filtered_response),
         ReservedSpanishTranslation(
-            translation_id=uuid4(), expected_source_transcript_version=1,
+            translation_id=uuid4(),
+            expected_source_transcript_version=1,
             source_segment_id=spanish.source_segment_id,
             expected_source_segment_version=spanish.source_segment_version,
             expected_previous_translation_version=0,
-            source_locale=spanish.source_locale, source_content=spanish.content,
+            source_locale=spanish.source_locale,
+            source_content=spanish.content,
         ),
     )
     assert calls == 1
     assert prepared.outcome == TranslationOutcome.FAILED
     assert prepared.failure_code == "provider_rejected" and prepared.content is None
     completed = CompletedTranslationJobV1.from_command(
-        tenant_id=tenant_id, session_id=draft.id, command=prepared,
+        tenant_id=tenant_id,
+        session_id=draft.id,
+        command=prepared,
     )
     publication = await commit_translation_attempt_and_publish(
-        provider, tenant_id, draft.id,
+        provider,
+        tenant_id,
+        draft.id,
         CompletedTranslationJobV1.model_validate_json(completed.model_dump_json()).to_command(),
     )
     assert publication is not None
     assert publication.status == ConfiguredExternalSessionStatus.TRANSLATION_PENDING
-    working = provider.normalized_working_transcripts[(
-        tenant_id, draft.id, publication.current_working_transcript.working_transcript_version,
-    )].working_transcript
+    working = provider.normalized_working_transcripts[
+        (
+            tenant_id,
+            draft.id,
+            publication.current_working_transcript.working_transcript_version,
+        )
+    ].working_transcript
     assert not working.note_ready
     assert WorkingTranscriptBlockerCode.TRANSLATION_FAILED in {
         blocker.code for blocker in working.blockers
@@ -411,20 +425,27 @@ async def test_content_filter_rejection_preserves_source_and_blocks_note_handoff
         assert await store.get_current_normalized_source_transcript(tenant_id, draft.id) == source
     with pytest.raises(ValueError, match="^working_transcript_not_note_ready$"):
         to_master_platform_payload_from_working_transcript(
-            encounter_id=draft.appointment_id, session_id=draft.id, working_transcript=working,
+            encounter_id=draft.appointment_id,
+            session_id=draft.id,
+            working_transcript=working,
         )
     decision = CreatorTranslationDecisionRequestV1(
-        schema_version="1.0", expected_source_transcript_version=1,
+        schema_version="1.0",
+        expected_source_transcript_version=1,
         source_segment_id=spanish.source_segment_id,
         expected_source_segment_version=spanish.source_segment_version,
-        translation_id=prepared.translation_id, expected_translation_version=1,
+        translation_id=prepared.translation_id,
+        expected_translation_version=1,
         decision=TranslationReviewDecision.ACCEPTED,
     )
     with pytest.raises(TranslationReviewPersistenceError) as rejected:
         await commit_creator_translation_review_and_publish(
-            provider, tenant_id, draft.id,
+            provider,
+            tenant_id,
+            draft.id,
             decision.to_authorized_command(
-                review_id=uuid4(), reviewer_actor_id=draft.creator_actor_id,
+                review_id=uuid4(),
+                reviewer_actor_id=draft.creator_actor_id,
                 reviewed_at=datetime.now(UTC),
             ),
         )

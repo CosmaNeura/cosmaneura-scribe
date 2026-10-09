@@ -20,18 +20,33 @@ private actor BindingWire: ProviderNativeWire {
     try require(token.split(separator: ".").count == 3)
     requests.append(request)
     let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
+    if request.action == .mount {
+      let appointment = "appointment_01j00000000000000000000000"
+      return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
+        "revision": request.revision, "workspaceId": workspace.uuidString.lowercased(),
+        "recoveryScope": UUID().uuidString.lowercased(), "bindingRef": binding,
+        "appointmentRef": appointment, "encounter": ["appointmentRef": appointment,
+          "native_recording_preparation_v1": true],
+      ]))
+    }
     try require(Set(body.keys) == ["workspace_id", "binding_ref", "request_nonce", "operation"])
     try require(body["binding_ref"] as? String == binding)
     try require(body["workspace_id"] as? String == workspace.uuidString.lowercased())
     let operation = body["operation"] as! [String: Any]
     let kind = operation["kind"] as! String
     var receipt: [String: Any]
-    if kind == "native_recording_context" {
+    if kind == "native_recording_context" || kind == "native_recording_preparation" {
       receipt = [
         "schema_version": "1.0", "workspace_id": workspace.uuidString.lowercased(),
         "tenant_id": tenant.uuidString.lowercased(), "session_id": session.uuidString.lowercased(),
         "status": "created",
       ]
+      if kind == "native_recording_preparation" {
+        receipt = ["schema_version": "1.0", "context": receipt,
+          "encryption_key": ["key_version": "synthetic-v1", "algorithm": "RSA-OAEP-256",
+            "public_jwk": ["kty": "RSA", "n": modulus, "e": "AQAB", "alg": "RSA-OAEP-256",
+              "ext": true, "key_ops": ["wrapKey"]]]]
+      }
     } else if kind == "encryption_key" {
       try require(Set(operation.keys) == ["kind"])
       var jwk: [String: Any] = [
@@ -51,6 +66,110 @@ private actor BindingWire: ProviderNativeWire {
         "key_version": fault == "key_version" ? "bad version" : "synthetic-v1",
         "algorithm": fault == "algorithm" ? "RSA1_5" : "RSA-OAEP-256", "public_jwk": jwk,
       ]
+    } else if kind == "prepare_recording_window" || kind == "prepare_continuation_window" {
+      let resumed = kind == "prepare_continuation_window"
+      try require(Set(operation.keys) == ["kind", "payload"])
+      let payload = operation["payload"] as! [String: Any]
+      let fields: Set<String> =
+        resumed
+        ? [
+          "schema_version", "channel", "first_sequence_number", "previous_lease_id",
+          "previous_lease_generation", "renew_idempotency_key", "reservation_idempotency_key",
+        ]
+        : [
+          "schema_version", "binding", "bind_idempotency_key", "lease_idempotency_key",
+          "reserve_idempotency_key", "channel", "reservation_count",
+        ]
+      try require(
+        Set(payload.keys) == fields && payload["schema_version"] as? String == "1.0"
+          && payload["channel"] as? String == "microphone")
+      let first = resumed ? payload["first_sequence_number"] as! Int : 0
+      let count = resumed ? 17 : payload["reservation_count"] as! Int
+      if !resumed, fault == "none",
+        let path = ProcessInfo.processInfo.environment["SCRIBE_NATIVE_WINDOW_FIXTURE_PATH"],
+        !FileManager.default.fileExists(atPath: path)
+      {
+        // Synthetic wire fixture for the actual Core boundary; no token or context.
+        try JSONSerialization.data(
+          withJSONObject: ["idempotency_key": request.key, "operation": operation],
+          options: [.sortedKeys]
+        ).write(to: URL(fileURLWithPath: path), options: .atomic)
+      }
+      let componentFields =
+        resumed
+        ? ["renew_idempotency_key", "reservation_idempotency_key"]
+        : ["bind_idempotency_key", "lease_idempotency_key", "reserve_idempotency_key"]
+      let componentKeys = try componentFields.map { field -> String in
+        guard let key = payload[field] as? String, UUID(uuidString: key) != nil else {
+          throw CheckFailure.failed
+        }
+        return key
+      }
+      // Match Core's actual contract: the outer request may not alias a component.
+      try require(Set(componentKeys + [request.key]).count == componentKeys.count + 1)
+      if resumed {
+        try require(
+          payload["previous_lease_id"] as? String == lease.uuidString.lowercased()
+            && payload["previous_lease_generation"] as? Int == 1)
+      } else {
+        try require(count == 30)
+        let binding = payload["binding"] as! [String: String]
+        try require(
+          Set(binding.keys) == ["key_version", "wrapped_dek"]
+            && binding["wrapped_dek"]?.count == 512)
+      }
+      let formatter = ISO8601DateFormatter()
+      let issued = Date()
+      let issuedAt = formatter.string(from: issued)
+      let expiresAt = formatter.string(from: issued.addingTimeInterval(900))
+      let leaseReceipt: [String: Any] = [
+        "protocol_version": "1.0", "receipt_id": UUID().uuidString.lowercased(),
+        "lease_id": fault == "aggregate_lease"
+          ? UUID().uuidString.lowercased() : lease.uuidString.lowercased(),
+        "session_id": session.uuidString.lowercased(),
+        "generation": fault == "aggregate_generation" ? 3 : resumed ? 2 : 1,
+        "issued_at": issuedAt, "expires_at": expiresAt,
+      ]
+      var rows: [[String: Any]] = []
+      for sequence in first..<(first + count) {
+        let object = UUID()
+        let aad = try JSONSerialization.data(
+          withJSONObject: [
+            "tenant_id": tenant.uuidString.lowercased(),
+            "session_id": session.uuidString.lowercased(),
+            "object_id": object.uuidString.lowercased(),
+            "channel": "microphone", "sequence_number": sequence,
+          ], options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        .base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(
+          of: "/", with: "_"
+        ).replacingOccurrences(of: "=", with: "")
+        rows.append([
+          "protocol_version": "1.0", "object_id": object.uuidString.lowercased(),
+          "session_id": session.uuidString.lowercased(), "channel": "microphone",
+          "sequence_number": fault == "aggregate_position" ? sequence + 1 : sequence,
+          "additional_authenticated_data": aad, "created_at": issuedAt,
+        ])
+      }
+      let reservations: [String: Any] = [
+        "protocol_version": "1.0", "batch_id": UUID().uuidString.lowercased(),
+        "session_id": session.uuidString.lowercased(), "capture_authorized_until": expiresAt,
+        "reservations": fault == "aggregate_count" ? [] : rows,
+      ]
+      receipt = [
+        "schema_version": fault == "aggregate_schema" ? "2.0" : "1.0", "lease": leaseReceipt,
+        "reservations": reservations,
+      ]
+      if !resumed {
+        receipt["binding"] = [
+          "session_id": fault == "aggregate_binding"
+            ? UUID().uuidString.lowercased() : session.uuidString.lowercased(),
+          "key_version": fault == "aggregate_key" ? "wrong-key" : "synthetic-v1",
+          "created_at": issuedAt,
+        ]
+      }
+      if fault == "aggregate_fields" { receipt["unexpected"] = true }
+      if fault == "lost_window" { throw ProviderNativeError.response }
     } else if kind == "issue_lease" || kind == "renew_lease" {
       let renewing = kind == "renew_lease"
       try require(
@@ -204,6 +323,7 @@ private final class BindingKeys: NativeRecordingKeyStorage, @unchecked Sendable 
 }
 
 private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRecordingRecordStore,
+  NativeRecordingLeaseRecordStore,
   @unchecked Sendable
 {
   private let lock = NSLock()
@@ -212,6 +332,11 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     lock.withLock { values[key] }
   }
   func createBinding(key: String, data: Data) throws { try write(key, data, 0) }
+  func readLease(key: String) throws -> NativeRecordingStoredRecord? { try readBinding(key: key) }
+  func createLease(key: String, data: Data) throws { try write(key, data, 0) }
+  func compareAndSwapLease(key: String, expectedRevision: UInt64, data: Data) throws {
+    try write(key, data, expectedRevision)
+  }
   func compareAndSwapBinding(key: String, expectedRevision: UInt64, data: Data) throws {
     try write(key, data, expectedRevision)
   }
@@ -236,7 +361,8 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
 }
 
 @main struct CheckNativeRecordingBinding {
-  @MainActor private static func make(_ modulus: String) async throws
+  @MainActor private static func make(_ modulus: String, combined: Bool = false, ticket: Bool = false,
+    contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now }) async throws
     -> (
       NativeWorkspaceAuth, Driver, BindingWire, NativeProviderConnection,
       NativeProviderRecordingService
@@ -249,11 +375,29 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     let auth = NativeWorkspaceAuth(
       enabled: true, organizationID: "org_offline", tokenPolicy: policy,
       driver: { driver }, accessBlock: { Block() })
-    let connection = NativeProviderConnection(auth: auth, wire: wire)
+    let connection = NativeProviderConnection(auth: auth, wire: wire, contextNow: contextNow)
     auth.onChange = { [weak connection] state in connection?.authChanged(state) }
-    let context = try await connection.recordingContext(
-      workspaceID: wire.workspace, bindingRef: wire.binding,
-      sessionID: wire.session, revision: auth.state().revision)
+    if combined {
+      _ = try await connection.send(CheckNativeProvider.request(auth, action: "mount", body:
+        String(decoding: JSONSerialization.data(withJSONObject: ["workspace_id": wire.workspace.uuidString.lowercased()]), as: UTF8.self)))
+    }
+    let context: NativeProviderRecordingContext
+    if ticket {
+      let nonce = UUID(), revision = auth.state().revision
+      _ = try await connection.prepareRecordingContext(CheckNativeProvider.request(auth,
+        action: "recorder-context", body: String(decoding: JSONSerialization.data(withJSONObject: [
+          "workspace_id": wire.workspace.uuidString.lowercased(), "binding_ref": wire.binding,
+          "session_id": wire.session.uuidString.lowercased(), "request_nonce": nonce.uuidString.lowercased(),
+        ]), as: UTF8.self)))
+      guard let prepared = try connection.takePreparedRecordingContext(nonce: nonce,
+        workspaceID: wire.workspace, bindingRef: wire.binding, sessionID: wire.session,
+        revision: revision) else { throw CheckFailure.failed }
+      context = prepared
+    } else {
+      context = try await connection.recordingContext(
+        workspaceID: wire.workspace, bindingRef: wire.binding,
+        sessionID: wire.session, revision: auth.state().revision)
+    }
     try require(context.bindingRef == wire.binding)
     return (
       auth, driver, wire, connection,
@@ -275,6 +419,38 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     let receipt = NativeRecordingKeyReceipt(
       keyVersion: "synthetic-v1", wrappedDEK: String(repeating: "A", count: 512))
     var checks = 0
+    for ticket in [false, true] {
+      for fault in ["none", "expired", "revision", "account", "cancelled", "remount"] {
+        var instant = ContinuousClock.now
+        let (auth, driver, wire, connection, service) = try await make(modulus, combined: true, ticket: ticket, contextNow: { instant })
+        let before = await wire.requests.count
+        if fault == "expired" { instant = instant.advanced(by: .seconds(6)) }
+        if fault == "revision" {
+          driver.identity = try .init(userID: "user_offline", sessionID: "sess_restarted", organizationID: "org_offline")
+          _ = auth.state()
+        }
+        if fault == "account" { driver.identity = nil; _ = auth.state() }
+        if fault == "remount" {
+          _ = try await connection.send(CheckNativeProvider.request(auth, action: "mount", body:
+            String(decoding: JSONSerialization.data(withJSONObject: ["workspace_id": wire.workspace.uuidString.lowercased()]), as: UTF8.self)))
+        }
+        if fault == "cancelled" {
+          let pending = Task { try await service.publishedKey() }
+          pending.cancel()
+          try await CheckNativeProvider.rejected(pending)
+          try require(await wire.requests.count == before)
+        } else if fault == "account" {
+          try await CheckNativeProvider.rejected(Task { try await service.publishedKey() })
+          try require(await wire.requests.count == before)
+        } else {
+          try require(try await service.publishedKey().version == "synthetic-v1")
+          try require(await wire.requests.count == before + (fault == "none" ? 0 : fault == "remount" ? 2 : 1))
+          _ = try await service.publishedKey()
+          try require(await wire.requests.count == before + (fault == "none" ? 1 : fault == "remount" ? 3 : 2))
+        }
+        connection.close(); checks += 1
+      }
+    }
     let envelopeFaults = [
       "none", "nonce", "binding", "workspace", "operation", "contract", "old", "future",
       "date", "extra", "large", "denied", "extra_receipt",
@@ -354,6 +530,105 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
         connection.close()
         checks += 1
       }
+    }
+    for resumed in [false, true] {
+      for fault in envelopeFaults + [
+        "aggregate_count", "aggregate_position", "aggregate_generation", "aggregate_schema",
+        "aggregate_fields",
+      ] + (resumed ? ["aggregate_lease"] : ["aggregate_binding", "aggregate_key"]) {
+        let (_, driver, wire, connection, service) = try await make(modulus)
+        await wire.setFault(fault)
+        let task = Task {
+          if resumed {
+            let formatter = ISO8601DateFormatter()
+            let now = Date()
+            let previous = try NativeRecordingLease(
+              receiptID: UUID(), leaseID: wire.lease, sessionID: wire.session,
+              generation: 1, issuedAt: formatter.string(from: now.addingTimeInterval(-600)),
+              expiresAt: formatter.string(from: now.addingTimeInterval(300)))
+            let value = try await service.prepareResumeWindow(
+              NativeRecordingResumeWindowRequest(
+                previous: previous, first: 7, intent: UUID(), renewIntent: UUID(),
+                reserveIntent: UUID()))
+            try require(
+              value.lease.generation == 2 && value.batch.reservations.count == 17
+                && value.batch.reservations.first?.sequence == 7)
+          } else {
+            let value = try await service.prepareInitialWindow(
+              NativeRecordingWindowRequest(
+                keyVersion: "synthetic-v1", wrappedDEK: receipt.wrappedDEK, bindIntent: UUID(),
+                leaseIntent: UUID(), reserveIntent: UUID(), count: 30))
+            try require(value.lease.generation == 1 && value.batch.reservations.count == 30)
+          }
+        }
+        if fault == "none" {
+          try await task.value
+        } else {
+          try await CheckNativeProvider.rejected(task)
+        }
+        try require(await wire.requests.count == 2 && driver.tokens == 2)
+        connection.close()
+        checks += 1
+      }
+    }
+    for preparation in ["legacy", "combined", "ticket"] {
+      let combined = preparation != "legacy"
+      let (_, driver, wire, connection, service) = try await make(modulus, combined: combined, ticket: preparation == "ticket")
+      let scope = try await service.recordingScope()
+      let records = BindingRecords()
+      let keys = BindingKeys()
+      let recovery = UUID()
+      let window = NativeRecordingWindowOwner(
+        scope: scope, recoveryScope: recovery, service: service, records: records)
+      try await window.initialize()
+      let binding = NativeRecordingBindingOwner(
+        scope: scope, service: window, records: records, keys: keys)
+      await wire.setFault("lost_window")
+      try await CheckNativeProvider.rejected(Task { try await binding.open() })
+      // Reconstruct owners from the same version-one journals after a lost reply.
+      // No new recipe or encryption key may replace the retained pending request.
+      let reopenedWindow = NativeRecordingWindowOwner(
+        scope: scope, recoveryScope: recovery, service: service, records: records)
+      try await reopenedWindow.initialize()
+      let reopenedBinding = NativeRecordingBindingOwner(
+        scope: scope, service: reopenedWindow, records: records, keys: keys)
+      await wire.setFault("none")
+      _ = try await reopenedBinding.open()
+      let requests = await wire.requests
+      let decoded = try requests.filter { $0.action == .operation }.map { request -> (ProviderNativeRequest, [String: Any]) in
+        let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
+        return (request, body["operation"] as! [String: Any])
+      }
+      let windows = decoded.filter { $0.1["kind"] as? String == "prepare_recording_window" }
+      try require(windows.count == 2 && windows[0].0.key == windows[1].0.key)
+      try require(decoded.filter { $0.1["kind"] as? String == "encryption_key" }.count == (combined ? 0 : 1))
+      try require(
+        JSONSerialization.data(withJSONObject: windows[0].1, options: [.sortedKeys])
+          == JSONSerialization.data(withJSONObject: windows[1].1, options: [.sortedKeys]))
+      let payload = windows[0].1["payload"] as! [String: Any]
+      try require(
+        windows[0].0.key == "native-initial-window-v1:"
+          + (payload["bind_idempotency_key"] as! String))
+      try require(driver.tokens == requests.count)
+      // The same actual binding/window/reservation writer encrypts fictional
+      // PCM using the combined public key, including lost-response recovery.
+      if combined {
+        let cipher = try await reopenedBinding.open()
+        let leases = NativeRecordingLeaseOwner(scope: scope, service: service, records: records)
+        let reservations = NativeRecordingReservationOwner(scope: scope, recoveryScope: recovery,
+          service: service, records: records)
+        try await reopenedWindow.adopt(leases: leases, reservations: reservations)
+        let lease = try await leases.open()
+        let prepared = try await reservations.reserve(lease: lease, first: 0, count: 30)
+        guard let row = prepared.reservations.first else { throw CheckFailure.failed }
+        let writer = try NativeRecordingQueueWriter(encryption: cipher, recoveryScope: recovery,
+          store: records, firstSequence: 0, priorPlaintextBytes: 0, maximumPlaintextBytes: 402_653_184)
+        var pcm = Data([1, 0, 255, 127])
+        _ = try writer.persist(pcm16: &pcm, objectID: row.objectID, sequence: row.sequence)
+        try require(pcm.allSatisfy { $0 == 0 })
+      }
+      connection.close()
+      checks += 1
     }
     for renewing in [false, true] {
       for fault in envelopeFaults + [

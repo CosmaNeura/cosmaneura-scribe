@@ -14,12 +14,23 @@
     static func make(
       connection: NativeProviderConnection, auth: NativeWorkspaceAuth,
       recovery: NativeSourceRecovery, workspaceID: UUID, bindingRef: String,
-      sessionID: UUID, revision: String
+      sessionID: UUID, revision: String, authorizationID: UUID? = nil
     ) async throws -> NativeProviderRecordingHost {
       let mount = try connection.recordingMount(
         workspaceID: workspaceID, bindingRef: bindingRef, revision: revision)
-      let context = try await connection.recordingContext(
-        workspaceID: workspaceID, bindingRef: bindingRef, sessionID: sessionID, revision: revision)
+      let prepared = try authorizationID.flatMap {
+        try connection.takePreparedRecordingContext(
+          nonce: $0, workspaceID: workspaceID,
+          bindingRef: bindingRef, sessionID: sessionID, revision: revision)
+      }
+      let context: NativeProviderRecordingContext
+      if let prepared {
+        context = prepared
+      } else {
+        context = try await connection.recordingContext(
+          workspaceID: workspaceID, bindingRef: bindingRef, sessionID: sessionID, revision: revision
+        )
+      }
       guard
         try connection.recordingMount(
           workspaceID: workspaceID, bindingRef: bindingRef, revision: revision) == mount
@@ -58,7 +69,7 @@
               if permission.currentPermission() == .granted { return true }
               return await permission.requestPermission() == .granted
             },
-            makeRecorder: { validate in
+            makeRecorder: { validate, finalize in
               try NativeEncryptedPCMRecorder(
                 encryption: encryption, recoveryScope: mount.recoveryScope, records: records,
                 firstSequence: source.recordingPreparation.firstSequenceNumber,
@@ -66,7 +77,14 @@
                 permission: AVFoundationMicrophonePermissionAdapter(provider: permission),
                 system: LiveAppleAudioSystem(signalMonitor: signal, microphoneInput: input),
                 foreground: LiveAppleApplicationForegroundProvider(), signal: signal,
-                validateActiveSource: validate)
+                validateActiveSource: validate, finalizeCapturedAudio: { write in
+                  try await finalize {
+                    guard permission.currentPermission() == .granted else {
+                      throw NativeRecordingBindingFailure.authorityChanged
+                    }
+                    try write()
+                  }
+                })
             })
         })
     }

@@ -42,7 +42,8 @@ function fixture() {
       encounters: [{ workspaceId: workspace, ...encounter }] }
       : request.action === "mount" ? { revision: request.revision, workspaceId: workspace,
         recoveryScope: recovery, appointmentRef: appointment, bindingRef: binding, encounter }
-        : request.action === "recorder" ? { revision: request.revision, session_id: body.session_id }
+        : request.action === "recorder-context" ? { revision: request.revision, session_id: body.session_id, authorization_id: body.request_nonce }
+          : request.action === "recorder" ? { revision: request.revision, session_id: body.session_id }
           : { contract_version: "1", workspace_id: workspace, binding_ref: binding,
             request_nonce: body.request_nonce, checked_at: new Date().toISOString(),
             appointment_ref: appointment, operation_ref: "scribe_admission_01j00000000000000000000000",
@@ -73,6 +74,121 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it.each([undefined, 1, 2])("advertises acquisition review only for native context version %s", async version => {
+    const f = fixture(); f.setState({ ...f.state, ...(version === undefined ? {} : { nativeRecordingVersion: version }) }, false);
+    const backend = await f.connect();
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.recorderRechecksReview).toBe(version === 2 ? true : undefined);
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount"]);
+    } finally { await backend.dispose(); }
+  });
+  it.each(["signedOut", "ready"])("drops current profile suggestions on %s identity transition without a request", async phase => {
+    const f = fixture();
+    f.setState({ ...f.state, providerDisplayName: "Fictional Lucía Rivera" }, false);
+    const backend = await f.connect();
+    try {
+      expect(backend.providerDisplayName).toBe("Fictional Lucía Rivera");
+      expect(f.plugin.providerRequest).not.toHaveBeenCalled();
+      expect(f.plugin.getToken).not.toHaveBeenCalled();
+      f.setState({ ...f.state, phase, revision: crypto.randomUUID(), providerDisplayName: "Another fictional person" });
+      expect(backend.signal.aborted).toBe(true);
+      expect(backend.providerDisplayName).toBeUndefined();
+    } finally { await backend.dispose(); }
+  });
+
+  it.each([undefined, "", "\u0000", "bad\ud800name", "x".repeat(121)])("withholds invalid/missing optional profile metadata without blocking access", async name => {
+    const f = fixture();
+    f.setState({ ...f.state, ...(name !== undefined ? { providerDisplayName: name } : {}) }, false);
+    const backend = await f.connect();
+    try {
+      expect(backend.providerDisplayName).toBeUndefined();
+      expect(backend.signal.aborted).toBe(false);
+      expect(f.plugin.providerRequest).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+
+  it("uses the patient's fresh authorized mount metadata, not a catalog title or earlier name", async () => {
+    const f = fixture(), backend = await f.connect();
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const value = JSON.parse(f.reply(request).body);
+      if (request.action === "catalog") value.encounters[0].patientName = "Synthetic earlier name";
+      if (request.action === "mount") Object.assign(value.encounter, { title: "Arbitrary appointment title", patientName: "Synthetic current name" });
+      return f.reply(request, value);
+    });
+    try {
+      expect((await backend.listEncounters(backend.signal))[0]!.patientName).toBe("Synthetic earlier name");
+      expect((await backend.openEncounter(appointment, backend.signal)).encounter.patientName).toBe("Synthetic current name");
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount"]);
+    } finally { await backend.dispose(); }
+  });
+  it("opens with a complete long transcript without a second Core request", async () => {
+    const f = fixture(), backend = await f.connect(), view = longReviewFixture(session);
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const result = JSON.parse(f.reply(request).body);
+      if (request.action === "catalog") result.opening_review_v1 = true;
+      if (request.action === "mount") result.openingReview = {
+        contract_version: "1", workspace_id: workspace, binding_ref: binding,
+        request_nonce: JSON.parse(request.body).opening_nonce, checked_at: new Date().toISOString(),
+        operation: "provider_encounter", receipt: { schema_version: "1.0", status: "available", review: view },
+      };
+      return f.reply(request, result);
+    });
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.openingReview?.view).toEqual(view);
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount"]);
+    } finally { await backend.dispose(); }
+  });
+
+  it.each([false, true])("requests a combined opening only with advertised capability (%s)", async supported => {
+    const f = fixture(), backend = await f.connect();
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const normal = f.reply(request), value = JSON.parse(normal.body);
+      if (request.action === "catalog") value.opening_review_v1 = supported;
+      if (request.action === "mount" && supported) value.openingReview = {
+        contract_version: "1", workspace_id: workspace, binding_ref: binding,
+        request_nonce: JSON.parse(request.body).opening_nonce, checked_at: new Date().toISOString(),
+        operation: "provider_encounter", receipt: { schema_version: "1.0", status: "not_prepared", review: null },
+      };
+      return { ...normal, body: JSON.stringify(value) };
+    });
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.openingReview?.view).toBe(supported ? null : undefined);
+      const body = JSON.parse(f.plugin.providerRequest.mock.calls[1]![0].body);
+      expect(Object.keys(body).sort()).toEqual(supported ? ["opening_nonce", "workspace_id"] : ["workspace_id"]);
+      await mount.reauthorizeRecorder(session, backend.signal);
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount", "recorder"]);
+      expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+
+  it.each([false, true])("gates note opening on its own advertised capability (%s)", async supported => {
+    const f = fixture(), backend = await f.connect();
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const normal = f.reply(request), value = JSON.parse(normal.body);
+      if (request.action === "catalog") value.note_opening_v1 = supported;
+      if (request.action === "note-opening") Object.assign(value, { operation: "note_opening",
+        receipt: { session_id: session, separate_reads_required: true } });
+      return { ...normal, body: JSON.stringify(value) };
+    });
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.noteOpeningSupported).toBe(supported ? true : undefined);
+      const client = new CoreCaptureClient(mount.scope, mount.request, mount.signal);
+      if (supported) expect(await client.openNote(session)).toEqual({ session_id: session, separate_reads_required: true });
+      else await expect(client.openNote(session)).rejects.toThrow();
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action))
+        .toEqual(["catalog", "mount", ...(supported ? ["note-opening"] : [])]);
+      expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+
   it("passes a full long review through native and Core receivers while retaining the byte guard", async () => {
     const f = fixture(), backend = await f.connect();
     try {
@@ -280,5 +396,58 @@ it("keeps older native builds on their existing recorder", async () => {
   try {
     await backend.listEncounters(backend.signal);
     expect((await backend.openEncounter(appointment, backend.signal)).nativeRecording).toBeUndefined();
+  } finally { await backend.dispose(); }
+});
+
+it("reuses one acknowledged native context once after recorder reauthorization", async () => {
+  const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+  const backend = await f.connect();
+  try {
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
+    await mount.reauthorizeRecorder(session, backend.signal);
+    const prepared = f.plugin.providerRequest.mock.calls.at(-1)![0];
+    expect(prepared.action).toBe("recorder-context");
+    const body = JSON.parse(prepared.body) as { request_nonce: string };
+    const requestId = crypto.randomUUID();
+    await mount.nativeRecording!.open(session, requestId);
+    expect(f.plugin.openProviderRecording).toHaveBeenCalledWith({ requestId, revision: f.state.revision,
+      workspaceId: workspace, bindingRef: binding, sessionId: session, authorizationId: body.request_nonce });
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
+    expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual(["catalog", "mount", "recorder-context"]);
+  } finally { await backend.dispose(); }
+});
+
+it.each(["nonce", "session", "extra", "denied"])("rejects invalid prepared context acknowledgement %s", async fault => {
+  const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+  const backend = await f.connect();
+  try {
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    f.plugin.providerRequest.mockImplementationOnce(async request => {
+      const body = JSON.parse(request.body) as { request_nonce: string };
+      return f.reply(request, { revision: request.revision, session_id: fault === "session" ? crypto.randomUUID() : session,
+        authorization_id: fault === "nonce" ? crypto.randomUUID() : body.request_nonce,
+        ...(fault === "extra" ? { tenant_id: workspace } : {}) }, fault === "denied" ? 403 : 200);
+    });
+    await expect(mount.reauthorizeRecorder(session, backend.signal)).rejects.toThrow();
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
+    expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();
+  } finally { await backend.dispose(); }
+});
+
+it("cancels an in-flight native context and cannot adopt its late acknowledgement", async () => {
+  const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+  const backend = await f.connect(), abort = new AbortController(), held = deferred<NativeReply>();
+  try {
+    await backend.listEncounters(backend.signal);
+    const mount = await backend.openEncounter(appointment, backend.signal);
+    f.plugin.providerRequest.mockImplementationOnce(() => held.promise);
+    const pending = mount.reauthorizeRecorder(session, abort.signal), rejected = expect(pending).rejects.toThrow();
+    const request = f.plugin.providerRequest.mock.calls.at(-1)![0];
+    abort.abort(); await rejected; held.resolve(f.reply(request)); await Promise.resolve();
+    expect(f.plugin.cancelProviderRequest).toHaveBeenCalledWith({ requestId: request.requestId });
+    expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
   } finally { await backend.dispose(); }
 });

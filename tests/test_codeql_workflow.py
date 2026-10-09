@@ -46,19 +46,13 @@ def test_swift_codeql_uses_the_proven_manual_capacitor_build_path() -> None:
     assert swift_job.index("github/codeql-action/init@") < swift_job.index(
         "npm run cap:sync:check:ios"
     )
-    assert swift_job.index("npm run cap:sync:check:ios") < swift_job.index(
-        "xcodebuild"
-    )
-    assert swift_job.index("xcodebuild") < swift_job.index(
-        "github/codeql-action/analyze@"
-    )
+    assert swift_job.index("npm run cap:sync:check:ios") < swift_job.index("xcodebuild")
+    assert swift_job.index("xcodebuild") < swift_job.index("github/codeql-action/analyze@")
 
 
 def test_codeql_actions_are_immutably_pinned_and_upload_is_least_privilege() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    action_references = re.findall(
-        r"^\s*-?\s*uses:\s*([^\s#]+)", workflow, re.MULTILINE
-    )
+    action_references = re.findall(r"^\s*-?\s*uses:\s*([^\s#]+)", workflow, re.MULTILINE)
 
     assert action_references
     for reference in action_references:

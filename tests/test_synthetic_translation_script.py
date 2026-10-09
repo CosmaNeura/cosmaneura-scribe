@@ -43,38 +43,61 @@ async def test_status_transport_reopens_after_each_one_shot_client(monkeypatch) 
 def test_error_metadata_retains_only_fixed_codes_and_true_flags() -> None:
     script = runpy.run_path(str(SCRIPT))
     marker = "synthetic-sensitive-message-never-retain"
-    raw = json.dumps({"error": {
-        "code": "content_filter", "message": marker, "param": marker,
-        "innererror": {
-            "code": "ResponsibleAIPolicyViolation",
-            "content_filter_result": {
-                "jailbreak": {"detected": True, "filtered": True, "message": marker},
-                "hate": {"detected": "true", "filtered": False},
-                marker: {"detected": True},
-            },
-        },
-    }}).encode()
+    raw = json.dumps(
+        {
+            "error": {
+                "code": "content_filter",
+                "message": marker,
+                "param": marker,
+                "innererror": {
+                    "code": "ResponsibleAIPolicyViolation",
+                    "content_filter_result": {
+                        "jailbreak": {"detected": True, "filtered": True, "message": marker},
+                        "hate": {"detected": "true", "filtered": False},
+                        marker: {"detected": True},
+                    },
+                },
+            }
+        }
+    ).encode()
     result = script["_error_metadata"](raw)
     assert result == {
-        "diagnostic": "parsed", "error_code": "content_filter",
+        "diagnostic": "parsed",
+        "error_code": "content_filter",
         "inner_code": "ResponsibleAIPolicyViolation",
         "filter_flags": ["jailbreak_detected", "jailbreak_filtered"],
     }
     assert marker not in json.dumps(result)
-    result = script["_error_metadata"](json.dumps({"error": {
-        "code": marker, "innererror": {"code": [marker]}, "message": marker,
-    }}).encode())
+    result = script["_error_metadata"](
+        json.dumps(
+            {
+                "error": {
+                    "code": marker,
+                    "innererror": {"code": [marker]},
+                    "message": marker,
+                }
+            }
+        ).encode()
+    )
     assert result == {
-        "diagnostic": "parsed", "error_code": "other_or_absent",
-        "inner_code": "other_or_absent", "filter_flags": [],
+        "diagnostic": "parsed",
+        "error_code": "other_or_absent",
+        "inner_code": "other_or_absent",
+        "filter_flags": [],
     }
 
 
-@pytest.mark.parametrize("raw", [
-    b"not-json", b"[]", b'{}', b'{"error":[]}',
-    b'{"error":{"code":"content_filter","code":"other"}}',
-    b"[" * 2000 + b"]" * 2000,
-])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"not-json",
+        b"[]",
+        b"{}",
+        b'{"error":[]}',
+        b'{"error":{"code":"content_filter","code":"other"}}',
+        b"[" * 2000 + b"]" * 2000,
+    ],
+)
 def test_invalid_error_payload_returns_no_values(raw: bytes) -> None:
     parse = runpy.run_path(str(SCRIPT))["_error_metadata"]
     assert parse(raw) == {"diagnostic": "invalid_error_body"}
@@ -91,7 +114,7 @@ class _ErrorStream(httpx.AsyncByteStream):
             raise self.failure
         for start in range(0, len(self.data), 1024):
             self.reads += 1
-            yield self.data[start:start + 1024]
+            yield self.data[start : start + 1024]
 
 
 @pytest.mark.asyncio
@@ -101,9 +124,15 @@ async def test_diagnostic_body_read_is_bounded_and_does_not_decompress() -> None
     assert await read(httpx.Response(400, stream=stream)) == {"diagnostic": "body_limit"}
     assert stream.reads == 17
     encoded = _ErrorStream(b"unused")
-    assert await read(httpx.Response(400, stream=encoded, headers={
-        "Content-Encoding": "gzip",
-    })) == {"diagnostic": "encoded_body_not_read"}
+    assert await read(
+        httpx.Response(
+            400,
+            stream=encoded,
+            headers={
+                "Content-Encoding": "gzip",
+            },
+        )
+    ) == {"diagnostic": "encoded_body_not_read"}
     assert encoded.reads == 0
 
 
@@ -134,9 +163,12 @@ async def test_real_adapter_still_rejects_once_after_error_diagnostics(monkeypat
             pools.append(self)
 
         async def handle_async_request(self, request):
-            return httpx.Response(400, stream=_ErrorStream(
-                b'{"error":{"code":"content_filter","message":"do-not-retain"}}'
-            ))
+            return httpx.Response(
+                400,
+                stream=_ErrorStream(
+                    b'{"error":{"code":"content_filter","message":"do-not-retain"}}'
+                ),
+            )
 
     monkeypatch.setattr(httpx, "AsyncHTTPTransport", Pool)
     transport = script["_StatusOnlyTransport"]()
@@ -144,14 +176,22 @@ async def test_real_adapter_still_rejects_once_after_error_diagnostics(monkeypat
         script["AzureTranslationProfile"](
             "https://synthetic-model.openai.azure.com/openai/v1", "gpt-4.1"
         ),
-        credential=Credential(), endpoint_guard=Guard(), transport=transport,
+        credential=Credential(),
+        endpoint_guard=Guard(),
+        transport=transport,
     )
     with pytest.raises(TranslationAdapterError) as error:
         await configured.translate(SpanishToEnglishTranslationRequest("Texto sintetico."))
     assert error.value.code == TranslationAdapterFailureCode.PROVIDER_REJECTED
     assert len(pools) == 1
-    assert transport.errors == [{
-        "request_index": 0, "http_status": 400, "diagnostic": "parsed",
-        "error_code": "content_filter", "inner_code": "other_or_absent", "filter_flags": [],
-    }]
+    assert transport.errors == [
+        {
+            "request_index": 0,
+            "http_status": 400,
+            "diagnostic": "parsed",
+            "error_code": "content_filter",
+            "inner_code": "other_or_absent",
+            "filter_flags": [],
+        }
+    ]
     assert transport.inner is None

@@ -125,9 +125,7 @@ def test_capture_lease_receipts_are_fenced_and_immutable_across_backends(
             assert first.generation == 1
 
         async with repository_backend.provider.transaction(tenant_id) as store:
-            persisted_first = await store.get_capture_lease_receipt(
-                tenant_id, first_receipt_id
-            )
+            persisted_first = await store.get_capture_lease_receipt(tenant_id, first_receipt_id)
             assert persisted_first == first
             renewal = await store.renew_capture_lease(
                 tenant_id,
@@ -310,9 +308,7 @@ def test_receipt_registration_and_finalization_fail_closed(
                 duration=timedelta(milliseconds=250),
             )
             assert short_authorization is not None
-            assert await store.is_upload_authorization_active(
-                tenant_id, short_authorization.id
-            )
+            assert await store.is_upload_authorization_active(tenant_id, short_authorization.id)
             assert not await store.is_upload_authorization_active(tenant_id, uuid4())
             assert (
                 await store.add_upload_authorization_receipt(
@@ -325,9 +321,7 @@ def test_receipt_registration_and_finalization_fail_closed(
                 is None
             )
             await asyncio.sleep(0.3)
-            assert not await store.is_upload_authorization_active(
-                tenant_id, short_authorization.id
-            )
+            assert not await store.is_upload_authorization_active(tenant_id, short_authorization.id)
             authorization = await store.add_upload_authorization_receipt(
                 tenant_id,
                 session.id,
@@ -353,9 +347,7 @@ def test_receipt_registration_and_finalization_fail_closed(
             await store.update_session(
                 tenant_id, session.model_copy(update={"status": SessionStatus.CAPTURING})
             )
-            receipt = await store.get_chunk_receipt(
-                tenant_id, session.id, chunk.object_id
-            )
+            receipt = await store.get_chunk_receipt(tenant_id, session.id, chunk.object_id)
             assert receipt is not None
             assert receipt.registration == chunk
             assert (
@@ -527,9 +519,10 @@ def test_capture_tables_force_rls_and_reject_metadata_updates(
                     text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
                     {"tenant_id": str(other_tenant)},
                 )
-                assert await connection.scalar(
-                    text("SELECT count(*) FROM audio_chunk_reservations")
-                ) == 0
+                assert (
+                    await connection.scalar(text("SELECT count(*) FROM audio_chunk_reservations"))
+                    == 0
+                )
 
             with pytest.raises(DBAPIError, match="capture metadata is immutable"):
                 async with engine.begin() as connection:

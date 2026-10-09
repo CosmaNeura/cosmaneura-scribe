@@ -48,9 +48,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 from test_database_bootstrap import _postgres_settings
+from test_derived_translation_evidence_migration import _seed_source
 from test_normalized_source_persistence import _expire_normalized_source
 from test_translation_attempt_persistence import _command, _seed_pending
 from test_translation_execution_v1 import _CountingAdapter, _reserved_record
+from test_working_transcript_migration import _set_status
 
 from alembic import command
 
@@ -538,11 +540,33 @@ def test_fresh_process_reads_committed_ciphertext(postgres_urls, tmp_path: Path)
 @pytest.mark.postgres
 def test_used_expand_refuses_downgrade(historical_postgres_url) -> None:
     async def prepare() -> None:
-        provider, tenant, draft, reservation, _, store = await _setup(historical_postgres_url)
+        engine = create_async_engine(historical_postgres_url, connect_args={"ssl": False})
+        tenant = uuid4()
         try:
-            await store.reserve_translation_job(tenant, draft.id, reservation)
+            async with engine.begin() as connection:
+                assert (
+                    await connection.scalar(
+                        text("SELECT to_regclass('public.creator_transcript_edits')")
+                    )
+                    is None
+                )
+                session, segment = await _seed_source(connection, tenant)
+            async with engine.begin() as connection:
+                await _set_status(connection, tenant, session, "translation_pending")
+            reservation = ReservedSpanishTranslation(
+                translation_id=uuid4(),
+                expected_source_transcript_version=1,
+                source_segment_id=segment,
+                expected_source_segment_version=1,
+                expected_previous_translation_version=0,
+                source_locale=SourceLocale.SPANISH_US,
+                source_content="Synthetic es-US source content.",
+            )
+            keys = _LocalKeys()
+            store = PostgresTranslationJobStore(engine, TranslationJobCipher(keys, keys))
+            await store.reserve_translation_job(tenant, session, reservation)
         finally:
-            await provider.close()
+            await engine.dispose()
 
     asyncio.run(prepare())
     config = Config("alembic.ini")

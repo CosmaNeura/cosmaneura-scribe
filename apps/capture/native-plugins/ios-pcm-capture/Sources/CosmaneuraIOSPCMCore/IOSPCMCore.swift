@@ -119,6 +119,17 @@ public final class IOSPCMSessionHandle: Sendable {
   public func stop(_ mode: PCMStopMode) async throws -> PCMStopResult {
     try await state.stop(mode)
   }
+
+  /// Actual 16 kHz mono frames accepted by this run, including its drain tail.
+  /// Feedback only: this does not assert encryption, retention or upload.
+  public var capturedAudioFrames: Int { state.acceptedFrames.value }
+}
+
+private final class AcceptedPCMFrames: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+  var value: Int { lock.withLock { count } }
+  func append(_ frames: Int) { lock.withLock { count += frames } }
 }
 
 private final class FrameAdmissionGate: @unchecked Sendable {
@@ -179,6 +190,7 @@ private final class FirstResult<Value: Sendable>: @unchecked Sendable {
 }
 
 private actor IOSPCMSessionState {
+  nonisolated let acceptedFrames = AcceptedPCMFrames()
   private enum Phase: Equatable {
     case owned
     case requestingPermission
@@ -285,6 +297,19 @@ private actor IOSPCMSessionState {
     }
 
     phase = .starting
+    let invalidate: (@Sendable (PCMAudioEvent) -> Void)?
+    if configuration.preserveInterruptedTail {
+      invalidate = { [sink] event in
+        // The sink serializes this fence with its durable write. A later hard
+        // event must beat any uncommitted tail, even while actor delivery waits.
+        switch event {
+        case .permissionRevoked: sink.terminated(.permissionRevoked)
+        case .captureFailed: sink.terminated(.captureFailed)
+        case .backgrounded: sink.terminated(.backgrounded)
+        case .interruption, .routeChanged: break
+        }
+      }
+    } else { invalidate = nil }
     let callbacks = PCMAudioCallbacks(
       frames: { [weak self, frameAdmission] frames in
         switch frameAdmission.claim() {
@@ -310,7 +335,8 @@ private actor IOSPCMSessionState {
           )
         }
       },
-      event: { [weak self] event in await self?.receive(event) }
+      event: { [weak self] event in await self?.receive(event) },
+      invalidate: invalidate
     )
     switch await raceAudioStart(callbacks: callbacks) {
     case .cancelled:
@@ -512,14 +538,33 @@ private actor IOSPCMSessionState {
   }
 
   private func receive(_ event: PCMAudioEvent) {
+    if phase == .closed && configuration.preserveInterruptedTail {
+      switch event {
+      case .permissionRevoked, .captureFailed, .backgrounded:
+        windowFinalPacket?.bytes.zeroize()
+        windowFinalPacket = nil
+      case .interruption, .routeChanged: break
+      }
+      return
+    }
     guard
       phase == .active || phase == .starting
         || (phase == .closing && requestedStopMode == .drain)
         || (phase == .closeFailed && requestedStopMode == .drain)
     else { return }
     switch event {
-    case .interruption: beginTerminal(.interruption)
-    case .routeChanged: beginTerminal(.routeChanged)
+    case .interruption:
+      if configuration.preserveInterruptedTail && phase == .active {
+        beginWindowClose(.interruption)
+      } else if !configuration.preserveInterruptedTail || requestedStopMode != .drain {
+        beginTerminal(.interruption)
+      }
+    case .routeChanged:
+      if configuration.preserveInterruptedTail && phase == .active {
+        beginWindowClose(.routeChanged)
+      } else if !configuration.preserveInterruptedTail || requestedStopMode != .drain {
+        beginTerminal(.routeChanged)
+      }
     case .backgrounded: beginTerminal(.backgrounded)
     case .permissionRevoked: beginTerminal(.permissionRevoked)
     case .captureFailed: beginTerminal(.captureFailed)
@@ -559,6 +604,7 @@ private actor IOSPCMSessionState {
       let availableFrames = (accumulator.storage.count - accumulator.count) / 2
       let end = min(samples.count, offset + availableFrames)
       try accumulator.append(samples, range: offset..<end)
+      acceptedFrames.append(end - offset)
       offset = end
       if accumulator.isFull, inFlight == nil { try startDelivery() }
     }

@@ -5,7 +5,11 @@ import { parseInputSignal, presentInputSignal, type IosInputSignal } from "./ios
 /** Mounted only while the native iPhone view reports recording. Never requests microphone access. */
 export class IosInputMeter extends LitElement {
   static override styles = css`
-    :host { display: block; margin: 1rem 0; }
+    :host { display: block; min-width: 0; }
+    .feedback { padding: .75rem; border: 1px solid #b9d3ca; border-radius: .75rem; background: #f2f8f5; }
+    .attention { border-color: #bb7926; background: #fff5e5; color: #64410d; }
+    h3 { font-size: 1rem; margin: 0 0 .25rem; }
+    strong { font-size: .9rem; }
     .bars { display: flex; align-items: end; gap: 4px; height: 32px; margin: .5rem 0; }
     .bar { width: 7px; border-radius: 3px; background: #d5ddd9; }
     .on { background: #167052; }
@@ -56,12 +60,14 @@ export class IosInputMeter extends LitElement {
   protected override render() {
     const state = presentInputSignal(this.#signal, performance.now() - this.#receivedAt);
     const bars = Math.ceil(state.level * 12);
-    return html`<strong>${state.route}</strong>
+    return html`<div class=${state.attention ? "feedback attention" : "feedback"}>
+      <div role="status" aria-atomic="true"><h3>${state.title}</h3><p>${state.message}</p></div>
+      <strong>${state.route}</strong>
       <div class="bars" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100"
         aria-valuenow=${Math.round(state.level * 100)}>
         ${Array.from({ length: 12 }, (_, i) => html`<span aria-hidden="true"
           class=${i < bars ? "bar on" : "bar"} style=${`height:${8 + i * 2}px`}></span>`)}
-      </div><p role="status">${state.message}</p>`;
+      </div></div>`;
   }
 }
 

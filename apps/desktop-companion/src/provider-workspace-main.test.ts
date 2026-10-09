@@ -5,6 +5,8 @@ import type { DesktopProviderMethod, DesktopProviderEvent } from "../../capture/
 import type { ProviderSessionState } from "../../capture/src/provider/native-plugin";
 import type { JournalSnapshot, ProviderProgress } from "../../capture/src/provider/workspace-journal";
 import type { PendingReviewDecision } from "../../review-ui/src/creator-review-journal";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
+import type { ProviderRecorderSnapshot } from "../../capture/src/provider-binding";
 
 const sessionId = "10000000-0000-4000-8000-000000000001", workspaceId = "20000000-0000-4000-8000-000000000002";
 const scope = { workspaceId, bindingRef: "scribe_capture_binding_01j00000000000000000000000", appointmentRef: "appointment_01j00000000000000000000000" };
@@ -14,10 +16,10 @@ const decision = { key: "invented-review-operation", request: { schema_version: 
   translation_id: sessionId, decision: "accepted" as const, expected_source_segment_version: 1,
   expected_source_transcript_version: 1, expected_translation_version: 1 } };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
-async function fixture() {
+async function fixture(openingReview?: { scope: typeof scope; receivedAt: number; view: null }, noteOpeningSupported = false, fresh = false) {
   let state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
   const authListeners = new Set<(value: ProviderSessionState) => void>(), events: DesktopProviderEvent[] = [];
-  let saved: JournalSnapshot = { revision: "1", progress: structuredClone(consent) };
+  let saved: JournalSnapshot = fresh ? { revision: null, progress: null } : { revision: "1", progress: structuredClone(consent) };
   let pending: PendingReviewDecision | null = null;
   let connectGate: Promise<void> | null = null, recorderGate: Promise<void> | null = null, coreGate: Promise<void> | null = null;
   let refuseStop = false, refuseAttachment = false, opens = 0;
@@ -26,10 +28,24 @@ async function fixture() {
     state = { phase, revision: crypto.randomUUID() }; authListeners.forEach(listener => listener(state));
   };
   const stop = vi.fn(async () => { if (refuseStop) throw new Error("invented native stop unconfirmed"); });
-  const dispose = vi.fn(async () => undefined), nativeRecord = { deactivate: stop } as unknown as DesktopProviderRecorder;
+  const recorderListeners = new Set<(snapshot: ProviderRecorderSnapshot) => void>();
+  let recorderSnapshot: ProviderRecorderSnapshot = { sessionId, state: "preparing", statusCode: "capture_preparing",
+    recordedChunks: 0, queuedChunks: 0, elapsedSeconds: 0, remainingBudgetSeconds: 0,
+    remainingAuthoritySeconds: null, transcriptionStatus: null, transcript: null,
+    desktop: { phase: "preparing", coverage: "not_started", trimmedStartMs: 0, trimmedEndMs: null } };
+  const subscribeRecorder = vi.fn((listener: (snapshot: ProviderRecorderSnapshot) => void) => {
+    recorderListeners.add(listener); listener(recorderSnapshot); return () => recorderListeners.delete(listener);
+  });
+  const dispose = vi.fn(async () => undefined), nativeRecord = { deactivate: stop,
+    subscribe: subscribeRecorder } as unknown as DesktopProviderRecorder;
   const backend = vi.fn(async () => { if (coreGate) await coreGate; return Response.json({ allowed: "invented-result" }); });
   const navigation = vi.fn(async () => undefined), create = vi.fn(async () => undefined);
   const signOut = vi.fn(async () => { changed("signedOut"); return state; });
+  const setup = {
+    state: vi.fn(async () => ({ account: "provider@synthetic.invalid", patients: [], moreResults: false, pending: null })),
+    search: vi.fn(async () => ({ account: "provider@synthetic.invalid", patients: [], moreResults: false })),
+    submit: vi.fn(async () => ({ appointmentRef: scope.appointmentRef, title: "Synthetic Patient", detail: "Visit" })),
+  };
   const host: DesktopProviderMainHost = {
     session: { getState: async () => state, signIn: async () => { changed("ready"); return state; },
       signOut,
@@ -37,12 +53,13 @@ async function fixture() {
     connect: vi.fn(async signal => {
       opens++;
       if (connectGate) await connectGate;
-      return { dispose, workspace: { signal, createEncounter: create,
+      return { dispose, workspace: { signal, createEncounter: create, encounterSetup: setup, account: { email: "provider@synthetic.invalid", environment: "Staging" },
         listEncounters: async () => [{ appointmentRef: scope.appointmentRef, title: "Invented desktop visit", detail: "Invented all-party consent" }],
         openEncounter: async (_ref: string, encounterSignal: AbortSignal) => {
           contextSignals.push(encounterSignal);
           return { scope, signal: encounterSignal, encounter: { appointmentRef: scope.appointmentRef, title: "Invented desktop visit", detail: "Invented consent" },
-            request: backend, openInCore: navigation,
+            request: backend, openInCore: navigation, ...(openingReview ? { openingReview } : {}),
+            ...(noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
             journal: { load: async () => structuredClone(saved), save: async (previous: JournalSnapshot, progress: ProviderProgress) => {
               if (previous.revision !== saved.revision) throw new Error("invented CAS conflict");
               saved = { revision: String(Number(saved.revision) + 1), progress: structuredClone(progress) }; return saved;
@@ -54,7 +71,8 @@ async function fixture() {
     }),
   };
   const attached = vi.fn(() => { if (refuseAttachment) throw new Error("invented IPC attachment failure"); return { dispose: stop }; });
-  const main = new DesktopProviderWorkspaceMain(host, attached);
+  const diagnostics = vi.fn<RuntimeDiagnostic>();
+  const main = new DesktopProviderWorkspaceMain(host, attached, diagnostics);
   main.subscribe(event => events.push(event)); await main.initialize();
   let connectionId: string | null = null, encounterId: string | null = null;
   const invoke = async (method: DesktopProviderMethod, payload: Record<string, unknown> = {}, ids?: { connectionId: string | null; encounterId: string | null }) =>
@@ -63,7 +81,12 @@ async function fixture() {
     expect(reply.ok).toBe(true); connectionId = reply.result!.connectionId as string; encounterId = null; };
   const open = async () => { const reply = await invoke("open", { appointmentRef: scope.appointmentRef }, { connectionId, encounterId: null });
     expect(reply.ok).toBe(true); encounterId = reply.result!.encounterId as string; };
-  return { main, invoke, connect, open, backend, attached, stop, dispose, events, changed, contextSignals, navigation, signOut,
+  return { main, invoke, connect, open, backend, setup, attached, stop, dispose, events, changed, contextSignals, navigation, signOut, diagnostics,
+    subscribeRecorder, recorderListeners,
+    publishRecorder: (state: ProviderRecorderSnapshot["state"], phase: NonNullable<ProviderRecorderSnapshot["desktop"]>["phase"], statusCode: string) => {
+      recorderSnapshot = { ...recorderSnapshot, state, statusCode, desktop: { ...recorderSnapshot.desktop!, phase } };
+      recorderListeners.forEach(listener => listener(recorderSnapshot));
+    },
     get opens() { return opens; },
     get ids() { return { connectionId, encounterId }; }, get saved() { return saved; },
     delayCore: (value: Promise<void>) => { coreGate = value; }, delayRecorder: (value: Promise<void>) => { recorderGate = value; },
@@ -74,6 +97,148 @@ const core = (kind: string) => ({ path: "/service/v1/agent/scribe/capture-operat
   body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID(), operation: { kind } } });
 
 describe("trusted desktop provider workspace", () => {
+  it.each(["lost", "malformed", "rejected", "other-key"] as const)("does not combine an unsuccessful admission with later readiness (%s)", async outcome => {
+    const f = await fixture(undefined, false, true);
+    try {
+      await f.connect(); await f.open();
+      expect((await f.invoke("journal_save", { previous: f.saved,
+        progress: { ...consent, sessionId: null } })).ok).toBe(true);
+      if (outcome === "lost") f.backend.mockRejectedValueOnce(new Error("invented lost response"));
+      if (outcome === "malformed") f.backend.mockResolvedValueOnce(new Response("{", { headers: { "content-type": "application/json" } }));
+      if (outcome === "rejected") f.backend.mockResolvedValueOnce(Response.json({}, { status: 503 }));
+      await f.invoke("core", { path: "/service/v1/agent/scribe/capture-admissions",
+        key: outcome === "other-key" ? crypto.randomUUID() : consent.admission.key,
+        body: { workspace_id: workspaceId, binding_ref: scope.bindingRef, request_nonce: crypto.randomUUID() } });
+      expect((await f.invoke("journal_save", { previous: f.saved, progress: consent })).ok).toBe(true);
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      f.publishRecorder("ready", "ready", "capture_ready");
+      expect(f.diagnostics.mock.calls.map(([event]) => event)).not.toContain("provider_consent_to_ready");
+    } finally { await f.main.dispose(); }
+  });
+  it("measures first consent persistence, admission and preparation in one main-process span", async () => {
+    const f = await fixture(undefined, false, true);
+    let now = 1000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      await f.connect(); await f.open();
+      expect((await f.invoke("journal_save", { previous: f.saved,
+        progress: { ...consent, sessionId: null } })).ok).toBe(true);
+      now = 3500;
+      expect((await f.invoke("journal_save", { previous: f.saved, progress: consent })).ok).toBe(true);
+      f.diagnostics.mockClear(); now = 4000;
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      now = 6800; f.publishRecorder("ready", "ready", "capture_ready");
+      expect(f.diagnostics.mock.calls).toEqual([
+        ["provider_recorder_attach", 0], ["provider_recorder_prepare", 2800],
+        ["provider_consent_to_ready", 5800],
+      ]);
+    } finally { clock.mockRestore(); await f.main.dispose(); }
+  });
+  it("does not time failed journal writes or a different consent attempt as first-consent readiness", async () => {
+    const f = await fixture(undefined, false, true);
+    try {
+      await f.connect(); await f.open();
+      expect((await f.invoke("journal_save", { previous: { revision: "99", progress: null },
+        progress: { ...consent, sessionId: null } })).ok).toBe(false);
+      expect((await f.invoke("journal_save", { previous: f.saved, progress: consent })).ok).toBe(true);
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      f.publishRecorder("ready", "ready", "capture_ready");
+      expect(f.diagnostics.mock.calls.map(([event]) => event)).not.toContain("provider_consent_to_ready");
+      await f.invoke("disconnect", {}, { ...f.ids, encounterId: null });
+      await f.connect(); await f.open();
+      expect((await f.invoke("journal_save", { previous: f.saved,
+        progress: { ...consent, admission: { ...consent.admission, key: crypto.randomUUID() } } })).ok).toBe(true);
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      f.publishRecorder("ready", "ready", "capture_ready");
+      expect(f.diagnostics.mock.calls.map(([event]) => event)).not.toContain("provider_consent_to_ready");
+    } finally { await f.main.dispose(); }
+  });
+  it("times asynchronous preparation through Ready separately from recorder attachment", async () => {
+    const f = await fixture(), gate = deferred<void>();
+    let now = 1000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      await f.connect(); await f.open(); f.diagnostics.mockClear(); f.delayRecorder(gate.promise);
+      const opening = f.invoke("recorder", { sessionId });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      now = 1200; gate.resolve(); expect((await opening).ok).toBe(true);
+      expect(f.diagnostics.mock.calls).toEqual([["provider_recorder_attach", 200]]);
+      now = 6800; f.publishRecorder("ready", "ready", "capture_ready");
+      expect(f.diagnostics.mock.calls).toEqual([
+        ["provider_recorder_attach", 200], ["provider_recorder_prepare", 5800],
+      ]);
+      now = 7000; f.publishRecorder("ready", "ready", "capture_ready");
+      expect(f.diagnostics).toHaveBeenCalledTimes(2);
+      expect(f.recorderListeners.size).toBe(0);
+    } finally { gate.resolve(); clock.mockRestore(); await f.main.dispose(); }
+  });
+  it("captures a synchronous Ready result and contains observation failures", async () => {
+    const f = await fixture();
+    try {
+      await f.connect(); await f.open(); f.diagnostics.mockClear();
+      f.publishRecorder("ready", "ready", "capture_ready");
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      expect(f.diagnostics.mock.calls.map(([event]) => event)).toEqual([
+        "provider_recorder_prepare", "provider_recorder_attach",
+      ]);
+      expect(f.recorderListeners.size).toBe(0);
+      await f.invoke("disconnect", {}, { ...f.ids, encounterId: null }); await f.connect(); await f.open();
+      f.diagnostics.mockImplementation(() => { throw new Error("invented observation failure"); });
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      expect(f.recorderListeners.size).toBe(0);
+    } finally { await f.main.dispose(); }
+  });
+  it.each([
+    ["ready", "ready", "capture_storage_low"], ["ready", "ready", "capture_storage_unavailable"],
+    ["ready", "permission_required", "capture_ready"], ["error", "stopped", "capture_preparation_failed"],
+  ] as const)("does not report a failed or blocked preparation as Ready (%s %s %s)", async (state, phase, status) => {
+    const f = await fixture();
+    try {
+      await f.connect(); await f.open(); f.diagnostics.mockClear();
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      f.publishRecorder(state, phase, status);
+      f.publishRecorder("ready", "ready", "capture_ready");
+      expect(f.diagnostics.mock.calls.map(([event]) => event)).toEqual(["provider_recorder_attach"]);
+      expect(f.recorderListeners.size).toBe(0);
+    } finally { await f.main.dispose(); }
+  });
+  it.each(["disconnect", "sign_out"] as const)("retires the pending timing observer on %s", async method => {
+    const f = await fixture();
+    try {
+      await f.connect(); await f.open(); f.diagnostics.mockClear();
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      expect(f.recorderListeners.size).toBe(1);
+      expect((await f.invoke(method, {}, method === "sign_out"
+        ? { connectionId: null, encounterId: null } : { ...f.ids, encounterId: null })).ok).toBe(true);
+      f.publishRecorder("ready", "ready", "capture_ready");
+      expect(f.recorderListeners.size).toBe(0);
+      expect(f.diagnostics.mock.calls.map(([event]) => event)).toEqual(["provider_recorder_attach"]);
+    } finally { await f.main.dispose(); }
+  });
+  it("preserves recorder cleanup when a subscription fails", async () => {
+    const f = await fixture();
+    try {
+      await f.connect(); await f.open();
+      f.subscribeRecorder.mockImplementationOnce(() => { throw new Error("invented observer failure"); });
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true);
+      expect((await f.invoke("disconnect", {}, { ...f.ids, encounterId: null })).ok).toBe(true);
+      expect(f.stop).toHaveBeenCalledTimes(1);
+    } finally { await f.main.dispose(); }
+  });
+  it("measures complete desktop operations without content and isolates diagnostic failures", async () => {
+    const f = await fixture();
+    try {
+      await f.connect(); await f.invoke("list"); await f.open(); await f.invoke("journal_load");
+      expect(f.diagnostics.mock.calls.map(([event]) => event)).toEqual([
+        "provider_workspace_list", "provider_workspace_open", "provider_journal_read",
+      ]);
+      for (const call of f.diagnostics.mock.calls) {
+        expect(call).toHaveLength(2); expect(call[1]).toEqual(expect.any(Number)); expect(call[1]).toBeGreaterThanOrEqual(0);
+      }
+      f.diagnostics.mockImplementation(() => { throw new Error("invented observation failure"); });
+      expect((await f.invoke("journal_load")).ok).toBe(true);
+    } finally { await f.main.dispose(); }
+  });
   it.each([
     ["capture-admissions", 409, { detail: "provider_consent_required" }, { detail: "provider_consent_required" }],
     ["capture-notes", 409, { detail: "provider_consent_required" }, null],
@@ -188,4 +353,46 @@ describe("trusted desktop provider workspace", () => {
       expect(f.stop).toHaveBeenCalled(); expect(f.dispose).toHaveBeenCalledTimes(1);
     } finally { gate.resolve(); f.refuseStop(false); await f.main.dispose(); }
   });
+});
+
+
+it("passes opening display data through main IPC without renewing its timestamp", async () => {
+  const openingReview = { scope, receivedAt: Date.now() - 100, view: null };
+  const f = await fixture(openingReview);
+  try {
+    await f.connect();
+    const reply = await f.invoke("open", { appointmentRef: scope.appointmentRef }, { ...f.ids, encounterId: null });
+    expect(reply.ok).toBe(true);
+    expect(reply.result!.openingReview).toEqual(openingReview);
+  } finally { await f.main.dispose(); }
+});
+
+it.each([false, true])("main gates note-opening capability and rejects writes (%s)", async supported => {
+  const f = await fixture(undefined, supported);
+  try {
+    await f.connect(); await f.open();
+    const payload = { path: "/service/v1/agent/scribe/note-opening", key: crypto.randomUUID(), body: {
+      workspace_id: scope.workspaceId, binding_ref: scope.bindingRef, request_nonce: crypto.randomUUID(), expected_session_id: sessionId } };
+    const reply = await f.invoke("core", payload);
+    expect(reply.ok).toBe(supported); expect(f.backend).toHaveBeenCalledTimes(supported ? 1 : 0);
+    const invalid = await f.invoke("core", { ...payload, body: { ...payload.body, action: "save" } });
+    expect(invalid.ok).toBe(false); expect(f.backend).toHaveBeenCalledTimes(supported ? 1 : 0);
+  } finally { await f.main.dispose(); }
+});
+
+
+it("routes encounter setup through the current desktop owner and rejects caller authority", async () => {
+  const f = await fixture();
+  try {
+    await f.connect();
+    expect((await f.invoke("encounter_setup", { action: "info" })).result).toEqual({ enabled: true, account: { email: "provider@synthetic.invalid", environment: "Staging" } });
+    expect((await f.invoke("encounter_setup", { action: "state" })).ok).toBe(true);
+    expect((await f.invoke("encounter_setup", { action: "search", query: "Synthetic" })).ok).toBe(true);
+    expect((await f.invoke("encounter_setup", { action: "submit", draft: null })).ok).toBe(true);
+    expect(f.setup.submit).toHaveBeenCalledTimes(1);
+    expect((await f.invoke("encounter_setup", { action: "submit", draft: null, actor: "foreign" })).ok).toBe(false);
+    const saved = f.ids; f.changed("signedOut");
+    expect((await f.invoke("encounter_setup", { action: "submit", draft: null }, saved)).ok).toBe(false);
+    expect(f.setup.submit).toHaveBeenCalledTimes(1);
+  } finally { await f.main.dispose(); }
 });

@@ -8,6 +8,8 @@ import { DesktopProviderRecorder, type DesktopProviderRecorderOptions } from "./
 import type { ProviderProgress } from "../../capture/src/provider/workspace-journal";
 import { InMemoryRecordingIndicator } from "./recording-indicator.js";
 import type { NativePresentationEvent } from "./native-provider-presentation.js";
+import { DesktopPreparationBff } from "./preparation-metadata.js";
+import { CoreCaptureClient } from "../../capture/src/provider/core-client";
 
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
 const sessionId = "30000000-0000-4000-8000-000000000003";
@@ -30,7 +32,13 @@ async function fixture() {
     contract_version: "1", binding_ref: body.binding_ref, workspace_id: body.workspace_id,
     request_nonce: body.request_nonce, checked_at: "2026-09-22T12:00:00Z",
     operation: (body.operation as { kind: string }).kind,
-    receipt: (body.operation as { kind: string }).kind === "creator_review"
+    receipt: (body.operation as { kind: string }).kind === "preparation_metadata" ? { schema_version: "1.0",
+      review: { schema_version: "1.0", session_id: sessionId, status: "created", source: null, working: null, review_queue: null, translation_progress: [] },
+      encryption_key: { key_version: "synthetic-key", algorithm: "RSA-OAEP-256", public_jwk: { kty: "RSA", n: "a".repeat(512), e: "AQAB", alg: "RSA-OAEP-256", ext: true, key_ops: ["wrapKey"] } },
+      capabilities: { protocol_version: "1.0", media: { media_type: "audio/wav", encoding: "pcm_s16le", channels: 1, sample_rate_hz: 16000 },
+        target_chunk_duration_ms: 10000, max_envelope_bytes: 327680, max_chunks: 1000, remaining_aggregate_plaintext_bytes: 67108864,
+        capture_lease_ttl_seconds: 900, reservation_window_seconds: 900, max_reservations_per_batch: 90, upload_concurrency: 2 } }
+      : (body.operation as { kind: string }).kind === "creator_review"
       ? { schema_version: "1.0", session_id: sessionId, status: "created", source: null,
         working: null, review_queue: null, translation_progress: [] } : { session_id: sessionId },
   }));
@@ -54,6 +62,70 @@ async function fixture() {
 }
 
 describe("desktop provider resource factory", () => {
+  it.each(["fresh", "retained", "cancelled", "cancelled_during_open", "foreign_receipt"])("uses admission metadata only for its current fresh recorder: %s", async mode => {
+    const f = await fixture();
+    vi.mocked(f.backend.openEncounter).mockResolvedValue({ ...f.selected, admissionMetadataSupported: true });
+    const original = f.request.getMockImplementation()!;
+    const attempt = new AbortController();
+    f.request.mockImplementationOnce(async (_path, body) => {
+      expect(body.preparation_metadata).toBe(true);
+      const metadata = (await (await original("/service/v1/agent/scribe/capture-operations", { ...body, operation: { kind: "preparation_metadata" } })).json()).receipt;
+      return Response.json({ contract_version: "1", binding_ref: body.binding_ref, workspace_id: body.workspace_id,
+        request_nonce: mode === "foreign_receipt" ? crypto.randomUUID() : body.request_nonce,
+        checked_at: new Date().toISOString(), appointment_ref: scope.appointmentRef, operation_ref: "scribe_admission_01j00000000000000000000000",
+        consent_record_id: crypto.randomUUID(), session_id: sessionId, preparation_metadata: metadata });
+    });
+    const connection = f.connect(), opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+    const intent = progress.admission;
+    await opened.journal.save(await opened.journal.load(), { ...progress, sessionId: null });
+    const client = new CoreCaptureClient(scope, opened.request, attempt.signal);
+    if (mode === "foreign_receipt") { await expect(client.admit(intent)).rejects.toThrow(); expect(f.request).toHaveBeenCalledOnce(); return; }
+    expect(await client.admit(intent)).toBe(sessionId);
+    if (mode === "cancelled") attempt.abort();
+    await opened.journal.save(await opened.journal.load(), progress);
+    let options!: DesktopProviderRecorderOptions;
+    vi.spyOn(DesktopProviderRecorder, "open").mockImplementation(async value => {
+      options = value; return { availableForView: true, deactivate: async () => undefined } as unknown as DesktopProviderRecorder;
+    });
+    await opened.recorder(sessionId, new AbortController().signal);
+    if (mode === "cancelled_during_open") attempt.abort();
+    if (mode === "retained") await options.flowStore.putPreparationState({ mode: "configured_core", schemaVersion: 6, channel: "mixed",
+      sessionId, startedAt: new Date().toISOString(), completeIdempotencyKey: "synthetic-complete",
+      leaseIdempotencyKey: null, leaseRequest: null, windowPreparation: null });
+    expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
+    expect(f.request.mock.calls).toHaveLength(mode === "fresh" ? 1 : 2);
+    if (mode === "fresh") {
+      expect(await options.createBff(options.signal).getAudioEncryptionKey()).toMatchObject({ key_version: "synthetic-key" });
+      expect(await options.createBff(options.signal).getCapabilities(sessionId)).toMatchObject({ protocol_version: "1.0" });
+      expect(f.request).toHaveBeenCalledOnce();
+    }
+    expect(f.authorizeStart).not.toHaveBeenCalled(); expect(f.resources.selectWindow).not.toHaveBeenCalled();
+  });
+  it("refuses a renderer-supplied admission option before backend I/O", async () => {
+    const f = await fixture(), opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+    await expect(opened.request("/service/v1/agent/scribe/capture-admissions", { preparation_metadata: true }, sessionId, new AbortController().signal)).rejects.toThrow();
+    expect(f.request).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("uses combined metadata only before any encrypted preparation exists: retained=%s", async retained => {
+    const f = await fixture(), connection = f.connect();
+    const opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+    await opened.journal.save(await opened.journal.load(), progress);
+    let options!: DesktopProviderRecorderOptions;
+    vi.spyOn(DesktopProviderRecorder, "open").mockImplementation(async value => {
+      options = value;
+      return { availableForView: true, deactivate: async () => undefined } as unknown as DesktopProviderRecorder;
+    });
+    await opened.recorder(sessionId, new AbortController().signal);
+    if (retained) await options.flowStore.putPreparationState({ mode: "configured_core", schemaVersion: 6, channel: "mixed",
+      sessionId, startedAt: new Date().toISOString(), completeIdempotencyKey: "synthetic-complete",
+      leaseIdempotencyKey: null, leaseRequest: null, windowPreparation: null });
+    const authorization = vi.spyOn(DesktopPreparationBff.prototype, "authorizePreparation");
+    expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
+    expect(authorization).toHaveBeenCalledWith(!retained);
+    expect(f.request.mock.calls.map(call => (call[1].operation as { kind: string }).kind).sort())
+      .toEqual(retained ? ["creator_review"] : ["preparation_metadata"]);
+    await connection.dispose(); expect(f.release).toHaveBeenCalledOnce();
+  });
   it("reauthorizes before custody, recovers the journal, and rejects a replacement device key", async () => {
     const f = await fixture(), first = f.connect();
     const one = await first.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
@@ -88,7 +160,7 @@ describe("desktop provider resource factory", () => {
   });
 
   it("binds the recorder to retained admission and Core scope without starting a picker or inventing authority", async () => {
-    const f = await fixture(), connection = f.connect();
+    const f = await fixture(), connection = f.connect({ prepareInBackground: true });
     const opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
     let options!: DesktopProviderRecorderOptions;
     const stop = vi.fn(async () => undefined);
@@ -101,16 +173,18 @@ describe("desktop provider resource factory", () => {
     await opened.recorder(sessionId, new AbortController().signal);
     expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
     expect(f.request).toHaveBeenCalledWith("/service/v1/agent/scribe/capture-operations",
-      expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "creator_review" } }),
+      expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "preparation_metadata" } }),
       expect.any(String), expect.any(AbortSignal));
     const prepared = { sessionId, captureLeaseId: crypto.randomUUID(), leaseReceiptId: crypto.randomUUID(),
       captureLeaseGeneration: 1, captureAuthorizedUntil: new Date(Date.now() + 60_000).toISOString() };
     await options.authorizeMount(prepared, options.signal);
     expect(f.authorizeRecorder).toHaveBeenCalledWith(prepared, options.signal);
     await options.createBff(options.signal).getCapabilities(sessionId);
+    await options.createBff(options.signal).getCapabilities(sessionId);
     expect(f.request).toHaveBeenCalledWith("/service/v1/agent/scribe/capture-operations",
       expect.objectContaining({ workspace_id: workspaceId, binding_ref: scope.bindingRef, operation: { kind: "capabilities" } }),
       expect.any(String), expect.any(AbortSignal));
+    expect(options.prepareInBackground).toBe(true);
     expect(options.authority).toBe(f.selected.authority); expect(f.authorizeStart).not.toHaveBeenCalled();
     expect(f.resources.selectWindow).not.toHaveBeenCalled();
     await options.release(); expect((await opened.journal.load()).progress).toEqual(progress);
@@ -151,6 +225,26 @@ describe("desktop provider resource factory", () => {
     await connection.dispose(); expect(dispose).toHaveBeenCalledAfter(deactivate); expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("closes an idle workspace when its presentation fails so the app can offer connection recovery", async () => {
+    const f = await fixture();
+    let listener!: (event: NativePresentationEvent) => void, healthy = true;
+    const dispose = vi.fn(async () => undefined), unsubscribe = vi.fn();
+    const connection = f.connect({ presentation: { isHealthy: () => healthy, dispose,
+      onEvent: next => { listener = next; return unsubscribe; } } });
+    await connection.workspace.listEncounters(new AbortController().signal);
+    listener({ kind: "stop_requested", sessionId });
+    expect(connection.workspace.signal.aborted).toBe(false);
+    healthy = false; listener({ kind: "failed", sessionId: null });
+    expect(connection.workspace.signal.aborted).toBe(true);
+    await expect(connection.workspace.listEncounters(new AbortController().signal)).rejects.toThrow();
+    await connection.dispose();
+    expect(f.backend.listEncounters).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1); expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(f.disposeBackend).toHaveBeenCalledTimes(1);
+    expect(f.resources.openCustody).not.toHaveBeenCalled();
+    expect(f.resources.selectWindow).not.toHaveBeenCalled();
+  });
+
   it("revokes capture on presentation failure but retains custody/presentation until source-stop retry succeeds", async () => {
     const f = await fixture();
     let listener!: (event: NativePresentationEvent) => void, healthy = true, refuse = true;
@@ -166,10 +260,66 @@ describe("desktop provider resource factory", () => {
     });
     await opened.recorder(sessionId, new AbortController().signal);
     healthy = false; listener({ kind: "failed", sessionId });
+    expect(connection.workspace.signal.aborted).toBe(true);
     expect(opened.signal.aborted).toBe(true); expect(options.native.isSessionActive()).toBe(false);
     await expect(connection.dispose()).rejects.toThrow();
     expect(f.release).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();
     refuse = false; await connection.dispose();
     expect(f.release).toHaveBeenCalledTimes(1); expect(dispose).toHaveBeenCalledTimes(1);
   });
+});
+
+it("preserves the opening timestamp while acquiring existing desktop custody", async () => {
+  const f = await fixture(), openingReview = { scope: { ...scope }, receivedAt: Date.now() - 100, view: null };
+  vi.mocked(f.backend.openEncounter).mockResolvedValue({ ...f.selected, openingReview, noteOpeningSupported: true });
+  const opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  expect(opened.openingReview).toEqual(openingReview);
+  expect(opened.noteOpeningSupported).toBe(true);
+  expect(f.authorizeRecorder).not.toHaveBeenCalled();
+  expect(f.resources.selectWindow).not.toHaveBeenCalled();
+});
+
+it("reauthorizes passage review, refuses a foreign session or segment, and suppresses revoked replies", async () => {
+  const f = await fixture(), opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  await opened.journal.save(await opened.journal.load(), { ...progress, uploaded: true });
+  const operation = new AbortController().signal, segment = crypto.randomUUID();
+  await expect(opened.playPassage!(crypto.randomUUID(), segment, operation)).rejects.toThrow();
+  expect(f.request).not.toHaveBeenCalled();
+  expect(await opened.playPassage!(sessionId, segment, operation)).toBeNull();
+  expect(f.request).toHaveBeenCalledOnce();
+  const original = f.request.getMockImplementation()!;
+  f.request.mockImplementationOnce(async (...args) => { const value = await original(...args); f.authorized.abort(); return value; });
+  await expect(opened.playPassage!(sessionId, segment, operation)).rejects.toThrow();
+});
+
+it.each(["opening", "ready"])("suppresses a delayed passage when a recorder becomes %s", async phase => {
+  const f = await fixture(), opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  await opened.journal.save(await opened.journal.load(), { ...progress, uploaded: true });
+  const response = deferred<void>(), reviewing = deferred<void>(), opening = deferred<void>(), prepared = deferred<void>();
+  const original = f.request.getMockImplementation()!;
+  f.request.mockImplementationOnce(async (...args) => { reviewing.resolve(); await response.promise; return original(...args); });
+  vi.spyOn(DesktopProviderRecorder, "open").mockImplementation(async () => {
+    opening.resolve(); if (phase === "opening") await prepared.promise;
+    return { availableForView: true, snapshot: { desktop: { phase: "ready" } }, deactivate: async () => undefined } as unknown as DesktopProviderRecorder;
+  });
+  const playback = opened.playPassage!(sessionId, crypto.randomUUID(), new AbortController().signal);
+  const rejected = expect(playback).rejects.toThrow(); await reviewing.promise;
+  const recorder = opened.recorder(sessionId, new AbortController().signal);
+  await opening.promise; if (phase === "ready") await recorder;
+  response.resolve(); await rejected; prepared.resolve(); await recorder;
+  expect(f.authorizeStart).not.toHaveBeenCalled();
+});
+
+it("suppresses a delayed passage if the existing ready recorder starts capturing", async () => {
+  const f = await fixture(), opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+  await opened.journal.save(await opened.journal.load(), { ...progress, uploaded: true });
+  const snapshot = { desktop: { phase: "ready" } };
+  vi.spyOn(DesktopProviderRecorder, "open").mockResolvedValue({ availableForView: true, snapshot,
+    deactivate: async () => undefined } as unknown as DesktopProviderRecorder);
+  await opened.recorder(sessionId, new AbortController().signal);
+  const response = deferred<void>(), reviewing = deferred<void>(), original = f.request.getMockImplementation()!;
+  f.request.mockImplementationOnce(async (...args) => { reviewing.resolve(); await response.promise; return original(...args); });
+  const playback = opened.playPassage!(sessionId, crypto.randomUUID(), new AbortController().signal);
+  const rejected = expect(playback).rejects.toThrow(); await reviewing.promise;
+  snapshot.desktop.phase = "recording"; response.resolve(); await rejected;
 });
