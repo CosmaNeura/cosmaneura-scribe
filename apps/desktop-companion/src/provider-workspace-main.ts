@@ -36,6 +36,7 @@ interface Encounter {
   readonly value: AuthorizedProviderEncounter<DesktopProviderRecorder>;
   recorder?: { dispose(): Promise<void> };
   recorderOpening?: boolean;
+  preparationAttempt?: { readonly key: string; readonly began: number };
   closing?: Promise<void>;
 }
 
@@ -89,6 +90,7 @@ export class DesktopProviderWorkspaceMain {
     const started = performance.now();
     const event: RuntimeTimingEvent | undefined = request.method === "list" ? "provider_workspace_list"
       : request.method === "open" ? "provider_workspace_open" : request.method === "journal_load" ? "provider_journal_read"
+      : request.method === "recorder" ? "provider_recorder_attach"
       : request.method === "encounter_setup" && request.payload.action === "hidden" ? "provider_visit_preferences" : undefined;
     try {
       const result = await this.dispatch(request, abort.signal);
@@ -203,10 +205,15 @@ export class DesktopProviderWorkspaceMain {
         case "core": result = await this.core(encounter, payload, AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal])); break;
         case "journal_load": exact(payload, []); result = await encounter.value.journal.load(); break;
         case "journal_save": {
+          const began = performance.now();
           exact(payload, ["previous", "progress"]); const previous = exact(payload.previous, ["revision", "progress"]);
           if (previous.revision !== null && (typeof previous.revision !== "string" || !/^[1-9][0-9]{0,15}$/u.test(previous.revision))) throw unavailable();
           if (previous.progress !== null) assertProgress(previous.progress); assertProgress(payload.progress);
-          result = await encounter.value.journal.save(previous as unknown as JournalSnapshot, payload.progress); break;
+          result = await encounter.value.journal.save(previous as unknown as JournalSnapshot, payload.progress);
+          if (previous.progress === null && payload.progress.sessionId === null && payload.progress.admission !== null) {
+            encounter.preparationAttempt = { key: payload.progress.admission.key, began };
+          } else if (encounter.preparationAttempt?.key !== payload.progress.admission?.key) delete encounter.preparationAttempt;
+          break;
         }
         case "edit_load": case "edit_save": case "edit_clear": {
           exact(payload, request.method === "edit_load" ? ["sessionId"] : request.method === "edit_save" ? ["sessionId", "operation"] : ["sessionId", "key"]);
@@ -236,7 +243,8 @@ export class DesktopProviderWorkspaceMain {
           break;
         }
         case "recorder": {
-          exact(payload, ["sessionId"]); await this.requireSession(encounter, payload.sessionId);
+          const preparationStarted = performance.now();
+          exact(payload, ["sessionId"]); const saved = await this.requireSession(encounter, payload.sessionId);
           this.requireEncounter(connection, encounter, signal);
           if (encounter.recorder || encounter.recorderOpening) throw unavailable();
           encounter.recorderOpening = true;
@@ -246,6 +254,9 @@ export class DesktopProviderWorkspaceMain {
             // stop remains unconfirmed. Close waits for this handoff to settle.
             encounter.recorder = { dispose: () => recorder.deactivate() };
             encounter.recorder = this.attachRecorder(recorder);
+            const attempt = encounter.preparationAttempt; delete encounter.preparationAttempt;
+            const consentStarted = attempt?.key === saved.progress?.admission?.key ? attempt?.began : undefined;
+            this.observeRecorderPreparation(connection, encounter, recorder, preparationStarted, signal, consentStarted);
           } catch (error) {
             void this.closeEncounter(connection, encounter).catch(() => undefined); throw error;
           } finally { delete encounter.recorderOpening; }
@@ -284,10 +295,18 @@ export class DesktopProviderWorkspaceMain {
       exact(body, ["workspace_id", "binding_ref", "request_nonce", "expected_session_id"]);
       uuid(body.expected_session_id);
     } else if (path !== "/service/v1/agent/scribe/capture-admissions" && path !== "/service/v1/agent/scribe/capture-notes") throw unavailable();
-    const response = await encounter.value.request(path, body, payload.key, signal);
+    const admission = path === "/service/v1/agent/scribe/capture-admissions";
+    if (admission && encounter.preparationAttempt?.key !== payload.key) delete encounter.preparationAttempt;
+    let response: Response;
+    try { response = await encounter.value.request(path, body, payload.key, signal); }
+    catch (error) { if (admission) delete encounter.preparationAttempt; throw error; }
+    if (admission && (response.status !== 200 || signal.aborted)) delete encounter.preparationAttempt;
     if (signal.aborted || ![200, 401, 403, 409, 422, 503].includes(response.status)) throw unavailable();
-    if (response.status === 200) return { status: 200, body: await readBoundedJson(response,
-      coreCaptureResponseLimit(path.slice(path.lastIndexOf("/") + 1))) };
+    if (response.status === 200) {
+      try { return { status: 200, body: await readBoundedJson(response,
+        coreCaptureResponseLimit(path.slice(path.lastIndexOf("/") + 1))) }; }
+      catch (error) { if (admission) delete encounter.preparationAttempt; throw error; }
+    }
     // Permit one native-sanitized recovery outcome, never arbitrary error content.
     if (path === "/service/v1/agent/scribe/capture-admissions" && response.status === 409
       && response.headers.get("content-type")?.split(";", 1)[0] === "application/json") {
@@ -299,9 +318,41 @@ export class DesktopProviderWorkspaceMain {
     }
     return { status: response.status, body: null };
   }
-  private async requireSession(encounter: Encounter, value: unknown): Promise<void> {
+  private async requireSession(encounter: Encounter, value: unknown): Promise<JournalSnapshot> {
     const sessionId = uuid(value), saved = await encounter.value.journal.load();
     if (saved.progress?.sessionId !== sessionId) throw unavailable();
+    return saved;
+  }
+  /** Trusted recorder state only. This measures initial preparation through the
+   * main-process Ready state; renderer paint and later user decisions are separate. */
+  private observeRecorderPreparation(connection: Connection, encounter: Encounter,
+    recorder: DesktopProviderRecorder, began: number, signal: AbortSignal, consentBegan?: number): void {
+    const lifetime = AbortSignal.any([signal, connection.abort.signal, encounter.abort.signal, encounter.value.signal]);
+    let finished = false, remove: (() => void) | undefined;
+    const finish = (): void => {
+      finished = true;
+      try { remove?.(); } catch { /* Observation must never affect recorder ownership. */ }
+      lifetime.removeEventListener("abort", finish);
+    };
+    if (lifetime.aborted) return;
+    lifetime.addEventListener("abort", finish, { once: true });
+    try {
+      remove = recorder.subscribe(snapshot => {
+        if (finished || lifetime.aborted) { finish(); return; }
+        if (snapshot.state === "ready" && snapshot.desktop?.phase === "ready"
+          && snapshot.statusCode === "capture_ready") {
+          try {
+            const ready = performance.now();
+            this.diagnostics("provider_recorder_prepare", Math.max(0, ready - began));
+            if (consentBegan !== undefined) this.diagnostics("provider_consent_to_ready", Math.max(0, ready - consentBegan));
+          }
+          catch { /* Observation cannot affect recording or cleanup. */ }
+          finish();
+        } else if (snapshot.state !== "preparing" || snapshot.desktop?.phase !== "preparing") finish();
+      });
+      // subscribe publishes its initial snapshot synchronously.
+      if (finished) finish();
+    } catch { finish(); }
   }
   private async readSession(): Promise<ProviderSessionState> {
     const observation = this.observations, value = sessionState(await this.host.session.getState());

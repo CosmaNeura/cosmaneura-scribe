@@ -81,10 +81,15 @@ describe("local runtime diagnostics", () => {
       record("audio_permission_helper_check", 1);
       record("audio_permission_probe", 3_600_000);
       record("audio_capture_helper_check", 2);
-      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(5));
+      record("provider_recorder_attach", 72.5);
+      record("provider_recorder_prepare", 6274.81);
+      record("provider_consent_to_ready", 6274.81);
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(8));
       const expected = [
         ["audio_availability_helper_check", 0], ["audio_availability_probe", 12.346],
         ["audio_permission_helper_check", 1], ["audio_permission_probe", 3_600_000], ["audio_capture_helper_check", 2],
+        ["provider_recorder_attach", 72.5], ["provider_recorder_prepare", 6274.81],
+        ["provider_consent_to_ready", 6274.81],
       ];
       (await readFile(path, "utf8")).trim().split("\n").forEach((line, index) => {
         expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid,
