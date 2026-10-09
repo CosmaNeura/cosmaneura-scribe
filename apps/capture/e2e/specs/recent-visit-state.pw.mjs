@@ -11,12 +11,12 @@ async function start(page) {
       { value: () => { window.recentMediaCalls++; throw new Error("Real media forbidden"); } });
   });
   await page.goto("/e2e/fixtures/optional-dob.html?platform=ios&recents");
-  await row(page).getByRole("button").click();
+  await row(page).locator('[data-workspace-action="open"]').click();
   await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
 }
 async function list(page) { await page.getByRole("button", { name: "Your encounters", exact: true }).click(); await expect(row(page)).toBeVisible(); }
-async function reopen(page) { await row(page).getByRole("button").click(); await expect(page.locator("cosmaneura-capture")).toBeVisible(); }
+async function reopen(page) { await row(page).locator('[data-workspace-action="open"]').click(); await expect(page.locator("cosmaneura-capture")).toBeVisible(); }
 async function pause(page, native = { phase: "paused", busy: false }, statusCode = "capture_paused") {
   await page.evaluate(({ native, statusCode }) => window.dobLab.emit({ state: "paused", native, statusCode, recordedChunks: 1 }), { native, statusCode });
 }
@@ -61,7 +61,7 @@ test("accepted upload shows Processing and an authoritative draft takes preceden
 test("a freshly verified note projects Draft ready without an extra catalog request", async ({ context, page, baseURL }) => {
   const server = await installNoteServer(context, { loseSaveResponse: false, origin: baseURL });
   await page.goto("/e2e/fixtures/provider-note.html");
-  await page.locator(`[data-appointment="${server.scope.appointmentRef}"]`).click();
+  await page.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
   await page.getByRole("button", { name: "Review draft note", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Plan", exact: true })).toBeVisible();
   await list(page); await expect(status(page)).toHaveText("Draft ready"); server.assertHealthy();
