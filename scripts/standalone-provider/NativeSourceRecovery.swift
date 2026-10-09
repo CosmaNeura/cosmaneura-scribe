@@ -107,8 +107,16 @@ extension NativeSourceProofRecord {
         if let desktopDirectory {
             if coordinator == nil {
                 let expected = journal.anchor
-                let acquired = try NativeCaptureProcessCoordinator(privateDirectory: desktopDirectory, expectedAnchor: expected)
+                let acquired = try NativeCaptureProcessCoordinator(privateDirectory: desktopDirectory, expectedAnchor: expected,
+                    allowLegacyRemount: journal.pending.isEmpty)
                 try journal.reloadWhileExclusive(expectedAnchor: expected)
+                // The first journal read may precede an old owner's final
+                // write. Recheck legacy eligibility with the locked fresh read.
+                guard expected?.matchesMountedFiles(acquired.anchor, allowLegacyRemount: journal.pending.isEmpty) != false
+                else { throw NativeSourceJournalError.unavailable }
+                // Preserve stop-only recovery before upgrading an original
+                // journal. Never clear a saved owner to repair a mount number.
+                if expected?.volumeID == nil { try await retireSavedOwners(connection) }
                 try journal.initializeAnchor(acquired.anchor)
                 coordinator = acquired
             }

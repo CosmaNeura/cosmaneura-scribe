@@ -103,13 +103,18 @@ struct NativeSourceProofRecord: Codable, Equatable, Sendable, CustomStringConver
         value = fresh; poisoned = false
     }
 
+    /// Caller holds both process locks. Upgrade the legacy mount identity only
+    /// with unchanged file inodes and no unresolved source owners. A current
+    /// stable anchor may refresh st_dev only for the same volume and files.
     func initializeAnchor(_ anchor: NativeFenceAnchor) throws {
         guard !poisoned, platform == .desktop else { throw NativeSourceJournalError.unavailable }
         if let prior = value.anchor {
-            guard prior == anchor else { throw NativeSourceJournalError.unavailable }
-            return
+            if prior == anchor { return }
+            guard prior.matchesMountedFiles(anchor, allowLegacyRemount: value.owners.isEmpty),
+                  prior.volumeID != nil || value.owners.isEmpty else { throw NativeSourceJournalError.unavailable }
+        } else {
+            guard value.owners.isEmpty else { throw NativeSourceJournalError.unavailable }
         }
-        guard value.owners.isEmpty else { throw NativeSourceJournalError.unavailable }
         var next = value; next.anchor = anchor
         try commit(next)
     }
@@ -165,6 +170,12 @@ struct NativeSourceProofRecord: Codable, Equatable, Sendable, CustomStringConver
               platform == .desktop || value.anchor == nil,
               platform == .ios || value.owners.isEmpty || value.anchor != nil else {
             throw NativeSourceJournalError.unavailable
+        }
+        if let anchor = value.anchor {
+            guard anchor.coordinator.inode > 0, anchor.capture.inode > 0,
+                  anchor.coordinator.device == anchor.capture.device,
+                  anchor.volumeID == nil || anchor.volumeID.flatMap({ UUID(uuidString: $0)?.uuidString.lowercased() }) == anchor.volumeID
+            else { throw NativeSourceJournalError.unavailable }
         }
         for record in value.owners { try record.validate(platform: platform) }
         return value
