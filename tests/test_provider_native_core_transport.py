@@ -81,7 +81,10 @@ class Wire:
                     "key_ops": ["wrapKey"],
                 },
             }
-        if data.get("operation", {}).get("kind") == "preparation_metadata":
+        if data.get("operation", {}).get("kind") in {
+            "preparation_metadata",
+            "native_recording_preparation",
+        }:
             review = {
                 "schema_version": "1.0",
                 "review": {"schema_version": "1.0", "session_id": SESSION, "status": "created"},
@@ -115,6 +118,18 @@ class Wire:
                     "upload_concurrency": 2,
                 },
             }
+            if data["operation"]["kind"] == "native_recording_preparation":
+                review = {
+                    "schema_version": "1.0",
+                    "context": {
+                        "schema_version": "1.0",
+                        "workspace_id": data["workspace_id"],
+                        "tenant_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                        "session_id": SESSION,
+                        "status": "created",
+                    },
+                    "encryption_key": review["encryption_key"],
+                }
         if data["action"] == "operation":
             result.update(operation=data["operation"]["kind"], receipt=review)
         else:
@@ -154,6 +169,79 @@ class Wire:
 
 
 SESSION = str(uuid4())
+
+
+async def test_native_recording_preparation_is_one_fresh_core_request():
+    wire = Wire()
+    account, value = await wire.call(
+        "capture-operations", body("capture-operations", "native_recording_preparation")
+    )
+    assert account == ACCOUNT and len(wire.calls) == 1 and wire.checks == 3
+    assert value["receipt"]["context"]["session_id"] == SESSION
+    assert value["receipt"]["encryption_key"]["public_jwk"]["key_ops"] == ["wrapKey"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["missing", "extra", "private_key", "key_ops", "workspace", "tenant", "status", "session"],
+)
+async def test_native_recording_preparation_rejects_malformed_receipts(fault):
+    wire = Wire()
+
+    def alter(value):
+        receipt = value["result"]["receipt"]
+        if fault == "missing":
+            receipt.pop("encryption_key")
+        elif fault == "extra":
+            receipt["capture_permission"] = True
+        elif fault in {"private_key", "key_ops"}:
+            receipt["encryption_key"]["public_jwk"][
+                "d" if fault == "private_key" else "key_ops"
+            ] = "invented" if fault == "private_key" else ["unwrapKey"]
+        elif fault == "workspace":
+            receipt["context"]["workspace_id"] = str(uuid4())
+        elif fault == "status":
+            receipt["context"]["status"] = "uploaded"
+        elif fault == "tenant":
+            receipt["context"]["tenant_id"] = "authority_tenant_" + SUFFIX
+        else:
+            receipt["context"]["session_id"] = "uncertain"
+        return value
+
+    wire.alter = alter
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call(
+            "capture-operations", body("capture-operations", "native_recording_preparation")
+        )
+
+
+@pytest.mark.parametrize("phase", ["workload", "response"])
+async def test_native_recording_preparation_discards_changed_account(phase):
+    wire = Wire()
+    if phase == "workload":
+
+        async def workload():
+            wire.revoked = True
+            return SecretStr("invented-workload-token")
+
+        wire.workload = workload
+    else:
+        wire.after = lambda: setattr(wire, "revoked", True)
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call(
+            "capture-operations", body("capture-operations", "native_recording_preparation")
+        )
+    assert len(wire.calls) == (0 if phase == "workload" else 1)
+
+
+@pytest.mark.parametrize("field", ["tenant_id", "session_id", "payload"])
+async def test_native_recording_preparation_cannot_choose_scope(field):
+    wire = Wire()
+    request = body("capture-operations", "native_recording_preparation")
+    request["operation"][field] = "invented"
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call("capture-operations", request)
+    assert not wire.calls and wire.checks == 0
 
 
 async def test_combined_preparation_is_one_fresh_core_request_with_closed_metadata():

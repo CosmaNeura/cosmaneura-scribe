@@ -8,7 +8,7 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -46,6 +46,7 @@ NATIVE_READ_OPERATIONS = frozenset(
         "provider_encounter",
         "capabilities",
         "native_recording_context",
+        "native_recording_preparation",
         # Existing public wrapping-key read, qualified Core receiver first.
         "encryption_key",
         "preparation_metadata",
@@ -59,6 +60,22 @@ class PreparationMetadata(BaseModel):
     review: CreatorReviewViewV1
     encryption_key: AudioEncryptionPublicKey
     capabilities: CaptureCapabilities
+
+
+class NativeRecordingContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    schema_version: Literal["1.0"]
+    workspace_id: UUID
+    tenant_id: UUID
+    session_id: UUID
+    status: Literal["created", "capturing"]
+
+
+class NativeRecordingPreparation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    schema_version: Literal["1.0"]
+    context: NativeRecordingContext
+    encryption_key: AudioEncryptionPublicKey
 
 
 class ProviderNativeCoreTransport:
@@ -134,6 +151,7 @@ class ProviderNativeCoreTransport:
                 )
                 if operation["kind"] in {
                     "native_recording_context",
+                    "native_recording_preparation",
                     "encryption_key",
                     "preparation_metadata",
                 }:
@@ -237,6 +255,23 @@ class ProviderNativeCoreTransport:
                             and result.get("operation") == _object(request["operation"])["kind"]
                         )
                         receipt = _object(result.get("receipt"))
+                        if _object(request["operation"])["kind"] == "native_recording_preparation":
+                            prepared = NativeRecordingPreparation.model_validate(receipt)
+                            context = _object(receipt.get("context"))
+                            _require(
+                                _uuid(context.get("workspace_id")) == workspace
+                                and context.get("workspace_id") == workspace
+                                and _uuid(context.get("tenant_id")) == context.get("tenant_id")
+                                and _uuid(context.get("session_id")) == context.get("session_id")
+                            )
+                            public = _object(receipt.get("encryption_key"))
+                            wrapping_jwk = _object(public.get("public_jwk"))
+                            _require(
+                                set(public) == {"key_version", "algorithm", "public_jwk"}
+                                and set(wrapping_jwk) == {"kty", "n", "e", "alg", "ext", "key_ops"}
+                                and wrapping_jwk.get("key_ops") == ["wrapKey"]
+                            )
+                            result["receipt"] = prepared.model_dump(mode="json")
                         if _object(request["operation"])["kind"] == "preparation_metadata":
                             metadata = PreparationMetadata.model_validate(receipt)
                             public = _object(receipt.get("encryption_key"))
