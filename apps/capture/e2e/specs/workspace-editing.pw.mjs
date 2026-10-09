@@ -4,7 +4,7 @@ import { installNoteServer } from "../support/note-server.mjs";
 
 async function openDraft(page, server) {
   await page.goto("/e2e/fixtures/provider-note.html");
-  await page.locator(`[data-appointment="${server.scope.appointmentRef}"]`).click();
+  await page.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
   await page.getByRole("button", { name: /^(Continue to note|Review draft note)$/u }).click();
   await expect(page.getByRole("textbox", { name: "Plan", exact: true })).toBeVisible();
 }
@@ -70,7 +70,7 @@ for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 430 
     expect(server.calls.filter(call => call === "save_status").length).toBeGreaterThan(0);
     expect(server.calls.filter(call => call === "resolve")).toHaveLength(0);
     await page.reload();
-    await page.locator(`[data-appointment="${server.scope.appointmentRef}"]`).click();
+    await page.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
     await page.getByRole("button", { name: /^(Continue to note|Review draft note)$/u }).click();
     await expect(page.getByRole("textbox", { name: "Plan", exact: true })).toHaveValue("Synthetic exact saved edit. No treatment plan discussed.");
     expect(await page.evaluate(() => window.workspaceMediaCalls)).toBe(0);

@@ -27,17 +27,22 @@ for (const platform of ["desktop", "ios"]) {
       await expect(page.locator('[name="new-patient-name"]')).toHaveValue("Synthetic walk-in");
       expect(await page.evaluate(() => window.dobLab.creates.length)).toBe(0);
       if (dateOfBirth) await dob.fill(dateOfBirth);
-      await expect(page.getByRole("button", { name: "Create patient & continue", exact: true })).toBeInViewport();
+      await expect(page.getByRole("button", { name: "Create patient & visit", exact: true })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath("patient-setup.png"), fullPage: true });
-      await page.getByRole("button", { name: "Create patient & continue", exact: true }).click();
-      const consent = page.getByRole("button", { name: "Confirm consent & record", exact: true });
+      await page.getByRole("button", { name: "Create patient & visit", exact: true }).click();
+      const consent = page.getByRole("button", { name: platform === "ios" ? "Confirm consent & record" : "Confirm consent & prepare recording", exact: true });
       await expect(consent).toBeVisible();
+      await expect(page.locator('[data-workspace-action="confirm-create"]')).toHaveCount(0);
       expect(await page.evaluate(() => window.dobLab.creates.map(body => body.patient))).toEqual([
         { kind: "new", name: "Synthetic walk-in", date_of_birth: dateOfBirth },
       ]);
       expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
-      await expect(page.getByLabel("Visit type")).toHaveValue(platform === "ios" ? "in_person" : "virtual");
+      await expect(page.getByLabel("Visit type")).toHaveValue("in_person");
       await consent.click();
+      if (platform === "desktop") {
+        expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
+        await page.getByRole("button", { name: "Start recording", exact: true }).click();
+      }
       await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
       expect(await page.evaluate(() => window.dobLab.admissions)).toBe(1);
       expect(await page.evaluate(() => globalThis.__dobMediaCalls)).toBe(0);
@@ -56,7 +61,7 @@ test("changed search disables stale patient creation and DOB can be added with t
   await expect(page.getByRole("button", { name: "Create new patient: Synthetic first name", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Find patient", exact: true }).click();
   await page.getByRole("button", { name: "Create new patient: Synthetic walk-in", exact: true }).click();
-  await page.getByRole("button", { name: "Create patient & continue", exact: true }).click();
+  await page.getByRole("button", { name: "Create patient & visit", exact: true }).click();
   await page.getByRole("button", { name: "Add DOB", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Add date of birth" })).toBeInViewport();
   await page.getByLabel("Date of birth", { exact: true }).fill("1980-02-03");
@@ -83,7 +88,8 @@ test("similar patient names require choosing the displayed chart before creating
   await expect(page.getByRole("button", { name: /Synthetic walk-in DOB:/u })).toHaveCount(2);
   expect(await page.evaluate(() => window.dobLab.creates)).toHaveLength(0);
   await page.getByRole("button", { name: /Synthetic walk-in DOB: 1985-03-04/u }).click();
-  await expect(page.getByRole("button", { name: "Confirm consent & record", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Confirm consent & prepare recording", exact: true })).toBeVisible();
+  await expect(page.locator('[data-workspace-action="confirm-create"]')).toHaveCount(0);
   expect(await page.evaluate(() => window.dobLab.creates.map(body => body.patient))).toEqual([
     { kind: "existing", patient_ref: "patient_01j00000000000000000000001" },
   ]);

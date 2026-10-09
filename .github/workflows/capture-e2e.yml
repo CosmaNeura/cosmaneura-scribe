@@ -14,13 +14,34 @@ jobs:
   synthetic-recording-flow:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cosmaneura_scribe_e2e_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cosmaneura_scribe_e2e_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      COSMANEURA_SCRIBE_E2E_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/cosmaneura_scribe_e2e_test
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24.5.0'
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: '3.12'
+          enable-cache: true
       - run: npm install --global npm@11.5.2
       - run: npm ci
+      - run: uv sync --all-groups
       - run: npm ci
         working-directory: apps/capture/e2e
       - name: Verify pinned Playwright dependency tree
@@ -31,4 +52,7 @@ jobs:
         working-directory: apps/capture/e2e
       - name: Run synthetic record-to-complete recovery flow
         run: npm test
+        working-directory: apps/capture/e2e
+      - name: Run browser through real API and PostgreSQL
+        run: npm run test:full-stack
         working-directory: apps/capture/e2e

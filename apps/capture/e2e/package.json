@@ -9,7 +9,8 @@
   },
   "packageManager": "npm@11.5.2",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:full-stack": "playwright test --config playwright.full-stack.config.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
