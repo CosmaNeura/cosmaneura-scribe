@@ -23,6 +23,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "locust>=2.42,<3",
   "pyright>=1.1.390",
   "pytest>=9.0.3,<10",
   "pytest-asyncio>=1.0,<2",
