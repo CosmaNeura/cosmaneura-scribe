@@ -62,6 +62,34 @@ prove that Record-to-audio readiness has been halved.
 
 ## Local workflow and Instruments timing
 
+The desktop app's existing private, bounded `runtime-diagnostics-v1.jsonl`
+adds three fixed numeric durations. `provider_recorder_attach` ends when the
+main process finishes the recorder acquisition/attachment request; it includes
+failed requests and can end before background preparation. `provider_recorder_prepare`
+starts at that request and ends once the trusted recorder reports initial
+`ready` / `capture_ready`, including background preparation. `provider_consent_to_ready`
+starts immediately before the first successful encrypted consent-journal save
+and ends at that same Ready state. The consent span is retained only in the
+current main-process encounter and consumed for its matching admission key.
+Reopening a saved visit has no first-consent span.
+An admission rejection, lost response or different request key discards the
+first-consent span; later recovery cannot turn that failed attempt into a
+successful initial-readiness measurement.
+
+Ready measurements are not emitted for failed preparation, insufficient or
+unknown storage, required permissions, cancellation or changed ownership. The
+observer ends on the first settled state; a later retry cannot convert the
+failed attempt into a successful measurement. Log only the fixed event and
+numeric duration, never the admission key or recorder snapshot. Diagnostic
+failures cannot change recording access, ownership or cleanup.
+
+These are main-process boundaries. The consent span excludes the short interval
+from the button click to receipt of its journal-save request and final renderer
+paint. It also excludes a later meeting selection or Start action. Pair it with
+the visible Ready observation when assessing the full 5–7 second UX target;
+do not count attachment settlement or a sum of overlapping backend timings as
+proof of readiness.
+
 The provider workspace and recorder also emit bounded User Timing measures
 named `scribe.ui.<fixed-action>.<resolved|threw|cancelled>`. They contain numeric
 times only. Names come from a closed action list; patient, encounter, session,
