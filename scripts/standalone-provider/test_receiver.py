@@ -1386,6 +1386,29 @@ def core_created_opening(h, after_lookup=None):
                         "key_ops": ["wrapKey"],
                     },
                 }
+            if kind == "native_recording_preparation":
+                receipt = {
+                    "schema_version": "1.0",
+                    "context": {
+                        "schema_version": "1.0",
+                        "workspace_id": str(workspace),
+                        "tenant_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                        "session_id": SESSION_ID,
+                        "status": "created",
+                    },
+                    "encryption_key": {
+                        "key_version": "synthetic-key",
+                        "algorithm": "RSA-OAEP-256",
+                        "public_jwk": {
+                            "kty": "RSA",
+                            "n": "a" * 512,
+                            "e": "AQAB",
+                            "alg": "RSA-OAEP-256",
+                            "ext": True,
+                            "key_ops": ["wrapKey"],
+                        },
+                    },
+                }
             if body["action"] == "preparation_context":
                 value.update(
                     appointment_ref=APPOINTMENT,
@@ -1534,6 +1557,7 @@ async def test_opening_rechecks_real_account_after_workload_token_await(harness)
     [
         "creator_review",
         "native_recording_context",
+        "native_recording_preparation",
         "encryption_key",
         "prepare_recording_window",
         "authorize_upload",
@@ -1559,7 +1583,12 @@ async def test_core_created_capture_uses_six_checks_and_keeps_outer_boundaries(h
     async with client(h) as c:
         result = await c.post("/provider/v1/" + route, json=body)
     assert result.status_code == 200
-    if kind in {"creator_review", "native_recording_context", "encryption_key"}:
+    if kind in {
+        "creator_review",
+        "native_recording_context",
+        "native_recording_preparation",
+        "encryption_key",
+    }:
         assert lookups == [] and len(h.wire.calls) == 1
     elif kind == "prepare_recording_window":
         assert lookups == [] and len(h.wire.calls) == 2
@@ -1567,6 +1596,37 @@ async def test_core_created_capture_uses_six_checks_and_keeps_outer_boundaries(h
         assert len(lookups) == 6 and len(h.wire.calls) == 3
     assert h.wire.operations == ["source_start_sequence" if kind == "source-start-ready" else kind]
     assert result.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", [1, 2, 3])
+async def test_native_preparation_keeps_every_real_account_fence(harness, boundary):
+    h = harness
+    workspace, lookups = core_created_opening(h)
+    original = h.receiver.encounter_account
+    calls = 0
+
+    def account(authorization, *, bind):
+        nonlocal calls
+        calls += 1
+        if calls == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+        return original(authorization, bind=bind)
+
+    h.receiver.encounter_account = account
+    async with client(h) as c:
+        result = await c.post(
+            "/provider/v1/capture-operations",
+            json={
+                "workspace_id": str(workspace),
+                "binding_ref": BINDING,
+                "request_nonce": str(uuid4()),
+                "operation": {"kind": "native_recording_preparation"},
+            },
+        )
+    assert result.status_code == 403 and lookups == []
+    assert len(h.wire.calls) == (1 if boundary == 3 else 0)
+    assert "receipt" not in result.text and "encryption_key" not in result.text
 
 
 @pytest.mark.asyncio
