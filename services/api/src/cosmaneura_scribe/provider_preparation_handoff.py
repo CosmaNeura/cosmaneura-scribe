@@ -57,7 +57,12 @@ class PreparationHandoff:
             account.recovery_scope,
             account.actor_ref,
             account.tenant_ref,
-            hashlib.sha256(account.user_token.get_secret_value().encode()).digest(),
+            ("session", account.session_fingerprint)
+            if account.session_fingerprint is not None
+            else (
+                "token",
+                hashlib.sha256(account.user_token.get_secret_value().encode()).digest(),
+            ),
             revision,
             workspace,
             binding,
