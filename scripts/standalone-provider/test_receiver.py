@@ -1328,7 +1328,8 @@ def core_created_opening(h, after_lookup=None):
                 "checked_at": datetime.now(UTC).isoformat(),
             }
             kind = body.get("operation", {}).get("kind", "provider_encounter")
-            h.wire.operations.append(kind)
+            if body["action"] != "preparation_context":
+                h.wire.operations.append(kind)
             receipt = {"schema_version": "1.0", "status": "not_prepared", "review": None}
             if kind == "encryption_key":
                 receipt = {
@@ -1343,7 +1344,15 @@ def core_created_opening(h, after_lookup=None):
                         "key_ops": ["wrapKey"],
                     },
                 }
-            if body["action"] == "mount":
+            if body["action"] == "preparation_context":
+                value.update(
+                    appointment_ref=APPOINTMENT,
+                    preparation=body["preparation"],
+                    context_token="offline-core-mount-token",
+                    interaction_ref="offline-interaction-0123456789",
+                    client_turn_id=str(uuid4()),
+                )
+            elif body["action"] == "mount":
                 value.update(
                     appointment_ref=APPOINTMENT,
                     encounter={
@@ -1499,6 +1508,8 @@ async def test_core_created_capture_uses_six_checks_and_keeps_outer_boundaries(h
     assert result.status_code == 200
     if kind in {"creator_review", "native_recording_context", "encryption_key"}:
         assert lookups == [] and len(h.wire.calls) == 1
+    elif kind == "prepare_recording_window":
+        assert lookups == [] and len(h.wire.calls) == 2
     else:
         assert len(lookups) == 6 and len(h.wire.calls) == 3
     assert h.wire.operations == ["source_start_sequence" if kind == "source-start-ready" else kind]
@@ -1618,3 +1629,58 @@ async def test_capture_lookup_revocation_blocks_initial_adjacent_and_final_publi
         # The operation already returned before this final receiver check.
         # Its durable remote effect must not make a revoked reply publishable.
         assert len(h.wire.operations) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["capture-admissions", "capture-operations"])
+async def test_core_preparation_setup_keeps_six_real_account_fences(harness, action):
+    h = harness
+    workspace, lookups = core_created_opening(h)
+    h.receiver._provider_trace_enabled = True
+    body = {"workspace_id": str(workspace), "binding_ref": BINDING, "request_nonce": str(uuid4())}
+    if action == "capture-admissions":
+        body.update(
+            attestation={"all_parties_consented": True},
+            configured_capture={"schema_version": "1.0", "language_mode": "en-US+es-US"},
+        )
+    else:
+        body["operation"] = {"kind": "prepare_recording_window"}
+    async with client(h) as c:
+        result = await c.post("/provider/v1/" + action, json=body)
+    assert result.status_code == 200 and lookups == [] and len(h.wire.calls) == 2
+    trace = json.loads(result.headers["x-scribe-provider-trace"])
+    assert trace["counts"]["selection_check"] == 0 and trace["counts"]["identity_check"] == 6
+    assert "offline-core-mount-token" not in result.text and "interaction_ref" not in result.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", range(1, 7))
+async def test_preparation_real_registry_revocation_stops_before_mutation_or_publication(
+    harness, boundary
+):
+    h = harness
+    workspace, lookups = core_created_opening(h)
+    original = h.receiver.encounter_account
+    calls = 0
+
+    def account(authorization, *, bind):
+        nonlocal calls
+        calls += 1
+        if calls == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+        return original(authorization, bind=bind)
+
+    h.receiver.encounter_account = account
+    async with client(h) as c:
+        result = await c.post(
+            "/provider/v1/capture-operations",
+            json={
+                "workspace_id": str(workspace),
+                "binding_ref": BINDING,
+                "request_nonce": str(uuid4()),
+                "operation": {"kind": "prepare_recording_window"},
+            },
+        )
+    assert result.status_code == 403 and lookups == []
+    assert len(h.wire.calls) == (0 if boundary <= 2 else 1 if boundary <= 4 else 2)
+    assert "receipt" not in result.text and "offline-core-mount-token" not in result.text

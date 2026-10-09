@@ -286,6 +286,52 @@ class ProviderCoreTransport:
         except TimeoutError:
             raise ProviderCoreUnavailable("core_provider_request_timeout") from None
 
+    async def request_prepared(
+        self,
+        mount: CoreProviderMount,
+        path: str,
+        body: Mapping[str, object],
+        key: str,
+        *,
+        token: SecretStr,
+        interaction_ref: str,
+        turn: UUID,
+        workload: SecretStr,
+    ) -> dict[str, object]:
+        """Consume server-only preparation in this invocation, never cache it.
+
+        The receiver validates the preparation and fresh local account before
+        constructing this call. This method rechecks its current context directly
+        before mutation and retains the ordinary post-I/O and publication fences.
+        """
+        action = path.removeprefix(_ROOT)
+        _require(path == _ROOT + action and action in {"capture-admissions", "capture-operations"})
+        payload = _snapshot(body, 2048 if action == "capture-admissions" else 4_194_304)
+        _validate_intent(mount, action, payload)
+        _require(
+            action == "capture-admissions"
+            or _object(payload["operation"]).get("kind") == "prepare_recording_window"
+        )
+        _require(
+            re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key)
+            and re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", interaction_ref)
+        )
+        _secret(token)
+        _secret(workload)
+        _checked(turn, UUID)
+        sequence = _OpeningSequence()
+        sequence.workload_headers = {"Authorization": "Bearer " + _secret(workload)}
+        # Only local current-registry work may run in this context callback.
+        # It remains a distinct fence after preparation, before remote mutation.
+        sequence.context = await self._context(mount.selection)
+        return await self._dispatch(
+            mount,
+            action,
+            payload,
+            key,
+            _NegotiatedMount(mount, token, interaction_ref, turn, sequence),
+        )
+
     async def prepare_and_authorize_source(
         self,
         mount: CoreProviderMount,
