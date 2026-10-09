@@ -45,7 +45,8 @@ const setup = createEncounterSetup({
     fixture.creates.push(body);
     encounter.patientRef = body.patient.kind === "existing" ? body.patient.patient_ref : encounter.patientRef;
     return { ...base, creation_key: body.creation_key, encounter: { workspace_id: scope.workspaceId,
-      appointment_ref: scope.appointmentRef, patient_name: body.patient.kind === "new" ? body.patient.name : "Synthetic walk-in",
+      appointment_ref: scope.appointmentRef, patient_ref: encounter.patientRef,
+      patient_name: body.patient.kind === "new" ? body.patient.name : "Synthetic walk-in",
       title: "Visit", appointment_at: "2026-09-30T12:00:00Z" } };
   },
 });
