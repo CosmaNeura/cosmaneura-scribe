@@ -39,10 +39,15 @@ for (const platform of ["desktop", "ios"]) {
   const scope = { workspaceId: "20000000-0000-4000-8000-000000000002", appointmentRef: "appointment_01j00000000000000000000000",
     bindingRef: "scribe_capture_binding_01j00000000000000000000000" };
   const encounter = { appointmentRef: scope.appointmentRef, title: "Invented recording entry", detail: "Synthetic all-party consent only" };
-  for (const mode of ["fresh", "in-person", "options", "recovered", "revoked", "permission", "journal-failure", "native-recheck", "native-recheck-denied"]) {
+  for (const mode of ["fresh", "in-person", "options", "recovered", "revoked", "permission", "journal-failure", "native-recheck", "native-recheck-denied", "created", "created-new", "creation-failure", "creation-pending", "creation-wrong-patient", "creation-revoked"]) {
     const abort = new window.AbortController(), gate = deferred(), acquisition = deferred(), listeners = new Set();
     let starts = 0, closes = 0, admissions = 0, reviews = 0, acquiring = false;
-    const rechecksReview = mode.startsWith("native-recheck");
+    const creation = mode.startsWith("creat"), rechecksReview = mode.startsWith("native-recheck");
+    let creations = 0;
+    const creationGate = deferred();
+    const patient = { patientRef: "patient_01j00000000000000000000000", name: "Invented <Patient>", dateOfBirth: null };
+    const createdEncounter = { ...encounter, patientRef: patient.patientRef, patientName: patient.name };
+    const pendingCreation = { creationKey: webcrypto.randomUUID(), patient: { kind: "existing", patientRef: patient.patientRef }, appointmentAt: new Date().toISOString(), title: "Visit" };
     const admission = { key: webcrypto.randomUUID(), languageMode: "en-US", attestation: { modality: "virtual", participant_regions: [],
       method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } };
     let saved = mode === "recovered" ? { revision: "1", progress: { admission, sessionId, uploaded: false, pendingSave: null } } : { revision: null, progress: null };
@@ -64,7 +69,23 @@ for (const platform of ["desktop", "ios"]) {
       ...(platform === "desktop" ? { async selectDesktopAudio(audioMode) { update({ desktop: { ...snapshot.desktop, audioMode } }); } } : {}),
     };
     const dispose = module.namespace.mountProviderWorkspace(root, { signal: abort.signal, listEncounters: async () => [encounter], createEncounter: forbidden,
-      openEncounter: async () => ({ encounter, scope, signal: abort.signal,
+      ...(creation ? { encounterSetup: {
+        state: async () => ({ account: "invented@example.invalid", patients: [patient], moreResults: false,
+          pending: mode === "creation-pending" ? pendingCreation : null }),
+        search: async () => ({ account: "invented@example.invalid", patients: [], moreResults: false }),
+        submit: async draft => {
+          creations++;
+          assert.equal(starts, 0); assert.equal(admissions, 0);
+          if (mode === "creation-pending") assert.equal(draft, null);
+          else {
+            assert.equal(draft.patient.kind, mode === "created-new" ? "new" : "existing");
+            if (mode === "creation-failure") throw new Error("Invented lost creation reply");
+            if (mode === "creation-revoked") await creationGate.promise;
+          }
+          return mode === "creation-wrong-patient" ? { ...createdEncounter, patientRef: "patient_01j00000000000000000000001" } : createdEncounter;
+        },
+      } } : {}),
+      openEncounter: async () => ({ encounter: creation ? createdEncounter : encounter, scope, signal: abort.signal,
         ...(rechecksReview ? { recorderRechecksReview: true } : {}),
         journal: { load: async () => saved, save: async (_prior, progress) => {
           if (mode === "journal-failure") throw new Error("Invented private storage unavailable");
@@ -96,7 +117,49 @@ for (const platform of ["desktop", "ios"]) {
     });
     try {
       await until(() => root.querySelector('[data-workspace-action="open"]'));
-      root.querySelector('[data-workspace-action="open"]').click();
+      if (creation) {
+        root.querySelector('[data-workspace-action="new-encounter"]').click();
+        if (mode === "creation-pending") {
+          await until(() => root.querySelector('[data-workspace-action="retry-creation"]'));
+          assert.equal(root.querySelector('[data-workspace-action="select-patient"]'), null);
+          root.querySelector('[data-workspace-action="retry-creation"]').click();
+        } else {
+          await until(() => root.querySelector('[data-workspace-action="select-patient"]'));
+          const select = root.querySelector('[data-workspace-action="select-patient"]');
+          assert.ok(select.textContent.includes("Create visit for this patient"));
+          assert.ok(root.textContent.includes(patient.name));
+          assert.equal(creations, 0); assert.equal(admissions, 0);
+          const forged = select.cloneNode(true); select.after(forged); forged.click();
+          await until(() => root.getAttribute("aria-busy") !== "true"); forged.remove();
+          assert.equal(creations, 0);
+          if (mode === "created-new") {
+            const search = root.querySelector('[name="patient-query"]'); search.value = patient.name;
+            search.dispatchEvent(new window.Event("input", { bubbles: true }));
+            root.querySelector('[data-patient-search]').dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+            await until(() => root.querySelector('[data-workspace-action="new-patient"]'));
+            root.querySelector('[data-workspace-action="new-patient"]').click();
+            await until(() => root.querySelector('[data-new-patient]'));
+            const form = root.querySelector('[data-new-patient]');
+            form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+            form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+          } else { select.click(); select.click(); }
+        }
+        if (mode === "creation-revoked") {
+          await until(() => creations === 1); abort.abort(); creationGate.resolve();
+          await until(() => root.getAttribute("aria-busy") !== "true");
+          assert.equal(admissions, 0); assert.equal(starts, 0); checks++; continue;
+        }
+        if (mode === "creation-failure" || mode === "creation-wrong-patient") {
+          await until(() => root.getAttribute("aria-busy") !== "true");
+          assert.equal(creations, 1); assert.equal(admissions, 0); assert.equal(starts, 0);
+          assert.equal(saved.progress, null); checks++; continue;
+        }
+        await until(() => root.querySelector('[data-workspace-action="prepare"]'));
+        assert.equal(creations, 1); assert.equal(admissions, 0); assert.equal(starts, 0);
+        assert.equal(root.querySelector('[data-workspace-action="confirm-create"]'), null);
+        assert.ok(root.textContent.includes(createdEncounter.title));
+        if (mode === "creation-pending") { checks++; continue; }
+      } else root.querySelector('[data-workspace-action="open"]').click();
       if (mode === "recovered") {
         await until(() => root.querySelector('[data-testid="record-button"]'));
         assert.equal(starts, 0); assert.equal(admissions, 0); checks++; continue;
@@ -104,7 +167,7 @@ for (const platform of ["desktop", "ios"]) {
       await until(() => root.querySelector('[data-workspace-action="prepare"]'));
       assert.equal(starts, 0); assert.equal(acquiring, false);
       const options = root.querySelector(".provider-recording-options");
-      assert.equal(options.open, platform === "desktop"); assert.equal(root.querySelector('[name="consent"]'), null);
+      assert.equal(options.open, false); assert.equal(root.querySelector('[name="consent"]'), null);
       assert.equal(root.querySelector('[name="language"]').value, "en-US");
       assert.equal(root.querySelector('[name="modality"]').value, "in_person");
       assert.equal(root.querySelector('[name="modality"]').closest("details"), null);
@@ -117,7 +180,7 @@ for (const platform of ["desktop", "ios"]) {
         if (mode !== "in-person") { type.value = "virtual"; type.dispatchEvent(new window.Event("change", { bubbles: true })); }
       }
       const start = root.querySelector('[data-workspace-action="prepare"]');
-      assert.equal(start.textContent, platform === "ios" ? "Confirm consent & record" : "Confirm consent & continue");
+      assert.equal(start.textContent, platform === "ios" ? "Confirm consent & record" : "Confirm consent & prepare recording");
       assert.ok(window.document.getElementById(start.getAttribute("aria-describedby")).textContent.includes("Everyone has agreed to recording and transcription"));
       // A detached/replaced action cannot reuse consent from a different screen.
       const forged = start.cloneNode(true); start.after(forged); forged.click();
@@ -194,7 +257,7 @@ for (const platform of ["desktop", "ios"]) {
       await until(() => root.querySelector('[data-testid="record-button"]'));
       assert.equal(starts, 1, "Reopening cannot replay the Start action"); checks++;
       if (rechecksReview) assert.equal(reviews, 1, "Reopening retains its fresh status read");
-    } finally { acquisition.resolve(); gate.resolve(); await dispose(); }
+    } finally { creationGate.resolve(); acquisition.resolve(); gate.resolve(); await dispose(); }
   }
   dom.window.close();
 }
