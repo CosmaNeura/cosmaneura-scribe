@@ -421,6 +421,7 @@ struct CheckNativeProvider {
         }
         checks += try await recordingContextChecks()
         checks += try await preparedContextChecks()
+        checks += try await combinedRecordingContextChecks()
         print("Passed \(checks) native provider checks with retained native session policy, offline driver/wire and in-memory access block. No network, Keychain, app, device or microphone was accessed.")
     }
 
@@ -521,6 +522,76 @@ struct CheckNativeProvider {
             // Even failed/expired consumption cannot reuse or substitute a ticket.
             try await rejected(Task { try connection.takePreparedRecordingContext(nonce: nonce,
                 workspaceID: workspace, bindingRef: binding, sessionID: session, revision: revision) })
+            connection.close(); checks += 1
+        }
+        return checks
+    }
+
+    @MainActor static func combinedRecordingContextChecks() async throws -> Int {
+        let bytes = Data([0x80] + Array(repeating: UInt8(0), count: 382) + [1])
+        let modulus = bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        var checks = 0
+        for fault in ["none", "private", "modulus", "exponent", "numeric_ext", "false_ext", "operations",
+                      "context_session", "context_tenant", "context_status", "extra", "missing", "old", "nonce", "denied",
+                      "expired", "account", "numeric_capability", "false_capability"] {
+            var instant = ContinuousClock.now
+            let (auth, driver, wire, connection) = try make(contextNow: { instant })
+            let workspace = UUID(), session = UUID(), tenant = UUID(), recovery = UUID()
+            let binding = "scribe_capture_binding_01j00000000000000000000000", revision = auth.state().revision
+            await wire.setResponder { request in
+                if request.action == .mount {
+                    let appointment = "appointment_01j00000000000000000000000"
+                    return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
+                        "revision": revision, "workspaceId": workspace.uuidString.lowercased(),
+                        "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
+                        "appointmentRef": appointment, "encounter": ["appointmentRef": appointment,
+                            "native_recording_preparation_v1": fault == "numeric_capability" ? 1 as Any : fault != "false_capability"],
+                    ]))
+                }
+                let body = try JSONSerialization.jsonObject(with: request.body) as! [String: Any]
+                try require((body["operation"] as? [String: String]) == ["kind": "native_recording_preparation"])
+                var key: [String: Any] = ["kty": "RSA", "n": modulus, "e": "AQAB", "alg": "RSA-OAEP-256",
+                    "ext": true, "key_ops": ["wrapKey"]]
+                var context: [String: Any] = ["schema_version": "1.0", "workspace_id": workspace.uuidString.lowercased(),
+                    "tenant_id": tenant.uuidString.lowercased(), "session_id": session.uuidString.lowercased(), "status": "created"]
+                switch fault {
+                case "private": key["d"] = "invented"
+                case "modulus": key["n"] = "bad"
+                case "exponent": key["e"] = "Aw"
+                case "numeric_ext": key["ext"] = 1
+                case "false_ext": key["ext"] = false
+                case "operations": key["key_ops"] = ["unwrapKey"]
+                case "context_session": context["session_id"] = UUID().uuidString.lowercased()
+                case "context_tenant": context["tenant_id"] = "authority_tenant_01j00000000000000000000000"
+                case "context_status": context["status"] = "uploaded"
+                default: break
+                }
+                var receipt: [String: Any] = ["schema_version": "1.0", "context": context,
+                    "encryption_key": ["key_version": "synthetic-v1", "algorithm": "RSA-OAEP-256", "public_jwk": key]]
+                if fault == "extra" { receipt["capture_permission"] = true }
+                if fault == "missing" { receipt.removeValue(forKey: "encryption_key") }
+                return ProviderNativeReply(status: fault == "denied" ? 403 : 200,
+                    body: try JSONSerialization.data(withJSONObject: ["contract_version": "1", "workspace_id": workspace.uuidString.lowercased(),
+                        "binding_ref": binding, "request_nonce": fault == "nonce" ? UUID().uuidString.lowercased() : body["request_nonce"]!,
+                        "operation": "native_recording_preparation", "checked_at": ISO8601DateFormatter().string(from: Date().addingTimeInterval(fault == "old" ? -60 : 0)),
+                        "receipt": receipt]))
+            }
+            _ = try await connection.send(request(auth, action: "mount", body: String(decoding: JSONSerialization.data(withJSONObject: ["workspace_id": workspace.uuidString.lowercased()]), as: UTF8.self)))
+            if fault == "numeric_capability" {
+                try await rejected(Task { try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision) })
+            } else if fault == "false_capability" {
+                try require(try connection.recordingMount(workspaceID: workspace, bindingRef: binding, revision: revision).recordingPreparationSupported == false)
+            } else {
+                let pending = Task { try await connection.recordingContext(workspaceID: workspace, bindingRef: binding, sessionID: session, revision: revision) }
+                if ["none", "expired", "account"].contains(fault) {
+                    let context = try await pending.value
+                    try require(context.preparedPublicKey?.modulusBase64URL == modulus)
+                    if fault == "expired" { instant = instant.advanced(by: .seconds(6)) }
+                    if fault == "account" { driver.identity = nil; _ = auth.state() }
+                    if fault == "account" { try await rejected(Task { try connection.recordingPreparationKeyIsCurrent(context) }) }
+                    else { try require(try connection.recordingPreparationKeyIsCurrent(context) == (fault == "none")) }
+                } else { try await rejected(pending) }
+            }
             connection.close(); checks += 1
         }
         return checks

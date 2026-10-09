@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import OSLog
 import CosmasNativeAuth
 
@@ -181,6 +182,30 @@ struct ProviderNativeRequestTiming: Sendable {
 
 /// Minted only by a current Core response. This identifies key custody; the
 /// source-start gate still independently decides whether capture may begin.
+struct NativeProviderRecordingPublicKey: Equatable, Sendable {
+    let version: String
+    let modulusBase64URL: String
+
+    static func parse(_ value: [String: Any]) throws -> Self {
+        guard Set(value.keys) == ["key_version", "algorithm", "public_jwk"],
+              let version = value["key_version"] as? String,
+              version.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil,
+              value["algorithm"] as? String == "RSA-OAEP-256",
+              let jwk = value["public_jwk"] as? [String: Any],
+              Set(jwk.keys) == ["kty", "n", "e", "alg", "ext", "key_ops"],
+              jwk["kty"] as? String == "RSA", jwk["alg"] as? String == "RSA-OAEP-256",
+              jwk["e"] as? String == "AQAB", jwk["key_ops"] as? [String] == ["wrapKey"],
+              let ext = jwk["ext"] as? NSNumber, CFGetTypeID(ext) == CFBooleanGetTypeID(), ext.boolValue,
+              let modulus = jwk["n"] as? String,
+              modulus.range(of: "^[A-Za-z0-9_-]{512}$", options: .regularExpression) != nil,
+              let bytes = Data(base64Encoded: modulus.replacingOccurrences(of: "-", with: "+")
+                  .replacingOccurrences(of: "_", with: "/")), bytes.count == 384,
+              bytes.first.map({ $0 & 0x80 != 0 }) == true,
+              bytes.last.map({ $0 & 1 == 1 }) == true else { throw ProviderNativeError.response }
+        return Self(version: version, modulusBase64URL: modulus)
+    }
+}
+
 struct NativeProviderRecordingContext: Equatable, Sendable {
     let bindingRef: String
     let workspaceID: UUID
@@ -188,10 +213,16 @@ struct NativeProviderRecordingContext: Equatable, Sendable {
     let sessionID: UUID
     let accountDigest: String
     fileprivate let checkedAt: Date
-    fileprivate init(bindingRef: String, workspaceID: UUID, tenantID: UUID, sessionID: UUID, accountDigest: String, checkedAt: Date) {
+    let preparedPublicKey: NativeProviderRecordingPublicKey?
+    let preparedRevision: String
+    let preparedKeyExpires: ContinuousClock.Instant
+    fileprivate init(bindingRef: String, workspaceID: UUID, tenantID: UUID, sessionID: UUID, accountDigest: String, checkedAt: Date,
+                     preparedPublicKey: NativeProviderRecordingPublicKey?, preparedRevision: String, preparedKeyExpires: ContinuousClock.Instant) {
         self.bindingRef = bindingRef
         self.workspaceID = workspaceID; self.tenantID = tenantID
         self.sessionID = sessionID; self.accountDigest = accountDigest; self.checkedAt = checkedAt
+        self.preparedPublicKey = preparedPublicKey; self.preparedRevision = preparedRevision
+        self.preparedKeyExpires = preparedKeyExpires
     }
 }
 
@@ -201,9 +232,11 @@ struct NativeProviderRecordingMount: Equatable, Sendable {
     let workspaceID: UUID
     let bindingRef: String
     let recoveryScope: UUID
-    fileprivate init(workspaceID: UUID, bindingRef: String, recoveryScope: UUID) {
+    let recordingPreparationSupported: Bool
+    fileprivate init(workspaceID: UUID, bindingRef: String, recoveryScope: UUID, recordingPreparationSupported: Bool) {
         self.workspaceID = workspaceID; self.bindingRef = bindingRef
         self.recoveryScope = recoveryScope
+        self.recordingPreparationSupported = recordingPreparationSupported
     }
 }
 
@@ -310,10 +343,14 @@ protocol ProviderNativeWire: Sendable {
             throw ProviderNativeError.invalidRequest
         }
         let account = try auth.recordingAccountDigest(expectedRevision: revision)
+        let mounted = recordingMounts[workspaceID]
+        let combined = mounted?.revision == revision && mounted?.mount.bindingRef == bindingRef
+            && mounted?.mount.recordingPreparationSupported == true
+        let kind = combined ? "native_recording_preparation" : "native_recording_context"
         let nonce = UUID().uuidString.lowercased()
         let body = try JSONSerialization.data(withJSONObject: [
             "workspace_id": workspaceID.uuidString.lowercased(), "binding_ref": bindingRef,
-            "request_nonce": nonce, "operation": ["kind": "native_recording_context"],
+            "request_nonce": nonce, "operation": ["kind": kind],
         ])
         let request = try ProviderNativeRequest(id: requestID.uuidString.lowercased(), revision: revision,
             action: "capture-operations", key: UUID().uuidString.lowercased(),
@@ -330,9 +367,25 @@ protocol ProviderNativeWire: Sendable {
               value["workspace_id"] as? String == workspaceID.uuidString.lowercased(),
               value["binding_ref"] as? String == bindingRef,
               value["request_nonce"] as? String == nonce,
-              value["operation"] as? String == "native_recording_context",
+              value["operation"] as? String == kind,
               let checked = value["checked_at"] as? String, let checkedAt = Self.recentRecordingCheck(checked),
-              let receipt = value["receipt"] as? [String: Any],
+              let rawReceipt = value["receipt"] as? [String: Any] else {
+            throw ProviderNativeError.response
+        }
+        let receipt: [String: Any]
+        let publicKey: NativeProviderRecordingPublicKey?
+        if combined {
+            guard Set(rawReceipt.keys) == ["schema_version", "context", "encryption_key"],
+                  rawReceipt["schema_version"] as? String == "1.0",
+                  let context = rawReceipt["context"] as? [String: Any],
+                  let key = rawReceipt["encryption_key"] as? [String: Any] else {
+                throw ProviderNativeError.response
+            }
+            receipt = context; publicKey = try NativeProviderRecordingPublicKey.parse(key)
+        } else {
+            receipt = rawReceipt; publicKey = nil
+        }
+        guard
               Set(receipt.keys) == ["schema_version", "workspace_id", "tenant_id", "session_id", "status"],
               receipt["schema_version"] as? String == "1.0",
               receipt["workspace_id"] as? String == workspaceID.uuidString.lowercased(),
@@ -343,7 +396,14 @@ protocol ProviderNativeWire: Sendable {
             throw ProviderNativeError.response
         }
         return NativeProviderRecordingContext(bindingRef: bindingRef, workspaceID: workspaceID, tenantID: tenantID,
-                                               sessionID: sessionID, accountDigest: account, checkedAt: checkedAt)
+            sessionID: sessionID, accountDigest: account, checkedAt: checkedAt,
+            preparedPublicKey: publicKey, preparedRevision: revision,
+            preparedKeyExpires: contextNow().advanced(by: .seconds(max(0, min(5, 30 - Date().timeIntervalSince(checkedAt))))))
+    }
+
+    func recordingPreparationKeyIsCurrent(_ context: NativeProviderRecordingContext) throws -> Bool {
+        let revision = try recordingRevision(accountDigest: context.accountDigest)
+        return revision == context.preparedRevision && contextNow() < context.preparedKeyExpires
     }
 
     /// Reuse the same fresh Core check before renderer custody inspection and
@@ -455,8 +515,15 @@ protocol ProviderNativeWire: Sendable {
                   review["request_nonce"] as? String == opening.uuidString.lowercased(),
                   review["operation"] as? String == "provider_encounter" else { return }
         }
+        var preparationSupported = false
+        if let rawCapability = encounter["native_recording_preparation_v1"] {
+            guard let capability = rawCapability as? NSNumber,
+                  CFGetTypeID(capability) == CFBooleanGetTypeID() else { return }
+            preparationSupported = capability.boolValue
+        }
         recordingMounts[id] = (request.revision, NativeProviderRecordingMount(
-            workspaceID: id, bindingRef: binding, recoveryScope: scope))
+            workspaceID: id, bindingRef: binding, recoveryScope: scope,
+            recordingPreparationSupported: preparationSupported))
     }
 
     func send(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {

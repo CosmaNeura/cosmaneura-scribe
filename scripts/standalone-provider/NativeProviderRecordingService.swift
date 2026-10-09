@@ -11,11 +11,13 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
 {
   private let connection: NativeProviderConnection
   private let context: NativeProviderRecordingContext
+  private var preparedPublicKey: NativeProviderRecordingPublicKey?
   private var bindingRef: String { context.bindingRef }
 
   init(connection: NativeProviderConnection, context: NativeProviderRecordingContext) {
     self.connection = connection
     self.context = context
+    self.preparedPublicKey = context.preparedPublicKey
   }
 
   func recordingScope() async throws -> NativeRecordingScope {
@@ -30,6 +32,15 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
   }
 
   func publishedKey() async throws -> NativeRecordingPublicKey {
+    if let prepared = preparedPublicKey {
+      preparedPublicKey = nil
+      // Single-use native metadata only. Expiry or a new SDK revision requires
+      // the original fresh key read; no source permission is cached here.
+      if try connection.recordingPreparationKeyIsCurrent(context) {
+        return try NativeRecordingPublicKey(
+          version: prepared.version, modulusBase64URL: prepared.modulusBase64URL)
+      }
+    }
     let value = try await operation(kind: "encryption_key", intent: UUID())
     guard Set(value.keys) == ["key_version", "algorithm", "public_jwk"],
       let version = value["key_version"] as? String, Self.validVersion(version),
