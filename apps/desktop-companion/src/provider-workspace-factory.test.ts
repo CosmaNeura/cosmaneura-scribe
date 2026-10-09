@@ -9,6 +9,7 @@ import type { ProviderProgress } from "../../capture/src/provider/workspace-jour
 import { InMemoryRecordingIndicator } from "./recording-indicator.js";
 import type { NativePresentationEvent } from "./native-provider-presentation.js";
 import { DesktopPreparationBff } from "./preparation-metadata.js";
+import { CoreCaptureClient } from "../../capture/src/provider/core-client";
 
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
 const sessionId = "30000000-0000-4000-8000-000000000003";
@@ -61,6 +62,50 @@ async function fixture() {
 }
 
 describe("desktop provider resource factory", () => {
+  it.each(["fresh", "retained", "cancelled", "cancelled_during_open", "foreign_receipt"])("uses admission metadata only for its current fresh recorder: %s", async mode => {
+    const f = await fixture();
+    vi.mocked(f.backend.openEncounter).mockResolvedValue({ ...f.selected, admissionMetadataSupported: true });
+    const original = f.request.getMockImplementation()!;
+    const attempt = new AbortController();
+    f.request.mockImplementationOnce(async (_path, body) => {
+      expect(body.preparation_metadata).toBe(true);
+      const metadata = (await (await original("/service/v1/agent/scribe/capture-operations", { ...body, operation: { kind: "preparation_metadata" } })).json()).receipt;
+      return Response.json({ contract_version: "1", binding_ref: body.binding_ref, workspace_id: body.workspace_id,
+        request_nonce: mode === "foreign_receipt" ? crypto.randomUUID() : body.request_nonce,
+        checked_at: new Date().toISOString(), appointment_ref: scope.appointmentRef, operation_ref: "scribe_admission_01j00000000000000000000000",
+        consent_record_id: crypto.randomUUID(), session_id: sessionId, preparation_metadata: metadata });
+    });
+    const connection = f.connect(), opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+    const intent = progress.admission;
+    await opened.journal.save(await opened.journal.load(), { ...progress, sessionId: null });
+    const client = new CoreCaptureClient(scope, opened.request, attempt.signal);
+    if (mode === "foreign_receipt") { await expect(client.admit(intent)).rejects.toThrow(); expect(f.request).toHaveBeenCalledOnce(); return; }
+    expect(await client.admit(intent)).toBe(sessionId);
+    if (mode === "cancelled") attempt.abort();
+    await opened.journal.save(await opened.journal.load(), progress);
+    let options!: DesktopProviderRecorderOptions;
+    vi.spyOn(DesktopProviderRecorder, "open").mockImplementation(async value => {
+      options = value; return { availableForView: true, deactivate: async () => undefined } as unknown as DesktopProviderRecorder;
+    });
+    await opened.recorder(sessionId, new AbortController().signal);
+    if (mode === "cancelled_during_open") attempt.abort();
+    if (mode === "retained") await options.flowStore.putPreparationState({ mode: "configured_core", schemaVersion: 6, channel: "mixed",
+      sessionId, startedAt: new Date().toISOString(), completeIdempotencyKey: "synthetic-complete",
+      leaseIdempotencyKey: null, leaseRequest: null, windowPreparation: null });
+    expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
+    expect(f.request.mock.calls).toHaveLength(mode === "fresh" ? 1 : 2);
+    if (mode === "fresh") {
+      expect(await options.createBff(options.signal).getAudioEncryptionKey()).toMatchObject({ key_version: "synthetic-key" });
+      expect(await options.createBff(options.signal).getCapabilities(sessionId)).toMatchObject({ protocol_version: "1.0" });
+      expect(f.request).toHaveBeenCalledOnce();
+    }
+    expect(f.authorizeStart).not.toHaveBeenCalled(); expect(f.resources.selectWindow).not.toHaveBeenCalled();
+  });
+  it("refuses a renderer-supplied admission option before backend I/O", async () => {
+    const f = await fixture(), opened = await f.connect().workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+    await expect(opened.request("/service/v1/agent/scribe/capture-admissions", { preparation_metadata: true }, sessionId, new AbortController().signal)).rejects.toThrow();
+    expect(f.request).not.toHaveBeenCalled();
+  });
   it.each([false, true])("uses combined metadata only before any encrypted preparation exists: retained=%s", async retained => {
     const f = await fixture(), connection = f.connect();
     const opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);

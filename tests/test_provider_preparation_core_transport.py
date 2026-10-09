@@ -10,6 +10,7 @@ from cosmaneura_scribe.provider_core_transport import ProviderCoreUnavailable
 from cosmaneura_scribe.provider_preparation_core_transport import PATH, prepare_then_dispatch
 from pydantic import SecretStr
 from test_provider_native_core_transport import ACCOUNT, BINDING, SESSION, SUFFIX
+from test_provider_native_core_transport import Wire as NativeWire
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,6 +23,7 @@ class Wire:
         self.alter = lambda value: value
         self.status = 200
         self.lose = None
+        self.alter_metadata = lambda value: value
 
     async def fresh(self):
         self.checks += 1
@@ -97,17 +99,39 @@ class Wire:
                 configured_capture=data["configured_capture"],
             )
         else:
-            value.update(
-                operation="prepare_recording_window",
-                receipt={"schema_version": "1.0", "session_id": SESSION},
-            )
+            if data["operation"]["kind"] == "preparation_metadata":
+                response = await NativeWire().handle(
+                    httpx.Request(
+                        "POST",
+                        "https://core.synthetic.invalid" + PATH,
+                        headers={
+                            "Authorization": "Bearer invented-user-session-token",
+                            "X-Cosmaneura-Workload-Authorization": "Bearer invented-workload-token",
+                        },
+                        json={
+                            **data,
+                            "action": "operation",
+                            "expected_actor_ref": ACCOUNT.actor_ref,
+                            "expected_tenant_ref": ACCOUNT.tenant_ref,
+                        },
+                    )
+                )
+                value.update(
+                    operation="preparation_metadata",
+                    receipt=self.alter_metadata(response.json()["result"]["receipt"]),
+                )
+            else:
+                value.update(
+                    operation="prepare_recording_window",
+                    receipt={"schema_version": "1.0", "session_id": SESSION},
+                )
         return httpx.Response(
             200,
             json=value,
             headers={"Cache-Control": "no-store", "X-Cosmaneura-Capture-Version": "1"},
         )
 
-    async def call(self, action="capture-operations"):
+    async def call(self, action="capture-operations", metadata=False):
         body = {"workspace_id": str(uuid4()), "binding_ref": BINDING, "request_nonce": str(uuid4())}
         if action == "capture-admissions":
             body.update(
@@ -116,6 +140,8 @@ class Wire:
             )
         else:
             body["operation"] = {"kind": "prepare_recording_window", "payload": {}}
+        if metadata:
+            body["preparation_metadata"] = True
         return body, await prepare_then_dispatch(
             "https://core.synthetic.invalid",
             action,
@@ -207,3 +233,57 @@ async def test_ambiguous_reply_never_retries_or_falls_back(lost):
     with pytest.raises((ProviderCoreUnavailable, httpx.ReadError)):
         await wire.call()
     assert len(wire.calls) == (1 if lost == PATH else 2)
+
+
+async def test_opted_in_admission_keeps_original_mutation_and_all_nine_fences():
+    wire = Wire()
+    body, result = await wire.call("capture-admissions", metadata=True)
+    assert wire.checks == 9 and len(wire.calls) == 3
+    assert wire.calls[1][1] == {k: v for k, v in body.items() if k != "preparation_metadata"}
+    assert wire.calls[1][2] == "original-retained-key"
+    assert wire.calls[2][1] == {
+        k: body[k] for k in ("workspace_id", "binding_ref", "request_nonce")
+    } | {"operation": {"kind": "preparation_metadata"}}
+    assert wire.calls[2][2] != wire.calls[1][2]
+    assert result["preparation_metadata"]["review"]["session_id"] == SESSION
+    assert "invented-server-context-token" not in str(result)
+
+
+@pytest.mark.parametrize("boundary", range(1, 10))
+async def test_combined_revocation_keeps_each_admission_and_metadata_fence(boundary):
+    wire = Wire()
+    wire.revoke_at = boundary
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call("capture-admissions", metadata=True)
+    assert len(wire.calls) == (
+        0 if boundary <= 2 else 1 if boundary <= 4 else 2 if boundary <= 7 else 3
+    )
+
+
+@pytest.mark.parametrize("fault", ["foreign_session", "extra", "private_key", "budget"])
+async def test_combined_invalid_metadata_never_returns_partial_admission(fault):
+    wire = Wire()
+
+    def alter(value):
+        if fault == "foreign_session":
+            value["review"]["session_id"] = str(uuid4())
+        elif fault == "extra":
+            value["permission"] = True
+        elif fault == "private_key":
+            value["encryption_key"]["public_jwk"]["d"] = "invented"
+        else:
+            value["capabilities"]["remaining_aggregate_plaintext_bytes"] = -1
+        return value
+
+    wire.alter_metadata = alter
+    with pytest.raises((ProviderCoreUnavailable, ValueError)):
+        await wire.call("capture-admissions", metadata=True)
+    assert len(wire.calls) == 3
+
+
+async def test_lost_metadata_response_never_repeats_the_durable_admission():
+    wire = Wire()
+    wire.lose = "/service/v1/agent/scribe/capture-operations"
+    with pytest.raises(ProviderCoreUnavailable):
+        await wire.call("capture-admissions", metadata=True)
+    assert len(wire.calls) == 3 and wire.calls[1][2] == "original-retained-key"

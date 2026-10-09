@@ -39,6 +39,7 @@ from .provider_core_transport import (
     core_wire_uuid as uid,
 )
 from .provider_encounter_transport import ProviderEncounterAccount
+from .provider_native_core_transport import PreparationMetadata
 from .provider_performance import provider_phase_timing
 
 PATH = "/service/v1/agent/scribe/native-capture"
@@ -59,6 +60,13 @@ async def prepare_then_dispatch(
     """No credential/context is returned to the receiver caller or device."""
     need(action in {"capture-admissions", "capture-operations"})
     payload = snapshot(body, 2048 if action == "capture-admissions" else 4_194_304)
+    metadata_requested = "preparation_metadata" in payload
+    if metadata_requested:
+        need(
+            action == "capture-admissions"
+            and payload.pop("preparation_metadata") is True
+            and payload.get("attestation") is not None
+        )
     workspace = uid(payload.get("workspace_id"))
     nonce = uid(payload.get("request_nonce"))
     binding = payload.get("binding_ref")
@@ -244,6 +252,44 @@ async def prepare_then_dispatch(
             )
             if await fresh() != before:
                 raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+            if metadata_requested:
+                # Read after the ordinary admission and its publication fence.
+                # Reuse only this invocation's negotiation; the ordinary read
+                # rechecks local access around I/O and Core authorizes afresh.
+                metadata = await ordinary.request_prepared(
+                    mount,
+                    "/service/v1/agent/scribe/capture-operations",
+                    {
+                        "workspace_id": workspace,
+                        "binding_ref": binding,
+                        "request_nonce": nonce,
+                        "operation": {"kind": "preparation_metadata"},
+                    },
+                    str(uuid5(revision, "admission-metadata:" + key)),
+                    token=context,
+                    interaction_ref=cast(str, interaction),
+                    turn=turn,
+                    workload=credential,
+                )
+                try:
+                    receipt = PreparationMetadata.model_validate(metadata.get("receipt"))
+                except ValueError:
+                    raise ProviderCoreUnavailable() from None
+                need(receipt.review.session_id == UUID(uid(answer.get("session_id"))))
+                public = obj(obj(metadata["receipt"])["encryption_key"])
+                wrapping = obj(public.get("public_jwk"))
+                need(
+                    set(public) == {"key_version", "algorithm", "public_jwk"}
+                    and set(wrapping) == {"kty", "n", "e", "alg", "ext", "key_ops"}
+                    and wrapping.get("key_ops") == ["wrapKey"]
+                )
+                if await fresh() != before:
+                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                answer = {
+                    **answer,
+                    "checked_at": metadata["checked_at"],
+                    "preparation_metadata": receipt.model_dump(mode="json"),
+                }
             return answer
         finally:
             await ordinary.close()

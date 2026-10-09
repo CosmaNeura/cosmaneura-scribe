@@ -150,6 +150,7 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       };
       return {
         release, retireSource, encounter, scope, signal: AbortSignal.any([lifetime, signal]), recoveryScope: uuid(value.recoveryScope),
+        ...(value.admission_metadata_v1 === true ? { admissionMetadataSupported: true as const } : {}),
         ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
         ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,

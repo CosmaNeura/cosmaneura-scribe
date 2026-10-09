@@ -227,6 +227,48 @@ class CoreWire:
                             "status": "not_prepared",
                             "review": None,
                         }
+                    elif kind == "preparation_metadata":
+                        receipt = {
+                            "schema_version": "1.0",
+                            "review": {
+                                "schema_version": "1.0",
+                                "session_id": SESSION_ID,
+                                "status": "created",
+                                "source": None,
+                                "working": None,
+                                "review_queue": None,
+                                "translation_progress": [],
+                            },
+                            "encryption_key": {
+                                "key_version": "synthetic-key",
+                                "algorithm": "RSA-OAEP-256",
+                                "public_jwk": {
+                                    "kty": "RSA",
+                                    "n": "a" * 512,
+                                    "e": "AQAB",
+                                    "alg": "RSA-OAEP-256",
+                                    "ext": True,
+                                    "key_ops": ["wrapKey"],
+                                },
+                            },
+                            "capabilities": CaptureCapabilities(
+                                protocol_version="1.0",
+                                media={
+                                    "media_type": "audio/wav",
+                                    "encoding": "pcm_s16le",
+                                    "channels": 1,
+                                    "sample_rate_hz": 16000,
+                                },
+                                target_chunk_duration_ms=5000,
+                                max_envelope_bytes=200000,
+                                max_chunks=1000,
+                                remaining_aggregate_plaintext_bytes=32000000,
+                                capture_lease_ttl_seconds=300,
+                                reservation_window_seconds=60,
+                                max_reservations_per_batch=10,
+                                upload_concurrency=2,
+                            ).model_dump(mode="json"),
+                        }
                     else:
                         receipt = {"session_id": SESSION_ID}
                     result.update(operation=kind, receipt=receipt)
@@ -1431,6 +1473,7 @@ async def test_core_created_opening_uses_one_facade_and_keeps_checked_display(ha
     assert lookups == [] and len(h.wire.calls) == 1
     assert result.json()["encounter"]["title"] == "Synthetic checked display"
     assert result.json()["encounter"]["patientName"] == "Synthetic checked display"
+    assert result.json()["admission_metadata_v1"] is True
     assert h.wire.operations == ["provider_encounter"]
 
 
@@ -1684,3 +1727,47 @@ async def test_preparation_real_registry_revocation_stops_before_mutation_or_pub
     assert result.status_code == 403 and lookups == []
     assert len(h.wire.calls) == (0 if boundary <= 2 else 1 if boundary <= 4 else 2)
     assert "receipt" not in result.text and "offline-core-mount-token" not in result.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", range(10))
+async def test_combined_admission_metadata_keeps_nine_real_registry_fences(harness, boundary):
+    h = harness
+    workspace, lookups = core_created_opening(h)
+    original = h.receiver.encounter_account
+    checks = 0
+
+    def account(authorization, *, bind):
+        nonlocal checks
+        checks += 1
+        if checks == boundary:
+            h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+        return original(authorization, bind=bind)
+
+    h.receiver.encounter_account = account
+    h.receiver._provider_trace_enabled = True
+    async with client(h) as c:
+        result = await c.post(
+            "/provider/v1/capture-admissions",
+            json={
+                "workspace_id": str(workspace),
+                "binding_ref": BINDING,
+                "request_nonce": str(uuid4()),
+                "attestation": {"all_parties_consented": True},
+                "configured_capture": {"schema_version": "1.0", "language_mode": "en-US+es-US"},
+                "preparation_metadata": True,
+            },
+        )
+    assert lookups == []
+    assert "offline-core-mount-token" not in result.text and "interaction_ref" not in result.text
+    if boundary:
+        assert result.status_code == 403 and "preparation_metadata" not in result.text
+        assert len(h.wire.calls) == (
+            0 if boundary <= 2 else 1 if boundary <= 4 else 2 if boundary <= 7 else 3
+        )
+    else:
+        assert result.status_code == 200 and len(h.wire.calls) == 3
+        assert result.json()["preparation_metadata"]["review"]["session_id"] == SESSION_ID
+        assert (
+            json.loads(result.headers["x-scribe-provider-trace"])["counts"]["identity_check"] == 9
+        )

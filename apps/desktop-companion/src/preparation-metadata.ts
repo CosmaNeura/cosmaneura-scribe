@@ -7,9 +7,12 @@ export class DesktopPreparationBff extends CoreCaptureBff {
   private publicKey: AudioEncryptionPublicKey | null = null;
   private capabilities: CaptureCapabilities | null = null;
   private begun = false;
+  private admissionMetadata: unknown;
 
-  constructor(private readonly preparationClient: CoreCaptureClient, private readonly admittedSession: string) {
+  constructor(private readonly preparationClient: CoreCaptureClient, private readonly admittedSession: string,
+    admissionMetadata?: unknown) {
     super(preparationClient, admittedSession);
+    this.admissionMetadata = admissionMetadata;
     preparationClient.signal.addEventListener("abort", () => this.clear(), { once: true });
   }
 
@@ -17,6 +20,7 @@ export class DesktopPreparationBff extends CoreCaptureBff {
     this.current();
     if (this.begun) throw new Error("Desktop preparation has already been checked.");
     this.begun = true;
+    const admissionMetadata = this.admissionMetadata; this.admissionMetadata = undefined;
     const review = async () => parseCreatorReview(
       await this.preparationClient.operation(this.admittedSession, { kind: "creator_review" }), this.admittedSession);
     if (!fresh) {
@@ -26,7 +30,7 @@ export class DesktopPreparationBff extends CoreCaptureBff {
     // The receiver-first Core sequence preserves each original read's complete
     // authorization and consent checks. It shares only request setup/client
     // connections, and grants no audio permission. No partial result is retained.
-    const result = await this.preparationClient.operation(this.admittedSession, { kind: "preparation_metadata" });
+    const result = admissionMetadata ?? await this.preparationClient.operation(this.admittedSession, { kind: "preparation_metadata" });
     this.current();
     if (!record(result) || Object.keys(result).sort().join(",") !== "capabilities,encryption_key,review,schema_version"
       || result.schema_version !== "1.0") throw new Error("Desktop preparation metadata is unavailable.");
@@ -65,7 +69,7 @@ export class DesktopPreparationBff extends CoreCaptureBff {
     }
   }
 
-  private clear(): void { this.publicKey = null; this.capabilities = null; }
+  private clear(): void { this.publicKey = null; this.capabilities = null; this.admissionMetadata = undefined; }
 }
 
 function record(value: unknown): value is Record<string, unknown> {
