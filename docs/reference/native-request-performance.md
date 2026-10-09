@@ -1,5 +1,33 @@
 # Native request performance
 
+## Verify the signed desktop package before timing
+
+After the final native-helper signing and enclosing-app signing, run this
+read-only check against the actual Apple Silicon app that will be installed:
+
+```sh
+python scripts/check_signed_desktop_package.py '/absolute/path/Cosmaneura Scribe Beta.app'
+```
+
+It verifies all three final helper hashes against `provider-profile.json`, the
+existing provider identity and exact existing Keychain claims, an embedded DER
+claims slot, and Apple's strict deep signature validation. It neither launches
+the app nor accesses data keys. A successful check qualifies these package
+properties; it does not prove launch, network access or recording readiness.
+
+Re-signing a helper changes its hash even when its runtime code is unchanged.
+Update that helper's profile pin from its final signed bytes before signing the
+enclosing app. Apple's default `codesign --display --entitlements -` output can
+be a pretty dictionary rather than XML. Treating it as an absent plist can drop
+existing provider claims during re-signing. Preserve the verified existing
+claims, then check the actual signed Mach-O data; do not broaden access or accept
+empty claims. Run `python scripts/test_signed_desktop_package.py` for the local
+regressions covering these two observed failures.
+
+Keep a known working package for recovery. Follow package verification with an
+authorized normal launch and a synthetic visit-to-Ready check. Record those
+results separately from the read-only package checks.
+
 Before physical audio timing, follow the
 [physical audio test environment](physical-audio-test-environment.md) procedure.
 Device Hub mirroring has interfered with iPhone microphone capture in the current
