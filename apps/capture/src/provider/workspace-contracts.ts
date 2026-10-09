@@ -34,6 +34,8 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly request: AuthorizedCoreRequest;
   readonly openingReview?: ProviderOpeningReview;
   readonly noteOpeningSupported?: true;
+  /** Trusted native acquisition checks current created/capturing status itself. */
+  readonly recorderRechecksReview?: true;
   readonly signal: AbortSignal;
   readonly journal: ProviderWorkspaceJournal;
   readonly reviewJournal: (sessionId: string) => CreatorReviewJournal;
@@ -46,7 +48,7 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
   /** Ephemeral name from the current native authenticated profile, not an identity. */
   readonly providerDisplayName?: string | undefined;
-  /** Trusted desktop recorder independently checks current review status at acquisition. */
+  /** Trusted recorder independently checks current review status at acquisition. */
   readonly recorderRechecksReview?: true;
   readonly encounterSetup?: ProviderEncounterSetup | undefined;
   readonly account?: ProviderAccount | undefined;

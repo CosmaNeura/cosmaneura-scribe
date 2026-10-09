@@ -70,6 +70,7 @@ export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWork
       return {
         encounter: mount.encounter, scope: mount.scope, request: mount.request, signal: mount.signal,
         ...(mount.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
+        ...(mount.recorderRechecksReview === true ? { recorderRechecksReview: true as const } : {}),
         ...(mount.openingReview ? { openingReview: mount.openingReview } : {}),
         openInCore: noteRef => { current(); return mount.openInCore(noteRef); },
         journal,

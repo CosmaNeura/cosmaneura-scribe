@@ -451,7 +451,9 @@ protocol ProviderNativeWire: Sendable {
     func takePreparedRecordingContext(nonce: UUID, workspaceID: UUID, bindingRef: String,
                                       sessionID: UUID, revision: String) throws -> NativeProviderRecordingContext? {
         let saved = preparedRecording
-        preparedRecording = nil; recordingGeneration = UUID()
+        preparedRecording = nil
+        var transferred = false
+        defer { if !transferred { recordingGeneration = UUID() } }
         try current(revision)
         guard let saved, saved.nonce == nonce, saved.revision == revision,
               saved.context.workspaceID == workspaceID, saved.context.bindingRef == bindingRef,
@@ -460,7 +462,13 @@ protocol ProviderNativeWire: Sendable {
               try recordingMount(workspaceID: workspaceID, bindingRef: bindingRef, revision: revision) == saved.mount else {
             throw ProviderNativeError.authorityChanged
         }
-        return contextNow() < saved.expires ? saved.context : nil
+        guard contextNow() < saved.expires else {
+            return nil
+        }
+        // Consuming this ticket transfers its context to one native service.
+        // Keep that same generation for the bundled single-use public key.
+        transferred = true
+        return saved.context
     }
 
     private static func canonicalUUID(_ value: String?) -> UUID? {

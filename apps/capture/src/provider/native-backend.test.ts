@@ -74,6 +74,16 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it.each([undefined, 1, 2])("advertises acquisition review only for native context version %s", async version => {
+    const f = fixture(); f.setState({ ...f.state, ...(version === undefined ? {} : { nativeRecordingVersion: version }) }, false);
+    const backend = await f.connect();
+    try {
+      await backend.listEncounters(backend.signal);
+      const mount = await backend.openEncounter(appointment, backend.signal);
+      expect(mount.recorderRechecksReview).toBe(version === 2 ? true : undefined);
+      expect(f.plugin.providerRequest.mock.calls.map(([r]) => r.action)).toEqual(["catalog", "mount"]);
+    } finally { await backend.dispose(); }
+  });
   it.each(["signedOut", "ready"])("drops current profile suggestions on %s identity transition without a request", async phase => {
     const f = fixture();
     f.setState({ ...f.state, providerDisplayName: "Fictional Lucía Rivera" }, false);

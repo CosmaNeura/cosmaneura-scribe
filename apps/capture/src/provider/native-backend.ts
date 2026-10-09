@@ -223,6 +223,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       let recordingAuthorization: string | null = null;
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
+        ...(nativeContextReuse ? { recorderRechecksReview: true as const } : {}),
         ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
         ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,

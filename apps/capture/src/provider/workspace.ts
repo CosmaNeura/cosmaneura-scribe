@@ -490,7 +490,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
     step = "recording status check";
-    const view = startRequested !== undefined && host.recorderRechecksReview === true ? null : openingView?.session_id === id ? openingView
+    const view = startRequested !== undefined && (host.recorderRechecksReview === true || activeContext.recorderRechecksReview === true) ? null : openingView?.session_id === id ? openingView
       : await interruptibleRead(new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read(), openingSignal);
     if (!authorized(n)) return;
     if (view) observeReview(view, n);

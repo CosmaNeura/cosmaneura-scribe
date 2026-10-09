@@ -361,7 +361,7 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
 }
 
 @main struct CheckNativeRecordingBinding {
-  @MainActor private static func make(_ modulus: String, combined: Bool = false,
+  @MainActor private static func make(_ modulus: String, combined: Bool = false, ticket: Bool = false,
     contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now }) async throws
     -> (
       NativeWorkspaceAuth, Driver, BindingWire, NativeProviderConnection,
@@ -381,9 +381,23 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
       _ = try await connection.send(CheckNativeProvider.request(auth, action: "mount", body:
         String(decoding: JSONSerialization.data(withJSONObject: ["workspace_id": wire.workspace.uuidString.lowercased()]), as: UTF8.self)))
     }
-    let context = try await connection.recordingContext(
-      workspaceID: wire.workspace, bindingRef: wire.binding,
-      sessionID: wire.session, revision: auth.state().revision)
+    let context: NativeProviderRecordingContext
+    if ticket {
+      let nonce = UUID(), revision = auth.state().revision
+      _ = try await connection.prepareRecordingContext(CheckNativeProvider.request(auth,
+        action: "recorder-context", body: String(decoding: JSONSerialization.data(withJSONObject: [
+          "workspace_id": wire.workspace.uuidString.lowercased(), "binding_ref": wire.binding,
+          "session_id": wire.session.uuidString.lowercased(), "request_nonce": nonce.uuidString.lowercased(),
+        ]), as: UTF8.self)))
+      guard let prepared = try connection.takePreparedRecordingContext(nonce: nonce,
+        workspaceID: wire.workspace, bindingRef: wire.binding, sessionID: wire.session,
+        revision: revision) else { throw CheckFailure.failed }
+      context = prepared
+    } else {
+      context = try await connection.recordingContext(
+        workspaceID: wire.workspace, bindingRef: wire.binding,
+        sessionID: wire.session, revision: auth.state().revision)
+    }
     try require(context.bindingRef == wire.binding)
     return (
       auth, driver, wire, connection,
@@ -405,35 +419,37 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     let receipt = NativeRecordingKeyReceipt(
       keyVersion: "synthetic-v1", wrappedDEK: String(repeating: "A", count: 512))
     var checks = 0
-    for fault in ["none", "expired", "revision", "account", "cancelled", "remount"] {
-      var instant = ContinuousClock.now
-      let (auth, driver, wire, connection, service) = try await make(modulus, combined: true, contextNow: { instant })
-      let before = await wire.requests.count
-      if fault == "expired" { instant = instant.advanced(by: .seconds(6)) }
-      if fault == "revision" {
-        driver.identity = try .init(userID: "user_offline", sessionID: "sess_restarted", organizationID: "org_offline")
-        _ = auth.state()
+    for ticket in [false, true] {
+      for fault in ["none", "expired", "revision", "account", "cancelled", "remount"] {
+        var instant = ContinuousClock.now
+        let (auth, driver, wire, connection, service) = try await make(modulus, combined: true, ticket: ticket, contextNow: { instant })
+        let before = await wire.requests.count
+        if fault == "expired" { instant = instant.advanced(by: .seconds(6)) }
+        if fault == "revision" {
+          driver.identity = try .init(userID: "user_offline", sessionID: "sess_restarted", organizationID: "org_offline")
+          _ = auth.state()
+        }
+        if fault == "account" { driver.identity = nil; _ = auth.state() }
+        if fault == "remount" {
+          _ = try await connection.send(CheckNativeProvider.request(auth, action: "mount", body:
+            String(decoding: JSONSerialization.data(withJSONObject: ["workspace_id": wire.workspace.uuidString.lowercased()]), as: UTF8.self)))
+        }
+        if fault == "cancelled" {
+          let pending = Task { try await service.publishedKey() }
+          pending.cancel()
+          try await CheckNativeProvider.rejected(pending)
+          try require(await wire.requests.count == before)
+        } else if fault == "account" {
+          try await CheckNativeProvider.rejected(Task { try await service.publishedKey() })
+          try require(await wire.requests.count == before)
+        } else {
+          try require(try await service.publishedKey().version == "synthetic-v1")
+          try require(await wire.requests.count == before + (fault == "none" ? 0 : fault == "remount" ? 2 : 1))
+          _ = try await service.publishedKey()
+          try require(await wire.requests.count == before + (fault == "none" ? 1 : fault == "remount" ? 3 : 2))
+        }
+        connection.close(); checks += 1
       }
-      if fault == "account" { driver.identity = nil; _ = auth.state() }
-      if fault == "remount" {
-        _ = try await connection.send(CheckNativeProvider.request(auth, action: "mount", body:
-          String(decoding: JSONSerialization.data(withJSONObject: ["workspace_id": wire.workspace.uuidString.lowercased()]), as: UTF8.self)))
-      }
-      if fault == "cancelled" {
-        let pending = Task { try await service.publishedKey() }
-        pending.cancel()
-        try await CheckNativeProvider.rejected(pending)
-        try require(await wire.requests.count == before)
-      } else if fault == "account" {
-        try await CheckNativeProvider.rejected(Task { try await service.publishedKey() })
-        try require(await wire.requests.count == before)
-      } else {
-        try require(try await service.publishedKey().version == "synthetic-v1")
-        try require(await wire.requests.count == before + (fault == "none" ? 0 : fault == "remount" ? 2 : 1))
-        _ = try await service.publishedKey()
-        try require(await wire.requests.count == before + (fault == "none" ? 1 : fault == "remount" ? 3 : 2))
-      }
-      connection.close(); checks += 1
     }
     let envelopeFaults = [
       "none", "nonce", "binding", "workspace", "operation", "contract", "old", "future",
@@ -555,8 +571,9 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
         checks += 1
       }
     }
-    for combined in [false, true] {
-      let (_, driver, wire, connection, service) = try await make(modulus, combined: combined)
+    for preparation in ["legacy", "combined", "ticket"] {
+      let combined = preparation != "legacy"
+      let (_, driver, wire, connection, service) = try await make(modulus, combined: combined, ticket: preparation == "ticket")
       let scope = try await service.recordingScope()
       let records = BindingRecords()
       let keys = BindingKeys()
