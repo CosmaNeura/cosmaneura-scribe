@@ -39,6 +39,7 @@ from cosmaneura_scribe.provider_performance import (
     provider_phase_timing,
     provider_request_timing,
 )
+from cosmaneura_scribe.provider_preparation_core_transport import prepare_then_dispatch
 from cosmas_os.api.auth import (
     CORE_STAGING_PERSONAL,
     AccessDenied,
@@ -353,6 +354,51 @@ class ProviderReceiver:
                     return _reply(
                         200, await self.native_core_read(authorization, revision, action, body, key)
                     )
+
+                preparation = (
+                    action == "capture-admissions"
+                    and set(body)
+                    == {
+                        "workspace_id",
+                        "binding_ref",
+                        "request_nonce",
+                        "attestation",
+                        "configured_capture",
+                    }
+                ) or (
+                    action == "capture-operations"
+                    and isinstance(operation, dict)
+                    and operation.get("kind") == "prepare_recording_window"
+                )
+                if (
+                    self.encounter_creation_enabled
+                    and preparation
+                    and not await self.registry_read(
+                        lambda bind: self.legacy_workspace_exists(workspace_id, bind)
+                    )
+                ):
+
+                    async def preparation_account():
+                        if not self.enabled or not self.encounter_creation_enabled:
+                            raise AccessDenied()
+                        return await self.registry_read(
+                            lambda bind: self.encounter_account(authorization, bind=bind)
+                        )
+
+                    result = await prepare_then_dispatch(
+                        self.profile.core_origin,
+                        action,
+                        body,
+                        key,
+                        revision,
+                        preparation_account,
+                        self.workload_token,
+                        transport=self.core_http,
+                        connections=self.core_connections,
+                    )
+                    if not self.enabled:
+                        raise AccessDenied()
+                    return _reply(200, result)
 
                 checked_selection = None
 
