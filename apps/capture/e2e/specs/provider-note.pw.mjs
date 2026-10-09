@@ -47,6 +47,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
             await expect(relaunched.locator("[data-note-save-state]")).toHaveText("Saved · Not clinically reviewed");
             expect(server.calls.filter(call => call === "resolve")).toHaveLength(0);
           });
+          await relaunched.locator(".provider-template-details > summary").click();
         } else await openNote(relaunched);
         await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);
         await expect(relaunched.getByRole("textbox", { name: "Plan", exact: true })).toHaveValue(server.original.fields.Plan);
