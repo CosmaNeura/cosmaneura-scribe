@@ -15,8 +15,8 @@ framework. That fits a focused recording appliance with a small number of explic
 the security-sensitive dependency and script surface narrow. Vite supplies the local and production
 build only; the shipped application loads no third-party scripts, analytics, or crash-reporting SDKs.
 
-Capacitor core, CLI, iOS, and Android are pinned as one reviewed set at exactly **8.5.0**, the latest
-stable release when this scaffold was created on 2026-08-17. The repository requires Node 24 and npm
+Capacitor core, CLI, iOS, and Android are pinned as one reviewed set at exactly **8.5.1**, the minimal
+patch for GHSA-rvm3-566m-v7fv. The repository requires Node 24 and npm
 11.5.2; npm's lockfile is authoritative. Capacitor upgrades must update all four packages together and
 regenerate both native projects in the same reviewed change.
 
@@ -123,7 +123,7 @@ npm run cap:sync:check:ios
 npm run cap:sync:check:android
 ```
 
-Capacitor 8.5.0 has no `cap sync --dry-run`. CI therefore runs the real platform sync on a clean
+Capacitor 8.5.1 has no `cap sync --dry-run`. CI therefore runs the real platform sync on a clean
 checkout and fails if tracked or untracked native files change. iOS sync/build validation requires a
 macOS runner with Xcode 26 or newer. Android validation requires JDK 21, Android SDK 36, and the
 project's committed Gradle wrapper; CI runs the SecureQueue integration suite on an API 36 emulator.

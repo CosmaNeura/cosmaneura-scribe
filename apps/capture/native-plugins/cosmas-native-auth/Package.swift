@@ -11,7 +11,7 @@ let package = Package(
         .package(path: "../native-recording"),
         .package(path: "../ios-pcm-capture"),
         .package(path: "../secure-queue"),
-        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.0"),
+        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.1"),
     ],
     targets: [
         .target(name: "ClerkKit", path: "vendor/Sources/ClerkKit",

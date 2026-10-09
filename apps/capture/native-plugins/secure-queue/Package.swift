@@ -15,7 +15,7 @@ let package = Package(
         .package(path: "../native-recording"),
         .package(
             url: "https://github.com/ionic-team/capacitor-swift-pm.git",
-            exact: "8.5.0"
+            exact: "8.5.1"
         ),
     ],
     targets: [

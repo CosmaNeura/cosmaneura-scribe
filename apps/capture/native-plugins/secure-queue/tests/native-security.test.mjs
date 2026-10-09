@@ -16,11 +16,11 @@ test("pins the JavaScript and Apple Capacitor compatibility boundary", async () 
   const swiftPackage = await source("../Package.swift");
 
   for (const dependency of ["@capacitor/android", "@capacitor/core", "@capacitor/ios"]) {
-    assert.equal(manifest.peerDependencies[dependency], "8.5.0");
+    assert.equal(manifest.peerDependencies[dependency], "8.5.1");
   }
-  assert.match(podspec, /s\.dependency\s+'Capacitor',\s+'8\.5\.0'/u);
+  assert.match(podspec, /s\.dependency\s+'Capacitor',\s+'8\.5\.1'/u);
   assert.match(podspec, /s\.name\s+=\s+'CosmaneuraScribeCapacitorSecureQueue'/u);
-  assert.match(swiftPackage, /exact:\s+"8\.5\.0"/u);
+  assert.match(swiftPackage, /exact:\s+"8\.5\.1"/u);
   assert.match(swiftPackage, /name:\s+"CosmaneuraScribeCapacitorSecureQueue"/u);
   assert.match(
     swiftPackage,
