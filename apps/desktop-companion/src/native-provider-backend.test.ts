@@ -17,7 +17,7 @@ it.each([false, true])("keeps admission RPC alive with its key, cancellation and
     calls.push({ payload, signal: operationSignal, timeout });
     return { status: 200, body: JSON.stringify(payload.action === "catalog"
       ? { revision, encounters: [{ ...encounter, workspaceId }] }
-      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID(), admission_metadata_v1: supported }) };
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter: { ...encounter, admission_metadata_v1: supported }, recoveryScope: crypto.randomUUID() }) };
   });
   const native = { signal, request, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
     addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;

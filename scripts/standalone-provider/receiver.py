@@ -631,8 +631,8 @@ class ProviderReceiver:
                 "workspaceId": row["workspaceId"],
                 "appointmentRef": row["appointmentRef"],
                 "bindingRef": value["binding_ref"],
-                "admission_metadata_v1": True,
                 "encounter": {
+                    "admission_metadata_v1": True,
                     "appointmentRef": row["appointmentRef"],
                     "title": row["title"],
                     "detail": row["detail"],

@@ -233,7 +233,7 @@ struct CheckNativeProvider {
             let revision = auth.state().revision
             var value: [String: Any] = ["revision": revision, "workspaceId": workspace.uuidString.lowercased(),
                 "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
-                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment]]
+                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment, "admission_metadata_v1": true]]
             let body = String(decoding: try JSONSerialization.data(withJSONObject: ["workspace_id": workspace.uuidString.lowercased()]), as: UTF8.self)
             await wire.setResponse(ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: value)))
             _ = try await connection.send(request(auth, action: "mount", body: body))
@@ -283,7 +283,7 @@ struct CheckNativeProvider {
             }
             var value: [String: Any] = ["revision": revision, "workspaceId": workspace.uuidString.lowercased(),
                 "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
-                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment]]
+                "appointmentRef": appointment, "encounter": ["appointmentRef": appointment, "admission_metadata_v1": true]]
             if fault != "missing" { value["openingReview"] = review }
             await wire.setResponse(ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: value)))
             let input = try request(auth, action: "mount", body: body)

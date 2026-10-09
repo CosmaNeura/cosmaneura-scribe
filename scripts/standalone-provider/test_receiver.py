@@ -1473,7 +1473,16 @@ async def test_core_created_opening_uses_one_facade_and_keeps_checked_display(ha
     assert lookups == [] and len(h.wire.calls) == 1
     assert result.json()["encounter"]["title"] == "Synthetic checked display"
     assert result.json()["encounter"]["patientName"] == "Synthetic checked display"
-    assert result.json()["admission_metadata_v1"] is True
+    assert result.json()["encounter"]["admission_metadata_v1"] is True
+    assert set(result.json()) == {
+        "revision",
+        "recoveryScope",
+        "workspaceId",
+        "appointmentRef",
+        "bindingRef",
+        "encounter",
+        "openingReview",
+    }
     assert h.wire.operations == ["provider_encounter"]
 
 
