@@ -633,6 +633,7 @@ class ProviderReceiver:
                 "bindingRef": value["binding_ref"],
                 "encounter": {
                     "admission_metadata_v1": True,
+                    "native_recording_preparation_v1": True,
                     "appointmentRef": row["appointmentRef"],
                     "title": row["title"],
                     "detail": row["detail"],
