@@ -15,7 +15,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       const openVisit = async target => {
         await target.setViewportSize(viewport);
         await target.goto("/e2e/fixtures/provider-note.html");
-        await target.locator(`[data-appointment="${server.scope.appointmentRef}"]`).click();
+        await target.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
       };
       const openNote = async target => {
         await target.getByRole("button", { name: /^(Continue to note|Review draft note)$/u }).click();
@@ -50,7 +50,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
         await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);
         await expect(relaunched.getByRole("textbox", { name: "Plan", exact: true })).toHaveValue(server.original.fields.Plan);
         await relaunched.getByRole("button", { name: "Your encounters", exact: true }).click();
-        await relaunched.locator(`[data-appointment="${server.scope.appointmentRef}"]`).click();
+        await relaunched.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
         await openNote(relaunched);
         await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);
       });
@@ -81,7 +81,7 @@ for (const width of [1280, 390]) {
     const server = await installNoteServer(context, { origin: baseURL, draftPending: true,
       clockNow: () => page.evaluate(() => new Date().toISOString()) });
     await page.goto("/e2e/fixtures/provider-note.html");
-    await page.locator(`[data-appointment="${server.scope.appointmentRef}"]`).click();
+    await page.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
     await page.getByRole("button", { name: "Review draft note", exact: true }).click();
     await page.getByRole("button", { name: "Prepare draft note", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Waiting for your draft note…", exact: true })).toBeVisible();

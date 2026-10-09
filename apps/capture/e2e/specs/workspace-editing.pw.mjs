@@ -4,7 +4,7 @@ import { installNoteServer } from "../support/note-server.mjs";
 
 async function openDraft(page, server) {
   await page.goto("/e2e/fixtures/provider-note.html");
-  await page.locator(`[data-appointment="${server.scope.appointmentRef}"]`).click();
+  await page.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
   await page.getByRole("button", { name: /^(Continue to note|Review draft note)$/u }).click();
   await expect(page.getByRole("textbox", { name: "Plan", exact: true })).toBeVisible();
 }
