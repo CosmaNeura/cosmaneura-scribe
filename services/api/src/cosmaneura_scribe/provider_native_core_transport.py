@@ -7,8 +7,8 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Literal
-from uuid import UUID, uuid4
+from typing import Literal, cast
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -17,6 +17,8 @@ from .creator_review_routes import CreatorReviewViewV1
 from .provider_core_connections import ProviderCoreConnections
 from .provider_core_transport import (
     MAX_CORE_CAPTURE_RESPONSE_BYTES,
+    CoreProviderMount,
+    CoreProviderSelection,
     ProviderCoreUnavailable,
     provider_cookie_jar,
 )
@@ -37,6 +39,7 @@ from .provider_core_transport import (
 )
 from .provider_encounter_transport import ProviderEncounterAccount
 from .provider_performance import provider_phase_timing
+from .provider_preparation_handoff import PreparationHandoff, PreparedContext
 from .schemas import AudioEncryptionPublicKey, CaptureCapabilities
 
 PATH = "/service/v1/agent/scribe/native-capture"
@@ -110,8 +113,168 @@ class ProviderNativeCoreTransport:
     async def close(self) -> None:
         await self.client.aclose()
 
+    async def prepared_operation(
+        self,
+        payload: dict[str, object],
+        key: str,
+        before: ProviderEncounterAccount,
+        context: PreparedContext,
+        workload: SecretStr,
+        *,
+        admission: bool = False,
+    ) -> dict[str, object]:
+        """Use one server-only context through the fully authenticated native route."""
+        selection = context.mount.selection
+        _require(
+            (
+                set(payload)
+                == {
+                    "workspace_id",
+                    "binding_ref",
+                    "request_nonce",
+                    "attestation",
+                    "configured_capture",
+                }
+                if admission
+                else set(payload) == {"workspace_id", "binding_ref", "request_nonce", "operation"}
+                and _object(payload["operation"]).get("kind") == "prepare_recording_window"
+            )
+            and payload["workspace_id"] == str(selection.workspace_id)
+            and payload["binding_ref"] == context.mount.binding_ref
+            and (before.actor_ref, before.tenant_ref) == (selection.actor_ref, selection.tenant_ref)
+        )
+        request = {
+            **payload,
+            "action": "prepared_admission" if admission else "prepared_window",
+            "expected_actor_ref": before.actor_ref,
+            "expected_tenant_ref": before.tenant_ref,
+            "prepared_context": {
+                "context_token": _secret(context.token),
+                "interaction_ref": context.interaction_ref,
+                "client_turn_id": str(context.turn),
+            },
+        }
+        # The preparation caller already checked before/after workload I/O.
+        # Keep its separate third fence, plus the ordinary adjacent pre-I/O,
+        # post-I/O and final publication checks (six total for the window).
+        try:
+            if await self.fresh() != before or await self.fresh() != before:
+                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+            async with self.client.stream(
+                "POST",
+                self.origin + PATH,
+                content=json.dumps(request, allow_nan=False).encode(),
+                headers={
+                    "Authorization": "Bearer " + _secret(before.user_token),
+                    "X-Cosmaneura-Workload-Authorization": "Bearer " + _secret(workload),
+                    "X-Cosmaneura-Native-Capture-Version": "1",
+                    "Idempotency-Key": key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Cache-Control": "no-store",
+                },
+            ) as response:
+                if response.status_code != 200:
+                    raise ProviderCoreUnavailable(
+                        "core_provider_request_unconfirmed",
+                        response.status_code
+                        if response.status_code in {401, 403, 409, 422}
+                        else 503,
+                    )
+                _require(
+                    response.headers.get("x-cosmaneura-native-capture-version") == "1"
+                    and response.headers.get("content-type", "").split(";", 1)[0]
+                    == "application/json"
+                    and "no-store" in response.headers.get("cache-control", "").lower()
+                )
+                raw = bytearray()
+                async for chunk in response.aiter_bytes():
+                    _require(len(raw) + len(chunk) <= MAX_CORE_CAPTURE_RESPONSE_BYTES)
+                    raw.extend(chunk)
+            value = _object(
+                json.loads(raw, object_pairs_hook=_unique, parse_constant=lambda _: _require(False))
+            )
+            _require(
+                set(value) == {"version", "action", "actor_ref", "tenant_ref", "result"}
+                and value["version"] == "1"
+                and value["action"] == request["action"]
+                and value["actor_ref"] == before.actor_ref
+                and value["tenant_ref"] == before.tenant_ref
+            )
+            result = _object(value["result"])
+            if admission:
+                _require(
+                    set(result)
+                    == {
+                        "contract_version",
+                        "workspace_id",
+                        "binding_ref",
+                        "request_nonce",
+                        "checked_at",
+                        "appointment_ref",
+                        "operation_ref",
+                        "session_id",
+                        "consent_record_id",
+                        "status",
+                        "configured_capture",
+                    }
+                    and result["appointment_ref"] == selection.appointment_ref
+                    and isinstance(result["operation_ref"], str)
+                    and re.fullmatch(
+                        r"scribe_admission_[0-7][0-9a-hjkmnp-tv-z]{25}", result["operation_ref"]
+                    )
+                    and result["status"] == "admitted"
+                    and result["configured_capture"] == payload["configured_capture"]
+                )
+                _uuid(result["session_id"])
+                _uuid(result["consent_record_id"])
+            else:
+                _require(
+                    set(result)
+                    == {
+                        "contract_version",
+                        "workspace_id",
+                        "binding_ref",
+                        "request_nonce",
+                        "checked_at",
+                        "operation",
+                        "receipt",
+                    }
+                    and result["operation"] == "prepare_recording_window"
+                )
+                _object(result["receipt"])
+            _require(
+                result["contract_version"] == "1"
+                and all(
+                    result[k] == payload[k]
+                    for k in ("workspace_id", "binding_ref", "request_nonce")
+                )
+            )
+            stamp = datetime.fromisoformat(str(result["checked_at"]))
+            _require(
+                stamp.tzinfo is not None
+                and datetime.now(UTC) - timedelta(seconds=30)
+                <= stamp
+                <= datetime.now(UTC) + timedelta(seconds=5)
+            )
+            if await self.fresh() != before:
+                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+            if not admission and await self.fresh() != before:
+                raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+            return result
+        except ProviderCoreUnavailable:
+            raise
+        except Exception:
+            raise ProviderCoreUnavailable("core_provider_request_unconfirmed") from None
+
     async def request(
-        self, action: str, body: dict[str, object], key: str
+        self,
+        action: str,
+        body: dict[str, object],
+        key: str,
+        *,
+        handoff: PreparationHandoff | None = None,
+        revision: UUID | None = None,
     ) -> tuple[ProviderEncounterAccount, dict[str, object]]:
         _require(action in {"mount", "capture-operations", "recorder"})
         payload = _snapshot(body, 4_194_304)
@@ -127,6 +290,9 @@ class ProviderNativeCoreTransport:
             _require(set(payload) in ({"workspace_id"}, {"workspace_id", "opening_nonce"}))
             if "opening_nonce" in payload:
                 request["opening_nonce"] = _uuid(payload["opening_nonce"])
+            if handoff is not None:
+                _require(revision is not None)
+                request["retain_preparation_context"] = True
         else:
             binding = payload.get("binding_ref")
             _require(
@@ -160,6 +326,7 @@ class ProviderNativeCoreTransport:
         try:
             async with asyncio.timeout(60):
                 before = await self.fresh()
+                issued_at = handoff.now() if handoff is not None else 0.0
                 request.update(
                     expected_actor_ref=before.actor_ref, expected_tenant_ref=before.tenant_ref
                 )
@@ -310,6 +477,7 @@ class ProviderNativeCoreTransport:
                                 "encounter",
                             }
                             | ({"opening_review"} if "opening_nonce" in payload else set())
+                            | ({"prepared_context"} if handoff is not None else set())
                         )
                         _object(result.get("encounter"))
                         if "opening_nonce" in payload:
@@ -324,6 +492,40 @@ class ProviderNativeCoreTransport:
                 # Core keeps its own current authorization around downstream I/O.
                 if await self.fresh() != before:
                     raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                if action == "mount" and handoff is not None:
+                    assert revision is not None
+                    private = _object(result.pop("prepared_context"))
+                    _require(set(private) == {"context_token", "interaction_ref", "client_turn_id"})
+                    _require(
+                        isinstance(private["context_token"], str)
+                        and isinstance(private["interaction_ref"], str)
+                        and re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", private["interaction_ref"])
+                    )
+                    context_token = SecretStr(cast(str, private["context_token"]))
+                    _secret(context_token)
+                    selection = CoreProviderSelection(
+                        before.recovery_scope,
+                        uuid5(before.recovery_scope, str(revision)),
+                        UUID(workspace),
+                        cast(str, result["appointment_ref"]),
+                        before.actor_ref,
+                        before.tenant_ref,
+                    )
+                    handoff.retain(
+                        self.origin,
+                        before,
+                        revision,
+                        workspace,
+                        cast(str, binding),
+                        PreparedContext(
+                            CoreProviderMount(selection, cast(str, binding)),
+                            context_token,
+                            cast(str, private["interaction_ref"]),
+                            UUID(_uuid(private["client_turn_id"])),
+                            issued_at,
+                            stage="admission",
+                        ),
+                    )
                 return before, result
         except ProviderCoreUnavailable:
             raise
