@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+from .audio_assembly import AudioAssemblyError
 from .azure_speech_source import normalize_azure_source
 from .captured_source_runtime import (
     CapturedSourceRepositoryProvider,
@@ -15,8 +16,10 @@ from .captured_source_runtime import (
 )
 from .consent import ConsentError
 from .normalized_source_persistence import CapturedPreSourceStatus
+from .safe_logging import log_event
 from .schemas import SessionStatus, TranscriptionJob, TranscriptionJobStatus
-from .transcription import SpeechToTextProvider, TranscriptionInputError
+from .speech_private_network import PrivateSpeechEndpointUnavailable
+from .transcription import AzureSpeechProviderError, SpeechToTextProvider, TranscriptionInputError
 from .transcription_worker import (
     AudioTrackAssembler,
     LeasedAudioTranscription,
@@ -29,6 +32,41 @@ class CapturedTranscriptionOutcome:
     session_id: UUID
     job_id: UUID
     already_completed: bool
+
+
+def _safe_processing_failure_label(error: Exception) -> str:
+    """Closed labels only; never log an exception, provider payload or audio data."""
+    if isinstance(error, PrivateSpeechEndpointUnavailable):
+        return "CapturedSpeechPrivateEndpointUnavailable"
+    if isinstance(error, AudioAssemblyError):
+        return {
+            "audio_blob_unavailable": "CapturedAudioBlobUnavailable",
+            "audio_assembly_not_authorized": "CapturedAudioAssemblyNotAuthorized",
+            "audio_key_not_authorized": "CapturedAudioKeyNotAuthorized",
+            "audio_wrapped_key_invalid": "CapturedAudioWrappedKeyInvalid",
+            "audio_key_unwrap_unavailable": "CapturedAudioKeyUnwrapUnavailable",
+            "audio_key_unwrap_rejected": "CapturedAudioKeyUnwrapRejected",
+            "audio_key_unwrap_invalid_response": "CapturedAudioKeyUnwrapInvalidResponse",
+            "audio_key_invalid": "CapturedAudioKeyInvalid",
+            "audio_decryption_failed": "CapturedAudioDecryptionFailed",
+            "audio_ciphertext_size_mismatch": "CapturedAudioCiphertextSizeMismatch",
+            "audio_ciphertext_digest_mismatch": "CapturedAudioCiphertextDigestMismatch",
+            "audio_wave_invalid": "CapturedAudioWaveInvalid",
+            "audio_wave_media_profile_unsupported": "CapturedAudioMediaUnsupported",
+        }.get(str(error), "CapturedAudioAssemblyFailed")
+    if isinstance(error, AzureSpeechProviderError):
+        return {
+            "speech_credential_unavailable": "CapturedSpeechCredentialUnavailable",
+            "speech_service_transport_error": "CapturedSpeechTransportFailed",
+            "speech_service_response_error": "CapturedSpeechResponseInvalid",
+            "speech_authentication_rejected": "CapturedSpeechAuthenticationRejected",
+            "speech_authorization_rejected": "CapturedSpeechAuthorizationRejected",
+            "speech_api_unavailable": "CapturedSpeechApiUnavailable",
+            "speech_request_rejected": "CapturedSpeechRequestRejected",
+            "speech_service_throttled": "CapturedSpeechThrottled",
+            "speech_service_unavailable": "CapturedSpeechServiceUnavailable",
+        }.get(str(error), "CapturedSpeechProviderFailed")
+    return "CapturedSpeechProcessingFailed"
 
 
 class CapturedTranscriptionWorker(LeasedAudioTranscription):
@@ -123,6 +161,7 @@ class CapturedTranscriptionWorker(LeasedAudioTranscription):
         # or protected source data. These labels do not change retry policy.
         failure = "captured_speech_processing_failed"
         terminal = False
+        error_class: str | None = None
         try:
             result = await self._transcribe_with_heartbeat(
                 tenant_id=tenant_id,
@@ -151,9 +190,20 @@ class CapturedTranscriptionWorker(LeasedAudioTranscription):
         except TranscriptionWorkerError:
             # Lease loss belongs to the current owner; do not overwrite its job.
             raise
-        except Exception:
-            pass
+        except Exception as error:
+            error_class = (
+                "CapturedSpeechPublicationFailed"
+                if failure == "captured_speech_publication_failed"
+                else _safe_processing_failure_label(error)
+            )
         await self._fail_attempt(tenant_id, session_id, job, token, failure, terminal)
+        if error_class is not None:
+            log_event(
+                action="captured_speech.failure_observed",
+                entity_id=job.id,
+                tenant_id=tenant_id,
+                error_class=error_class,
+            )
         raise CapturedSourceUnavailable()
 
     async def _fail_attempt(
