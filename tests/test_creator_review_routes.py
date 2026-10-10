@@ -5,7 +5,9 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from cosmaneura_scribe import creator_review_routes
 from cosmaneura_scribe.captured_processing import CapturedProcessingUnavailable
+from cosmaneura_scribe.captured_source_runtime import CapturedSourceRepository
 from cosmaneura_scribe.creator_review_routes import CreatorReviewRuntime
 from cosmaneura_scribe.main import app
 from cosmaneura_scribe.service_auth import (
@@ -14,12 +16,70 @@ from cosmaneura_scribe.service_auth import (
     get_workflow_authenticator,
 )
 from cosmaneura_scribe.settings import get_settings
+from cosmaneura_scribe.transcription_worker import TranscriptionWorkerError
 from test_captured_processing import Flow
 from test_captured_processing import flow as flow
 from test_captured_source_runtime import trial as trial
 from test_captured_transcription_worker import capture as capture
 
 pytestmark = [pytest.mark.postgres, pytest.mark.asyncio]
+
+
+@pytest.mark.parametrize(
+    ("publication", "stored_code", "expected"),
+    [
+        (False, None, "CapturedSpeechProcessingFailed"),
+        (True, None, "CapturedSpeechPublicationFailed"),
+        (False, "private detail must never be logged", "CapturedSpeechFailureUnclassified"),
+    ],
+)
+async def test_failure_observation_preserves_wire_and_creator_scope(
+    review, monkeypatch, publication, stored_code, expected
+):
+    flow, _ = review
+    await flow.capture.record()
+    worker = flow.capture.worker()
+    if publication:
+
+        async def fail_publication(**_kwargs):
+            raise RuntimeError("private publication detail must never be logged")
+
+        monkeypatch.setattr(worker._runtime, "publish_speech_result", fail_publication)
+    else:
+        flow.capture.speech.fail = True
+    for _ in range(3):
+        with pytest.raises(TranscriptionWorkerError):
+            await worker.process(**flow.scope)
+    if stored_code:
+        original = CapturedSourceRepository.transcription_job_for
+
+        async def changed_code(self, tenant_id, session_id):
+            job = await original(self, tenant_id, session_id)
+            assert job is not None
+            return job.model_copy(update={"last_error_code": stored_code})
+
+        monkeypatch.setattr(CapturedSourceRepository, "transcription_job_for", changed_code)
+    events = []
+    monkeypatch.setattr(creator_review_routes, "log_event", lambda **event: events.append(event))
+    client, path = flow.capture.client, _path(flow)
+    denied = await client.get(path, headers={"X-Scribe-Creator-Actor-ID": "another-creator"})
+    assert denied.status_code == 404 and events == []
+    response = await client.get(path, headers=_headers(flow))
+    assert response.status_code == 200
+    assert response.json()["status"] == "speech_failed" and response.json()["source"] is None
+    assert "last_error_code" not in response.json()
+    assert events == [
+        {
+            "action": "captured_review.speech_failure_observed",
+            "tenant_id": flow.capture.trial.tenant,
+            "entity_id": flow.capture.trial.draft.id,
+            "error_class": expected,
+        }
+    ]
+    async with flow.capture.trial.provider.transaction(flow.capture.trial.tenant) as store:
+        await store.revoke_consent(flow.capture.trial.tenant, flow.capture.trial.consent.id)
+    assert (await client.get(path, headers=_headers(flow))).status_code == 404
+    assert len(events) == 1
 
 
 @pytest_asyncio.fixture
