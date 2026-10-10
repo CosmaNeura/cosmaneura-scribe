@@ -1,7 +1,7 @@
 # Capacitor Secure Queue
 
 `@cosmaneura-scribe/capacitor-secure-queue` is the native at-rest store for opaque capture queue
-records. It is compatible with, and pinned to, Capacitor `8.5.0`. It is not a general-purpose
+records. It is compatible with, and pinned to, Capacitor `8.5.1`. It is not a general-purpose
 secret API and has no browser implementation.
 
 ## Bridge contract

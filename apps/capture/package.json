@@ -29,16 +29,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@capacitor/android": "8.5.0",
-    "@capacitor/core": "8.5.0",
-    "@capacitor/ios": "8.5.0",
+    "@capacitor/android": "8.5.1",
+    "@capacitor/core": "8.5.1",
+    "@capacitor/ios": "8.5.1",
     "@cosmaneura-scribe/capacitor-secure-queue": "0.1.0",
     "@cosmaneura-scribe/capture-preview-domain": "0.1.0",
     "@cosmaneura-scribe/capture-protocol": "1.0.0",
     "lit": "3.3.3"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.5.0",
+    "@capacitor/cli": "8.5.1",
     "fake-indexeddb": "6.2.5"
   }
 }

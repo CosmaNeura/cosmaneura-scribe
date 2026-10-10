@@ -16,11 +16,11 @@ test("pins the JavaScript and Apple Capacitor compatibility boundary", async () 
   const swiftPackage = await source("../Package.swift");
 
   for (const dependency of ["@capacitor/android", "@capacitor/core", "@capacitor/ios"]) {
-    assert.equal(manifest.peerDependencies[dependency], "8.5.0");
+    assert.equal(manifest.peerDependencies[dependency], "8.5.1");
   }
-  assert.match(podspec, /s\.dependency\s+'Capacitor',\s+'8\.5\.0'/u);
+  assert.match(podspec, /s\.dependency\s+'Capacitor',\s+'8\.5\.1'/u);
   assert.match(podspec, /s\.name\s+=\s+'CosmaneuraScribeCapacitorSecureQueue'/u);
-  assert.match(swiftPackage, /exact:\s+"8\.5\.0"/u);
+  assert.match(swiftPackage, /exact:\s+"8\.5\.1"/u);
   assert.match(swiftPackage, /name:\s+"CosmaneuraScribeCapacitorSecureQueue"/u);
   assert.match(
     swiftPackage,
@@ -73,6 +73,10 @@ test("isolates iOS Keychain integration tests in a simulator-only host", async (
   assert.doesNotMatch(hostedEntitlements, /\*/u);
   assert.doesNotMatch(productionProject, /SecureQueue(?:TestHost|HostedTests)/u);
   assert.doesNotMatch(productionPackage, /SecureQueue(?:TestHost|HostedTests)/u);
+  const deploymentTargets = [...productionProject.matchAll(/IPHONEOS_DEPLOYMENT_TARGET = ([\d.]+);/gu)];
+  assert.equal(deploymentTargets.length, 4);
+  assert.ok(deploymentTargets.every((target) => target[1] === "17.0"));
+  assert.match(productionPackage, /platforms:\s*\[\.iOS\(\.v17\)\]/u);
   assert.doesNotMatch(swiftPackage, /\.testTarget\(/u);
   assert.match(swiftPackage, /targets:\s*\["CosmaneuraSecureQueue"\]/u);
 });
