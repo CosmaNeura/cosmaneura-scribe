@@ -30,6 +30,7 @@ from .creator_review_contract_v1 import (
 )
 from .external_transcript_v1 import EnglishWorkingTranscriptV1, SourceTranscriptV1
 from .repository import IdempotencyClaimUnavailableError, IdempotencyConflictError
+from .safe_logging import log_event
 from .service_auth import get_verified_tenant_id
 from .transcript_constraints import MAX_TRANSCRIPT_SEGMENTS
 from .translation_review_persistence import TranslationReviewPersistenceError
@@ -135,6 +136,21 @@ class CreatorReviewRuntime:
                 entity_type="scribe_session",
                 entity_id=session_id,
             )
+            if job is not None and state in {"speech_failed", "speech_retryable"}:
+                # Emit only closed operational labels after live creator checks.
+                # Never serialize a provider/database exception or clinical data.
+                error_class = {
+                    "captured_speech_processing_failed": "CapturedSpeechProcessingFailed",
+                    "captured_speech_publication_failed": "CapturedSpeechPublicationFailed",
+                    "captured_speech_consent_invalid": "CapturedSpeechConsentInvalid",
+                    "captured_speech_source_invalid": "CapturedSpeechSourceInvalid",
+                }.get(job.last_error_code or "", "CapturedSpeechFailureUnclassified")
+                log_event(
+                    action="captured_review.speech_failure_observed",
+                    entity_id=session_id,
+                    tenant_id=tenant_id,
+                    error_class=error_class,
+                )
             return CreatorReviewViewV1(session_id=session_id, status=state)
         current = await store.get_creator_working_transcript(
             tenant_id, session_id, creator_actor_id=actor
