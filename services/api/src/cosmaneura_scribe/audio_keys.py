@@ -44,6 +44,32 @@ class AudioEncryptionKeyProvider(Protocol):
     async def close(self) -> None: ...
 
 
+class BorrowedAudioEncryptionKeyProvider:
+    """Request-local handle; the application owns transport and credential cleanup.
+
+    Every read still asks the provider for its current Key Vault key. Closing a
+    handle prevents further use without closing resources used by other requests.
+    """
+
+    def __init__(self, provider: AudioEncryptionKeyProvider) -> None:
+        self._provider = provider
+        self._closed = False
+
+    async def get_public_key(self) -> AudioEncryptionPublicKey:
+        if self._closed:
+            raise AudioEncryptionKeyUnavailable("audio_encryption_key_unavailable")
+        result = await self._provider.get_public_key()
+        if self._closed:
+            raise AudioEncryptionKeyUnavailable("audio_encryption_key_unavailable")
+        return result
+
+    def versioned_key_id(self, key_version: str) -> str | None:
+        return None if self._closed else self._provider.versioned_key_id(key_version)
+
+    async def close(self) -> None:
+        self._closed = True
+
+
 class UnavailableAudioEncryptionKeyProvider:
     async def get_public_key(self) -> AudioEncryptionPublicKey:
         raise AudioEncryptionKeyUnavailable("audio_encryption_key_unavailable")

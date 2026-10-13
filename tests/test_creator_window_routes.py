@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 import pytest_asyncio
+from cosmaneura_scribe import creator_preparation_routes, main
 from cosmaneura_scribe.audio_keys import AudioEncryptionKeyUnavailable
 from cosmaneura_scribe.capture_protocol_v1 import RESERVATION_PLAINTEXT_BUDGET_BYTES
 from cosmaneura_scribe.creator_preparation_routes import preparation_keys
@@ -64,6 +65,39 @@ async def initial(capture):
 
 async def combined(capture, body, key="first-window-outer", headers=None):
     return await post(capture, "recording-window", body, key=key, headers=headers)
+
+
+async def test_production_dependency_keeps_owner_open_across_metadata_and_window(
+    initial, monkeypatch
+):
+    capture, _, _ = initial
+
+    class LifecycleKeys(CaptureKeyProvider):
+        closed = False
+        calls = 0
+
+        async def get_public_key(self):
+            assert not self.closed
+            assert capture.trial.provider.engine.pool.checkedout() == 0
+            self.calls += 1
+            return await super().get_public_key()
+
+        async def close(self):
+            self.closed = True
+
+    shared = LifecycleKeys()
+    monkeypatch.setattr(main, "get_audio_encryption_key_provider", lambda: shared)
+    app.dependency_overrides[preparation_keys] = creator_preparation_routes.preparation_keys
+    t = capture.trial
+    result = await capture.client.get(
+        f"/v1/captured-sessions/{t.draft.id}/preparation-metadata",
+        headers={"X-Scribe-Creator-Actor-ID": t.draft.creator_actor_id},
+    )
+    assert result.status_code == 200 and not shared.closed
+    window = await combined(capture, intent("mixed"))
+    assert window.status_code == 200 and shared.calls == 2 and not shared.closed
+    assert (await combined(capture, intent("mixed"))).json() == window.json()
+    assert shared.calls == 2 and not shared.closed
 
 
 async def ordinary(capture, body, *, steps=3, creator=False):

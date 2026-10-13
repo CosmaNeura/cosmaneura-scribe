@@ -79,18 +79,18 @@ async def test_metadata_matches_existing_receipts_without_capture(preparation):
     assert t.provider.engine.pool.checkedout() == 0
 
 
-async def test_production_dependency_closes_only_its_owned_client_before_key_binding(
+async def test_production_dependency_closes_only_its_handle_before_key_binding(
     preparation, monkeypatch
 ):
     capture, _, _ = preparation
-    created = []
-
     class LifecycleKeys(CaptureKeyProvider):
         closed = False
+        calls = 0
 
         async def get_public_key(self):
             if self.closed:
                 raise RuntimeError("Synthetic key client is closed")
+            self.calls += 1
             return await super().get_public_key()
 
         async def close(self):
@@ -101,17 +101,11 @@ async def test_production_dependency_closes_only_its_owned_client_before_key_bin
     monkeypatch.setattr(main, "get_audio_encryption_key_provider", lambda: shared)
     app.dependency_overrides[preparation_keys] = creator_preparation_routes.preparation_keys
 
-    def build(_settings):
-        provider = LifecycleKeys()
-        created.append(provider)
-        return provider
-
-    monkeypatch.setattr(creator_preparation_routes, "build_audio_encryption_key_provider", build)
     # Exercise the actual preparation dependency, twice, followed by the same
     # ordinary key-binding endpoint used by installed recording preparation.
     for _ in range(2):
         assert (await metadata(capture)).status_code == 200
-    assert len(created) == 2 and all(provider.closed for provider in created)
+    assert shared.calls == 2
     assert not shared.closed
     result = await capture.post(
         "audio-key",

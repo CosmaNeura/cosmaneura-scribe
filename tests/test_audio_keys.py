@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 import base64
 from datetime import UTC, datetime
+from functools import lru_cache
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from azure.core.credentials import AccessToken
 from conftest import RepositoryBackend
+from cosmaneura_scribe import main
 from cosmaneura_scribe.audio_keys import (
     AudioEncryptionKeyUnavailable,
+    BorrowedAudioEncryptionKeyProvider,
     KeyVaultAudioEncryptionKeyProvider,
 )
 from cosmaneura_scribe.main import app, get_audio_encryption_key_provider
@@ -21,6 +25,7 @@ from cosmaneura_scribe.schemas import (
     RsaPublicJwk,
     SessionStatus,
 )
+from cosmaneura_scribe.settings import Settings
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -236,6 +241,169 @@ def test_key_provider_rejects_non_azure_key_vault_host_before_token_use() -> Non
         )
 
     assert credential.scopes == []
+
+
+@pytest.mark.asyncio
+async def test_borrowed_handles_reuse_transport_but_read_rotation_and_revocation() -> None:
+    credential = StaticCredential()
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "attributes": {"enabled": len(seen) < 3},
+                "key": {
+                    "kid": (
+                        "https://scribe-test.vault.azure.net/keys/audio-encryption/"
+                        f"version-{len(seen)}"
+                    ),
+                    "kty": "RSA",
+                    "key_ops": ["wrapKey", "unwrapKey"],
+                    "n": RSA_3072_MODULUS,
+                    "e": "AQAB",
+                },
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        shared = KeyVaultAudioEncryptionKeyProvider(
+            configured_key_id="https://scribe-test.vault.azure.net/keys/audio-encryption",
+            credential=credential,
+            client=client,
+        )
+        first, second = (BorrowedAudioEncryptionKeyProvider(shared) for _ in range(2))
+        assert (await first.get_public_key()).key_version == "version-1"
+        await first.close()
+        with pytest.raises(AudioEncryptionKeyUnavailable):
+            await first.get_public_key()
+        assert first.versioned_key_id("version-1") is None
+        assert not credential.closed and not client.is_closed
+        assert (await second.get_public_key()).key_version == "version-2"
+        with pytest.raises(AudioEncryptionKeyUnavailable):
+            await second.get_public_key()
+        await second.close()
+        assert len(seen) == 3
+        assert all(request.url.path == "/keys/audio-encryption" for request in seen)
+        assert credential.scopes == ["https://vault.azure.net/.default"] * 3
+        assert not credential.closed and not client.is_closed
+        await shared.close()
+        assert credential.closed
+
+
+@pytest.mark.asyncio
+async def test_closing_one_handle_during_io_does_not_close_another_request() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class DelayedKeys(StaticKeyProvider):
+        closed = False
+
+        async def get_public_key(self) -> AudioEncryptionPublicKey:
+            entered.set()
+            await release.wait()
+            assert not self.closed
+            return await super().get_public_key()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    shared = DelayedKeys()
+    first, second = (BorrowedAudioEncryptionKeyProvider(shared) for _ in range(2))
+    pending = asyncio.create_task(first.get_public_key())
+    await entered.wait()
+    await first.close()
+    release.set()
+    with pytest.raises(AudioEncryptionKeyUnavailable):
+        await pending
+    assert (await second.get_public_key()).key_version == "version-1"
+    await second.close()
+    assert not shared.closed
+
+
+@pytest.mark.asyncio
+async def test_cancelled_key_read_does_not_poison_shared_provider() -> None:
+    entered = asyncio.Event()
+
+    class CancellableKeys(StaticKeyProvider):
+        reads = 0
+        closed = False
+
+        async def get_public_key(self) -> AudioEncryptionPublicKey:
+            self.reads += 1
+            if self.reads == 1:
+                entered.set()
+                await asyncio.Event().wait()
+            assert not self.closed
+            return await super().get_public_key()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    shared = CancellableKeys()
+    first = BorrowedAudioEncryptionKeyProvider(shared)
+    pending = asyncio.create_task(first.get_public_key())
+    await entered.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    await first.close()
+    second = BorrowedAudioEncryptionKeyProvider(shared)
+    assert (await second.get_public_key()).key_version == "version-1"
+    await second.close()
+    assert shared.reads == 2 and not shared.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_shutdown", [False, True])
+async def test_application_shutdown_closes_the_borrowed_provider_owner_once(
+    monkeypatch, failed_shutdown
+) -> None:
+    class CountingCredential(StaticCredential):
+        closes = 0
+
+        async def close(self) -> None:
+            self.closes += 1
+            await super().close()
+
+    credential = CountingCredential()
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(503)))
+    with patch("cosmaneura_scribe.audio_keys.httpx.AsyncClient", return_value=client):
+        shared = KeyVaultAudioEncryptionKeyProvider(
+            configured_key_id="https://scribe-test.vault.azure.net/keys/audio-encryption",
+            credential=credential,
+        )
+
+    @lru_cache
+    def cached_keys():
+        return shared
+
+    monkeypatch.setattr(main, "get_settings", lambda: Settings(configured_capture_enabled=False))
+    monkeypatch.setattr(main, "get_audio_encryption_key_provider", cached_keys)
+    for name in ("get_repository_provider", "get_audio_storage", "get_master_platform_handoff"):
+        monkeypatch.setattr(main, name, lru_cache(lambda: None))
+
+    from cosmaneura_scribe.creator_preparation_routes import preparation_keys
+
+    async def serve():
+        async with main.lifespan(app):
+            assert cached_keys.cache_info().currsize == 1
+            for _ in range(2):
+                handle = preparation_keys()
+                with pytest.raises(AudioEncryptionKeyUnavailable):
+                    await handle.get_public_key()
+                await handle.close()
+            assert not client.is_closed and credential.closes == 0
+            if failed_shutdown:
+                raise RuntimeError("Synthetic shutdown failure")
+
+    if failed_shutdown:
+        with pytest.raises(RuntimeError, match="Synthetic shutdown failure"):
+            await serve()
+    else:
+        await serve()
+    assert client.is_closed and credential.closes == 1
+    assert cached_keys.cache_info().currsize == 0
 
 
 def _headers(tenant_id: UUID, key: str) -> dict[str, str]:

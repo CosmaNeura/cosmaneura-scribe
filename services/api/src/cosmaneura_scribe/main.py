@@ -145,12 +145,22 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             raise RuntimeError("Configured capture requires the PostgreSQL service provider.")
         bind_configured_capture_service(application, get_settings(), provider)
     try:
+        # Construct the single owner before serving concurrent sync dependencies.
+        # Construction performs no token request or Key Vault read.
+        get_audio_encryption_key_provider()
         yield
     finally:
-        if configured:
-            from .configured_capture_service import unbind_configured_capture_service
+        try:
+            if configured:
+                from .configured_capture_service import unbind_configured_capture_service
 
-            unbind_configured_capture_service(application)
+                unbind_configured_capture_service(application)
+        finally:
+            if get_audio_encryption_key_provider.cache_info().currsize:
+                try:
+                    await get_audio_encryption_key_provider().close()
+                finally:
+                    get_audio_encryption_key_provider.cache_clear()
     if get_repository_provider.cache_info().currsize:
         await get_repository_provider().close()
         get_repository_provider.cache_clear()
@@ -160,9 +170,6 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
     if get_master_platform_handoff.cache_info().currsize:
         await get_master_platform_handoff().close()
         get_master_platform_handoff.cache_clear()
-    if get_audio_encryption_key_provider.cache_info().currsize:
-        await get_audio_encryption_key_provider().close()
-        get_audio_encryption_key_provider.cache_clear()
 
 
 app = FastAPI(
