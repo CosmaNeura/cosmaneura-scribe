@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 from uuid import UUID, uuid4, uuid5
@@ -122,9 +123,11 @@ class ProviderNativeCoreTransport:
         workload: SecretStr,
         *,
         admission: bool = False,
+        native_read: bool = False,
     ) -> dict[str, object]:
         """Use one server-only context through the fully authenticated native route."""
         selection = context.mount.selection
+        _require(not (admission and native_read))
         _require(
             (
                 set(payload)
@@ -137,7 +140,9 @@ class ProviderNativeCoreTransport:
                 }
                 if admission
                 else set(payload) == {"workspace_id", "binding_ref", "request_nonce", "operation"}
-                and _object(payload["operation"]).get("kind") == "prepare_recording_window"
+                and _object(payload["operation"]).get("kind")
+                == ("native_recording_preparation" if native_read else "prepare_recording_window")
+                and (not native_read or set(_object(payload["operation"])) == {"kind"})
             )
             and payload["workspace_id"] == str(selection.workspace_id)
             and payload["binding_ref"] == context.mount.binding_ref
@@ -145,7 +150,9 @@ class ProviderNativeCoreTransport:
         )
         request = {
             **payload,
-            "action": "prepared_admission" if admission else "prepared_window",
+            "action": "prepared_admission"
+            if admission
+            else ("prepared_native_read" if native_read else "prepared_window"),
             "expected_actor_ref": before.actor_ref,
             "expected_tenant_ref": before.tenant_ref,
             "prepared_context": {
@@ -157,8 +164,10 @@ class ProviderNativeCoreTransport:
         # The preparation caller already checked before/after workload I/O.
         # Keep its separate third fence, plus the ordinary adjacent pre-I/O,
         # post-I/O and final publication checks (six total for the window).
+        # The read caller uses its original two adjacent account checks above
+        # and this method's publication check: the same three as a fresh read.
         try:
-            if await self.fresh() != before or await self.fresh() != before:
+            if not native_read and (await self.fresh() != before or await self.fresh() != before):
                 raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
             async with self.client.stream(
                 "POST",
@@ -240,9 +249,18 @@ class ProviderNativeCoreTransport:
                         "operation",
                         "receipt",
                     }
-                    and result["operation"] == "prepare_recording_window"
+                    and result["operation"]
+                    == (
+                        "native_recording_preparation"
+                        if native_read
+                        else "prepare_recording_window"
+                    )
                 )
                 _object(result["receipt"])
+                if native_read:
+                    result["receipt"] = _validated_native_preparation(
+                        result["receipt"], payload["workspace_id"]
+                    )
             _require(
                 result["contract_version"] == "1"
                 and all(
@@ -259,7 +277,7 @@ class ProviderNativeCoreTransport:
             )
             if await self.fresh() != before:
                 raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
-            if not admission and await self.fresh() != before:
+            if not admission and not native_read and await self.fresh() != before:
                 raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
             return result
         except ProviderCoreUnavailable:
@@ -336,6 +354,39 @@ class ProviderNativeCoreTransport:
                 user_secret = _secret(before.user_token)
                 if await self.fresh() != before:
                     raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                retained_read = None
+                if (
+                    action == "capture-operations"
+                    and _object(request["operation"])["kind"] == "native_recording_preparation"
+                    and handoff is not None
+                ):
+                    if revision is None:
+                        raise ProviderCoreUnavailable()
+                    retained = handoff.take(
+                        self.origin, before, revision, workspace, cast(str, request["binding_ref"])
+                    )
+                    if (
+                        retained is not None
+                        and not retained.native_read_done
+                        and retained.native_read_supported
+                    ):
+                        result = await self.prepared_operation(
+                            payload, key, before, retained, workload, native_read=True
+                        )
+                        # Carry the same credential to the first window only after
+                        # all read fences succeed. Never refresh its issue time or
+                        # retain an access decision; failures are destructive.
+                        handoff.retain(
+                            self.origin,
+                            before,
+                            revision,
+                            workspace,
+                            cast(str, request["binding_ref"]),
+                            replace(retained, native_read_done=True),
+                        )
+                        return before, result
+                    if retained is not None and not retained.native_read_done:
+                        retained_read = retained
                 with provider_phase_timing("core_operation"):
                     async with self.client.stream(
                         "POST",
@@ -423,22 +474,7 @@ class ProviderNativeCoreTransport:
                         )
                         receipt = _object(result.get("receipt"))
                         if _object(request["operation"])["kind"] == "native_recording_preparation":
-                            prepared = NativeRecordingPreparation.model_validate(receipt)
-                            context = _object(receipt.get("context"))
-                            _require(
-                                _uuid(context.get("workspace_id")) == workspace
-                                and context.get("workspace_id") == workspace
-                                and _uuid(context.get("tenant_id")) == context.get("tenant_id")
-                                and _uuid(context.get("session_id")) == context.get("session_id")
-                            )
-                            public = _object(receipt.get("encryption_key"))
-                            wrapping_jwk = _object(public.get("public_jwk"))
-                            _require(
-                                set(public) == {"key_version", "algorithm", "public_jwk"}
-                                and set(wrapping_jwk) == {"kty", "n", "e", "alg", "ext", "key_ops"}
-                                and wrapping_jwk.get("key_ops") == ["wrapKey"]
-                            )
-                            result["receipt"] = prepared.model_dump(mode="json")
+                            result["receipt"] = _validated_native_preparation(receipt, workspace)
                         if _object(request["operation"])["kind"] == "preparation_metadata":
                             metadata = PreparationMetadata.model_validate(receipt)
                             public = _object(receipt.get("encryption_key"))
@@ -492,6 +528,16 @@ class ProviderNativeCoreTransport:
                 # Core keeps its own current authorization around downstream I/O.
                 if await self.fresh() != before:
                     raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                if retained_read is not None:
+                    assert handoff is not None and revision is not None
+                    handoff.retain(
+                        self.origin,
+                        before,
+                        revision,
+                        workspace,
+                        cast(str, request["binding_ref"]),
+                        replace(retained_read, native_read_done=True),
+                    )
                 if action == "mount" and handoff is not None:
                     assert revision is not None
                     private = _object(result.pop("prepared_context"))
@@ -524,6 +570,12 @@ class ProviderNativeCoreTransport:
                             UUID(_uuid(private["client_turn_id"])),
                             issued_at,
                             stage="admission",
+                            native_read_supported=(
+                                response.headers.get_list(
+                                    "x-cosmaneura-prepared-native-read-version"
+                                )
+                                == ["1"]
+                            ),
                         ),
                     )
                 return before, result
@@ -531,6 +583,26 @@ class ProviderNativeCoreTransport:
             raise
         except Exception:
             raise ProviderCoreUnavailable("core_provider_request_unconfirmed") from None
+
+
+def _validated_native_preparation(value: object, workspace: object) -> dict[str, object]:
+    receipt = _object(value)
+    prepared = NativeRecordingPreparation.model_validate(receipt)
+    context = _object(receipt.get("context"))
+    _require(
+        _uuid(context.get("workspace_id")) == workspace
+        and context.get("workspace_id") == workspace
+        and _uuid(context.get("tenant_id")) == context.get("tenant_id")
+        and _uuid(context.get("session_id")) == context.get("session_id")
+    )
+    public = _object(receipt.get("encryption_key"))
+    wrapping_jwk = _object(public.get("public_jwk"))
+    _require(
+        set(public) == {"key_version", "algorithm", "public_jwk"}
+        and set(wrapping_jwk) == {"kty", "n", "e", "alg", "ext", "key_ops"}
+        and wrapping_jwk.get("key_ops") == ["wrapKey"]
+    )
+    return prepared.model_dump(mode="json")
 
 
 def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:

@@ -21,6 +21,12 @@ class HandoffWire(Wire):
         from datetime import UTC, datetime
 
         data = json.loads(request.content)
+        if request.url.path == PATH and data["action"] == "prepared_native_read":
+            from test_provider_native_core_transport import Wire as NativeWire
+
+            self.calls.append((request.url.path, data, request.headers["idempotency-key"]))
+            assert data["prepared_context"]["context_token"] == "invented-server-context-token"
+            return await NativeWire().handle(request)
         if request.url.path != PATH or data["action"] != "prepared_window":
             return await super().handle(request)
         self.calls.append((request.url.path, data, request.headers["idempotency-key"]))
@@ -281,6 +287,43 @@ async def test_partial_failure_never_retains_and_mobile_admission_can_handoff():
     s.wire.calls.clear()
     await s.call()
     assert len(s.wire.calls) == 1 and s.wire.calls[0][1]["action"] == "prepared_window"
+
+
+async def test_mobile_admission_native_read_window_preserves_the_handoff_and_original_keys():
+    from cosmaneura_scribe.provider_native_core_transport import ProviderNativeCoreTransport
+
+    s = Sequence()
+    await s.call(admission=True, metadata=False)
+    s.pending._pending = type(s.pending._pending)(
+        (key, replace(value, native_read_supported=True))
+        for key, value in s.pending._pending.items()
+    )
+    s.wire.calls.clear()
+    s.wire.checks = 0
+    client = ProviderNativeCoreTransport(
+        s.origin, s.wire.fresh, s.wire.workload, transport=httpx.MockTransport(s.wire.handle)
+    )
+    try:
+        _, result = await client.request(
+            "capture-operations",
+            {
+                "workspace_id": s.workspace,
+                "binding_ref": s.binding,
+                "request_nonce": str(uuid4()),
+                "operation": {"kind": "native_recording_preparation"},
+            },
+            "original-mobile-read-key",
+            handoff=s.pending,
+            revision=s.revision,
+        )
+    finally:
+        await client.close()
+    assert result["receipt"]["context"]["workspace_id"] == s.workspace
+    assert s.wire.checks == 3 and s.pending._pending
+    assert s.wire.calls[0][2] == "original-mobile-read-key"
+    await s.call()
+    assert [row[1]["action"] for row in s.wire.calls] == ["prepared_native_read", "prepared_window"]
+    assert s.wire.checks == 9 and not s.pending._pending
 
 
 async def test_new_admission_invalidates_pending_context_and_renegotiates():
