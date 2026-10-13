@@ -131,6 +131,11 @@ async def prepare_then_dispatch(
             and retained is not None
             and retained.admission_native_preparation_supported
         )
+        combined_metadata = (
+            metadata_requested
+            and retained is not None
+            and retained.admission_preparation_metadata_supported
+        )
         if retained is not None:
             # Core receiver-first: retain the native route's current Clerk,
             # agent-workload, capture-workload and visit-policy boundaries.
@@ -147,6 +152,7 @@ async def prepare_then_dispatch(
                     credential,
                     admission=preparation == "admission",
                     admission_native_preparation=combined_native_metadata,
+                    admission_preparation_metadata=combined_metadata,
                 )
             finally:
                 await native.close()
@@ -339,7 +345,7 @@ async def prepare_then_dispatch(
                     "native_recording_preparation": metadata["receipt"],
                     "checked_at": metadata["checked_at"],
                 }
-            if metadata_requested:
+            if metadata_requested and not combined_metadata:
                 # Read after the ordinary admission and its publication fence.
                 # Reuse only this invocation's negotiation; the ordinary read
                 # rechecks local access around I/O and Core authorizes afresh.

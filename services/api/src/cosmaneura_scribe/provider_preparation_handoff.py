@@ -28,6 +28,7 @@ class PreparedContext:
     native_read_done: bool = False
     native_read_supported: bool = False
     admission_native_preparation_supported: bool = False
+    admission_preparation_metadata_supported: bool = False
 
 
 class PreparationHandoff:

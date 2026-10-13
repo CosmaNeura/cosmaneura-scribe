@@ -125,11 +125,14 @@ class ProviderNativeCoreTransport:
         admission: bool = False,
         native_read: bool = False,
         admission_native_preparation: bool = False,
+        admission_preparation_metadata: bool = False,
     ) -> dict[str, object]:
         """Use one server-only context through the fully authenticated native route."""
         selection = context.mount.selection
         _require(
-            not (admission and native_read) and (not admission_native_preparation or admission)
+            not (admission and native_read)
+            and (not (admission_native_preparation or admission_preparation_metadata) or admission)
+            and not (admission_native_preparation and admission_preparation_metadata)
         )
         _require(
             (
@@ -166,6 +169,8 @@ class ProviderNativeCoreTransport:
         }
         if admission_native_preparation:
             request["include_native_preparation"] = True
+        if admission_preparation_metadata:
+            request["include_preparation_metadata"] = True
         # The preparation caller already checked before/after workload I/O.
         # Keep its separate third fence, plus the ordinary adjacent pre-I/O,
         # post-I/O and final publication checks (six total for the window).
@@ -233,6 +238,7 @@ class ProviderNativeCoreTransport:
                         "configured_capture",
                     }
                     | ({"native_recording_preparation"} if admission_native_preparation else set())
+                    | ({"preparation_metadata"} if admission_preparation_metadata else set())
                     and result["appointment_ref"] == selection.appointment_ref
                     and isinstance(result["operation_ref"], str)
                     and re.fullmatch(
@@ -249,6 +255,10 @@ class ProviderNativeCoreTransport:
                     )
                     _require(_object(prepared["context"])["session_id"] == result["session_id"])
                     result["native_recording_preparation"] = prepared
+                if admission_preparation_metadata:
+                    prepared = _validated_preparation_metadata(result["preparation_metadata"])
+                    _require(_object(prepared["review"])["session_id"] == result["session_id"])
+                    result["preparation_metadata"] = prepared
             else:
                 _require(
                     set(result)
@@ -594,6 +604,12 @@ class ProviderNativeCoreTransport:
                                 )
                                 == ["1"]
                             ),
+                            admission_preparation_metadata_supported=(
+                                response.headers.get_list(
+                                    "x-cosmaneura-admission-preparation-metadata-version"
+                                )
+                                == ["1"]
+                            ),
                         ),
                     )
                 return before, result
@@ -601,6 +617,19 @@ class ProviderNativeCoreTransport:
             raise
         except Exception:
             raise ProviderCoreUnavailable("core_provider_request_unconfirmed") from None
+
+
+def _validated_preparation_metadata(value: object) -> dict[str, object]:
+    receipt = _object(value)
+    prepared = PreparationMetadata.model_validate(receipt)
+    public = _object(receipt.get("encryption_key"))
+    wrapping = _object(public.get("public_jwk"))
+    _require(
+        set(public) == {"key_version", "algorithm", "public_jwk"}
+        and set(wrapping) == {"kty", "n", "e", "alg", "ext", "key_ops"}
+        and wrapping.get("key_ops") == ["wrapKey"]
+    )
+    return prepared.model_dump(mode="json")
 
 
 def _validated_native_preparation(value: object, workspace: object) -> dict[str, object]:

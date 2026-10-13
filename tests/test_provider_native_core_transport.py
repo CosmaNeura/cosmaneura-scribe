@@ -85,10 +85,12 @@ class Wire:
             data.get("include_native_preparation") is True
             or data.get("operation", {}).get("kind") == "native_recording_preparation"
         )
-        if native_preparation or data.get("operation", {}).get("kind") in {
-            "preparation_metadata",
-            "native_recording_preparation",
-        }:
+        if (
+            native_preparation
+            or data.get("include_preparation_metadata") is True
+            or data.get("operation", {}).get("kind")
+            in {"preparation_metadata", "native_recording_preparation"}
+        ):
             review = {
                 "schema_version": "1.0",
                 "review": {"schema_version": "1.0", "session_id": SESSION, "status": "created"},
@@ -145,6 +147,8 @@ class Wire:
             )
             if data.get("include_native_preparation"):
                 result["native_recording_preparation"] = review
+            if data.get("include_preparation_metadata"):
+                result["preparation_metadata"] = review
         elif data["action"] in {"operation", "prepared_native_read"}:
             result.update(operation=data["operation"]["kind"], receipt=review)
         else:
