@@ -41,7 +41,11 @@ from .provider_core_transport import (
 from .provider_encounter_transport import ProviderEncounterAccount
 from .provider_native_core_transport import PreparationMetadata, ProviderNativeCoreTransport
 from .provider_performance import provider_phase_timing
-from .provider_preparation_handoff import PreparationHandoff, PreparedContext
+from .provider_preparation_handoff import (
+    PreparationHandoff,
+    PreparedContext,
+    retain_source_window,
+)
 
 PATH = "/service/v1/agent/scribe/native-capture"
 
@@ -157,6 +161,17 @@ async def prepare_then_dispatch(
             finally:
                 await native.close()
             if preparation != "admission":
+                retain_source_window(
+                    handoff,
+                    origin,
+                    before,
+                    revision,
+                    workspace,
+                    cast(str, binding),
+                    retained,
+                    payload,
+                    prepared_answer,
+                )
                 return prepared_answer
         if retained is not None:
             issued_at = retained.issued_at
@@ -400,6 +415,9 @@ async def prepare_then_dispatch(
                         issued_at,
                         native_read_supported=native_read_supported,
                         native_read_done=native_metadata_requested,
+                        source_start_supported=(
+                            retained.source_start_supported if retained is not None else False
+                        ),
                     ),
                 )
             return answer

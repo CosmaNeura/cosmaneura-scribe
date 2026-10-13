@@ -610,6 +610,12 @@ class ProviderNativeCoreTransport:
                                 )
                                 == ["1"]
                             ),
+                            source_start_supported=(
+                                response.headers.get_list(
+                                    "x-cosmaneura-prepared-source-start-version"
+                                )
+                                == ["1"]
+                            ),
                         ),
                     )
                 return before, result

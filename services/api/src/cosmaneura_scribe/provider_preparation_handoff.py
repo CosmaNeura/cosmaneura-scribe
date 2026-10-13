@@ -7,8 +7,9 @@ import hashlib
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, replace
+from datetime import datetime
+from typing import Literal, cast
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -18,17 +19,28 @@ from .provider_encounter_transport import ProviderEncounterAccount
 
 
 @dataclass(frozen=True, repr=False)
+class PreparedSourceWindow:
+    session_id: UUID
+    lease_id: UUID
+    lease_receipt_id: UUID
+    capture_authorized_until: datetime
+    channel: Literal["microphone", "mixed"]
+
+
+@dataclass(frozen=True, repr=False)
 class PreparedContext:
     mount: CoreProviderMount
     token: SecretStr
     interaction_ref: str
     turn: UUID
     issued_at: float
-    stage: Literal["admission", "recording_window"] = "recording_window"
+    stage: Literal["admission", "recording_window", "source_start"] = "recording_window"
     native_read_done: bool = False
     native_read_supported: bool = False
     admission_native_preparation_supported: bool = False
     admission_preparation_metadata_supported: bool = False
+    source_start_supported: bool = False
+    source_window: PreparedSourceWindow | None = None
 
 
 class PreparationHandoff:
@@ -87,7 +99,7 @@ class PreparationHandoff:
         revision: UUID,
         workspace: str,
         binding: str,
-        stage: Literal["admission", "recording_window"] = "recording_window",
+        stage: Literal["admission", "recording_window", "source_start"] = "recording_window",
     ) -> PreparedContext | None:
         self._expire()
         value = self._pending.pop(self._scope(origin, account, revision, workspace, binding), None)
@@ -136,3 +148,71 @@ class PreparationHandoff:
 
     def now(self) -> float:
         return self._clock()
+
+
+def retain_source_window(
+    handoff: PreparationHandoff | None,
+    origin: str,
+    account: ProviderEncounterAccount,
+    revision: UUID,
+    workspace: str,
+    binding: str,
+    context: PreparedContext | None,
+    request: dict[str, object],
+    answer: dict[str, object],
+) -> None:
+    """Carry one fresh window's credential, never its authority or a new epoch."""
+    if handoff is None or context is None or not context.source_start_supported:
+        return
+    from .creator_window_routes import CreatorWindowReceipt, CreatorWindowRequest
+    from .provider_core_transport import ProviderCoreUnavailable
+
+    try:
+        operation = request["operation"]
+        if not isinstance(operation, dict):
+            raise ValueError
+        operation = cast(dict[str, object], operation)
+        if operation.get("kind") != "prepare_recording_window":
+            raise ValueError
+        payload = CreatorWindowRequest.model_validate(operation["payload"])
+        receipt = CreatorWindowReceipt.model_validate(answer["receipt"])
+        lease, batch = receipt.lease, receipt.reservations
+        if (
+            payload.channel not in {"microphone", "mixed"}
+            or lease.generation != 1
+            or payload.reservation_count != 30
+        ):
+            return
+        if (
+            receipt.binding.key_version != payload.binding.key_version
+            or receipt.binding.session_id != lease.session_id
+            or batch.session_id != lease.session_id
+            or batch.capture_authorized_until != lease.expires_at
+            or lease.expires_at.tzinfo is None
+            or len(batch.reservations) != 30
+            or len({row.object_id for row in batch.reservations}) != 30
+            or any(
+                row.session_id != lease.session_id
+                or row.channel != payload.channel
+                or row.sequence_number != index
+                for index, row in enumerate(batch.reservations)
+            )
+        ):
+            raise ValueError
+        window = PreparedSourceWindow(
+            lease.session_id,
+            lease.lease_id,
+            lease.receipt_id,
+            lease.expires_at,
+            cast(Literal["microphone", "mixed"], payload.channel.value),
+        )
+    except (ValueError, TypeError, KeyError):
+        raise ProviderCoreUnavailable() from None
+    handoff.retain(
+        origin,
+        account,
+        revision,
+        workspace,
+        binding,
+        replace(context, stage="source_start", source_window=window),
+    )
