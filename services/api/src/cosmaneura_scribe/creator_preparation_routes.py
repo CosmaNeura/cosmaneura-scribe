@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from .audio_keys import (
     AudioEncryptionKeyProvider,
     AudioEncryptionKeyUnavailable,
-    build_audio_encryption_key_provider,
+    BorrowedAudioEncryptionKeyProvider,
 )
 from .creator_review_routes import Creator, CreatorReviewViewV1, Runtime, Tenant
 from .schemas import AudioEncryptionPublicKey, CaptureCapabilities
@@ -20,9 +20,12 @@ Configuration = Annotated[Settings, Depends(get_settings)]
 
 
 def preparation_keys() -> AudioEncryptionKeyProvider:
-    # This route closes its provider before final publication. It must never
-    # borrow the application's cached provider used by later key binding.
-    return build_audio_encryption_key_provider(get_settings())
+    from .main import get_audio_encryption_key_provider
+
+    # Reuse only the application's Key Vault transport/credential owner. The
+    # request handle closes before publication, while each get_public_key()
+    # still makes the ordinary live Key Vault read with all key checks intact.
+    return BorrowedAudioEncryptionKeyProvider(get_audio_encryption_key_provider())
 
 
 Keys = Annotated[AudioEncryptionKeyProvider, Depends(preparation_keys)]
