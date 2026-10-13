@@ -1343,7 +1343,7 @@ async def test_new_workflow_disabled_and_legacy_revocation_cannot_fall_through(h
         assert reply.status_code == 403 and h.wire.calls == []
 
 
-def core_created_opening(h, after_lookup=None):
+def core_created_opening(h, after_lookup=None, *, native_admission=False):
     """Core-owned synthetic visit; real registry checks plus a counted Core wire."""
     h.receiver.encounter_creation_enabled = True
     workspace = uuid4()
@@ -1386,7 +1386,7 @@ def core_created_opening(h, after_lookup=None):
                         "key_ops": ["wrapKey"],
                     },
                 }
-            if kind == "native_recording_preparation":
+            if kind == "native_recording_preparation" or body.get("include_native_preparation"):
                 receipt = {
                     "schema_version": "1.0",
                     "context": {
@@ -1409,7 +1409,18 @@ def core_created_opening(h, after_lookup=None):
                         },
                     },
                 }
-            if body["action"] == "preparation_context":
+            if body["action"] == "prepared_admission":
+                value.update(
+                    appointment_ref=APPOINTMENT,
+                    operation_ref="scribe_admission_" + SUFFIX,
+                    consent_record_id=str(uuid4()),
+                    session_id=SESSION_ID,
+                    status="admitted",
+                    configured_capture=body["configured_capture"],
+                )
+                if body.get("include_native_preparation"):
+                    value["native_recording_preparation"] = receipt
+            elif body["action"] == "preparation_context":
                 value.update(
                     appointment_ref=APPOINTMENT,
                     preparation=body["preparation"],
@@ -1435,6 +1446,12 @@ def core_created_opening(h, after_lookup=None):
                     value["opening_review"].update(
                         request_nonce=body["opening_nonce"], operation=kind, receipt=receipt
                     )
+                if native_admission:
+                    value["prepared_context"] = {
+                        "context_token": "offline-core-mount-token",
+                        "interaction_ref": "offline-interaction-0123456789",
+                        "client_turn_id": str(uuid4()),
+                    }
             else:
                 value.update(operation=kind, receipt=receipt)
             if after_lookup:
@@ -1448,7 +1465,15 @@ def core_created_opening(h, after_lookup=None):
                     "tenant_ref": h.wire.selection.tenant_ref,
                     "result": value,
                 },
-                headers={"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"},
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-Cosmaneura-Native-Capture-Version": "1",
+                    **(
+                        {"X-Cosmaneura-Admission-Native-Preparation-Version": "1"}
+                        if native_admission
+                        else {}
+                    ),
+                },
             )
         if request.url.path != "/embed/v1/scribe/encounters":
             return await h.wire.handle(request)
@@ -1498,6 +1523,7 @@ async def test_core_created_opening_uses_one_facade_and_keeps_checked_display(ha
     assert result.json()["encounter"]["patientName"] == "Synthetic checked display"
     assert result.json()["encounter"]["admission_metadata_v1"] is True
     assert result.json()["encounter"]["native_recording_preparation_v1"] is True
+    assert result.json()["encounter"]["admission_native_preparation_v1"] is True
     assert set(result.json()) == {
         "revision",
         "recoveryScope",
@@ -1841,3 +1867,49 @@ async def test_combined_admission_metadata_keeps_nine_real_registry_fences(harne
         assert (
             json.loads(result.headers["x-scribe-provider-trace"])["counts"]["identity_check"] == 9
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", range(8))
+async def test_native_admission_metadata_keeps_real_registry_fences_and_one_core_request(
+    harness, boundary
+):
+    from cosmaneura_scribe.provider_preparation_handoff import PreparationHandoff
+
+    h = harness
+    h.receiver._preparation_handoff = PreparationHandoff()
+    workspace, lookups = core_created_opening(h, native_admission=True)
+    async with client(h) as c:
+        mounted = await c.post("/provider/v1/mount", json={"workspace_id": str(workspace)})
+        assert mounted.status_code == 200, mounted.text
+        before = len(h.wire.calls)
+        checks = 0
+        original = h.receiver.encounter_account
+
+        def account(authorization, *, bind):
+            nonlocal checks
+            checks += 1
+            if checks == boundary:
+                h.mutate(CoreCaptureAccount, h.account, revoked_at=datetime.now(UTC))
+            return original(authorization, bind=bind)
+
+        h.receiver.encounter_account = account
+        result = await c.post(
+            "/provider/v1/capture-admissions",
+            json={
+                "workspace_id": str(workspace),
+                "binding_ref": BINDING,
+                "request_nonce": str(uuid4()),
+                "attestation": {"all_parties_consented": True},
+                "configured_capture": {"schema_version": "1.0", "language_mode": "en-US"},
+                "native_recording_preparation": True,
+            },
+        )
+    assert lookups == [] and "offline-core-mount-token" not in result.text
+    if boundary:
+        assert result.status_code == 403 and "native_recording_preparation" not in result.text
+        assert len(h.wire.calls) - before == (0 if boundary <= 4 else 1)
+    else:
+        assert result.status_code == 200, result.text
+        assert checks == 7 and len(h.wire.calls) - before == 1
+        assert result.json()["native_recording_preparation"]["context"]["session_id"] == SESSION_ID
