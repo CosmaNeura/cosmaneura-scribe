@@ -336,6 +336,58 @@ it.each(["recording", "interrupted", "expired"] as const)("holds mobile upload u
 
 
 describe("native provider selection and ownership", () => {
+  it("overlaps scoped store setup with authorization without reading custody early", async () => {
+    const store = await EncryptedIndexedDbFlowStore.open();
+    const active = vi.spyOn(store, "getActiveCaptureState").mockResolvedValue(null);
+    vi.spyOn(store, "getPreparationState").mockResolvedValue(null);
+    vi.spyOn(store, "getSessionKeyState").mockResolvedValue(null);
+    vi.spyOn(store, "getSessionKey").mockResolvedValue(null);
+    const nativeRecorder = recordingFixture(session), opened = vi.spyOn(nativeRecorder.port, "open");
+    const authorize = vi.fn(() => new Promise<void>(resolve => setTimeout(resolve, 2500)));
+    const service = connection({ nativeRecording: nativeRecorder.port, reauthorizeRecorder: authorize });
+    const encounter = await service.openAny();
+    vi.spyOn(EncryptedIndexedDbFlowStore, "open").mockImplementationOnce(
+      () => new Promise(resolve => setTimeout(() => resolve(store), 2000)));
+    vi.useFakeTimers();
+    try {
+      const pending = encounter.recorder(session, service.abort.signal);
+      void pending.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(authorize).toHaveBeenCalledOnce();
+      expect(active).not.toHaveBeenCalled();
+      expect(opened).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(500);
+      const resources = await pending;
+      if (!("controller" in resources)) throw new Error("Expected native recorder");
+      expect(active).toHaveBeenCalledOnce();
+      expect(opened).toHaveBeenCalledOnce();
+      expect(source.start).not.toHaveBeenCalled();
+      await resources.deactivate();
+    } finally { store.close(); vi.useRealTimers(); }
+  });
+
+  it("joins a late store after authorization fails before unlocking and never reads custody", async () => {
+    const store = await EncryptedIndexedDbFlowStore.open();
+    const closed = vi.spyOn(store, "close"), active = vi.spyOn(store, "getActiveCaptureState");
+    let finish!: (value: EncryptedIndexedDbFlowStore) => void;
+    vi.spyOn(EncryptedIndexedDbFlowStore, "open").mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const nativeRecorder = recordingFixture(session), opened = vi.spyOn(nativeRecorder.port, "open");
+    const service = connection({ nativeRecording: nativeRecorder.port,
+      reauthorizeRecorder: vi.fn().mockRejectedValueOnce(new Error("fresh authorization denied")) });
+    const encounter = await service.openAny(), pending = encounter.recorder(session, service.abort.signal);
+    const rejected = expect(pending).rejects.toThrow("fresh authorization denied");
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    expect(closed).not.toHaveBeenCalled();
+    await expect(encounter.recorder(session, service.abort.signal)).rejects.toThrow("capture_flow_already_active");
+    finish(store); await rejected;
+    expect(closed).toHaveBeenCalledOnce();
+    expect(active).not.toHaveBeenCalled(); expect(opened).not.toHaveBeenCalled();
+    expect(source.start).not.toHaveBeenCalled();
+    const next = await encounter.recorder(session, service.abort.signal);
+    if (!("controller" in next)) throw new Error("Expected native recorder");
+    await next.deactivate();
+  });
+
   it("joins independent custody reads within one delayed-read interval after authorization", async () => {
     const store = await EncryptedIndexedDbFlowStore.open();
     vi.spyOn(EncryptedIndexedDbFlowStore, "open").mockResolvedValueOnce(store);

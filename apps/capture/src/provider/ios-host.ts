@@ -102,11 +102,18 @@ async function openRecorder(mount: AuthorizedProviderIOSMount, sessionId: string
   let flow: EncryptedIndexedDbFlowStore | undefined;
   try {
     current();
-    await mount.reauthorizeRecorder(sessionId, signal);
-    current();
-    flow = await EncryptedIndexedDbFlowStore.open({
-      databaseName: `scribe-provider-flow:v1:${mount.recoveryScope}:${mount.scope.workspaceId}`,
-    });
+    // Opening a scoped encrypted store does not read recording custody or start
+    // a source. Overlap only that setup with fresh authorization, and settle
+    // both handles before cleanup so cancellation cannot leak a late store.
+    const [authorization, opened] = await Promise.allSettled([
+      mount.reauthorizeRecorder(sessionId, signal),
+      EncryptedIndexedDbFlowStore.open({
+        databaseName: `scribe-provider-flow:v1:${mount.recoveryScope}:${mount.scope.workspaceId}`,
+      }),
+    ]);
+    if (opened.status === "fulfilled") flow = opened.value;
+    readResult(authorization);
+    flow = readResult(opened);
     current();
     // These independent read-only checks share the same exclusive flow lock and
     // fresh authorization. Join every read before releasing the store on failure;
