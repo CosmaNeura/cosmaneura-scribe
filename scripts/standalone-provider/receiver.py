@@ -42,6 +42,7 @@ from cosmaneura_scribe.provider_performance import (
 )
 from cosmaneura_scribe.provider_preparation_core_transport import prepare_then_dispatch
 from cosmaneura_scribe.provider_preparation_handoff import PreparationHandoff
+from cosmaneura_scribe.provider_source_preparation import prepare_source
 from cosmas_os.api.auth import (
     CORE_STAGING_PERSONAL,
     AccessDenied,
@@ -433,6 +434,37 @@ class ProviderReceiver:
                     if not self.enabled:
                         raise AccessDenied()
                     return _reply(200, result)
+
+                if (
+                    self.encounter_creation_enabled
+                    and action == "source-start-ready"
+                    and not await self.registry_read(
+                        lambda bind: self.legacy_workspace_exists(workspace_id, bind)
+                    )
+                ):
+
+                    async def source_account():
+                        if not self.enabled or not self.encounter_creation_enabled:
+                            raise AccessDenied()
+                        return await self.registry_read(
+                            lambda bind: self.encounter_account(authorization, bind=bind)
+                        )
+
+                    prepared_source = await prepare_source(
+                        self.profile.core_origin,
+                        body,
+                        key,
+                        revision,
+                        source_account,
+                        self.workload_token,
+                        self._preparation_handoff,
+                        transport=self.core_http,
+                        connections=self.core_connections,
+                    )
+                    if prepared_source is not None:
+                        if not self.enabled:
+                            raise AccessDenied()
+                        return _reply(200, prepared_source)
 
                 checked_selection = None
 

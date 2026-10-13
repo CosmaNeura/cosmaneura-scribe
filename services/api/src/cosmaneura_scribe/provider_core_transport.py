@@ -344,97 +344,16 @@ class ProviderCoreTransport:
         The native owner must journal its original stop proof before dispatch.
         No automatic retry or persistent context is created by this sequence.
         """
-        _checked(mount, CoreProviderMount)
-        payload = _snapshot(body, 8192)
-        authorize_key = payload.pop("authorize_idempotency_key", None)
-        authorize_nonce = _uuid(payload.pop("authorize_request_nonce", None))
-        for value in (key, authorize_key):
-            _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(value, str)))
-        _require(key != authorize_key and payload.get("request_nonce") != authorize_nonce)
-        _validate_intent(mount, "capture-operations", payload, native_start=True)
-        operation = _object(payload["operation"])
-        _require(operation["action"] == "prepare")
-        intent = SourceStartIntent.model_validate(operation["payload"])
-        sequence = {
-            **payload,
-            "operation": {
-                "kind": "source_start_sequence",
-                "payload": operation["payload"],
-                "authorize_idempotency_key": authorize_key,
-            },
-        }
+        sequence, intent, authorize_nonce = source_start_sequence(mount, body, key)
         current = await self._negotiate(mount.selection, capture_mount=mount)
-        combined = await self._dispatch(
-            mount,
-            "capture-operations",
-            sequence,
-            key,
-            current,
+        combined = await self._dispatch(mount, "capture-operations", sequence, key, current)
+        result = source_start_reply(
+            mount, sequence, combined, intent, authorize_nonce, self._clock()
         )
-        _require(
-            set(combined)
-            == _SCOPE_KEYS
-            | {
-                "contract_version",
-                "checked_at",
-                "operation",
-                "receipt",
-            }
-        )
-        pair = _object(combined.get("receipt"))
-        _require(set(pair) == {"preparation", "authorization"})
-        try:
-            receipt = SourceStartReceipt.model_validate(pair["preparation"])
-            decision = SourceStartCapability.model_validate(pair["authorization"])
-        except ValueError:
-            raise ProviderCoreUnavailable() from None
-        issued = decision.receipt
-        now = self._clock()
-        _require(
-            receipt.state == "prepared"
-            and receipt.creator_actor_id == mount.selection.actor_ref
-            and receipt.issued_at is None
-            and receipt.expires_at is None
-            and now < receipt.preparation_expires_at <= intent.capture_authorized_until
-            and all(
-                getattr(receipt, field) == getattr(intent, field)
-                for field in (
-                    "attempt_id",
-                    "source",
-                    "lease_id",
-                    "lease_receipt_id",
-                    "lease_generation",
-                    "capture_authorized_until",
-                    "first_sequence_number",
-                )
-            )
-            and receipt.model_dump(exclude={"state", "issued_at", "expires_at"})
-            == issued.model_dump(exclude={"state", "issued_at", "expires_at"})
-            and issued.state == "issued"
-            and issued.issued_at is not None
-            and issued.expires_at is not None
-            and issued.issued_at <= now + timedelta(seconds=5)
-            and issued.issued_at < issued.preparation_expires_at
-            and now < issued.expires_at <= issued.capture_authorized_until
-            and timedelta(0) < issued.expires_at - issued.issued_at <= timedelta(seconds=15)
-            and len(decision.secret.get_secret_value()) == 64
-            and hmac.compare_digest(
-                decision.secret.get_secret_value().encode("utf-8"),
-                intent.owner_proof.get_secret_value().encode("ascii"),
-            )
-        )
-        # Core owns cancellation between its decisions. An ambiguous reply still
-        # leaves stop custody with the native owner; never fall back or retry.
+        # Core owns cancellation between its decisions. An ambiguous reply never
+        # falls back or retries, and remains covered by original stop custody.
         await asyncio.sleep(0)
-        envelope = {**combined, "operation": "source_start"}
-        return {
-            "preparation": {**envelope, "receipt": pair["preparation"]},
-            "authorization": {
-                **envelope,
-                "request_nonce": authorize_nonce,
-                "receipt": pair["authorization"],
-            },
-        }
+        return result
 
     async def open_note(
         self, mount: CoreProviderMount, session_id: UUID, request_nonce: UUID, key: str
@@ -1082,3 +1001,114 @@ core_wire_require = _require
 core_wire_secret = _secret
 core_wire_snapshot = _snapshot
 core_wire_uuid = _uuid
+
+
+def source_start_sequence(
+    mount: CoreProviderMount, body: Mapping[str, object], key: str
+) -> tuple[dict[str, object], SourceStartIntent, str]:
+    """Validate the one native source composition before any transport choice."""
+    _checked(mount, CoreProviderMount)
+    payload = _snapshot(body, 8192)
+    authorize_key = payload.pop("authorize_idempotency_key", None)
+    authorize_nonce = _uuid(payload.pop("authorize_request_nonce", None))
+    for value in (key, authorize_key):
+        _require(re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", _checked(value, str)))
+    _require(key != authorize_key and payload.get("request_nonce") != authorize_nonce)
+    _validate_intent(mount, "capture-operations", payload, native_start=True)
+    operation = _object(payload["operation"])
+    _require(operation["action"] == "prepare")
+    intent = SourceStartIntent.model_validate(operation["payload"])
+    sequence = {
+        **payload,
+        "operation": {
+            "kind": "source_start_sequence",
+            "payload": operation["payload"],
+            "authorize_idempotency_key": authorize_key,
+        },
+    }
+    return sequence, intent, authorize_nonce
+
+
+def source_start_reply(
+    mount: CoreProviderMount,
+    sequence: dict[str, object],
+    combined: dict[str, object],
+    intent: SourceStartIntent,
+    authorize_nonce: str,
+    now: datetime,
+) -> dict[str, object]:
+    """The same complete source pair validation for both fixed Core routes."""
+    _require(
+        combined.get("contract_version") == "1"
+        and combined.get("operation") == "source_start_sequence"
+        and all(combined.get(k) == sequence[k] for k in _SCOPE_KEYS)
+    )
+    try:
+        stamp = datetime.fromisoformat(_checked(combined.get("checked_at"), str))
+        _require(
+            stamp.tzinfo is not None
+            and now.tzinfo is not None
+            and now - timedelta(seconds=30) <= stamp <= now + timedelta(seconds=5)
+        )
+    except (ValueError, TypeError):
+        raise ProviderCoreUnavailable() from None
+    _require(
+        set(combined)
+        == _SCOPE_KEYS
+        | {
+            "contract_version",
+            "checked_at",
+            "operation",
+            "receipt",
+        }
+    )
+    pair = _object(combined.get("receipt"))
+    _require(set(pair) == {"preparation", "authorization"})
+    try:
+        receipt = SourceStartReceipt.model_validate(pair["preparation"])
+        decision = SourceStartCapability.model_validate(pair["authorization"])
+    except ValueError:
+        raise ProviderCoreUnavailable() from None
+    issued = decision.receipt
+    _require(
+        receipt.state == "prepared"
+        and receipt.creator_actor_id == mount.selection.actor_ref
+        and receipt.issued_at is None
+        and receipt.expires_at is None
+        and now < receipt.preparation_expires_at <= intent.capture_authorized_until
+        and all(
+            getattr(receipt, field) == getattr(intent, field)
+            for field in (
+                "attempt_id",
+                "source",
+                "lease_id",
+                "lease_receipt_id",
+                "lease_generation",
+                "capture_authorized_until",
+                "first_sequence_number",
+            )
+        )
+        and receipt.model_dump(exclude={"state", "issued_at", "expires_at"})
+        == issued.model_dump(exclude={"state", "issued_at", "expires_at"})
+        and issued.state == "issued"
+        and issued.issued_at is not None
+        and issued.expires_at is not None
+        and issued.issued_at <= now + timedelta(seconds=5)
+        and issued.issued_at < issued.preparation_expires_at
+        and now < issued.expires_at <= issued.capture_authorized_until
+        and timedelta(0) < issued.expires_at - issued.issued_at <= timedelta(seconds=15)
+        and len(decision.secret.get_secret_value()) == 64
+        and hmac.compare_digest(
+            decision.secret.get_secret_value().encode("utf-8"),
+            intent.owner_proof.get_secret_value().encode("ascii"),
+        )
+    )
+    envelope = {**combined, "operation": "source_start"}
+    return {
+        "preparation": {**envelope, "receipt": pair["preparation"]},
+        "authorization": {
+            **envelope,
+            "request_nonce": authorize_nonce,
+            "receipt": pair["authorization"],
+        },
+    }
