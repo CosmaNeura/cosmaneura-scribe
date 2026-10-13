@@ -72,7 +72,15 @@ class Wire:
             return httpx.Response(
                 self.status,
                 json=self.alter(value),
-                headers={"Cache-Control": "no-store", "X-Cosmaneura-Native-Capture-Version": "1"},
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-Cosmaneura-Native-Capture-Version": "1",
+                    **(
+                        {"X-Cosmaneura-Prepared-Native-Read-Version": "1"}
+                        if getattr(self, "native_read_supported", False)
+                        else {}
+                    ),
+                },
             )
         assert request.url.path in {
             "/service/v1/agent/scribe/capture-admissions",

@@ -293,11 +293,8 @@ async def test_mobile_admission_native_read_window_preserves_the_handoff_and_ori
     from cosmaneura_scribe.provider_native_core_transport import ProviderNativeCoreTransport
 
     s = Sequence()
+    s.wire.native_read_supported = True
     await s.call(admission=True, metadata=False)
-    s.pending._pending = type(s.pending._pending)(
-        (key, replace(value, native_read_supported=True))
-        for key, value in s.pending._pending.items()
-    )
     s.wire.calls.clear()
     s.wire.checks = 0
     client = ProviderNativeCoreTransport(
