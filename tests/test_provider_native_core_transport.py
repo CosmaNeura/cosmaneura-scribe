@@ -130,7 +130,7 @@ class Wire:
                     },
                     "encryption_key": review["encryption_key"],
                 }
-        if data["action"] == "operation":
+        if data["action"] in {"operation", "prepared_native_read"}:
             result.update(operation=data["operation"]["kind"], receipt=review)
         else:
             result.update(appointment_ref="appointment_" + SUFFIX, encounter={})
@@ -179,6 +179,147 @@ async def test_native_recording_preparation_is_one_fresh_core_request():
     assert account == ACCOUNT and len(wire.calls) == 1 and wire.checks == 3
     assert value["receipt"]["context"]["session_id"] == SESSION
     assert value["receipt"]["encryption_key"]["public_jwk"]["key_ops"] == ["wrapKey"]
+
+
+def retained_preparation(
+    wire,
+    workspace,
+    *,
+    issued_at=100.0,
+    stage="recording_window",
+    native_read_supported=True,
+    **changes,
+):
+    from uuid import UUID
+
+    from cosmaneura_scribe.provider_core_transport import CoreProviderMount, CoreProviderSelection
+    from cosmaneura_scribe.provider_preparation_handoff import PreparationHandoff, PreparedContext
+
+    handoff = PreparationHandoff(clock=lambda: 100.0)
+    revision = uuid4()
+    selection = CoreProviderSelection(
+        ACCOUNT.recovery_scope,
+        uuid4(),
+        UUID(workspace),
+        "appointment_" + SUFFIX,
+        ACCOUNT.actor_ref,
+        ACCOUNT.tenant_ref,
+    )
+    context = PreparedContext(
+        CoreProviderMount(selection, BINDING),
+        SecretStr("invented-context-token"),
+        "invented-interaction-0123456789",
+        uuid4(),
+        issued_at,
+        stage,
+        native_read_supported=native_read_supported,
+        **changes,
+    )
+    handoff.retain("https://core.synthetic.invalid", ACCOUNT, revision, workspace, BINDING, context)
+    client = ProviderNativeCoreTransport(
+        "https://core.synthetic.invalid",
+        wire.fresh,
+        wire.workload,
+        transport=httpx.MockTransport(wire.handle),
+    )
+    return client, handoff, revision
+
+
+async def test_retained_native_read_omits_exchange_without_refreshing_authorization_or_age():
+    wire = Wire()
+    request = body("capture-operations", "native_recording_preparation")
+    client, handoff, revision = retained_preparation(wire, request["workspace_id"], issued_at=90.0)
+    try:
+        account, value = await client.request(
+            "capture-operations", request, "retained-read-key", handoff=handoff, revision=revision
+        )
+        assert account == ACCOUNT and wire.checks == 3
+        assert [call["action"] for call in wire.calls] == ["prepared_native_read"]
+        assert value["receipt"]["context"]["session_id"] == SESSION
+        assert "invented-context-token" not in str(value)
+        context = handoff.take(client.origin, ACCOUNT, revision, request["workspace_id"], BINDING)
+        assert context is not None and context.issued_at == 90.0 and context.native_read_done
+        handoff.retain(client.origin, ACCOUNT, revision, request["workspace_id"], BINDING, context)
+        await client.request(
+            "capture-operations",
+            request,
+            "second-native-read-key",
+            handoff=handoff,
+            revision=revision,
+        )
+        assert wire.calls[-1]["action"] == "operation" and not handoff._pending
+    finally:
+        await client.close()
+
+
+async def test_old_core_uses_ordinary_native_read_before_preserving_first_window_context():
+    wire = Wire()
+    request = body("capture-operations", "native_recording_preparation")
+    client, handoff, revision = retained_preparation(
+        wire, request["workspace_id"], native_read_supported=False
+    )
+    try:
+        await client.request(
+            "capture-operations",
+            request,
+            "old-core-native-read-key",
+            handoff=handoff,
+            revision=revision,
+        )
+        assert wire.calls[0]["action"] == "operation" and wire.checks == 3
+        context = handoff.take(client.origin, ACCOUNT, revision, request["workspace_id"], BINDING)
+        assert (
+            context is not None and context.native_read_done and not context.native_read_supported
+        )
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize(
+    "fault", ["expired", "stage", "revision", "account", "failed", "revoked", "malformed"]
+)
+async def test_retained_native_read_fails_closed_or_negotiates_before_read_on_scoped_miss(fault):
+    wire = Wire()
+    request = body("capture-operations", "native_recording_preparation")
+    client, handoff, revision = retained_preparation(
+        wire,
+        request["workspace_id"],
+        issued_at=74.0 if fault == "expired" else 100.0,
+        stage="admission" if fault == "stage" else "recording_window",
+    )
+    if fault == "revision":
+        revision = uuid4()
+    if fault == "account":
+        wire.account = replace(ACCOUNT, account_id="changed-account")
+    if fault == "failed":
+        wire.status = 503
+    if fault == "revoked":
+        wire.after = lambda: setattr(wire, "revoked", True)
+    if fault == "malformed":
+        wire.alter = lambda value: {**value, "result": {**value["result"], "receipt": {}}}
+    try:
+        if fault in {"failed", "revoked", "malformed"}:
+            with pytest.raises(ProviderCoreUnavailable):
+                await client.request(
+                    "capture-operations",
+                    request,
+                    "faulted-native-read-key",
+                    handoff=handoff,
+                    revision=revision,
+                )
+            assert len(wire.calls) == 1 and wire.calls[0]["action"] == "prepared_native_read"
+            assert not handoff._pending
+        else:
+            await client.request(
+                "capture-operations",
+                request,
+                "missed-native-read-key",
+                handoff=handoff,
+                revision=revision,
+            )
+            assert len(wire.calls) == 1 and wire.calls[0]["action"] == "operation"
+    finally:
+        await client.close()
 
 
 @pytest.mark.parametrize(

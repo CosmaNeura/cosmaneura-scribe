@@ -117,6 +117,7 @@ async def prepare_then_dispatch(
             else None
         )
         prepared_answer = None
+        native_read_supported = retained.native_read_supported if retained is not None else False
         if retained is not None:
             # Core receiver-first: retain the native route's current Clerk,
             # agent-workload, capture-workload and visit-policy boundaries.
@@ -185,6 +186,9 @@ async def prepare_then_dispatch(
                             == "application/json"
                             and "no-store" in response.headers.get("cache-control", "").lower()
                         )
+                        native_read_supported = response.headers.get_list(
+                            "x-cosmaneura-prepared-native-read-version"
+                        ) == ["1"]
                         raw = bytearray()
                         async for chunk in response.aiter_bytes():
                             need(len(raw) + len(chunk) <= 16384)
@@ -336,7 +340,14 @@ async def prepare_then_dispatch(
                     revision,
                     workspace,
                     cast(str, binding),
-                    PreparedContext(mount, context, cast(str, interaction), turn, issued_at),
+                    PreparedContext(
+                        mount,
+                        context,
+                        cast(str, interaction),
+                        turn,
+                        issued_at,
+                        native_read_supported=native_read_supported,
+                    ),
                 )
             return answer
         finally:

@@ -25,6 +25,8 @@ class PreparedContext:
     turn: UUID
     issued_at: float
     stage: Literal["admission", "recording_window"] = "recording_window"
+    native_read_done: bool = False
+    native_read_supported: bool = False
 
 
 class PreparationHandoff:
@@ -34,6 +36,8 @@ class PreparationHandoff:
     caller supplies a freshly authenticated account when taking a context, and
     Core must reauthorize the existing token, binding and consent normally.
     Taking is synchronous and destructive, including on a subsequent failure.
+    One successful native preparation read may hand the same credential onward
+    to the first window, with its original issue time and a consumed-read marker.
     A miss uses the original negotiation before any mutation; failed mutations
     never retry or fall back. Process restart needs no recovery state.
     """

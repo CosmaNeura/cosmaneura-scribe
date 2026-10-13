@@ -645,7 +645,7 @@ class ProviderReceiver:
                 action,
                 body,
                 key,
-                handoff=self._preparation_handoff if action == "mount" else None,
+                handoff=self._preparation_handoff,
                 revision=revision,
             )
             if not self.enabled:
