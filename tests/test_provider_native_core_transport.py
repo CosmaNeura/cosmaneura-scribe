@@ -81,7 +81,11 @@ class Wire:
                     "key_ops": ["wrapKey"],
                 },
             }
-        if data.get("operation", {}).get("kind") in {
+        native_preparation = (
+            data.get("include_native_preparation") is True
+            or data.get("operation", {}).get("kind") == "native_recording_preparation"
+        )
+        if native_preparation or data.get("operation", {}).get("kind") in {
             "preparation_metadata",
             "native_recording_preparation",
         }:
@@ -118,7 +122,7 @@ class Wire:
                     "upload_concurrency": 2,
                 },
             }
-            if data["operation"]["kind"] == "native_recording_preparation":
+            if native_preparation:
                 review = {
                     "schema_version": "1.0",
                     "context": {
@@ -130,7 +134,18 @@ class Wire:
                     },
                     "encryption_key": review["encryption_key"],
                 }
-        if data["action"] in {"operation", "prepared_native_read"}:
+        if data["action"] == "prepared_admission":
+            result.update(
+                appointment_ref="appointment_" + SUFFIX,
+                operation_ref="scribe_admission_" + SUFFIX,
+                consent_record_id=str(uuid4()),
+                session_id=SESSION,
+                status="admitted",
+                configured_capture=data["configured_capture"],
+            )
+            if data.get("include_native_preparation"):
+                result["native_recording_preparation"] = review
+        elif data["action"] in {"operation", "prepared_native_read"}:
             result.update(operation=data["operation"]["kind"], receipt=review)
         else:
             result.update(appointment_ref="appointment_" + SUFFIX, encounter={})

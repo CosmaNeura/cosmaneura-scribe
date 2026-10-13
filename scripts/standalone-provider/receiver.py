@@ -380,6 +380,14 @@ class ProviderReceiver:
                             "configured_capture",
                             "preparation_metadata",
                         },
+                        {
+                            "workspace_id",
+                            "binding_ref",
+                            "request_nonce",
+                            "attestation",
+                            "configured_capture",
+                            "native_recording_preparation",
+                        },
                     )
                 ) or (
                     action == "capture-operations"
@@ -395,11 +403,20 @@ class ProviderReceiver:
                 ):
 
                     async def preparation_account():
-                        if not self.enabled or not self.encounter_creation_enabled:
-                            raise AccessDenied()
-                        return await self.registry_read(
-                            lambda bind: self.encounter_account(authorization, bind=bind)
-                        )
+                        try:
+                            if not self.enabled or not self.encounter_creation_enabled:
+                                raise AccessDenied()
+                            return await self.registry_read(
+                                lambda bind: self.encounter_account(authorization, bind=bind)
+                            )
+                        except AuthenticationFailed:
+                            raise ProviderCoreUnavailable(
+                                "core_provider_access_unavailable", 401
+                            ) from None
+                        except (AccessDenied, ws.WorkspaceError):
+                            raise ProviderCoreUnavailable(
+                                "core_provider_access_unavailable", 403
+                            ) from None
 
                     result = await prepare_then_dispatch(
                         self.profile.core_origin,
@@ -668,6 +685,7 @@ class ProviderReceiver:
                 "encounter": {
                     "admission_metadata_v1": True,
                     "native_recording_preparation_v1": True,
+                    "admission_native_preparation_v1": True,
                     "appointmentRef": row["appointmentRef"],
                     "title": row["title"],
                     "detail": row["detail"],

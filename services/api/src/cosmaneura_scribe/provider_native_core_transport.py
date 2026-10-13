@@ -124,10 +124,13 @@ class ProviderNativeCoreTransport:
         *,
         admission: bool = False,
         native_read: bool = False,
+        admission_native_preparation: bool = False,
     ) -> dict[str, object]:
         """Use one server-only context through the fully authenticated native route."""
         selection = context.mount.selection
-        _require(not (admission and native_read))
+        _require(
+            not (admission and native_read) and (not admission_native_preparation or admission)
+        )
         _require(
             (
                 set(payload)
@@ -161,6 +164,8 @@ class ProviderNativeCoreTransport:
                 "client_turn_id": str(context.turn),
             },
         }
+        if admission_native_preparation:
+            request["include_native_preparation"] = True
         # The preparation caller already checked before/after workload I/O.
         # Keep its separate third fence, plus the ordinary adjacent pre-I/O,
         # post-I/O and final publication checks (six total for the window).
@@ -227,6 +232,7 @@ class ProviderNativeCoreTransport:
                         "status",
                         "configured_capture",
                     }
+                    | ({"native_recording_preparation"} if admission_native_preparation else set())
                     and result["appointment_ref"] == selection.appointment_ref
                     and isinstance(result["operation_ref"], str)
                     and re.fullmatch(
@@ -237,6 +243,12 @@ class ProviderNativeCoreTransport:
                 )
                 _uuid(result["session_id"])
                 _uuid(result["consent_record_id"])
+                if admission_native_preparation:
+                    prepared = _validated_native_preparation(
+                        result["native_recording_preparation"], payload["workspace_id"]
+                    )
+                    _require(_object(prepared["context"])["session_id"] == result["session_id"])
+                    result["native_recording_preparation"] = prepared
             else:
                 _require(
                     set(result)
@@ -573,6 +585,12 @@ class ProviderNativeCoreTransport:
                             native_read_supported=(
                                 response.headers.get_list(
                                     "x-cosmaneura-prepared-native-read-version"
+                                )
+                                == ["1"]
+                            ),
+                            admission_native_preparation_supported=(
+                                response.headers.get_list(
+                                    "x-cosmaneura-admission-native-preparation-version"
                                 )
                                 == ["1"]
                             ),

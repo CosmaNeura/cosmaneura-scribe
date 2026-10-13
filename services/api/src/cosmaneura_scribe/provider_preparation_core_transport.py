@@ -69,6 +69,14 @@ async def prepare_then_dispatch(
             and payload.pop("preparation_metadata") is True
             and payload.get("attestation") is not None
         )
+    native_metadata_requested = "native_recording_preparation" in payload
+    if native_metadata_requested:
+        need(
+            action == "capture-admissions"
+            and payload.pop("native_recording_preparation") is True
+            and payload.get("attestation") is not None
+            and not metadata_requested
+        )
     workspace = uid(payload.get("workspace_id"))
     nonce = uid(payload.get("request_nonce"))
     binding = payload.get("binding_ref")
@@ -118,6 +126,11 @@ async def prepare_then_dispatch(
         )
         prepared_answer = None
         native_read_supported = retained.native_read_supported if retained is not None else False
+        combined_native_metadata = (
+            native_metadata_requested
+            and retained is not None
+            and retained.admission_native_preparation_supported
+        )
         if retained is not None:
             # Core receiver-first: retain the native route's current Clerk,
             # agent-workload, capture-workload and visit-policy boundaries.
@@ -127,7 +140,13 @@ async def prepare_then_dispatch(
             )
             try:
                 prepared_answer = await native.prepared_operation(
-                    payload, key, before, retained, credential, admission=preparation == "admission"
+                    payload,
+                    key,
+                    before,
+                    retained,
+                    credential,
+                    admission=preparation == "admission",
+                    admission_native_preparation=combined_native_metadata,
                 )
             finally:
                 await native.close()
@@ -293,6 +312,33 @@ async def prepare_then_dispatch(
             )
             if await fresh() != before:
                 raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+            if native_metadata_requested and not combined_native_metadata:
+                # Old Core takes the original read path. This is a supported
+                # compatibility choice made before I/O, never failure fallback.
+                native = ProviderNativeCoreTransport(
+                    origin, fresh, workload, transport=transport, connections=connections
+                )
+                try:
+                    _, metadata = await native.request(
+                        "capture-operations",
+                        {
+                            "workspace_id": workspace,
+                            "binding_ref": binding,
+                            "request_nonce": nonce,
+                            "operation": {"kind": "native_recording_preparation"},
+                        },
+                        str(uuid5(revision, "admission-native-metadata:" + key)),
+                    )
+                finally:
+                    await native.close()
+                need(obj(obj(metadata["receipt"])["context"])["session_id"] == answer["session_id"])
+                if await fresh() != before:
+                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                answer = {
+                    **answer,
+                    "native_recording_preparation": metadata["receipt"],
+                    "checked_at": metadata["checked_at"],
+                }
             if metadata_requested:
                 # Read after the ordinary admission and its publication fence.
                 # Reuse only this invocation's negotiation; the ordinary read
@@ -347,6 +393,7 @@ async def prepare_then_dispatch(
                         turn,
                         issued_at,
                         native_read_supported=native_read_supported,
+                        native_read_done=native_metadata_requested,
                     ),
                 )
             return answer

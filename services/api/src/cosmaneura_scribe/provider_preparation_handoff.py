@@ -27,6 +27,7 @@ class PreparedContext:
     stage: Literal["admission", "recording_window"] = "recording_window"
     native_read_done: bool = False
     native_read_supported: bool = False
+    admission_native_preparation_supported: bool = False
 
 
 class PreparationHandoff:
