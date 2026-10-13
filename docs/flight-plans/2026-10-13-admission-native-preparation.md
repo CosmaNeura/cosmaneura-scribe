@@ -13,7 +13,10 @@ Older Core uses ordinary admission followed by the original fresh native read
 inside the same device request. Neither path retries an uncertain admission.
 No credential or access decision is returned to the device.
 
-The native bridge opts in for fresh non-null consent only when our receiver
+The iPhone native bridge explicitly enables reuse only when native recording is
+available. The desktop connection leaves it disabled, preserving its existing
+renderer metadata flow and avoiding an unused read on consent renewal. The
+native bridge opts in for fresh non-null consent only when our receiver
 advertises support. It validates the closed reply, same workspace/binding/session,
 current native account, key shape and server timestamp, and strips native metadata
 before renderer publication. One in-memory context transfers once to the next

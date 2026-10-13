@@ -508,7 +508,8 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
           tokenPolicy: try NativeTokenPolicy(
             issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider"),
           driver: { driver }, accessBlock: { Block() })
-        let connection = NativeProviderConnection(auth: auth, wire: wire)
+        let connection = NativeProviderConnection(
+          auth: auth, wire: wire, nativeAdmissionPreparationEnabled: true)
         _ = try await connection.send(
           CheckNativeProvider.request(
             auth, action: "mount",
@@ -557,7 +558,8 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     }
     for supported in [false, true] {
       for fault in [
-        "none", "expired", "transfer_expiry", "cancelled", "revision", "remount",
+        "none", "expired", "transfer_expiry", "cancelled", "early_cancel", "task_cancel",
+        "revision", "remount",
         "admission_session", "admission_extra", "admission_absent", "admission_lost",
       ] {
         var instant = ContinuousClock.now
@@ -569,7 +571,8 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
           tokenPolicy: try NativeTokenPolicy(
             issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider"),
           driver: { driver }, accessBlock: { Block() })
-        let connection = NativeProviderConnection(auth: auth, wire: wire, contextNow: { instant })
+        let connection = NativeProviderConnection(
+          auth: auth, wire: wire, nativeAdmissionPreparationEnabled: true, contextNow: { instant })
         auth.onChange = { [weak connection] state in connection?.authChanged(state) }
         let mountRequest = try CheckNativeProvider.request(
           auth, action: "mount",
@@ -623,7 +626,17 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
                   "session_id": wire.session.uuidString.lowercased(),
                   "request_nonce": nonce.uuidString.lowercased(),
                 ]), as: UTF8.self))
-          if fault == "revision" {
+          if fault == "early_cancel" {
+            connection.cancel(preparation.id)
+            try await CheckNativeProvider.rejected(
+              Task { try await connection.prepareRecordingContext(preparation) })
+            try require(await wire.requests.count == before && driver.tokens == tokens)
+          } else if fault == "task_cancel" {
+            let cancelled = Task { try await connection.prepareRecordingContext(preparation) }
+            cancelled.cancel()
+            try await CheckNativeProvider.rejected(cancelled)
+            try require(await wire.requests.count == before && driver.tokens == tokens)
+          } else if fault == "revision" {
             try await CheckNativeProvider.rejected(
               Task { try await connection.prepareRecordingContext(preparation) })
           } else {

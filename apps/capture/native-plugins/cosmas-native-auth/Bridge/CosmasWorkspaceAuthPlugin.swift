@@ -217,7 +217,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                           let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
                     else { throw ProviderNativeError.unavailable }
                     self.providerConnection = NativeProviderConnection(auth: auth,
-                        wire: try ProviderNativeTransport(settings: settings))
+                        wire: try ProviderNativeTransport(settings: settings),
+                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable)
                 }
                 guard let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
                 try await self.recoverSources(connection: connection)
@@ -305,7 +306,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                           let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
                     else { throw ProviderNativeError.unavailable }
                     self.providerConnection = NativeProviderConnection(auth: auth,
-                        wire: try ProviderNativeTransport(settings: settings))
+                        wire: try ProviderNativeTransport(settings: settings),
+                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable)
                 }
                 self.providerConnection?.cancel(id)
                 call.resolve()
@@ -386,7 +388,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                     guard let settings = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
                     else { throw ProviderNativeError.unavailable }
                     self.providerConnection = NativeProviderConnection(auth: auth,
-                        wire: try ProviderNativeTransport(settings: settings))
+                        wire: try ProviderNativeTransport(settings: settings),
+                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable)
                 }
                 guard let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
                 try await self.recoverSources(connection: connection)

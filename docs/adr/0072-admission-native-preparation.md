@@ -6,6 +6,8 @@ work. Compose the existing consent action and existing fresh native preparation
 read in a single versioned native admission reply. Both keep their original
 server checks. Scope comes from current server admission, never from the device.
 
+Reuse is disabled by default and enabled only by the iPhone plugin when native
+recording is available. Desktop retains its existing renderer metadata flow.
 The native bridge consumes the bounded namespace/public wrapping key once,
 strips it before renderer publication and preserves the original five-second
 monotonic expiry. This is preparation metadata, not capture permission. Source

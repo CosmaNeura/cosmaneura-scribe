@@ -255,6 +255,7 @@ protocol ProviderNativeWire: Sendable {
 @MainActor final class NativeProviderConnection {
     private let auth: NativeWorkspaceAuth
     private let wire: any ProviderNativeWire
+    private let nativeAdmissionPreparationEnabled: Bool
     private var pending: [UUID: (revision: String, task: Task<ProviderNativeReply, Error>)] = [:]
     private var earlyCancellations: Set<UUID> = []
     private var closed = false
@@ -280,10 +281,12 @@ protocol ProviderNativeWire: Sendable {
     private let requestTiming: @MainActor (ProviderNativeRequestTiming) -> Void
 
     init(auth: NativeWorkspaceAuth, wire: any ProviderNativeWire,
+         nativeAdmissionPreparationEnabled: Bool = false,
          contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
          timingNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
          requestTiming: @escaping @MainActor (ProviderNativeRequestTiming) -> Void = { $0.log() }) {
         self.auth = auth; self.wire = wire; self.contextNow = contextNow
+        self.nativeAdmissionPreparationEnabled = nativeAdmissionPreparationEnabled
         self.timingNow = timingNow; self.requestTiming = requestTiming
     }
 
@@ -431,6 +434,13 @@ protocol ProviderNativeWire: Sendable {
     /// native open. Only an acknowledgement crosses the bridge, never the tenant.
     /// This single-use metadata does not grant microphone or source permission.
     func prepareRecordingContext(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
+        // A local handoff must keep send()'s cancellation fence even when no
+        // token/network request is needed to prepare this recording.
+        try Task.checkCancellation()
+        guard earlyCancellations.remove(request.id) == nil else {
+            preparedAdmission = nil; preparedRecording = nil; recordingGeneration = UUID()
+            throw ProviderNativeError.cancelled
+        }
         preparingAdmission = nil
         preparedRecording = nil
         let ticket = UUID(); recordingGeneration = ticket
@@ -465,6 +475,7 @@ protocol ProviderNativeWire: Sendable {
                 sessionID: session, revision: request.revision, requestID: request.id)
         }
         try current(request.revision)
+        try Task.checkCancellation()
         guard ticket == recordingGeneration,
               try recordingMount(workspaceID: workspace, bindingRef: binding, revision: request.revision) == mount else {
             throw ProviderNativeError.authorityChanged
@@ -582,6 +593,7 @@ protocol ProviderNativeWire: Sendable {
     /// The renderer cannot select or supply the native metadata or its scope.
     private func admissionPreparationRequest(_ request: ProviderNativeRequest) throws -> ProviderNativeRequest {
         guard request.action == .admission else { return request }
+        guard nativeAdmissionPreparationEnabled else { return request }
         preparedAdmission = nil; preparedRecording = nil
         preparingAdmission = nil; recordingGeneration = UUID()
         if let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any],
