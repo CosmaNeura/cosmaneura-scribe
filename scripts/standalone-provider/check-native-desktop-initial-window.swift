@@ -87,6 +87,10 @@ private func encoded(_ value: [String: Any]) throws -> Data {
                     "reservation_window_seconds": 900, "max_reservations_per_batch": 30, "upload_concurrency": 2],
             ]
             if admissionFault == "metadata-extra" { metadata["permission"] = true }
+            if admissionFault == "legacy-key" {
+                var key = metadata["encryption_key"] as! [String: Any]
+                key["algorithm"] = "invalid"; metadata["encryption_key"] = key
+            }
             if admissionFault == "review-session" {
                 var review = metadata["review"] as! [String: Any]; review["session_id"] = UUID().uuidString.lowercased()
                 metadata["review"] = review
@@ -101,7 +105,11 @@ private func encoded(_ value: [String: Any]) throws -> Data {
                 "consent_record_id": UUID().uuidString.lowercased(), "session_id": session, "status": "admitted",
                 "configured_capture": body["configured_capture"]!, "preparation_metadata": metadata]
             if admissionFault == "appointment" { answer["appointment_ref"] = "appointment_01j00000000000000000000001" }
-            if admissionFault == "nonce" { answer["request_nonce"] = UUID().uuidString.lowercased() }
+            if admissionFault == "nonce" || admissionFault == "legacy-nonce" { answer["request_nonce"] = UUID().uuidString.lowercased() }
+            if admissionFault.hasPrefix("legacy") || admissionFault == "missing-status" { answer.removeValue(forKey: "status") }
+            if admissionFault.hasPrefix("legacy") || admissionFault == "missing-configuration" { answer.removeValue(forKey: "configured_capture") }
+            if admissionFault == "different-configuration" { answer["configured_capture"] = ["schema_version": "1.0", "language_mode": "es-US"] }
+            if admissionFault == "extra-admission-field" { answer["unused_extension"] = true }
             return ProviderNativeReply(status: 200, body: try encoded(answer))
         }
         if loseWindowReply { throw ProviderNativeError.response }
@@ -185,6 +193,24 @@ private func rejected(_ run: () async throws -> Void) async throws {
             let f = try Fixture(); try await f.prepare(); _ = try await f.claim()
             try require(f.driver.tokens == 2 && f.wire.calls.count == 3)
             _ = try await f.claim(); try require(f.driver.tokens == 3 && f.wire.calls.count == 4)
+            f.connection.close(); checks += 1
+        }
+        for extensionShape in ["legacy", "missing-status", "missing-configuration", "different-configuration", "extra-admission-field"] {
+            let f = try Fixture(); f.wire.admissionFault = extensionShape
+            try await f.prepare()
+            let published = try JSONSerialization.jsonObject(with: f.receipt) as! [String: Any]
+            try require(published["request_nonce"] as? String == f.admissionNonce)
+            try require(published["session_id"] as? String == f.wire.session)
+            _ = try await f.claim()
+            try require(f.driver.tokens == 3 && f.wire.calls.count == 3)
+            _ = try await f.connection.send(f.window())
+            try require(f.driver.tokens == 4 && f.wire.calls.count == 4)
+            f.connection.close(); checks += 1
+        }
+        for mandatoryFault in ["legacy-nonce", "legacy-key"] {
+            let f = try Fixture(); f.wire.admissionFault = mandatoryFault
+            try await f.mount(); try await rejected { try await f.admit() }
+            try require(f.receipt.isEmpty && f.driver.tokens == 2 && f.wire.calls.count == 2)
             f.connection.close(); checks += 1
         }
         do {

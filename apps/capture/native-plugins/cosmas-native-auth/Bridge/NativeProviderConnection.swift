@@ -861,14 +861,9 @@ protocol ProviderNativeWire: Sendable {
               mounted.mount.bindingRef == binding, mounted.mount.desktopAdmissionMetadataSupported,
               reply.body.count <= 8192,
               let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
-              Set(value.keys) == ["contract_version", "workspace_id", "binding_ref", "request_nonce", "checked_at",
-                  "appointment_ref", "operation_ref", "consent_record_id", "session_id", "status", "configured_capture", "preparation_metadata"],
               value["contract_version"] as? String == "1", value["workspace_id"] as? String == workspace.uuidString.lowercased(),
               value["binding_ref"] as? String == binding, value["request_nonce"] as? String == nonce,
               value["appointment_ref"] as? String == mounted.mount.appointmentRef,
-              value["status"] as? String == "admitted",
-              let requested = body["configured_capture"] as? NSDictionary,
-              value["configured_capture"] as? NSDictionary == requested,
               let operation = value["operation_ref"] as? String,
               operation.range(of: "^scribe_admission_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil,
               Self.canonicalUUID(value["consent_record_id"] as? String) != nil,
@@ -882,6 +877,14 @@ protocol ProviderNativeWire: Sendable {
               review["schema_version"] as? String == "1.0", review["session_id"] as? String == session.uuidString.lowercased()
         else { throw ProviderNativeError.response }
         let publicKey = try NativeProviderRecordingPublicKey.parse(key)
+        // The baseline admission does not require the optional status/configuration
+        // extension. Keep its mandatory scope/nonce/metadata validation above;
+        // an older or partial extension declines reuse without rejecting admission.
+        guard Set(value.keys) == ["contract_version", "workspace_id", "binding_ref", "request_nonce", "checked_at",
+                  "appointment_ref", "operation_ref", "consent_record_id", "session_id", "status", "configured_capture", "preparation_metadata"],
+              value["status"] as? String == "admitted",
+              let requested = body["configured_capture"] as? NSDictionary,
+              value["configured_capture"] as? NSDictionary == requested else { return }
         // Existing/resumed review contents remain ordinary fresh work. The
         // shortcut parser accepts only the closed empty created review form.
         guard Set(review.keys) == ["schema_version", "session_id", "status", "source", "working", "review_queue", "translation_progress"],

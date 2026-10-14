@@ -66,7 +66,7 @@ async function fixture() {
 }
 
 describe("desktop provider resource factory", () => {
-  it.each(["fresh", "consent_uncertain", "session_uncertain", "input_uncertain", "initial_preparation_uncertain", "key_uncertain", "recipe_uncertain", "old_reply", "cancelled"])(
+  it.each(["fresh", "consent_uncertain", "session_uncertain", "input_uncertain", "initial_preparation_uncertain", "key_uncertain", "recipe_uncertain", "old_reply", "missing_status", "missing_configuration", "configuration_mismatch", "extra_optional_field", "cancelled"])(
     "uses the real encrypted custody witness and preserves recovery keys: %s", async mode => {
       const f = await fixture();
       initialWindowJwk ??= crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 3072,
@@ -86,10 +86,15 @@ describe("desktop provider resource factory", () => {
         if (path.endsWith("capture-admissions")) {
           const metadata = (await (await original("/service/v1/agent/scribe/capture-operations", { ...body, operation: { kind: "preparation_metadata" } })).json()).receipt;
           metadata.encryption_key.public_jwk = publishedJwk;
-          return Response.json({ contract_version: "1", binding_ref: body.binding_ref, workspace_id: body.workspace_id,
+          const answer: Record<string, unknown> = { contract_version: "1", binding_ref: body.binding_ref, workspace_id: body.workspace_id,
             request_nonce: body.request_nonce, checked_at: new Date().toISOString(), appointment_ref: scope.appointmentRef,
             operation_ref: "scribe_admission_01j00000000000000000000000", consent_record_id: crypto.randomUUID(), session_id: sessionId,
-            ...(mode === "old_reply" ? {} : { status: "admitted", configured_capture: body.configured_capture }), preparation_metadata: metadata });
+            status: "admitted", configured_capture: body.configured_capture, preparation_metadata: metadata };
+          if (mode === "old_reply" || mode === "missing_status") delete answer.status;
+          if (mode === "old_reply" || mode === "missing_configuration") delete answer.configured_capture;
+          if (mode === "configuration_mismatch") answer.configured_capture = { schema_version: "1.0", language_mode: "es-US" };
+          if (mode === "extra_optional_field") answer.unused_extension = true;
+          return Response.json(answer);
         }
         const reply = await original(path, body);
         if ((body.operation as { kind?: string }).kind !== "preparation_metadata") return reply;
