@@ -19,12 +19,16 @@ import { DesktopPreparationBff } from "./preparation-metadata.js";
 import { readBoundedJson } from "../../review-ui/src/beta-api";
 import { coreCaptureResponseLimit } from "../../review-ui/src/capture-response-limits";
 import { canonical } from "../../capture/src/provider/core-notes";
+import { DesktopInitialWindowOwner, type DesktopInitialWindowProof } from "./desktop-initial-window.js";
 
 export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderEncounter,
   "journal" | "reviewJournal" | "recorder"> {
   readonly recoveryScope: string;
   /** Optional receiver capability, confined to this backend-issued mount. */
   readonly admissionMetadataSupported?: true;
+  /** Main-owned opaque proof; never part of ProviderWorkspaceHost/renderer IPC. */
+  readonly sendFreshInitialWindow?: (proof: DesktopInitialWindowProof, body: Readonly<Record<string, unknown>>,
+    key: string, signal: AbortSignal) => Promise<Response>;
   readonly release?: () => Promise<void>;
   readonly uploadTarget: CiphertextUploadTarget;
   /** Backend-issued authority. A session/capabilities receipt is insufficient. */
@@ -177,13 +181,22 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           recoveryScope: selected.recoveryScope, workspaceId: selected.scope.workspaceId, key: owned.custody.key }); check();
         const records = desktopJournalRecords(owned.store.namespace("provider-journals"));
         const journal = new NativeProviderWorkspaceJournal(records, selected.recoveryScope, selected.scope);
-        let admissionMetadata: { sessionId: string; key: string; value: unknown; signal: AbortSignal } | undefined;
+        let admissionMetadata: { sessionId: string; key: string; nonce: string; value: unknown;
+          receipt: Record<string, unknown>; complete: boolean; signal: AbortSignal } | undefined;
         let admissionGeneration = 0;
-        mountSignal.addEventListener("abort", () => { admissionGeneration++; admissionMetadata = undefined; }, { once: true });
+        let cleanAdmissionKey: string | undefined, cleanSessionKey: string | undefined;
+        let freshWindow: DesktopInitialWindowOwner | undefined;
+        const discardFresh = (): void => { freshWindow?.invalidate(); freshWindow = undefined; cleanAdmissionKey = undefined; cleanSessionKey = undefined; };
+        mountSignal.addEventListener("abort", () => { admissionGeneration++; admissionMetadata = undefined; discardFresh(); }, { once: true });
         const guarded = <T>(run: () => Promise<T>): Promise<T> => track(owned.work, async () => {
           check(); const value = await run(); check(); return value;
         });
-        const request: typeof selected.request = (path, body, key, operationSignal) => guarded(async () => {
+        const request: typeof selected.request = (path, body, key, operationSignal) => {
+          const window = path === "/service/v1/agent/scribe/capture-operations" && record(body.operation)
+            && body.operation.kind === "prepare_recording_window";
+          const proof = window ? freshWindow?.take(body, key) : null;
+          if (!window && path !== "/service/v1/agent/scribe/capture-admissions") freshWindow?.invalidate();
+          return guarded(async () => {
           check();
           const linked = AbortSignal.any([mountSignal, operationSignal]);
           if (linked.aborted) throw unavailable();
@@ -193,6 +206,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
           let combine = false;
           if (admission) {
             admissionMetadata = undefined;
+            freshWindow?.invalidate(); freshWindow = undefined; cleanSessionKey = undefined;
             // Only the already-journaled, deliberate first admission opts in.
             // Recovery, renewal and renderer-supplied options keep the old path.
             if (selected.admissionMetadataSupported && body.attestation !== null
@@ -204,7 +218,9 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
             }
           }
           check(); if (linked.aborted) throw unavailable();
-          const value = await selected.request(path, combine ? { ...body, preparation_metadata: true } : body, key, linked);
+          const value = proof && selected.sendFreshInitialWindow
+            ? await selected.sendFreshInitialWindow(proof, body, key, linked)
+            : await selected.request(path, combine ? { ...body, preparation_metadata: true } : body, key, linked);
           if (combine && value.status === 200) {
             if (value.headers.get("content-type")?.split(";", 1)[0] !== "application/json") throw unavailable();
             const result = await readBoundedJson(value, coreCaptureResponseLimit("capture-admissions"));
@@ -218,15 +234,19 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
               || typeof row.checked_at !== "string" || !Number.isFinite(Date.parse(row.checked_at))
               || row.preparation_metadata === null || typeof row.preparation_metadata !== "object") throw unavailable();
             const sessionId = uuid(row.session_id); uuid(row.consent_record_id);
-            admissionMetadata = { sessionId, key, value: row.preparation_metadata, signal: linked };
+            const complete = Object.keys(row).sort().join(",") === "appointment_ref,binding_ref,checked_at,configured_capture,consent_record_id,contract_version,operation_ref,preparation_metadata,request_nonce,session_id,status,workspace_id"
+              && row.status === "admitted" && canonical(row.configured_capture) === canonical(body.configured_capture);
+            admissionMetadata = { sessionId, key, nonce: String(body.request_nonce), value: row.preparation_metadata,
+              receipt: structuredClone(row), complete, signal: linked };
             linked.addEventListener("abort", () => {
-              if (generation === admissionGeneration) { admissionGeneration++; admissionMetadata = undefined; }
+              if (generation === admissionGeneration) { admissionGeneration++; admissionMetadata = undefined; discardFresh(); }
             }, { once: true });
             delete row.preparation_metadata;
             return Response.json(row, { headers: { "Cache-Control": "no-store" } });
           }
           check(); if (linked.aborted) throw unavailable(); return value;
-        });
+          });
+        };
         return {
           scope: selected.scope, encounter: selected.encounter, signal: mountSignal, request,
           ...(selected.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
@@ -255,7 +275,19 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
             finally { wav.fill(0); }
           }),
           openInCore: noteRef => guarded(() => selected.openInCore(noteRef)),
-          journal: { load: () => guarded(() => journal.load()), save: (previous, progress) => guarded(() => journal.save(previous, progress)) },
+          journal: { load: () => guarded(() => journal.load()), save: (previous, progress) => guarded(async () => {
+            try {
+              const saved = await journal.save(previous, progress); check();
+              if (previous.revision === null && previous.progress === null && progress.sessionId === null && progress.admission) {
+                cleanAdmissionKey = progress.admission.key; cleanSessionKey = undefined;
+              } else if (progress.admission?.key === cleanAdmissionKey && previous.progress?.sessionId === null
+                && canonical(previous.progress.admission) === canonical(progress.admission)
+                && progress.sessionId === admissionMetadata?.sessionId && admissionMetadata?.key === cleanAdmissionKey
+                && !progress.uploaded && progress.pendingSave === null) cleanSessionKey = cleanAdmissionKey;
+              else discardFresh();
+              return saved;
+            } catch (error) { discardFresh(); throw error; }
+          }) },
           editJournal: sessionId => {
             check(); uuid(sessionId);
             const edit = new NativeCreatorEditJournal(records, selected.recoveryScope, sessionId);
@@ -269,6 +301,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
               clear: key => guarded(() => review.clear(key)) };
           },
           recorder: (sessionId, recorderSignal) => guarded(async () => {
+            freshWindow?.invalidate(); freshWindow = undefined;
             uuid(sessionId);
             if (owned.recorderOpening || owned.recorder?.availableForView) throw unavailable();
             owned.recorderOpening = true;
@@ -304,7 +337,10 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                 finally { bytes.fill(0); }
               };
               if (!storedInput) await saveAudioMode(audioMode);
-              const flow = new DurableDesktopFlowStore(owned.store!.namespace("flow"));
+              const flow = new DurableDesktopFlowStore(owned.store!.namespace("flow"), {
+                preparation: (prior, next) => freshWindow?.preparation(prior, next),
+                newKey: state => freshWindow?.newKey(state), invalidate: () => freshWindow?.invalidate(),
+              });
               const coverage = new DurableDesktopCoverage(owned.store!.namespace("coverage"), sessionId);
               let preparationBff: DesktopPreparationBff | undefined, preparationSignal: AbortSignal | undefined;
               const bff = (captureSignal: AbortSignal): DesktopPreparationBff => {
@@ -321,11 +357,30 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                 authorizePreparation: async captureSignal => {
                   const retained = await Promise.allSettled([
                     flow.getActiveCaptureState(), flow.getPreparationState(), flow.getSessionKeyState(sessionId), coverage.load(),
+                    owned.store!.namespace("flow").list(), owned.store!.namespace("coverage").list(),
+                    owned.store!.namespace(`queue:${sessionId}`).list(),
                   ]);
-                  for (const result of retained) if (result.status === "rejected") throw result.reason;
-                  check(); if (captureSignal.aborted) throw unavailable();
-                  // Retained/crashed attempts keep their original read/replay path.
-                  return bff(captureSignal).authorizePreparation(retained.every(result => result.status === "fulfilled" && result.value === null));
+                  const inventories = [retained[4], retained[5], retained[6]];
+                  let empty: boolean;
+                  try {
+                    for (const result of retained) if (result.status === "rejected") throw result.reason;
+                    check(); if (captureSignal.aborted) throw unavailable();
+                    // Retained/crashed attempts keep their original read/replay path.
+                    empty = retained.slice(0, 4).every(result => result.status === "fulfilled" && result.value === null)
+                      && inventories.every(result => result.status === "fulfilled" && result.value.length === 0);
+                  } finally {
+                    for (const result of inventories) if (result.status === "fulfilled")
+                      for (const record of result.value) record.data.fill(0);
+                  }
+                  const authorization = await bff(captureSignal).authorizePreparation(empty); check();
+                  if (empty && authorization.status === "created" && !storedInput && selected.sendFreshInitialWindow
+                    && initialMetadata?.complete && !initialMetadata.signal.aborted && !captureSignal.aborted
+                    && initialMetadata.key === cleanAdmissionKey && initialMetadata.key === cleanSessionKey) {
+                    freshWindow = new DesktopInitialWindowOwner(selected.scope, { key: initialMetadata.key,
+                      nonce: initialMetadata.nonce, receipt: initialMetadata.receipt },
+                    AbortSignal.any([linked, captureSignal, initialMetadata.signal]));
+                  }
+                  return authorization;
                 },
                 authorizeMount: (prepared, captureSignal) => selected.authorizeRecorder(prepared, captureSignal),
                 authority: selected.authority, indicator: resources.indicator,
@@ -372,3 +427,6 @@ function track<T>(work: Set<Promise<unknown>>, run: () => Promise<T>): Promise<T
   void result.finally(() => work.delete(result)).catch(() => undefined); return result;
 }
 function unavailable(): Error { return new Error("Desktop provider resources are unavailable."); }
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

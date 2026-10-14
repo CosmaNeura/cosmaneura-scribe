@@ -10,6 +10,9 @@ import { InMemoryRecordingIndicator } from "./recording-indicator.js";
 import type { NativePresentationEvent } from "./native-provider-presentation.js";
 import { DesktopPreparationBff } from "./preparation-metadata.js";
 import { CoreCaptureClient } from "../../capture/src/provider/core-client";
+import { claimDesktopInitialWindow, type DesktopInitialWindowProof } from "./desktop-initial-window.js";
+import { DesktopRecordNamespace } from "./durable-record-store.js";
+import type { ConfiguredCapturePreparationState, SessionKeyBindingState } from "../../capture/src/flow/types";
 
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
 const sessionId = "30000000-0000-4000-8000-000000000003";
@@ -18,6 +21,7 @@ const progress: ProviderProgress = { sessionId, uploaded: false, pendingSave: nu
   admission: { key: sessionId, languageMode: "en-US+es-US", attestation: { modality: "virtual", participant_regions: ["US-NY"],
     method: "verbal_attestation", all_parties_consented: true, granted_at: "2026-09-22T12:00:00Z" } } };
 const cleanup: (() => Promise<void>)[] = [];
+let initialWindowJwk: Promise<JsonWebKey> | undefined;
 afterEach(async () => { vi.restoreAllMocks(); for (const close of cleanup.reverse()) await close(); cleanup.length = 0; });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 async function fixture() {
@@ -62,6 +66,115 @@ async function fixture() {
 }
 
 describe("desktop provider resource factory", () => {
+  it.each(["fresh", "consent_uncertain", "session_uncertain", "input_uncertain", "initial_preparation_uncertain", "key_uncertain", "recipe_uncertain", "old_reply", "missing_status", "missing_configuration", "configuration_mismatch", "extra_optional_field", "cancelled"])(
+    "uses the real encrypted custody witness and preserves recovery keys: %s", async mode => {
+      const f = await fixture();
+      initialWindowJwk ??= crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 3072,
+        publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["wrapKey", "unwrapKey"])
+        .then(pair => crypto.subtle.exportKey("jwk", pair.publicKey));
+      const publishedJwk = await initialWindowJwk;
+      const original = f.request.getMockImplementation()!;
+      const fresh = vi.fn(async (proof: DesktopInitialWindowProof, body: Readonly<Record<string, unknown>>, key: string, signal: AbortSignal) => {
+        expect(signal.aborted).toBe(false);
+        const admission = claimDesktopInitialWindow(proof, { scope, body, key });
+        expect(admission.key).toBe(progress.admission.key); expect(admission.receipt.session_id).toBe(sessionId);
+        expect(admission.receipt.preparation_metadata).toBeDefined();
+        return original("/service/v1/agent/scribe/capture-operations", body);
+      });
+      vi.mocked(f.backend.openEncounter).mockResolvedValue({ ...f.selected, admissionMetadataSupported: true, sendFreshInitialWindow: fresh });
+      f.request.mockImplementation(async (path, body) => {
+        if (path.endsWith("capture-admissions")) {
+          const metadata = (await (await original("/service/v1/agent/scribe/capture-operations", { ...body, operation: { kind: "preparation_metadata" } })).json()).receipt;
+          metadata.encryption_key.public_jwk = publishedJwk;
+          const answer: Record<string, unknown> = { contract_version: "1", binding_ref: body.binding_ref, workspace_id: body.workspace_id,
+            request_nonce: body.request_nonce, checked_at: new Date().toISOString(), appointment_ref: scope.appointmentRef,
+            operation_ref: "scribe_admission_01j00000000000000000000000", consent_record_id: crypto.randomUUID(), session_id: sessionId,
+            status: "admitted", configured_capture: body.configured_capture, preparation_metadata: metadata };
+          if (mode === "old_reply" || mode === "missing_status") delete answer.status;
+          if (mode === "old_reply" || mode === "missing_configuration") delete answer.configured_capture;
+          if (mode === "configuration_mismatch") answer.configured_capture = { schema_version: "1.0", language_mode: "es-US" };
+          if (mode === "extra_optional_field") answer.unused_extension = true;
+          return Response.json(answer);
+        }
+        const reply = await original(path, body);
+        if ((body.operation as { kind?: string }).kind !== "preparation_metadata") return reply;
+        const data = await reply.json(); data.receipt.encryption_key.public_jwk = publishedJwk;
+        return Response.json(data);
+      });
+      const connection = f.connect(), opened = await connection.workspace.openEncounter(scope.appointmentRef, new AbortController().signal);
+      let injected = false;
+      // The captured prototype is explicitly called with each live tested namespace.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const save = DesktopRecordNamespace.prototype.save;
+      vi.spyOn(DesktopRecordNamespace.prototype, "save").mockImplementation(async function (this: DesktopRecordNamespace, key, previous, bytes) {
+        const revision = await save.call(this, key, previous, bytes);
+        const target = mode === "consent_uncertain" ? key.startsWith("provider-workspace-v1:") && previous === null
+          : mode === "session_uncertain" ? key.startsWith("provider-workspace-v1:") && previous !== null
+          : mode === "input_uncertain" ? key === `audio-mode:${sessionId}`
+          : mode === "initial_preparation_uncertain" ? key === "preparation" && previous === null
+          : mode === "key_uncertain" ? key === `session:${sessionId}`
+          : mode === "recipe_uncertain" ? key === "preparation" && previous !== null : false;
+        if (target && !injected) { injected = true; throw new Error("fictional committed-then-thrown write"); }
+        return revision;
+      });
+      const first = opened.journal.save(await opened.journal.load(), { ...progress, sessionId: null });
+      if (mode === "consent_uncertain") await expect(first).rejects.toThrow(); else await first;
+      expect((await opened.journal.load()).progress?.sessionId).toBeNull();
+      const client = new CoreCaptureClient(scope, opened.request, new AbortController().signal);
+      expect(await client.admit(progress.admission)).toBe(sessionId);
+      const admitted = opened.journal.save(await opened.journal.load(), progress);
+      if (mode === "session_uncertain") await expect(admitted).rejects.toThrow(); else await admitted;
+      expect((await opened.journal.load()).progress?.sessionId).toBe(sessionId);
+      let options!: DesktopProviderRecorderOptions;
+      vi.spyOn(DesktopProviderRecorder, "open").mockImplementation(async value => {
+        options = value; return { availableForView: true, deactivate: async () => undefined } as unknown as DesktopProviderRecorder;
+      });
+      const opening = opened.recorder(sessionId, new AbortController().signal);
+      if (mode === "input_uncertain") {
+        await expect(opening).rejects.toThrow();
+        await opened.recorder(sessionId, new AbortController().signal);
+      } else await opening;
+      expect(await options.authorizePreparation(options.signal)).toEqual({ sessionId, status: "created" });
+      const initial: ConfiguredCapturePreparationState = { mode: "configured_core", schemaVersion: 6, channel: "mixed", sessionId,
+        startedAt: new Date().toISOString(), completeIdempotencyKey: "complete:" + crypto.randomUUID(), leaseIdempotencyKey: null,
+        leaseRequest: null, windowPreparation: null };
+      const preparing = options.flowStore.putPreparationState(initial);
+      if (mode === "initial_preparation_uncertain") await expect(preparing).rejects.toThrow(); else await preparing;
+      expect(await options.flowStore.getPreparationState()).toEqual(initial);
+      const bff = options.createBff(options.signal), published = await bff.getAudioEncryptionKey();
+      const candidate = await options.createSessionKey(sessionId, published, crypto);
+      const state: SessionKeyBindingState = { schemaVersion: 2, sessionId, state: "pending", keyVersion: candidate.keyVersion,
+        wrappedDek: candidate.wrappedDek, idempotencyKey: "bind-key:" + crypto.randomUUID() };
+      const custody = options.flowStore.putSessionKeyCandidate(state, candidate.key);
+      if (mode === "key_uncertain") await expect(custody).rejects.toThrow(); else await custody;
+      expect(await options.flowStore.getSessionKeyState(sessionId)).toEqual(state);
+      expect(await options.flowStore.getSessionKey(sessionId)).not.toBeNull();
+      const recipe: ConfiguredCapturePreparationState = { ...initial, leaseIdempotencyKey: "lease:" + crypto.randomUUID(),
+        leaseRequest: { protocol_version: "1.0" }, windowPreparation: { idempotencyKey: "prepare-window:" + crypto.randomUUID(),
+          bindIdempotencyKey: state.idempotencyKey, reserveIdempotencyKey: "reserve:" + crypto.randomUUID(), keyVersion: state.keyVersion,
+          wrappedDek: state.wrappedDek, reservationCount: 30, aggregatePlaintextBudgetBytes: 67108864 } };
+      const savedRecipe = options.flowStore.putPreparationState(recipe);
+      if (mode === "recipe_uncertain") await expect(savedRecipe).rejects.toThrow(); else await savedRecipe;
+      expect(await options.flowStore.getPreparationState()).toEqual(recipe);
+      if (mode === "cancelled") {
+        f.authorized.abort(); await expect(bff.prepareRecordingWindow!(sessionId, { schema_version: "1.0",
+          binding: { key_version: state.keyVersion, wrapped_dek: state.wrappedDek }, bind_idempotency_key: state.idempotencyKey,
+          lease_idempotency_key: recipe.leaseIdempotencyKey!, reserve_idempotency_key: recipe.windowPreparation!.reserveIdempotencyKey,
+          channel: "mixed", reservation_count: 30 }, { idempotencyKey: recipe.windowPreparation!.idempotencyKey })).rejects.toThrow();
+        expect(fresh).not.toHaveBeenCalled(); return;
+      }
+      const window = { schema_version: "1.0" as const, binding: { key_version: state.keyVersion, wrapped_dek: state.wrappedDek },
+        bind_idempotency_key: state.idempotencyKey, lease_idempotency_key: recipe.leaseIdempotencyKey!,
+        reserve_idempotency_key: recipe.windowPreparation!.reserveIdempotencyKey, channel: "mixed" as const, reservation_count: 30 };
+      // Explicit continuation after uncertainty preserves the exact durable recipe.
+      await bff.prepareRecordingWindow!(sessionId, window, { idempotencyKey: recipe.windowPreparation!.idempotencyKey });
+      expect(fresh).toHaveBeenCalledTimes(mode === "fresh" ? 1 : 0);
+      expect(await options.flowStore.getSessionKeyState(sessionId)).toEqual(state);
+      expect(await options.flowStore.getPreparationState()).toEqual(recipe);
+      await bff.prepareRecordingWindow!(sessionId, window, { idempotencyKey: recipe.windowPreparation!.idempotencyKey });
+      expect(fresh).toHaveBeenCalledTimes(mode === "fresh" ? 1 : 0);
+      expect(f.authorizeStart).not.toHaveBeenCalled(); expect(f.resources.selectWindow).not.toHaveBeenCalled();
+    });
   it.each(["fresh", "retained", "cancelled", "cancelled_during_open", "foreign_receipt"])("uses admission metadata only for its current fresh recorder: %s", async mode => {
     const f = await fixture();
     vi.mocked(f.backend.openEncounter).mockResolvedValue({ ...f.selected, admissionMetadataSupported: true });
