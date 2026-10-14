@@ -4,6 +4,7 @@ import { createWrappedSessionKey, type WrappedSessionKey } from "../../capture/s
 import type { CaptureSessionKeyFactory } from "../../capture/src/flow/controller";
 import type { ActiveCaptureState, CaptureFlowStore, CapturePreparationState, ReservationIntent,
   SessionKeyBindingState } from "../../capture/src/flow/types";
+import type { DesktopFreshPreparationWitness } from "./desktop-initial-window.js";
 import { type DesktopRecordNamespace, type DesktopStoredRecord, conflict, failure, uuid } from "./durable-record-store.js";
 
 type LocalKey = NonNullable<WrappedSessionKey["localKey"]>;
@@ -13,7 +14,7 @@ type Session = { readonly state: SessionKeyBindingState; readonly localKey: Loca
  * local-key/state commits. Only this store's key factory can supply candidates. */
 export class DurableDesktopFlowStore implements CaptureFlowStore {
   private readonly candidates = new WeakMap<CryptoKey, { sessionId: string; value: WrappedSessionKey }>();
-  constructor(private readonly records: DesktopRecordNamespace) {}
+  constructor(private readonly records: DesktopRecordNamespace, private readonly fresh?: DesktopFreshPreparationWitness) {}
 
   readonly createSessionKey: CaptureSessionKeyFactory = async (sessionId, published, crypto) => {
     const value = await createWrappedSessionKey(published, crypto, this.records.wrapping(uuid(sessionId)));
@@ -26,6 +27,7 @@ export class DurableDesktopFlowStore implements CaptureFlowStore {
     const prior = await this.read("preparation", assertPreparationState);
     if (prior) assertPreparationProgression(prior.value, state);
     await this.save("preparation", prior?.revision ?? null, state);
+    this.fresh?.preparation(prior?.value ?? null, state);
   }
   async getPreparationState(): Promise<CapturePreparationState | null> {
     return (await this.read("preparation", assertPreparationState))?.value ?? null;
@@ -121,6 +123,7 @@ export class DurableDesktopFlowStore implements CaptureFlowStore {
       || candidate.value.wrappedDek !== state.wrappedDek || candidate.value.keyVersion !== state.keyVersion) throw failure();
     await this.save(`session:${uuid(state.sessionId)}`, revision, { state, localKey: candidate.value.localKey });
     this.candidates.delete(key);
+    if (revision === null) this.fresh?.newKey(state); else this.fresh?.invalidate();
   }
   private async read<T>(key: string, validate: (value: unknown) => asserts value is T): Promise<{ value: T; revision: number } | null> {
     const record = await this.records.get(key);
@@ -131,6 +134,7 @@ export class DurableDesktopFlowStore implements CaptureFlowStore {
   private async save(key: string, revision: number | null, value: unknown): Promise<void> {
     const bytes = new TextEncoder().encode(JSON.stringify(value));
     try { await this.records.save(key, revision, bytes); }
+    catch (error) { this.fresh?.invalidate(); throw error; }
     finally { bytes.fill(0); }
   }
 }

@@ -238,12 +238,17 @@ struct NativeProviderRecordingMount: Equatable, Sendable {
     let recoveryScope: UUID
     let recordingPreparationSupported: Bool
     let admissionPreparationSupported: Bool
+    let appointmentRef: String?
+    let desktopAdmissionMetadataSupported: Bool
     fileprivate init(workspaceID: UUID, bindingRef: String, recoveryScope: UUID,
-                     recordingPreparationSupported: Bool, admissionPreparationSupported: Bool) {
+                     recordingPreparationSupported: Bool, admissionPreparationSupported: Bool,
+                     appointmentRef: String? = nil, desktopAdmissionMetadataSupported: Bool = false) {
         self.workspaceID = workspaceID; self.bindingRef = bindingRef
         self.recoveryScope = recoveryScope
         self.recordingPreparationSupported = recordingPreparationSupported
         self.admissionPreparationSupported = admissionPreparationSupported
+        self.appointmentRef = appointmentRef
+        self.desktopAdmissionMetadataSupported = desktopAdmissionMetadataSupported
     }
 }
 
@@ -257,6 +262,8 @@ protocol ProviderNativeWire: Sendable {
     private let auth: NativeWorkspaceAuth
     private let wire: any ProviderNativeWire
     private let nativeAdmissionPreparationEnabled: Bool
+    private let desktopInitialWindowEnabled: Bool
+    private let desktopWallNow: @MainActor () -> Date
     private var pending: [UUID: (revision: String, task: Task<ProviderNativeReply, Error>)] = [:]
     private var earlyCancellations: Set<UUID> = []
     private var closed = false
@@ -286,6 +293,25 @@ protocol ProviderNativeWire: Sendable {
     private var initialWindowEpoch = UUID()
     private var initialWindowExpiry: Task<Void, Never>?
 
+    // Desktop has no tenant-bearing native-recording context on this wire.
+    // Bind only the complete existing desktop account/mount/admission contract.
+    private struct DesktopInitialWindowTicket {
+        let token: String, identity: NativeAuthIdentity
+        let revision: String, account: String, admissionKey: String, admissionNonce: String
+        let receipt: Data, session: UUID, keyVersion: String
+        let mount: NativeProviderRecordingMount, epoch: UUID
+        let mintedAt: ContinuousClock.Instant, expires: ContinuousClock.Instant
+        let clockAt: ContinuousClock.Instant, clockWall: Date
+    }
+    private var desktopInitialWindowTicket: DesktopInitialWindowTicket?
+    private var desktopInitialWindowEpoch = UUID()
+    private var desktopInitialWindowExpiry: Task<Void, Never>?
+
+    func abandonDesktopInitialWindow() {
+        desktopInitialWindowExpiry?.cancel(); desktopInitialWindowExpiry = nil
+        desktopInitialWindowTicket = nil; desktopInitialWindowEpoch = UUID()
+    }
+
     func abandonFreshInitialWindow() {
         initialWindowExpiry?.cancel(); initialWindowExpiry = nil
         initialWindowTicket = nil; initialWindowEpoch = UUID()
@@ -299,16 +325,21 @@ protocol ProviderNativeWire: Sendable {
 
     init(auth: NativeWorkspaceAuth, wire: any ProviderNativeWire,
          nativeAdmissionPreparationEnabled: Bool = false,
+         desktopInitialWindowEnabled: Bool = false,
+         desktopWallNow: @escaping @MainActor () -> Date = { Date() },
          contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
          timingNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
          requestTiming: @escaping @MainActor (ProviderNativeRequestTiming) -> Void = { $0.log() }) {
         self.auth = auth; self.wire = wire; self.contextNow = contextNow
         self.nativeAdmissionPreparationEnabled = nativeAdmissionPreparationEnabled
+        self.desktopInitialWindowEnabled = desktopInitialWindowEnabled
+        self.desktopWallNow = desktopWallNow
         self.timingNow = timingNow; self.requestTiming = requestTiming
     }
 
     func authChanged(_ state: NativeAuthState) {
         abandonFreshInitialWindow()
+        abandonDesktopInitialWindow()
         preparingAdmission = nil
         preparedAdmission = nil
         preparedRecording = nil; recordingGeneration = UUID()
@@ -320,6 +351,7 @@ protocol ProviderNativeWire: Sendable {
 
     func cancel(_ id: UUID) {
         abandonFreshInitialWindow()
+        abandonDesktopInitialWindow()
         if preparingAdmission == id { preparingAdmission = nil }
         if preparedAdmission?.requestID == id { preparedAdmission = nil }
         if preparedRecording?.requestID == id || preparingRecording == id {
@@ -334,6 +366,7 @@ protocol ProviderNativeWire: Sendable {
 
     func close() {
         abandonFreshInitialWindow()
+        abandonDesktopInitialWindow()
         closed = true
         preparingAdmission = nil
         preparedAdmission = nil
@@ -619,10 +652,18 @@ protocol ProviderNativeWire: Sendable {
                   CFGetTypeID(capability) == CFBooleanGetTypeID() else { return }
             admissionSupported = capability.boolValue
         }
+        var desktopSupported = false
+        if desktopInitialWindowEnabled, let rawCapability = encounter["admission_metadata_v1"] {
+            guard let capability = rawCapability as? NSNumber,
+                  CFGetTypeID(capability) == CFBooleanGetTypeID() else { return }
+            desktopSupported = capability.boolValue
+        }
         recordingMounts[id] = (request.revision, NativeProviderRecordingMount(
             workspaceID: id, bindingRef: binding, recoveryScope: scope,
             recordingPreparationSupported: preparationSupported,
-            admissionPreparationSupported: admissionSupported))
+            admissionPreparationSupported: admissionSupported,
+            appointmentRef: desktopInitialWindowEnabled ? appointment : nil,
+            desktopAdmissionMetadataSupported: desktopSupported))
     }
 
     /// Opt in only for fresh consent on a mount advertised by our receiver.
@@ -729,7 +770,177 @@ protocol ProviderNativeWire: Sendable {
 
     func send(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
         abandonFreshInitialWindow()
+        abandonDesktopInitialWindow()
         return try await sendNative(request, initialWindowToken: nil)
+    }
+
+    /// Only trusted desktop main calls this after its one-use clean-custody proof.
+    /// A miss before I/O takes the original fresh path; uncertain I/O never retries.
+    func sendFreshDesktopInitialWindow(_ request: ProviderNativeRequest, admissionKey: String,
+                                      admissionNonce: String, admissionReceipt: Data,
+                                      beforeDispatch: @MainActor () async throws -> Void = {}) async throws -> ProviderNativeReply {
+        let saved = desktopInitialWindowTicket
+        desktopInitialWindowExpiry?.cancel(); desktopInitialWindowExpiry = nil
+        desktopInitialWindowTicket = nil // Destructive claim before validation or await.
+        var retained: DesktopInitialWindowTicket?
+        if desktopInitialWindowEnabled, let saved,
+           saved.admissionKey == admissionKey, saved.admissionNonce == admissionNonce,
+           let row = try? JSONSerialization.jsonObject(with: admissionReceipt) as? [String: Any],
+           (try? Self.desktopCanonical(row)) == saved.receipt,
+           desktopTicketIsCurrent(saved, revision: request.revision),
+           Self.isDesktopInitialWindow(request, ticket: saved) {
+            retained = saved
+        } else { abandonDesktopInitialWindow() }
+        try await beforeDispatch()
+        return try await sendNative(request, initialWindowToken: nil, desktopWindowToken: retained)
+    }
+
+    private func desktopTicketIsCurrent(_ ticket: DesktopInitialWindowTicket, revision: String) -> Bool {
+        guard !closed, ticket.revision == revision, ticket.epoch == desktopInitialWindowEpoch,
+              auth.state().phase == .ready, auth.state().revision == revision,
+              auth.state().identity == ticket.identity,
+              (try? auth.recordingAccountDigest(expectedRevision: revision)) == ticket.account,
+              recordingMounts[ticket.mount.workspaceID]?.revision == revision,
+              recordingMounts[ticket.mount.workspaceID]?.mount == ticket.mount,
+              contextNow() < ticket.expires,
+              Self.desktopClocksAgree(from: ticket.clockAt, wall: ticket.clockWall,
+                                     to: contextNow(), wall: desktopWallNow()),
+              (try? auth.validateInitialWindowToken(ticket.token, expectedRevision: revision)) != nil else { return false }
+        return true
+    }
+
+    private static func desktopCanonical(_ value: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])
+    }
+
+    private static func desktopClocksAgree(from: ContinuousClock.Instant, wall first: Date,
+                                          to: ContinuousClock.Instant, wall last: Date) -> Bool {
+        let duration = from.duration(to: to).components
+        let elapsed = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
+        let wallElapsed = last.timeIntervalSince(first)
+        // Sampling skew is bounded to 1 ms; neither sample may run backwards.
+        return elapsed.isFinite && wallElapsed.isFinite && elapsed >= 0 && wallElapsed >= 0
+            && abs(elapsed - wallElapsed) < 0.001
+    }
+
+    private static func desktopInteger(_ value: Any?, minimum: Int) -> Bool {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
+        let value = number.doubleValue
+        return value.isFinite && value.rounded(.down) == value && value >= Double(minimum)
+            && value <= 9_007_199_254_740_991
+    }
+
+    private static func desktopCapabilities(_ value: Any?) -> Bool {
+        guard let value = value as? [String: Any],
+              Set(value.keys) == ["protocol_version", "media", "target_chunk_duration_ms", "max_envelope_bytes", "max_chunks",
+                  "remaining_aggregate_plaintext_bytes", "capture_lease_ttl_seconds", "reservation_window_seconds",
+                  "max_reservations_per_batch", "upload_concurrency"], value["protocol_version"] as? String == "1.0",
+              let media = value["media"] as? [String: Any],
+              Set(media.keys) == ["media_type", "encoding", "channels", "sample_rate_hz"],
+              media["media_type"] as? String == "audio/wav", media["encoding"] as? String == "pcm_s16le",
+              desktopInteger(media["channels"], minimum: 1), (media["channels"] as? NSNumber)?.intValue == 1,
+              desktopInteger(media["sample_rate_hz"], minimum: 1), (media["sample_rate_hz"] as? NSNumber)?.intValue == 16000
+        else { return false }
+        return ["target_chunk_duration_ms", "max_envelope_bytes", "max_chunks", "capture_lease_ttl_seconds",
+                "reservation_window_seconds", "max_reservations_per_batch", "upload_concurrency"].allSatisfy {
+            desktopInteger(value[$0], minimum: 1)
+        } && desktopInteger(value["remaining_aggregate_plaintext_bytes"], minimum: 0)
+    }
+
+    private func takeDesktopAdmissionReply(_ request: ProviderNativeRequest, _ reply: ProviderNativeReply,
+                                          token: String, mintedAt: ContinuousClock.Instant,
+                                          mintedWall: Date?, epoch: UUID) throws {
+        guard desktopInitialWindowEnabled, request.action == .admission,
+              let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              let optIn = body["preparation_metadata"] as? NSNumber,
+              CFGetTypeID(optIn) == CFBooleanGetTypeID(), optIn.boolValue else { return }
+        guard Set(body.keys) == ["workspace_id", "binding_ref", "request_nonce", "attestation", "configured_capture", "preparation_metadata"],
+              body["attestation"] is [String: Any], let workspace = Self.canonicalUUID(body["workspace_id"] as? String),
+              let binding = body["binding_ref"] as? String, let nonce = body["request_nonce"] as? String,
+              Self.canonicalUUID(nonce) != nil, let mounted = recordingMounts[workspace], mounted.revision == request.revision,
+              mounted.mount.bindingRef == binding, mounted.mount.desktopAdmissionMetadataSupported,
+              reply.body.count <= 8192,
+              let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+              Set(value.keys) == ["contract_version", "workspace_id", "binding_ref", "request_nonce", "checked_at",
+                  "appointment_ref", "operation_ref", "consent_record_id", "session_id", "status", "configured_capture", "preparation_metadata"],
+              value["contract_version"] as? String == "1", value["workspace_id"] as? String == workspace.uuidString.lowercased(),
+              value["binding_ref"] as? String == binding, value["request_nonce"] as? String == nonce,
+              value["appointment_ref"] as? String == mounted.mount.appointmentRef,
+              value["status"] as? String == "admitted",
+              let requested = body["configured_capture"] as? NSDictionary,
+              value["configured_capture"] as? NSDictionary == requested,
+              let operation = value["operation_ref"] as? String,
+              operation.range(of: "^scribe_admission_[0-7][0-9a-hjkmnp-tv-z]{25}$", options: .regularExpression) != nil,
+              Self.canonicalUUID(value["consent_record_id"] as? String) != nil,
+              let session = Self.canonicalUUID(value["session_id"] as? String),
+              let checked = value["checked_at"] as? String, let checkedAt = Self.recentRecordingCheck(checked),
+              let metadata = value["preparation_metadata"] as? [String: Any],
+              Set(metadata.keys) == ["schema_version", "review", "encryption_key", "capabilities"],
+              metadata["schema_version"] as? String == "1.0", Self.desktopCapabilities(metadata["capabilities"]),
+              let key = metadata["encryption_key"] as? [String: Any],
+              let review = metadata["review"] as? [String: Any],
+              review["schema_version"] as? String == "1.0", review["session_id"] as? String == session.uuidString.lowercased()
+        else { throw ProviderNativeError.response }
+        let publicKey = try NativeProviderRecordingPublicKey.parse(key)
+        // Existing/resumed review contents remain ordinary fresh work. The
+        // shortcut parser accepts only the closed empty created review form.
+        guard Set(review.keys) == ["schema_version", "session_id", "status", "source", "working", "review_queue", "translation_progress"],
+              review["status"] as? String == "created", review["source"] is NSNull,
+              review["working"] is NSNull, review["review_queue"] is NSNull,
+              let progress = review["translation_progress"] as? [Any], progress.isEmpty,
+              epoch == desktopInitialWindowEpoch, let mintedWall,
+              let identity = auth.state().identity,
+              let jwtExpiry = try? auth.validateInitialWindowToken(token, expectedRevision: request.revision)
+        else { return }
+        let now = contextNow(), wall = desktopWallNow()
+        guard Self.desktopClocksAgree(from: mintedAt, wall: mintedWall, to: now, wall: wall) else { return }
+        // Both original anchors are conservative: a wall adjustment cannot move
+        // either original checked_at or JWT deadline later. Transfer never resets them.
+        let expires = min(mintedAt.advanced(by: .seconds(5)),
+            mintedAt.advanced(by: .seconds(checkedAt.addingTimeInterval(30).timeIntervalSince(mintedWall))),
+            now.advanced(by: .seconds(checkedAt.addingTimeInterval(30).timeIntervalSince(wall))),
+            mintedAt.advanced(by: .seconds(jwtExpiry.timeIntervalSince(mintedWall))),
+            now.advanced(by: .seconds(jwtExpiry.timeIntervalSince(wall))))
+        guard now < expires else { return }
+        desktopInitialWindowTicket = DesktopInitialWindowTicket(token: token, identity: identity,
+            revision: request.revision, account: try auth.recordingAccountDigest(expectedRevision: request.revision),
+            admissionKey: request.key, admissionNonce: nonce, receipt: try Self.desktopCanonical(value),
+            session: session, keyVersion: publicKey.version, mount: mounted.mount, epoch: epoch,
+            mintedAt: mintedAt, expires: expires, clockAt: now, clockWall: wall)
+        desktopInitialWindowExpiry = Task { @MainActor [weak self] in
+            try? await Task.sleep(until: expires, clock: ContinuousClock())
+            guard !Task.isCancelled, self?.desktopInitialWindowTicket?.epoch == epoch else { return }
+            self?.desktopInitialWindowTicket = nil; self?.desktopInitialWindowExpiry = nil
+            // An already claimed request keeps its publication epoch: expiration
+            // limits dispatch and erases unused RAM, not an in-flight reply.
+        }
+    }
+
+    private static func isDesktopInitialWindow(_ request: ProviderNativeRequest, ticket: DesktopInitialWindowTicket) -> Bool {
+        func component(_ value: Any?, prefix: String) -> String? {
+            guard let value = value as? String, value.hasPrefix(prefix + ":"),
+                  canonicalUUID(String(value.dropFirst(prefix.count + 1))) != nil else { return nil }
+            return value
+        }
+        guard request.action == .operation, component(request.key, prefix: "prepare-window") != nil,
+              let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              Set(body.keys) == ["workspace_id", "binding_ref", "request_nonce", "operation"],
+              body["workspace_id"] as? String == ticket.mount.workspaceID.uuidString.lowercased(),
+              body["binding_ref"] as? String == ticket.mount.bindingRef, canonicalUUID(body["request_nonce"] as? String) != nil,
+              let operation = body["operation"] as? [String: Any], Set(operation.keys) == ["kind", "payload"],
+              operation["kind"] as? String == "prepare_recording_window",
+              let payload = operation["payload"] as? [String: Any],
+              Set(payload.keys) == ["schema_version", "binding", "bind_idempotency_key", "lease_idempotency_key", "reserve_idempotency_key", "channel", "reservation_count"],
+              payload["schema_version"] as? String == "1.0", payload["channel"] as? String == "mixed",
+              desktopInteger(payload["reservation_count"], minimum: 30), (payload["reservation_count"] as? NSNumber)?.intValue == 30,
+              let binding = payload["binding"] as? [String: Any], Set(binding.keys) == ["key_version", "wrapped_dek"],
+              binding["key_version"] as? String == ticket.keyVersion,
+              let wrapped = binding["wrapped_dek"] as? String,
+              wrapped.range(of: "^[A-Za-z0-9_-]{512}$", options: .regularExpression) != nil,
+              let bind = component(payload["bind_idempotency_key"], prefix: "bind-key"),
+              let lease = component(payload["lease_idempotency_key"], prefix: "lease"),
+              let reserve = component(payload["reserve_idempotency_key"], prefix: "reserve") else { return false }
+        return Set([request.key, bind, lease, reserve, ticket.admissionKey]).count == 5
     }
 
     /// No renderer route calls this method. The unconstructable native proof
@@ -786,7 +997,8 @@ protocol ProviderNativeWire: Sendable {
     }
 
     private func sendNative(_ request: ProviderNativeRequest,
-                            initialWindowToken: InitialWindowTicket?) async throws -> ProviderNativeReply {
+                            initialWindowToken: InitialWindowTicket?,
+                            desktopWindowToken: DesktopInitialWindowTicket? = nil) async throws -> ProviderNativeReply {
         guard request.action != .recorderContext else { throw ProviderNativeError.invalidRequest }
         guard !closed, pending[request.id] == nil, pending.count < 8 else {
             throw ProviderNativeError.unavailable
@@ -809,6 +1021,7 @@ protocol ProviderNativeWire: Sendable {
             preparedAdmission = nil
             preparedRecording = nil; recordingGeneration = UUID()
         }
+        let desktopEpoch = desktopInitialWindowEpoch
         let operation = Task { @MainActor [auth, wire, timingNow, requestTiming] in
             let started = timingNow()
             let requestInterval = ProviderNativeRequestTiming.begin("Provider request")
@@ -831,8 +1044,9 @@ protocol ProviderNativeWire: Sendable {
                     status: status, completed: completed, serverTiming: serverTiming))
             }
             try Task.checkCancellation()
-            let token: String
+            var token: String
             let usedWindowTicket: InitialWindowTicket?
+            var usedDesktopWindowTicket: DesktopInitialWindowTicket?
             if let initialWindowToken,
                self.contextNow() >= initialWindowToken.mintedAt,
                self.contextNow() < initialWindowToken.expires,
@@ -841,19 +1055,40 @@ protocol ProviderNativeWire: Sendable {
                auth.state().identity == initialWindowToken.identity,
                (try? auth.validateInitialWindowToken(initialWindowToken.token, expectedRevision: request.revision)) != nil {
                 token = initialWindowToken.token; usedWindowTicket = initialWindowToken
+                usedDesktopWindowTicket = nil
+            } else if let desktopWindowToken,
+                      self.desktopTicketIsCurrent(desktopWindowToken, revision: request.revision),
+                      Self.isDesktopInitialWindow(request, ticket: desktopWindowToken) {
+                token = desktopWindowToken.token; usedDesktopWindowTicket = desktopWindowToken
+                usedWindowTicket = nil
             } else {
                 // No wire I/O has occurred. An optional ticket that expired while
                 // this Task was scheduled behaves exactly like a ticket miss.
                 usedWindowTicket = nil
+                usedDesktopWindowTicket = nil
                 token = try await auth.token(expectedRevision: request.revision,
                                             nativeSessionWithoutOrigin: true)
             }
             let mintedAt = self.contextNow()
+            let desktopMintedWall = self.desktopInitialWindowEnabled ? self.desktopWallNow() : nil
             tokenEnd = timingNow()
             if let interval = tokenInterval { ProviderNativeRequestTiming.end("Provider token", interval) }
             tokenInterval = nil
             try self.current(request.revision)
             try Task.checkCancellation()
+            if let desktop = usedDesktopWindowTicket,
+               !self.desktopTicketIsCurrent(desktop, revision: request.revision) {
+                // Still before wire: scheduling/local recovery consumed the
+                // original deadline. One fresh mint, with no repeated dispatch.
+                usedDesktopWindowTicket = nil
+                tokenEnd = nil
+                tokenInterval = ProviderNativeRequestTiming.begin("Provider token")
+                token = try await auth.token(expectedRevision: request.revision, nativeSessionWithoutOrigin: true)
+                tokenEnd = timingNow()
+                if let interval = tokenInterval { ProviderNativeRequestTiming.end("Provider token", interval) }
+                tokenInterval = nil
+                try self.current(request.revision); try Task.checkCancellation()
+            }
             receiverStart = timingNow()
             receiverInterval = ProviderNativeRequestTiming.begin("Provider receiver")
             let reply = try await wire.send(request, token: token)
@@ -870,6 +1105,30 @@ protocol ProviderNativeWire: Sendable {
                       auth.state().identity == initialWindowToken.identity
                 else { throw ProviderNativeError.cancelled }
             }
+            if let desktop = usedDesktopWindowTicket {
+                // Expiry limits dispatch, not the response. Account/mount/epoch
+                // publication fences remain mandatory after I/O and cancellation.
+                guard self.desktopInitialWindowEpoch == desktop.epoch,
+                      auth.state().identity == desktop.identity,
+                      (try? auth.recordingAccountDigest(expectedRevision: request.revision)) == desktop.account,
+                      self.recordingMounts[desktop.mount.workspaceID]?.revision == request.revision,
+                      self.recordingMounts[desktop.mount.workspaceID]?.mount == desktop.mount else {
+                    throw ProviderNativeError.cancelled
+                }
+                if reply.status == 200 {
+                    guard let value = try? JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+                          let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+                          Set(value.keys) == ["contract_version", "workspace_id", "binding_ref", "request_nonce", "checked_at", "operation", "receipt"],
+                          value["contract_version"] as? String == "1",
+                          value["workspace_id"] as? String == desktop.mount.workspaceID.uuidString.lowercased(),
+                          value["binding_ref"] as? String == desktop.mount.bindingRef,
+                          value["request_nonce"] as? String == body["request_nonce"] as? String,
+                          value["operation"] as? String == "prepare_recording_window",
+                          value["checked_at"] is String, value["receipt"] is [String: Any] else {
+                        throw ProviderNativeError.response
+                    }
+                }
+            }
             guard request.action.acceptsResponseStatus(reply.status),
                   reply.body.count <= request.responseLimit else {
                 throw ProviderNativeError.response
@@ -885,6 +1144,8 @@ protocol ProviderNativeWire: Sendable {
             }
             self.rememberRecordingMount(request, reply)
             let published = try self.takeAdmissionPreparationReply(request, reply, token: token, mintedAt: mintedAt)
+            try self.takeDesktopAdmissionReply(request, published, token: token, mintedAt: mintedAt,
+                                               mintedWall: desktopMintedWall, epoch: desktopEpoch)
             completed = true
             return published
         }

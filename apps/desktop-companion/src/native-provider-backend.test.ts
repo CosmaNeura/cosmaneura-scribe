@@ -238,3 +238,80 @@ it.each([false, true])("gates coordinated notes and preserves its native timeout
       .toEqual(["catalog", "mount", ...(supported ? ["note-opening"] : [])]);
   } finally { await backend.dispose(); }
 });
+
+it("claims only main identity proofs, not serialized requests, and abandons cancelled metadata I/O", async () => {
+  const { DesktopInitialWindowOwner } = await import("./desktop-initial-window.js");
+  const signal = new AbortController().signal, revision = crypto.randomUUID(), workspaceId = crypto.randomUUID(), sessionId = crypto.randomUUID();
+  const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
+  const encounter = { appointmentRef, title: "Fictional visit", detail: "Virtual authority fixture" };
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const request = vi.fn(async (method: string, payload: Record<string, unknown>) => {
+    if (method === "providerInitialWindowAbandon") return null;
+    if (method === "providerInitialWindow") { await gate; return { status: 200, body: "{}" }; }
+    return { status: 200, body: JSON.stringify(payload.action === "catalog"
+      ? { revision, encounters: [{ ...encounter, workspaceId }] }
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+  });
+  const native = { signal, request, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
+    addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  await backend.listEncounters(signal); const mount = await backend.openEncounter(appointmentRef, signal);
+  const abort = new AbortController(), admission = { key: crypto.randomUUID(), nonce: crypto.randomUUID(), receipt: { session_id: sessionId } };
+  const owner = new DesktopInitialWindowOwner(mount.scope, admission, abort.signal);
+  const initial = { mode: "configured_core" as const, schemaVersion: 6 as const, channel: "mixed" as const, sessionId,
+    startedAt: new Date().toISOString(), completeIdempotencyKey: "complete:" + crypto.randomUUID(), leaseIdempotencyKey: null,
+    leaseRequest: null, windowPreparation: null };
+  const key = { schemaVersion: 2 as const, sessionId, state: "pending" as const, keyVersion: "fixture", wrappedDek: "a".repeat(512),
+    idempotencyKey: "bind-key:" + crypto.randomUUID() };
+  const recipe = { ...initial, leaseIdempotencyKey: "lease:" + crypto.randomUUID(), leaseRequest: { protocol_version: "1.0" as const },
+    windowPreparation: { idempotencyKey: "prepare-window:" + crypto.randomUUID(), bindIdempotencyKey: key.idempotencyKey,
+      reserveIdempotencyKey: "reserve:" + crypto.randomUUID(), keyVersion: key.keyVersion, wrappedDek: key.wrappedDek,
+      reservationCount: 30, aggregatePlaintextBudgetBytes: 67108864 } };
+  owner.preparation(null, initial); owner.newKey(key); owner.preparation(initial, recipe);
+  const body = { workspace_id: workspaceId, binding_ref: bindingRef, request_nonce: crypto.randomUUID(),
+    operation: { kind: "prepare_recording_window", payload: { schema_version: "1.0", binding: { key_version: key.keyVersion,
+      wrapped_dek: key.wrappedDek }, bind_idempotency_key: key.idempotencyKey, lease_idempotency_key: recipe.leaseIdempotencyKey,
+      reserve_idempotency_key: recipe.windowPreparation.reserveIdempotencyKey, channel: "mixed", reservation_count: 30 } } };
+  const proof = owner.take(body, recipe.windowPreparation.idempotencyKey)!;
+  expect(() => mount.sendFreshInitialWindow!(JSON.parse(JSON.stringify(proof)), body,
+    recipe.windowPreparation.idempotencyKey, abort.signal)).toThrow();
+  expect(request.mock.calls.some(([method]) => method === "providerInitialWindow")).toBe(false);
+  const pending = mount.sendFreshInitialWindow!(proof, body, recipe.windowPreparation.idempotencyKey, abort.signal);
+  const rejected = expect(pending).rejects.toThrow();
+  expect(() => mount.sendFreshInitialWindow!(proof, body, recipe.windowPreparation.idempotencyKey, abort.signal)).toThrow();
+  expect(request.mock.calls.filter(([method]) => method === "providerInitialWindow")).toHaveLength(1);
+  const sent = request.mock.calls.find(([method]) => method === "providerInitialWindow")![1];
+  expect(Object.keys(sent).sort()).toEqual(["admissionKey", "admissionNonce", "admissionReceipt", "body", "key", "revision"]);
+  expect(sent.admissionReceipt).toEqual(admission.receipt); expect(JSON.parse(sent.body as string)).toEqual(body);
+  abort.abort();
+  expect(request.mock.calls.some(([method]) => method === "providerInitialWindowAbandon")).toBe(true);
+  release(); await rejected;
+  expect(request.mock.calls.filter(([method]) => method === "providerInitialWindow")).toHaveLength(1);
+  await mount.release?.(); await backend.dispose();
+});
+
+it("does not add an idle metadata-abandon reply wait to encounter release", async () => {
+  const signal = new AbortController().signal, revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
+  const id = "01j" + "0".repeat(23), appointmentRef = "appointment_" + id, bindingRef = "scribe_capture_binding_" + id;
+  const encounter = { appointmentRef, title: "Fictional visit", detail: "Virtual cleanup fixture" };
+  let acknowledge!: () => void;
+  const gate = new Promise<void>(resolve => { acknowledge = resolve; });
+  const request = vi.fn(async (method: string, payload: Record<string, unknown>) => {
+    if (method === "providerInitialWindowAbandon") { await gate; return null; }
+    return { status: 200, body: JSON.stringify(payload.action === "catalog"
+      ? { revision, encounters: [{ ...encounter, workspaceId }] }
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+  });
+  const native = { signal, request, isReady: () => true, getState: async () => ({ phase: "ready", revision }),
+    addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  await backend.listEncounters(signal); const mount = await backend.openEncounter(appointmentRef, signal);
+  try {
+    await mount.release?.();
+    expect(request.mock.calls.filter(([method]) => method === "providerInitialWindowAbandon")).toHaveLength(1);
+    expect(request.mock.calls.some(([method]) => method.startsWith("source"))).toBe(false);
+  } finally { acknowledge(); await backend.dispose(); }
+});

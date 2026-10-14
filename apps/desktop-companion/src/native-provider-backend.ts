@@ -10,6 +10,7 @@ import { parseBackendCaptureGrant } from "./protocol.js";
 import { parseNativeProcessFence, type NativeProcessFence } from "./native-process-fence.js";
 import type { NativeProviderClient } from "./native-provider-client.js";
 import { parseProviderAccount, type ProviderAccount, createEncounterSetup, type CreationRecords } from "../../capture/src/provider/encounter-setup";
+import { claimDesktopInitialWindow } from "./desktop-initial-window.js";
 
 /** Real native RPC/receiver backend. The helper owns fresh SDK tokens and all
  * source-start proofs; the main process receives only the checked grant/decision. */
@@ -54,6 +55,16 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
   const current = (signal?: AbortSignal): void => {
     if (lifetime.aborted || signal?.aborted || !native.isReady()) throw unavailable();
   };
+  const response = (input: unknown, signal: AbortSignal): Response => {
+    const value = exact(input, ["status", "body"]); current(signal);
+    if (typeof value.status !== "number" || typeof value.body !== "string"
+      || ![200, 401, 403, 409, 422, 503].includes(value.status)) throw unavailable();
+    if (value.status === 401 || value.status === 403) abort.abort();
+    return new Response(value.body, { status: value.status, headers: {
+      "Content-Type": "application/json", "Cache-Control": "no-store",
+    } });
+  };
+  const abandonWindow = (): Promise<unknown> => native.request("providerInitialWindowAbandon", {});
   const request = async (action: string, body: Record<string, unknown>, key: string,
     signal: AbortSignal): Promise<Response> => {
     current(signal);
@@ -64,17 +75,15 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       : operation === "capabilities" ? "provider_capabilities" : operation === "encryption_key" ? "provider_encryption_key"
       : operation === "prepare_recording_window" ? "provider_recording_window"
       : operation === "preparation_metadata" ? "provider_preparation_metadata" : "provider_other_operation";
-    const value = exact(await timed(event, () => native.request("providerRequest", {
-      revision, action, key, body: JSON.stringify(body),
-    }, AbortSignal.any([lifetime, signal]), action === "capture-admissions" ? 220_000
-      : ["capture-notes", "note-opening"].includes(action) ? 125_000 : 35_000)), ["status", "body"]);
-    current(signal);
-    if (typeof value.status !== "number" || typeof value.body !== "string"
-      || ![200, 401, 403, 409, 422, 503].includes(value.status)) throw unavailable();
-    if (value.status === 401 || value.status === 403) abort.abort();
-    return new Response(value.body, { status: value.status, headers: {
-      "Content-Type": "application/json", "Cache-Control": "no-store",
-    } });
+    const cancel = (): void => { void abandonWindow().catch(() => undefined); };
+    if (action === "capture-admissions") signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const value = await timed(event, () => native.request("providerRequest", {
+        revision, action, key, body: JSON.stringify(body),
+      }, AbortSignal.any([lifetime, signal]), action === "capture-admissions" ? 220_000
+        : ["capture-notes", "note-opening"].includes(action) ? 125_000 : 35_000));
+      return response(value, signal);
+    } finally { signal.removeEventListener("abort", cancel); }
   };
   const json = async (action: "catalog" | "mount", body: Record<string, unknown>, signal: AbortSignal) => {
     const response = await request(action, body, crypto.randomUUID(), signal);
@@ -136,7 +145,12 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       if (encounter.appointmentRef !== appointmentRef) throw unavailable();
       const scope = Object.freeze({ workspaceId: row.workspaceId, appointmentRef, bindingRef: value.bindingRef });
       const ownedSources = new Set<string>();
+      const mountedSignal = AbortSignal.any([lifetime, signal]);
+      mountedSignal.addEventListener("abort", () => { void abandonWindow().catch(() => undefined); }, { once: true });
       const release = async (): Promise<void> => {
+        // RAM metadata is already unusable in main. Notify native without adding
+        // its RPC timeout to the existing confirmed source-cleanup path.
+        void abandonWindow().catch(() => undefined);
         for (const preparationId of ownedSources) {
           await releasePreparation(preparationId, false);
           ownedSources.delete(preparationId);
@@ -149,11 +163,24 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
         }
       };
       return {
-        release, retireSource, encounter, scope, signal: AbortSignal.any([lifetime, signal]), recoveryScope: uuid(value.recoveryScope),
+        release, retireSource, encounter, scope, signal: mountedSignal, recoveryScope: uuid(value.recoveryScope),
         ...(object(value.encounter).admission_metadata_v1 === true ? { admissionMetadataSupported: true as const } : {}),
         ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
         ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),
         uploadTarget: options.uploadTarget,
+        sendFreshInitialWindow: (proof, body, key, operationSignal) => {
+          const admission = claimDesktopInitialWindow(proof, { scope, body, key });
+          current(signal); current(operationSignal);
+          const cancel = (): void => { void abandonWindow().catch(() => undefined); };
+          operationSignal.addEventListener("abort", cancel, { once: true });
+          return timed("provider_recording_window", async () => {
+            try { return response(await native.request("providerInitialWindow", {
+              revision, key, body: JSON.stringify(body), admissionKey: admission.key,
+              admissionNonce: admission.nonce, admissionReceipt: admission.receipt,
+            }, AbortSignal.any([lifetime, signal, operationSignal])), operationSignal); }
+            finally { operationSignal.removeEventListener("abort", cancel); }
+          });
+        },
         request: (path, body, key, operationSignal) => {
           current(signal);
           const action = path.slice("/service/v1/agent/scribe/".length);

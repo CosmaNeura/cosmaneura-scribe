@@ -40,7 +40,8 @@ import Foundation
                 accessBlock: { throw NativeAuthError.unavailable })
         }
         connection = NativeProviderConnection(auth: auth,
-            wire: try ProviderNativeTransport(settings: receiver, workspaceOrigin: .desktopApp))
+            wire: try ProviderNativeTransport(settings: receiver, workspaceOrigin: .desktopApp),
+            desktopInitialWindowEnabled: true)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 160),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Sign in to Scribe"; window.center(); window.orderOut(nil)
@@ -98,6 +99,25 @@ import Foundation
             let reply = try await connection.send(request)
             guard let json = String(data: reply.body, encoding: .utf8) else { throw ProviderNativeError.response }
             return ["status": reply.status, "body": json]
+        case "providerInitialWindow":
+            guard Set(payload.keys) == ["revision", "key", "body", "admissionKey", "admissionNonce", "admissionReceipt"],
+                  let revision = payload["revision"] as? String, let key = payload["key"] as? String,
+                  let body = payload["body"] as? String, let admissionKey = payload["admissionKey"] as? String,
+                  let admissionNonce = payload["admissionNonce"] as? String,
+                  let receipt = payload["admissionReceipt"] as? [String: Any] else {
+                throw ProviderNativeError.invalidRequest
+            }
+            let receiptData = try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys, .withoutEscapingSlashes])
+            guard receiptData.count <= 8192 else { throw ProviderNativeError.invalidRequest }
+            let request = try ProviderNativeRequest(id: id, revision: revision, action: "capture-operations", key: key, body: body)
+            let reply = try await connection.sendFreshDesktopInitialWindow(request, admissionKey: admissionKey,
+                admissionNonce: admissionNonce, admissionReceipt: receiptData, beforeDispatch: { try await self.recoverSources() })
+            guard let json = String(data: reply.body, encoding: .utf8) else { throw ProviderNativeError.response }
+            return ["status": reply.status, "body": json]
+        case "providerInitialWindowAbandon":
+            guard payload.isEmpty else { throw ProviderNativeError.invalidRequest }
+            connection.abandonDesktopInitialWindow()
+            return NSNull()
         case "sourcePrepare", "sourcePrepareForStart":
             guard Set(payload.keys.filter { $0 != "firstSequenceNumber" }) == ["revision", "preparationId", "workspaceId", "bindingRef", "sessionId",
                 "leaseId", "leaseReceiptId", "leaseGeneration", "captureAuthorizedUntil"],

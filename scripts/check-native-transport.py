@@ -87,7 +87,7 @@ def main() -> None:
         ]
         + [str(path) for path in sorted(recording.glob("*.swift"))]
     )
-    for name in ("transport", "provider"):
+    for name in ("transport", "provider", "desktop-initial-window"):
         commands += [
             common
             + [
