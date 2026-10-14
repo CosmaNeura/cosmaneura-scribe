@@ -29,6 +29,11 @@ const encounter = { appointmentRef: scope.appointmentRef, title: "Synthetic walk
 const plugin = await encryptedFixturePlugin(scope.workspaceId);
 const forbidden = () => { throw new Error("Outside the synthetic DOB fixture"); };
 const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, dobUpdates: [] };
+const gatedAdmission = new URL(window.location.href).searchParams.has("gate-admission");
+const admissionGate = new Promise(resolve => { fixture.releaseAdmission = resolve; });
+const journalGate = new Promise(resolve => { fixture.releaseJournal = resolve; });
+const recorderGate = new Promise(resolve => { fixture.releaseRecorder = resolve; });
+fixture.recorderCalls = 0;
 const recents = new URL(window.location.href).searchParams.has("recents");
 fixture.catalog = recents ? [encounter] : [];
 fixture.listCalls = 0;
@@ -55,10 +60,12 @@ let snapshot = { sessionId, state: "ready", statusCode: "capture_ready", recorde
   elapsedSeconds: 0, remainingBudgetSeconds: 10_800, remainingAuthoritySeconds: 900,
   transcriptionStatus: null, transcript: null,
   ...(platform === "ios" && recents ? { native: { phase: "ready", busy: false } } : {}),
-  ...(platform === "desktop" ? { desktop: { phase: "ready", coverage: "not_started", trimmedStartMs: 0, trimmedEndMs: null } } : {}) };
+  ...(platform === "desktop" ? { desktop: { phase: "ready", audioMode: "microphone", coverage: "not_started", trimmedStartMs: 0, trimmedEndMs: null } } : {}) };
 const listeners = new Set();
 fixture.emit = update => { snapshot = { ...snapshot, ...update }; for (const listener of listeners) listener(snapshot); };
 fixture.signOut = () => abort.abort();
+fixture.ready = () => fixture.emit({ state: "ready", statusCode: "capture_ready",
+  desktop: { ...snapshot.desktop, phase: "ready" } });
 mountProviderWorkspace(document.querySelector("#provider"), {
   signal: abort.signal, account, encounterSetup: { ...setup,
     async addDateOfBirth(selected, date, key, signal) {
@@ -70,13 +77,18 @@ mountProviderWorkspace(document.querySelector("#provider"), {
   },
   listEncounters: async () => { fixture.listCalls++; return fixture.catalog; }, createEncounter: forbidden,
   openEncounter: async () => ({ encounter, scope, signal: abort.signal, openInCore: forbidden,
-    journal: { load: async () => saved, save: async (_prior, progress) => (saved = { revision: String(Number(saved.revision ?? 0) + 1), progress }) },
+    journal: { load: async () => saved, save: async (_prior, progress) => {
+      if (new URL(window.location.href).searchParams.has("gate-journal") && saved.progress === null) await journalGate;
+      if (new URL(window.location.href).searchParams.has("fail-journal")) throw new Error("Synthetic journal failure");
+      return (saved = { revision: String(Number(saved.revision ?? 0) + 1), progress });
+    } },
     reviewJournal: () => ({ load: async () => null, save: forbidden, clear: forbidden }),
     request: async (path, body) => {
       const base = { ...body, contract_version: "1", checked_at: new Date().toISOString() };
       if (path.endsWith("capture-admissions")) {
         fixture.admissions++;
         if (!body.attestation.all_parties_consented) throw new Error("Consent required");
+        if (gatedAdmission) await admissionGate;
         return Response.json({ ...base, operation_ref: "scribe_admission_01j00000000000000000000000",
           appointment_ref: scope.appointmentRef, consent_record_id: sessionId, session_id: sessionId });
       }
@@ -84,18 +96,34 @@ mountProviderWorkspace(document.querySelector("#provider"), {
         ? { schema_version: "1.0", status: "not_prepared", review: null }
         : { schema_version: "1.0", session_id: sessionId, status: fixture.reviewStatus, source: null, working: null, review_queue: null } });
     },
-    recorder: async () => ({ sourceKind: "microphone", ...(platform === "desktop" ? { captureMode: "desktop_meeting" } : {}),
+    recorder: async () => {
+      fixture.recorderCalls++;
+      if (new URL(window.location.href).searchParams.has("gate-recorder")) await recorderGate;
+      if (new URL(window.location.href).searchParams.has("gate-ready")) fixture.emit({ state: "preparing",
+        statusCode: "capture_preparing", desktop: { ...snapshot.desktop, phase: "preparing" } });
+      return ({ sourceKind: "microphone", ...(platform === "desktop" ? { captureMode: "desktop_meeting" } : {}),
       ...(platform === "ios" && recents ? { captureMode: "native_microphone" } : {}),
       controller: { get snapshot() { return snapshot; },
         subscribe(listener) { listeners.add(listener); listener(snapshot); return () => listeners.delete(listener); },
+        ...(platform === "desktop" ? {
+          async selectDesktopAudio(audioMode) {
+            fixture.emit({ desktop: { ...snapshot.desktop, audioMode,
+              ...(audioMode === "meeting" ? { meetingWindows: { state: "ready", selectedId: null,
+                windows: [{ id: "30000000-0000-4000-8000-000000000003", title: "Synthetic meeting" }] } } : {}) } });
+          },
+          async selectMeetingWindow(id) { fixture.emit({ desktop: { ...snapshot.desktop,
+            meetingWindows: { ...snapshot.desktop.meetingWindows, selectedId: id } } }); },
+        } : {}),
         async startRecording() {
           fixture.starts++;
+          if (new URL(window.location.href).searchParams.has("fail-start") && fixture.starts === 1) throw new Error("Synthetic Start failure");
           snapshot = { ...snapshot, state: "recording", statusCode: "capture_recording",
             ...(snapshot.native ? { native: { phase: "recording", busy: false } } : {}),
             ...(snapshot.desktop ? { desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned" } } : {}) };
           for (const listener of listeners) listener(snapshot);
         }, stopRecording: forbidden, refreshTranscriptionStatus: forbidden,
       }, deactivate: async () => {}, resumePendingWork: forbidden, releaseUploadedCapture: forbidden,
-    }),
+      });
+    },
   }),
 });

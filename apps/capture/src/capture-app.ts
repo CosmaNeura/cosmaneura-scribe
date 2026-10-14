@@ -38,6 +38,8 @@ const SYNTHETIC_ENCOUNTER = Object.freeze({
 export class CaptureApp extends LitElement {
   #provider: ProviderCaptureBinding | undefined;
   #providerClosed = false;
+  #desktopRecordActionConsumed = false;
+  #pendingProviderActionSignal: AbortSignal | undefined;
   #providerCloseStatus: "closing" | "closed" | "unconfirmed" = "closing";
   #disposeReview: (() => void) | undefined;
   #busy = false;
@@ -83,18 +85,33 @@ export class CaptureApp extends LitElement {
     binding.signal.addEventListener("abort", this.#closeProvider, { once: true });
   }
 
-  /** Apply the consent-screen source choice; desktop Start stays deliberate. */
-  public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting"): Promise<void> {
+  /** Only the fresh microphone consent-and-record button supplies the third argument. */
+  public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting", desktopRecordAction?: "microphone", actionSignal?: AbortSignal): Promise<void> {
+    if (desktopRecordAction !== undefined) {
+      if (this.#desktopRecordActionConsumed) return;
+      this.#desktopRecordActionConsumed = true; // Never replay this action after any await or failure.
+    }
+    if (actionSignal) { this.#pendingProviderActionSignal = actionSignal; this.requestUpdate(); }
+    try { await this.#continueProviderAction(input, desktopAudio, desktopRecordAction === "microphone", actionSignal); }
+    finally {
+      if (this.#pendingProviderActionSignal === actionSignal) { this.#pendingProviderActionSignal = undefined; this.requestUpdate(); }
+    }
+  }
+
+  async #continueProviderAction(input: MicrophoneInput, desktopAudio: "microphone" | "meeting" | undefined, recordDesktop: boolean, actionSignal?: AbortSignal): Promise<void> {
     const binding = this.#provider;
-    if (!binding || !isMicrophoneInput(input)) return;
+    if (!binding || !isMicrophoneInput(input) || actionSignal?.aborted) return;
+    if (recordDesktop && (desktopAudio !== "microphone" || binding.captureMode !== "desktop_meeting"
+      || !binding.controller.selectDesktopAudio || !this.#snapshot.desktop)) return;
     if (this.#snapshot.desktop?.phase === "preparing") {
       await new Promise<void>(resolve => {
         let settled = false, unsubscribe = (): void => undefined;
         const finish = (): void => {
           if (settled) return;
-          settled = true; unsubscribe(); this.#preparationWaiters.delete(finish); resolve();
+          settled = true; unsubscribe(); actionSignal?.removeEventListener("abort", finish); this.#preparationWaiters.delete(finish); resolve();
         };
         this.#preparationWaiters.add(finish);
+        actionSignal?.addEventListener("abort", finish, { once: true });
         unsubscribe = binding.controller.subscribe(snapshot => {
           if (snapshot.desktop?.phase !== "preparing" || this.#providerClosed || binding.signal.aborted) finish();
         });
@@ -102,7 +119,7 @@ export class CaptureApp extends LitElement {
       });
     }
     const current = (): boolean => this.isConnected && this.#provider === binding && !this.#providerClosed
-      && !binding.signal.aborted && this.#snapshot.state === "ready"
+      && !binding.signal.aborted && !actionSignal?.aborted && this.#snapshot.state === "ready"
       && (!this.#snapshot.desktop || ["ready", "permission_required"].includes(this.#snapshot.desktop.phase));
     if (!current() || this.#busy || this.#stopping) return;
     if (desktopAudio && binding.controller.selectDesktopAudio) {
@@ -112,11 +129,22 @@ export class CaptureApp extends LitElement {
       if (!current()) return;
     }
     if (this.#snapshot.desktop && this.#snapshot.desktop.phase !== "ready") return;
-    // Every desktop visit waits for Start in the visible recording controls.
-    // Consent confirms permission; finishing preparation never opens a source.
-    if (binding.captureMode === "desktop_meeting" || this.#snapshot.desktop) return;
+    if (binding.captureMode === "desktop_meeting" || this.#snapshot.desktop) {
+      if (!recordDesktop) return; // Preparation/default/meeting/recovery still wait for Start.
+      const emptyMicrophone = (): boolean => {
+        if (!current() || this.#stopping) return false;
+        const snapshot = binding.controller.snapshot;
+        return snapshot.sessionId === binding.sessionId && snapshot.state === "ready"
+          && snapshot.desktop?.phase === "ready" && snapshot.desktop.audioMode === "microphone"
+          && snapshot.desktop.coverage === "not_started" && snapshot.recordedChunks === 0
+          && snapshot.queuedChunks === 0 && snapshot.elapsedSeconds === 0;
+      };
+      if (emptyMicrophone()) await this.#recordWithGuard(emptyMicrophone);
+      return;
+    }
+    if (recordDesktop) return;
     this.#microphoneInput = input;
-    await this.#record();
+    await this.#recordWithGuard(actionSignal ? current : undefined);
   }
 
   protected override createRenderRoot(): HTMLElement {
@@ -374,6 +402,9 @@ export class CaptureApp extends LitElement {
                     : "Records your microphone and all audio from the selected application. Close unrelated audio in Chrome."}</small>
               </div>` : ""}
             <div class="record-actions">
+              ${desktopProvider && this.#snapshot.desktop?.phase === "preparing" && this.#pendingProviderActionSignal
+                && !this.#pendingProviderActionSignal.aborted ? html`<button class="secondary"
+                  data-workspace-action="cancel-recording-action">Cancel recording start</button>` : ""}
               ${desktopProvider && this.#snapshot.statusCode === "capture_window_selection_pending"
                 && provider.controller.showWindowChooser ? html`<button class="primary" data-testid="show-window-chooser"
                 ?disabled=${this.#showingChooser || this.#stopping} @click=${this.#showWindowChooser}>${this.#showingChooser
@@ -676,14 +707,16 @@ export class CaptureApp extends LitElement {
     });
   };
 
-  readonly #record = (): Promise<void> => {
+  readonly #record = (): Promise<void> => this.#recordWithGuard();
+
+  #recordWithGuard(current?: () => boolean): Promise<void> {
     this.#cancelledStart = false; this.#chooserUnavailable = false;
     return this.#run(async () => {
       await this.#selectMicrophone();
-      if (this.#providerClosed) return;
+      if (this.#providerClosed || current && !current()) return;
       await this.#requireController().startRecording();
     }, "record");
-  };
+  }
 
   readonly #stop = (): void => {
     if (this.#snapshot.desktop || this.#snapshot.native) {

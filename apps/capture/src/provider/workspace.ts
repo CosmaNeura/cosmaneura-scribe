@@ -46,6 +46,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let currentSchema = "";
   let consentRenewalOffered = false;
   let consentAction: HTMLButtonElement | null = null;
+  type RecordingAction = Readonly<{ microphone: MicrophoneInput; signal: AbortSignal; desktopAudio?: "microphone" | "meeting"; desktopRecordAction?: "microphone" }>;
+  let pendingRecordingAction: AbortController | null = null;
+  let leaveAfterRecordingPreparation = false;
   let openingRef: string | null = null;
   let cancelOpening: (() => void) | null = null;
   type NavigationDestination = "encounters" | "review" | (() => void);
@@ -104,6 +107,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    pendingRecordingAction?.abort(); pendingRecordingAction = null; leaveAfterRecordingPreparation = false;
     listedDraftRefs.clear();
     stopSaveCheck?.(); stopSaveCheck = null; pendingDateOfBirth = null;
     clearNavigation();
@@ -145,8 +149,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     try { await action(); }
     catch (error) {
       outcome = "threw";
+      pendingRecordingAction?.abort(); pendingRecordingAction = null;
       if (context) recentStates.delete(context.encounter.appointmentRef);
       if (!disposed && !host.signal.aborted) {
+        const preparing = content.querySelector<HTMLElement>("[data-recording-preparation-status]");
+        if (preparing && !preparing.hidden) preparing.textContent = "Recording has not started. Preparation could not be confirmed; return to Your encounters and reopen this visit.";
         notice.textContent = error instanceof RecorderStopUnconfirmed
           ? "Recording stop could not be confirmed. Stop it in the native app before continuing."
           : error instanceof CaptureDeviceCustodyError
@@ -174,6 +181,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       clearInterval(activityTimer); activity.hidden = true; activity.textContent = "";
       busy = false; root.removeAttribute("aria-busy");
       finishTiming(disposed || host.signal.aborted ? "cancelled" : outcome);
+      if (leaveAfterRecordingPreparation && !disposed && !host.signal.aborted) {
+        leaveAfterRecordingPreparation = false;
+        void run(() => guardNavigation("encounters"), "encounters");
+      }
     }
   };
   const list = async (): Promise<void> => {
@@ -418,19 +429,24 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ${isIOS ? `<label>Microphone<select name="microphone">${microphoneInputs.map(input => `<option value="${input.value}">${input.label}</option>`).join("")}</select><small>Connect an accessory before starting. Check the microphone bars when recording begins.</small></label>` : ""}
       ${isIOS ? "" : `<label>Record audio from<select name="desktop-audio"><option value="microphone"${preferredDesktopAudio === "microphone" ? " selected" : ""}>Microphone only · room or speakerphone</option><option value="meeting"${preferredDesktopAudio === "meeting" ? " selected" : ""}>Microphone + Zoom or Chrome audio</option></select></label><p>Microphone only captures voices audible to this Mac. Application audio also captures the selected app; Chrome can include other tabs and windows.</p>`}
       </details>
-      <button data-workspace-action="prepare" aria-describedby="provider-start-consent">${isIOS ? "Confirm consent &amp; record" : "Confirm consent &amp; prepare recording"}</button>
-      <p class="provider-consent-explanation" id="provider-start-consent">Everyone has agreed to recording and transcription.${isIOS ? "" : " You’ll choose Start when the recording is ready."}</p>
+      <button data-workspace-action="prepare" aria-describedby="provider-start-consent"></button>
+      <p class="provider-consent-explanation" id="provider-start-consent"></p>
+      <p data-recording-preparation-status role="status" hidden></p>
+      <button data-workspace-action="cancel-recording-action" hidden>Cancel recording start</button>
       </section>`);
     const options = content.querySelector<HTMLDetailsElement>(".provider-recording-options")!;
     const summarize = (): void => {
-      content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!.textContent = isIOS ? "Confirm consent & record" : "Confirm consent & prepare recording";
+      const record = isIOS || input("desktop-audio") === "microphone";
+      content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!.textContent = record ? "Confirm consent & record" : "Confirm consent & prepare recording";
+      content.querySelector<HTMLElement>("#provider-start-consent")!.textContent = "Everyone has agreed to recording and transcription."
+        + (record ? " This starts recording once preparation finishes." : " You’ll choose your meeting window and Start when ready.");
       options.querySelector<HTMLElement>("[data-recording-summary]")!.textContent = isIOS
         ? content.querySelector<HTMLSelectElement>('[name="microphone"]')!.selectedOptions[0]!.textContent
         : input("desktop-audio") === "microphone" ? "Microphone only" : "Microphone + application audio";
       content.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = isIOS
         ? input("modality") === "in_person" ? "Records the selected iPhone microphone. Check the sound bars when recording begins."
           : "Records the selected iPhone microphone. Call audio is not captured directly; use Scribe on a separate device where both voices can be heard."
-        : input("desktop-audio") === "microphone" ? "Records this Mac’s microphone after you choose Start. Keep both voices audible; use speakerphone for a call."
+        : input("desktop-audio") === "microphone" ? "Records this Mac’s microphone after you confirm consent. Keep both voices audible; use speakerphone for a call."
           : "Next, choose the Zoom or Chrome window for this visit, then choose Start. Close unrelated audio in that application.";
     };
     const changed = (event: Event): void => {
@@ -444,6 +460,22 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     summarize(); content.addEventListener("change", changed);
     disposeContent = () => content.removeEventListener("change", changed);
     consentAction = content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]');
+  };
+  const initialPreparationStatus = (): void => {
+    const status = content.querySelector<HTMLElement>("[data-recording-preparation-status]");
+    requireValue(status); status.hidden = false;
+    status.textContent = pendingRecordingAction?.signal.aborted
+      ? "Recording start canceled. Secure setup may finish without recording."
+      : "Preparing your recording… Checking consent and secure storage. Recording has not started yet.";
+  };
+  const cancelRecordingAction = (): boolean => {
+    if (!pendingRecordingAction) return false;
+    pendingRecordingAction.abort(); // A leave/cancel click takes effect before the busy guard.
+    const status = content.querySelector<HTMLElement>("[data-recording-preparation-status]");
+    if (status) status.textContent = "Recording start canceled. Secure setup may finish without recording.";
+    const cancel = content.querySelector<HTMLButtonElement>('[data-workspace-action="cancel-recording-action"]');
+    if (cancel) cancel.disabled = true;
+    return true;
   };
   const renewConsent = (): void => {
     const saved = progress();
@@ -485,7 +517,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const endOpening = (): void => {
     cancelOpening = null; content.querySelector('[data-workspace-action="cancel-opening"]')?.remove();
   };
-  const recordOrReview = async (startRequested?: MicrophoneInput, openingView?: CreatorReviewView, openingSignal?: AbortSignal, initialAction?: "open-draft"): Promise<void> => {
+  const recordOrReview = async (startRequested?: RecordingAction, openingView?: CreatorReviewView, openingSignal?: AbortSignal, initialAction?: "open-draft"): Promise<void> => {
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
     step = "recording status check";
@@ -573,29 +605,34 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     });
     disposeContent = () => { stopObserving(); app.remove(); };
     // Only the current consent action carries this in-memory source choice.
-    // Desktop waits for Start; mobile retains its consent-and-record action.
+    // The explicit microphone button records; meeting preparation waits for Start.
     // Reopening/recovering a journal never starts a microphone or meeting.
-    if (startRequested !== undefined) {
+    if (startRequested !== undefined && !startRequested.signal.aborted) {
       await app.updateComplete;
       if (authorized(n) && app.isConnected) {
         // Visible preparation must not hold the workspace navigation busy guard.
         // The bound view discards this one intent on removal/revocation.
-        void app.startFromProviderAction(startRequested, native?.controller.selectDesktopAudio ? preferredDesktopAudio : undefined)
-          .catch(() => { if (authorized(n) && app.isConnected) notice.textContent = "Recording could not start. Check the audio source and recording access, then retry."; });
+        void app.startFromProviderAction(startRequested.microphone,
+          native?.controller.selectDesktopAudio ? startRequested.desktopAudio : undefined,
+          native?.captureMode === "desktop_meeting" && native.controller.selectDesktopAudio && native.controller.snapshot.desktop
+            ? startRequested.desktopRecordAction : undefined, startRequested.signal)
+          .catch(() => { if (authorized(n) && app.isConnected) notice.textContent = "Recording could not start. Check the audio source and recording access, then retry."; })
+          .finally(() => { if (pendingRecordingAction?.signal === startRequested.signal) pendingRecordingAction = null; });
       }
-    }
+    } else if (pendingRecordingAction?.signal === startRequested?.signal) pendingRecordingAction = null;
   };
-  const admit = async (mode: "initial" | "recover" | "renew" = "initial", startRequested?: MicrophoneInput): Promise<void> => {
+  const admit = async (mode: "initial" | "recover" | "renew" = "initial", startRequested?: RecordingAction): Promise<void> => {
     requireValue(client);
     const n = generation;
     step = "recording admission";
-    show(`<h2>Preparing your recording…</h2><p role="status">${startRequested === undefined ? "Restoring your saved visit." : "Checking consent and preparing secure storage. Recording has not started yet."}</p>`);
+    if (mode === "initial" && startRequested) initialPreparationStatus();
+    else show("<h2>Preparing your recording…</h2><p role=\"status\">Restoring your saved visit.</p>");
     const intent = progress().admission;
     requireValue(intent);
     const id = await (mode === "recover" ? client.recoverAdmission(intent)
       : mode === "renew" ? client.renewAdmission(intent) : client.admit(intent));
     if (!authorized(n)) return;
-    if (id === null) { renewConsent(); return; }
+    if (id === null) { pendingRecordingAction?.abort(); pendingRecordingAction = null; renewConsent(); return; }
     requireValue(progress().sessionId === null || progress().sessionId === id);
     if (progress().sessionId === null) await persist({ ...progress(), sessionId: id });
     if (authorized(n)) await recordOrReview(startRequested);
@@ -997,6 +1034,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const requestDesktopClose = (event: Event): void => {
     if (!(event instanceof CustomEvent) || typeof event.detail !== "function" || disposed || host.signal.aborted) return;
     event.preventDefault();
+    cancelRecordingAction();
     const close = event.detail as () => void;
     // A pending save already retains the exact edits in the durable journal.
     // While an unjournaled edit is being saved, leave its editor mounted.
@@ -1039,8 +1077,15 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const click = (event: MouseEvent): void => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-workspace-action]") : null;
     if (!button || !root.contains(button)) return;
+    if (button.dataset.workspaceAction === "cancel-recording-action") { cancelRecordingAction(); return; }
+    if (["encounters", "review", "core", "create", "new-encounter", "open", "open-draft"].includes(button.dataset.workspaceAction ?? "")) {
+      if (cancelRecordingAction() && busy && button.dataset.workspaceAction === "encounters") {
+        leaveAfterRecordingPreparation = true;
+        return;
+      }
+    }
     // Only a currently displayed read-only opening can bypass the busy guard.
-    if (button.dataset.workspaceAction === "cancel-opening") { cancelOpening?.(); return; }
+    if (button.dataset.workspaceAction === "cancel-opening") { cancelRecordingAction(); cancelOpening?.(); return; }
     // Read-only note checks own their cancellation and never block navigation.
     if (button.dataset.workspaceAction === "check-note" && checkPreparedNote) {
       if (!button.disabled) void checkPreparedNote();
@@ -1099,10 +1144,20 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           if (desktopAudio === "microphone" || desktopAudio === "meeting") preferredDesktopAudio = desktopAudio;
           const microphone = content.querySelector<HTMLSelectElement>('[name="microphone"]')?.value ?? "built_in";
           requireValue(isMicrophoneInput(microphone));
-          assertProgress(next); consentAction = null; button.disabled = true; await persist(next);
+          pendingRecordingAction = new AbortController();
+          const startRequested: RecordingAction = Object.freeze({ microphone, signal: pendingRecordingAction.signal,
+            ...(!isIOS && (desktopAudio === "microphone" || desktopAudio === "meeting") ? { desktopAudio,
+              ...(desktopAudio === "microphone" ? { desktopRecordAction: "microphone" as const } : {}) } : {}) });
+          assertProgress(next); consentAction = null;
+          for (const field of content.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(".provider-preparation input, .provider-preparation select, .provider-preparation button")) field.disabled = true;
+          const cancel = content.querySelector<HTMLButtonElement>('[data-workspace-action="cancel-recording-action"]');
+          if (cancel && (isIOS || desktopAudio === "microphone")) { cancel.hidden = false; cancel.disabled = false; }
+          disposeContent?.(); disposeContent = null; // Source choices are fixed before journal/admission waits.
+          initialPreparationStatus();
+          await persist(next);
           preferredLanguage = next.admission.languageMode;
           preferredModality = next.admission.attestation.modality;
-          await admit("initial", microphone); break;
+          await admit("initial", startRequested); break;
         }
         case "admit": await admit("recover"); break;
         case "renew-consent": {

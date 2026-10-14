@@ -1,5 +1,19 @@
-/* global window */
+/* global document, window */
 import { expect, test } from "@playwright/test";
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    for (const method of ["getUserMedia", "getDisplayMedia"]) Object.defineProperty(navigator.mediaDevices, method, { value: () => {
+      throw new Error("Physical media is forbidden in this synthetic entry fixture");
+    } });
+  });
+});
+
+const openFreshFixtureVisit = async page => {
+  await expect(page.locator("#provider")).not.toHaveAttribute("aria-busy", "true");
+  await page.getByRole("button", { name: /Synthetic walk-in/u }).click();
+  await expect(page.locator(".provider-preparation")).toBeVisible();
+};
 
 for (const platform of ["desktop", "ios"]) {
   for (const dateOfBirth of [null, "1980-01-02"]) {
@@ -30,7 +44,7 @@ for (const platform of ["desktop", "ios"]) {
       await expect(page.getByRole("button", { name: "Create patient & visit", exact: true })).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath("patient-setup.png"), fullPage: true });
       await page.getByRole("button", { name: "Create patient & visit", exact: true }).click();
-      const consent = page.getByRole("button", { name: platform === "ios" ? "Confirm consent & record" : "Confirm consent & prepare recording", exact: true });
+      const consent = page.getByRole("button", { name: "Confirm consent & record", exact: true });
       await expect(consent).toBeVisible();
       await expect(page.locator('[data-workspace-action="confirm-create"]')).toHaveCount(0);
       expect(await page.evaluate(() => window.dobLab.creates.map(body => body.patient))).toEqual([
@@ -39,10 +53,6 @@ for (const platform of ["desktop", "ios"]) {
       expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
       await expect(page.getByLabel("Visit type")).toHaveValue("in_person");
       await consent.click();
-      if (platform === "desktop") {
-        expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
-        await page.getByRole("button", { name: "Start recording", exact: true }).click();
-      }
       await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
       expect(await page.evaluate(() => window.dobLab.admissions)).toBe(1);
       expect(await page.evaluate(() => globalThis.__dobMediaCalls)).toBe(0);
@@ -88,10 +98,144 @@ test("similar patient names require choosing the displayed chart before creating
   await expect(page.getByRole("button", { name: /Synthetic walk-in DOB:/u })).toHaveCount(2);
   expect(await page.evaluate(() => window.dobLab.creates)).toHaveLength(0);
   await page.getByRole("button", { name: /Synthetic walk-in DOB: 1985-03-04/u }).click();
-  await expect(page.getByRole("button", { name: "Confirm consent & prepare recording", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Confirm consent & record", exact: true })).toBeVisible();
   await expect(page.locator('[data-workspace-action="confirm-create"]')).toHaveCount(0);
   expect(await page.evaluate(() => window.dobLab.creates.map(body => body.patient))).toEqual([
     { kind: "existing", patient_ref: "patient_01j00000000000000000000001" },
   ]);
   expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
+});
+
+for (const platform of ["desktop", "ios"]) {
+  test(`${platform} keeps one locked setup card visible during fresh admission`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: platform === "ios" ? 390 : 780, height: 844 });
+    await page.goto(`/e2e/fixtures/optional-dob.html?platform=${platform}&recents&gate-admission`);
+    await openFreshFixtureVisit(page);
+    const setup = page.locator(".provider-preparation");
+    await expect(setup.getByRole("button", { name: "Confirm consent & record", exact: true })).toBeVisible();
+    await page.evaluate(() => { window.dobLab.setupNode = document.querySelector(".provider-preparation"); });
+    await setup.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+    await expect(setup.locator("[data-recording-preparation-status]")).toContainText("Recording has not started yet.");
+    await expect(page.getByRole("heading", { name: "Record this visit", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Preparing your recording…", exact: true })).toHaveCount(0);
+    expect(await page.evaluate(() => window.dobLab.setupNode === document.querySelector(".provider-preparation"))).toBe(true);
+    expect(await setup.locator('input, select, button:not([data-workspace-action="cancel-recording-action"])').evaluateAll(fields => fields.every(field => field.disabled))).toBe(true);
+    await expect(setup.getByRole("button", { name: "Cancel recording start", exact: true })).toBeEnabled();
+    expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([1, 0]);
+    if (platform === "desktop") {
+      // Even a synthetic event on a disabled field cannot change the captured
+      // action or run the detached source-summary listener.
+      await setup.locator('[name="desktop-audio"]').evaluate(field => { field.value = "meeting"; field.dispatchEvent(new Event("change", { bubbles: true })); });
+      await expect(setup.getByRole("button", { name: "Confirm consent & record", exact: true })).toBeDisabled();
+    }
+    await page.screenshot({ path: testInfo.outputPath("inline-preparation.png"), fullPage: true });
+    await page.evaluate(() => window.dobLab.releaseAdmission());
+    await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
+    await expect(setup).toHaveCount(0);
+  });
+}
+
+test("desktop meeting consent stays prepare-only with visible inline window selection", async ({ page }) => {
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents");
+  await openFreshFixtureVisit(page);
+  await page.getByLabel("Visit type").selectOption("virtual");
+  await page.getByRole("button", { name: "Confirm consent & prepare recording", exact: true }).click();
+  await expect(page.getByText("Choose your meeting window below to enable Start recording.", { exact: true })).toBeVisible();
+  const start = page.getByRole("button", { name: "Start recording", exact: true });
+  await expect(start).toBeDisabled();
+  expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
+  await page.getByLabel("Meeting window").selectOption({ label: "Synthetic meeting" });
+  await expect(start).toBeEnabled(); await start.click();
+  await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
+});
+
+test("revocation during inline admission discards the fresh recording action", async ({ page }) => {
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&gate-admission");
+  await openFreshFixtureVisit(page);
+  await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+  await expect(page.locator("[data-recording-preparation-status]")).toBeVisible();
+  await page.evaluate(() => { window.dobLab.signOut(); window.dobLab.releaseAdmission(); });
+  await expect(page.locator(".provider-preparation")).toHaveCount(0);
+  expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
+});
+
+test("reopening a failed empty desktop start waits for a new manual Start", async ({ page }) => {
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&fail-start");
+  await openFreshFixtureVisit(page);
+  await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+  const start = page.getByRole("button", { name: "Start recording", exact: true });
+  await expect(start).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
+  await page.getByRole("button", { name: "Your encounters", exact: true }).click();
+  await page.getByRole("button", { name: /Synthetic walk-in/u }).click();
+  await expect(start).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Confirm consent & record", exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([1, 1]);
+  await start.click(); await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(2);
+});
+
+test("a slow failed journal locks the same card and never admits or starts audio", async ({ page }) => {
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&gate-journal&fail-journal");
+  await openFreshFixtureVisit(page);
+  await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+  const status = page.locator("[data-recording-preparation-status]");
+  await expect(status).toContainText("Preparing your recording…");
+  await expect(page.getByLabel("Visit type")).toBeDisabled();
+  expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
+  await page.evaluate(() => window.dobLab.releaseJournal());
+  await expect(status).toContainText("Preparation could not be confirmed");
+  await expect(page.getByRole("button", { name: "Confirm consent & record", exact: true })).toBeDisabled();
+  expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
+});
+
+for (const platform of ["desktop", "ios"]) {
+  for (const phase of ["journal", "admission", "recorder"]) {
+    for (const action of ["leave", "cancel"]) {
+      test(`${platform} ${action} during pending ${phase} discards recording but preserves recovery`, async ({ page }) => {
+        await page.setViewportSize({ width: platform === "ios" ? 390 : 780, height: 844 });
+        await page.goto(`/e2e/fixtures/optional-dob.html?platform=${platform}&recents&gate-${phase}`);
+        await openFreshFixtureVisit(page);
+        await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+        await expect(page.locator("[data-recording-preparation-status]")).toBeVisible();
+        if (phase === "admission") await expect.poll(() => page.evaluate(() => window.dobLab.admissions)).toBe(1);
+        if (phase === "recorder") await expect.poll(() => page.evaluate(() => window.dobLab.recorderCalls)).toBe(1);
+        await page.getByRole("button", { name: action === "leave" ? "Your encounters" : "Cancel recording start", exact: true }).click();
+        await expect(page.locator("[data-recording-preparation-status]")).toContainText("Recording start canceled.");
+        expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
+        await page.evaluate(phase => window.dobLab[`release${phase[0].toUpperCase()}${phase.slice(1)}`](), phase);
+        if (action === "leave") {
+          await expect(page.getByRole("list", { name: "Authorized encounters", exact: true })).toBeVisible();
+          await expect(page.locator("#provider")).not.toHaveAttribute("aria-busy", "true");
+          await page.getByRole("button", { name: /Synthetic walk-in/u }).click();
+        }
+        const manualStart = page.getByRole("button", { name: "Start recording", exact: true });
+        await expect(manualStart).toBeEnabled();
+        await expect(page.getByRole("button", { name: "Confirm consent & record", exact: true })).toHaveCount(0);
+        expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([1, 0]);
+        await manualStart.click(); await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
+      });
+    }
+  }
+}
+
+test("compact desktop preparation exposes Cancel and canceled readiness never records", async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 420 });
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&gate-ready");
+  await openFreshFixtureVisit(page);
+  await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+  const controls = page.getByRole("region", { name: "Recording controls", exact: true });
+  const cancel = controls.getByRole("button", { name: "Cancel recording start", exact: true });
+  await expect(cancel).toBeInViewport(); await expect(cancel).toBeEnabled();
+  await cancel.click(); await page.evaluate(() => window.dobLab.ready());
+  const start = page.getByRole("button", { name: "Start recording", exact: true });
+  await expect(start).toBeEnabled(); expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
+  await start.click(); await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
+});
+
+test("non-native local provider consent still starts its counted recorder", async ({ page }) => {
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=local&recents");
+  await openFreshFixtureVisit(page);
+  await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
+  expect(await page.evaluate(() => window.dobLab.admissions)).toBe(1);
 });
