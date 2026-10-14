@@ -9,6 +9,7 @@ import scribeIcon from "../../public/icon.svg?raw";
 
 const sessionId = "40000000-0000-4000-8000-000000000004";
 const inlineMeeting = new URLSearchParams(window.location.search).has("inline-meeting");
+const sourceChoice = new URLSearchParams(window.location.search).has("source-choice");
 const meetingWindowId = "50000000-0000-4000-8000-000000000005";
 const abort = new AbortController(), listeners = new Set(), commands = [];
 let finishChoice;
@@ -46,6 +47,12 @@ const controller = {
     emit({ state: "paused", statusCode: "capture_start_unconfirmed" }, { phase: "stop_unconfirmed" });
   },
   async showWindowChooser() { commands.push("show_chooser"); },
+  ...(sourceChoice ? { async selectDesktopAudio(audioMode) {
+    if (!["microphone", "meeting"].includes(audioMode)) forbidden();
+    commands.push(`source_${audioMode}`);
+    emit({}, { audioMode, meetingWindows: audioMode === "meeting" ? { state: "ready", selectedId: null,
+      windows: [{ id: meetingWindowId, title: "Zoom — Invented visit" }] } : undefined });
+  } } : {}),
   async selectMeetingWindow(id) {
     if (id !== meetingWindowId) forbidden();
     commands.push("meeting_window");
@@ -68,7 +75,7 @@ root.replaceWith(application);
 application.innerHTML = `<header class="provider-session-header"><div class="provider-brand"><span class="provider-brand-icon" aria-hidden="true">${scribeIcon}</span><strong>Scribe</strong></div><div data-session-actions><button data-session-action="sign-out" disabled>Sign out</button></div></header>`;
 application.append(root);
 root.classList.add("provider-workspace");
-root.innerHTML = '<p class="provider-account">Local synthetic · Signed in as provider@example.invalid</p><header class="provider-header"><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter>Invented visit — no real patient</p></div><button disabled>Your encounters</button></header>';
+root.innerHTML = '<p class="provider-account">Local synthetic · Signed in as provider@example.invalid</p><header class="provider-header"><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter>Avery Example</p></div><button disabled>Your encounters</button></header>';
 root.append(app);
 window.desktopControlsLab = {
   commands,

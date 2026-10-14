@@ -376,10 +376,13 @@ export class CaptureApp extends LitElement {
             ${this.#microphoneError ? html`<p role="alert">Microphone choice could not be confirmed. Stop any other recording, then retry.</p>` : ""}
             ${desktopProvider && provider.controller.selectDesktopAudio && this.#snapshot.recordedChunks === 0
               && this.#snapshot.elapsedSeconds === 0 && !this.#isStarting() && ["preparing", "ready", "permission_required"].includes(this.#snapshot.desktop?.phase ?? "")
-              ? html`<label>Record audio from<select data-testid="desktop-audio-mode"
+              ? html`<details class="recording-source-choice"><summary>Change source
+                <span>${this.#snapshot.desktop?.audioMode === "microphone" ? "Microphone only"
+                  : this.#snapshot.desktop?.audioMode === "meeting" ? "Microphone + meeting audio" : "Source not confirmed"}</span></summary>
+                <label>Record audio from<select data-testid="desktop-audio-mode"
                 .value=${this.#snapshot.desktop?.audioMode ?? "meeting"} ?disabled=${this.#busy || this.#stopping || this.#snapshot.desktop?.phase === "preparing"}
                 @change=${this.#changeDesktopAudio}><option value="microphone">Microphone only · in the room or speakerphone</option>
-                <option value="meeting">Microphone + Zoom or Chrome audio</option></select></label>` : ""}
+                <option value="meeting">Microphone + Zoom or Chrome audio</option></select></label></details>` : ""}
             ${desktopProvider && this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows
               && !this.#isStarting() && ["preparing", "ready", "permission_required", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase)
               ? html`<div class="meeting-window-selection">
@@ -466,8 +469,13 @@ export class CaptureApp extends LitElement {
             ${this.#chooserUnavailable && this.#snapshot.statusCode === "capture_window_selection_pending"
               ? html`<p class="recording-recovery" role="alert">The chooser is still opening or could not come forward. Try Show window chooser again, or Cancel start.</p>` : ""}
             ${desktopProvider ? html`<details class="recording-source-help">
-              <summary>Microphone + meeting audio</summary>
-              <p>Choose your Zoom window or Meet window in Chrome. Scribe records your microphone and the selected application’s audio; other audio from that application may be included.</p>
+              <summary>${this.#snapshot.desktop?.audioMode === "microphone" ? "Microphone only"
+                : this.#snapshot.desktop?.audioMode === "meeting" ? "Microphone + meeting audio" : "Audio source and saved audio"}</summary>
+              <p>${this.#snapshot.desktop?.audioMode === "microphone"
+                ? "Scribe records this Mac’s microphone only. Keep both voices audible in the room or use speakerphone."
+                : this.#snapshot.desktop?.audioMode === "meeting"
+                  ? "Choose your Zoom window or Meet window in Chrome. Scribe records your microphone and the selected application’s audio; other audio from that application may be included."
+                  : "Confirm your audio source before recording. If you use meeting audio, choose the Zoom or Chrome window for this visit."}</p>
               <p>Encrypted audio uploads while you record. If you go offline, saved audio waits on this Mac.</p>
             </details>` : nativeProvider ? html`<details class="recording-source-help">
               <summary>Microphone and saved audio</summary>

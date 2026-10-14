@@ -357,7 +357,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     };
     const onNew = (event: SubmitEvent): void => {
       event.preventDefault();
-      if (!newPatient?.reportValidity() || input("patient-query").trim() !== setupQuery) return;
+      if (newPatient?.parentElement?.hidden || !newPatient?.reportValidity() || input("patient-query").trim() !== setupQuery) return;
       const name = input("new-patient-name").trim(), dateOfBirth = input("new-patient-dob") || null;
       if (!name) { notice.textContent = "Enter the patient's name."; return; }
       void run(() => create({ kind: "new", name, dateOfBirth }), "create-visit");
@@ -1104,8 +1104,24 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         case "create": await host.createEncounter(host.signal); await list(); break;
         case "new-encounter": await setup(); break;
         case "add-dob": addDateOfBirth(); break;
-        case "new-patient": showSetup(setupQuery, true); break;
-        case "patient-results": showSetup(setupQuery); break;
+        case "new-patient": {
+          if (button.disabled || button !== content.querySelector(".provider-create-choice")) return;
+          const details = content.querySelector<HTMLElement>("#provider-new-patient");
+          if (!details) showSetup(setupQuery, true);
+          else {
+            // Hide/show keeps the entered DOB; only Cancel discards this form.
+            details.hidden = !details.hidden;
+            button.setAttribute("aria-expanded", String(!details.hidden));
+            button.textContent = details.hidden ? `Create new patient: ${setupQuery}` : "Hide new patient details";
+          }
+          if (details?.hidden) button.focus({ preventScroll: true });
+          else content.querySelector<HTMLElement>("#provider-new-patient-title")?.focus();
+          break;
+        }
+        case "patient-results":
+          showSetup(setupQuery);
+          content.querySelector<HTMLButtonElement>(".provider-create-choice")?.focus({ preventScroll: true });
+          break;
         case "hide-visit": {
           const ref = button.dataset.appointment; requireValue(ref && reference(ref, "appointment"));
           const hidden = !hiddenVisits.has(ref);

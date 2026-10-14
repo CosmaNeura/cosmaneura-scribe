@@ -106,6 +106,88 @@ test("similar patient names require choosing the displayed chart before creating
   expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
 });
 
+test("new-patient expansion retains matching charts and cancellation returns focus without creating", async ({ page }) => {
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&existing");
+  await page.getByRole("button", { name: "New visit", exact: true }).click();
+  await page.getByLabel("Patient name", { exact: true }).fill("Synthetic walk-in");
+  await page.getByRole("button", { name: "Find patient", exact: true }).click();
+  const choice = page.locator(".provider-create-choice");
+  const charts = page.getByRole("list", { name: "Choose patient", exact: true });
+  await expect(choice).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("[data-new-patient]")).toHaveCount(0);
+  await choice.click();
+  await expect(choice).toHaveAttribute("aria-expanded", "true");
+  await expect(choice).toHaveText("Hide new patient details");
+  await expect(charts.getByRole("button")).toHaveCount(2);
+  await expect(charts).toBeVisible();
+  await expect(page.getByRole("heading", { name: "New patient: Synthetic walk-in", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "Cancel new patient", exact: true }).click();
+  await expect(choice).toHaveAttribute("aria-expanded", "false");
+  await expect(choice).toBeFocused();
+  await expect(page.locator("[data-new-patient]")).toHaveCount(0);
+  await expect(charts.getByRole("button")).toHaveCount(2);
+  expect(await page.evaluate(() => [window.dobLab.creates.length, window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0, 0]);
+  await choice.click();
+  // An existing result remains selectable while the new-chart form is open.
+  await charts.getByRole("button", { name: /DOB: 1985-03-04/u }).click();
+  await expect(page.getByRole("button", { name: "Confirm consent & record", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.dobLab.creates.map(body => body.patient))).toEqual([
+    { kind: "existing", patient_ref: "patient_01j00000000000000000000001" },
+  ]);
+});
+
+test("new-patient disclosure retains DOB across repeated hide and show until explicit submission", async ({ page }) => {
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&existing");
+  await page.getByRole("button", { name: "New visit", exact: true }).click();
+  await page.getByLabel("Patient name", { exact: true }).fill("Synthetic walk-in");
+  await page.getByRole("button", { name: "Find patient", exact: true }).click();
+  const choice = page.locator(".provider-create-choice");
+  await choice.click();
+  const dob = page.getByLabel("Date of birth (optional)");
+  await dob.fill("1982-06-07");
+  for (let i = 0; i < 2; i++) {
+    await expect(choice).toHaveText("Hide new patient details");
+    await choice.click();
+    await expect(choice).toHaveAttribute("aria-expanded", "false");
+    await expect(choice).toHaveText("Create new patient: Synthetic walk-in");
+    await expect(choice).toBeFocused();
+    await expect(dob).toBeHidden();
+    await expect(dob).toHaveValue("1982-06-07");
+    await expect(page.getByRole("list", { name: "Choose patient", exact: true }).getByRole("button")).toHaveCount(2);
+    // A hidden form cannot submit through an accidental/programmatic event.
+    await page.locator("[data-new-patient]").evaluate(form => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(await page.evaluate(() => [window.dobLab.creates.length, window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0, 0]);
+    await choice.click();
+    await expect(choice).toHaveAttribute("aria-expanded", "true");
+    await expect(dob).toHaveValue("1982-06-07");
+    await expect(page.getByRole("heading", { name: "New patient: Synthetic walk-in", exact: true })).toBeFocused();
+  }
+  await page.getByRole("button", { name: "Create patient & visit", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Confirm consent & record", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.dobLab.creates.map(body => body.patient))).toEqual([
+    { kind: "new", name: "Synthetic walk-in", date_of_birth: "1982-06-07" },
+  ]);
+  expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
+});
+
+test("changing a search with an expanded new-patient form blocks stale chart and creation submissions", async ({ page }) => {
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&existing");
+  await page.getByRole("button", { name: "New visit", exact: true }).click();
+  await page.getByLabel("Patient name", { exact: true }).fill("Synthetic walk-in");
+  await page.getByRole("button", { name: "Find patient", exact: true }).click();
+  await page.getByRole("button", { name: "Create new patient: Synthetic walk-in", exact: true }).click();
+  await page.getByLabel("Patient name", { exact: true }).fill("Different synthetic name");
+  await expect(page.getByRole("button", { name: "Create patient & visit", exact: true })).toBeDisabled();
+  const charts = page.getByRole("list", { name: "Choose patient", exact: true });
+  expect(await charts.getByRole("button").evaluateAll(buttons => buttons.every(button => button.disabled))).toBe(true);
+  await page.locator("[data-new-patient]").evaluate(form => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  await charts.getByRole("button").first().evaluate(button => button.dispatchEvent(new Event("click", { bubbles: true })));
+  expect(await page.evaluate(() => [window.dobLab.creates.length, window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0, 0]);
+  await page.getByRole("button", { name: "Find patient", exact: true }).click();
+  await expect(page.locator("[data-new-patient]")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create new patient: Different synthetic name", exact: true })).toHaveAttribute("aria-expanded", "false");
+});
+
 for (const platform of ["desktop", "ios"]) {
   test(`${platform} keeps one locked setup card visible during fresh admission`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: platform === "ios" ? 390 : 780, height: 844 });
@@ -230,6 +312,30 @@ test("compact desktop preparation exposes Cancel and canceled readiness never re
   const start = page.getByRole("button", { name: "Start recording", exact: true });
   await expect(start).toBeEnabled(); expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
   await start.click(); await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
+});
+
+test("compact desktop exit stays reachable and cancels pending readiness without replaying audio", async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 420 });
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&gate-ready");
+  await openFreshFixtureVisit(page);
+  await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+  const exit = page.getByRole("button", { name: "Your encounters", exact: true });
+  await expect(exit).toBeInViewport();
+  await expect(exit).toBeEnabled();
+  expect((await exit.boundingBox()).height).toBeGreaterThanOrEqual(44);
+  await expect(page.getByText("Synthetic walk-in", { exact: true }).filter({ visible: true })).toHaveCount(1);
+  await exit.click();
+  await expect(page.getByRole("list", { name: "Authorized encounters", exact: true })).toBeVisible();
+  await page.evaluate(() => window.dobLab.ready());
+  expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([1, 0]);
+  await expect(page.locator("#provider")).not.toHaveAttribute("aria-busy", "true");
+  await page.getByRole("button", { name: /Synthetic walk-in/u }).click();
+  // This gated fixture prepares each newly acquired recorder, including reopen.
+  const manualStart = page.getByRole("button", { name: "Start recording", exact: true });
+  await expect(manualStart).toBeDisabled();
+  await page.evaluate(() => window.dobLab.ready());
+  await expect(manualStart).toBeEnabled();
+  expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
 });
 
 test("non-native local provider consent still starts its counted recorder", async ({ page }) => {

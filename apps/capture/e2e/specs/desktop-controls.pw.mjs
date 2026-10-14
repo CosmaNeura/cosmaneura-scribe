@@ -26,6 +26,46 @@ test("inline meeting selection explains disabled Start and clears the instructio
   await page.evaluate(() => window.desktopControlsLab.close());
 });
 
+test("optional source changes preserve the visible required window gate and follow confirmed mode", async ({ page }) => {
+  await page.goto("/e2e/fixtures/desktop-controls.html?inline-meeting&source-choice");
+  const choice = page.locator(".recording-source-choice");
+  const source = page.getByTestId("desktop-audio-mode");
+  const help = page.locator(".recording-source-help");
+  const windowSelect = page.getByTestId("meeting-window");
+  const start = page.getByRole("button", { name: "Start recording", exact: true });
+  await expect(choice).not.toHaveAttribute("open");
+  await expect(source).toBeHidden();
+  await expect(windowSelect).toBeVisible();
+  await expect(start).toBeDisabled();
+  await choice.locator("summary").click();
+  await expect(source).toHaveValue("meeting");
+  await source.selectOption("microphone");
+  await expect(choice.locator("summary")).toContainText("Microphone only");
+  await expect(windowSelect).toHaveCount(0);
+  await expect(start).toBeEnabled();
+  await help.locator("summary").click();
+  await expect(help).toContainText("Keep both voices audible");
+  await expect(help).not.toContainText("Choose your Zoom window");
+  await expect(help).toContainText("Encrypted audio uploads while you record.");
+  expect(await page.evaluate(() => window.desktopControlsLab.commands)).toEqual(["source_microphone"]);
+  // The existing busy source transition removes the selector until its reply.
+  await expect(choice).not.toHaveAttribute("open");
+  await choice.locator("summary").click();
+  await source.selectOption("meeting");
+  await expect(help).toContainText("selected application’s audio");
+  await expect(windowSelect).toBeVisible();
+  await expect(start).toBeDisabled();
+  await expect(choice).not.toHaveAttribute("open");
+  await expect(source).toBeHidden();
+  await expect(windowSelect).toBeVisible();
+  await windowSelect.selectOption({ label: "Zoom — Invented visit" });
+  await expect(start).toBeEnabled();
+  expect(await page.evaluate(() => window.desktopControlsLab.commands)).toEqual([
+    "source_microphone", "source_meeting", "meeting_window",
+  ]);
+  await page.evaluate(() => window.desktopControlsLab.close());
+});
+
 test("interruption confirmation hides Resume until settled and keeps lost-reply recovery visible", async ({ page }) => {
   await page.setViewportSize({ width: 480, height: 332 });
   await page.goto("/e2e/fixtures/desktop-controls.html");
@@ -95,6 +135,10 @@ for (const width of [1280, 640, 480]) {
     if (width === 480) {
       expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(332);
       await expect(controls.locator(".recording-source-help")).toBeInViewport();
+      const exit = page.getByRole("button", { name: "Your encounters", exact: true });
+      await expect(exit).toBeInViewport();
+      expect((await exit.boundingBox()).height).toBeGreaterThanOrEqual(44);
+      await expect(page.getByText("Avery Example", { exact: true }).filter({ visible: true })).toHaveCount(1);
     }
     await page.screenshot({ path: testInfo.outputPath("paused.png") });
     if (width === 1280) {
