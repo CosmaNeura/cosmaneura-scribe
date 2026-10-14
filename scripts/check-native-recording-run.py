@@ -203,6 +203,10 @@ def main() -> None:
                             "NativeProviderConnection.swift",
                             "ProviderNativeTransport.swift",
                             "NativeProviderRecordingService.swift",
+                            "NativeSourceStartOwner.swift",
+                            "NativeSourceProofJournal.swift",
+                            "NativeSourceRecovery.swift",
+                            "NativeCaptureProcessFence.swift",
                         )
                     ],
                     str(REPO / "scripts/standalone-provider/check-native-provider.swift"),

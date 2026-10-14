@@ -205,7 +205,7 @@ struct NativeSourceDecision: Sendable {
         body["authorize_request_nonce"] = authorizeNonce
         let request = try ProviderNativeRequest(nativeStartID: UUID(), revision: revision,
             key: prepareKey, body: JSONSerialization.data(withJSONObject: body), combinedPreparation: true)
-        let reply = try await connection.send(request)
+        let reply = try await connection.sendFreshDesktopSourceStart(request, preparation: preparation)
         try Task.checkCancellation()
         guard !closed, !retiring else { throw ProviderNativeError.unavailable }
         if reply.status == 404 { desktopLegacyFallback = true; return nil }
@@ -308,6 +308,7 @@ struct NativeSourceDecision: Sendable {
     func retireForAuthenticationChange() {
         retiring = true
 #if os(macOS)
+        connection.abandonDesktopInitialWindow()
         desktopPreparedDecision = nil
 #endif
     }
@@ -315,6 +316,7 @@ struct NativeSourceDecision: Sendable {
     func close() {
         closed = true; proof = ""; grant = nil; microphoneRunID = nil
 #if os(macOS)
+        connection.abandonDesktopInitialWindow()
         desktopPreparedDecision = nil
 #endif
     }
