@@ -42,6 +42,38 @@ public struct NativeRecordingWindowReceipt: Codable, Equatable, Sendable {
 public protocol NativeRecordingWindowService: NativeRecordingBindingService {
   func prepareInitialWindow(_ request: NativeRecordingWindowRequest) async throws
     -> NativeRecordingWindowReceipt
+  func prepareFreshInitialWindow(_ request: NativeRecordingWindowRequest,
+    proof: NativeRecordingFreshInitialWindow) async throws -> NativeRecordingWindowReceipt
+}
+
+extension NativeRecordingWindowService {
+  public func prepareFreshInitialWindow(_ request: NativeRecordingWindowRequest,
+    proof: NativeRecordingFreshInitialWindow) async throws -> NativeRecordingWindowReceipt {
+    try await prepareInitialWindow(request)
+  }
+}
+
+public struct NativeRecordingFreshFlow: Sendable {
+  let scope: NativeRecordingScope
+  let recovery: UUID
+  init(scope: NativeRecordingScope, recovery: UUID) { self.scope = scope; self.recovery = recovery }
+}
+
+/// No public constructor, Codable conformance or bridge representation. Created
+/// only after new empty flow/window journals and a successful new key insert.
+public struct NativeRecordingFreshInitialWindow: Sendable {
+  let scope: NativeRecordingScope
+  let request: NativeRecordingWindowRequest
+  let recovery: UUID
+  init(scope: NativeRecordingScope, request: NativeRecordingWindowRequest, recovery: UUID) {
+    self.scope = scope; self.request = request; self.recovery = recovery
+  }
+  public func matches(scope: NativeRecordingScope, request: NativeRecordingWindowRequest) -> Bool {
+    self.scope == scope && self.request == request && request.count == 30
+  }
+  public func matches(scope: NativeRecordingScope, request: NativeRecordingWindowRequest, recoveryScope: UUID) -> Bool {
+    matches(scope: scope, request: request) && recovery == recoveryScope
+  }
 }
 
 /// Fresh native visits collapse bind/lease/reserve into one authenticated request.
@@ -66,6 +98,7 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
   private let key: String
   private var initialized = false
   private var busy = false
+  private var createdEmptyWindow = false
 
   public init(
     scope: NativeRecordingScope, recoveryScope: UUID,
@@ -80,20 +113,22 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
       "scribe-native-initial-window:v1:\(scope.keyAccount):\(recoveryScope.uuidString.lowercased())"
   }
 
-  public func initialize() async throws {
+  public func initialize(freshFlow: NativeRecordingFreshFlow? = nil) async throws {
     guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
     busy = true
     defer { busy = false }
+    createdEmptyWindow = false
     try await checkScope()
     if let saved = try records.readBinding(key: key) {
       _ = try decode(saved)
     } else if try records.readBinding(key: "scribe-native-binding:v1:\(scope.keyAccount)") == nil,
       try records.readLease(key: "scribe-native-lease:v1:\(scope.keyAccount)") == nil
     {
-      try commit(
+      let cleanCreation = try commit(
         Journal(
           schemaVersion: 1, account: scope.keyAccount, recovery: recovery,
           leaseIntent: UUID(), reserveIntent: UUID(), adopted: false), after: 0)
+      createdEmptyWindow = cleanCreation && freshFlow?.scope == scope && freshFlow?.recovery == recovery
     }
     initialized = true
   }
@@ -103,29 +138,52 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
   public func publishedKey() async throws -> NativeRecordingPublicKey {
     try await service.publishedKey()
   }
+  public func abandonFreshInitialWindow() async {
+    createdEmptyWindow = false
+    await service.abandonFreshInitialWindow()
+  }
 
   public func bind(key binding: NativeRecordingKeyReceipt, intent: UUID) async throws
     -> NativeRecordingBindingAcknowledgement
   {
+    try await bindCandidate(key: binding, intent: intent, proof: nil)
+  }
+  public func bindNewCandidate(key binding: NativeRecordingKeyReceipt, intent: UUID,
+    proof: NativeRecordingFreshBinding) async throws -> NativeRecordingBindingAcknowledgement {
+    try await bindCandidate(key: binding, intent: intent, proof: proof)
+  }
+  private func bindCandidate(key binding: NativeRecordingKeyReceipt, intent: UUID,
+    proof: NativeRecordingFreshBinding?) async throws -> NativeRecordingBindingAcknowledgement {
     guard initialized, !busy else { throw NativeRecordingBindingFailure.operationInProgress }
     busy = true
     defer { busy = false }
+    let fresh = createdEmptyWindow
+    createdEmptyWindow = false
     try await checkScope()
     guard let saved = try records.readBinding(key: key) else {
       return try await service.bind(key: binding, intent: intent)
     }
     var journal = try decode(saved)
+    var eligible = fresh && journal.request == nil && journal.receipt == nil && !journal.adopted
+      && proof?.scope == scope && proof?.intent == intent && proof?.receipt == binding
     let request = NativeRecordingWindowRequest(
       keyVersion: binding.keyVersion,
       wrappedDEK: binding.wrappedDEK, bindIntent: intent, leaseIntent: journal.leaseIntent,
       reserveIntent: journal.reserveIntent, count: 30)
     if journal.request == nil {
       journal.request = request
-      try commit(journal, after: 1)
+      let cleanRequestWrite = try commit(journal, after: 1)
+      eligible = eligible && cleanRequestWrite
     }
     guard journal.request == request else { throw NativeRecordingBindingFailure.journalConflict }
     if journal.receipt == nil {
-      let receipt = try await service.prepareInitialWindow(request)
+      let receipt: NativeRecordingWindowReceipt
+      if eligible {
+        receipt = try await service.prepareFreshInitialWindow(request,
+          proof: NativeRecordingFreshInitialWindow(scope: scope, request: request, recovery: recovery))
+      } else {
+        receipt = try await service.prepareInitialWindow(request)
+      }
       try await checkScope()
       try validate(receipt, request: request)
       journal.receipt = receipt
@@ -200,7 +258,9 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
     }
     return value
   }
-  private func commit(_ value: Journal, after revision: UInt64) throws {
+  /// Exact readback preserves recovery, but only an exception-free write is fresh.
+  @discardableResult
+  private func commit(_ value: Journal, after revision: UInt64) throws -> Bool {
     try Task.checkCancellation()
     let data = try encoded(value)
     _ = try decode(NativeRecordingStoredRecord(data: data, revision: revision + 1))
@@ -214,6 +274,8 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
       guard let saved = try records.readBinding(key: key), saved.revision == revision + 1,
         saved.data == data
       else { throw NativeRecordingBindingFailure.journalConflict }
+      return false
     }
+    return true
   }
 }

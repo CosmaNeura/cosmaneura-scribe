@@ -70,6 +70,23 @@ def main() -> None:
             if path.name != "ClerkKitWorkspaceDriver.swift"
         ],
     ]
+    recording = (
+        root / "apps/capture/native-plugins/native-recording/Sources/CosmaneuraNativeRecording"
+    )
+    commands.append(
+        common
+        + [
+            "-emit-library",
+            "-emit-module",
+            "-module-name",
+            "CosmaneuraNativeRecording",
+            "-emit-module-path",
+            str(output / "CosmaneuraNativeRecording.swiftmodule"),
+            "-o",
+            str(output / "libCosmaneuraNativeRecording.dylib"),
+        ]
+        + [str(path) for path in sorted(recording.glob("*.swift"))]
+    )
     for name in ("transport", "provider"):
         commands += [
             common
@@ -80,6 +97,7 @@ def main() -> None:
                 "-L",
                 str(output),
                 "-lCosmasNativeAuth",
+                "-lCosmaneuraNativeRecording",
                 "-Xlinker",
                 "-rpath",
                 "-Xlinker",
