@@ -12,7 +12,9 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    output = parser.parse_args().output.resolve()
+    parser.add_argument("--scenario", choices=("source", "desktop-initial-window"), default="source")
+    args = parser.parse_args()
+    output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     repo = Path(__file__).resolve().parents[1]
     auth = repo / "apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth"
@@ -40,9 +42,12 @@ def main() -> None:
             "NativeCaptureProcessFence",
             "DesktopSourceRegistry",
             "check-native-provider",
-            "check-desktop-source",
+            "check-desktop-source" if args.scenario == "source" else "check-native-desktop-initial-window",
         ]
     ]
+    if args.scenario == "desktop-initial-window":
+        # This fixture supplies its own SDK/wire types and entry point.
+        bridge.remove(standalone / "check-native-provider.swift")
     recording_sources = sorted(
         (
             repo / "apps/capture/native-plugins/native-recording/Sources/CosmaneuraNativeRecording"
