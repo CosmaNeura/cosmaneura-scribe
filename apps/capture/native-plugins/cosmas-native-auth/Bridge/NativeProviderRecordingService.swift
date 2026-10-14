@@ -30,6 +30,7 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       tenantID: context.tenantID, sessionID: context.sessionID,
       workspaceID: context.workspaceID, accountDigest: context.accountDigest)
   }
+  func abandonFreshInitialWindow() async { connection.abandonFreshInitialWindow() }
 
   func publishedKey() async throws -> NativeRecordingPublicKey {
     try Task.checkCancellation()
@@ -185,6 +186,18 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
   func prepareInitialWindow(_ request: NativeRecordingWindowRequest) async throws
     -> NativeRecordingWindowReceipt
   {
+    try await prepareWindow(request, proof: nil)
+  }
+
+  func prepareFreshInitialWindow(_ request: NativeRecordingWindowRequest,
+    proof: NativeRecordingFreshInitialWindow) async throws -> NativeRecordingWindowReceipt {
+    let scope = try await recordingScope()
+    guard proof.matches(scope: scope, request: request) else { throw ProviderNativeError.invalidRequest }
+    return try await prepareWindow(request, proof: proof)
+  }
+
+  private func prepareWindow(_ request: NativeRecordingWindowRequest,
+    proof: NativeRecordingFreshInitialWindow?) async throws -> NativeRecordingWindowReceipt {
     guard request.count == 30, Self.validVersion(request.keyVersion),
       request.wrappedDEK.range(of: "^[A-Za-z0-9_-]{512}$", options: .regularExpression) != nil
     else { throw ProviderNativeError.invalidRequest }
@@ -197,7 +210,7 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
         "lease_idempotency_key": request.leaseIntent.uuidString.lowercased(),
         "reserve_idempotency_key": request.reserveIntent.uuidString.lowercased(),
         "channel": "microphone", "reservation_count": request.count,
-      ], maximumResponseBytes: 131_072)
+      ], maximumResponseBytes: 131_072, freshWindow: proof.map { (request, $0) })
     guard Set(value.keys) == ["schema_version", "binding", "lease", "reservations"],
       value["schema_version"] as? String == "1.0",
       let binding = value["binding"] as? [String: Any],
@@ -254,7 +267,8 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
 
   private func operation(
     kind: String, intent: UUID, payload: [String: Any]? = nil,
-    leaseID: UUID? = nil, maximumResponseBytes: Int = 8192
+    leaseID: UUID? = nil, maximumResponseBytes: Int = 8192,
+    freshWindow: (NativeRecordingWindowRequest, NativeRecordingFreshInitialWindow)? = nil
   )
     async throws -> [String: Any]
   {
@@ -279,7 +293,12 @@ final class NativeProviderRecordingService: NativeRecordingBindingService,
       action: "capture-operations", key: operationKey,
       body: String(decoding: body, as: UTF8.self))
     let reply: ProviderNativeReply
-    do { reply = try await connection.send(request) } catch ProviderNativeError.response {
+    do {
+      if let freshWindow {
+        reply = try await connection.sendFreshInitialWindow(request, context: context,
+          window: freshWindow.0, proof: freshWindow.1)
+      } else { reply = try await connection.send(request) }
+    } catch ProviderNativeError.response {
       throw NativeRecordingBindingFailure.receiptMismatch
     }
     do {

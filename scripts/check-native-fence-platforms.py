@@ -49,8 +49,14 @@ def main() -> None:
             repo / "scripts/standalone-provider" / name
         ).read_bytes():
             raise ValueError(f"Desktop and mobile source copy differs: {name}")
+    recording = sorted(
+        (
+            repo / "apps/capture/native-plugins/native-recording/Sources/CosmaneuraNativeRecording"
+        ).glob("*.swift")
+    )
     inputs = {
-        str(p.relative_to(repo)): hashlib.sha256(p.read_bytes()).hexdigest() for p in auth + bridge
+        str(p.relative_to(repo)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in auth + recording + bridge
     }
     results: list[dict[str, object]] = []
 
@@ -106,6 +112,18 @@ def main() -> None:
                 "-emit-module-path",
                 str(directory / "CosmasNativeAuth.swiftmodule"),
                 *map(str, auth),
+            ],
+        )
+        run(
+            platform + "-recording",
+            flags
+            + [
+                "-emit-module",
+                "-module-name",
+                "CosmaneuraNativeRecording",
+                "-emit-module-path",
+                str(directory / "CosmaneuraNativeRecording.swiftmodule"),
+                *map(str, recording),
             ],
         )
         artifact = directory / "NativeRecovery.o"

@@ -48,6 +48,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   let scope: NativeRecordingScope
   let recoveryScope: UUID
   private let flow: NativeRecordingFlowOwner
+  private let service: any Service
   private let binding: NativeRecordingBindingOwner
   private let initialWindow: NativeRecordingWindowOwner?
   private let resumeWindow: NativeRecordingResumeWindowOwner?
@@ -89,6 +90,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     now: @escaping @MainActor () -> Date = { Date() }
   ) {
     self.scope = scope
+    self.service = service
     self.recoveryScope = recoveryScope
     self.requireCurrent = requireCurrent
     self.recoverSources = recoverSources
@@ -149,7 +151,8 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
           phase = .sealed
           return
         }
-        try await initialWindow?.initialize()
+        let freshFlow = try await flow.takeFreshInitialWindowProof()
+        try await initialWindow?.initialize(freshFlow: freshFlow)
         cipher = try await binding.open()
         try current(ticket)
         try await initialWindow?.adopt(leases: leases, reservations: reservations)
@@ -165,6 +168,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         phase = saved!.committedChunks == 0 ? .ready : .paused
         warmRecordingWindow()
       } catch {
+        await service.abandonFreshInitialWindow()
         if phase == .opening {
           phase = .failed
           failure = .preparationFailed

@@ -37,6 +37,7 @@ public actor NativeRecordingFlowOwner {
     let revision: UInt64
   }
   private var clearing: Clearing?
+  private var createdEmptyFlow = false
 
   public init(
     scope: NativeRecordingScope, recoveryScope: UUID,
@@ -54,6 +55,7 @@ public actor NativeRecordingFlowOwner {
   public func open() async throws -> NativeRecordingFlowSnapshot {
     try enter()
     defer { busy = false }
+    createdEmptyFlow = false
     try await checkScope()
     if let saved = try records.readBinding(key: key) { return snapshot(try decode(saved)) }
     guard try records.listRecordingKeys(prefix: scope.queuePrefix(recoveryScope: recovery)).isEmpty,
@@ -64,7 +66,25 @@ public actor NativeRecordingFlowOwner {
       completionIntent: UUID(), chunks: 0, plaintextBytes: 0)
     try await checkScope()
     try commit(journal, after: 0)
+    createdEmptyFlow = true
     return snapshot(journal)
+  }
+
+  /// Consumed only during this host's initial open, before any key/window/source.
+  /// Existing/recovered flow journals and nonempty queues cannot issue proof.
+  public func takeFreshInitialWindowProof() async throws -> NativeRecordingFreshFlow? {
+    try enter()
+    defer { busy = false }
+    let created = createdEmptyFlow
+    createdEmptyFlow = false
+    guard created else { return nil }
+    try await checkScope()
+    let (saved, journal) = try load()
+    guard saved.revision == 1, journal.chunks == 0, journal.plaintextBytes == 0,
+      journal.sourceCheckpoint == nil, journal.completionLease == nil,
+      try records.listRecordingKeys(prefix: scope.queuePrefix(recoveryScope: recovery)).isEmpty
+    else { return nil }
+    return NativeRecordingFreshFlow(scope: scope, recovery: recovery)
   }
 
   /// Persist before any audio admission. A crash or failed final write leaves

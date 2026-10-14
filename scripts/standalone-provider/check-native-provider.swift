@@ -13,6 +13,7 @@ import CosmasNativeAuth
     var loaded = true
     var identity: NativeAuthIdentity? = try! .init(userID: "user_offline", sessionID: "sess_offline", organizationID: "org_offline")
     var tokens = 0, expired = false, holdToken = false
+    var tokenLifetime = 120
     var displayName: String?
     var beforeNameRead: (() -> Void)?
     var providerDisplayName: String? {
@@ -33,7 +34,7 @@ import CosmasNativeAuth
         let claims: [String: Any] = ["iss": "https://identity.clerk.accounts.dev", "aud": "offline-provider",
             "sub": identity?.userID ?? "user_offline", "sid": identity?.sessionID ?? "sess_offline",
             "org_id": identity?.organizationID ?? "org_offline",
-            "iat": now - 10, "nbf": now - 10, "exp": now + (expired ? -10 : 120)]
+            "iat": now - 10, "nbf": now - 10, "exp": now + (expired ? -10 : tokenLifetime)]
         func encode(_ data: Data) -> String {
             data.base64EncodedString().replacingOccurrences(of: "=", with: "")
                 .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")

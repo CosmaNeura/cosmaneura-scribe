@@ -22,13 +22,35 @@ public struct NativeRecordingBindingAcknowledgement: Sendable {
 }
 
 /// Implemented by the authenticated native Core connection. Each operation
-/// must use fresh native credentials and validate its complete Core envelope.
+/// validates its complete Core envelope. The only credential reuse is a bounded,
+/// one-use native admission ticket for a proven new empty initial window.
 /// No renderer-provided identity or cached capture permission is accepted here.
 public protocol NativeRecordingBindingService: Sendable {
   func recordingScope() async throws -> NativeRecordingScope
   func publishedKey() async throws -> NativeRecordingPublicKey
   func bind(key: NativeRecordingKeyReceipt, intent: UUID) async throws
     -> NativeRecordingBindingAcknowledgement
+  func bindNewCandidate(key: NativeRecordingKeyReceipt, intent: UUID,
+    proof: NativeRecordingFreshBinding) async throws -> NativeRecordingBindingAcknowledgement
+  func abandonFreshInitialWindow() async
+}
+
+/// Only the native key/journal creator can construct this RAM-only evidence.
+public struct NativeRecordingFreshBinding: Sendable {
+  let scope: NativeRecordingScope
+  let intent: UUID
+  let receipt: NativeRecordingKeyReceipt
+  init(scope: NativeRecordingScope, intent: UUID, receipt: NativeRecordingKeyReceipt) {
+    self.scope = scope; self.intent = intent; self.receipt = receipt
+  }
+}
+
+extension NativeRecordingBindingService {
+  public func abandonFreshInitialWindow() async {}
+  public func bindNewCandidate(key: NativeRecordingKeyReceipt, intent: UUID,
+    proof: NativeRecordingFreshBinding) async throws -> NativeRecordingBindingAcknowledgement {
+    try await bind(key: key, intent: intent)
+  }
 }
 
 /// Retains the intent before creating custody, and the exact candidate before
@@ -70,6 +92,11 @@ public actor NativeRecordingBindingOwner {
   }
 
   public func open() async throws -> NativeRecordingEncryption {
+    do { return try await openCandidate() }
+    catch { await service.abandonFreshInitialWindow(); throw error }
+  }
+
+  private func openCandidate() async throws -> NativeRecordingEncryption {
     // Actor isolation alone does not exclude another call across network awaits.
     guard !busy else { throw NativeRecordingBindingFailure.operationInProgress }
     busy = true
@@ -77,6 +104,7 @@ public actor NativeRecordingBindingOwner {
     try await checkScope()
 
     var journal: Journal
+    var createdJournal = false
     if let retained = try records.readBinding(key: recordKey) {
       journal = try decode(retained)
     } else {
@@ -87,6 +115,7 @@ public actor NativeRecordingBindingOwner {
         keyVersion: published.version, modulus: nativeBase64URL(published.modulus),
         wrappedDEK: nil, bound: false)
       try commit(journal, after: 0)
+      createdJournal = true
     }
 
     let cipher: NativeRecordingEncryption
@@ -109,7 +138,13 @@ public actor NativeRecordingBindingOwner {
     }
 
     try await checkScope()
-    let acknowledgement = try await service.bind(key: cipher.receipt, intent: journal.intent)
+    let acknowledgement: NativeRecordingBindingAcknowledgement
+    if createdJournal && cipher.newlyCreatedBindingIntent == journal.intent {
+      acknowledgement = try await service.bindNewCandidate(key: cipher.receipt, intent: journal.intent,
+        proof: NativeRecordingFreshBinding(scope: scope, intent: journal.intent, receipt: cipher.receipt))
+    } else {
+      acknowledgement = try await service.bind(key: cipher.receipt, intent: journal.intent)
+    }
     try await checkScope()
     guard acknowledgement.sessionID == scope.sessionID,
       acknowledgement.keyVersion == cipher.receipt.keyVersion

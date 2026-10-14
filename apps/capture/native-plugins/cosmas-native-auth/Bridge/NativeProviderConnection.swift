@@ -2,6 +2,7 @@ import Foundation
 import CoreFoundation
 import OSLog
 import CosmasNativeAuth
+import CosmaneuraNativeRecording
 
 enum ProviderNativeError: String, Error, Sendable {
     case unavailable = "provider_native_unavailable"
@@ -273,6 +274,22 @@ protocol ProviderNativeWire: Sendable {
         let expires: ContinuousClock.Instant
     }
     private var preparedAdmission: PreparedAdmissionContext?
+    private struct InitialWindowTicket {
+        let token: String
+        let identity: NativeAuthIdentity
+        let revision: String, admissionKey: String, account: String, binding: String
+        var generation: UUID
+        let epoch: UUID, workspace: UUID, session: UUID, tenant: UUID, recovery: UUID
+        let mintedAt: ContinuousClock.Instant, expires: ContinuousClock.Instant
+    }
+    private var initialWindowTicket: InitialWindowTicket?
+    private var initialWindowEpoch = UUID()
+    private var initialWindowExpiry: Task<Void, Never>?
+
+    func abandonFreshInitialWindow() {
+        initialWindowExpiry?.cancel(); initialWindowExpiry = nil
+        initialWindowTicket = nil; initialWindowEpoch = UUID()
+    }
     private var preparingAdmission: UUID?
     private var preparingRecording: UUID?
     private var recordingGeneration = UUID()
@@ -291,6 +308,7 @@ protocol ProviderNativeWire: Sendable {
     }
 
     func authChanged(_ state: NativeAuthState) {
+        abandonFreshInitialWindow()
         preparingAdmission = nil
         preparedAdmission = nil
         preparedRecording = nil; recordingGeneration = UUID()
@@ -301,6 +319,7 @@ protocol ProviderNativeWire: Sendable {
     }
 
     func cancel(_ id: UUID) {
+        abandonFreshInitialWindow()
         if preparingAdmission == id { preparingAdmission = nil }
         if preparedAdmission?.requestID == id { preparedAdmission = nil }
         if preparedRecording?.requestID == id || preparingRecording == id {
@@ -314,6 +333,7 @@ protocol ProviderNativeWire: Sendable {
     }
 
     func close() {
+        abandonFreshInitialWindow()
         closed = true
         preparingAdmission = nil
         preparedAdmission = nil
@@ -439,11 +459,15 @@ protocol ProviderNativeWire: Sendable {
         try Task.checkCancellation()
         guard earlyCancellations.remove(request.id) == nil else {
             preparedAdmission = nil; preparedRecording = nil; recordingGeneration = UUID()
+            abandonFreshInitialWindow()
             throw ProviderNativeError.cancelled
         }
         preparingAdmission = nil
         preparedRecording = nil
+        let priorGeneration = recordingGeneration
         let ticket = UUID(); recordingGeneration = ticket
+        var transferred = false
+        defer { if !transferred { abandonFreshInitialWindow() } }
         preparingRecording = request.id
         defer { if preparingRecording == request.id { preparingRecording = nil } }
         try current(request.revision)
@@ -470,6 +494,17 @@ protocol ProviderNativeWire: Sendable {
                 accountDigest: retained.context.accountDigest, checkedAt: retained.context.checkedAt,
                 preparedPublicKey: retained.context.preparedPublicKey, preparedRevision: request.revision,
                 preparedKeyExpires: retained.expires, preparedGeneration: ticket)
+            if var saved = initialWindowTicket, saved.generation == priorGeneration,
+               saved.revision == request.revision, saved.workspace == workspace,
+               saved.session == session, saved.tenant == context.tenantID,
+               saved.account == context.accountDigest, saved.binding == binding,
+               saved.recovery == mount.recoveryScope, saved.epoch == initialWindowEpoch,
+               saved.identity == auth.state().identity, contextNow() >= saved.mintedAt,
+               contextNow() < saved.expires {
+                // Transfer with the exact single-use admission metadata. Only the
+                // owner generation changes; neither original clock bound is renewed.
+                saved.generation = ticket; initialWindowTicket = saved
+            } else { abandonFreshInitialWindow() }
         } else {
             context = try await recordingContext(workspaceID: workspace, bindingRef: binding,
                 sessionID: session, revision: request.revision, requestID: request.id)
@@ -485,6 +520,7 @@ protocol ProviderNativeWire: Sendable {
         preparedRecording = PreparedRecordingContext(requestID: request.id, nonce: nonce,
             revision: request.revision, mount: mount, context: context,
             expires: context.preparedKeyExpires)
+        transferred = true
         return ProviderNativeReply(status: 200, body: try JSONSerialization.data(withJSONObject: [
             "revision": request.revision, "session_id": session.uuidString.lowercased(),
             "authorization_id": nonce.uuidString.lowercased(),
@@ -496,7 +532,7 @@ protocol ProviderNativeWire: Sendable {
         let saved = preparedRecording
         preparedRecording = nil
         var transferred = false
-        defer { if !transferred { recordingGeneration = UUID() } }
+        defer { if !transferred { recordingGeneration = UUID(); abandonFreshInitialWindow() } }
         try current(revision)
         guard let saved, saved.nonce == nonce, saved.revision == revision,
               saved.context.workspaceID == workspaceID, saved.context.bindingRef == bindingRef,
@@ -614,7 +650,8 @@ protocol ProviderNativeWire: Sendable {
     }
 
     private func takeAdmissionPreparationReply(_ request: ProviderNativeRequest,
-                                               _ reply: ProviderNativeReply) throws -> ProviderNativeReply {
+                                               _ reply: ProviderNativeReply, token: String,
+                                               mintedAt: ContinuousClock.Instant) throws -> ProviderNativeReply {
         guard request.action == .admission,
               let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any],
               body["native_recording_preparation"] as? Bool == true else { return reply }
@@ -625,7 +662,7 @@ protocol ProviderNativeWire: Sendable {
               let mounted = recordingMounts[workspace], mounted.revision == request.revision,
               mounted.mount.bindingRef == binding, mounted.mount.admissionPreparationSupported,
               reply.body.count <= 8192,
-              var value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
+              let value = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any],
               Set(value.keys) == ["contract_version", "workspace_id", "binding_ref", "request_nonce", "checked_at",
                                   "appointment_ref", "operation_ref", "consent_record_id", "session_id", "status",
                                   "configured_capture", "native_recording_preparation"],
@@ -658,13 +695,98 @@ protocol ProviderNativeWire: Sendable {
             preparedKeyExpires: expires, preparedGeneration: recordingGeneration)
         preparedAdmission = PreparedAdmissionContext(requestID: request.id, revision: request.revision,
             mount: mounted.mount, context: retained, expires: expires)
+        let now = contextNow()
+        // The optional ticket must not reject an otherwise successful admission
+        // whose original JWT expires while the receiver is responding.
+        if status == "created", now >= mintedAt,
+           let jwtExpiry = try? auth.validateInitialWindowToken(token, expectedRevision: request.revision),
+           let identity = auth.state().identity {
+            let deadline = min(expires, mintedAt.advanced(by: .seconds(5)),
+                               now.advanced(by: .seconds(max(0, jwtExpiry.timeIntervalSinceNow))))
+            guard now < deadline else { return try Self.stripAdmissionMetadata(value, reply: reply) }
+            initialWindowTicket = InitialWindowTicket(token: token, identity: identity,
+                revision: request.revision, admissionKey: request.key, account: retained.accountDigest,
+                binding: binding, generation: recordingGeneration, epoch: initialWindowEpoch,
+                workspace: workspace, session: session,
+                tenant: tenant, recovery: mounted.mount.recoveryScope, mintedAt: mintedAt, expires: deadline)
+            let epoch = initialWindowEpoch
+            initialWindowExpiry = Task { @MainActor [weak self] in
+                try? await Task.sleep(until: deadline, clock: ContinuousClock())
+                guard !Task.isCancelled, self?.initialWindowEpoch == epoch else { return }
+                self?.abandonFreshInitialWindow()
+            }
+        }
         // Native storage namespace/key metadata never enters renderer custody.
+        return try Self.stripAdmissionMetadata(value, reply: reply)
+    }
+
+    private static func stripAdmissionMetadata(_ value: [String: Any], reply: ProviderNativeReply) throws -> ProviderNativeReply {
+        var value = value
         value.removeValue(forKey: "native_recording_preparation")
         return ProviderNativeReply(status: reply.status, body: try JSONSerialization.data(withJSONObject: value),
             serverTiming: reply.serverTiming)
     }
 
     func send(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
+        abandonFreshInitialWindow()
+        return try await sendNative(request, initialWindowToken: nil)
+    }
+
+    /// No renderer route calls this method. The unconstructable native proof
+    /// comes from new empty flow/window journals and successful new key custody.
+    func sendFreshInitialWindow(_ request: ProviderNativeRequest, context: NativeProviderRecordingContext,
+                                window: NativeRecordingWindowRequest,
+                                proof: NativeRecordingFreshInitialWindow) async throws -> ProviderNativeReply {
+        let saved = initialWindowTicket
+        initialWindowExpiry?.cancel(); initialWindowExpiry = nil
+        initialWindowTicket = nil // Claim before validation or any await; never restore.
+        let scope = try NativeRecordingScope(tenantID: context.tenantID, sessionID: context.sessionID,
+            workspaceID: context.workspaceID, accountDigest: context.accountDigest)
+        var retainedTicket: InitialWindowTicket?
+        if let saved, proof.matches(scope: scope, request: window, recoveryScope: saved.recovery),
+           saved.revision == request.revision, saved.generation == recordingGeneration,
+           saved.epoch == initialWindowEpoch,
+           saved.account == context.accountDigest, saved.binding == context.bindingRef,
+           saved.workspace == context.workspaceID, saved.session == context.sessionID,
+           saved.tenant == context.tenantID,
+           recordingMounts[context.workspaceID]?.mount.recoveryScope == saved.recovery,
+           saved.identity == auth.state().identity,
+           saved.admissionKey != request.key,
+           contextNow() >= saved.mintedAt, contextNow() < saved.expires,
+           try recordingPreparationKeyIsCurrent(context),
+           Self.isInitialWindow(request, context: context, window: window),
+           (try? auth.validateInitialWindowToken(saved.token, expectedRevision: request.revision)) != nil {
+            retainedTicket = saved
+        }
+        return try await sendNative(request, initialWindowToken: retainedTicket)
+    }
+
+    private static func isInitialWindow(_ request: ProviderNativeRequest,
+                                       context: NativeProviderRecordingContext,
+                                       window: NativeRecordingWindowRequest) -> Bool {
+        guard request.action == .operation,
+              request.key == "native-initial-window-v1:" + window.bindIntent.uuidString.lowercased(),
+              let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              Set(body.keys) == ["workspace_id", "binding_ref", "request_nonce", "operation"],
+              body["workspace_id"] as? String == context.workspaceID.uuidString.lowercased(),
+              body["binding_ref"] as? String == context.bindingRef,
+              canonicalUUID(body["request_nonce"] as? String) != nil,
+              let operation = body["operation"] as? [String: Any],
+              Set(operation.keys) == ["kind", "payload"],
+              operation["kind"] as? String == "prepare_recording_window",
+              let payload = operation["payload"] as? NSDictionary else { return false }
+        let expected: NSDictionary = ["schema_version": "1.0",
+            "binding": ["key_version": window.keyVersion, "wrapped_dek": window.wrappedDEK],
+            "bind_idempotency_key": window.bindIntent.uuidString.lowercased(),
+            "lease_idempotency_key": window.leaseIntent.uuidString.lowercased(),
+            "reserve_idempotency_key": window.reserveIntent.uuidString.lowercased(),
+            "channel": "microphone", "reservation_count": 30]
+        return window.count == 30 && Set([window.bindIntent, window.leaseIntent, window.reserveIntent]).count == 3
+            && payload == expected
+    }
+
+    private func sendNative(_ request: ProviderNativeRequest,
+                            initialWindowToken: InitialWindowTicket?) async throws -> ProviderNativeReply {
         guard request.action != .recorderContext else { throw ProviderNativeError.invalidRequest }
         guard !closed, pending[request.id] == nil, pending.count < 8 else {
             throw ProviderNativeError.unavailable
@@ -709,8 +831,24 @@ protocol ProviderNativeWire: Sendable {
                     status: status, completed: completed, serverTiming: serverTiming))
             }
             try Task.checkCancellation()
-            let token = try await auth.token(expectedRevision: request.revision,
-                                             nativeSessionWithoutOrigin: true)
+            let token: String
+            let usedWindowTicket: InitialWindowTicket?
+            if let initialWindowToken,
+               self.contextNow() >= initialWindowToken.mintedAt,
+               self.contextNow() < initialWindowToken.expires,
+               self.initialWindowEpoch == initialWindowToken.epoch,
+               self.recordingGeneration == initialWindowToken.generation,
+               auth.state().identity == initialWindowToken.identity,
+               (try? auth.validateInitialWindowToken(initialWindowToken.token, expectedRevision: request.revision)) != nil {
+                token = initialWindowToken.token; usedWindowTicket = initialWindowToken
+            } else {
+                // No wire I/O has occurred. An optional ticket that expired while
+                // this Task was scheduled behaves exactly like a ticket miss.
+                usedWindowTicket = nil
+                token = try await auth.token(expectedRevision: request.revision,
+                                            nativeSessionWithoutOrigin: true)
+            }
+            let mintedAt = self.contextNow()
             tokenEnd = timingNow()
             if let interval = tokenInterval { ProviderNativeRequestTiming.end("Provider token", interval) }
             tokenInterval = nil
@@ -724,6 +862,14 @@ protocol ProviderNativeWire: Sendable {
             receiverInterval = nil
             try Task.checkCancellation()
             try self.current(request.revision)
+            if let initialWindowToken = usedWindowTicket {
+                // Five seconds bounds the single dispatch, not the response
+                // lifetime. Preserve the existing in-flight publication fences.
+                guard self.initialWindowEpoch == initialWindowToken.epoch,
+                      self.recordingGeneration == initialWindowToken.generation,
+                      auth.state().identity == initialWindowToken.identity
+                else { throw ProviderNativeError.cancelled }
+            }
             guard request.action.acceptsResponseStatus(reply.status),
                   reply.body.count <= request.responseLimit else {
                 throw ProviderNativeError.response
@@ -738,7 +884,7 @@ protocol ProviderNativeWire: Sendable {
                 throw ProviderNativeError.response
             }
             self.rememberRecordingMount(request, reply)
-            let published = try self.takeAdmissionPreparationReply(request, reply)
+            let published = try self.takeAdmissionPreparationReply(request, reply, token: token, mintedAt: mintedAt)
             completed = true
             return published
         }

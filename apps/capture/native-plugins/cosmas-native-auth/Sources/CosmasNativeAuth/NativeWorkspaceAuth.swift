@@ -297,6 +297,16 @@ public enum NativeProviderDisplayName {
         }
     }
 
+    /// Validate one native-only initial-window ticket without minting. This is
+    /// never used for source/audio, content reads, upload or recovery.
+    public func validateInitialWindowToken(_ token: String, expectedRevision: String) throws -> Date {
+        let before = state()
+        guard before.phase == .ready, before.revision == expectedRevision,
+              transition == nil, let expected = before.identity, let driver, let tokenPolicy,
+              driver.identity == expected, !(try blocked()) else { throw NativeAuthError.sessionChanged }
+        return try tokenPolicy.initialWindowExpiration(token, identity: expected)
+    }
+
     private func abandonMutation(_ operation: UUID) {
         guard transition == operation else { return }
         transition = nil

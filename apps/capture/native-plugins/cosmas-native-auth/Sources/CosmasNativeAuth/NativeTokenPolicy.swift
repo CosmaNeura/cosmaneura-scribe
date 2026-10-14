@@ -75,6 +75,15 @@ public struct NativeTokenPolicy: Sendable {
               notBefore <= now.timeIntervalSince1970 + 5 else { throw NativeAuthError.tokenUnavailable }
     }
 
+    public func initialWindowExpiration(_ token: String, identity: NativeAuthIdentity,
+                                        now: Date = Date()) throws -> Date {
+        try validate(token, identity: identity, now: now, nativeSessionWithoutOrigin: true)
+        let pieces = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard pieces.count == 3, let claims = object(pieces[1]), let expiration = time(claims["exp"])
+        else { throw NativeAuthError.tokenUnavailable }
+        return Date(timeIntervalSince1970: expiration)
+    }
+
     private func bytes(_ value: Substring) -> Data? {
         guard !value.isEmpty, value.unicodeScalars.allSatisfy({
             $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_")

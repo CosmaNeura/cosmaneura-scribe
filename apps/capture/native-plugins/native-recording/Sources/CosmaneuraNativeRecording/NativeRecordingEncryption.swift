@@ -122,6 +122,9 @@ public struct KeychainNativeRecordingStorage: NativeRecordingKeyStorage {
 public final class NativeRecordingEncryption: Sendable {
   public let scope: NativeRecordingScope
   public let receipt: NativeRecordingKeyReceipt
+  // RAM-only evidence of a successful new insert in this invocation. Reopen,
+  // retained candidates and ambiguous insert recovery never receive it.
+  let newlyCreatedBindingIntent: UUID?
   private let key: SymmetricKey
 
   private struct StoredKey: Codable {
@@ -134,13 +137,14 @@ public final class NativeRecordingEncryption: Sendable {
     let bindingIntent: UUID?
   }
 
-  private init(scope: NativeRecordingScope, stored: StoredKey) throws {
+  private init(scope: NativeRecordingScope, stored: StoredKey, createdIntent: UUID? = nil) throws {
     guard stored.version == 1, stored.account == scope.keyAccount,
       stored.raw.count == 32, stored.wrapped.count == 384,
       !stored.keyVersion.isEmpty, stored.keyVersion.utf8.count <= 256,
       stored.publicKeyDigest.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
     else { throw NativeRecordingFailure.keyUnavailable }
     self.scope = scope
+    newlyCreatedBindingIntent = createdIntent
     key = SymmetricKey(data: stored.raw)
     receipt = NativeRecordingKeyReceipt(
       keyVersion: stored.keyVersion,
@@ -227,7 +231,7 @@ public final class NativeRecordingEncryption: Sendable {
         .joined(),
       raw: raw, wrapped: encrypted as Data, bindingIntent: bindingIntent)
     defer { stored.raw.resetBytes(in: 0..<stored.raw.count) }
-    let result = try NativeRecordingEncryption(scope: scope, stored: stored)
+    let result = try NativeRecordingEncryption(scope: scope, stored: stored, createdIntent: bindingIntent)
     var encoded = try PropertyListEncoder().encode(stored)
     defer { encoded.resetBytes(in: 0..<encoded.count) }
     try storage.insert(account: scope.keyAccount, value: encoded)

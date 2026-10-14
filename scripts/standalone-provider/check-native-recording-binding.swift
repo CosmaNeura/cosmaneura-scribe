@@ -9,15 +9,19 @@ private actor BindingWire: ProviderNativeWire {
   let workspace = UUID(), session = UUID(), tenant = UUID()
   let binding = "scribe_capture_binding_01j00000000000000000000000"
   let modulus: String
-  let lease = UUID()
+  let lease = UUID(), recovery = UUID()
   let reservationDeadline = ISO8601DateFormatter().string(from: Date().addingTimeInterval(900))
   var replyBytes = 0
   var fault = "none"
   var admissionSupported = false
   var preparationDelay = false
   var requests: [ProviderNativeRequest] = []
+  var onAdmission: (@MainActor @Sendable () -> Void)?
+  var onWindow: (@MainActor @Sendable () -> Void)?
   init(_ modulus: String) { self.modulus = modulus }
   func setFault(_ value: String) { fault = value }
+  func setAdmissionClock(_ value: @escaping @MainActor @Sendable () -> Void) { onAdmission = value }
+  func setWindowClock(_ value: @escaping @MainActor @Sendable () -> Void) { onWindow = value }
   func supportAdmission(_ value: Bool, delay: Bool = false) {
     admissionSupported = value
     preparationDelay = delay
@@ -32,7 +36,7 @@ private actor BindingWire: ProviderNativeWire {
         status: 200,
         body: try JSONSerialization.data(withJSONObject: [
           "revision": request.revision, "workspaceId": workspace.uuidString.lowercased(),
-          "recoveryScope": UUID().uuidString.lowercased(), "bindingRef": binding,
+          "recoveryScope": recovery.uuidString.lowercased(), "bindingRef": binding,
           "appointmentRef": appointment,
           "encounter": [
             "appointmentRef": appointment,
@@ -42,6 +46,8 @@ private actor BindingWire: ProviderNativeWire {
         ]))
     }
     if request.action == .admission {
+      await onAdmission?()
+      if fault == "admission_jwt_expiry" { try await Task.sleep(for: .milliseconds(2200)) }
       let combined = body["native_recording_preparation"] as? Bool == true
       try require(
         Set(body.keys)
@@ -66,6 +72,7 @@ private actor BindingWire: ProviderNativeWire {
           "session_id": session.uuidString.lowercased(), "status": "created",
         ]
         if fault == "admission_session" { context["session_id"] = UUID().uuidString.lowercased() }
+        if fault == "admission_capturing" { context["status"] = "capturing" }
         var metadata: [String: Any] = [
           "schema_version": "1.0", "context": context,
           "encryption_key": [
@@ -83,6 +90,7 @@ private actor BindingWire: ProviderNativeWire {
       return ProviderNativeReply(
         status: 200, body: try JSONSerialization.data(withJSONObject: answer))
     }
+    if request.action == .catalog { return ProviderNativeReply(status: 200, body: Data("{}".utf8)) }
     try require(Set(body.keys) == ["workspace_id", "binding_ref", "request_nonce", "operation"])
     try require(body["binding_ref"] as? String == binding)
     try require(body["workspace_id"] as? String == workspace.uuidString.lowercased())
@@ -129,6 +137,7 @@ private actor BindingWire: ProviderNativeWire {
       ]
     } else if kind == "prepare_recording_window" || kind == "prepare_continuation_window" {
       let resumed = kind == "prepare_continuation_window"
+      await onWindow?()
       try require(Set(operation.keys) == ["kind", "payload"])
       let payload = operation["payload"] as! [String: Any]
       let fields: Set<String> =
@@ -371,24 +380,43 @@ private actor BindingWire: ProviderNativeWire {
   }
 }
 
+@MainActor private final class WindowClock {
+  var value = ContinuousClock.now
+  var readsUntilExpiry: Int?
+  func read() -> ContinuousClock.Instant {
+    if let remaining = readsUntilExpiry {
+      readsUntilExpiry = remaining - 1
+      if remaining == 0 {
+        value = value.advanced(by: .seconds(5)); readsUntilExpiry = nil
+      }
+    }
+    return value
+  }
+}
+
 private final class BindingKeys: NativeRecordingKeyStorage, @unchecked Sendable {
   private let lock = NSLock()
   private var values: [String: Data] = [:]
+  var ambiguousInsert = false
   func read(account: String) throws -> Data? { lock.withLock { values[account] } }
   func insert(account: String, value: Data) throws {
     try lock.withLock {
       guard values[account] == nil else { throw NativeRecordingFailure.keyConflict }
       values[account] = value
+      if ambiguousInsert { throw NativeRecordingFailure.storageUnavailable }
     }
   }
 }
 
-private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRecordingRecordStore,
+private final class BindingRecords: NativeRecordingFlowStore,
   NativeRecordingLeaseRecordStore,
   @unchecked Sendable
 {
   private let lock = NSLock()
   private var values: [String: NativeRecordingStoredRecord] = [:]
+  func listRecordingKeys(prefix: String) throws -> [String] {
+    lock.withLock { values.keys.filter { $0.hasPrefix(prefix) }.sorted() }
+  }
   func readBinding(key: String) throws -> NativeRecordingStoredRecord? {
     lock.withLock { values[key] }
   }
@@ -423,7 +451,9 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
 
 @main struct CheckNativeRecordingBinding {
   @MainActor private static func make(
-    _ modulus: String, combined: Bool = false, ticket: Bool = false,
+    _ modulus: String, combined: Bool = false, ticket: Bool = false, admission: Bool = false,
+    admissionFault: String = "none", admissionClock: (@MainActor @Sendable () -> Void)? = nil,
+    tokenLifetime: Int = 120,
     contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now }
   ) async throws
     -> (
@@ -432,15 +462,22 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     )
   {
     let driver = Driver()
+    driver.tokenLifetime = tokenLifetime
     let wire = BindingWire(modulus)
     let policy = try NativeTokenPolicy(
       issuer: "https://identity.clerk.accounts.dev", audience: "offline-provider")
     let auth = NativeWorkspaceAuth(
       enabled: true, organizationID: "org_offline", tokenPolicy: policy,
       driver: { driver }, accessBlock: { Block() })
-    let connection = NativeProviderConnection(auth: auth, wire: wire, contextNow: contextNow)
+    let connection = NativeProviderConnection(auth: auth, wire: wire,
+      nativeAdmissionPreparationEnabled: admission, contextNow: contextNow)
     auth.onChange = { [weak connection] state in connection?.authChanged(state) }
-    if combined {
+    if admission {
+      await wire.supportAdmission(true)
+      await wire.setFault(admissionFault)
+      if let admissionClock { await wire.setAdmissionClock(admissionClock) }
+    }
+    if combined || admission {
       _ = try await connection.send(
         CheckNativeProvider.request(
           auth, action: "mount",
@@ -451,7 +488,15 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
               ]), as: UTF8.self)))
     }
     let context: NativeProviderRecordingContext
-    if ticket {
+    if admission {
+      _ = try await connection.send(CheckNativeProvider.request(auth, action: "capture-admissions",
+        body: String(decoding: JSONSerialization.data(withJSONObject: [
+          "workspace_id": wire.workspace.uuidString.lowercased(), "binding_ref": wire.binding,
+          "request_nonce": UUID().uuidString.lowercased(), "attestation": ["all_parties_consented": true],
+          "configured_capture": ["schema_version": "1.0", "language_mode": "en-US"]]), as: UTF8.self)))
+      await wire.setFault("none")
+    }
+    if ticket || admission {
       let nonce = UUID()
       let revision = auth.state().revision
       _ = try await connection.prepareRecordingContext(
@@ -497,6 +542,106 @@ private final class BindingRecords: NativeRecordingBindingRecordStore, NativeRec
     let receipt = NativeRecordingKeyReceipt(
       keyVersion: "synthetic-v1", wrappedDEK: String(repeating: "A", count: 512))
     var checks = 0
+    // Real owner-created flow/key/window proof drives the only ticket-aware
+    // native operation. No bridge boolean or fabricated proof is supplied.
+    for fault in ["none", "none2", "none3", "deadline", "before_deadline", "clock_back",
+                  "slow_admission", "other_operation", "source", "cancel", "capturing",
+                  "existing_flow", "existing_window", "ambiguous_key", "lost_window", "jwt_expired", "admission_jwt_expiry",
+                  "window_spans_deadline", "foreign_flow", "foreign_recovery", "source_after_window", "account_change", "before_dispatch_expiry", "desktop_default"] {
+      let clock = WindowClock()
+      let admissionClock: (@MainActor @Sendable () -> Void)?
+      if fault == "slow_admission" {
+        admissionClock = { clock.value = clock.value.advanced(by: .seconds(6)) }
+      } else { admissionClock = nil }
+      let admissionFault = fault == "capturing" ? "admission_capturing" :
+        (fault == "admission_jwt_expiry" ? "admission_jwt_expiry" : "none")
+      let nativeAdmission = fault != "desktop_default"
+      let (auth, driver, wire, connection, service) = try await make(modulus,
+        combined: !nativeAdmission, admission: nativeAdmission,
+        admissionFault: admissionFault, admissionClock: admissionClock,
+        tokenLifetime: ["jwt_expired", "admission_jwt_expiry"].contains(fault) ? 2 : 120,
+        contextNow: { clock.read() })
+      let scope = try await service.recordingScope()
+      let recovery = fault == "foreign_recovery" ? UUID() : wire.recovery
+      let records = BindingRecords(), keys = BindingKeys()
+      let flow = NativeRecordingFlowOwner(scope: scope, recoveryScope: recovery, service: service, records: records)
+      _ = try await flow.open()
+      if fault == "existing_flow" { _ = try await flow.open() }
+      let freshFlow = try await flow.takeFreshInitialWindowProof()
+      try require((freshFlow == nil) == (fault == "existing_flow"))
+      try require(try await flow.takeFreshInitialWindowProof() == nil)
+      let window = NativeRecordingWindowOwner(scope: scope, recoveryScope: recovery, service: service, records: records)
+      var passedFlow = freshFlow
+      if fault == "foreign_flow" {
+        let foreign = NativeRecordingFlowOwner(scope: scope, recoveryScope: UUID(), service: service, records: BindingRecords())
+        _ = try await foreign.open()
+        passedFlow = try await foreign.takeFreshInitialWindowProof()
+      }
+      try await window.initialize(freshFlow: passedFlow)
+      if fault == "existing_window" { try await window.initialize(freshFlow: freshFlow) }
+      if fault == "deadline" { clock.value = clock.value.advanced(by: .seconds(5)) }
+      if fault == "before_deadline" { clock.value = clock.value.advanced(by: .milliseconds(4999)) }
+      if fault == "clock_back" { clock.value = clock.value.advanced(by: .milliseconds(-1)) }
+      if fault == "other_operation" {
+        let request = try CheckNativeProvider.request(auth, action: "catalog")
+        _ = try? await connection.send(request)
+      }
+      if fault == "source" {
+        driver.expired = true
+        try await CheckNativeProvider.rejected(Task { try await connection.send(
+          ProviderNativeRequest(nativeStartID: UUID(), revision: auth.state().revision,
+            key: "offline-source-start", body: Data("{}".utf8), combinedPreparation: true)) })
+        let count = await wire.requests.count
+        try require(driver.tokens == 3 && count == 2)
+        connection.close(); checks += 1; continue
+      }
+      if fault == "cancel" { connection.cancel(UUID()) }
+      if fault == "ambiguous_key" { keys.ambiguousInsert = true }
+      if fault == "lost_window" { await wire.setFault("lost_window") }
+      if fault == "jwt_expired" { try await Task.sleep(for: .milliseconds(2200)) }
+      if fault == "window_spans_deadline" {
+        await wire.setWindowClock { clock.value = clock.value.advanced(by: .seconds(5)) }
+      }
+      if fault == "account_change" {
+        driver.identity = try .init(userID: "user_other", sessionID: "sess_other", organizationID: "org_offline")
+        let count = await wire.requests.count
+        try await CheckNativeProvider.rejected(Task { try await window.recordingScope() })
+        let afterCount = await wire.requests.count
+        try require(afterCount == count)
+        connection.close(); checks += 1; continue
+      }
+      let binding = NativeRecordingBindingOwner(scope: scope, service: window, records: records, keys: keys)
+      let before = driver.tokens
+      if fault == "before_dispatch_expiry" { clock.readsUntilExpiry = 4 }
+      if fault == "lost_window" {
+        try await CheckNativeProvider.rejected(Task { try await binding.open() })
+        try require(driver.tokens == before)
+        await wire.setFault("none")
+        _ = try await binding.open()
+        try require(driver.tokens == before + 1)
+      } else {
+        _ = try await binding.open()
+        let eligible = ["none", "none2", "none3", "before_deadline", "source_after_window", "window_spans_deadline"].contains(fault)
+        let additional = eligible ? 0 : fault == "deadline" ? 2 : 1
+        try require(driver.tokens == before + additional)
+        let after = driver.tokens
+        _ = try await binding.open()
+        try require(driver.tokens == after) // Bound reopen sends no window and creates no ticket.
+        if ["none", "none2", "none3"].contains(fault) {
+          print("Virtual mobile native WINDOW round \(fault): token requests 2; legacy equivalent 3; native owner proof verified")
+        }
+        if ["source_after_window", "window_spans_deadline"].contains(fault) {
+          driver.expired = true
+          let count = await wire.requests.count
+          try await CheckNativeProvider.rejected(Task { try await connection.send(
+            ProviderNativeRequest(nativeStartID: UUID(), revision: auth.state().revision,
+              key: "offline-source-start", body: Data("{}".utf8), combinedPreparation: true)) })
+          let afterCount = await wire.requests.count
+          try require(driver.tokens == after + 1 && afterCount == count)
+        }
+      }
+      connection.close(); checks += 1
+    }
     for round in 1...3 {
       var measurements: [Int] = []
       for supported in [false, true] {

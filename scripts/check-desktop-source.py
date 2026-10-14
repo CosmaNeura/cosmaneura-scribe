@@ -43,6 +43,11 @@ def main() -> None:
             "check-desktop-source",
         ]
     ]
+    recording_sources = sorted(
+        (
+            repo / "apps/capture/native-plugins/native-recording/Sources/CosmaneuraNativeRecording"
+        ).glob("*.swift")
+    )
     flags = [
         "xcrun",
         "swiftc",
@@ -53,6 +58,18 @@ def main() -> None:
         str(output / "cache"),
     ]
     commands = [
+        flags
+        + [
+            "-emit-library",
+            "-emit-module",
+            "-module-name",
+            "CosmaneuraNativeRecording",
+            "-emit-module-path",
+            str(output / "CosmaneuraNativeRecording.swiftmodule"),
+            "-o",
+            str(output / "libCosmaneuraNativeRecording.dylib"),
+        ]
+        + [str(p) for p in recording_sources],
         flags
         + [
             "-emit-library",
@@ -75,6 +92,7 @@ def main() -> None:
             "-L",
             str(output),
             "-lCosmasNativeAuth",
+            "-lCosmaneuraNativeRecording",
             "-Xlinker",
             "-rpath",
             "-Xlinker",
@@ -88,7 +106,7 @@ def main() -> None:
     results: list[dict[str, object]] = []
     inputs = {
         str(p.relative_to(repo)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sources + bridge
+        for p in sources + recording_sources + bridge
     }
     for index, command in enumerate(commands):
         result = subprocess.run(command, cwd=repo, capture_output=True, text=True, timeout=120)

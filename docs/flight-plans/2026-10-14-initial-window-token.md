@@ -1,0 +1,27 @@
+# Initial-window native token reuse
+
+Risk: Tier 2, intermediate native authentication freshness. Owner: Scribe beta owner. Initial cohort: the existing iPhone beta groups after separate native artifact qualification. This source preparation is local only; it authorizes no build publication, cloud configuration, Apple account action, physical recording or production release.
+
+## Change and bounds
+
+The iPhone native path retains the successful admission JWT in its private connection for exactly one genuinely new empty initial WINDOW. Native flow/window/binding owners prove fresh creation through opaque RAM-only evidence. The ticket is bound to the original native identity/revision/generation, full admitted scope, mount recovery scope and admission key. Its last-dispatch deadline is the minimum of original mint completion + five seconds, original context deadline and JWT expiry. Native metadata handoff changes the owner generation without renewing age. SOURCE and every other authenticated action always clear it and request a fresh token.
+
+No migration, durable custody-format change, server endpoint change, dependency upgrade or renderer authority is included. New service methods default to the original path for existing callers. Both tracked Bridge/standalone connection and service copies stay equal. The current Electron desktop path uses renderer-owned key custody and `preparation_metadata`, with native admission preparation disabled; it gets no ticket and keeps its fresh WINDOW mint. Native macOS execution checks the shared code, not a desktop timing benefit. Existing native admission opt-in and server capability are prerequisites; unsupported servers, missing metadata, non-created admissions, expired/mismatched tickets, existing/recovered journals and ambiguous key insertion select the original fresh path before wire I/O. Lost dispatch never retries the ticket; original recipes remain durable for fresh recovery.
+
+## Security difference
+
+The original WINDOW mint independently observed Clerk revocation. The new bounded WINDOW reuses admission's JWT while keeping every Core/Scribe current local authority, consent, key-version, ownership and replay check. Remote Clerk revocation after admission can create unused wrapped-key/lease/reservation metadata. This is an explicitly assessed and documented intermediate-metadata residual, not identical revocation observation at every request or a new owner approval inferred from an assessment. Every final SOURCE operation, including combined/fallback desktop and iOS microphone paths, still forces a fresh mint before audio. Upload/read/renew/resume/recovery paths keep fresh minting. The ticket never enters renderer/IPC, logs, Keychain or persistence.
+
+Five seconds limits reuse/dispatch only. An invalid ticket before I/O falls back fresh. The original in-flight cancellation/identity/generation/envelope fences remain; a valid delayed response is not newly rejected solely for crossing that deadline. Unknown dispatch outcomes consume the attempt and retain custody for the original fresh recovery route.
+
+## Local validation
+
+Compile the real macOS and arm64 iOS recording/auth/source/host graph with the retained Swift toolchain. Run the existing real native pipeline and binding checks with fictional payloads, in-memory custody and synthetic RSA keys; no physical audio, SDK account, online service or credential access. Three virtual iPhone-native owner-driven runs must each show one fewer WINDOW mint, while preserving all wire actions. Test the five-second boundary, scheduling expiry, clock reversal, JWT expiry during and after admission, delayed window response, cancellation/account change, generic/SOURCE invalidation, foreign flow/recovery scope, existing journals, ambiguous key insert, lost result and fresh retry. Preserve existing source/upload/continuation/custody regressions. Check Bridge/standalone parity, platform-selection imports and focused Python lint/type checks.
+
+Evidence is recorded under the task output directory with exact source hashes and commands. Counts/timings from fake wires are virtual evidence; the previously measured native WINDOW mint cost was 0.328–1.567 seconds. Only the mobile native path is eligible to remove one mint; that range is a bottleneck reference, not a measured mobile improvement. No claim of a whole 1.2–3.7 second window removal, on-device performance or goal completion follows from these checks.
+
+## Review, release and recovery
+
+Keep repository GitHub Actions disabled. Root verifies that state before source publication. A non-implementer independently reviews the final substantive pushed head and records exact-head results in the PR. Later source changes invalidate that acceptance. Root controls any local merge and native build qualification. The beta release must bind artifacts to merged reviewed source, preserve existing identities/configuration/groups and pass the final-source gate and recording → transcript → saved-note smoke checks. Physical timing remains required for the five-second goal and cannot be inferred from the virtual suite.
+
+Recovery: revert this source optimization or distribute the previous qualified native build, preserving all retained keys, recipes, leases, reservations and recording data. The dormant additive native methods and unchanged records remain readable. Do not delete data or loosen source authorization to recover latency. No cloud/Apple/Clerk configuration rollback is needed for this source-only change.
