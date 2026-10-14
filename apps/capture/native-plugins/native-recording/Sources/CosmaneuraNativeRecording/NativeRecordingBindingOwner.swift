@@ -114,8 +114,7 @@ public actor NativeRecordingBindingOwner {
         schemaVersion: 1, account: scope.keyAccount, intent: UUID(),
         keyVersion: published.version, modulus: nativeBase64URL(published.modulus),
         wrappedDEK: nil, bound: false)
-      try commit(journal, after: 0)
-      createdJournal = true
+      createdJournal = try commit(journal, after: 0)
     }
 
     let cipher: NativeRecordingEncryption
@@ -130,7 +129,8 @@ public actor NativeRecordingBindingOwner {
           version: journal.keyVersion, modulusBase64URL: journal.modulus),
         intent: journal.intent, storage: keys)
       journal.wrappedDEK = cipher.receipt.wrappedDEK
-      try commit(journal, after: 1)
+      let cleanReceiptWrite = try commit(journal, after: 1)
+      createdJournal = createdJournal && cleanReceiptWrite
     }
     if journal.bound {
       try Task.checkCancellation()
@@ -189,7 +189,9 @@ public actor NativeRecordingBindingOwner {
     return journal
   }
 
-  private func commit(_ journal: Journal, after revision: UInt64) throws {
+  /// Exact readback preserves recovery, but only an exception-free write is fresh.
+  @discardableResult
+  private func commit(_ journal: Journal, after revision: UInt64) throws -> Bool {
     try Task.checkCancellation()
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -208,6 +210,8 @@ public actor NativeRecordingBindingOwner {
       guard let retained = try records.readBinding(key: recordKey),
         retained.revision == revision + 1, retained.data == data
       else { throw NativeRecordingBindingFailure.journalConflict }
+      return false
     }
+    return true
   }
 }

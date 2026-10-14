@@ -10,6 +10,8 @@ SOURCE authorization, iOS microphone authorization, source fallback, uploads, cl
 
 The five-second cap limits a dispatch, not an in-flight response. Pre-dispatch expiry is a ticket miss and triggers fresh minting. In-flight publication retains the original cancellation, identity, generation and response validation fences without adding a new five-second request timeout. There is no second ticket use after dispatch.
 
+Fresh eligibility also requires exception-free success at all five pre-dispatch journal writes: initial flow, initial window, binding intent, binding key receipt, and initial window request. An exact successor readback after a committed-then-thrown write still completes the existing durable recovery, but marks that attempt ineligible for token reuse. Each such path sends WINDOW with fresh credentials without regenerating custody or changing its saved recipe.
+
 The current Electron desktop recorder remains unchanged: it opts into `preparation_metadata` and sends a generic mixed-channel window under renderer-owned key custody. Its provider helper does not enable native admission preparation, and it cannot supply this native proof. macOS compilation and virtual execution check shared source compatibility; they do not establish a desktop saving.
 
 Choose this bounded intermediate optimization over general token caching or a new pending-key protocol. It removes one measured mint without changing the canonical key-custody format, wire payloads or server policy. It does not prove all physical starts are at most five seconds. The [flight plan](../flight-plans/2026-10-14-initial-window-token.md) governs local evidence, beta rollout and recovery.

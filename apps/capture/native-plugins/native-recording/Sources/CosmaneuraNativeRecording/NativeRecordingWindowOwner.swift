@@ -124,11 +124,11 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
     } else if try records.readBinding(key: "scribe-native-binding:v1:\(scope.keyAccount)") == nil,
       try records.readLease(key: "scribe-native-lease:v1:\(scope.keyAccount)") == nil
     {
-      try commit(
+      let cleanCreation = try commit(
         Journal(
           schemaVersion: 1, account: scope.keyAccount, recovery: recovery,
           leaseIntent: UUID(), reserveIntent: UUID(), adopted: false), after: 0)
-      createdEmptyWindow = freshFlow?.scope == scope && freshFlow?.recovery == recovery
+      createdEmptyWindow = cleanCreation && freshFlow?.scope == scope && freshFlow?.recovery == recovery
     }
     initialized = true
   }
@@ -164,7 +164,7 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
       return try await service.bind(key: binding, intent: intent)
     }
     var journal = try decode(saved)
-    let eligible = fresh && journal.request == nil && journal.receipt == nil && !journal.adopted
+    var eligible = fresh && journal.request == nil && journal.receipt == nil && !journal.adopted
       && proof?.scope == scope && proof?.intent == intent && proof?.receipt == binding
     let request = NativeRecordingWindowRequest(
       keyVersion: binding.keyVersion,
@@ -172,7 +172,8 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
       reserveIntent: journal.reserveIntent, count: 30)
     if journal.request == nil {
       journal.request = request
-      try commit(journal, after: 1)
+      let cleanRequestWrite = try commit(journal, after: 1)
+      eligible = eligible && cleanRequestWrite
     }
     guard journal.request == request else { throw NativeRecordingBindingFailure.journalConflict }
     if journal.receipt == nil {
@@ -257,7 +258,9 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
     }
     return value
   }
-  private func commit(_ value: Journal, after revision: UInt64) throws {
+  /// Exact readback preserves recovery, but only an exception-free write is fresh.
+  @discardableResult
+  private func commit(_ value: Journal, after revision: UInt64) throws -> Bool {
     try Task.checkCancellation()
     let data = try encoded(value)
     _ = try decode(NativeRecordingStoredRecord(data: data, revision: revision + 1))
@@ -271,6 +274,8 @@ public actor NativeRecordingWindowOwner: NativeRecordingBindingService {
       guard let saved = try records.readBinding(key: key), saved.revision == revision + 1,
         saved.data == data
       else { throw NativeRecordingBindingFailure.journalConflict }
+      return false
     }
+    return true
   }
 }

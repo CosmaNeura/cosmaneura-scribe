@@ -65,8 +65,7 @@ public actor NativeRecordingFlowOwner {
       schemaVersion: 1, account: scope.keyAccount, recovery: recovery,
       completionIntent: UUID(), chunks: 0, plaintextBytes: 0)
     try await checkScope()
-    try commit(journal, after: 0)
-    createdEmptyFlow = true
+    createdEmptyFlow = try commit(journal, after: 0)
     return snapshot(journal)
   }
 
@@ -249,7 +248,9 @@ public actor NativeRecordingFlowOwner {
     }
     return journal
   }
-  private func commit(_ journal: Journal, after revision: UInt64) throws {
+  /// Exact readback preserves recovery, but only an exception-free write is fresh.
+  @discardableResult
+  private func commit(_ journal: Journal, after revision: UInt64) throws -> Bool {
     try Task.checkCancellation()
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -267,6 +268,8 @@ public actor NativeRecordingFlowOwner {
       else {
         throw NativeRecordingBindingFailure.journalConflict
       }
+      return false
     }
+    return true
   }
 }

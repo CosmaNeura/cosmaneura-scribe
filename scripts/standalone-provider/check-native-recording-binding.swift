@@ -398,11 +398,13 @@ private final class BindingKeys: NativeRecordingKeyStorage, @unchecked Sendable 
   private let lock = NSLock()
   private var values: [String: Data] = [:]
   var ambiguousInsert = false
+  private(set) var insertions = 0
   func read(account: String) throws -> Data? { lock.withLock { values[account] } }
   func insert(account: String, value: Data) throws {
     try lock.withLock {
       guard values[account] == nil else { throw NativeRecordingFailure.keyConflict }
       values[account] = value
+      insertions += 1
       if ambiguousInsert { throw NativeRecordingFailure.storageUnavailable }
     }
   }
@@ -414,6 +416,8 @@ private final class BindingRecords: NativeRecordingFlowStore,
 {
   private let lock = NSLock()
   private var values: [String: NativeRecordingStoredRecord] = [:]
+  var ambiguousWrite: (prefix: String, revision: UInt64)?
+  private(set) var ambiguousWrites = 0
   func listRecordingKeys(prefix: String) throws -> [String] {
     lock.withLock { values.keys.filter { $0.hasPrefix(prefix) }.sorted() }
   }
@@ -445,6 +449,10 @@ private final class BindingRecords: NativeRecordingFlowStore,
         throw NativeRecordingFailure.storageUnavailable
       }
       values[key] = NativeRecordingStoredRecord(data: data, revision: revision + 1)
+      if let fault = ambiguousWrite, key.hasPrefix(fault.prefix), revision == fault.revision {
+        ambiguousWrites += 1
+        throw NativeRecordingFailure.storageUnavailable
+      }
     }
   }
 }
@@ -547,7 +555,8 @@ private final class BindingRecords: NativeRecordingFlowStore,
     for fault in ["none", "none2", "none3", "deadline", "before_deadline", "clock_back",
                   "slow_admission", "other_operation", "source", "cancel", "capturing",
                   "existing_flow", "existing_window", "ambiguous_key", "lost_window", "jwt_expired", "admission_jwt_expiry",
-                  "window_spans_deadline", "foreign_flow", "foreign_recovery", "source_after_window", "account_change", "before_dispatch_expiry", "desktop_default"] {
+                  "window_spans_deadline", "foreign_flow", "foreign_recovery", "source_after_window", "account_change", "before_dispatch_expiry", "desktop_default", "ambiguous_flow_create", "ambiguous_window_create",
+                  "ambiguous_binding_create", "ambiguous_binding_receipt", "ambiguous_window_request"] {
       let clock = WindowClock()
       let admissionClock: (@MainActor @Sendable () -> Void)?
       if fault == "slow_admission" {
@@ -564,11 +573,18 @@ private final class BindingRecords: NativeRecordingFlowStore,
       let scope = try await service.recordingScope()
       let recovery = fault == "foreign_recovery" ? UUID() : wire.recovery
       let records = BindingRecords(), keys = BindingKeys()
+      records.ambiguousWrite = [
+        "ambiguous_flow_create": ("scribe-native-flow:", UInt64(0)),
+        "ambiguous_window_create": ("scribe-native-initial-window:", UInt64(0)),
+        "ambiguous_binding_create": ("scribe-native-binding:", UInt64(0)),
+        "ambiguous_binding_receipt": ("scribe-native-binding:", UInt64(1)),
+        "ambiguous_window_request": ("scribe-native-initial-window:", UInt64(1)),
+      ][fault]
       let flow = NativeRecordingFlowOwner(scope: scope, recoveryScope: recovery, service: service, records: records)
       _ = try await flow.open()
       if fault == "existing_flow" { _ = try await flow.open() }
       let freshFlow = try await flow.takeFreshInitialWindowProof()
-      try require((freshFlow == nil) == (fault == "existing_flow"))
+      try require((freshFlow == nil) == ["existing_flow", "ambiguous_flow_create"].contains(fault))
       try require(try await flow.takeFreshInitialWindowProof() == nil)
       let window = NativeRecordingWindowOwner(scope: scope, recoveryScope: recovery, service: service, records: records)
       var passedFlow = freshFlow
@@ -620,13 +636,24 @@ private final class BindingRecords: NativeRecordingFlowStore,
         _ = try await binding.open()
         try require(driver.tokens == before + 1)
       } else {
-        _ = try await binding.open()
+        let cipher = try await binding.open()
         let eligible = ["none", "none2", "none3", "before_deadline", "source_after_window", "window_spans_deadline"].contains(fault)
         let additional = eligible ? 0 : fault == "deadline" ? 2 : 1
         try require(driver.tokens == before + additional)
         let after = driver.tokens
-        _ = try await binding.open()
+        let reopened = try await binding.open()
         try require(driver.tokens == after) // Bound reopen sends no window and creates no ticket.
+        try require(reopened.receipt == cipher.receipt && keys.insertions == 1)
+        if records.ambiguousWrite != nil {
+          try require(records.ambiguousWrites == 1)
+          let requests = await wire.requests
+          let windows = try requests.filter { request in
+            let body = try JSONSerialization.jsonObject(with: request.body) as? [String: Any]
+            return (body?["operation"] as? [String: Any])?["kind"] as? String == "prepare_recording_window"
+          }
+          try require(windows.count == 1)
+          print("Recovered journal case \(fault): one fresh WINDOW mint; one key and one window dispatch preserved")
+        }
         if ["none", "none2", "none3"].contains(fault) {
           print("Virtual mobile native WINDOW round \(fault): token requests 2; legacy equivalent 3; native owner proof verified")
         }
