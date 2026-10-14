@@ -241,6 +241,9 @@ describe("desktop preparation screen", () => {
     try {
       const recorder = await f.open({ audioMode: "microphone", listMeetingWindows: list });
       expect(recorder.snapshot.desktop?.phase).toBe("ready"); expect(list).not.toHaveBeenCalled();
+      expect(recorder.snapshot).toMatchObject({ recordedChunks: 0, elapsedSeconds: 0,
+        desktop: { coverage: "not_started" } });
+      expect(recorder.snapshot.queuedChunks).toBeGreaterThan(0); // Empty reserved slots, no audio.
       expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
     } finally { await f.close(); }
   });

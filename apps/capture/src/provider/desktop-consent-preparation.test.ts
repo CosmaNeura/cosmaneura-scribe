@@ -88,6 +88,22 @@ it.each(["ready", "preparing"] as const)("one explicit fresh microphone record a
   expect(f.selectDesktopAudio).toHaveBeenCalledOnce(); expect(f.startRecording).toHaveBeenCalledOnce();
 });
 
+it.each(["ready", "preparing"] as const)("fresh microphone consent starts with reserved queue slots after %s", async phase => {
+  const f = fixture(phase, "microphone"); f.subscribe();
+  // The real configured flow reserves empty upload slots during preparation.
+  // queuedChunks counts those reservations, before any source/audio exists.
+  f.emit({ queuedChunks: 3 });
+  const pending = f.app.startFromProviderAction("built_in", "microphone", "microphone");
+  if (phase === "preparing") {
+    expect(f.startRecording).not.toHaveBeenCalled(); f.ready();
+  }
+  await pending;
+  expect(f.selectDesktopAudio).toHaveBeenCalledOnce();
+  expect(f.startRecording).toHaveBeenCalledOnce();
+  await f.app.startFromProviderAction("built_in", "microphone", "microphone");
+  expect(f.startRecording).toHaveBeenCalledOnce();
+});
+
 it("readiness alone and a default source choice never record", async () => {
   const f = fixture("preparing", "microphone"); f.subscribe(); f.ready();
   expect(f.startRecording).not.toHaveBeenCalled();
@@ -95,7 +111,7 @@ it("readiness alone and a default source choice never record", async () => {
   expect(f.startRecording).not.toHaveBeenCalled();
 });
 
-it.each(["meeting-choice", "legacy", "missing-mode", "permission", "recorded", "elapsed", "queued", "coverage"])("discards the microphone record action for %s", async reason => {
+it.each(["meeting-choice", "legacy", "missing-mode", "permission", "recorded", "elapsed", "coverage"])("discards the microphone record action for %s", async reason => {
   const f = fixture("ready", "microphone", reason === "legacy"); f.subscribe();
   if (reason === "missing-mode") {
     const desktop = { ...f.snapshot.desktop! }; delete desktop.audioMode;
@@ -104,7 +120,6 @@ it.each(["meeting-choice", "legacy", "missing-mode", "permission", "recorded", "
   if (reason === "permission") f.emit({ desktop: { ...f.snapshot.desktop!, phase: "permission_required" } });
   if (reason === "recorded") f.emit({ recordedChunks: 1 });
   if (reason === "elapsed") f.emit({ elapsedSeconds: 1 });
-  if (reason === "queued") f.emit({ queuedChunks: 1 });
   if (reason === "coverage") f.emit({ desktop: { ...f.snapshot.desktop!, coverage: "complete" } });
   await f.app.startFromProviderAction("built_in", reason === "meeting-choice" ? "meeting" : "microphone", "microphone");
   expect(f.startRecording).not.toHaveBeenCalled();
