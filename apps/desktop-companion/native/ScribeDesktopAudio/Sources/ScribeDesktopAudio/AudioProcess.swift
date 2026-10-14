@@ -242,15 +242,7 @@ private actor AudioProcessHost {
     private func fail(_ reason: DesktopAudioFailure) {
         guard !failureSent, !disconnected, !stopped else { return }
         failureSent = true; requestDiscard()
-        let code: String
-        switch reason {
-        case .permissionRequired: code = "permission_required"
-        case .inputChanged, .selectionChanged: code = "device_changed"
-        case .clockDiscontinuity: code = "clock_discontinuity"
-        case .bufferOverflow: code = "overflow"
-        default: code = "failed"
-        }
-        output.metadata(["type": "failure", "code": code])
+        output.metadata(reason.processFailureMetadata)
     }
 
     func checkParent() {

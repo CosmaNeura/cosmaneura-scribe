@@ -255,10 +255,13 @@ private final class CaptureSession: @unchecked Sendable {
     func observeInterruptions(workspaceCenter: NotificationCenter) {
         self.workspaceCenter = workspaceCenter
         engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
-            object: engine, queue: nil) { [delivery] _ in delivery.fail(.inputChanged) }
-        workspaceObservers = [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification].map { name in
-            workspaceCenter.addObserver(forName: name, object: nil, queue: nil) { [delivery] _ in delivery.fail(.inputChanged) }
-        }
+            object: engine, queue: nil) { [delivery] _ in delivery.fail(.engineConfigurationChanged) }
+        workspaceObservers = [
+            workspaceCenter.addObserver(forName: NSWorkspace.willSleepNotification,
+                object: nil, queue: nil) { [delivery] _ in delivery.fail(.workspaceSleep) },
+            workspaceCenter.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification,
+                object: nil, queue: nil) { [delivery] _ in delivery.fail(.workspaceSessionInactive) },
+        ]
     }
 
     func removeObservers() {
@@ -279,7 +282,7 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
 
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
         lock.withLock { didStop = true }
-        delivery.fail(.inputChanged)
+        delivery.fail(.streamStopped)
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
