@@ -2,7 +2,7 @@ import "../capture-app";
 import { Capacitor } from "@capacitor/core";
 import type { CaptureApp } from "../capture-app";
 import { isMicrophoneInput, microphoneInputs, type MicrophoneInput } from "../native/microphone-input";
-import type { PreparedProviderRecorder } from "../provider-binding";
+import type { PreparedProviderRecorder, ProviderRecorderSnapshot } from "../provider-binding";
 import { CaptureFlowController } from "../flow";
 import { CaptureDeviceCustodyError } from "../capture/device-custody";
 import { CaptureQueue } from "../queue/capture-queue";
@@ -33,6 +33,7 @@ import { encounterStatusCopy, pendingEncounterUpdates } from "./encounter-progre
 export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspaceHost): () => Promise<void> {
   const isIOS = Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
   let disposed = false, generation = 0, busy = false;
+  let recorderBlocksRefresh = false;
   let context: AuthorizedProviderEncounter | null = null;
   let client: CoreCaptureClient | null = null;
   let journal: JournalSnapshot = { revision: null, progress: null };
@@ -51,7 +52,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let leaveAfterRecordingPreparation = false;
   let openingRef: string | null = null;
   let cancelOpening: (() => void) | null = null;
-  type NavigationDestination = "encounters" | "review" | (() => void);
+  type NavigationDestination = "encounters" | "review" | (() => void | Promise<void>);
   let pendingNavigation: NavigationDestination | null = null;
   let editorPosition: NoteEditorPosition | null = null;
   let lastEditorField: HTMLTextAreaElement | null = null;
@@ -69,7 +70,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let preferredLanguage: LanguageMode = "en-US"; // This authorized workspace's lifetime only.
   let preferredModality: "in_person" | "virtual" | "phone" = "in_person";
   root.classList.add("provider-workspace");
-  root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p><p class="provider-patient-detail" data-provider-patient-detail></p></div><button data-workspace-action="encounters">Your encounters</button></header>
+  root.innerHTML = `<p class="provider-account" data-provider-account hidden></p><header class="provider-header" hidden><div><strong>Cosmaneura Scribe</strong><p data-provider-encounter></p><p class="provider-patient-detail" data-provider-patient-detail></p></div><nav class="provider-visit-navigation" aria-label="Visit navigation"><button data-workspace-action="encounters" aria-label="Back to encounters">Back</button><button data-workspace-action="refresh-visit" aria-label="Refresh current visit">Refresh</button></nav></header>
     <p data-workspace-notice role="status"></p><p data-workspace-progress hidden></p><div data-workspace-navigation aria-live="polite"></div><div data-workspace-content></div>`;
   const content = root.querySelector<HTMLElement>("[data-workspace-content]")!;
   const notice = root.querySelector<HTMLElement>("[data-workspace-notice]")!;
@@ -79,6 +80,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const header = root.querySelector<HTMLElement>(".provider-header")!;
   const accountLabel = root.querySelector<HTMLElement>("[data-provider-account]")!;
   const patientDetail = root.querySelector<HTMLElement>("[data-provider-patient-detail]")!;
+  const updateRefresh = (): void => {
+    const button = root.querySelector<HTMLButtonElement>('[data-workspace-action="refresh-visit"]');
+    if (!button) return;
+    button.disabled = busy || recorderBlocksRefresh || !context;
+    button.title = recorderBlocksRefresh ? "Finish recording before refreshing this visit" : "Refresh this visit without starting a recording";
+  };
   const headerObserver = new ResizeObserver(() => root.style.setProperty("--provider-header-height", `${header.getBoundingClientRect().height}px`));
   headerObserver.observe(header);
   const current = (n: number): boolean => !disposed && !host.signal.aborted && n === generation;
@@ -107,6 +114,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    recorderBlocksRefresh = false; updateRefresh();
     pendingRecordingAction?.abort(); pendingRecordingAction = null; leaveAfterRecordingPreparation = false;
     listedDraftRefs.clear();
     stopSaveCheck?.(); stopSaveCheck = null; pendingDateOfBirth = null;
@@ -132,6 +140,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const run = async (action: () => Promise<void>, timingAction?: string): Promise<void> => {
     if (disposed || busy || host.signal.aborted) return;
     busy = true; notice.textContent = ""; step = "request";
+    updateRefresh();
     root.setAttribute("aria-busy", "true");
     const finishTiming = beginWorkflowTiming(timingAction);
     const started = performance.now();
@@ -180,6 +189,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     } finally {
       clearInterval(activityTimer); activity.hidden = true; activity.textContent = "";
       busy = false; root.removeAttribute("aria-busy");
+      updateRefresh();
       finishTiming(disposed || host.signal.aborted ? "cancelled" : outcome);
       if (leaveAfterRecordingPreparation && !disposed && !host.signal.aborted) {
         leaveAfterRecordingPreparation = false;
@@ -599,6 +609,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     content.replaceChildren(app);
     const stopObserving = controller.subscribe(snapshot => {
       if (!authorized(n) || context !== activeContext || snapshot.sessionId !== id) return;
+      const device = snapshot as ProviderRecorderSnapshot;
+      recorderBlocksRefresh = ["recording", "uploading"].includes(snapshot.state)
+        || ["stopping", "stop_unconfirmed"].includes(device.desktop?.phase ?? "")
+        || ["pausing", "stopPending", "sealing"].includes(device.native?.phase ?? "");
+      updateRefresh();
       const status = settledRecorderVisitStatus(snapshot), ref = activeContext.encounter.appointmentRef;
       if (status) recentStates.set(ref, { sessionId: id, status });
       else recentStates.delete(ref); // Starting, errors and unresolved stops invalidate earlier labels.
@@ -1013,7 +1028,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     void check();
   };
   const navigate = async (destination: NavigationDestination): Promise<void> => {
-    if (typeof destination === "function") destination();
+    if (typeof destination === "function") await destination();
     else if (destination === "encounters") await list(); else showReview();
   };
   const guardNavigation = async (destination: NavigationDestination): Promise<void> => {
@@ -1078,7 +1093,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-workspace-action]") : null;
     if (!button || !root.contains(button)) return;
     if (button.dataset.workspaceAction === "cancel-recording-action") { cancelRecordingAction(); return; }
-    if (["encounters", "review", "core", "create", "new-encounter", "open", "open-draft"].includes(button.dataset.workspaceAction ?? "")) {
+    if (button.dataset.workspaceAction === "refresh-visit" && (button.disabled || recorderBlocksRefresh || !context)) return;
+    if (["encounters", "refresh-visit", "review", "core", "create", "new-encounter", "open", "open-draft"].includes(button.dataset.workspaceAction ?? "")) {
       if (cancelRecordingAction() && busy && button.dataset.workspaceAction === "encounters") {
         leaveAfterRecordingPreparation = true;
         return;
@@ -1094,6 +1110,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     void run(async () => {
       switch (button.dataset.workspaceAction) {
         case "encounters": await guardNavigation("encounters"); break;
+        case "refresh-visit": {
+          if (!context || recorderBlocksRefresh) return;
+          const ref = context.encounter.appointmentRef;
+          await guardNavigation(() => open(ref));
+          break;
+        }
         case "keep-editing": clearNavigation(); restoreNoteEditorPosition(editorPosition); break;
         case "discard-edits": {
           const destination = pendingNavigation;

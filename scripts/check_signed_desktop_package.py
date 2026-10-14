@@ -19,10 +19,19 @@ PROVIDER_CLAIMS: dict[str, object] = {
     "com.apple.developer.team-identifier": "JVV65668U6",
     "keychain-access-groups": ["JVV65668U6." + PROVIDER_ID],
 }
+HOST_CLAIMS: dict[str, object] = {
+    "com.apple.security.cs.allow-jit": True,
+    "com.apple.security.device.audio-input": True,
+}
 
 
 def provider_claims(binary: bytes) -> dict[str, object]:
     """Read signed XML claims; codesign's default display is not plist data."""
+    return signed_claims(binary, PROVIDER_CLAIMS)
+
+
+def signed_claims(binary: bytes, expected: dict[str, object]) -> dict[str, object]:
+    """Require the exact claims for the responsible process, not its child."""
 
     def require(condition: bool) -> None:
         if not condition:
@@ -77,8 +86,9 @@ def provider_claims(binary: bytes) -> dict[str, object]:
             claims = cast(dict[str, object], value)
         elif slot == 7:
             require(blob_magic == 0xFADE7172)
-    require(claims == PROVIDER_CLAIMS and 7 in seen and 0 in seen and cms_signature)
+    require(claims == expected and 7 in seen and 0 in seen and cms_signature)
     assert claims is not None
+    require(all(type(claims[key]) is type(value) for key, value in expected.items()))
     return claims
 
 
@@ -118,6 +128,10 @@ def check_package(application: Path) -> dict[str, object]:
     info = plistlib.loads((application / "Contents/Info.plist").read_bytes())
     if info.get("CFBundleIdentifier") != "com.cosmaneura.scribe.beta.desktop":
         raise ValueError("application_identity_invalid")
+    executable = info.get("CFBundleExecutable")
+    if not isinstance(executable, str) or not executable or Path(executable).name != executable:
+        raise ValueError("application_executable_invalid")
+    signed_claims((application / "Contents/MacOS" / executable).read_bytes(), HOST_CLAIMS)
     resources = application / "Contents/Resources/app"
     helper = check_helper_pins(resources)
     native_info = plistlib.loads((helper.parent.parent / "Info.plist").read_bytes())
@@ -135,6 +149,7 @@ def check_package(application: Path) -> dict[str, object]:
         "build": info["CFBundleVersion"],
         "helper_pins_verified": 3,
         "provider_existing_claims_verified": True,
+        "responsible_host_microphone_entitlement_verified": True,
         "strict_deep_signature_verified": True,
         "launched": False,
         "data_keys_accessed": False,

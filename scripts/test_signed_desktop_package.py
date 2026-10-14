@@ -8,7 +8,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check_signed_desktop_package import PROVIDER_CLAIMS, check_helper_pins, provider_claims
+from check_signed_desktop_package import (
+    HOST_CLAIMS,
+    PROVIDER_CLAIMS,
+    check_helper_pins,
+    provider_claims,
+    signed_claims,
+)
 
 
 def signature(
@@ -44,6 +50,22 @@ def signature(
 
 
 class SignedDesktopPackageTests(unittest.TestCase):
+    def test_microphone_permission_on_child_cannot_replace_responsible_host_claim(self) -> None:
+        self.assertEqual(signed_claims(signature(HOST_CLAIMS), HOST_CLAIMS), HOST_CLAIMS)
+        for claims in (
+            {"com.apple.security.cs.allow-jit": True},
+            {**HOST_CLAIMS, "com.apple.security.device.audio-input": False},
+            PROVIDER_CLAIMS,
+        ):
+            with self.subTest(claims=claims), self.assertRaises(ValueError):
+                signed_claims(signature(claims), HOST_CLAIMS)
+
+    def test_integer_one_cannot_replace_boolean_microphone_permission(self) -> None:
+        with self.assertRaises(ValueError):
+            signed_claims(
+                signature({**HOST_CLAIMS, "com.apple.security.device.audio-input": 1}), HOST_CLAIMS
+            )
+
     def test_exact_preexisting_claims(self) -> None:
         self.assertEqual(provider_claims(signature(PROVIDER_CLAIMS)), PROVIDER_CLAIMS)
 

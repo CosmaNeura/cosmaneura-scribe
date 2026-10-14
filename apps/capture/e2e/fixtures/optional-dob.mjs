@@ -28,7 +28,7 @@ const encounter = { appointmentRef: scope.appointmentRef, title: "Synthetic walk
   patientRef: "patient_01j00000000000000000000000", dateOfBirth: null };
 const plugin = await encryptedFixturePlugin(scope.workspaceId);
 const forbidden = () => { throw new Error("Outside the synthetic DOB fixture"); };
-const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, dobUpdates: [] };
+const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, dobUpdates: [], openedRefs: [], closes: 0 };
 const gatedAdmission = new URL(window.location.href).searchParams.has("gate-admission");
 const admissionGate = new Promise(resolve => { fixture.releaseAdmission = resolve; });
 const journalGate = new Promise(resolve => { fixture.releaseJournal = resolve; });
@@ -76,7 +76,7 @@ mountProviderWorkspace(document.querySelector("#provider"), {
     },
   },
   listEncounters: async () => { fixture.listCalls++; return fixture.catalog; }, createEncounter: forbidden,
-  openEncounter: async () => ({ encounter, scope, signal: abort.signal, openInCore: forbidden,
+  openEncounter: async ref => { fixture.openedRefs.push(ref); return ({ encounter, scope, signal: abort.signal, openInCore: forbidden,
     journal: { load: async () => saved, save: async (_prior, progress) => {
       if (new URL(window.location.href).searchParams.has("gate-journal") && saved.progress === null) await journalGate;
       if (new URL(window.location.href).searchParams.has("fail-journal")) throw new Error("Synthetic journal failure");
@@ -122,8 +122,8 @@ mountProviderWorkspace(document.querySelector("#provider"), {
             ...(snapshot.desktop ? { desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned" } } : {}) };
           for (const listener of listeners) listener(snapshot);
         }, stopRecording: forbidden, refreshTranscriptionStatus: forbidden,
-      }, deactivate: async () => {}, resumePendingWork: forbidden, releaseUploadedCapture: forbidden,
+      }, deactivate: async () => { fixture.closes++; }, resumePendingWork: forbidden, releaseUploadedCapture: forbidden,
       });
     },
-  }),
+  }); },
 });

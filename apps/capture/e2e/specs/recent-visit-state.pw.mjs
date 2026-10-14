@@ -15,7 +15,7 @@ async function start(page) {
   await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
 }
-async function list(page) { await page.getByRole("button", { name: "Your encounters", exact: true }).click(); await expect(row(page)).toBeVisible(); }
+async function list(page) { await page.getByRole("button", { name: "Back to encounters", exact: true }).click(); await expect(row(page)).toBeVisible(); }
 async function reopen(page) { await row(page).locator('[data-workspace-action="open"]').click(); await expect(page.locator("cosmaneura-capture")).toBeVisible(); }
 async function pause(page, native = { phase: "paused", busy: false }, statusCode = "capture_paused") {
   await page.evaluate(({ native, statusCode }) => window.dobLab.emit({ state: "paused", native, statusCode, recordedChunks: 1 }), { native, statusCode });
