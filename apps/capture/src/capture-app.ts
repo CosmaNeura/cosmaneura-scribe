@@ -134,10 +134,13 @@ export class CaptureApp extends LitElement {
       const emptyMicrophone = (): boolean => {
         if (!current() || this.#stopping) return false;
         const snapshot = binding.controller.snapshot;
+        // queuedChunks includes empty slots reserved during fresh preparation.
+        // Recorded audio is represented by the accepted chunk count/coverage;
+        // reservations alone must not discard the explicit consent-and-record action.
         return snapshot.sessionId === binding.sessionId && snapshot.state === "ready"
           && snapshot.desktop?.phase === "ready" && snapshot.desktop.audioMode === "microphone"
           && snapshot.desktop.coverage === "not_started" && snapshot.recordedChunks === 0
-          && snapshot.queuedChunks === 0 && snapshot.elapsedSeconds === 0;
+          && snapshot.elapsedSeconds === 0;
       };
       if (emptyMicrophone()) await this.#recordWithGuard(emptyMicrophone);
       return;
