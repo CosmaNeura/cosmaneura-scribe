@@ -90,8 +90,8 @@
 /* Match the main process's compact recording window, including the app wrapper. */
 .provider-workspace:has(.provider-desktop-compact) { margin: 0; padding: 10px 12px; }
 .provider-workspace:has(.provider-desktop-compact) .provider-account { margin: 0 0 6px; padding: 0; background: none; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.provider-workspace:has(.provider-desktop-compact) .provider-header { padding-bottom: 8px; margin-bottom: 10px; }
-.provider-workspace:has(.provider-desktop-compact) .provider-header button { display: none; }
+.provider-workspace:has(.provider-desktop-capture.provider-desktop-compact) .provider-header { min-height: 44px; padding: 0; margin: 0; border-bottom: 0; }
+.provider-workspace:has(.provider-desktop-compact) .provider-header > button { display: block; min-height: 44px; margin: 0; padding: 8px 10px; font-size: 13px; }
 .provider-workspace:has(.provider-desktop-compact) [data-provider-encounter] { margin: 0; font-size: 13px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .provider-desktop-compact main > h1, .provider-desktop-compact main > p,
 .provider-desktop-compact [data-testid="desktop-coverage"]:not([open]) { display: none; }
@@ -167,8 +167,16 @@
   .provider-save-bar p { font-size: .85rem; }
   .provider-save-recovery button { max-width: 136px; padding: 8px 10px; font-size: .85rem; }
 }
-.provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-header { display: none; }
+/* Use the existing patient header beside the exit, rather than repeating it below. */
+.provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-header [data-provider-encounter] { display: -webkit-box; font-size: 16px; }
+.provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-header > div > strong,
+.provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-patient-detail,
+.provider-workspace .provider-desktop-compact .recording-patient { display: none; }
 .provider-workspace cosmaneura-capture .shell.provider-desktop-compact { padding-block: 8px; }
+
+.provider-workspace .recording-source-choice summary { min-height: 44px; box-sizing: border-box; padding: 10px 0; cursor: pointer; font-weight: 600; }
+.provider-workspace .recording-source-choice summary span { margin-left: 8px; font-size: .85rem; font-weight: 400; color: #526d63; }
+.provider-workspace .recording-source-choice label { margin-top: 8px; }
 
 /* Keep source choice and Start visible together in the normal desktop window. */
 .provider-workspace:has(.provider-desktop-capture) .provider-header [data-provider-encounter] { display: none; }
