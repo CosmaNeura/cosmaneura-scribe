@@ -248,7 +248,7 @@ test("reopening a failed empty desktop start waits for a new manual Start", asyn
   const start = page.getByRole("button", { name: "Start recording", exact: true });
   await expect(start).toBeEnabled();
   await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
-  await page.getByRole("button", { name: "Your encounters", exact: true }).click();
+  await page.getByRole("button", { name: "Back to encounters", exact: true }).click();
   await page.getByRole("button", { name: /Synthetic walk-in/u }).click();
   await expect(start).toBeEnabled();
   await expect(page.getByRole("button", { name: "Confirm consent & record", exact: true })).toHaveCount(0);
@@ -281,7 +281,7 @@ for (const platform of ["desktop", "ios"]) {
         await expect(page.locator("[data-recording-preparation-status]")).toBeVisible();
         if (phase === "admission") await expect.poll(() => page.evaluate(() => window.dobLab.admissions)).toBe(1);
         if (phase === "recorder") await expect.poll(() => page.evaluate(() => window.dobLab.recorderCalls)).toBe(1);
-        await page.getByRole("button", { name: action === "leave" ? "Your encounters" : "Cancel recording start", exact: true }).click();
+        await page.getByRole("button", { name: action === "leave" ? "Back to encounters" : "Cancel recording start", exact: true }).click();
         await expect(page.locator("[data-recording-preparation-status]")).toContainText("Recording start canceled.");
         expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
         await page.evaluate(phase => window.dobLab[`release${phase[0].toUpperCase()}${phase.slice(1)}`](), phase);
@@ -319,7 +319,7 @@ test("compact desktop exit stays reachable and cancels pending readiness without
   await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&gate-ready");
   await openFreshFixtureVisit(page);
   await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
-  const exit = page.getByRole("button", { name: "Your encounters", exact: true });
+  const exit = page.getByRole("button", { name: "Back to encounters", exact: true });
   await expect(exit).toBeInViewport();
   await expect(exit).toBeEnabled();
   expect((await exit.boundingBox()).height).toBeGreaterThanOrEqual(44);

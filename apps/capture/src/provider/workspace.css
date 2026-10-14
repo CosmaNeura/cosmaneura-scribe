@@ -3,6 +3,8 @@
 .provider-header[hidden] { display: none; }
 .provider-header > div { min-width: 0; overflow-wrap: anywhere; }
 .provider-header > button { flex-shrink: 0; margin-right: 0; }
+.provider-visit-navigation { display: flex; flex-shrink: 0; gap: 8px; }
+.provider-workspace .provider-visit-navigation button { min-height: 44px; margin: 0; padding: 10px 12px; }
 .provider-workspace h1 { font-size: clamp(1.5rem, 4vw, 1.85rem); line-height: 1.2; }
 .provider-workspace button { min-height: 44px; margin: 8px 12px 8px 0; padding: 10px 18px; border: 1px solid #306b5c; border-radius: 8px; background: #f2faf5; color: #17352f; cursor: pointer; font: inherit; }
 .provider-workspace button:hover { background: #e0f0e7; }

@@ -51,7 +51,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
         } else await openNote(relaunched);
         await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);
         await expect(relaunched.getByRole("textbox", { name: "Plan", exact: true })).toHaveValue(server.original.fields.Plan);
-        await relaunched.getByRole("button", { name: "Your encounters", exact: true }).click();
+        await relaunched.getByRole("button", { name: "Back to encounters", exact: true }).click();
         await relaunched.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
         await openNote(relaunched);
         await expect(relaunched.getByRole("textbox", { name: "Patient", exact: true })).toHaveValue(edited);

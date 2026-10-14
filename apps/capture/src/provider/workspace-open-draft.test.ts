@@ -112,6 +112,17 @@ it.each(["open-draft", "open"])("propagates only the explicit %s intent after au
   expect(f.recorder).not.toHaveBeenCalled(); expect(f.journal.save).not.toHaveBeenCalled();
   expect(f.request).not.toHaveBeenCalled(); // Current host read reused only before the later fresh note-opening check.
 });
+it("refreshes the same authorized visit without admission, recorder acquisition, or replaying a save", async () => {
+  const f = mount(); await vi.waitFor(() => expect(f.content.innerHTML).toContain("Open draft"));
+  await f.click("open");
+  await f.click("refresh-visit");
+  expect(f.host.openEncounter).toHaveBeenCalledTimes(2);
+  expect(f.host.openEncounter).toHaveBeenLastCalledWith(ref, expect.any(AbortSignal));
+  expect(f.journal.load).toHaveBeenCalledTimes(2);
+  expect(f.recorder).not.toHaveBeenCalled();
+  expect(f.journal.save).not.toHaveBeenCalled();
+  expect(f.request).not.toHaveBeenCalled();
+});
 it.each(["ready", "recording_saved", "processing", undefined])("does not expose or honor a shortcut for catalog status %s", async status => {
   const f = mount({ catalog: [{ appointmentRef: ref, title: "Invented", detail: "Fixture", ...(status ? { status: status as NonNullable<ProviderEncounter["status"]> } : {}) }] });
   await vi.waitFor(() => expect(f.content.innerHTML).toContain("Authorized encounters"));
