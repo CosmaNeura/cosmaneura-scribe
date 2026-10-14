@@ -39,6 +39,16 @@ private actor InventedSource: DesktopProcessSource {
         // The real producer checks current macOS permission before source setup.
         // This denial substitutes only that OS result, never opens an OS source.
         if selection.processID == 9 { throw DesktopAudioFailure.permissionRequired }
+        // Private virtual interruption cases: no physical source is constructed.
+        switch selection.processID {
+        case 101: throw DesktopAudioFailure.engineConfigurationChanged
+        case 102: throw DesktopAudioFailure.workspaceSleep
+        case 103: throw DesktopAudioFailure.workspaceSessionInactive
+        case 104: throw DesktopAudioFailure.streamStopped
+        case 105: throw DesktopAudioFailure.selectionChanged
+        case 106: throw DesktopAudioFailure.inputChanged
+        default: break
+        }
         // Model a native child dying before readiness, without generating a
         // real OS crash report or ever constructing a physical audio source.
         if selection.processID == 7 { _exit(70) }

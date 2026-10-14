@@ -40,6 +40,13 @@ const DEADLINE_MS = 15_000;
 const MAX_FRAMES = 1_382_400_000;
 const CODES: readonly DesktopPCMFailure[] = ["permission_required", "device_changed", "session_locked",
   "clock_discontinuity", "overflow", "failed"];
+const FAILURE_CAUSE_EVENTS = Object.freeze({
+  engine_configuration_changed: "audio_engine_configuration_changed",
+  workspace_sleep: "audio_workspace_sleep",
+  workspace_session_inactive: "audio_workspace_session_inactive",
+  stream_stopped: "audio_stream_stopped",
+  selection_changed: "audio_selection_changed",
+} as const);
 
 /** Main process only. The packaged helper path/hash are release inputs, never an
  * IPC argument. This source preparation does not establish signing acceptance. */
@@ -265,9 +272,17 @@ class ProcessSession implements DesktopPCMDriverSession {
         this.startValue = parseDesktopPCMStart(value.start); clearTimeout(this.startupTimer);
         this.diagnose("audio_ready");
         this.readiness.resolve(this.startValue); return;
-      case "failure":
-        if (!exactKeys(value, ["type", "code"]) || !CODES.includes(value.code as DesktopPCMFailure)) throw failure();
-        this.fail(value.code as DesktopPCMFailure); return;
+      case "failure": {
+        const hasCause = Object.hasOwn(value, "cause");
+        if (!exactKeys(value, hasCause ? ["type", "code", "cause"] : ["type", "code"])
+          || !CODES.includes(value.code as DesktopPCMFailure)
+          || hasCause && (value.code !== "device_changed" || typeof value.cause !== "string"
+            || !Object.hasOwn(FAILURE_CAUSE_EVENTS, value.cause))) throw failure();
+        // Start the same terminal cleanup before reporting optional metadata.
+        this.fail(value.code as DesktopPCMFailure);
+        if (hasCause) this.diagnose(FAILURE_CAUSE_EVENTS[value.cause as keyof typeof FAILURE_CAUSE_EVENTS]);
+        return;
+      }
       case "stopped":
       case "stopFailed": {
         if (!exactKeys(value, value.type === "stopped" ? ["type", "request", "completion"] : ["type", "request"])

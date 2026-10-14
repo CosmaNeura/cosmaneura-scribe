@@ -14,6 +14,7 @@ const EVENTS = ["host_open", "window_ready", "connect_begin", "backend_ready", "
   "before_quit", "window_close", "renderer_gone", "renderer_navigation", "close_begin", "boundary_closed", "owner_closed", "close_failed", "quit_ready",
   "audio_start_pending", "audio_helper_spawned", "audio_ready", "audio_start_timeout", "audio_stop_confirmed",
   "audio_permission_required", "audio_device_changed", "audio_session_locked", "audio_clock_discontinuity", "audio_overflow", "audio_failed",
+  "audio_engine_configuration_changed", "audio_workspace_sleep", "audio_workspace_session_inactive", "audio_stream_stopped", "audio_selection_changed",
   ...TIMING_EVENTS] as const;
 export type RuntimeDiagnostic = (event: typeof EVENTS[number], durationMilliseconds?: number) => void;
 export const NO_DIAGNOSTICS: RuntimeDiagnostic = () => undefined;

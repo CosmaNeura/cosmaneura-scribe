@@ -17,6 +17,49 @@ const fixturePath = process.env.SCRIBE_DESKTOP_PIPE_FIXTURE;
 const consent = Object.freeze({ id: "desktop-pipe-invented-all-parties-consent", allPartiesAgreed: true });
 
 describe("private native pipe framing", () => {
+  it("rejects unknown, mismatched or extended interruption metadata and confirms child cessation", async () => {
+    expect(consent.allPartiesAgreed).toBe(true);
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-failure-schema-")));
+    try {
+      for (const body of [
+        { type: "failure", code: "device_changed", cause: null },
+        { type: "failure", code: "device_changed", cause: "unrecognized" },
+        { type: "failure", code: "device_changed", cause: "__proto__" },
+        { type: "failure", code: "permission_required", cause: "engine_configuration_changed" },
+        { type: "failure", code: "device_changed", cause: "engine_configuration_changed", extra: "disallowed" },
+      ]) {
+        // This owned executable emits only an invented protocol frame. It has
+        // no native source, audio API, credential access or network interface.
+        const helperPath = join(directory, "metadata-only-helper.cjs");
+        const wire = nativeCommand(body).toString("base64");
+        await writeFile(helperPath, `#!${process.execPath}\nprocess.stdin.once("data", () => process.stdout.write(Buffer.from(${JSON.stringify(wire)}, "base64")));\nprocess.stdin.on("end", () => process.exit(0));\nprocess.stdin.resume();\n`, { mode: 0o700 });
+        const events: string[] = [], failures: DesktopPCMFailure[] = [], packets = vi.fn(async () => undefined);
+        const driver = new NativeProcessPCMDriver({ enabled: true, helperPath,
+          helperSha256: createHash("sha256").update(await readFile(helperPath)).digest("hex"),
+          isSessionActive: () => true, diagnostics: event => { events.push(event); },
+          getProcessFence: () => ({ epoch: randomUUID(), coordinatorDevice: "1", coordinatorInode: "2",
+            captureDevice: "1", captureInode: "3" }),
+          authorizeSelectedWindow: async () => ({ application: "microphone", processID: 0, windowID: 0,
+            captureAuthorizedUntil: Date.now() + 60_000 }),
+        });
+        const session = driver.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+          onPcmPacket: packets, onFailure: code => { failures.push(code); },
+        });
+        try {
+          await expect(session.ready).rejects.toThrow();
+          expect(await session.stop({ mode: "discard" })).toBeNull();
+          expect(failures).toEqual(["failed"]);
+          expect(packets).not.toHaveBeenCalled();
+          // Malformed metadata has no trustworthy stop receipt. The awaited
+          // discard resolves only after this owned child has actually exited.
+          expect(events).toContain("audio_helper_spawned");
+          expect(events).not.toContain("audio_ready");
+          expect(events.filter(event => /audio_(?:engine|workspace|stream|selection)_/.test(event))).toEqual([]);
+          expect(() => session.activate()).toThrow();
+        } finally { await session.stop({ mode: "discard" }); }
+      }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it("consumes split/coalesced frames with owned-input clearing", () => {
     const decoder = new NativeProcessDecoder();
     const wire = Buffer.concat([nativeCommand({ type: "heartbeat" }), nativeCommand({ type: "activate" })]);
@@ -180,17 +223,49 @@ setTimeout(() => process.stdout.write(Buffer.concat([header, payload]), () => pr
 
 describe.skipIf(!fixturePath)("actual Swift process with explicit invented source", () => {
   async function driver(pid = 1, authorize?: () => Promise<void>, hash?: string,
-    fence: () => NativeProcessFence = nativePipeFixtureFence, expiresAt?: number): Promise<NativeProcessPCMDriver> {
+    fence: () => NativeProcessFence = nativePipeFixtureFence, expiresAt?: number,
+    diagnostics?: RuntimeDiagnostic): Promise<NativeProcessPCMDriver> {
     expect(consent.allPartiesAgreed).toBe(true);
     if (!fixturePath) throw new Error("compiled fixture required");
     return new NativeProcessPCMDriver({ enabled: true, helperPath: fixturePath,
       helperSha256: hash ?? createHash("sha256").update(await readFile(fixturePath)).digest("hex"),
       getProcessFence: fence,
+      ...(diagnostics ? { diagnostics } : {}),
       isSessionActive: () => true, authorizeSelectedWindow: async () => {
         await authorize?.();
         return { application: "com.google.Chrome", processID: pid, windowID: 1, captureAuthorizedUntil: expiresAt ?? Date.now() + 60_000 };
       } });
   }
+  it("distinguishes native interruption causes without activating audio or changing terminal cleanup", async () => {
+    for (const [pid, cause] of [
+      [101, "audio_engine_configuration_changed"], [102, "audio_workspace_sleep"],
+      [103, "audio_workspace_session_inactive"], [104, "audio_stream_stopped"],
+      [105, "audio_selection_changed"], [106, null],
+    ] as const) {
+      const events: string[] = [], failures: DesktopPCMFailure[] = [], packets = vi.fn(async () => undefined);
+      const native = await driver(pid, undefined, undefined, nativePipeFixtureFence, undefined, event => {
+        events.push(event);
+        if (event === cause) throw new Error("diagnostic observer failed");
+      });
+      const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+        onPcmPacket: packets, onFailure: code => { failures.push(code); },
+      });
+      try {
+        await expect(session.ready).rejects.toThrow();
+        expect(await session.stop({ mode: "discard" })).toBeNull();
+        expect(packets).not.toHaveBeenCalled();
+        expect(failures).toEqual(["device_changed"]);
+        expect(events).not.toContain("audio_ready");
+        expect(events).toContain("audio_stop_confirmed");
+        if (cause) {
+          expect(events).toContain(cause);
+          expect(events.indexOf("audio_device_changed")).toBeLessThan(events.indexOf(cause));
+        } else expect(events.filter(event => /audio_(?:engine|workspace|stream|selection)_/.test(event))).toEqual([]);
+        expect(() => session.activate()).toThrow();
+        expect(await session.stop({ mode: "discard" })).toBeNull();
+      } finally { await session.stop({ mode: "discard" }); }
+    }
+  });
   it("rejects native permission denial after authorization without a disposable probe or activation", async () => {
     const native = await driver(9), availability = vi.spyOn(native, "getAvailability");
     const coverage: DesktopPCMCoverage[] = [], chunks = vi.fn(async () => undefined);

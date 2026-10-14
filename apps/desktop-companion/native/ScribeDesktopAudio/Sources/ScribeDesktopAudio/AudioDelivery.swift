@@ -4,6 +4,31 @@ public enum DesktopAudioFailure: String, Error, Sendable {
     case unavailable, permissionRequired, selectionChanged, cancelled, inputChanged
     case invalidAudio, bufferOverflow, sinkRejected, stopUnconfirmed, windowExpired
     case clockDiscontinuity
+    // Preserve the existing terminal input-change behavior, while retaining
+    // its fixed cause for the private helper's content-free diagnostics.
+    case engineConfigurationChanged, workspaceSleep, workspaceSessionInactive, streamStopped
+
+    var processFailureMetadata: [String: String] {
+        var result = ["type": "failure"]
+        switch self {
+        case .permissionRequired: result["code"] = "permission_required"
+        case .inputChanged, .selectionChanged, .engineConfigurationChanged,
+             .workspaceSleep, .workspaceSessionInactive, .streamStopped:
+            result["code"] = "device_changed"
+        case .clockDiscontinuity: result["code"] = "clock_discontinuity"
+        case .bufferOverflow: result["code"] = "overflow"
+        default: result["code"] = "failed"
+        }
+        switch self {
+        case .engineConfigurationChanged: result["cause"] = "engine_configuration_changed"
+        case .workspaceSleep: result["cause"] = "workspace_sleep"
+        case .workspaceSessionInactive: result["cause"] = "workspace_session_inactive"
+        case .streamStopped: result["cause"] = "stream_stopped"
+        case .selectionChanged: result["cause"] = "selection_changed"
+        default: break
+        }
+        return result
+    }
 }
 
 public enum DesktopAudioChannel: Sendable, Hashable { case microphone, systemAudio }
