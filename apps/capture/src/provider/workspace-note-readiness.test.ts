@@ -1,3 +1,4 @@
+import { Surface } from "./test-workspace-surface";
 import { afterEach, expect, it, vi } from "vitest";
 import { parseCreatorReview, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
 import { mountCreatorReview } from "../../../review-ui/src/creator-review-panel";
@@ -37,54 +38,6 @@ function deferred<T>() {
   return { promise: new Promise<T>(done => { resolve = done; }), resolve: (value: T) => resolve(value) };
 }
 
-// Minimal event tree, not a browser/layout or assistive-technology simulation.
-class Surface extends EventTarget {
-  private markup = "";
-  readonly nodes = new Map<string, Surface>();
-  readonly dataset: Record<string, string> = {};
-  readonly attributes = new Set<string>();
-  readonly classList = { add: vi.fn() };
-  readonly style = { setProperty: vi.fn() };
-  buttons: Surface[] = [];
-  parent: Surface | null = null;
-  textContent = "";
-  hidden = false;
-  disabled = false;
-  isConnected = true;
-  get innerHTML(): string { return this.markup; }
-  set innerHTML(value: string) {
-    this.markup = value; this.nodes.clear(); this.buttons = [];
-    for (const key of ["data-workspace-content", "data-workspace-notice", "data-workspace-progress", "data-workspace-navigation",
-      "data-provider-encounter", "data-provider-account", "data-provider-patient-detail", "data-encounter-progress", "data-note-readiness", "data-note-wait-time"]) {
-      if (value.includes(key)) this.nodes.set(`[${key}]`, new Surface());
-    }
-    if (value.includes('class="provider-note-options"')) this.nodes.set(".provider-note-options", new Surface());
-    if (value.includes('data-workspace-action="check-note"')) {
-      const button = new Surface(); button.dataset.workspaceAction = "check-note";
-      this.nodes.set('[data-workspace-action="check-note"]', button);
-    }
-    if (value.includes('class="provider-header"')) this.nodes.set(".provider-header", new Surface());
-    if (value.includes('class="provider-encounters"')) {
-      const list = new Surface(); this.nodes.set(".provider-encounters", list);
-      for (const match of value.matchAll(/<li[^>]*><button data-workspace-action="open" data-appointment="([^"]+)"/gu)) {
-        const button = new Surface(), row = new Surface(); button.dataset.appointment = match[1]!;
-        button.dataset.workspaceAction = "open"; button.parent = row; row.nodes.set("[data-draft-action]", new Surface());
-        button.nodes.set(".provider-visit-status", new Surface()); list.buttons.push(button);
-      }
-    }
-  }
-  querySelector(selector: string): Surface | null { return this.nodes.get(selector) ?? null; }
-  querySelectorAll(selector: string): Surface[] { return selector === '[data-workspace-action="open"]' ? this.buttons : []; }
-  append(): void {}
-  contains(value: unknown): boolean { return value instanceof Surface && value.isConnected; }
-  closest(selector: string): Surface | null { return selector === "li" ? this.parent : selector === "button[data-workspace-action]" ? this : null; }
-  setAttribute(name: string): void { this.attributes.add(name); }
-  removeAttribute(name: string): void { this.attributes.delete(name); }
-  getBoundingClientRect(): { height: number } { return { height: 0 }; }
-  remove(): void { this.isConnected = false; }
-  replaceChildren(): void { this.innerHTML = ""; }
-  close(): void {}
-}
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 function mount(options: { catalog?: ProviderEncounter[]; snapshot?: JournalSnapshot; view?: CreatorReviewView | null;
@@ -146,7 +99,7 @@ async function waiting() {
   await f.click("open"); await lastOptions().continueToNote!(ready());
   vi.useFakeTimers();
   await f.click("generate");
-  expect(f.content.innerHTML).toContain("Waiting for your draft note");
+  expect(f.content.innerHTML).toContain("Recording saved");
   expect(polls).toHaveLength(2);
   return { ...f, polls, prepareCount: () => prepareCount,
     visibility: (value: string) => { Object.assign(document, { visibilityState: value }); document.dispatchEvent(new Event("visibilitychange")); },
@@ -166,7 +119,7 @@ it("uses a monotonic three-second start cadence and displays an exact fresh draf
   await vi.advanceTimersByTimeAsync(1); expect(f.polls).toHaveLength(4);
   expect(f.polls[2]!.start - first).toBe(3000);
   await settle(f.polls, 2, true);
-  await vi.waitFor(() => expect(f.content.innerHTML).toContain("Saved · Not clinically reviewed"));
+  await vi.waitFor(() => expect(f.content.innerHTML).toContain("Clinical review is still required."));
   await vi.advanceTimersByTimeAsync(10_000); expect(f.polls).toHaveLength(4);
   expect(f.prepareCount()).toBe(1); expect(f.recorder).not.toHaveBeenCalled();
 });
@@ -204,14 +157,14 @@ it("does not overlap hidden aborted requests or apply their late responses", asy
   expect(f.polls.every(poll => poll.signal.aborted)).toBe(true);
   f.visibility("visible"); await vi.advanceTimersByTimeAsync(0); expect(f.polls).toHaveLength(2);
   await settle(f.polls, 0, true); await vi.advanceTimersByTimeAsync(1);
-  expect(f.content.innerHTML).toContain("Waiting for your draft note"); expect(f.polls).toHaveLength(4);
+  expect(f.content.innerHTML).toContain("Recording saved"); expect(f.polls).toHaveLength(4);
 });
 
 it("discards late draft responses after navigation and disposal", async () => {
   const f = await waiting(); await f.click("encounters");
-  expect(f.content.innerHTML).toContain("Your encounters");
+  expect(f.content.innerHTML).toContain("Today's patients");
   await settle(f.polls, 0, true); await vi.advanceTimersByTimeAsync(10_000);
-  expect(f.content.innerHTML).toContain("Your encounters"); expect(f.polls).toHaveLength(2);
+  expect(f.content.innerHTML).toContain("Today's patients"); expect(f.polls).toHaveLength(2);
   await f.dispose(); expect(f.root.innerHTML).toBe("");
 });
 
@@ -226,14 +179,14 @@ it("aborts both reads when the authorized host expires and never checks again", 
   const f = await waiting(); f.abort.abort(); await vi.advanceTimersByTimeAsync(0);
   expect(f.polls.every(poll => poll.signal.aborted)).toBe(true);
   await settle(f.polls, 0, true); await vi.advanceTimersByTimeAsync(30_000);
-  expect(f.polls).toHaveLength(2); expect(f.content.innerHTML).not.toContain("Saved · Not clinically reviewed");
+  expect(f.polls).toHaveLength(2); expect(f.content.innerHTML).not.toContain("Clinical review is still required.");
 });
 
 it("rejects a stale reviewed source instead of displaying or automatically retrying", async () => {
   const f = await waiting(), stale = ready();
   stale.working!.working_transcript_version += 1;
   await f.polls[0]!.complete(stale); await f.polls[1]!.complete(await noteValue()); await vi.advanceTimersByTimeAsync(0);
-  expect(f.content.innerHTML).toContain("Waiting for your draft note");
+  expect(f.content.innerHTML).toContain("Recording saved");
   expect(f.content.querySelector("[data-note-readiness]")!.textContent).toContain("could not be confirmed");
   await vi.advanceTimersByTimeAsync(30_000); expect(f.polls).toHaveLength(2);
 });
@@ -247,5 +200,5 @@ it("retains the original five-minute budget across wall-clock changes and aborts
   await vi.advanceTimersByTimeAsync(1); expect(f.polls[2]!.signal.aborted).toBe(true);
   expect(f.content.querySelector("[data-note-wait-time]")!.textContent).toBe("Automatic checking paused.");
   await settle(f.polls, 2, true); await vi.advanceTimersByTimeAsync(30_000);
-  expect(f.content.innerHTML).toContain("Waiting for your draft note"); expect(f.polls).toHaveLength(4);
+  expect(f.content.innerHTML).toContain("Recording saved"); expect(f.polls).toHaveLength(4);
 });

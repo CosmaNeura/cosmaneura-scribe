@@ -1,3 +1,4 @@
+import "./provider/private-note-editor";
 import { LitElement, html, type TemplateResult } from "lit";
 import { Capacitor } from "@capacitor/core";
 import "./native/ios-input-meter";
@@ -42,6 +43,7 @@ export class CaptureApp extends LitElement {
   #pendingProviderActionSignal: AbortSignal | undefined;
   #providerCloseStatus: "closing" | "closed" | "unconfirmed" = "closing";
   #disposeReview: (() => void) | undefined;
+  #continueAfterFinish = false;
   #busy = false;
   #stopping = false;
   #cancelledStart = false;
@@ -85,23 +87,23 @@ export class CaptureApp extends LitElement {
     binding.signal.addEventListener("abort", this.#closeProvider, { once: true });
   }
 
-  /** Only the fresh microphone consent-and-record button supplies the third argument. */
-  public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting", desktopRecordAction?: "microphone", actionSignal?: AbortSignal): Promise<void> {
+  /** A fresh checked consent action may start only this empty prepared visit. */
+  public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting", desktopRecordAction?: "microphone" | "meeting", actionSignal?: AbortSignal, meetingWindowId?: string): Promise<void> {
     if (desktopRecordAction !== undefined) {
       if (this.#desktopRecordActionConsumed) return;
       this.#desktopRecordActionConsumed = true; // Never replay this action after any await or failure.
     }
     if (actionSignal) { this.#pendingProviderActionSignal = actionSignal; this.requestUpdate(); }
-    try { await this.#continueProviderAction(input, desktopAudio, desktopRecordAction === "microphone", actionSignal); }
+    try { await this.#continueProviderAction(input, desktopAudio, desktopRecordAction !== undefined, actionSignal, meetingWindowId); }
     finally {
       if (this.#pendingProviderActionSignal === actionSignal) { this.#pendingProviderActionSignal = undefined; this.requestUpdate(); }
     }
   }
 
-  async #continueProviderAction(input: MicrophoneInput, desktopAudio: "microphone" | "meeting" | undefined, recordDesktop: boolean, actionSignal?: AbortSignal): Promise<void> {
+  async #continueProviderAction(input: MicrophoneInput, desktopAudio: "microphone" | "meeting" | undefined, recordDesktop: boolean, actionSignal?: AbortSignal, meetingWindowId?: string): Promise<void> {
     const binding = this.#provider;
     if (!binding || !isMicrophoneInput(input) || actionSignal?.aborted) return;
-    if (recordDesktop && (desktopAudio !== "microphone" || binding.captureMode !== "desktop_meeting"
+    if (recordDesktop && (!desktopAudio || binding.captureMode !== "desktop_meeting"
       || !binding.controller.selectDesktopAudio || !this.#snapshot.desktop)) return;
     if (this.#snapshot.desktop?.phase === "preparing") {
       await new Promise<void>(resolve => {
@@ -130,19 +132,25 @@ export class CaptureApp extends LitElement {
     }
     if (this.#snapshot.desktop && this.#snapshot.desktop.phase !== "ready") return;
     if (binding.captureMode === "desktop_meeting" || this.#snapshot.desktop) {
-      if (!recordDesktop) return; // Preparation/default/meeting/recovery still wait for Start.
-      const emptyMicrophone = (): boolean => {
+      if (!recordDesktop) return; // Reopening and recovery never replay recording intent.
+      if (desktopAudio === "meeting") {
+        if (!meetingWindowId || !binding.controller.selectMeetingWindow
+          || !this.#snapshot.desktop?.meetingWindows?.windows.some(row => row.id === meetingWindowId)) return;
+        await binding.controller.selectMeetingWindow(meetingWindowId);
+      }
+      const emptyPreparedVisit = (): boolean => {
         if (!current() || this.#stopping) return false;
         const snapshot = binding.controller.snapshot;
         // queuedChunks includes empty slots reserved during fresh preparation.
         // Recorded audio is represented by the accepted chunk count/coverage;
         // reservations alone must not discard the explicit consent-and-record action.
         return snapshot.sessionId === binding.sessionId && snapshot.state === "ready"
-          && snapshot.desktop?.phase === "ready" && snapshot.desktop.audioMode === "microphone"
+          && snapshot.desktop?.phase === "ready" && snapshot.desktop.audioMode === desktopAudio
+          && (desktopAudio !== "meeting" || snapshot.desktop.meetingWindows?.selectedId === meetingWindowId)
           && snapshot.desktop.coverage === "not_started" && snapshot.recordedChunks === 0
           && snapshot.elapsedSeconds === 0;
       };
-      if (emptyMicrophone()) await this.#recordWithGuard(emptyMicrophone);
+      if (emptyPreparedVisit()) await this.#recordWithGuard(emptyPreparedVisit);
       return;
     }
     if (recordDesktop) return;
@@ -242,6 +250,7 @@ export class CaptureApp extends LitElement {
     } else if (!this.#disposeReview) {
       this.#disposeReview = mountCreatorReview(root,
         new HttpCreatorReviewApi(binding.sessionId, binding.authorizedRequest), {
+          continueAfterFinish: this.#continueAfterFinish,
           journal: binding.journal,
           ...(binding.speakerNameSuggestions ? { speakerNameSuggestions: binding.speakerNameSuggestions } : {}),
           ...(binding.editJournal ? { editJournal: binding.editJournal } : {}),
@@ -292,7 +301,7 @@ export class CaptureApp extends LitElement {
     return html`
       <div class=${nativeProvider ? "shell provider-native-capture" : desktopProvider
         ? `shell provider-desktop-capture${this.#isDesktopCompact() ? " provider-desktop-compact" : ""}` : "shell"}>
-        <header>
+        <header ?hidden=${!!provider}>
           <span class="brand">${provider ? "Cosmaneura Scribe" : "Cosmaneura Capture"}</span>
           <span class="status" data-testid=${provider ? "provider-recording" : "synthetic-only"}>
             ${provider ? "Your recording" : this.#sourceKind === "microphone"
@@ -302,9 +311,9 @@ export class CaptureApp extends LitElement {
         </header>
         <main>
           <p class="eyebrow">${provider ? "Record · Review · Prepare note" : "Phase 3 foreground flow"}</p>
-          <h1>${captureFinished ? "Your encounter" : nativeProvider || desktopProvider ? "Visit recording" : provider ? "Your encounter recording" : "Consented recording, safely staged"}</h1>
+          <h1 ?hidden=${!!provider && !captureFinished}>${captureFinished ? "Recording saved" : nativeProvider || desktopProvider ? "Visit recording" : provider ? "Your encounter recording" : "Consented recording, safely staged"}</h1>
           <p class="intro" ?hidden=${(nativeProvider || desktopProvider) && !captureFinished}>
-            ${captureFinished ? "Recording uploaded. Review the transcript below before preparing your note."
+            ${captureFinished ? "Your recording is saved. The visit note can be prepared once its conversation is ready."
               : provider ? "Record this consented encounter, then review its transcript before preparing your note."
               : this.#sourceKind === "microphone"
               ? "This preview uses synthetic identifiers with an explicitly enabled foreground microphone test adapter."
@@ -312,8 +321,8 @@ export class CaptureApp extends LitElement {
             ${provider ? "" : "It never connects to a patient, Scribe, Azure Speech, or a clinical tenant."}
           </p>
 
-          ${captureFinished ? html`<p>${provider.languageMode === "english_spanish" ? "English and Spanish" : "English"}</p>`
-            : provider ? html`<p>${provider.languageMode === "english_spanish" ? "English and Spanish · Translate Spanish to English" : "English"}</p>` : html`
+          ${captureFinished ? html`<button class="primary" data-workspace-action="encounters">Back to today’s patients</button>`
+            : provider ? "" : html`
           <section class="flow-card" aria-labelledby="consent-title">
             <div>
               <p class="step">Step 1</p>
@@ -361,14 +370,22 @@ export class CaptureApp extends LitElement {
             </div>
             ${provider?.encounterLabel ? html`<div class="recording-patient" aria-label="Current visit">
               <strong>${provider.encounterLabel}</strong>
-              <span>${provider.visitLabel ?? (desktopProvider ? "Video visit" : "In-person visit")}</span>
+              <span>${provider.languageMode === "english_spanish" ? "Spanish and English · note in English" : "English"} · ${provider.visitLabel ?? (desktopProvider ? "Video visit" : "In-person visit")}</span>
             </div>` : ""}
             ${desktopProvider || nativeProvider ? this.#renderProviderProgress() : ""}
             ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
               ? html`<scribe-desktop-input-meter .signal=${this.#snapshot.desktop.inputSignal} .microphoneOnly=${this.#snapshot.desktop.audioMode === "microphone"}></scribe-desktop-input-meter>` : ""}
             ${showInputMeter
               ? html`<scribe-ios-input-meter .readSignal=${provider?.controller.getCaptureSignal}></scribe-ios-input-meter>` : ""}
-            ${this.#isNativeIPhone() && (!nativeProvider || ["ready", "paused"].includes(this.#snapshot.state)) ? html`<label>Microphone
+            ${provider?.controller.selectAudioInput && this.#snapshot.inputDevices?.length ? html`<button class="provider-text-link" data-testid="change-audio"
+              ?disabled=${this.#busy || this.#stopping || !["ready", "recording", "paused"].includes(this.#snapshot.state)}
+              @click=${() => this.querySelector<HTMLDialogElement>("[data-active-audio]")?.showModal()}>${this.#snapshot.inputDevices.find(row => row.id === this.#snapshot.selectedInputId)?.label ?? "Microphone"} · Change audio</button>
+              <dialog data-active-audio class="provider-audio-dialog"><h2>Change microphone</h2><label>Microphone<select data-testid="active-microphone" @change=${this.#changeAudioInput}
+                ?disabled=${this.#busy || this.#stopping}>
+                ${this.#snapshot.inputDevices.map(row => html`<option value=${row.id} ?selected=${row.id === this.#snapshot.selectedInputId}>${row.label}</option>`)}
+              </select></label><p>Changing microphone briefly pauses capture. Earlier saved audio stays with this visit.</p>
+              <button type="button" ?disabled=${this.#busy} @click=${() => this.querySelector<HTMLDialogElement>("[data-active-audio]")?.close()}>Done</button></dialog>` : ""}
+            ${!provider?.controller.selectAudioInput && this.#isNativeIPhone() && (!nativeProvider || ["ready", "paused"].includes(this.#snapshot.state)) ? html`<label>Microphone
               <select data-testid="microphone-input" .value=${this.#microphoneInput}
                 ?disabled=${this.#busy || this.#stopping || !["ready", "paused"].includes(this.#snapshot.state)}
                 @change=${this.#changeMicrophone}>
@@ -444,7 +461,7 @@ export class CaptureApp extends LitElement {
                     && this.#snapshot.desktop.meetingWindows.selectedId === null}
                 @click=${this.#resume}>${this.#snapshot.statusCode === "capture_recovery_pending"
                   ? "Retry recovery and resume" : this.#isCancelledEmptyStart() || this.#isExpiredEmptyStart()
-                    ? "Start recording" : "Resume"}</button>` : ""}
+                    ? "Start recording" : "Continue"}</button>` : ""}
               ${this.#isExpiredEmptyStart() ? html`<button class="secondary" data-testid="empty-setup-encounters"
                 data-workspace-action="encounters" ?disabled=${this.#busy || this.#stopping}>Your encounters</button>` : ""}
               <button
@@ -458,11 +475,11 @@ export class CaptureApp extends LitElement {
                 ${this.#stopping ? this.#snapshot.native?.phase === "sealing" ? "Saving…"
                   : this.#uploadAfterStop() ? this.#snapshot.statusCode === "capture_upload_confirming" ? "Confirming upload…" : "Uploading…"
                   : this.#isStarting() ? "Cancelling start…" : "Stopping…"
-                  : (this.#snapshot.desktop?.phase === "starting" || this.#snapshot.native?.phase === "starting") ? "Cancel start"
+                  : this.#isStarting() && this.#snapshot.recordedChunks === 0 ? "Cancel start"
                   : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
                   : this.#snapshot.statusCode === "capture_recovery_pending" ? "Retry saving and upload"
                   : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
-                  ? "Retry finish recording" : provider ? "Finish recording" : "Stop and upload"}
+                  ? "Retry finish recording" : provider ? "Finish visit" : "Stop and upload"}
               </button>
               ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
                 data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Set up recording access</button>` : ""}
@@ -471,17 +488,9 @@ export class CaptureApp extends LitElement {
             </div>
             ${this.#chooserUnavailable && this.#snapshot.statusCode === "capture_window_selection_pending"
               ? html`<p class="recording-recovery" role="alert">The chooser is still opening or could not come forward. Try Show window chooser again, or Cancel start.</p>` : ""}
-            ${desktopProvider ? html`<details class="recording-source-help">
-              <summary>${this.#snapshot.desktop?.audioMode === "microphone" ? "Microphone only"
-                : this.#snapshot.desktop?.audioMode === "meeting" ? "Microphone + meeting audio" : "Audio source and saved audio"}</summary>
-              <p>${this.#snapshot.desktop?.audioMode === "microphone"
-                ? "Scribe records this Mac’s microphone only. Keep both voices audible in the room or use speakerphone."
-                : this.#snapshot.desktop?.audioMode === "meeting"
-                  ? "Choose your Zoom window or Meet window in Chrome. Scribe records your microphone and the selected application’s audio; other audio from that application may be included."
-                  : "Confirm your audio source before recording. If you use meeting audio, choose the Zoom or Chrome window for this visit."}</p>
-              <p>Encrypted audio uploads while you record. If you go offline, saved audio waits on this Mac.</p>
-            </details>` : nativeProvider ? html`<details class="recording-source-help">
-              <summary>Microphone and saved audio</summary>
+            ${provider?.privateNotes ? html`<scribe-private-note .port=${provider.privateNotes}></scribe-private-note>` : ""}
+            ${nativeProvider ? html`<details class="recording-source-help">
+              <summary>Recording details</summary>
               <p>Audio is saved on this iPhone until upload is confirmed.</p>
             </details>` : ""}
           </section>`}
@@ -558,7 +567,10 @@ export class CaptureApp extends LitElement {
               : "Recording has not started."}
             ${this.#snapshot.desktop.trimmedStartMs > 0 ? ` The first ${this.#snapshot.desktop.trimmedStartMs} ms before both sources were available was excluded.` : ""}
             ${(this.#snapshot.desktop.trimmedEndMs ?? 0) > 0 ? ` The final ${this.#snapshot.desktop.trimmedEndMs} ms without both sources was excluded.` : ""}
-          </p></details>` : ""}
+          </p><p>${this.#snapshot.desktop.audioMode === "microphone"
+            ? "Keep both voices audible in the room or use speakerphone."
+            : "Scribe records your microphone and the selected application’s audio; other audio from that application may be included."}</p>
+          <p>Encrypted audio uploads while you record. If you go offline, saved audio waits on this Mac.</p></details>` : ""}
 
           ${provider ? html`<div data-provider-review></div>`
             : html`<p class="fixed-status" role="status">${this.#snapshot.statusCode}</p>`}
@@ -607,12 +619,10 @@ export class CaptureApp extends LitElement {
   #renderProviderProgress(): TemplateResult {
     const desktopProvider = this.#provider?.captureMode === "desktop_meeting";
     const nativeProvider = this.#provider?.captureMode === "native_microphone";
-    const showInputMeter = this.#snapshot.state === "recording" && !this.#stopping
-      && !this.#snapshot.desktop && this.#isNativeIPhone();
     const savedAudio = this.#snapshot.recordedChunks > 0 ? "Saved audio is retained." : "No saved audio has been confirmed.";
     const uploadProgress = this.#snapshot.native?.uploadProgress ?? this.#snapshot.uploadProgress;
     return html`<section class=${desktopProvider || nativeProvider ? "recording-progress" : "flow-card"} aria-label="Recording progress">
-            <p role="status" ?hidden=${nativeProvider && showInputMeter && this.#snapshot.statusCode === "capture_recording"}>${this.#stopping
+            <p role="status" class=${this.#snapshot.state === "recording" && !this.#stopping ? "recording-live" : ""}>${this.#snapshot.reconnecting ? "Reconnecting to your call… Speech during this gap is not recorded." : this.#stopping
               && this.#snapshot.native?.phase !== "sealing" && !this.#uploadAfterStop()
               ? this.#isStarting() ? "Cancelling start… Waiting for recording to stop." : "Stopping recording…"
               : !this.#snapshot.desktop && (this.#snapshot.statusCode === "capture_starting"
@@ -688,7 +698,7 @@ export class CaptureApp extends LitElement {
             ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
               ? html`<p class="recording-control-hint">Use Pause for a break. Finish recording when the visit is finished.</p>` : ""}
             ${this.#snapshot.remainingAuthoritySeconds === null || this.#isExpiredEmptyStart() ? "" : desktopProvider
-              ? this.#snapshot.desktop?.phase === "recording" ? html`<p>Secure connection renews automatically. If it cannot renew, Scribe will pause and show a warning.</p>` : ""
+              ? ""
               : html`<p ?hidden=${nativeProvider && this.#snapshot.remainingAuthoritySeconds > 300}>Recording window remaining: ${formatDuration(this.#snapshot.remainingAuthoritySeconds)}</p>`}
           </section>`;
   }
@@ -732,7 +742,9 @@ export class CaptureApp extends LitElement {
   readonly #stop = (): void => {
     if (this.#snapshot.desktop || this.#snapshot.native) {
       if (this.#stopping) return;
-      this.#cancelledStart = this.#isStarting();
+      this.#cancelledStart = this.#isStarting() && this.#snapshot.recordedChunks === 0;
+      this.#continueAfterFinish = !this.#cancelledStart;
+      if (this.#continueAfterFinish) void this.#provider?.onFinishVisit?.().catch(() => { /* Stop proceeds; recovery stays explicit if intent could not persist. */ });
       this.#stopping = true; this.requestUpdate();
       const finishTiming = beginWorkflowTiming("stop-upload");
       let outcome: WorkflowTimingOutcome = "resolved";
@@ -796,8 +808,15 @@ export class CaptureApp extends LitElement {
     this.#microphoneInput = value; this.#microphoneError = false; this.requestUpdate();
   };
 
+  readonly #changeAudioInput = (event: Event): void => {
+    const id = (event.currentTarget as HTMLSelectElement).value;
+    if (this.#busy || this.#stopping || !this.#snapshot.inputDevices?.some(row => row.id === id)) return;
+    void this.#run(async () => { await this.#provider?.controller.selectAudioInput?.(id); }, "change-audio");
+  };
+
   async #selectMicrophone(): Promise<void> {
     if (!this.#isNativeIPhone()) return;
+    if (this.#provider?.controller.selectAudioInput && this.#snapshot.selectedInputId) return;
     this.#microphoneError = false;
     try {
       if (this.#provider?.controller.selectMicrophoneInput) {

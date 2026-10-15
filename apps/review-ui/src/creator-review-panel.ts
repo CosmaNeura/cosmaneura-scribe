@@ -33,7 +33,9 @@ export interface CreatorReviewOptions {
   readonly journal?: CreatorReviewJournal;
   readonly editJournal?: CreatorEditJournal;
   /** Open the host's existing Core note flow with this action's fresh authorized read. */
-  readonly continueToNote?: (view: CreatorReviewView) => Promise<void>;
+  readonly continueToNote?: (view: CreatorReviewView, prepareAfterFinish?: boolean) => Promise<void>;
+  /** One fresh Finish visit intent; never enabled for a reopened recording. */
+  readonly continueAfterFinish?: boolean;
   /** Coordinated fresh read, consumed only by this still-current explicit action. */
   readonly prepareNoteOpening?: () => Promise<{ view: CreatorReviewView; open: () => Promise<void> }>;
 }
@@ -52,6 +54,7 @@ export function mountCreatorReview(
   let continuing = false;
   let refreshing = false;
   let initialAction = options.initialAction;
+  let finishIntent = options.continueAfterFinish === true;
   let playbackAbort: AbortController | null = null, playbackUrl: string | null = null;
   let playbackAudio: HTMLAudioElement | null = null;
   const stopPlayback = (): void => {
@@ -71,6 +74,7 @@ export function mountCreatorReview(
       if (!canApplyReviewProgress(previous, view)) throw new CreatorReviewError("invalid_response");
       if (JSON.stringify(previous) === JSON.stringify(view)) return;
       state = { ...state, view, notice: "" }; renderPreservingReading();
+      advanceFinishedVisit();
     },
     stopped: reason => {
       state = { ...state, notice: reason === "deadline"
@@ -202,9 +206,8 @@ export function mountCreatorReview(
       refreshing = false;
       if (!disposed && request === generation) { render(); progress.restart(); }
     }
-    if (openDraft && !disposed && request === generation && state.phase === "ready" && state.view?.working?.note_ready) {
-      await continueToNote();
-    }
+    if (openDraft && !disposed && request === generation && state.phase === "ready" && state.view?.working?.note_ready) await continueToNote();
+    else advanceFinishedVisit();
   };
 
   const save = async (): Promise<void> => {
@@ -283,7 +286,13 @@ export function mountCreatorReview(
     }
   };
 
-  const continueToNote = async (): Promise<void> => {
+  const advanceFinishedVisit = (): void => {
+    if (!finishIntent || disposed || refreshing || continuing || state.phase !== "ready" || !state.view?.working?.note_ready
+      || pending || pendingEdit || editingSegment) return;
+    finishIntent = false;
+    void continueToNote(true);
+  };
+  const continueToNote = async (prepareAfterFinish = false): Promise<void> => {
     if (continuing || disposed || pending !== null || pendingEdit !== null || editingSegment !== null || state.phase !== "ready" || !options.continueToNote) return;
     clearRefresh();
     const request = ++generation;
@@ -291,7 +300,7 @@ export function mountCreatorReview(
     const previous = state.view;
     render();
     try {
-      const opening = options.prepareNoteOpening ? await options.prepareNoteOpening() : undefined;
+      const opening = !prepareAfterFinish && options.prepareNoteOpening ? await options.prepareNoteOpening() : undefined;
       const view = opening?.view ?? await api.read();
       if (disposed || request !== generation) return;
       if (!canApplyReviewProgress(previous, view)) throw new CreatorReviewError("invalid_response");
@@ -300,7 +309,7 @@ export function mountCreatorReview(
         state = { ...state, notice: "The transcript changed. Complete its current review before preparing a note." };
       } else {
         if (opening) await opening.open();
-        else await options.continueToNote(view);
+        else await options.continueToNote(view, prepareAfterFinish);
       }
     } catch {
       if (disposed || request !== generation) return;

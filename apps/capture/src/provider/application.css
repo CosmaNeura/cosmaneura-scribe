@@ -1,32 +1,25 @@
-.provider-application { --scribe-gradient: linear-gradient(135deg, #146f6c, #17273c); color: #203035; background: #f1f5f2; min-height: 100vh; font: 16px/1.5 system-ui, sans-serif; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
-.provider-session-header, .provider-session-status { box-sizing: border-box; max-width: 1100px; margin: auto; padding: 16px 24px; }
-.provider-session-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; max-width: none; padding: 20px max(24px, calc(50% - 526px)); background: var(--scribe-gradient); color: #f1d99c; }
-.provider-brand { display: flex; align-items: center; gap: 14px; font-size: 1.5rem; }
-.provider-brand-icon { display: block; width: 48px; height: 48px; overflow: hidden; border-radius: 12px; flex-shrink: 0; }
-.provider-brand-icon svg { display: block; width: 100%; height: 100%; }
-.provider-session-status h1 { font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1.2; }
-.provider-session-status h1:empty, .provider-session-status p:empty, .provider-session-status:has([data-session-title]:empty):has([data-session-message]:empty) { display: none; }
-.provider-application button[data-session-action] { min-height: 44px; padding: 10px 18px; border: 1px solid #306b5c; border-radius: 8px; color: #17352f; background: #f2faf5; font: inherit; cursor: pointer; }
-.provider-application button[data-session-action]:disabled { opacity: .6; cursor: wait; }
-.provider-session-header button[data-session-action] { background: transparent; color: #fff; border-color: #b5d2d1; }
-.provider-application button[data-session-action]:focus-visible { outline: 3px solid #648ad9; outline-offset: 2px; }
-.provider-application .provider-header > div > strong { display: none; }
-@media (max-width: 600px) { .provider-session-header, .provider-session-status { padding: 16px; } }
+@import "./tokens.css";
+.provider-application { color:var(--scribe-ink); background:#f1f5f2; min-height:100dvh; font:18px/1.5 system-ui,sans-serif; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.provider-session-header { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:12px max(24px,calc(50% - 526px)); background:var(--scribe-gradient); color:#f1d99c; }
+.provider-brand { display:flex; align-items:center; gap:10px; font-size:1.25rem; }
+.provider-brand-icon { display:block; width:36px; height:36px; overflow:hidden; border-radius:10px; flex-shrink:0; }
+.provider-brand-icon svg { display:block; width:100%; height:100%; }
+.provider-session-status { box-sizing:border-box; max-width:640px; margin:28px auto; padding:24px; background:white; border:1px solid var(--scribe-border); border-radius:16px; box-shadow:var(--scribe-shadow); }
+.provider-session-status h1 { font-size:2rem; line-height:1.2; color:var(--scribe-heading); }
+.provider-session-status h1:empty,.provider-session-status p:empty,.provider-session-status:has([data-session-title]:empty):has([data-session-message]:empty) { display:none; }
+.provider-application button[data-session-action] { min-height:56px; padding:12px 18px; border:0; border-radius:12px; color:white; background:var(--scribe-gradient); font:inherit; font-weight:600; cursor:pointer; }
+.provider-application button[data-session-action]:disabled { opacity:.6; cursor:default; }
+.provider-session-header button[data-session-action] { min-height:44px; background:transparent; color:white; font-size:16px; font-weight:400; text-decoration:underline; text-underline-offset:3px; }
+.provider-application button[data-session-action]:focus-visible,.scribe-desktop-close:focus-visible { outline:3px solid #90b4ff; outline-offset:3px; }
+.scribe-desktop-close { flex-shrink:0; min-height:44px; padding:8px 12px; border:0; border-radius:8px; background:transparent; color:inherit; font:16px/1.4 system-ui,sans-serif; cursor:pointer; }
+.provider-session-header:has(.scribe-desktop-close) [data-session-actions] { margin-left:auto; }
+.provider-application:has(.provider-desktop-compact) .provider-session-header { padding:8px 12px; gap:8px; }
+.provider-application:has(.provider-desktop-compact) .provider-brand { font-size:18px; }
+.provider-application:has(.provider-desktop-compact) .provider-brand-icon { width:28px; height:28px; }
+.provider-application:has(.provider-desktop-compact) [data-session-actions],.provider-application:has([data-testid=pause-recording]:not([hidden])) [data-session-actions] { display:none; }
+@media(max-width:600px) { .provider-session-header { padding:12px 16px; } .provider-session-status { margin:20px 16px; padding:24px 20px; } }
 
-.provider-application:has(.provider-desktop-compact) { background: white; font-size: 14px; }
-.provider-application:has(.provider-desktop-compact) .provider-session-header { padding: 6px 12px; gap: 8px; }
-.provider-application:has(.provider-desktop-compact) .provider-brand { font-size: 17px; gap: 8px; }
-.provider-application:has(.provider-desktop-compact) .provider-brand-icon { width: 24px; height: 24px; border-radius: 6px; }
-.provider-application:has(.provider-desktop-compact) [data-session-actions] { display: none; }
-
-/* Only the desktop shell inserts this secondary app action. */
-.scribe-desktop-close { flex-shrink: 0; min-height: 44px; padding: 8px 12px; border: 1px solid currentColor; border-radius: 8px; background: transparent; color: inherit; font: 14px/1.4 system-ui, sans-serif; cursor: pointer; }
-.scribe-desktop-close:hover { background: #ffffff1f; }
-.scribe-desktop-close:focus-visible { outline: 3px solid #90b4ff; outline-offset: 2px; }
-.provider-session-header:has(.scribe-desktop-close) { gap: 12px; }
-.provider-session-header:has(.scribe-desktop-close) [data-session-actions] { margin-left: auto; }
-
-.provider-session-header { padding-top: 8px; padding-bottom: 8px; gap: 8px; }
-.provider-brand { font-size: 1.1rem; gap: 8px; }
-.provider-brand-icon { width: 32px; height: 32px; border-radius: 8px; }
-.provider-session-header button[data-session-action], .scribe-desktop-close { padding: 6px 10px; font-size: .85rem; border-color: transparent; }
+.provider-account-menu { position:relative; font-size:16px; }
+.provider-account-menu summary { min-height:44px; display:flex; align-items:center; cursor:pointer; list-style:none; border:1px solid var(--scribe-border); border-radius:10px; padding:0 14px; }
+.provider-account-menu[open] { padding:12px; border:1px solid var(--scribe-border); border-radius:12px; background:white; box-shadow:var(--scribe-shadow); }
+.provider-account-menu a { display:block; min-height:44px; padding:12px 0; }
