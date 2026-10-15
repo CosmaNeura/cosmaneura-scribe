@@ -84,6 +84,8 @@ def run(output: Path) -> int:
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
     cases = [
         (["--availability-v1"], 0, {"mode": "availability", "application_ready": True}),
+        (["--microphone-availability-v1"], 0, {"mode": "availability", "application_ready": True}),
+        (["--microphone-check-v1"], 0, {"mode": "microphone_check", "application_ready": True}),
         (
             ["--capture-v2"],
             0,

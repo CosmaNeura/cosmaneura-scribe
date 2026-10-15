@@ -7,6 +7,7 @@ import type { JournalSnapshot, ProviderProgress } from "../../capture/src/provid
 import type { PendingReviewDecision } from "../../review-ui/src/creator-review-journal";
 import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 import type { ProviderRecorderSnapshot } from "../../capture/src/provider-binding";
+import type { AudioPreflightSnapshot, ProviderAudioPreflight } from "../../capture/src/provider/audio-preflight";
 
 const sessionId = "10000000-0000-4000-8000-000000000001", workspaceId = "20000000-0000-4000-8000-000000000002";
 const scope = { workspaceId, bindingRef: "scribe_capture_binding_01j00000000000000000000000", appointmentRef: "appointment_01j00000000000000000000000" };
@@ -16,7 +17,8 @@ const decision = { key: "invented-review-operation", request: { schema_version: 
   translation_id: sessionId, decision: "accepted" as const, expected_source_segment_version: 1,
   expected_source_transcript_version: 1, expected_translation_version: 1 } };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
-async function fixture(openingReview?: { scope: typeof scope; receivedAt: number; view: null }, noteOpeningSupported = false, fresh = false) {
+async function fixture(openingReview?: { scope: typeof scope; receivedAt: number; view: null }, noteOpeningSupported = false, fresh = false,
+  audioPreflight?: (signal: AbortSignal) => Promise<ProviderAudioPreflight>) {
   let state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
   const authListeners = new Set<(value: ProviderSessionState) => void>(), events: DesktopProviderEvent[] = [];
   let saved: JournalSnapshot = fresh ? { revision: null, progress: null } : { revision: "1", progress: structuredClone(consent) };
@@ -46,6 +48,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
     search: vi.fn(async () => ({ account: "provider@synthetic.invalid", patients: [], moreResults: false })),
     submit: vi.fn(async () => ({ appointmentRef: scope.appointmentRef, title: "Synthetic Patient", detail: "Visit" })),
   };
+  const acquireRecorder = vi.fn(async () => { if (recorderGate) await recorderGate; return nativeRecord; });
   const host: DesktopProviderMainHost = {
     session: { getState: async () => state, signIn: async () => { changed("ready"); return state; },
       signOut,
@@ -54,6 +57,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
       opens++;
       if (connectGate) await connectGate;
       return { dispose, workspace: { signal, createEncounter: create, encounterSetup: setup, account: { email: "provider@synthetic.invalid", environment: "Staging" },
+        ...(audioPreflight ? {audioPreflight} : {}),
         listEncounters: async () => [{ appointmentRef: scope.appointmentRef, title: "Invented desktop visit", detail: "Invented all-party consent" }],
         openEncounter: async (_ref: string, encounterSignal: AbortSignal) => {
           contextSignals.push(encounterSignal);
@@ -65,7 +69,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
               saved = { revision: String(Number(saved.revision) + 1), progress: structuredClone(progress) }; return saved;
             } },
             reviewJournal: () => ({ load: async () => pending, save: async (value: PendingReviewDecision) => { pending = value; }, clear: async () => { pending = null; } }),
-            recorder: async () => { if (recorderGate) await recorderGate; return nativeRecord; },
+            recorder: acquireRecorder,
           };
         } } };
     }),
@@ -81,7 +85,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
     expect(reply.ok).toBe(true); connectionId = reply.result!.connectionId as string; encounterId = null; };
   const open = async () => { const reply = await invoke("open", { appointmentRef: scope.appointmentRef }, { connectionId, encounterId: null });
     expect(reply.ok).toBe(true); encounterId = reply.result!.encounterId as string; };
-  return { main, invoke, connect, open, backend, setup, attached, stop, dispose, events, changed, contextSignals, navigation, signOut, diagnostics,
+  return { main, invoke, connect, open, backend, setup, attached, stop, dispose, events, changed, contextSignals, navigation, signOut, diagnostics, acquireRecorder,
     subscribeRecorder, recorderListeners,
     publishRecorder: (state: ProviderRecorderSnapshot["state"], phase: NonNullable<ProviderRecorderSnapshot["desktop"]>["phase"], statusCode: string) => {
       recorderSnapshot = { ...recorderSnapshot, state, statusCode, desktop: { ...recorderSnapshot.desktop!, phase } };
@@ -97,6 +101,65 @@ const core = (kind: string) => ({ path: "/service/v1/agent/scribe/capture-operat
   body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID(), operation: { kind } } });
 
 describe("trusted desktop provider workspace", () => {
+  it("opens advisory audio only for the authorized encounter and rejects hardware identities without admitting a recorder", async () => {
+    const input=crypto.randomUUID(), window=crypto.randomUUID();
+    const snapshot: AudioPreflightSnapshot = {status:"ready",inputDevices:[{id:input,label:"USB microphone",kind:"external",current:true}],
+      selectedInputId:input,microphone:{level:.25,ageMs:0},desktopAudio:"meeting",meetingWindows:{state:"ready",selectedId:null,windows:[{id:window,title:"Synthetic call"}]}};
+    const selectInput=vi.fn(async(id:string)=>{if(id!==input)throw new Error("invented unknown native input");});
+    const selectWindow=vi.fn(async(id:string)=>{if(id!==window)throw new Error("invented unknown native window");});
+    const close=vi.fn(async()=>undefined);
+    const port: ProviderAudioPreflight={getSnapshot:()=>snapshot,subscribe:()=>()=>undefined,selectMicrophone:selectInput,selectMeetingWindow:selectWindow,close};
+    const opening=vi.fn(async()=>port), f=await fixture(undefined,false,true,opening);
+    try {
+      expect((await f.invoke("preflight",{action:"open"})).ok).toBe(false);
+      await f.connect();expect((await f.invoke("preflight",{action:"open"})).ok).toBe(false);expect(opening).not.toHaveBeenCalled();
+      await f.open();expect((await f.invoke("preflight",{action:"open"})).result).toEqual(snapshot);
+      expect((await f.invoke("preflight",{action:"read"})).result).toEqual(snapshot);
+      for(const payload of [{action:"input",id:"invented-hardware-uid"},{action:"input",id:input,microphoneUID:"invented-hardware-uid"},
+        {action:"window",id:window,processID:41}]) expect((await f.invoke("preflight",payload)).ok).toBe(false);
+      expect(selectInput).not.toHaveBeenCalled();expect(selectWindow).not.toHaveBeenCalled();
+      expect((await f.invoke("preflight",{action:"input",id:crypto.randomUUID()})).ok).toBe(false);
+      expect((await f.invoke("preflight",{action:"window",id:crypto.randomUUID()})).ok).toBe(false);
+      expect((await f.invoke("preflight",{action:"input",id:input})).ok).toBe(true);
+      expect((await f.invoke("preflight",{action:"window",id:window})).ok).toBe(true);
+      expect(f.saved).toEqual({revision:null,progress:null});expect(f.backend).not.toHaveBeenCalled();
+      expect(f.acquireRecorder).not.toHaveBeenCalled();expect(f.attached).not.toHaveBeenCalled();
+    } finally {await f.main.dispose();}
+  });
+  it("waits for the advisory native close and retains its exact owner after uncertain closure", async()=>{
+    const entered=deferred<void>(), stopped=deferred<void>();let refuse=true;
+    let snapshot: AudioPreflightSnapshot={status:"ready",inputDevices:[],selectedInputId:null,microphone:{level:.25,ageMs:0}};
+    const close=vi.fn(async()=>{snapshot={...snapshot,microphone:null};entered.resolve();await stopped.promise;if(refuse)throw new Error("invented advisory stop uncertain");});
+    const port: ProviderAudioPreflight={getSnapshot:()=>snapshot,subscribe:()=>()=>undefined,selectMicrophone:async()=>undefined,close};
+    const opening=vi.fn(async()=>port),f=await fixture(undefined,false,true,opening);
+    try {
+      await f.connect();await f.open();expect((await f.invoke("preflight",{action:"open"})).ok).toBe(true);
+      let completed=false;const closing=f.invoke("preflight",{action:"close"}).then(value=>{completed=true;return value;});
+      await entered.promise;expect(completed).toBe(false);
+      expect((await f.invoke("preflight",{action:"read"})).result?.microphone).toBeNull();
+      expect((await f.invoke("preflight",{action:"open"})).ok).toBe(false);expect(opening).toHaveBeenCalledOnce();
+      stopped.resolve();expect((await closing).ok).toBe(false);
+      expect((await f.invoke("preflight",{action:"open"})).ok).toBe(false);expect(opening).toHaveBeenCalledOnce();
+      refuse=false;expect((await f.invoke("preflight",{action:"close"})).ok).toBe(true);
+      expect((await f.invoke("preflight",{action:"open"})).ok).toBe(true);expect(opening).toHaveBeenCalledTimes(2);
+      expect(f.acquireRecorder).not.toHaveBeenCalled();
+    } finally {refuse=false;stopped.resolve();await f.main.dispose();}
+  });
+  it("clears advisory ownership on revocation and rejects a late meter from a pending opening", async()=>{
+    const gate=deferred<void>(),entered=deferred<void>();let signal: AbortSignal|undefined;
+    const close=vi.fn(async()=>undefined),port: ProviderAudioPreflight={getSnapshot:()=>({status:"ready",inputDevices:[],selectedInputId:null,microphone:{level:.75,ageMs:0}}),
+      subscribe:()=>()=>undefined,selectMicrophone:async()=>undefined,close};
+    const opening=vi.fn(async(value:AbortSignal)=>{signal=value;entered.resolve();await gate.promise;return port;});
+    const f=await fixture(undefined,false,true,opening);
+    try {
+      await f.connect();await f.open();const pending=f.invoke("preflight",{action:"open"});await entered.promise;
+      f.changed("signedOut");expect(signal?.aborted).toBe(true);gate.resolve();
+      expect(await pending).toMatchObject({ok:false,result:null});
+      await vi.waitFor(()=>expect(close).toHaveBeenCalledOnce());
+      expect((await f.invoke("preflight",{action:"read"})).result).toBeNull();
+      expect(f.events.some(event=>event.kind==="encounter_closed")).toBe(true);expect(f.acquireRecorder).not.toHaveBeenCalled();
+    } finally {gate.resolve();await f.main.dispose();}
+  });
   it.each(["lost", "malformed", "rejected", "other-key"] as const)("does not combine an unsuccessful admission with later readiness (%s)", async outcome => {
     const f = await fixture(undefined, false, true);
     try {

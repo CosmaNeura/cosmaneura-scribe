@@ -22,6 +22,8 @@ export interface NativeProcessDriverOptions {
   /** Existing companion enablement; false/omitted never executes a helper. */
   readonly enabled?: boolean;
   readonly audioMode?: () => "microphone" | "meeting";
+  /** Main-owned hardware UID, freshly re-resolved by the native source. */
+  readonly microphoneUID?: () => string | null;
   readonly helperPath: string;
   readonly helperSha256: string;
   /** Observed native workstation state, supplied by the trusted host. */
@@ -38,7 +40,7 @@ type Child = ChildProcessByStdio<Writable, Readable, null>;
 type Sink = Parameters<DesktopPCMDriver["start"]>[1];
 const DEADLINE_MS = 15_000;
 const MAX_FRAMES = 1_382_400_000;
-const CODES: readonly DesktopPCMFailure[] = ["permission_required", "device_changed", "session_locked",
+const CODES: readonly DesktopPCMFailure[] = ["permission_required", "device_changed", "meeting_disconnected", "session_locked",
   "clock_discontinuity", "overflow", "failed"];
 
 /** Main process only. The packaged helper path/hash are release inputs, never an
@@ -137,6 +139,10 @@ class ProcessSession implements DesktopPCMDriverSession {
       if (this.authorization.expiresAtMilliseconds !== selection.captureAuthorizedUntil) throw failure();
     } else this.maximumFrames = Math.min(this.maximumFrames, duration * 16_000);
     const processFence = parseNativeProcessFence(this.options.getProcessFence?.());
+    const microphoneUID = this.options.microphoneUID?.() ?? null;
+    if (microphoneUID !== null && (typeof microphoneUID !== "string" || microphoneUID.length < 1
+      || Buffer.byteLength(microphoneUID, "utf8") > 511 || [...microphoneUID].some(character => character.codePointAt(0)! < 32 || character.codePointAt(0) === 127))) throw failure();
+    const microphone = microphoneUID === null ? {} : { microphoneUID };
     const child = launch(this.options.helperPath, this.authorization ? "--capture-v3" : "--capture-v2");
     this.child = child;
     child.once("spawn", () => { this.diagnose("audio_helper_spawned"); });
@@ -161,9 +167,9 @@ class ProcessSession implements DesktopPCMDriverSession {
     });
     if (this.authorization) {
       this.send({ type: "startRenewable", application: selection.application, processID: selection.processID,
-        windowID: selection.windowID, authorization: this.authorization, processFence });
+        windowID: selection.windowID, authorization: this.authorization, processFence, ...microphone });
     } else this.send({ type: "start", application: selection.application, processID: selection.processID,
-      windowID: selection.windowID, maximumDurationSeconds: duration, maximumOutputFrames: this.maximumFrames, processFence });
+      windowID: selection.windowID, maximumDurationSeconds: duration, maximumOutputFrames: this.maximumFrames, processFence, ...microphone });
     this.captureTimer = setTimeout(() => { this.fail("failed"); }, Math.max(0, selection.captureAuthorizedUntil - Date.now()));
     this.heartbeat = setInterval(() => {
       if (this.closingInput) return;
@@ -307,7 +313,7 @@ class ProcessSession implements DesktopPCMDriverSession {
     this.failed = true; this.readiness.reject(failure());
     // Begin cleanup before notifying the existing capture controller.
     void this.stop({ mode: "discard" }).catch(() => undefined);
-    this.diagnose(`audio_${code}`);
+    this.diagnose(code === "meeting_disconnected" ? "audio_device_changed" : `audio_${code}`);
     try { this.sink.onFailure(code); } catch { /* Cleanup remains owned here. */ }
   }
   private diagnose(event: Parameters<RuntimeDiagnostic>[0]): void {

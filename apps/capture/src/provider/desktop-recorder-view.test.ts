@@ -11,6 +11,19 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve };
 }
 describe("desktop recorder command view", () => {
+  it("accepts only opaque named-input choices with one truthful current selection", () => {
+    const inputId=crypto.randomUUID(), original=state(0);
+    const withInputs=(inputDevices:unknown,selectedInputId:unknown)=>({...original,snapshot:{...original.snapshot,inputDevices,selectedInputId,reconnecting:false}});
+    const devices=[{id:inputId,label:"USB microphone",kind:"external",current:true}];
+    expect(parseDesktopRecorderState(withInputs(devices,inputId)).snapshot.selectedInputId).toBe(inputId);
+    for (const invalid of [[{...devices[0],microphoneUID:"foreign-hardware"}], [{...devices[0],current:false}], [...devices,...devices]]) {
+      expect(()=>parseDesktopRecorderState(withInputs(invalid,inputId))).toThrow();
+    }
+    const command={kind:"audio_input",requestId:crypto.randomUUID(),recorderId,inputId};
+    expect(parseDesktopRecorderRequest(command)).toEqual(command);
+    expect(()=>parseDesktopRecorderRequest({...command,microphoneUID:"foreign-hardware"})).toThrow();
+    expect(()=>parseDesktopRecorderRequest({...command,kind:"start"})).toThrow();
+  });
   it("accepts bounded inline labels and opaque IDs, never renderer process/window metadata", () => {
     const id = crypto.randomUUID(), original = state(0);
     const choices = { state: "ready", selectedId: id, windows: [{ id, title: "Zoom — Synthetic visit" }] };

@@ -23,6 +23,7 @@ import { NativeProcessPCMDriver } from "./native-process-driver.js";
 import { nativePipeFixtureFence } from "./native-pipe-fixture.js";
 import { CoreCaptureClient } from "../../capture/src/provider/core-client";
 import { DesktopPreparationBff } from "./preparation-metadata.js";
+import type { NativeMicrophoneInputService } from "./native-microphone-inputs.js";
 
 const helperPath = process.env.SCRIBE_DESKTOP_PIPE_FIXTURE;
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
@@ -1784,6 +1785,162 @@ describe("start readiness overlap", () => {
 
 
 describe("deliberate desktop input selection", () => {
+  it.each(["pause", "finish"] as const)("joins a delayed microphone preference on %s without restarting capture", async action => {
+    const f = await fixture(true), saved = deferred(); let saving = false;
+    let sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
+    const start = { hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" };
+    f.nativeStart!.mockImplementation((_configuration, next) => {
+      sink = next;
+      return { ready: Promise.resolve(start), activate: () => undefined, stop: async ({ mode }) => mode === "discard" ? null : {
+        start, outputFrames: 1600, endHostTimeNanoseconds: "1100000000", microphoneTailNanoseconds: "0", systemTailNanoseconds: "0" } };
+    });
+    const first = crypto.randomUUID(), second = crypto.randomUUID(); let selected: string = first;
+    const inputs = { getSnapshot: () => ({ status: "ready", inputDevices: [{ id: first, label: "Built-in microphone", kind: "built_in", current: selected === first },
+      { id: second, label: "USB microphone", kind: "external", current: selected === second }], selectedInputId: selected, microphone: null }),
+      get selectedUID() { return selected === first ? "invented-built-in" : "invented-usb"; }, subscribe: () => () => undefined,
+      selectMicrophone: async (id: string) => { saving = true; await saved.promise; selected = id; } } as unknown as NativeMicrophoneInputService;
+    const recorder = await f.open({ audioMode: "microphone", audioInputs: inputs });
+    let stopped: Promise<void> | undefined;
+    try {
+      await recorder.startRecording(); await sink.onPcmPacket({ firstFrame: 0, pcmBytes: new Uint8Array(3200) });
+      const switching = recorder.selectAudioInput(second), cancelled = expect(switching).rejects.toThrow();
+      await vi.waitFor(() => expect(saving).toBe(true)); let settled = false;
+      stopped = (action === "pause" ? recorder.pauseRecording() : recorder.stopRecording()).then(() => { settled = true; });
+      await Promise.resolve(); await Promise.resolve();
+      expect(settled).toBe(false); expect(f.nativeStart).toHaveBeenCalledOnce(); expect(f.authority).toHaveBeenCalledOnce();
+      saved.resolve(); await cancelled; await stopped;
+      expect(f.nativeStart).toHaveBeenCalledOnce(); expect(f.authority).toHaveBeenCalledOnce();
+      expect(recorder.snapshot.recordedChunks).toBe(1); expect(f.indicator.current()?.visible).toBe(false);
+      if (action === "pause") {
+        expect(recorder.snapshot.state).toBe("paused"); expect(f.complete).not.toHaveBeenCalled();
+        expect((await f.options.queueStorage.list()).filter(row => row.state === "encrypted")).toHaveLength(1);
+      } else { expect(f.complete).toHaveBeenCalledOnce(); expect(recorder.snapshot.state).toBe("processing"); }
+    } finally { saved.resolve(); await stopped; await f.close(); }
+  });
+
+  it.each(["pause", "finish"] as const)("joins reconnect continuation metadata on %s and never starts its delayed renewal", async action => {
+    const f = await fixture(true), reply = deferred(); let entered = false;
+    let sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
+    f.nativeStart!.mockImplementation((_configuration, next) => {
+      sink = next;
+      return { ready: Promise.resolve({ hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" }),
+        activate: () => undefined, stop: async () => null };
+    });
+    const bff = f.options.createBff(f.abort.signal), renew = bff.renewLease.bind(bff);
+    vi.spyOn(bff, "renewLease").mockImplementation(async (...args) => { entered = true; await reply.promise; return renew(...args); });
+    const window = { application: "us.zoom.xos" as const, processID: 41, windowID: 42, title: "Synthetic call" }, id = crypto.randomUUID();
+    const recorder = await f.open({ autoReconnectMeeting: true, listMeetingWindows: async () => [window],
+      meetingWindowChoices: () => [{ id, value: window }], selectedMeetingWindowId: () => id });
+    let stopped: Promise<void> | undefined;
+    try {
+      await recorder.startRecording(); await sink.onPcmPacket({ firstFrame: 0, pcmBytes: new Uint8Array(3200) });
+      sink.onFailure("meeting_disconnected"); await vi.waitFor(() => expect(entered).toBe(true));
+      let settled = false; stopped = (action === "pause" ? recorder.pauseRecording() : recorder.stopRecording()).then(() => { settled = true; });
+      await Promise.resolve(); await Promise.resolve();
+      expect(settled).toBe(false); expect(f.nativeStart).toHaveBeenCalledOnce(); expect(f.authority).toHaveBeenCalledOnce();
+      reply.resolve(); await stopped; await vi.waitFor(() => expect(recorder.snapshot.reconnecting).toBe(false));
+      expect(f.nativeStart).toHaveBeenCalledOnce(); expect(f.authority).toHaveBeenCalledOnce();
+      expect(recorder.snapshot.recordedChunks).toBe(1); expect(f.indicator.current()?.visible).toBe(false);
+      if (action === "pause") { expect(recorder.snapshot.state).toBe("paused"); expect(f.complete).not.toHaveBeenCalled(); }
+      else { expect(recorder.snapshot.state).toBe("processing"); expect(f.complete).toHaveBeenCalledOnce(); }
+    } finally { reply.resolve(); await stopped; await f.close(); }
+  });
+
+  it.each(["pause", "finish"] as const)("cancels a delayed fresh reconnect authority on %s before native Start", async action => {
+    const f = await fixture(true), reply = deferred(); let entered = false;
+    let sink!: Parameters<NativeProcessPCMDriver["start"]>[1], authorizationSignal: AbortSignal | undefined;
+    f.nativeStart!.mockImplementation((_configuration, next) => {
+      sink = next;
+      return { ready: Promise.resolve({ hostTimeNanoseconds: "1000000000", microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" }),
+        activate: () => undefined, stop: async () => null };
+    });
+    const authority = vi.fn(async (_grant, signal: AbortSignal) => {
+      if (authority.mock.calls.length === 2) { authorizationSignal = signal; entered = true; await reply.promise; }
+      return f.authority();
+    });
+    const window = { application: "us.zoom.xos" as const, processID: 41, windowID: 42, title: "Synthetic call" }, id = crypto.randomUUID();
+    const recorder = await f.open({ autoReconnectMeeting: true, listMeetingWindows: async () => [window],
+      meetingWindowChoices: () => [{ id, value: window }], selectedMeetingWindowId: () => id, authority: { authorizeStart: authority } });
+    let stopped: Promise<void> | undefined;
+    try {
+      await recorder.startRecording(); await sink.onPcmPacket({ firstFrame: 0, pcmBytes: new Uint8Array(3200) });
+      sink.onFailure("meeting_disconnected"); await vi.waitFor(() => expect(entered).toBe(true));
+      stopped = action === "pause" ? recorder.pauseRecording() : recorder.stopRecording();
+      expect(authorizationSignal?.aborted).toBe(true); expect(f.nativeStart).toHaveBeenCalledOnce();
+      reply.resolve(); await stopped; await vi.waitFor(() => expect(recorder.snapshot.reconnecting).toBe(false));
+      expect(f.nativeStart).toHaveBeenCalledOnce(); expect(authority).toHaveBeenCalledTimes(2);
+      expect(recorder.snapshot.recordedChunks).toBe(1); expect(f.indicator.current()?.visible).toBe(false);
+      if (action === "pause") { expect(recorder.snapshot.state).toBe("paused"); expect(f.complete).not.toHaveBeenCalled(); }
+      else { expect(recorder.snapshot.state).toBe("processing"); expect(f.complete).toHaveBeenCalledOnce(); }
+    } finally { reply.resolve(); await stopped; await f.close(); }
+  });
+
+  it("reuses only freshly resolved preparation window IDs and drops a substituted process", async () => {
+    const f = await fixture(true); interruptedDriver(f);
+    const selected = { application: "us.zoom.xos" as const, processID: 42, windowID: 74, title: "Synthetic call" };
+    let values = [selected];
+    const id = crypto.randomUUID(), recorder = await f.open({ listMeetingWindows: async () => values,
+      meetingWindowChoices: () => [{id,value:selected}], selectedMeetingWindowId: () => id });
+    try {
+      expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBe(id);
+      expect(f.nativeStart).not.toHaveBeenCalled();
+      values = [{...selected,processID:43}]; await recorder.refreshMeetingWindows();
+      expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
+      expect(recorder.snapshot.desktop?.meetingWindows?.windows[0]?.id).not.toBe(id);
+      await expect(recorder.startRecording()).rejects.toThrow(); expect(f.authority).not.toHaveBeenCalled();
+    } finally { await f.close(); }
+  });
+  it("drains a live microphone choice before obtaining fresh continuation authority and retains earlier encrypted chunks", async () => {
+    const f = await fixture(true);
+    let sink!: Parameters<NativeProcessPCMDriver["start"]>[1], frames = 0;
+    const start = {hostTimeNanoseconds:"1000000000",microphonePrerollNanoseconds:"0",systemPrerollNanoseconds:"0"};
+    f.nativeStart!.mockImplementation((_configuration,next) => {
+      sink=next; frames=0;
+      return {ready:Promise.resolve(start),activate:()=>undefined,stop:async ({mode})=>mode==="discard"?null:{
+        start,outputFrames:frames,endHostTimeNanoseconds:String(1_000_000_000n+BigInt(frames)*62_500n),microphoneTailNanoseconds:"0",systemTailNanoseconds:"0"}};
+    });
+    const first=crypto.randomUUID(), second=crypto.randomUUID(); let selected: string=first;
+    const select = vi.fn(async (id:string) => {
+      expect(recorder.snapshot.desktop?.phase).toBe("interrupted");
+      expect(f.indicator.current()?.visible).toBe(false); expect(f.nativeStart).toHaveBeenCalledOnce(); selected=id;
+    });
+    const inputs = {getSnapshot:()=>({status:"ready",inputDevices:[{id:first,label:"Built-in microphone",kind:"built_in",current:selected===first},
+      {id:second,label:"USB microphone",kind:"external",current:selected===second}],selectedInputId:selected,microphone:null}),
+      get selectedUID(){return selected===first?"invented-built-in":"invented-usb";},
+      subscribe:()=>()=>undefined,selectMicrophone:select} as unknown as NativeMicrophoneInputService;
+    const recorder=await f.open({audioMode:"microphone",audioInputs:inputs});
+    try {
+      await recorder.startRecording(); frames=1600; await sink.onPcmPacket({firstFrame:0,pcmBytes:new Uint8Array(3200)});
+      await recorder.selectAudioInput(second);
+      expect(select).toHaveBeenCalledWith(second); expect(f.nativeStart).toHaveBeenCalledTimes(2); expect(f.authority).toHaveBeenCalledTimes(2);
+      expect(recorder.snapshot).toMatchObject({state:"recording",recordedChunks:1,selectedInputId:second,desktop:{coverage:"incomplete"}});
+      expect((await f.options.queueStorage.list()).filter(row=>row.state==="encrypted")).toHaveLength(1);
+      expect(f.complete).not.toHaveBeenCalled();
+      await expect(recorder.selectAudioInput(crypto.randomUUID())).rejects.toThrow();
+      expect(f.nativeStart).toHaveBeenCalledTimes(2);
+    } finally { await f.close(); }
+  });
+  it("reconnects a failed meeting stream only after physical stop and retirement, using the original native identity", async () => {
+    const f=await fixture(true);
+    let sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
+    const stopped=deferred(), retirement=deferred(), entered=deferred(); let starts=0;
+    f.nativeStart!.mockImplementation((_configuration,next)=>{sink=next; starts++; return {ready:Promise.resolve({hostTimeNanoseconds:"1000000000",
+      microphonePrerollNanoseconds:"0",systemPrerollNanoseconds:"0"}),activate:()=>undefined,stop:async()=>{if(starts===1)await stopped.promise;return null;}};});
+    const window={application:"us.zoom.xos" as const,processID:41,windowID:42,title:"Synthetic call"}, id=crypto.randomUUID();
+    const retired=vi.fn(async()=>{if(starts===1){entered.resolve();await retirement.promise;}});
+    const recorder=await f.open({autoReconnectMeeting:true,listMeetingWindows:async()=>[window],
+      meetingWindowChoices:()=>[{id,value:window}],selectedMeetingWindowId:()=>id,retireSource:retired});
+    try {
+      await recorder.startRecording(); await sink.onPcmPacket({firstFrame:0,pcmBytes:new Uint8Array(3200)}); sink.onFailure("meeting_disconnected");
+      expect(recorder.snapshot.reconnecting).toBe(true); expect(f.nativeStart).toHaveBeenCalledOnce();
+      stopped.resolve(); await entered.promise;
+      expect(f.nativeStart).toHaveBeenCalledOnce(); expect(f.authority).toHaveBeenCalledOnce();
+      retirement.resolve();
+      await vi.waitFor(()=>expect(recorder.snapshot).toMatchObject({state:"recording",reconnecting:false,recordedChunks:1,desktop:{coverage:"incomplete"}}));
+      expect(f.nativeStart).toHaveBeenCalledTimes(2); expect(f.authority).toHaveBeenCalledTimes(2);
+      expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.complete).not.toHaveBeenCalled();
+    } finally { stopped.resolve();retirement.resolve();await f.close(); }
+  });
   it("uses only an explicit current inline choice, refresh invalidates it, and selection never captures", async () => {
     const f = await fixture(true); interruptedDriver(f);
     const list = vi.fn(async () => [{ application: "us.zoom.xos" as const, processID: 42, windowID: 74, title: "Zoom — Synthetic visit" }]);

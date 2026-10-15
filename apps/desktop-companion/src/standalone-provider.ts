@@ -12,6 +12,9 @@ import { openDeviceCustody, type DeviceProtection } from "./device-custody.js";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 import { DurableDesktopRecordStore } from "./durable-record-store.js";
 import { desktopJournalRecords } from "./durable-provider-records.js";
+import { NativeMicrophoneInputService } from "./native-microphone-inputs.js";
+import { DesktopAudioPreflight } from "./desktop-audio-preflight.js";
+import { microphonePreferenceScope, openMicrophonePreferences } from "./microphone-preferences.js";
 
 interface PackagedRuntime {
   readonly packageDirectory: string;
@@ -87,13 +90,38 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
           } });
         diagnostics("backend_ready");
         let presentation: NativeProviderPresentation | undefined;
+        let preferences: Awaited<ReturnType<typeof openMicrophonePreferences>> | undefined;
+        let preferencesOpening: Promise<NonNullable<typeof preferences>> | undefined;
+        let preferenceScope: string | undefined;
+        const currentPreferenceScope = (): string => {
+          if (linked.aborted || backend.signal.aborted || !native.isReady() || !backend.account) throw unavailable();
+          const scope=microphonePreferenceScope(backend.account);
+          if (preferenceScope && preferenceScope !== scope) throw unavailable();
+          return scope;
+        };
+        const preference = (): Promise<NonNullable<typeof preferences>> => {
+          const scope=currentPreferenceScope();
+          if (preferences) return Promise.resolve(preferences);
+          preferenceScope=scope;
+          return preferencesOpening ??= openMicrophonePreferences(join(runtime.userDataDirectory,"provider-audio-preferences-v1"),
+            runtime.protection,backend.account!,AbortSignal.any([linked,backend.signal])).then(async value => {
+              try { if (currentPreferenceScope() !== scope) throw unavailable();preferences=value;return value; }
+              catch(error){await value.close();throw error;}
+            }).catch(error=>{preferencesOpening=undefined;throw error;});
+        };
         try {
           presentation = await NativeProviderPresentation.open({ enabled: true, ...presentationOptions,
             inlineMeetingSelection: true,
             isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady(),
             ...(runtime.recordingWindow ? { primaryWindowId: () => runtime.recordingWindow!.primaryWindowId() } : {}) });
           diagnostics("presentation_ready");
+          const inputs = new NativeMicrophoneInputService({ ...audioOptions,
+            loadSelectedUID: async () => { const store=await preference();currentPreferenceScope();return store.load(); },
+            saveSelectedUID: async uid => { const store=await preference();currentPreferenceScope();await store.save(uid);currentPreferenceScope(); },
+            isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady() });
+          const audioPreflight = new DesktopAudioPreflight(inputs, presentation.listMeetingWindows);
           const connection = createDesktopProviderConnection(backend, { enabled: true,
+            audioPreflight,
             directory: join(runtime.userDataDirectory, "provider-records-v1"),
             openCustody: (scope, operation) => openDeviceCustody(join(runtime.userDataDirectory, "provider-records-v1"), runtime.protection, scope, operation),
             indicator: presentation, presentation, selectWindow: presentation.selectWindow,
@@ -101,12 +129,13 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
             listMeetingWindows: presentation.listMeetingWindows,
             showWindowChooser: presentation.showWindowChooser,
             ...(runtime.recordingWindow ? { recordingWindow: runtime.recordingWindow } : {}),
-            native: { ...audioOptions, diagnostics, isSessionActive: () => !linked.aborted && native.isReady() },
+            native: { ...audioOptions, diagnostics, microphoneUID: () => inputs.selectedUID,
+              isSessionActive: () => !linked.aborted && native.isReady() },
           }, linked);
           const owned = { workspace: connection.workspace,
-            dispose: async () => { await connection.dispose(); connections.delete(owned); } };
+            dispose: async () => { await connection.dispose(); await preferencesOpening?.catch(()=>undefined);await preferences?.close();connections.delete(owned); } };
           connections.add(owned); diagnostics("connect_ready"); return owned;
-        } catch { await presentation?.dispose(); await backend.dispose(); throw unavailable(); }
+        } catch { await presentation?.dispose(); await backend.dispose(); await preferencesOpening?.catch(()=>undefined);await preferences?.close();throw unavailable(); }
       })();
       opening.add(run); void run.finally(() => opening.delete(run)).catch(() => diagnostics("connect_failed")); return run;
     },

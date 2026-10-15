@@ -13,10 +13,16 @@ public struct MeetingAudioSelection: Sendable, Equatable {
     public let application: Application
     public let processID: Int32
     public let windowID: UInt32
+    public let microphoneUID: String?
 
-    public init(application: Application, processID: Int32, windowID: UInt32) throws {
+    public init(application: Application, processID: Int32, windowID: UInt32, microphoneUID: String? = nil) throws {
         guard application == .microphone ? processID == 0 && windowID == 0 : processID > 0 && windowID > 0 else { throw DesktopAudioFailure.selectionChanged }
+        if let microphoneUID {
+            guard !microphoneUID.isEmpty, microphoneUID.utf8.count <= 511,
+                  !microphoneUID.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { throw DesktopAudioFailure.selectionChanged }
+        }
         self.application = application; self.processID = processID; self.windowID = windowID
+        self.microphoneUID = microphoneUID
     }
 }
 
@@ -127,6 +133,7 @@ public actor MacMeetingAudio {
                 }
             }
             try stream?.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
+            try MacMicrophoneInputs.select(selection.microphoneUID ?? MacMicrophoneInputs.defaultUID(), engine: session.engine)
             let format = session.engine.inputNode.outputFormat(forBus: 0)
             guard format.commonFormat == .pcmFormatFloat32, (1...2).contains(format.channelCount),
                   (16_000...96_000).contains(format.sampleRate) else { throw DesktopAudioFailure.invalidAudio }
@@ -279,7 +286,7 @@ final class AudioOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked 
 
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
         lock.withLock { didStop = true }
-        delivery.fail(.inputChanged)
+        delivery.fail(.meetingDisconnected)
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {

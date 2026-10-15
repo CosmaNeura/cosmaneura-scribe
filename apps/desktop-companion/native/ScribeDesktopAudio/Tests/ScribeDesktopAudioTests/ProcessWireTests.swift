@@ -2,6 +2,23 @@ import Foundation
 import Testing
 @testable import ScribeDesktopAudio
 
+@Test func microphoneCheckCommandsCannotCarryCaptureAuthorityOrUnboundedDeviceIdentities() throws {
+    func command(_ value: [String: Any]) throws -> Data {
+        var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: value)); return data
+    }
+    let valid: [String: Any] = ["type": "selectMicrophone", "request": 1, "microphoneUID": "invented-physical-device"]
+    guard case .selectMicrophone(let request, let uid) = try ProcessCommand.parse(command(valid)) else {
+        Issue.record("Missing microphone-check command"); return
+    }
+    #expect(request == 1 && uid == "invented-physical-device")
+    for invalid: Any in [true, "", String(repeating: "a", count: 512), "device\nother"] {
+        var changed = valid; changed["microphoneUID"] = invalid
+        #expect(throws: DesktopAudioFailure.self) { try ProcessCommand.parse(command(changed)) }
+    }
+    var extra = valid; extra["authorization"] = "disallowed"
+    #expect(throws: DesktopAudioFailure.self) { try ProcessCommand.parse(command(extra)) }
+}
+
 @Test func renewableCommandsHaveExactBoundedMetadata() throws {
     func command(_ values: [String: Any]) throws -> Data {
         var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: values)); return data

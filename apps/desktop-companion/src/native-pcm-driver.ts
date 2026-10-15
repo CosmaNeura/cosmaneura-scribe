@@ -22,7 +22,7 @@ export interface DesktopPCMPacket {
   /** One complete owned buffer, <=4096 frames of mono signed PCM16 little-endian. */
   readonly pcmBytes: Uint8Array<ArrayBuffer>;
 }
-export type DesktopPCMFailure = "permission_required" | "device_changed" | "session_locked"
+export type DesktopPCMFailure = "permission_required" | "device_changed" | "meeting_disconnected" | "session_locked"
   | "clock_discontinuity" | "overflow" | "failed";
 export interface DesktopPCMDriverSession {
   /** Both native sources are running and their common recording start is known.

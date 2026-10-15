@@ -102,6 +102,7 @@ private actor AudioProcessHost {
         lastInput = .now
         switch command {
         case .heartbeat: break
+        case .selectMicrophone: fail(.invalidAudio)
         case .startRenewable(let selection, let authorization, let fence):
             guard allowsRenewal, !started, !stopped else { fail(.invalidAudio); return }
             started = true
@@ -246,6 +247,7 @@ private actor AudioProcessHost {
         switch reason {
         case .permissionRequired: code = "permission_required"
         case .inputChanged, .selectionChanged: code = "device_changed"
+        case .meetingDisconnected: code = "meeting_disconnected"
         case .clockDiscontinuity: code = "clock_discontinuity"
         case .bufferOverflow: code = "overflow"
         default: code = "failed"

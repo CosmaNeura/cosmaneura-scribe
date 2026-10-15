@@ -18,8 +18,8 @@ export class DesktopInputMeter extends LitElement {
     :host { display: block; min-width: 0; }
     .inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .input { display: grid; gap: 3px; min-width: 0; }
-    strong { font-size: 12px; color: #12372d; }
-    span, p { font-size: 11px; color: #536860; }
+    strong { font-size: 16px; color: #12372d; }
+    span, p { font-size: 15px; color: #536860; }
     meter { width: 100%; height: 12px; accent-color: #167052; }
     p { margin: 6px 0 0; line-height: 1.4; }
   `;

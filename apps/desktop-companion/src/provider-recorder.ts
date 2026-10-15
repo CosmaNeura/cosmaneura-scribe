@@ -17,6 +17,7 @@ import { DesktopPcmCaptureSource } from "./pcm-capture-source.js";
 import type { DesktopPCMCoverage } from "./native-pcm-driver.js";
 import type { NativeMeetingWindow } from "./native-provider-presentation.js";
 import { NativeProcessPCMDriver, type AuthorizedDesktopSelection, type NativeProcessDriverOptions } from "./native-process-driver.js";
+import type { NativeMicrophoneInputService } from "./native-microphone-inputs.js";
 
 /** Saved server receipts, supplied to the backend for verification, not authority. */
 export interface PreparedDesktopCapture {
@@ -64,6 +65,11 @@ export interface DesktopProviderRecorderOptions {
   /** Native picker, deliberate choice only; never a renderer PID or first window. */
   readonly selectWindow: (signal: AbortSignal) => Promise<Omit<AuthorizedDesktopSelection, "captureAuthorizedUntil">>;
   readonly listMeetingWindows?: (signal: AbortSignal) => Promise<readonly NativeMeetingWindow[]>;
+  /** Reuses only host-issued IDs for freshly revalidated native identities. */
+  readonly meetingWindowChoices?: () => readonly { readonly id: string; readonly value: NativeMeetingWindow }[];
+  readonly selectedMeetingWindowId?: () => string | null;
+  readonly audioInputs?: NativeMicrophoneInputService;
+  readonly autoReconnectMeeting?: true;
   /** Reveal only the current native chooser; never select or start another request. */
   readonly showWindowChooser?: () => Promise<void>;
   /** Retire backend ownership only after the physical native stop barrier. */
@@ -107,7 +113,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private choosingWindow = false;
   private startFailed = false;
   private operation: Promise<void> | null = null;
-  private action: "prepare" | "start" | "other" | null = null;
+  private action: "prepare" | "start" | "resume" | "other" | null = null;
   private stopping: Promise<void> | null = null;
   private stopIntent: { upload: boolean } | null = null;
   private stoppingNative = false;
@@ -122,6 +128,13 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private capturedAudioFrames: number | null = null;
   private audioMode: "microphone" | "meeting";
   private inputLevels: Partial<Record<"microphone" | "meetingAudio", { level: number; receivedAt: number }>> = {};
+  private lastSelectedWindow: NativeMeetingWindow | null = null;
+  private callReconnectRequested = false;
+  private reconnecting = false;
+  private reconnectGeneration = 0;
+  private continuationGeneration = 0;
+  private switchingInput = false;
+  private inputSwitch: Promise<void> | null = null;
 
   private constructor(private readonly options: DesktopProviderRecorderOptions) {
     if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
@@ -130,6 +143,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.audioMode = options.audioMode ?? "meeting";
     this.signal = AbortSignal.any([options.signal, this.abort.signal]);
     const driver = new NativeProcessPCMDriver({ ...options.native, enabled: true, audioMode: () => this.audioMode,
+      ...(options.audioInputs ? { microphoneUID: () => options.audioInputs!.selectedUID } : {}),
       authorizeSelectedWindow: async () => {
         this.requireStart();
         const selection = this.selectedWindow;
@@ -152,6 +166,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       const previous = Math.floor((this.capturedAudioFrames ?? 0) / 16_000);
       this.capturedAudioFrames = this.capturePriorAudioFrames + frames;
       if (Math.floor(this.capturedAudioFrames / 16_000) !== previous) this.publish();
+    }, code => {
+      this.callReconnectRequested = code === "meeting_disconnected" && options.autoReconnectMeeting === true
+        && this.audioMode === "meeting" && this.lastSelectedWindow !== null;
     });
     const bff = options.createBff(this.signal);
     this.createFlow = () => new CaptureFlowController({ bff, flowStore: options.flowStore, createSessionKey: options.createSessionKey,
@@ -210,6 +227,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.unsubscribeController = this.controller.subscribe(() => this.publish());
     this.unsubscribeFlow = this.subscribeFlow();
     this.unsubscribe.push(() => this.unsubscribeController(), () => this.unsubscribeFlow());
+    if (options.audioInputs) this.unsubscribe.push(options.audioInputs.subscribe(() => this.publish()));
     options.signal.addEventListener("abort", this.onRevocation, { once: true });
   }
 
@@ -324,7 +342,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : this.stopping && (this.stopConfirmationPending || flow.state === "paused") ? "stopping"
       : this.stopping && !this.captureMayBeActive ? "stopped"
       : this.reopenRequired && flow.state === "error" ? "stopped"
-      : this.action === "start" ? "starting" : control.state === "recording" && flow.state === "recording" ? "recording"
+      : this.action === "start" || this.action === "resume" ? "starting" : control.state === "recording" && flow.state === "recording" ? "recording"
       : control.state === "permission_required" || this.unmountedAvailability === "permission_required" ? "permission_required"
       : flow.state === "ready" && (control.state === "ready" || this.unmountedAvailability === "ready") ? "ready"
       : ["paused", "error", "ready", "recording"].includes(flow.state) && !this.closed ? "interrupted" : "stopped";
@@ -340,6 +358,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : phase === "ready" && this.startFailed && !["capture_storage_low", "capture_storage_unavailable"].includes(flow.statusCode) ? "capture_start_failed"
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
+      ...(this.options.audioInputs ? { inputDevices: this.options.audioInputs.getSnapshot().inputDevices,
+        selectedInputId: this.options.audioInputs.getSnapshot().selectedInputId } : {}),
+      ...(this.options.autoReconnectMeeting ? { reconnecting: this.reconnecting } : {}),
       elapsedSeconds: this.capturedAudioFrames === null ? flow.elapsedSeconds : Math.floor(this.capturedAudioFrames / 16_000),
       desktop: { phase, audioMode: this.audioMode,
       ...(this.options.listMeetingWindows ? { meetingWindows: { state: this.meetingWindowsUnavailable ? "unavailable" as const : "ready" as const,
@@ -362,7 +383,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   }
   async selectDesktopAudio(mode: "microphone" | "meeting"): Promise<void> {
     this.requireOpen();
-    if (!["microphone", "meeting"].includes(mode) || this.initializing || this.operation || this.stopping
+    if (!["microphone", "meeting"].includes(mode) || this.initializing || this.operation || this.stopping || this.switchingInput || this.reconnecting
       || this.captureMayBeActive || this.coverage !== null || this.flow.snapshot.recordedChunks > 0) throw unavailable();
     if (mode === this.audioMode) return;
     await this.run("other", async () => {
@@ -372,6 +393,30 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     });
     if (mode === "meeting" && this.options.listMeetingWindows) await this.refreshMeetingWindows();
   }
+  async selectAudioInput(id: string): Promise<void> {
+    this.requireOpen();
+    const inputs = this.options.audioInputs;
+    if (!inputs || !inputs.getSnapshot().inputDevices.some(input => input.id === id)
+      || this.initializing || this.operation || this.stopping || this.reconnecting || this.switchingInput) throw unavailable();
+    if (id === inputs.getSnapshot().selectedInputId) return;
+    const recording = this.flow.snapshot.state === "recording";
+    if (!recording && !["ready", "paused"].includes(this.flow.snapshot.state)) throw unavailable();
+    // Hardware replacement starts a new disclosed interval. Drain the current
+    // source and retire its lease before changing the native input or authority.
+    this.switchingInput = true;
+    const generation = this.continuationGeneration;
+    const work = (async () => {
+      // This internal drain preserves the choice's ticket. A deliberate Pause
+      // or Finish cancels that ticket and joins the pending hardware save.
+      if (recording) await this.stopCapture(false, false);
+      this.requireContinuation(generation);
+      if (recording && this.flow.snapshot.state !== "paused") throw unavailable();
+      await inputs.selectMicrophone(id); this.requireContinuation(generation);
+      if (recording) await this.resumeCapture(generation);
+    })().finally(() => { this.inputSwitch = null; this.switchingInput = false; this.publish(); });
+    this.inputSwitch = work;
+    return work;
+  }
   refreshMeetingWindows(): Promise<void> {
     this.requireOpen();
     if (!this.options.listMeetingWindows || this.audioMode !== "meeting" || this.captureMayBeActive || this.stopping
@@ -379,11 +424,15 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     return this.run("other", () => this.loadMeetingWindows());
   }
   private async loadMeetingWindows(): Promise<void> {
+    const preferred = this.options.meetingWindowChoices ? this.meetingWindowId ?? this.options.selectedMeetingWindowId?.() ?? null : null;
+    const previous = this.options.meetingWindowChoices ? [...this.meetingWindows, ...this.options.meetingWindowChoices()] : [];
     this.meetingWindowId = null; this.meetingWindows = []; this.meetingWindowsUnavailable = false; this.publish();
     try {
       const rows = await this.options.listMeetingWindows!(this.signal); this.requireOpen();
       if (rows.length > 64) throw unavailable();
-      this.meetingWindows = rows.map(value => ({ id: crypto.randomUUID(), value: Object.freeze({ ...value }) }));
+      this.meetingWindows = rows.map(value => ({ id: previous.find(row => sameMeetingWindow(row.value, value))?.id ?? crypto.randomUUID(),
+        value: Object.freeze({ ...value }) }));
+      this.meetingWindowId = this.meetingWindows.some(row => row.id === preferred) ? preferred : null;
     } catch { this.requireOpen(); this.meetingWindowsUnavailable = true; }
   }
   selectMeetingWindow(id: string): Promise<void> {
@@ -396,63 +445,67 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   }
   startRecording(): Promise<void> {
     this.requireOpen();
-    if (this.snapshot.desktop?.phase !== "ready" || this.stopping) return Promise.reject(unavailable());
+    if (this.snapshot.desktop?.phase !== "ready" || this.operation || this.stopping || this.switchingInput || this.reconnecting) return Promise.reject(unavailable());
+    const generation = this.continuationGeneration;
     this.startFailed = false;
     this.attempt = new AbortController();
     const attempt = this.attempt;
-    return this.run("start", async () => {
-      // Human window choice precedes the fresh server decision and the native
-      // helper's bounded startup. No grant or active indicator is spent waiting
-      // for a person to choose. The native source still revalidates the window.
-      try {
-        await this.flow.checkStorageCapacity(); this.requireOpen();
-        this.choosingWindow = this.audioMode === "meeting" && !this.options.listMeetingWindows; this.publish();
-        let selected: Awaited<ReturnType<DesktopProviderRecorderOptions["selectWindow"]>>;
-        try { selected = this.audioMode === "microphone" ? { application: "microphone", processID: 0, windowID: 0 }
-          : this.options.listMeetingWindows ? this.selectedInlineWindow()
-          : await chooseWindow(this.options.selectWindow, attempt.signal); }
-        finally { this.choosingWindow = false; this.publish(); }
-        this.requireOpen();
-        if (attempt.signal.aborted || this.attempt !== attempt) throw unavailable();
-        this.selectedWindow = Object.freeze({ application: selected.application,
-          processID: selected.processID, windowID: selected.windowID });
-        if (this.unmountedAvailability !== null) {
-          const prepared = await this.preparedContext();
-          // Start a new read-only OS probe alongside this attempt's server
-          // preparation. Stop waits for both so a returned native owner cannot
-          // be lost. The source performs another fresh probe before capture.
-          const [authorization, probe] = await Promise.allSettled([
-            this.options.authorizeMount(prepared, this.signal), this.probeForInitialization(),
-          ]);
-          if (authorization.status === "rejected") throw authorization.reason;
-          const mount = authorization.value; this.requireOpen();
-          if (attempt.signal.aborted || this.attempt !== attempt) throw unavailable();
-          const checked = await this.preparedContext();
-          if (Object.keys(prepared).some(key => prepared[key as keyof PreparedDesktopCapture] !== checked[key as keyof PreparedDesktopCapture])) throw unavailable();
-          const grant = parseBackendCaptureGrant(mount.grant);
-          if (mount.status !== "created" || grant.captureSessionId !== this.options.sessionId) throw unavailable();
-          this.unmountedAvailability = null;
-          // One use, tied to this main-owned attempt. A rejected probe reaches
-          // the controller's existing failed-initialization/retirement path.
-          this.initializationProbe = { attempt, result: probe };
-          await this.controller.initializeFromBackend(grant, crypto.randomUUID());
-          this.requireOpen();
-          if (attempt.signal.aborted || this.attempt !== attempt) throw unavailable();
-          if (this.controller.snapshot().state === "permission_required") {
-            // No start authority has been requested. Release this unused
-            // preparation before allowing a later choice to acquire a fresh one.
-            this.unmountedAvailability = "permission_required";
-            this.preparationResetPending = true;
-            await this.resetUnstartedPreparation();
-            return;
-          }
+    return this.run("start", () => this.startAttempt(attempt, generation));
+  }
+  private async startAttempt(attempt: AbortController, generation: number): Promise<void> {
+    // Human window choice precedes the fresh server decision and the native
+    // helper's bounded startup. No grant or active indicator is spent waiting
+    // for a person to choose. The native source still revalidates the window.
+    try {
+      this.requireAttempt(attempt, generation);
+      await this.flow.checkStorageCapacity(); this.requireAttempt(attempt, generation);
+      this.choosingWindow = this.audioMode === "meeting" && !this.options.listMeetingWindows; this.publish();
+      let selected: Awaited<ReturnType<DesktopProviderRecorderOptions["selectWindow"]>>;
+      try { selected = this.audioMode === "microphone" ? { application: "microphone", processID: 0, windowID: 0 }
+        : this.options.listMeetingWindows ? this.selectedInlineWindow()
+        : await chooseWindow(this.options.selectWindow, attempt.signal); }
+      finally { this.choosingWindow = false; this.publish(); }
+      this.requireAttempt(attempt, generation);
+      this.selectedWindow = Object.freeze({ application: selected.application,
+        processID: selected.processID, windowID: selected.windowID });
+      this.lastSelectedWindow = selected.application === "microphone" ? null
+        : Object.freeze({ application: selected.application, processID: selected.processID, windowID: selected.windowID,
+          title: "title" in selected ? selected.title as string : "" });
+      if (this.unmountedAvailability !== null) {
+        const prepared = await this.preparedContext(); this.requireAttempt(attempt, generation);
+        // Start a new read-only OS probe alongside this attempt's server
+        // preparation. Stop waits for both so a returned native owner cannot
+        // be lost. The source performs another fresh probe before capture.
+        const [authorization, probe] = await Promise.allSettled([
+          this.options.authorizeMount(prepared, this.signal), this.probeForInitialization(),
+        ]);
+        if (authorization.status === "rejected") throw authorization.reason;
+        const mount = authorization.value; this.requireAttempt(attempt, generation);
+        const checked = await this.preparedContext(); this.requireAttempt(attempt, generation);
+        if (Object.keys(prepared).some(key => prepared[key as keyof PreparedDesktopCapture] !== checked[key as keyof PreparedDesktopCapture])) throw unavailable();
+        const grant = parseBackendCaptureGrant(mount.grant);
+        if (mount.status !== "created" || grant.captureSessionId !== this.options.sessionId) throw unavailable();
+        this.unmountedAvailability = null;
+        // One use, tied to this main-owned attempt. A rejected probe reaches
+        // the controller's existing failed-initialization/retirement path.
+        this.initializationProbe = { attempt, result: probe };
+        await this.controller.initializeFromBackend(grant, crypto.randomUUID());
+        this.requireAttempt(attempt, generation);
+        if (this.controller.snapshot().state === "permission_required") {
+          // No start authority has been requested. Release this unused
+          // preparation before allowing a later choice to acquire a fresh one.
+          this.unmountedAvailability = "permission_required";
+          this.preparationResetPending = true;
+          await this.resetUnstartedPreparation();
+          return;
         }
-        await this.controller.handleRendererCommand({ schemaVersion: 1, kind: "start", requestId: crypto.randomUUID() });
-      } catch (error) {
-        this.startFailed = !attempt.signal.aborted;
-        throw error;
-      } finally { this.selectedWindow = null; this.initializationProbe = null; }
-    });
+      }
+      this.requireAttempt(attempt, generation);
+      await this.controller.handleRendererCommand({ schemaVersion: 1, kind: "start", requestId: crypto.randomUUID() });
+    } catch (error) {
+      this.startFailed = !attempt.signal.aborted;
+      throw error;
+    } finally { this.selectedWindow = null; this.initializationProbe = null; }
   }
   private selectedInlineWindow(): NativeMeetingWindow {
     const row = this.meetingWindows.find(row => row.id === this.meetingWindowId);
@@ -461,9 +514,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     // revalidates this exact app/PID/window after fresh server Start authority.
     return row.value;
   }
-  stopRecording(): Promise<void> { return this.stopCapture(true); }
-  pauseRecording(): Promise<void> { return this.stopCapture(false); }
-  private stopCapture(upload: boolean): Promise<void> {
+  stopRecording(): Promise<void> { this.cancelContinuation(); return this.stopCapture(true); }
+  pauseRecording(): Promise<void> { this.cancelContinuation(); return this.stopCapture(false); }
+  private stopCapture(upload: boolean, joinInput = true): Promise<void> {
     this.requireOpen();
     if (this.stopping) {
       // Finish may arrive while an interruption is already settling. Preserve
@@ -471,14 +524,16 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       if (upload && this.stopIntent) this.stopIntent.upload = true;
       return this.stopping;
     }
-    if (this.operation && this.action !== "start") return Promise.reject(unavailable());
+    if (this.operation && this.action !== "start" && this.action !== "resume") return Promise.reject(unavailable());
     const intent = this.stopIntent = { upload };
     this.stoppingNative = true;
-    if (this.action === "start") this.attempt?.abort();
+    if (this.action === "start" || this.action === "resume") this.attempt?.abort();
     const prior = this.operation;
+    const input = joinInput ? this.inputSwitch : null;
     this.stopping = (async () => {
       try {
-        await prior?.catch(() => undefined); this.requireOpen();
+        await prior?.catch(() => undefined);
+        await input?.catch(() => undefined); this.requireOpen();
         this.unmountedAvailability = null;
         if (this.controller.snapshot().state === "recording") {
           await this.controller.handleRendererCommand({ schemaVersion: 1, kind: "stop", requestId: crypto.randomUUID() });
@@ -517,37 +572,54 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.publish(); return this.stopping;
   }
   resumeRecording(): Promise<void> {
-    if (this.flow.snapshot.state !== "paused" || this.stopConfirmationPending) return Promise.reject(unavailable());
-    return this.run("other", async () => {
-      // The preceding helper and server owner must both be retired before any renewal.
-      await this.controller.shutdownFromMain(crypto.randomUUID()); this.requireOpen();
-      if (this.controller.snapshot().state !== "stopped" || this.captureMayBeActive) throw unavailable();
-      await this.flow.pauseRecording();
-      this.stopConfirmationPending = true; this.publish();
-      await this.options.retireSource(); this.requireOpen();
-      this.stopConfirmationPending = false;
-      // Prior native and server ownership is retired. This read-only OS probe
-      // is independent of continuation metadata; settle both before proceeding
-      // or releasing custody. Start still performs its separate fresh checks.
-      const [preparation, availability] = await Promise.allSettled([
-        this.flow.prepareContinuation(), this.availability(this.signal),
-      ]);
-      if (preparation.status === "rejected") throw preparation.reason;
-      if (availability.status === "rejected") throw availability.reason;
-      this.requireOpen();
-      const active = await this.options.flowStore.getActiveCaptureState(); this.requireOpen();
-      if (!active?.continuation?.prepared || !this.options.coverage.beginInterval) throw unavailable();
-      await this.options.coverage.beginInterval(active.lease.receipt_id, active.continuation.firstSequenceNumber);
-      this.continuityUnconfirmed ||= this.coverage !== null || active.continuation.firstSequenceNumber > 0
-        || await this.options.coverage.hasPriorCapture?.(active.lease.receipt_id) !== false;
-      this.coverage = await this.options.coverage.load(); this.requireOpen();
-      this.unsubscribeController(); this.controller = this.createController();
-      this.unsubscribeController = this.controller.subscribe(() => this.publish());
-      this.unmountedAvailability = availability.value;
-    }).catch(async error => {
-      if (this.flow.snapshot.state === "ready") await this.flow.pauseRecording();
-      throw error;
-    }).then(() => this.startRecording());
+    if (this.switchingInput || this.reconnecting) return Promise.reject(unavailable());
+    return this.resumeCapture(this.continuationGeneration);
+  }
+  private resumeCapture(generation: number): Promise<void> {
+    this.requireContinuation(generation);
+    if (this.flow.snapshot.state !== "paused" || this.stopConfirmationPending || this.operation || this.stopping) return Promise.reject(unavailable());
+    this.startFailed = false;
+    const attempt = this.attempt = new AbortController();
+    return this.run("resume", async () => {
+      let starting = false;
+      try {
+        // The preceding helper and server owner must both be retired before any renewal.
+        await this.controller.shutdownFromMain(crypto.randomUUID()); this.requireAttempt(attempt, generation);
+        if (this.controller.snapshot().state !== "stopped" || this.captureMayBeActive) throw unavailable();
+        await this.flow.pauseRecording(); this.requireAttempt(attempt, generation);
+        this.stopConfirmationPending = true; this.publish();
+        await this.options.retireSource(); this.requireAttempt(attempt, generation);
+        this.stopConfirmationPending = false;
+        // Prior native and server ownership is retired. This read-only OS probe
+        // is independent of continuation metadata; settle both before proceeding
+        // or releasing custody. Start still performs its separate fresh checks.
+        const [preparation, availability] = await Promise.allSettled([
+          this.flow.prepareContinuation(), this.availability(this.signal),
+        ]);
+        if (preparation.status === "rejected") throw preparation.reason;
+        if (availability.status === "rejected") throw availability.reason;
+        this.requireAttempt(attempt, generation);
+        const active = await this.options.flowStore.getActiveCaptureState(); this.requireAttempt(attempt, generation);
+        if (!active?.continuation?.prepared || !this.options.coverage.beginInterval) throw unavailable();
+        await this.options.coverage.beginInterval(active.lease.receipt_id, active.continuation.firstSequenceNumber);
+        this.continuityUnconfirmed ||= this.coverage !== null || active.continuation.firstSequenceNumber > 0
+          || await this.options.coverage.hasPriorCapture?.(active.lease.receipt_id) !== false;
+        this.coverage = await this.options.coverage.load(); this.requireAttempt(attempt, generation);
+        this.unsubscribeController(); this.controller = this.createController();
+        this.unsubscribeController = this.controller.subscribe(() => this.publish());
+        this.unmountedAvailability = availability.value;
+        // Preparation and Start share this owner. Stop cancels the ticket before
+        // joining it, including while fresh authority or OS readiness is delayed.
+        starting = true;
+        await this.startAttempt(attempt, generation);
+      } catch (error) {
+        // Preserve an ordinary failed Start's exact ready continuation for its
+        // existing recovery path. Cancellation must pause before Stop can finish.
+        if (this.flow.snapshot.state === "ready" && (!starting || attempt.signal.aborted
+          || generation !== this.continuationGeneration)) await this.flow.pauseRecording();
+        throw error;
+      }
+    });
   }
   refreshPermissions(): Promise<void> {
     return this.run("other", async () => {
@@ -568,12 +640,13 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   deactivate(): Promise<void> {
     if (this.closed) return Promise.resolve();
     if (this.closing) return this.closing;
-    this.deactivated = true; this.abort.abort(); this.attempt?.abort();
+    this.deactivated = true; this.cancelContinuation(); this.abort.abort(); this.attempt?.abort();
     // Interrupt startup now, then await all prior work before releasing custody.
     const halted = this.halt(); void halted.catch(() => undefined);
     this.closing = (async () => {
       await this.initialization?.catch(() => undefined);
       await this.operation?.catch(() => undefined); await this.stopping?.catch(() => undefined);
+      await this.inputSwitch?.catch(() => undefined);
       await halted.catch(() => undefined);
       await this.controller.shutdownFromMain(crypto.randomUUID());
       if (this.controller.snapshot().state !== "stopped" || this.captureMayBeActive) throw unavailable();
@@ -587,7 +660,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   async showWindowChooser(): Promise<void> {
     this.requireOpen();
     const attempt = this.attempt;
-    if (!this.choosingWindow || !attempt || attempt.signal.aborted || this.action !== "start"
+    if (!this.choosingWindow || !attempt || attempt.signal.aborted || !["start", "resume"].includes(this.action ?? "")
       || this.stopping || !this.options.showWindowChooser) throw unavailable();
     await this.options.showWindowChooser();
     this.requireOpen();
@@ -597,7 +670,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     return this.halting ??= this.flow.deactivate().then(() => { this.captureMayBeActive = false; })
       .finally(() => { this.halting = null; this.publish(); });
   }
-  private run(action: "prepare" | "start" | "other", work: () => Promise<void>): Promise<void> {
+  private run(action: "prepare" | "start" | "resume" | "other", work: () => Promise<void>): Promise<void> {
     this.requireOpen();
     if (this.operation || this.stopping || this.initializing && action !== "prepare") return Promise.reject(unavailable());
     this.action = action;
@@ -610,7 +683,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private subscribeFlow(): () => void {
     return this.flow.subscribe(snapshot => {
       if (!this.deactivated && ["paused", "error"].includes(snapshot.state)
-        && (this.controller.snapshot().state === "recording" || this.action === "start")) {
+        && (this.controller.snapshot().state === "recording" || this.action === "start" || this.action === "resume" && this.choosingWindow)) {
         // A human picker can outlive the prepared lease. Release that await as
         // soon as setup is invalid, so "starting" cannot mask the expired or
         // failed flow. Cancellation also discards any later native selection.
@@ -621,11 +694,37 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
           // chunks and pause journal must finish before retirement can settle.
           // Reuse the physical stop and exact server-owner recovery path now,
           // rather than making the provider wait for it on a later Resume.
-          void this.stopCapture(false).catch(() => undefined);
+          const reconnect = this.callReconnectRequested;
+          this.callReconnectRequested = false;
+          const settled = this.stopCapture(false);
+          if (reconnect) void this.reconnectMeeting(settled).catch(() => undefined);
+          else void settled.catch(() => undefined);
         }
       }
       this.publish();
     });
+  }
+  private async reconnectMeeting(settled: Promise<void>): Promise<void> {
+    const identity = this.lastSelectedWindow, generation = ++this.reconnectGeneration, continuation = this.continuationGeneration;
+    if (!identity || !this.options.listMeetingWindows || this.reconnecting) return;
+    this.reconnecting = true; this.publish();
+    try {
+      await settled; this.requireOpen();
+      for (const delay of [0, 1_000, 2_000, 4_000]) {
+        if (delay) await new Promise<void>(resolve => { setTimeout(resolve, delay); });
+        this.requireOpen();
+        if (generation !== this.reconnectGeneration || this.flow.snapshot.state !== "paused" || this.captureMayBeActive
+          || this.stopConfirmationPending || this.operation || this.stopping) return;
+        await this.loadMeetingWindows(); this.requireOpen();
+        if (generation !== this.reconnectGeneration) return;
+        const current = this.meetingWindows.find(row => sameMeetingWindow(row.value, identity));
+        if (!current) continue;
+        this.meetingWindowId = current.id;
+        // Fresh backend continuation and native PID/bundle/window validation
+        // occur inside Resume. A failed start never triggers another restart.
+        await this.resumeCapture(continuation); return;
+      }
+    } finally { this.reconnecting = false; this.publish(); }
   }
   private async recoverUnstartedCapture(): Promise<void> {
     const saved = await this.options.flowStore.getActiveCaptureState(); this.requireOpen();
@@ -708,6 +807,18 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     if (!this.capability?.secret || !this.attempt || this.attempt.signal.aborted
       || Date.parse(this.capability.expiresAt) <= Date.now()) throw unavailable();
   }
+  private cancelContinuation(): void {
+    this.continuationGeneration++; this.reconnectGeneration++;
+    this.callReconnectRequested = false; this.attempt?.abort();
+  }
+  private requireContinuation(generation: number): void {
+    this.requireOpen();
+    if (generation !== this.continuationGeneration) throw unavailable();
+  }
+  private requireAttempt(attempt: AbortController, generation: number): void {
+    this.requireContinuation(generation);
+    if (attempt.signal.aborted || this.attempt !== attempt) throw unavailable();
+  }
   private publish(): void { for (const listener of this.listeners) { try { listener(this.snapshot); } catch { /* UI cannot break native cleanup. */ } } }
 }
 function unavailable(): Error { return new Error("Desktop provider recorder is unavailable."); }
@@ -732,3 +843,8 @@ function chooseWindow(select: DesktopProviderRecorderOptions["selectWindow"],
   });
 }
 function milliseconds(a: string, b: string): number { return Number((BigInt(a) + BigInt(b) + 999_999n) / 1_000_000n); }
+/** Titles are display metadata. A relaunch or replacement window requires a
+ * fresh provider choice, even if its title happens to match the prior call. */
+export function sameMeetingWindow(a: NativeMeetingWindow, b: NativeMeetingWindow): boolean {
+  return a.application === b.application && a.processID === b.processID && a.windowID === b.windowID;
+}

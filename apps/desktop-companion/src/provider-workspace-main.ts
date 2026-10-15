@@ -11,6 +11,8 @@ import { parseDesktopProviderRequest, sessionState, exact, object, uuid, jsonCop
   type DesktopProviderRequest, type DesktopProviderEvent } from "../../capture/src/provider/desktop-host-protocol";
 import { parseEncounterDraft } from "../../capture/src/provider/encounter-setup";
 import type { DesktopProviderRecorder } from "./provider-recorder.js";
+import type { ProviderAudioPreflight } from "../../capture/src/provider/audio-preflight";
+import type { PatientSelection } from "../../capture/src/provider/visit-features";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 
 export interface DesktopProviderMainHost {
@@ -37,6 +39,8 @@ interface Encounter {
   recorder?: { dispose(): Promise<void> };
   recorderOpening?: boolean;
   preparationAttempt?: { readonly key: string; readonly began: number };
+  preflight?: ProviderAudioPreflight;
+  preflightOpening?: boolean;
   closing?: Promise<void>;
 }
 
@@ -194,6 +198,53 @@ export class DesktopProviderWorkspaceMain {
       this.requireEncounter(connection, encounter, signal);
       let result: unknown;
       switch (request.method) {
+        case "preflight": {
+          const action = payload.action;
+          if (action === "open") {
+            exact(payload, ["action"]);
+            if (!connection.value!.workspace.audioPreflight || encounter.preflight || encounter.preflightOpening
+              || encounter.recorder || encounter.recorderOpening) throw unavailable();
+            encounter.preflightOpening = true;
+            try { encounter.preflight = await connection.value!.workspace.audioPreflight(AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal])); }
+            finally { delete encounter.preflightOpening; }
+          } else {
+            const port = encounter.preflight;
+            if (!port) throw unavailable();
+            if (action === "read") exact(payload, ["action"]);
+            else if (action === "input") { exact(payload, ["action", "id"]); await port.selectMicrophone(uuid(payload.id)); }
+            else if (action === "mode") { exact(payload, ["action", "mode"]); if (!port.selectDesktopAudio || payload.mode !== "microphone" && payload.mode !== "meeting") throw unavailable(); await port.selectDesktopAudio(payload.mode); }
+            else if (action === "windows") { exact(payload, ["action"]); if (!port.refreshMeetingWindows) throw unavailable(); await port.refreshMeetingWindows(); }
+            else if (action === "window") { exact(payload, ["action", "id"]); if (!port.selectMeetingWindow) throw unavailable(); await port.selectMeetingWindow(uuid(payload.id)); }
+            else if (action === "close") { exact(payload, ["action"]); await port.close(); delete encounter.preflight; return null; }
+            else throw unavailable();
+          }
+          result = encounter.preflight!.getSnapshot(); break;
+        }
+        case "visit_features": {
+          const setup = connection.value!.workspace.encounterSetup;
+          if (!setup) throw unavailable();
+          const selected = encounter.value.encounter, linked = AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal]);
+          if (payload.action === "private_read") {
+            exact(payload, ["action"]); if (!setup.readPrivateNote) throw unavailable(); result = await setup.readPrivateNote(selected, linked);
+          } else if (payload.action === "private_save") {
+            exact(payload, ["action", "text", "expectedVersion", "key"]);
+            if (!setup.savePrivateNote || typeof payload.text !== "string" || !Number.isSafeInteger(payload.expectedVersion)) throw unavailable();
+            result = await setup.savePrivateNote(selected, payload.text, payload.expectedVersion as number, uuid(payload.key), linked);
+          } else if (payload.action === "candidates") {
+            exact(payload, ["action", "query", "dateOfBirth"]);
+            if (!setup.patientCandidates || typeof payload.query !== "string" || payload.dateOfBirth !== null && typeof payload.dateOfBirth !== "string") throw unavailable();
+            result = await setup.patientCandidates(selected, payload.query, payload.dateOfBirth, linked);
+          } else if (payload.action === "match") {
+            exact(payload, ["action", "selection", "expectedVersion", "key"]);
+            const choice = object(payload.selection);
+            if (!setup.matchPatient || !Number.isSafeInteger(payload.expectedVersion)) throw unavailable();
+            if (choice.kind === "existing") { exact(choice, ["kind", "patientRef"]); if (!reference(choice.patientRef, "patient")) throw unavailable(); }
+            else if (choice.kind === "confirm_new") { exact(choice, ["kind", "dateOfBirth"]); if (choice.dateOfBirth !== null && typeof choice.dateOfBirth !== "string") throw unavailable(); }
+            else throw unavailable();
+            result = await setup.matchPatient(selected, choice as unknown as PatientSelection, payload.expectedVersion as number, uuid(payload.key), linked);
+          } else throw unavailable();
+          break;
+        }
         case "add_birth_date": {
           exact(payload, ["dateOfBirth", "key"]);
           const setup = connection.value!.workspace.encounterSetup;
@@ -402,6 +453,7 @@ export class DesktopProviderWorkspaceMain {
     if (encounter.closing) return encounter.closing;
     encounter.closing = Promise.resolve().then(async () => {
       await Promise.allSettled(encounter.work); await encounter.recorder?.dispose();
+      await encounter.preflight?.close(); delete encounter.preflight;
       if (connection.encounter === encounter) delete connection.encounter;
     }).catch(error => { delete encounter.closing; throw error; });
     encounter.abort.abort(); this.publish({ kind: "encounter_closed", id: encounter.id });

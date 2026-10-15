@@ -1,9 +1,12 @@
 import { parsePendingCreatorEdit } from "../../../review-ui/src/creator-edit";
+import { parsePrivateNote, parsePatientIdentity } from "./visit-features";
 import { parseEncounterDisplay } from "./encounter-display";
+import { openDesktopAudioPreflight } from "./desktop-audio-preflight";
 import { parseProviderAccount, parseSetupState, parseEncounterDraft, type ProviderEncounterSetup, type ProviderAccount } from "./encounter-setup";
 import { mountProviderApplication, type ProviderApplicationHost } from "./application";
 import type { ProviderSessionState } from "./native-plugin";
 import type { ProviderWorkspaceHost } from "./workspace";
+import type { ProviderEncounter } from "./workspace-contracts";
 import { assertProgress, type JournalSnapshot } from "./workspace-journal";
 import { parsePendingReviewDecision } from "../../../review-ui/src/creator-review-journal";
 import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
@@ -127,7 +130,24 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
       };
       let creationEnabled = false, account: ProviderAccount | undefined;
       let currentEncounter: { id: string; appointmentRef: string } | null = null;
+      const visitRequest = (selected: ProviderEncounter, payload: Record<string, unknown>, extra: AbortSignal): Promise<unknown> => {
+        if (!currentEncounter || currentEncounter.appointmentRef !== selected.appointmentRef) throw unavailable();
+        return send("visit_features", payload, currentEncounter.id, extra);
+      };
+      const privateNote = (value: unknown) => { const row = object(value); return parsePrivateNote({ text: row.text, version: row.version, updated_at: row.updatedAt }); };
+      const identity = (value: unknown) => { const row = object(value); return parsePatientIdentity({ state: row.state, version: row.version, canonical_patient_ref: row.canonicalPatientRef, name: row.name, date_of_birth: row.dateOfBirth }); };
       const setup: ProviderEncounterSetup = {
+        readPrivateNote: async (selected, extra) => privateNote(await visitRequest(selected, { action: "private_read" }, extra)),
+        savePrivateNote: async (selected, text, expectedVersion, key, extra) => privateNote(await visitRequest(selected, { action: "private_save", text, expectedVersion, key }, extra)),
+        patientCandidates: async (selected, query, dateOfBirth, extra) => {
+          const value = object(await visitRequest(selected, { action: "candidates", query, dateOfBirth }, extra));
+          const parsed = parseSetupState({ account: account?.email, patients: value.patients, moreResults: value.moreResults, pending: null });
+          return { patients: parsed.patients, moreResults: parsed.moreResults, identity: identity(value.identity) };
+        },
+        matchPatient: async (selected, selection, expectedVersion, key, extra) => {
+          const value = object(await visitRequest(selected, { action: "match", selection, expectedVersion, key }, extra));
+          return { encounter: encounter(value.encounter), identity: identity(value.identity) };
+        },
         addDateOfBirth: async (selected, dateOfBirth, key, extra) => {
           if (!currentEncounter || currentEncounter.appointmentRef !== selected.appointmentRef) throw unavailable();
           return encounter(await send("add_birth_date", { dateOfBirth, key }, currentEncounter.id, extra));
@@ -149,6 +169,11 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         }, null, extra)),
       };
       const workspace: ProviderWorkspaceHost = {
+        audioPreflight: extra => {
+          if (!currentEncounter) return Promise.reject(unavailable());
+          const selectedId = currentEncounter.id;
+          return openDesktopAudioPreflight(extra, (payload, operation) => send("preflight", payload, selectedId, operation));
+        },
         recorderRechecksReview: true,
         get providerDisplayName() {
           return !abort.signal.aborted && !signal.aborted && state?.phase === "ready"
