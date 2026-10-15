@@ -168,3 +168,11 @@ deployed independently.
 - No workflow currently validates tier, flight-plan, or agent-review evidence;
   those remain documented process controls. The required change-budget check
   is a narrow automated size gate and does not claim to validate semantics.
+
+## Two-bot QA loop
+
+Read `COORDINATION.md` before editing; claim files and release your own claims at handoff.
+The browser QA protocol and offline ledger live in `qa/two-bot/README.md`.
+Both queues start paused. Synthetic environments require verified isolation before use;
+existing staging is not automatically eligible. Existing deployment, PHI, consent and
+Actions restrictions remain in force. A QA finding never authorizes deployment.

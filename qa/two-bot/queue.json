@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "repository": "CosmaNeura/cosmaneura-scribe",
+  "bots": {
+    "bot-1": {
+      "paused": true,
+      "prefix": "QA-cosmaneura-scribe-B1",
+      "target": "",
+      "tenant": "",
+      "identity": "",
+      "queue_issue": "",
+      "isolation_evidence": "",
+      "build_evidence": "",
+      "protected_fixtures": [],
+      "events": []
+    },
+    "bot-2": {
+      "paused": true,
+      "prefix": "QA-cosmaneura-scribe-B2",
+      "target": "",
+      "tenant": "",
+      "identity": "",
+      "queue_issue": "",
+      "isolation_evidence": "",
+      "build_evidence": "",
+      "protected_fixtures": [],
+      "events": []
+    }
+  },
+  "batches": []
+}
