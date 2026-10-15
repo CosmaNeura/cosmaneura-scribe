@@ -14,7 +14,9 @@ private func encoded(_ value: [String: Any]) throws -> Data {
     var instant = ContinuousClock.now
     var wall = Date()
     var expireAtTokenTiming = false, timingReads = 0
+    var eligibilityDelay: Double?
     var timings: [ProviderNativeRequestTiming] = []
+    var wallReads = 0
     func advance(_ seconds: Double) {
         instant = instant.advanced(by: .seconds(seconds)); wall = wall.addingTimeInterval(seconds)
     }
@@ -182,7 +184,7 @@ private func encoded(_ value: [String: Any]) throws -> Data {
     let auth: NativeWorkspaceAuth, wire: Wire, connection: NativeProviderConnection
     var admissionKey = "admission:" + UUID().uuidString.lowercased()
     var admissionNonce = UUID().uuidString.lowercased(), receipt = Data()
-    init(enabled: Bool = true) throws {
+    init(enabled: Bool = true, warm: Bool = false) throws {
         wire = Wire(clock)
         let policy = try NativeTokenPolicy(issuer: "https://resolved-emu-53.clerk.accounts.dev", audience: nil,
             authorizedParty: NativeWorkspaceOrigin.desktopApp.rawValue, identityProfile: .coreStagingPersonal)
@@ -191,7 +193,12 @@ private func encoded(_ value: [String: Any]) throws -> Data {
             driver: { driver }, accessBlock: { Block() })
         let clock = self.clock
         connection = NativeProviderConnection(auth: auth, wire: wire, desktopInitialWindowEnabled: enabled,
-            desktopWallNow: { clock.wall }, contextNow: { clock.instant }, timingNow: {
+            desktopVisitSignInEnabled: warm,
+            desktopWallNow: { clock.wallReads += 1; return clock.wall }, contextNow: { clock.instant }, timingNow: {
+                if let delay = clock.eligibilityDelay {
+                    clock.timingReads += 1
+                    if clock.timingReads == 2 { clock.advance(delay) }
+                }
                 if clock.expireAtTokenTiming {
                     clock.timingReads += 1
                     if clock.timingReads == 2 { clock.advance(6) }
@@ -490,6 +497,82 @@ private func encoded(_ value: [String: Any]) throws -> Data {
             }
             f.connection.close(); sourceChecks += 1
         }
-        print("Desktop initial WINDOW: \(checks) checks; bounded SOURCE handoff: \(sourceChecks) checks passed. No accounts, network, Keychain or audio.")
+        var visitChecks = 0
+        print("Existing window/source virtual checks passed; testing visit sign-in.")
+        do {
+            print("visit-sign-in: exact-use")
+            let f = try Fixture(warm: true); f.wire.completeWindow = true
+            try await f.mount(); try await until { f.clock.wallReads >= 2 }
+            try await f.admit(); _ = try await f.claim(); _ = try await f.source()
+            try require(f.driver.tokens == 2 && f.wire.calls.count == 4)
+            try require(f.wire.tokensSeen[1] == f.wire.tokensSeen[2] && f.wire.tokensSeen[2] == f.wire.tokensSeen[3])
+            f.connection.close(); visitChecks += 1
+        }
+        do {
+            print("visit-sign-in: eligibility-crossing-before-dispatch")
+            let f = try Fixture(warm: true); f.wire.completeWindow = true
+            try await f.mount(); try await until { f.clock.wallReads >= 2 }
+            f.clock.advance(0.99); f.clock.timingReads = 0; f.clock.eligibilityDelay = 0.02
+            try await f.admit(); _ = try await f.claim(); _ = try await f.source()
+            // The selected warm token aged past one second before wire. Mint
+            // once before dispatch and retain the ordinary window/source chain.
+            try require(f.driver.tokens == 3 && f.wire.calls.count == 4)
+            try require(f.wire.tokensSeen[1] == f.wire.tokensSeen[2] && f.wire.tokensSeen[2] == f.wire.tokensSeen[3])
+            f.connection.close(); visitChecks += 1
+        }
+        for fault in ["expiry", "idle", "wall-back", "wall-forward", "clock-back", "cancel", "unrelated"] {
+            print("visit-sign-in: \(fault)")
+            let f = try Fixture(warm: true)
+            try await f.mount(); try await until { f.clock.wallReads >= 2 }
+            if fault == "expiry" { f.clock.advance(6); f.wire.checkedAge = 6 }
+            if fault == "idle" { f.clock.advance(1) }
+            if fault == "wall-back" { f.clock.wall = f.clock.wall.addingTimeInterval(-1) }
+            if fault == "wall-forward" { f.clock.wall = f.clock.wall.addingTimeInterval(1) }
+            if fault == "clock-back" { f.clock.instant = f.clock.instant.advanced(by: .seconds(-1)) }
+            if fault == "cancel" { f.connection.cancel(UUID()) }
+            if fault == "unrelated" { _ = try await f.connection.send(f.window()) }
+            try await f.admit()
+            try require(f.driver.tokens == (fault == "unrelated" ? 4 : 3))
+            f.connection.close(); visitChecks += 1
+        }
+        do {
+            let f = try Fixture(warm: true)
+            print("visit-sign-in: original-deadline")
+            try await f.mount(); try await until { f.clock.wallReads >= 2 }
+            f.clock.advance(0.7); try await f.admit(); f.clock.advance(4.4)
+            _ = try await f.claim(); try require(f.driver.tokens == 3)
+            // Reuse did not reset the original mint timestamp at admission.
+            f.connection.close(); visitChecks += 1
+        }
+        do {
+            let f = try Fixture(warm: true)
+            print("visit-sign-in: speculative-failure")
+            f.driver.onToken = { if f.driver.tokens == 2 { f.driver.revoked = true } }
+            try await f.mount(); try await until { f.driver.tokens == 2 }
+            for _ in 0..<10 { await Task.yield() }
+            try require(f.auth.state().phase == .ready)
+            f.driver.revoked = false; f.driver.onToken = nil
+            try await f.admit(); try require(f.driver.tokens == 3)
+            f.connection.close(); visitChecks += 1
+        }
+        for fault in ["auth", "close", "task-cancel", "late-response", "concurrent"] {
+            print("visit-sign-in: \(fault)")
+            let f = try Fixture(warm: true)
+            try await f.mount(); try await until { f.clock.wallReads >= 2 }
+            f.wire.holdAction = .admission
+            let task = Task { try await f.admit() }
+            try await until { f.wire.wait != nil }
+            if fault == "auth" { f.driver.identity = try .init(coreUserID: "user_foreign", sessionID: "sess_foreign"); _ = f.auth.state() }
+            if fault == "close" { f.connection.close() }
+            if fault == "task-cancel" { task.cancel() }
+            if fault == "late-response" { f.clock.advance(6); f.wire.checkedAge = 6 }
+            if fault == "concurrent" { f.wire.holdAction = nil; try await f.admit(); try require(f.driver.tokens == 3) }
+            f.wire.wait?.resume(); f.wire.wait = nil
+            if fault == "late-response" {
+                _ = try await task.value; _ = try await f.claim(); try require(f.driver.tokens == 3)
+            } else { try await rejected { _ = try await task.value } }
+            f.connection.close(); visitChecks += 1
+        }
+        print("Desktop initial WINDOW: \(checks) checks; bounded SOURCE: \(sourceChecks); visit sign-in: \(visitChecks) checks passed. No accounts, network, Keychain or audio.")
     }
 }

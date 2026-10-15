@@ -41,7 +41,7 @@ import Foundation
         }
         connection = NativeProviderConnection(auth: auth,
             wire: try ProviderNativeTransport(settings: receiver, workspaceOrigin: .desktopApp),
-            desktopInitialWindowEnabled: true)
+            desktopInitialWindowEnabled: true, desktopVisitSignInEnabled: true)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 160),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Sign in to Scribe"; window.center(); window.orderOut(nil)
