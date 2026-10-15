@@ -207,7 +207,13 @@ export async function connectNativeProviderRecorder(options: {
     controller: { get snapshot() { return snapshot(); }, subscribe: listener => {
       current(); listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener);
     }, startRecording: start, resumeRecording: start, pauseRecording: pause, stopRecording: async () => {
-      if (starting && ["ready", "paused"].includes(state?.phase ?? "") || state?.phase === "starting") { await pause(); return; }
+      if (starting && ["ready", "paused"].includes(state?.phase ?? "") || state?.phase === "starting") {
+        // Cancel an empty initial Start, but retain Finish during a continuation.
+        // Pause can commit its final tail, so decide from the pre-Pause position.
+        const hadRecordedAudio = (state?.recordedChunks ?? 0) > 0;
+        await pause();
+        if (!hadRecordedAudio) return;
+      }
       await upload();
     }, selectMicrophoneInput: async input => { current(); if (state?.input !== input) await invoke("input", input); }, selectAudioInput: async id => {
       current(); const device = state?.inputDevices?.find(candidate => candidate.id === id);

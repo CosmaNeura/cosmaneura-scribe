@@ -34,8 +34,8 @@ const forbidden = () => { throw new Error("Unrequested write, recording, or exte
 const flush = async () => { await new Promise(done => setTimeout(done, 5)); };
 const results = [];
 for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "hidden", "departed", "revoked", "hung-manual",
-  "changed-source", "invalid-draft", "access-denied", "review-failed", "retain-failed", "read-only", "invalid-dob", "saved-invalid-dob", "canonical-match"]) {
-  const readOnly = ["read-only", "invalid-dob", "saved-invalid-dob", "canonical-match"].includes(scenario);
+  "changed-source", "invalid-draft", "access-denied", "review-failed", "retain-failed", "read-only", "invalid-dob", "saved-invalid-dob", "canonical-match", "private-close"]) {
+  const readOnly = ["read-only", "invalid-dob", "saved-invalid-dob", "canonical-match", "private-close"].includes(scenario);
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "capacitor://localhost/index.html",
     runScripts: "outside-only", pretendToBeVisual: true });
   const window = dom.window, root = window.document.getElementById("root");
@@ -43,6 +43,7 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
   Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
   window.ResizeObserver = class { observe() {} disconnect() {} };
   window.matchMedia = () => ({ matches: false });
+  window.scrollTo = () => {}; // This fixture checks saved state, not browser scrolling.
   window.fetch = forbidden;
   window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   window.HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -114,13 +115,13 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
     return Response.json({ ...envelope, action: kind, receipt });
   };
   let pendingMatch = scenario === "saved-invalid-dob" ? { key: webcrypto.randomUUID(), expectedVersion: 0, selection: { kind: "confirm_new", dateOfBirth: "9999-01-01" } } : null;
-  let matchWrites = 0, matches = 0;
+  let matchWrites = 0, matches = 0, lastProgress = null, privateWritable = false, privateRetains = 0;
   const host = { signal: lifetime.signal, listEncounters: async () => [encounter], createEncounter: forbidden,
-    encounterSetup: { patientCandidates: async () => ({ identity, moreResults: false, patients: [{ patientRef: "patient_" + "01j" + "1".repeat(23), name: "Canonical invented name", dateOfBirth: "1985-02-03" }] }),
+    encounterSetup: { ...(scenario === "private-close" ? { readPrivateNote: async () => ({ text: "", version: 0, updatedAt: null }), savePrivateNote: forbidden } : {}), patientCandidates: async () => ({ identity, moreResults: false, patients: [{ patientRef: "patient_" + "01j" + "1".repeat(23), name: "Canonical invented name", dateOfBirth: "1985-02-03" }] }),
       matchPatient: async (_encounter, selection) => { matches++; assert.deepEqual(JSON.parse(JSON.stringify(pendingMatch.selection)), JSON.parse(JSON.stringify(selection))); return { encounter, identity: { ...identity, state: "matched", version: 1, name: "Canonical invented name", dateOfBirth: "1985-02-03" } }; } },
     openEncounter: async () => ({ encounter, scope, signal: encounterLifetime.signal, request, noteOpeningSupported: true,
       openingReview: { scope, receivedAt: window.Date.now(), view: review },
-      journal: { load: async () => ({ revision: "1", progress: { admission: null, sessionId: session, uploaded: true, pendingSave: null, pendingPatientMatch: pendingMatch } }), save: async (_previous, progress) => { if (scenario === "retain-failed" && progress.notePreparation?.state === "submitted") throw new Error("Storage unavailable"); if (JSON.stringify(pendingMatch) !== JSON.stringify(progress.pendingPatientMatch ?? null)) { matchWrites++; pendingMatch = progress.pendingPatientMatch ?? null; } return { revision: "2", progress }; } },
+      journal: { load: async () => ({ revision: "1", progress: { admission: null, sessionId: session, uploaded: true, pendingSave: null, pendingPatientMatch: pendingMatch } }), save: async (_previous, progress) => { if (scenario === "retain-failed" && progress.notePreparation?.state === "submitted") throw new Error("Storage unavailable"); if (scenario === "private-close" && progress.privateNoteState?.text === "Latest private reminder") { privateRetains++; if (!privateWritable) throw new Error("Private storage unavailable"); } if (JSON.stringify(pendingMatch) !== JSON.stringify(progress.pendingPatientMatch ?? null)) { matchWrites++; pendingMatch = progress.pendingPatientMatch ?? null; } lastProgress = progress; return { revision: "2", progress }; } },
       recorder: forbidden, openInCore: forbidden, reviewJournal: () => ({ load: async () => null, save: forbidden, clear: forbidden }) }) };
   const until = async predicate => {
     for (let i = 0; i < 200; i++) { if (predicate()) return; await flush(); }
@@ -214,7 +215,21 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
       assert.equal(root.querySelector("[data-note-save-state]").textContent, "Saving…");
       const count = readCount; await advance(120_000); await visibility(false); await visibility(true);
       assert.equal(readCount, count); assert.match(fieldsReady().value, /Unsubmitted synthetic edit/);
-      if (readOnly && scenario !== "read-only") {
+      if (scenario === "private-close") {
+        await until(() => lastProgress?.pendingSave);
+        const retainedKey = lastProgress.pendingSave.edit.client_key, privateEditor = root.querySelector("scribe-private-note");
+        await privateEditor.port.load(); await privateEditor.port.change("Latest private reminder");
+        assert.equal(privateEditor.port.getSnapshot().status, "unconfirmed"); assert.ok(privateRetains > 0);
+        let closes = 0;
+        const close = () => { const event = new window.CustomEvent("scribe-desktop-close-request", { cancelable: true, detail: () => { closes++; } }); root.dispatchEvent(event); assert.equal(event.defaultPrevented, true); };
+        close(); await until(() => root.textContent.includes("Your private reminder hasn’t been retained"));
+        assert.equal(closes, 0); assert.equal(lastProgress.privateNoteState?.text ?? null, null);
+        assert.equal(privateEditor.port.getSnapshot().text, "Latest private reminder");
+        privateWritable = true; close(); await until(() => closes === 1);
+        assert.equal(lastProgress.privateNoteState.text, "Latest private reminder");
+        assert.equal(lastProgress.pendingSave.edit.client_key, retainedKey);
+      }
+      if (["invalid-dob", "saved-invalid-dob", "canonical-match"].includes(scenario)) {
         const edited = fieldsReady().value; click("match-patient");
         await until(() => root.querySelector(scenario === "saved-invalid-dob" ? "[data-match-correct]" : "[data-match-new]")?.disabled === false);
         const dob = root.querySelector('[name="match-dob"]'); assert.equal(dob.max, new Date().toISOString().slice(0, 10));

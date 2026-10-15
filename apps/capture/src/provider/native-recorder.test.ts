@@ -26,6 +26,28 @@ async function fixture() {
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
+async function retainedUpload(h: Awaited<ReturnType<typeof fixture>>) {
+  const queue = new CaptureQueue(h.storage), objectId = crypto.randomUUID(), createdAt = "2026-10-15T12:00:00.000Z";
+  const reservation: ChunkReservation = { protocolVersion: PROTOCOL_VERSION, objectId, sessionId, channel: "microphone",
+    sequenceNumber: 0, createdAt, additionalAuthenticatedData: encodeChunkAdditionalDataBase64Url({
+      tenantId: crypto.randomUUID(), objectId, sessionId, channel: "microphone", sequenceNumber: 0 }) };
+  await queue.reserve(reservation, crypto.randomUUID());
+  const encrypted = await queue.encrypt(objectId, encodeEnvelope({ schema_version: PROTOCOL_VERSION,
+    content_encryption: "A256GCM", nonce: base64UrlEncode(new Uint8Array(12)), media_type: "audio/wav" }, new Uint8Array(48)));
+  const receipt = vi.fn<CaptureBff["getChunkReceipt"]>().mockResolvedValue({ state: "registered",
+    reservation: { protocol_version: PROTOCOL_VERSION, object_id: objectId, session_id: sessionId, channel: "microphone",
+      sequence_number: 0, additional_authenticated_data: reservation.additionalAuthenticatedData, created_at: createdAt },
+    registration: { chunk_id: crypto.randomUUID(), sha256: encrypted.sha256,
+      ciphertext_size_bytes: encrypted.byteLength, registered_at: createdAt } });
+  const complete = vi.fn<CaptureBff["completeCapture"]>().mockResolvedValue({ id: sessionId,
+    appointment_id: crypto.randomUUID(), consent_record_id: crypto.randomUUID(), created_at: createdAt,
+    ingest_mode: "chunk_upload", modality: "in_person", patient_id: crypto.randomUUID(),
+    practitioner_id: crypto.randomUUID(), status: "uploaded" });
+  h.bff.getChunkReceipt = receipt; h.bff.completeCapture = complete;
+  return { receipt, complete, queue, objectId, completion: { idempotencyKey: crypto.randomUUID(),
+    leaseId: crypto.randomUUID(), leaseGeneration: 14, finalSequence: 0 } };
+}
+
 describe("native provider controller", () => {
   it("uses the advertised device UID without replacing the session or saved capture position", async () => {
     const h = await fixture(), command = h.port.command;
@@ -261,20 +283,75 @@ describe("native provider controller", () => {
     } finally { await view.deactivate(); h.storage.close(); }
   });
 
-  it("shows Resume starting immediately and cancels it without uploading retained audio", async () => {
-    const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
-    h.f.set({ phase: "paused", recordedChunks: 1, recordedPlaintextBytes: 320_044 });
-    let startID = "";
-    h.port.command = request => { if (request.kind === "start") { startID = request.requestId; return pending.promise; } return command(request); };
+  it.each(["continue", "input"] as const)("finishes retained audio once while a delayed %s is starting", async operation => {
+    const h = await fixture(), retained = await retainedUpload(h), pending = deferred<unknown>(), sealing = deferred<unknown>();
+    const command = h.port.command;
+    const devices = [
+      { id: "synthetic-phone", label: "Synthetic phone", kind: "built_in" as const, current: true },
+      { id: "synthetic-headset", label: "Synthetic headset", kind: "bluetooth" as const, current: false },
+    ];
+    h.f.set({ phase: operation === "continue" ? "paused" : "recording", recordedChunks: 1,
+      recordedPlaintextBytes: 204, inputDevices: devices, selectedInputId: devices[0]!.id });
+    let pendingID = "", sealID = "";
+    h.port.command = request => {
+      if (request.kind === (operation === "continue" ? "start" : "input")) {
+        h.commands.push(request); pendingID = request.requestId;
+        if (operation === "input") h.f.set({ phase: "starting", busy: true });
+        return pending.promise;
+      }
+      if (request.kind === "seal") {
+        h.commands.push(request); sealID = request.requestId;
+        h.f.set({ phase: "sealing", busy: true }); return sealing.promise;
+      }
+      return command(request);
+    };
     const view = await h.open();
     try {
-      const resuming = view.controller.resumeRecording!();
+      const continuation = operation === "continue" ? view.controller.resumeRecording!()
+        : view.controller.selectAudioInput!(devices[1]!.id);
+      const settledContinuation = operation === "input" ? expect(continuation).rejects.toThrow() : continuation;
+      if (operation === "input") await view.controller.refreshTranscriptionStatus();
       expect(view.controller.snapshot.native?.phase).toBe("starting");
-      expect(view.controller.snapshot.statusCode).toBe("capture_starting");
-      await view.controller.stopRecording();
-      pending.resolve(h.f.response(startID)); await resuming;
-      expect(view.controller.snapshot.state).toBe("paused");
-      expect(view.controller.snapshot.recordedChunks).toBe(1);
+      const finishing = view.controller.stopRecording();
+      await vi.waitFor(() => expect(h.commands.filter(c => c.kind === "seal")).toHaveLength(1));
+      const lateCancelledResponse = h.f.response(pendingID, false);
+      const duplicateFinish = view.controller.stopRecording();
+      expect(retained.complete).not.toHaveBeenCalled();
+      h.f.set({ phase: "sealed", busy: false, completion: retained.completion });
+      sealing.resolve(h.f.response(sealID));
+      await Promise.all([finishing, duplicateFinish]);
+      expect(view.controller.snapshot).toMatchObject({ sessionId, state: "processing", recordedChunks: 1 });
+      expect(h.commands.filter(c => c.kind === "pause")).toHaveLength(1);
+      expect(h.commands.filter(c => c.kind === "seal")).toHaveLength(1);
+      expect(retained.receipt).toHaveBeenCalledTimes(1);
+      expect(retained.complete).toHaveBeenCalledTimes(1);
+      expect(retained.complete.mock.calls[0]).toEqual([sessionId, { protocol_version: "1.0",
+        capture_lease_id: retained.completion.leaseId, capture_lease_generation: 14,
+        channels: [{ channel: "microphone", final_sequence_number: 0 }] },
+      { idempotencyKey: retained.completion.idempotencyKey }]);
+      expect((await retained.queue.get(retained.objectId))?.state).toBe("purged");
+      pending.resolve(lateCancelledResponse); await settledContinuation;
+      expect(view.controller.snapshot.state).toBe("processing");
+      expect(h.commands.filter(c => c.kind === "start")).toHaveLength(operation === "continue" ? 1 : 0);
+      expect(h.commands.filter(c => c.kind === "input")).toHaveLength(operation === "input" ? 1 : 0);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+
+  it("keeps an initial-empty delayed Start cancellation even when Pause commits its tail", async () => {
+    const h = await fixture(), pending = deferred<unknown>(), command = h.port.command;
+    let startID = "";
+    h.port.command = request => {
+      if (request.kind === "start") { startID = request.requestId; return pending.promise; }
+      if (request.kind === "pause") h.f.set({ recordedChunks: 1, recordedPlaintextBytes: 204 });
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      const starting = view.controller.startRecording();
+      expect(view.controller.snapshot.recordedChunks).toBe(0);
+      await view.controller.stopRecording(); await starting;
+      expect(view.controller.snapshot).toMatchObject({ state: "paused", recordedChunks: 1, statusCode: "capture_paused" });
+      pending.resolve(h.f.response(startID, false)); await Promise.resolve();
       expect(h.commands.map(c => c.kind)).toEqual(["pause"]);
     } finally { await view.deactivate(); h.storage.close(); }
   });

@@ -1128,7 +1128,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (privateNoteSession && !await privateNoteSession.keepLocal()) { notice.textContent = "Your private reminder hasn’t been retained yet. Keep Scribe open and try again."; return; }
       if (!disposed && !host.signal.aborted) close();
     })();
-    else if (journal.progress?.pendingSave) void stageNoteEdits().then(() => { if (!disposed && !host.signal.aborted) close(); }).catch(() => { notice.textContent = "Your latest edits haven’t saved yet. Keep Scribe open and try again."; });
+    else if (journal.progress?.pendingSave) void (async () => {
+      if (privateNoteSession && !await privateNoteSession.keepLocal()) { notice.textContent = "Your private reminder hasn’t been retained yet. Keep Scribe open and try again."; return; }
+      await stageNoteEdits();
+      if (!disposed && !host.signal.aborted) close();
+    })().catch(() => { notice.textContent = "Your latest edits haven’t saved yet. Keep Scribe open and try again."; });
     else void run(() => guardNavigation(close));
   };
   const saveCurrentNote = async (): Promise<boolean> => {
