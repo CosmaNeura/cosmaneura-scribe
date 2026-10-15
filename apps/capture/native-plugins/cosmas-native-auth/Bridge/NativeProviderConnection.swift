@@ -263,11 +263,97 @@ protocol ProviderNativeWire: Sendable {
     private let wire: any ProviderNativeWire
     private let nativeAdmissionPreparationEnabled: Bool
     private let desktopInitialWindowEnabled: Bool
+    private let desktopVisitSignInEnabled: Bool
     private let desktopWallNow: @MainActor () -> Date
     private var pending: [UUID: (revision: String, task: Task<ProviderNativeReply, Error>)] = [:]
     private var earlyCancellations: Set<UUID> = []
     private var closed = false
     private var recordingMounts: [UUID: (revision: String, mount: NativeProviderRecordingMount)] = [:]
+    private struct VisitSignInTicket {
+        let token: String, revision: String, account: String
+        let identity: NativeAuthIdentity, mount: NativeProviderRecordingMount, epoch: UUID
+        let mintedAt: ContinuousClock.Instant, mintedWall: Date, expires: ContinuousClock.Instant
+    }
+    private var visitSignIn: (mount: NativeProviderRecordingMount, epoch: UUID,
+                              task: Task<VisitSignInTicket?, Never>)?
+    private var visitSignInEpoch = UUID()
+    private var visitSignInExpiry: Task<Void, Never>?
+
+    private func abandonVisitSignIn() {
+        visitSignInExpiry?.cancel(); visitSignInExpiry = nil
+        visitSignIn?.task.cancel(); visitSignIn = nil; visitSignInEpoch = UUID()
+    }
+
+    private func visitSignInIsCurrent(_ ticket: VisitSignInTicket, revision: String) -> Bool {
+        guard !closed, ticket.revision == revision, ticket.epoch == visitSignInEpoch,
+              contextNow() >= ticket.mintedAt, contextNow() < ticket.expires,
+              Self.desktopClocksAgree(from: ticket.mintedAt, wall: ticket.mintedWall,
+                  to: contextNow(), wall: desktopWallNow()),
+              auth.state().identity == ticket.identity,
+              (try? auth.recordingAccountDigest(expectedRevision: revision)) == ticket.account,
+              recordingMounts[ticket.mount.workspaceID]?.revision == revision,
+              recordingMounts[ticket.mount.workspaceID]?.mount == ticket.mount,
+              (try? auth.validateInitialWindowToken(ticket.token, expectedRevision: revision)) != nil
+        else { return false }
+        return true
+    }
+
+    private func prepareVisitSignIn(after request: ProviderNativeRequest) {
+        guard desktopVisitSignInEnabled, desktopInitialWindowEnabled, request.action == .mount,
+              let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              let workspace = Self.canonicalUUID(body["workspace_id"] as? String),
+              let saved = recordingMounts[workspace], saved.revision == request.revision,
+              saved.mount.desktopAdmissionMetadataSupported else { return }
+        abandonVisitSignIn()
+        let epoch = visitSignInEpoch, mount = saved.mount
+        let task = Task { @MainActor [weak self] () -> VisitSignInTicket? in
+            guard let self else { return nil }
+            do {
+                try self.current(request.revision)
+                let identity = self.auth.state().identity
+                let account = try self.auth.recordingAccountDigest(expectedRevision: request.revision)
+                let token = try await self.auth.prepareToken(expectedRevision: request.revision)
+                try Task.checkCancellation(); try self.current(request.revision)
+                guard let identity, self.auth.state().identity == identity,
+                      self.visitSignInEpoch == epoch,
+                      self.recordingMounts[workspace]?.mount == mount else { return nil }
+                let mintedAt = self.contextNow(), wall = self.desktopWallNow()
+                let jwtExpiry = try self.auth.validateInitialWindowToken(token, expectedRevision: request.revision)
+                let deadline = min(mintedAt.advanced(by: .seconds(5)),
+                    mintedAt.advanced(by: .seconds(jwtExpiry.timeIntervalSince(wall))))
+                guard mintedAt < deadline else { return nil }
+                let ticket = VisitSignInTicket(token: token, revision: request.revision, account: account,
+                    identity: identity, mount: mount, epoch: epoch, mintedAt: mintedAt,
+                    mintedWall: wall, expires: deadline)
+                self.visitSignInExpiry = Task { @MainActor [weak self] in
+                    try? await Task.sleep(until: deadline, clock: ContinuousClock())
+                    guard !Task.isCancelled, self?.visitSignIn?.epoch == epoch else { return }
+                    self?.visitSignIn = nil; self?.visitSignInExpiry = nil
+                }
+                return ticket
+            } catch { return nil }
+        }
+        visitSignIn = (mount, epoch, task)
+    }
+
+    private func claimVisitSignIn(_ request: ProviderNativeRequest) -> Task<VisitSignInTicket?, Never>? {
+        let saved = visitSignIn
+        visitSignIn = nil; visitSignInExpiry?.cancel(); visitSignInExpiry = nil
+        guard request.action == .admission,
+              let body = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              Set(body.keys) == ["workspace_id", "binding_ref", "request_nonce", "attestation", "configured_capture", "preparation_metadata"],
+              body["attestation"] is [String: Any],
+              Self.canonicalUUID(body["request_nonce"] as? String) != nil,
+              let optIn = body["preparation_metadata"] as? NSNumber,
+              CFGetTypeID(optIn) == CFBooleanGetTypeID(), optIn.boolValue,
+              let saved, saved.epoch == visitSignInEpoch,
+              body["workspace_id"] as? String == saved.mount.workspaceID.uuidString.lowercased(),
+              body["binding_ref"] as? String == saved.mount.bindingRef else {
+            saved?.task.cancel(); visitSignInEpoch = UUID(); return nil
+        }
+        // One destructive claim before any await. No restore or I/O retry.
+        return saved.task
+    }
 
     private struct PreparedRecordingContext {
         let requestID: UUID, nonce: UUID, revision: String
@@ -337,6 +423,7 @@ protocol ProviderNativeWire: Sendable {
     init(auth: NativeWorkspaceAuth, wire: any ProviderNativeWire,
          nativeAdmissionPreparationEnabled: Bool = false,
          desktopInitialWindowEnabled: Bool = false,
+         desktopVisitSignInEnabled: Bool = false,
          desktopWallNow: @escaping @MainActor () -> Date = { Date() },
          contextNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
          timingNow: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
@@ -344,11 +431,13 @@ protocol ProviderNativeWire: Sendable {
         self.auth = auth; self.wire = wire; self.contextNow = contextNow
         self.nativeAdmissionPreparationEnabled = nativeAdmissionPreparationEnabled
         self.desktopInitialWindowEnabled = desktopInitialWindowEnabled
+        self.desktopVisitSignInEnabled = desktopVisitSignInEnabled
         self.desktopWallNow = desktopWallNow
         self.timingNow = timingNow; self.requestTiming = requestTiming
     }
 
     func authChanged(_ state: NativeAuthState) {
+        abandonVisitSignIn()
         abandonFreshInitialWindow()
         abandonDesktopInitialWindow()
         preparingAdmission = nil
@@ -361,6 +450,7 @@ protocol ProviderNativeWire: Sendable {
     }
 
     func cancel(_ id: UUID) {
+        abandonVisitSignIn()
         abandonFreshInitialWindow()
         abandonDesktopInitialWindow()
         if preparingAdmission == id { preparingAdmission = nil }
@@ -376,6 +466,7 @@ protocol ProviderNativeWire: Sendable {
     }
 
     func close() {
+        abandonVisitSignIn()
         abandonFreshInitialWindow()
         abandonDesktopInitialWindow()
         closed = true
@@ -1146,6 +1237,7 @@ protocol ProviderNativeWire: Sendable {
         }
         guard earlyCancellations.remove(request.id) == nil else { throw ProviderNativeError.cancelled }
         try current(request.revision)
+        let visitSignIn = claimVisitSignIn(request)
         let request = try admissionPreparationRequest(request)
         var succeeded = false
         defer {
@@ -1190,6 +1282,7 @@ protocol ProviderNativeWire: Sendable {
             let usedWindowTicket: InitialWindowTicket?
             var usedDesktopWindowTicket: DesktopInitialWindowTicket?
             var usedDesktopSourceTicket: DesktopSourceStartTicket?
+            var usedVisitSignIn: VisitSignInTicket?
             if let initialWindowToken,
                self.contextNow() >= initialWindowToken.mintedAt,
                self.contextNow() < initialWindowToken.expires,
@@ -1214,16 +1307,40 @@ protocol ProviderNativeWire: Sendable {
                 // this Task was scheduled behaves exactly like a ticket miss.
                 usedWindowTicket = nil
                 usedDesktopWindowTicket = nil
-                token = try await auth.token(expectedRevision: request.revision,
-                                            nativeSessionWithoutOrigin: true)
+                let prepared = await withTaskCancellationHandler {
+                    await visitSignIn?.value
+                } onCancel: {
+                    visitSignIn?.cancel()
+                }
+                try Task.checkCancellation(); try self.current(request.revision)
+                if let prepared,
+                   self.visitSignInIsCurrent(prepared, revision: request.revision),
+                   self.contextNow() < prepared.mintedAt.advanced(by: .seconds(1)) {
+                    // Leave at least four of the original five seconds for the
+                    // measured Core/window/source chain. Older idle tokens use
+                    // the ordinary fresh path rather than causing extra mints later.
+                    token = prepared.token; usedVisitSignIn = prepared
+                } else {
+                    token = try await auth.token(expectedRevision: request.revision,
+                                                nativeSessionWithoutOrigin: true)
+                }
             }
-            let mintedAt = self.contextNow()
-            let desktopMintedWall = self.desktopInitialWindowEnabled ? self.desktopWallNow() : nil
+            var mintedAt = usedVisitSignIn?.mintedAt ?? self.contextNow()
+            var desktopMintedWall = usedVisitSignIn?.mintedWall ?? (self.desktopInitialWindowEnabled ? self.desktopWallNow() : nil)
             tokenEnd = timingNow()
             if let interval = tokenInterval { ProviderNativeRequestTiming.end("Provider token", interval) }
             tokenInterval = nil
             try self.current(request.revision)
             try Task.checkCancellation()
+            if let prepared = usedVisitSignIn,
+               !self.visitSignInIsCurrent(prepared, revision: request.revision) {
+                // Still before dispatch: use the ordinary fresh path once.
+                usedVisitSignIn = nil
+                token = try await auth.token(expectedRevision: request.revision, nativeSessionWithoutOrigin: true)
+                mintedAt = self.contextNow(); desktopMintedWall = self.desktopWallNow()
+                tokenEnd = timingNow()
+                try self.current(request.revision); try Task.checkCancellation()
+            }
             if let desktop = usedDesktopWindowTicket ?? usedDesktopSourceTicket?.admission,
                !self.desktopTicketIsCurrent(desktop, revision: request.revision) {
                 // Still before wire: scheduling/local recovery consumed the
@@ -1246,6 +1363,15 @@ protocol ProviderNativeWire: Sendable {
             receiverInterval = nil
             try Task.checkCancellation()
             try self.current(request.revision)
+            if let prepared = usedVisitSignIn {
+                // Expiry bounds dispatch only. Account/mount/epoch publication
+                // fences remain after possibly committed I/O; never retry it.
+                guard self.visitSignInEpoch == prepared.epoch,
+                      self.auth.state().identity == prepared.identity,
+                      (try? self.auth.recordingAccountDigest(expectedRevision: request.revision)) == prepared.account,
+                      self.recordingMounts[prepared.mount.workspaceID]?.mount == prepared.mount
+                else { throw ProviderNativeError.cancelled }
+            }
             if let initialWindowToken = usedWindowTicket {
                 // Five seconds bounds the single dispatch, not the response
                 // lifetime. Preserve the existing in-flight publication fences.
@@ -1323,6 +1449,7 @@ protocol ProviderNativeWire: Sendable {
         } onCancel: {
             operation.cancel()
         }
+        prepareVisitSignIn(after: request)
         // Publish only after the outer cancellation/current-revision check. A
         // late window reply cannot extend the admission deadline or refill RAM.
         if let sourceCandidate,

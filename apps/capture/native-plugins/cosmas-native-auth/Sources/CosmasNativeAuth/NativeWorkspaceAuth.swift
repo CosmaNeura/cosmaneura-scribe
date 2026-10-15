@@ -233,6 +233,20 @@ public enum NativeProviderDisplayName {
     }
 
     public func token(expectedRevision: String, nativeSessionWithoutOrigin: Bool = false) async throws -> String {
+        try await requestToken(expectedRevision: expectedRevision,
+            nativeSessionWithoutOrigin: nativeSessionWithoutOrigin, speculative: false)
+    }
+
+    /// Optional visit-opening preparation. Failure cannot turn a ready idle
+    /// workspace into an error; ordinary Start still performs its fresh request.
+    /// The caller owns a bounded, native-only one-use ticket, not an access grant.
+    public func prepareToken(expectedRevision: String) async throws -> String {
+        try await requestToken(expectedRevision: expectedRevision,
+            nativeSessionWithoutOrigin: true, speculative: true)
+    }
+
+    private func requestToken(expectedRevision: String, nativeSessionWithoutOrigin: Bool,
+                              speculative: Bool) async throws -> String {
         let before = state()
         guard before.phase == .ready, before.revision == expectedRevision,
               let expected = before.identity, let driver, let tokenPolicy else {
@@ -243,8 +257,9 @@ public enum NativeProviderDisplayName {
         let operation = UUID()
         pendingTokens.insert(operation)
         do {
-            let token = try await NativeAuthAwait<String?>().run(timeout: networkTimeout,
-                onAbandon: { if self.revision == expectedRevision { self.change(.unavailable) } }) {
+            let token = try await NativeAuthAwait<String?>().run(
+                timeout: speculative ? min(networkTimeout, .seconds(5)) : networkTimeout,
+                onAbandon: { if !speculative, self.revision == expectedRevision { self.change(.unavailable) } }) {
                 defer { self.pendingTokens.remove(operation) }
                 try Task.checkCancellation()
                 return try await driver.freshToken()
@@ -258,7 +273,7 @@ public enum NativeProviderDisplayName {
             try tokenPolicy.validate(token, identity: expected, nativeSessionWithoutOrigin: nativeSessionWithoutOrigin)
             return token
         } catch {
-            if revision == expectedRevision { change(.unavailable) }
+            if !speculative, revision == expectedRevision { change(.unavailable) }
             throw NativeAuthError.tokenUnavailable
         }
     }

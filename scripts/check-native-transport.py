@@ -88,6 +88,9 @@ def main() -> None:
         + [str(path) for path in sorted(recording.glob("*.swift"))]
     )
     for name in ("transport", "provider", "desktop-initial-window"):
+        # Desktop owns its distinct source-start implementation; the phone
+        # bridge retains microphone-finalization authority and must not be copied.
+        owner_sources = standalone if name == "desktop-initial-window" else bridge
         commands += [
             common
             + [
@@ -106,6 +109,11 @@ def main() -> None:
                 str(output / name),
                 str(bridge / "NativeProviderConnection.swift"),
                 str(bridge / "ProviderNativeTransport.swift"),
+                *[str(owner_sources / filename) for filename in (
+                    "NativeProviderRecordingService.swift", "NativeSourceStartOwner.swift",
+                    "NativeSourceProofJournal.swift", "NativeSourceRecovery.swift",
+                    "NativeCaptureProcessFence.swift",
+                )],
                 str(standalone / f"check-native-{name}.swift"),
             ],
             [str(output / name)] + ([str(output / "fixture.der")] if name == "provider" else []),
