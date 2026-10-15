@@ -10,7 +10,14 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from .canonical_json import canonical_sha256
 from .captured_source_runtime import CapturedSourceRepositoryProvider
+from .creator_preparation_routes import (
+    Configuration,
+    CreatorPreparationMetadata,
+    Keys,
+    read_creator_preparation_metadata,
+)
 from .creator_review_routes import Creator, Key, Tenant
+from .creator_review_routes import Runtime as ReviewRuntime
 from .external_transcript_v1 import TranscriptLanguageMode
 from .normalized_source_persistence import CapturedSessionCreate
 from .repository import IdempotencyClaimUnavailableError, IdempotencyConflictError
@@ -59,6 +66,13 @@ class CapturedAdmissionReceiptV1(CapturedAdmissionRequestV1):
     )
     status: Literal["admitted"] = "admitted"
     created_at: AwareDatetime
+
+
+class PreparedCapturedAdmissionReceiptV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    schema_version: Literal["1.0"] = "1.0"
+    admission: CapturedAdmissionReceiptV1
+    preparation_metadata: CreatorPreparationMetadata
 
 
 class CapturedAdmissionRuntime:
@@ -142,3 +156,30 @@ async def admit_captured_session(
 ) -> CapturedAdmissionReceiptV1:
     response.headers.update(_HEADERS)
     return await runtime.admit(tenant_id, actor, key, payload)
+
+
+@router.post("/prepared", response_model=PreparedCapturedAdmissionReceiptV1, status_code=201)
+async def admit_prepared_captured_session(
+    payload: CapturedAdmissionRequestV1,
+    tenant_id: Tenant,
+    actor: Creator,
+    key: Key,
+    runtime: Runtime,
+    review_runtime: ReviewRuntime,
+    settings: Configuration,
+    provider: Keys,
+    response: Response,
+) -> PreparedCapturedAdmissionReceiptV1:
+    # The original session key/fingerprint is unchanged across both endpoints.
+    # Admission may commit before metadata fails. Never publish that partial
+    # result or replace its family; exact replay rechecks consent and creator.
+    response.headers.update(_HEADERS)
+    try:
+        receipt = await runtime.admit(tenant_id, actor, key, payload)
+    except BaseException:
+        await provider.close()
+        raise
+    metadata = await read_creator_preparation_metadata(
+        receipt.id, tenant_id, actor, review_runtime, settings, provider, response
+    )
+    return PreparedCapturedAdmissionReceiptV1(admission=receipt, preparation_metadata=metadata)

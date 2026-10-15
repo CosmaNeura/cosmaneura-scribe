@@ -72,6 +72,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/captured-sessions/prepared": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admit Prepared Captured Session */
+        post: operations["admit_prepared_captured_session_v1_captured_sessions_prepared_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/captured-sessions/{session_id}/capture-lease": {
         parameters: {
             query?: never;
@@ -134,6 +151,40 @@ export interface paths {
         put?: never;
         /** Prepare Creator Continuation */
         post: operations["prepare_creator_continuation_v1_captured_sessions__session_id__continuation_window_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/captured-sessions/{session_id}/preparation-metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Creator Preparation Metadata */
+        get: operations["read_creator_preparation_metadata_v1_captured_sessions__session_id__preparation_metadata_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/captured-sessions/{session_id}/recording-window": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prepare Creator Window */
+        post: operations["prepare_creator_window_v1_captured_sessions__session_id__recording_window_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1198,6 +1249,18 @@ export interface components {
              */
             session_id: string;
         };
+        /** CreatorPreparationMetadata */
+        CreatorPreparationMetadata: {
+            capabilities: components["schemas"]["CaptureCapabilities"];
+            encryption_key: components["schemas"]["AudioEncryptionPublicKey"];
+            review: components["schemas"]["CreatorReviewViewV1"];
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+        };
         /**
          * CreatorReviewQueueStatus
          * @enum {string}
@@ -1449,6 +1512,37 @@ export interface components {
             /** Working Transcript Version */
             working_transcript_version: number;
         };
+        /** CreatorWindowReceipt */
+        CreatorWindowReceipt: {
+            binding: components["schemas"]["SessionAudioKeyReceipt"];
+            lease: components["schemas"]["CaptureLeaseReceipt"];
+            reservations: components["schemas"]["ChunkReservationBatchReceipt"];
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+        };
+        /** CreatorWindowRequest */
+        CreatorWindowRequest: {
+            /** Bind Idempotency Key */
+            bind_idempotency_key: string;
+            binding: components["schemas"]["WindowBinding"];
+            channel: components["schemas"]["CaptureChannel"];
+            /** Lease Idempotency Key */
+            lease_idempotency_key: string;
+            /** Reservation Count */
+            reservation_count: number;
+            /** Reserve Idempotency Key */
+            reserve_idempotency_key: string;
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
+        };
         /**
          * DeliveryStatus
          * @enum {string}
@@ -1564,6 +1658,17 @@ export interface components {
              * Format: uuid
              */
             source_start_id: string;
+        };
+        /** PreparedCapturedAdmissionReceiptV1 */
+        PreparedCapturedAdmissionReceiptV1: {
+            admission: components["schemas"]["CapturedAdmissionReceiptV1"];
+            preparation_metadata: components["schemas"]["CreatorPreparationMetadata"];
+            /**
+             * Schema Version
+             * @default 1.0
+             * @constant
+             */
+            schema_version: "1.0";
         };
         /** RsaPublicJwk */
         RsaPublicJwk: {
@@ -1911,6 +2016,13 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** WindowBinding */
+        WindowBinding: {
+            /** Key Version */
+            key_version: string;
+            /** Wrapped Dek */
+            wrapped_dek: string;
+        };
         /**
          * WorkingSegmentResolution
          * @enum {string}
@@ -2039,6 +2151,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CapturedAdmissionReceiptV1"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admit_prepared_captured_session_v1_captured_sessions_prepared_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapturedAdmissionRequestV1"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreparedCapturedAdmissionReceiptV1"];
                 };
             };
             /** @description Validation Error */
@@ -2200,6 +2350,81 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CreatorContinuationReceiptV1"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_creator_preparation_metadata_v1_captured_sessions__session_id__preparation_metadata_get: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatorPreparationMetadata"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_creator_window_v1_captured_sessions__session_id__recording_window_post: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Creator reauthorized and asserted by the trusted platform, never the browser. */
+                "X-Scribe-Creator-Actor-ID": string;
+                "Idempotency-Key": string;
+                "X-Tenant-ID": string;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatorWindowRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatorWindowReceipt"];
                 };
             };
             /** @description Validation Error */
