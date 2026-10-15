@@ -472,6 +472,41 @@ def body(action, kind="creator_review"):
     )
 
 
+@pytest.mark.parametrize("status", [200, 403])
+async def test_prepared_core_wait_is_observed_on_success_and_denial(status):
+    from cosmaneura_scribe.provider_performance import provider_request_timing
+
+    wire = Wire()
+    wire.status = status
+    request = body("capture-operations", "native_recording_preparation")
+    client, handoff, revision = retained_preparation(wire, request["workspace_id"])
+    try:
+        with provider_request_timing("capture-operations", trace_enabled=True) as timing:
+            if status == 200:
+                await client.request(
+                    "capture-operations",
+                    request,
+                    "prepared-timing-key",
+                    handoff=handoff,
+                    revision=revision,
+                )
+            else:
+                with pytest.raises(ProviderCoreUnavailable):
+                    await client.request(
+                        "capture-operations",
+                        request,
+                        "prepared-timing-key",
+                        handoff=handoff,
+                        revision=revision,
+                    )
+        assert timing.durations["core_operation"] > 0
+        assert "scribe_core_operation;dur=0.000" not in timing.server_timing()
+        assert len(wire.calls) == 1
+        assert wire.checks == (3 if status == 200 else 2)
+    finally:
+        await client.close()
+
+
 @pytest.mark.parametrize("action", ["mount", "capture-operations", "recorder"])
 async def test_each_client_phase_uses_one_fresh_core_request(action):
     wire = Wire()

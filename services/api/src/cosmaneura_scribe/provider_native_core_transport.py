@@ -179,37 +179,38 @@ class ProviderNativeCoreTransport:
         try:
             if not native_read and (await self.fresh() != before or await self.fresh() != before):
                 raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
-            async with self.client.stream(
-                "POST",
-                self.origin + PATH,
-                content=json.dumps(request, allow_nan=False).encode(),
-                headers={
-                    "Authorization": "Bearer " + _secret(before.user_token),
-                    "X-Cosmaneura-Workload-Authorization": "Bearer " + _secret(workload),
-                    "X-Cosmaneura-Native-Capture-Version": "1",
-                    "Idempotency-Key": key,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "Cache-Control": "no-store",
-                },
-            ) as response:
-                if response.status_code != 200:
-                    raise ProviderCoreUnavailable(
-                        "core_provider_request_unconfirmed",
-                        response.status_code
-                        if response.status_code in {401, 403, 409, 422}
-                        else 503,
+            with provider_phase_timing("core_operation"):
+                async with self.client.stream(
+                    "POST",
+                    self.origin + PATH,
+                    content=json.dumps(request, allow_nan=False).encode(),
+                    headers={
+                        "Authorization": "Bearer " + _secret(before.user_token),
+                        "X-Cosmaneura-Workload-Authorization": "Bearer " + _secret(workload),
+                        "X-Cosmaneura-Native-Capture-Version": "1",
+                        "Idempotency-Key": key,
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "Cache-Control": "no-store",
+                    },
+                ) as response:
+                    if response.status_code != 200:
+                        raise ProviderCoreUnavailable(
+                            "core_provider_request_unconfirmed",
+                            response.status_code
+                            if response.status_code in {401, 403, 409, 422}
+                            else 503,
+                        )
+                    _require(
+                        response.headers.get("x-cosmaneura-native-capture-version") == "1"
+                        and response.headers.get("content-type", "").split(";", 1)[0]
+                        == "application/json"
+                        and "no-store" in response.headers.get("cache-control", "").lower()
                     )
-                _require(
-                    response.headers.get("x-cosmaneura-native-capture-version") == "1"
-                    and response.headers.get("content-type", "").split(";", 1)[0]
-                    == "application/json"
-                    and "no-store" in response.headers.get("cache-control", "").lower()
-                )
-                raw = bytearray()
-                async for chunk in response.aiter_bytes():
-                    _require(len(raw) + len(chunk) <= MAX_CORE_CAPTURE_RESPONSE_BYTES)
-                    raw.extend(chunk)
+                    raw = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        _require(len(raw) + len(chunk) <= MAX_CORE_CAPTURE_RESPONSE_BYTES)
+                        raw.extend(chunk)
             value = _object(
                 json.loads(raw, object_pairs_hook=_unique, parse_constant=lambda _: _require(False))
             )
