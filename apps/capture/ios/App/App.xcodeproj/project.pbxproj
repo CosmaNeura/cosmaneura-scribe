@@ -16,6 +16,9 @@
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
+		3334C3316C544EEFBAB589B3 /* ScribeRecordingWidget.appex in Copy Files */ = {isa = PBXBuildFile; fileRef = FE312EAC2C4148C2895977D2 /* ScribeRecordingWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, CodeSignOnCopy, ); }; };
+		D97288998AB94E108F7F62EC /* ScribeRecordingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270D1A6EBEB45E9BC319196 /* ScribeRecordingWidget.swift */; };
+		545DB5A4957A48D09D2B1453 /* CosmaneuraRecordingActivity in Frameworks */ = {isa = PBXBuildFile; productRef = 2B6C1FE50F114594A16F1651; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +33,8 @@
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
 		9582B6822FE993A50072D4E8 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		FE312EAC2C4148C2895977D2 /* ScribeRecordingWidget.appex */ = {isa = PBXFileReference; name = "ScribeRecordingWidget.appex"; path = "ScribeRecordingWidget.appex"; sourceTree = BUILT_PRODUCTS_DIR; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; };
+		9270D1A6EBEB45E9BC319196 /* ScribeRecordingWidget.swift */ = {isa = PBXFileReference; name = "ScribeRecordingWidget.swift"; path = "ScribeRecordingWidget.swift"; sourceTree = "<group>"; fileEncoding = 4; lastKnownFileType = sourcecode.swift; includeInIndex = 0; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -38,6 +43,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		346893AD142D4110A549C5E7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				545DB5A4957A48D09D2B1453 /* CosmaneuraRecordingActivity in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -50,6 +63,7 @@
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
 				504EC3051FED79650016851F /* Products */,
+				D3EC7BBC539146449273DE90 /* ScribeRecordingWidget */,
 			);
 			sourceTree = "<group>";
 		};
@@ -57,6 +71,7 @@
 			isa = PBXGroup;
 			children = (
 				504EC3041FED79650016851F /* App.app */,
+				FE312EAC2C4148C2895977D2 /* ScribeRecordingWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -77,6 +92,15 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		D3EC7BBC539146449273DE90 /* ScribeRecordingWidget */ = {
+			isa = PBXGroup;
+			children = (
+				9270D1A6EBEB45E9BC319196 /* ScribeRecordingWidget.swift */,
+			);
+			name = ScribeRecordingWidget;
+			path = ScribeRecordingWidget;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -87,6 +111,7 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
+				B42DFF0773AF4A618110794F /* Copy Files */,
 			);
 			buildRules = (
 			);
@@ -100,14 +125,34 @@
 			productReference = 504EC3041FED79650016851F /* App.app */;
 			productType = "com.apple.product-type.application";
 		};
+		38B68722916F48D1A4E6329E /* "ScribeRecordingWidget" */ = {
+			isa = PBXNativeTarget;
+			name = "ScribeRecordingWidget";
+			productName = "ScribeRecordingWidget";
+			productReference = FE312EAC2C4148C2895977D2;
+			productType = "com.apple.product-type.app-extension";
+			buildConfigurationList = 0BAB1D3829AC4691812783BE;
+			buildPhases = (
+				E805FA60B7074D4BBBCD774C /* Sources */,
+				346893AD142D4110A549C5E7 /* Frameworks */,
+				20A3001532CC409196DA728A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			packageProductDependencies = (
+				2B6C1FE50F114594A16F1651 /* CosmaneuraRecordingActivity */,
+			);
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
 		504EC2FC1FED79650016851F /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				LastSwiftUpdateCheck = 0920;
-				LastUpgradeCheck = 0920;
+				LastSwiftUpdateCheck = 920;
+				LastUpgradeCheck = 920;
 				TargetAttributes = {
 					504EC3031FED79650016851F = {
 						CreatedOnToolsVersion = 9.2;
@@ -127,12 +172,14 @@
 			mainGroup = 504EC2FB1FED79650016851F;
 			packageReferences = (
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
+				BBDFF8F547934954BDB78E2F /* XCLocalSwiftPackageReference "ios-pcm-capture" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				504EC3031FED79650016851F /* App */,
+				38B68722916F48D1A4E6329E /* "ScribeRecordingWidget" */,
 			);
 		};
 /* End PBXProject section */
@@ -151,6 +198,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		20A3001532CC409196DA728A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -160,6 +214,14 @@
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E805FA60B7074D4BBBCD774C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D97288998AB94E108F7F62EC /* ScribeRecordingWidget.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -240,6 +302,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SCRIBE_APPLICATION_BUNDLE_IDENTIFIER = com.cosmaneura.capture;
 			};
 			name = Debug;
 		};
@@ -291,6 +354,7 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				VALIDATE_PRODUCT = YES;
+				SCRIBE_APPLICATION_BUNDLE_IDENTIFIER = com.cosmaneura.capture;
 			};
 			name = Release;
 		};
@@ -338,6 +402,46 @@
 			};
 			name = Release;
 		};
+		A5C9E8C116B242BDA9C7B4BA /* Debug */ = {
+			name = Debug;
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				INFOPLIST_FILE = ScribeRecordingWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				PRODUCT_NAME = "ScribeRecordingWidget";
+				SKIP_INSTALL = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SCRIBE_APPLICATION_BUNDLE_IDENTIFIER).recording";
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+		};
+		91113487F71542C98CAA6EFA /* Release */ = {
+			name = Release;
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INFOPLIST_FILE = ScribeRecordingWidget/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				PRODUCT_NAME = "ScribeRecordingWidget";
+				SKIP_INSTALL = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SCRIBE_APPLICATION_BUNDLE_IDENTIFIER).recording";
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -359,12 +463,25 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		0BAB1D3829AC4691812783BE /* Build configuration list for PBXNativeTarget "ScribeRecordingWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A5C9E8C116B242BDA9C7B4BA /* Debug */,
+				91113487F71542C98CAA6EFA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
 		D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "CapApp-SPM";
+		};
+		BBDFF8F547934954BDB78E2F /* XCLocalSwiftPackageReference "ios-pcm-capture" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../../native-plugins/ios-pcm-capture";
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -374,7 +491,26 @@
 			package = D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */;
 			productName = "CapApp-SPM";
 		};
+		2B6C1FE50F114594A16F1651 /* CosmaneuraRecordingActivity */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BBDFF8F547934954BDB78E2F;
+			productName = CosmaneuraRecordingActivity;
+		};
 /* End XCSwiftPackageProductDependency section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B42DFF0773AF4A618110794F /* Copy Files */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3334C3316C544EEFBAB589B3 /* ScribeRecordingWidget.appex in Copy Files */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			name = "Copy Files";
+			dstPath = "";
+			dstSubfolderSpec = 13;
+		};
+/* End PBXCopyFilesBuildPhase section */
 	};
 	rootObject = 504EC2FC1FED79650016851F /* Project object */;
 }

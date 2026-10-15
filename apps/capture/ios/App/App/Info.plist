@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>NSSupportsLiveActivities</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Scribe checks your microphone and records visits after patient consent.</string>
+  <key>UIBackgroundModes</key><array><string>audio</string></array>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>Scribe Recording</string>
+    <key>CFBundleURLSchemes</key><array><string>scribe-recording</string></array>
+  </dict></array>
   <key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>

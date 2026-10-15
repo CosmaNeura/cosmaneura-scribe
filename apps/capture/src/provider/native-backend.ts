@@ -180,29 +180,53 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       return value;
     },
   });
+  const listEncounters = async (signal: AbortSignal): Promise<readonly ProviderEncounter[]> => {
+    const value = await json("catalog", {}, signal);
+    if (!Array.isArray(value.encounters) || value.encounters.length > 1000) throw unavailable();
+    const next = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
+    for (const row of value.encounters) {
+      if (!record(row) || !isUuid(row.workspaceId)) throw unavailable();
+      const entry = encounter(row);
+      if (next.has(entry.appointmentRef)) throw unavailable();
+      next.set(entry.appointmentRef, { workspaceId: row.workspaceId, encounter: entry });
+    }
+    current(signal); encounters.clear();
+    openingReviewSupported = value.opening_review_v1 === true;
+    noteOpeningSupported = value.note_opening_v1 === true;
+    creationSupported = value.encounter_creation_v1 === true;
+    account = creationSupported ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }) : undefined;
+    for (const [key, row] of next) encounters.set(key, row);
+    return [...next.values()].map(row => row.encounter);
+  };
+  const activeRecording = async (signal: AbortSignal): Promise<{ appointmentRef: string; sessionId: string } | null> => {
+    current(signal);
+    const read = plugin.getProviderActiveRecording?.bind(plugin);
+    if (!nativeRecording || !read) return null;
+    const metadata = async (): Promise<{ workspaceId: string; sessionId: string } | null> => {
+      const value = await read({ revision }); current(signal);
+      if (!record(value) || Object.keys(value).sort().join() !== "recording,revision,version"
+        || value.version !== 1 || value.revision !== revision) throw unavailable();
+      if (value.recording === null) return null;
+      const selected = value.recording;
+      if (!record(selected) || Object.keys(selected).sort().join() !== "sessionId,workspaceId"
+        || !isUuid(selected.workspaceId) || !isUuid(selected.sessionId)) throw unavailable();
+      return { workspaceId: selected.workspaceId, sessionId: selected.sessionId };
+    };
+    const selected = await metadata();
+    if (!selected) return null;
+    await listEncounters(signal); // A URL never substitutes for current catalog authorization.
+    const matches = [...encounters.values()].filter(row => row.workspaceId === selected.workspaceId);
+    if (matches.length !== 1) throw unavailable();
+    const checked = await metadata();
+    if (!checked || checked.workspaceId !== selected.workspaceId || checked.sessionId !== selected.sessionId) return null;
+    return { appointmentRef: matches[0]!.encounter.appointmentRef, sessionId: selected.sessionId };
+  };
   return {
     get providerDisplayName() { return !abort.signal.aborted && !options.signal.aborted ? providerDisplayName : undefined; },
     get encounterSetup() { return creationSupported ? encounterSetup : undefined; },
     get account() { return account; },
     signal: abort.signal, dispose,
-    listEncounters: async signal => {
-      const value = await json("catalog", {}, signal);
-      if (!Array.isArray(value.encounters) || value.encounters.length > 1000) throw unavailable();
-      const next = new Map<string, { workspaceId: string; encounter: ProviderEncounter }>();
-      for (const row of value.encounters) {
-        if (!record(row) || !isUuid(row.workspaceId)) throw unavailable();
-        const entry = encounter(row);
-        if (next.has(entry.appointmentRef)) throw unavailable();
-        next.set(entry.appointmentRef, { workspaceId: row.workspaceId, encounter: entry });
-      }
-      current(signal); encounters.clear();
-      openingReviewSupported = value.opening_review_v1 === true;
-      noteOpeningSupported = value.note_opening_v1 === true;
-      creationSupported = value.encounter_creation_v1 === true;
-      account = creationSupported ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }) : undefined;
-      for (const [key, row] of next) encounters.set(key, row);
-      return [...next.values()].map(row => row.encounter);
-    },
+    listEncounters, activeRecording,
     createEncounter: async signal => {
       current(signal); await refresh(); current(signal);
       await options.core.createEncounter(signal); current(signal);

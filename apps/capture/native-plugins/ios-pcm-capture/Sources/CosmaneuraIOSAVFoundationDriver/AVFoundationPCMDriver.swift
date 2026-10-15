@@ -92,10 +92,14 @@ public enum AppleMicrophoneInput: String, Sendable {
 public final class AppleMicrophoneInputPreference: @unchecked Sendable {
   private let lock = NSLock()
   private var input: AppleMicrophoneInput = .builtIn
+  private var uid: String?
 
   public init() {}
   public var selected: AppleMicrophoneInput { lock.withLock { input } }
-  public func select(_ value: AppleMicrophoneInput) { lock.withLock { input = value } }
+  public var selectedUID: String? { lock.withLock { uid } }
+  public func select(_ value: AppleMicrophoneInput, uid: String? = nil) {
+    lock.withLock { input = value; self.uid = uid }
+  }
 }
 
 public protocol AppleApplicationForegroundProviding: Sendable {

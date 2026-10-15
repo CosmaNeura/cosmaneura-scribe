@@ -49,6 +49,8 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
+  /** Actual native owner mapped only against a fresh authorized encounter catalog. */
+  readonly activeRecording?: (signal: AbortSignal) => Promise<{ appointmentRef: string; sessionId: string } | null>;
   readonly audioPreflight?: (signal: AbortSignal) => Promise<ProviderAudioPreflight>;
   /** Ephemeral name from the current native authenticated profile, not an identity. */
   readonly providerDisplayName?: string | undefined;

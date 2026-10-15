@@ -195,7 +195,12 @@
           }
           // Keep the current eligible accessory if several are connected.
           let currentUID = audioSession.currentRoute.inputs.first?.uid
-          guard let port = available.first(where: { $0.uid == currentUID }) ?? available.first
+          let requestedUID = microphoneInput.selectedUID
+          // An exact device selection never silently falls back to a different
+          // accessory. Current-route verification remains the final authority.
+          let port = requestedUID.map { uid in available.first(where: { $0.uid == uid }) }
+            ?? available.first(where: { $0.uid == currentUID }) ?? available.first
+          guard let port, requestedUID == nil || requestedUID == port.uid
           else {
             throw AVFoundationDriverError.operationFailed
           }

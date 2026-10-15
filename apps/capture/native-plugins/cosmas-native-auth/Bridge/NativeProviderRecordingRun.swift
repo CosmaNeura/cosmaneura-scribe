@@ -78,6 +78,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
   private let lease: NativeRecordingLease
   private let batch: NativeRecordingReservationBatch
   private let requestPermission: @MainActor () async throws -> Bool
+  private let priorAudioFrames: Int
   private var completionFailure: NativeRecordingFinalizationFailure?
   private var installed = false
   private var starting: Task<Void, Error>?
@@ -91,6 +92,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
   init(
     source: any NativeProviderMicrophoneSource,
     lease: NativeRecordingLease, batch: NativeRecordingReservationBatch,
+    priorAudioFrames: Int = 0,
     requestPermission: @escaping @MainActor () async throws -> Bool,
     makeRecorder: (@escaping @Sendable () async throws -> Void,
       @escaping NativeRecordingFinalizer) throws
@@ -111,6 +113,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
     self.lease = lease
     self.batch = batch
     self.requestPermission = requestPermission
+    self.priorAudioFrames = priorAudioFrames
     recorder = try makeRecorder(
       { try await authority.validate() }, { write in try await authority.finalize(write) })
   }
@@ -196,6 +199,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         try requireStarting()
         try authority.validate()
         phase = .recording
+        updateRecordingActivity("recording")
         PCMStartupDiagnostics.shared.record(.readyAccepted)
         observeTerminalState()
       } catch {
@@ -220,6 +224,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
       return
     }
     phase = .stopping
+    updateRecordingActivity("stopping")
     if installed { NativeCaptureStartGate.retire(owner: authority.id) }
     authority.source.retireForStop()
     starting?.cancel()
@@ -251,6 +256,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
           }
         }
         phase = .stopped
+        updateRecordingActivity("paused")
         if completionFailure != nil { failure = .recordingIncomplete }
         else if failure != .startFailed { failure = nil }
       } catch {
@@ -288,8 +294,16 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
           try? await stop()
           return
         }
+        updateRecordingActivity("recording")
         do { try await Task.sleep(for: .seconds(1)) } catch { return }
       }
     }
+  }
+
+  private func updateRecordingActivity(_ phase: String) {
+    #if os(iOS)
+      ScribeRecordingActivity.update(phase: phase,
+        capturedAudioFrames: priorAudioFrames + recorder.capturedAudioFrames)
+    #endif
   }
 }

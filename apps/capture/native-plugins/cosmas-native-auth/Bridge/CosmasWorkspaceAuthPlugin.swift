@@ -18,6 +18,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "signIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "signOut", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getProviderState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getProviderActiveRecording", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "takeRecordingOpenRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "providerRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancelProviderRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "prepareProviderSource", returnType: CAPPluginReturnPromise),
@@ -39,9 +41,49 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     private var providerSourceID: UUID?
     private var observedDriver: W13ObservedAuthDriver?
     private static let recordingBridge = NativeProviderRecordingBridge()
+    private var recordingOpenObservation: RecordingOpenObservation?
+    private var recordingOpenPending = false
 
     nonisolated public override func load() {
-        Task { @MainActor in self.initializeAuth() }
+        Task { @MainActor in self.initializeAuth(); self.observeRecordingLinks() }
+    }
+
+    private func observeRecordingLinks() {
+        #if os(iOS)
+        guard recordingOpenObservation == nil else { return }
+        let token = NotificationCenter.default.addObserver(forName: .capacitorOpenURL,
+            object: nil, queue: .main) { [weak self] notification in
+            let value = (notification.object as? [String: Any])?["url"] as? URL
+            guard value?.absoluteString == "scribe-recording://recording" else { return }
+            Task { @MainActor [weak self] in
+                self?.recordingOpenPending = true
+                self?.notifyListeners("recordingOpen", data: ["version": 1])
+            }
+        }
+        recordingOpenObservation = RecordingOpenObservation(token)
+        #endif
+    }
+
+    @objc nonisolated public func takeRecordingOpenRequest(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            guard call.options.isEmpty else { return Self.rejectProvider(call) }
+            let pending = self.recordingOpenPending
+            self.recordingOpenPending = false
+            call.resolve(["version": 1, "pending": pending])
+        }
+    }
+
+    @objc nonisolated public func getProviderActiveRecording(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            self.initializeAuth()
+            guard Set(call.options.keys) == ["revision"], let revision = call.getString("revision"),
+                UUID(uuidString: revision)?.uuidString.lowercased() == revision,
+                self.nativeRecordingAvailable, let auth = self.auth,
+                auth.state().phase == .ready, auth.state().revision == revision
+            else { return Self.rejectProvider(call) }
+            call.resolve(["version": 1, "revision": revision,
+                "recording": Self.recordingBridge.navigationMetadata(revision: revision) as Any? ?? NSNull()])
+        }
     }
 
     @MainActor private func initializeAuth() {
@@ -478,4 +520,10 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
     private static func reject(_ call: CAPPluginCall) {
         call.reject("Secure session operation unavailable", NativeAuthError.unavailable.rawValue)
     }
+}
+
+private final class RecordingOpenObservation: @unchecked Sendable {
+    let token: NSObjectProtocol
+    init(_ token: NSObjectProtocol) { self.token = token }
+    deinit { NotificationCenter.default.removeObserver(token) }
 }

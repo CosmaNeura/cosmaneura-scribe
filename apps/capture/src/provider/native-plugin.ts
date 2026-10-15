@@ -19,8 +19,10 @@ export interface NativeProviderState {
   readonly providerDisplayName?: string;
 }
 export interface ProviderNativePlugin {
+  /** Read-only metadata; never starts or admits a recording. */
+  getProviderActiveRecording?(request: { revision: string }): Promise<unknown>;
   openProviderRecording?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; authorizationId?: string }): Promise<unknown>;
-  providerRecordingCommand?(request: { requestId: string; revision: string; recorderId: string; kind: NativeRecordingCommand; input?: MicrophoneInput }): Promise<unknown>;
+  providerRecordingCommand?(request: { requestId: string; revision: string; recorderId: string; kind: NativeRecordingCommand; input?: MicrophoneInput; inputId?: string }): Promise<unknown>;
   prepareProviderSource(request: { revision: string; workspaceId: string; bindingRef: string;
     sessionId: string; leaseId: string; leaseReceiptId: string; leaseGeneration: number;
     captureAuthorizedUntil: string; firstSequenceNumber?: number }): Promise<{ revision: string; sessionId: string }>;
@@ -38,5 +40,10 @@ export interface StandaloneProviderNative {
   openProviderCore(request: { appointmentRef: string | null }): Promise<void>;
 }
 
+export interface IOSRecordingOpenPlugin {
+  takeRecordingOpenRequest(): Promise<unknown>;
+  addListener(event: "recordingOpen", listener: (value: unknown) => void): Promise<PluginListenerHandle>;
+}
+
 // Register once: startup and the encounter backend share the same native owner.
-export const nativeProviderPlugin = registerPlugin<ProviderNativePlugin & NativeProviderSession & StandaloneProviderNative>("CosmasWorkspaceAuth");
+export const nativeProviderPlugin = registerPlugin<ProviderNativePlugin & NativeProviderSession & StandaloneProviderNative & IOSRecordingOpenPlugin>("CosmasWorkspaceAuth");
