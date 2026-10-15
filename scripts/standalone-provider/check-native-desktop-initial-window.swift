@@ -14,6 +14,7 @@ private func encoded(_ value: [String: Any]) throws -> Data {
     var instant = ContinuousClock.now
     var wall = Date()
     var expireAtTokenTiming = false, timingReads = 0
+    var eligibilityDelay: Double?
     var timings: [ProviderNativeRequestTiming] = []
     var wallReads = 0
     func advance(_ seconds: Double) {
@@ -194,6 +195,10 @@ private func encoded(_ value: [String: Any]) throws -> Data {
         connection = NativeProviderConnection(auth: auth, wire: wire, desktopInitialWindowEnabled: enabled,
             desktopVisitSignInEnabled: warm,
             desktopWallNow: { clock.wallReads += 1; return clock.wall }, contextNow: { clock.instant }, timingNow: {
+                if let delay = clock.eligibilityDelay {
+                    clock.timingReads += 1
+                    if clock.timingReads == 2 { clock.advance(delay) }
+                }
                 if clock.expireAtTokenTiming {
                     clock.timingReads += 1
                     if clock.timingReads == 2 { clock.advance(6) }
@@ -500,6 +505,18 @@ private func encoded(_ value: [String: Any]) throws -> Data {
             try await f.mount(); try await until { f.clock.wallReads >= 2 }
             try await f.admit(); _ = try await f.claim(); _ = try await f.source()
             try require(f.driver.tokens == 2 && f.wire.calls.count == 4)
+            try require(f.wire.tokensSeen[1] == f.wire.tokensSeen[2] && f.wire.tokensSeen[2] == f.wire.tokensSeen[3])
+            f.connection.close(); visitChecks += 1
+        }
+        do {
+            print("visit-sign-in: eligibility-crossing-before-dispatch")
+            let f = try Fixture(warm: true); f.wire.completeWindow = true
+            try await f.mount(); try await until { f.clock.wallReads >= 2 }
+            f.clock.advance(0.99); f.clock.timingReads = 0; f.clock.eligibilityDelay = 0.02
+            try await f.admit(); _ = try await f.claim(); _ = try await f.source()
+            // The selected warm token aged past one second before wire. Mint
+            // once before dispatch and retain the ordinary window/source chain.
+            try require(f.driver.tokens == 3 && f.wire.calls.count == 4)
             try require(f.wire.tokensSeen[1] == f.wire.tokensSeen[2] && f.wire.tokensSeen[2] == f.wire.tokensSeen[3])
             f.connection.close(); visitChecks += 1
         }

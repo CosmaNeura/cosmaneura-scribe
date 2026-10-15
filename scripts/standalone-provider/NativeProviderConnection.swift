@@ -1333,7 +1333,8 @@ protocol ProviderNativeWire: Sendable {
             try self.current(request.revision)
             try Task.checkCancellation()
             if let prepared = usedVisitSignIn,
-               !self.visitSignInIsCurrent(prepared, revision: request.revision) {
+               (!self.visitSignInIsCurrent(prepared, revision: request.revision)
+                || self.contextNow() >= prepared.mintedAt.advanced(by: .seconds(1))) {
                 // Still before dispatch: use the ordinary fresh path once.
                 usedVisitSignIn = nil
                 token = try await auth.token(expectedRevision: request.revision, nativeSessionWithoutOrigin: true)
