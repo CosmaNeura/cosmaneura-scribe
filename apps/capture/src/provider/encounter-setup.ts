@@ -3,11 +3,12 @@ import type { SecureQueuePlugin } from "@cosmaneura-scribe/capacitor-secure-queu
 import { isUuid } from "../../../review-ui/src/contracts";
 import { record, reference } from "./core-client";
 import type { ProviderEncounter } from "./workspace-contracts";
+import { createVisitFeatures, type VisitFeatures } from "./visit-features";
 
 export interface ProviderPatient { patientRef: string; name: string; dateOfBirth: string | null }
 export interface EncounterDraft {
   creationKey: string;
-  patient: { kind: "existing"; patientRef: string } | { kind: "new"; name: string; dateOfBirth: string | null };
+  patient: { kind: "existing"; patientRef: string } | { kind: "new"; name: string; dateOfBirth: string | null; provisional?: boolean };
   appointmentAt: string;
   title: string;
 }
@@ -17,7 +18,7 @@ export interface EncounterSetupState {
   moreResults: boolean;
   pending: EncounterDraft | null;
 }
-export interface ProviderEncounterSetup {
+export interface ProviderEncounterSetup extends Partial<VisitFeatures> {
   state(signal: AbortSignal): Promise<EncounterSetupState>;
   search(query: string, signal: AbortSignal): Promise<Omit<EncounterSetupState, "pending">>;
   submit(draft: EncounterDraft | null, signal: AbortSignal): Promise<ProviderEncounter>;
@@ -64,7 +65,8 @@ export function parseEncounterDraft(value: unknown): EncounterDraft {
   if (patient.kind === "existing") {
     if (Object.keys(patient).sort().join(",") !== "kind,patientRef" || !reference(patient.patientRef, "patient")) throw fail();
   } else if (patient.kind === "new") {
-    if (Object.keys(patient).sort().join(",") !== "dateOfBirth,kind,name"
+    if (Object.keys(patient).sort().join(",") !== (Object.hasOwn(patient, "provisional") ? "dateOfBirth,kind,name,provisional" : "dateOfBirth,kind,name")
+      || patient.provisional !== undefined && typeof patient.provisional !== "boolean"
       || text(patient.name).trim() !== patient.name) throw fail();
     birthDate(patient.dateOfBirth);
   } else throw fail();
@@ -73,7 +75,7 @@ export function parseEncounterDraft(value: unknown): EncounterDraft {
   text(value.title);
   return { creationKey: value.creationKey, patient: patient.kind === "existing"
     ? { kind: "existing", patientRef: patient.patientRef as string }
-    : { kind: "new", name: patient.name as string, dateOfBirth: birthDate(patient.dateOfBirth) },
+    : { kind: "new", name: patient.name as string, dateOfBirth: birthDate(patient.dateOfBirth), ...(patient.provisional !== undefined ? { provisional: patient.provisional as boolean } : {}) },
     appointmentAt: stamp, title: value.title as string };
 }
 
@@ -83,6 +85,7 @@ export function parseCreatedEncounter(value: unknown): ProviderEncounter & { wor
     title: text(value.patient_name), patientName: text(value.patient_name), detail: `${text(value.title)} · ${text(value.appointment_at, 40)}`,
     ...(value.patient_ref !== undefined ? { patientRef: value.patient_ref } : {}),
     ...(value.date_of_birth !== undefined ? { dateOfBirth: value.date_of_birth } : {}),
+    ...(value.identity !== undefined ? { identity: value.identity } : {}),
     ...(value.status !== undefined ? { status: value.status } : {}),
   });
   return { workspaceId: value.workspace_id, ...display };
@@ -168,6 +171,10 @@ export function createEncounterSetup(options: {
     return { revision: saved.revision, refs: value.refs as string[] };
   };
   return {
+    ...createVisitFeatures(async (body, key, signal) => {
+      options.current(signal); const value = await options.request(body, key, signal);
+      options.current(signal); accept(value); return value;
+    }),
     ...(options.canHide ? {
       hidden: async (signal: AbortSignal) => (await hiddenSnapshot(signal)).refs,
       setHidden: async (appointmentRef: string, hidden: boolean, signal: AbortSignal) => {
@@ -188,7 +195,7 @@ export function createEncounterSetup(options: {
       },
     } : {}),
     search,
-    state: async signal => ({ ...await search("", signal), pending: (await load(signal)).pending }),
+    state: async signal => ({ ...(recovery && account ? { account, patients: [], moreResults: false } : await search("", signal)), pending: (await load(signal)).pending }),
     submit: async (input, signal) => {
       options.current(signal);
       if (busy) throw fail();
@@ -200,7 +207,7 @@ export function createEncounterSetup(options: {
         if (saved.pending === null) saved = await save(saved, draft, signal);
         const patient = draft.patient.kind === "existing"
           ? { kind: "existing", patient_ref: draft.patient.patientRef }
-          : { kind: "new", name: draft.patient.name, date_of_birth: draft.patient.dateOfBirth };
+          : { kind: "new", name: draft.patient.name, date_of_birth: draft.patient.dateOfBirth, ...(draft.patient.provisional ? { provisional: true } : {}) };
         const value = await options.request({ action: "create", creation_key: draft.creationKey,
           patient, appointment_at: draft.appointmentAt, title: draft.title, request_nonce: crypto.randomUUID() }, draft.creationKey, signal);
         options.current(signal); accept(value);

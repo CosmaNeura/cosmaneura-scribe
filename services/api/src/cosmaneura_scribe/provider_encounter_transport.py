@@ -88,7 +88,11 @@ class ProviderEncounterTransport:
                     not re.fullmatch(r"[A-Za-z0-9._:-]{8,255}", key)
                     or set(body) & {"expected_actor_ref", "expected_tenant_ref"}
                     or body.get("action")
-                    not in {"patients", "list", "lookup", "create", "add_birth_date"}
+                    not in {
+                        "patients", "list", "lookup", "create", "add_birth_date",
+                        "private_note_read", "private_note_save",
+                        "patient_match_candidates", "patient_match_save",
+                    }
                 ):
                     raise ValueError
                 payload = {
@@ -97,7 +101,7 @@ class ProviderEncounterTransport:
                     "expected_tenant_ref": before.tenant_ref,
                 }
                 raw = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode()
-                if len(raw) > 4096:
+                if len(raw) > (16384 if body.get("action") == "private_note_save" else 4096):
                     raise ValueError
                 # Only a fixed label and duration enter diagnostics. Account
                 # checks remain outside this HTTP/decode timing interval.

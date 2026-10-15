@@ -1,13 +1,25 @@
+import type { PendingPatientMatch } from "./patient-match-view";
+import type { PrivateNoteLocal } from "./private-note-session";
+import { privateText } from "./visit-features";
 import type { SecureQueuePlugin } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { isUuid } from "../../../review-ui/src/contracts";
 import { type AdmissionIntent, type CoreCaptureScope, requireValue } from "./core-client";
-import { canonical, closed, validPendingSave, type PendingNoteSave } from "./core-notes";
+import { canonical, closed, validPendingSave, validSource, type PendingNoteSave, type ReviewedSource } from "./core-notes";
+import { reference } from "./core-client";
+
+interface NotePreparationIntent { readonly state: "requested" | "submitted"; readonly key: string;
+  readonly schema: string | null; readonly source: ReviewedSource | null }
 
 interface RecordingProviderProgress {
   readonly admission: AdmissionIntent;
   readonly sessionId: string | null;
   readonly uploaded: boolean;
   readonly pendingSave: PendingNoteSave | null;
+  /** Latest editor text, encrypted locally; never an instruction to replay a save. */
+  readonly queuedNoteEdits?: PendingNoteSave | null;
+  readonly privateNoteState?: PrivateNoteLocal;
+  readonly pendingPatientMatch?: PendingPatientMatch | null;
+  readonly notePreparation?: NotePreparationIntent | null;
 }
 interface RecoveredProviderProgress {
   /** Read/review recovery never invents an attestation or takes recording custody. */
@@ -15,6 +27,10 @@ interface RecoveredProviderProgress {
   readonly sessionId: string;
   readonly uploaded: true;
   readonly pendingSave: PendingNoteSave | null;
+  readonly queuedNoteEdits?: PendingNoteSave | null;
+  readonly privateNoteState?: PrivateNoteLocal;
+  readonly pendingPatientMatch?: PendingPatientMatch | null;
+  readonly notePreparation?: NotePreparationIntent | null;
 }
 export type ProviderProgress = RecordingProviderProgress | RecoveredProviderProgress;
 export interface JournalSnapshot { readonly revision: string | null; readonly progress: ProviderProgress | null }
@@ -62,7 +78,11 @@ export class NativeProviderWorkspaceJournal implements ProviderWorkspaceJournal 
         && (prior.sessionId === null || prior.sessionId === progress.sessionId)
         && (!prior.uploaded || progress.uploaded)
         && (prior.pendingSave === null || progress.pendingSave === null
-          || canonical(prior.pendingSave) === canonical(progress.pendingSave)));
+          || canonical(prior.pendingSave) === canonical(progress.pendingSave))
+        && (!prior.pendingPatientMatch || !progress.pendingPatientMatch || canonical(prior.pendingPatientMatch) === canonical(progress.pendingPatientMatch))
+        && (!prior.privateNoteState?.pending || !progress.privateNoteState?.pending || canonical(prior.privateNoteState.pending) === canonical(progress.privateNoteState.pending))
+        && (!prior.notePreparation || !progress.notePreparation || prior.notePreparation.key === progress.notePreparation.key
+          && (prior.notePreparation.state !== "submitted" || canonical(prior.notePreparation) === canonical(progress.notePreparation))));
     }
     const bytes = new TextEncoder().encode(JSON.stringify({ version: progress.admission === null ? 2 : 1, recoveryScope: this.recoveryScope,
       scope: this.scope, progress }));
@@ -78,10 +98,35 @@ export class NativeProviderWorkspaceJournal implements ProviderWorkspaceJournal 
 }
 
 export function assertProgress(value: unknown): asserts value is ProviderProgress {
-  requireValue(closed(value, "admission,sessionId,uploaded,pendingSave")
+  const buffered = typeof value === "object" && value !== null && Object.hasOwn(value, "queuedNoteEdits");
+  const privateNote = typeof value === "object" && value !== null && Object.hasOwn(value, "privateNoteState");
+  const matching = typeof value === "object" && value !== null && Object.hasOwn(value, "pendingPatientMatch");
+  const preparing = typeof value === "object" && value !== null && Object.hasOwn(value, "notePreparation");
+  requireValue(closed(value, "admission,sessionId,uploaded,pendingSave" + (buffered ? ",queuedNoteEdits" : "") + (privateNote ? ",privateNoteState" : "") + (matching ? ",pendingPatientMatch" : "") + (preparing ? ",notePreparation" : ""))
     && (value.sessionId === null || isUuid(value.sessionId)) && typeof value.uploaded === "boolean"
     && (!value.uploaded || value.sessionId !== null)
     && (value.pendingSave === null || value.uploaded && validPendingSave(value.pendingSave)));
+  if (buffered) requireValue(value.queuedNoteEdits === null || value.uploaded && validPendingSave(value.queuedNoteEdits));
+  if (preparing && value.notePreparation !== null) {
+    const intent = value.notePreparation;
+    requireValue(closed(intent, "state,key,schema,source") && isUuid(intent.key)
+      && (intent.state === "requested" && intent.schema === null && intent.source === null
+        || intent.state === "submitted" && value.uploaded && reference(intent.schema, "doctor_note_schema") && validSource(intent.source)));
+  }
+  if (matching && value.pendingPatientMatch !== null) {
+    const match = value.pendingPatientMatch;
+    requireValue(closed(match, "key,expectedVersion,selection") && isUuid(match.key) && Number.isSafeInteger(match.expectedVersion) && Number(match.expectedVersion) >= 0);
+    const selection = match.selection;
+    requireValue(closed(selection, "kind,patientRef") && selection.kind === "existing" && typeof selection.patientRef === "string" && /^patient_[0-7][0-9a-hjkmnp-tv-z]{25}$/u.test(selection.patientRef)
+      || closed(selection, "kind,dateOfBirth") && selection.kind === "confirm_new" && (selection.dateOfBirth === null || typeof selection.dateOfBirth === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(selection.dateOfBirth)));
+  }
+  if (privateNote) {
+    const note = value.privateNoteState;
+    requireValue(closed(note, "text,confirmedText,version,pending") && privateText(note.text) && privateText(note.confirmedText)
+      && Number.isSafeInteger(note.version) && Number(note.version) >= 0
+      && (note.pending === null || closed(note.pending, "text,expectedVersion,key") && privateText(note.pending.text)
+        && Number.isSafeInteger(note.pending.expectedVersion) && Number(note.pending.expectedVersion) >= 0 && isUuid(note.pending.key)));
+  }
   if (value.admission === null) { requireValue(value.uploaded === true && isUuid(value.sessionId)); return; }
   requireValue(closed(value.admission, "key,languageMode,attestation") && isUuid(value.admission.key)
     && ["en-US", "en-US+es-US"].includes(String(value.admission.languageMode))

@@ -10,6 +10,8 @@ import type { AuthorizedCoreRequest, CoreCaptureScope } from "./core-client";
 import type { ProviderWorkspaceJournal } from "./workspace-journal";
 import type { ProviderOpeningReview } from "./opening-review";
 import type { ProviderEncounterSetup, ProviderAccount } from "./encounter-setup";
+import type { ProviderAudioPreflight } from "./audio-preflight";
+import type { PatientIdentity } from "./visit-features";
 
 /** Core supplies display values through its existing authorized encounter list. */
 export interface ProviderEncounter {
@@ -17,6 +19,7 @@ export interface ProviderEncounter {
   readonly patientRef?: string;
   readonly patientName?: string;
   readonly dateOfBirth?: string | null;
+  readonly identity?: PatientIdentity;
   readonly status?: "draft_ready" | "processing" | "paused" | "ready" | "recording_saved";
 }
 export interface ProviderRecorderResources {
@@ -46,6 +49,7 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
+  readonly audioPreflight?: (signal: AbortSignal) => Promise<ProviderAudioPreflight>;
   /** Ephemeral name from the current native authenticated profile, not an identity. */
   readonly providerDisplayName?: string | undefined;
   /** Trusted recorder independently checks current review status at acquisition. */

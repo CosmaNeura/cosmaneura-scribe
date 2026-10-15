@@ -4,6 +4,8 @@ import type { AuthorizedReviewRequest, CreatorReviewView } from "../../review-ui
 import type { CreatorEditJournal } from "../../review-ui/src/creator-edit";
 import type { SpeakerNameSuggestions } from "../../review-ui/src/creator-edit-view";
 import type { CreatorReviewJournal } from "../../review-ui/src/creator-review-journal";
+import type { PrivateNoteSession } from "./provider/private-note-session";
+import type { AudioInputDevice } from "./provider/audio-preflight";
 
 /** Plain recorder state/commands shared by native hosts and the provider view.
  * Desktop implementations keep the flow, keys, audio and storage in main. */
@@ -12,6 +14,9 @@ export interface DesktopInputFeedback {
   readonly meetingAudio: { readonly level: number; readonly ageMs: number } | null;
 }
 export interface ProviderRecorderSnapshot extends CaptureFlowSnapshot {
+  readonly inputDevices?: readonly AudioInputDevice[];
+  readonly selectedInputId?: string | null;
+  readonly reconnecting?: boolean;
   readonly native?: { readonly phase: string; readonly busy: boolean;
     readonly uploadProgress?: { readonly total: number; readonly registered: number } };
   readonly desktop?: {
@@ -44,6 +49,7 @@ export interface ProviderRecorderController {
   refreshMeetingWindows?(): Promise<void>;
   selectMeetingWindow?(id: string): Promise<void>;
   selectMicrophoneInput?(input: MicrophoneInput): Promise<void>;
+  selectAudioInput?(id: string): Promise<void>;
   readonly getCaptureSignal?: () => Promise<unknown>;
 }
 /** Admitted and exclusively owned by a native host; preparation may still be pending. */
@@ -71,6 +77,8 @@ export interface ProviderCaptureBinding {
   /** Verified encounter context, shown only in the authenticated app surface. */
   readonly encounterLabel?: string;
   readonly visitLabel?: string;
+  readonly privateNotes?: PrivateNoteSession | undefined;
+  readonly onFinishVisit?: () => Promise<void>;
   readonly authorizedRequest: AuthorizedReviewRequest;
   readonly journal: CreatorReviewJournal;
   readonly editJournal?: CreatorEditJournal;
@@ -82,6 +90,6 @@ export interface ProviderCaptureBinding {
   /** Retries the retained upload/completion after confirmed native stop. Never records. */
   readonly resumePendingUpload?: () => Promise<void>;
   /** Optional until the host has a qualified existing Core note entrypoint. */
-  readonly continueToNote?: (view: CreatorReviewView) => Promise<void>;
+  readonly continueToNote?: (view: CreatorReviewView, prepareAfterFinish?: boolean) => Promise<void>;
   readonly prepareNoteOpening?: () => Promise<{ view: CreatorReviewView; open: () => Promise<void> }>;
 }

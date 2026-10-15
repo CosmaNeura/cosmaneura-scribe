@@ -77,7 +77,7 @@ _PREFIX = "/provider/v1/"
 _CORE = "/service/v1/agent/scribe/"
 _LIMITS = {
     "catalog": 2,
-    "encounters": 4096,
+    "encounters": 16384,
     "mount": 256,
     "recorder": 1024,
     "note-opening": 1024,
@@ -284,7 +284,7 @@ class ProviderReceiver:
                 if len(authorization) > 8200 or not authorization.startswith("Bearer "):
                     raise AuthenticationFailed()
                 revision = _uuid(request.headers.get("x-scribe-native-revision"))
-                body = await _read(request, _LIMITS[action])
+                body = await _read(request, _LIMITS[action], private_note=action == "encounters")
                 if action == "encounters":
                     _require(self.encounter_creation_enabled)
                     key = request.headers.get("idempotency-key", "")
@@ -754,6 +754,7 @@ class ProviderReceiver:
             **({"patientRef": value["patient_ref"]} if "patient_ref" in value else {}),
             **({"dateOfBirth": value["date_of_birth"]} if "date_of_birth" in value else {}),
             **({"status": value["status"]} if "status" in value else {}),
+            **({"identity": value["identity"]} if "identity" in value else {}),
         }
 
     async def selected_current(self, authorization, revision, workspace_id):
@@ -1060,7 +1061,7 @@ def _unique(pairs):
     return result
 
 
-async def _read(request: Request, limit: int) -> dict:
+async def _read(request: Request, limit: int, *, private_note: bool = False) -> dict:
     _require(
         request.headers.get("content-type", "").split(";", 1)[0] == "application/json"
         and "content-encoding" not in request.headers
@@ -1075,6 +1076,14 @@ async def _read(request: Request, limit: int) -> dict:
             data, object_pairs_hook=_unique, parse_constant=lambda _: _require(False)
         )
         _require(isinstance(result, dict))
+        if private_note and len(data) > 4096:
+            _require(
+                result.get("action") == "private_note_save"
+                and set(result) == {
+                    "action", "appointment_ref", "text", "expected_version",
+                    "change_key", "request_nonce",
+                }
+            )
         return result
     except (ValueError, UnicodeError, TimeoutError, RecursionError):
         raise InvalidRequest() from None
