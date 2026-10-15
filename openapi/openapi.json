@@ -2193,6 +2193,29 @@
         "title": "NativeIntervalStart",
         "type": "object"
       },
+      "PreparedCapturedAdmissionReceiptV1": {
+        "additionalProperties": false,
+        "properties": {
+          "admission": {
+            "$ref": "#/components/schemas/CapturedAdmissionReceiptV1"
+          },
+          "preparation_metadata": {
+            "$ref": "#/components/schemas/CreatorPreparationMetadata"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "admission",
+          "preparation_metadata"
+        ],
+        "title": "PreparedCapturedAdmissionReceiptV1",
+        "type": "object"
+      },
       "RsaPublicJwk": {
         "additionalProperties": false,
         "properties": {
@@ -3215,6 +3238,87 @@
           }
         ],
         "summary": "Admit Captured Session",
+        "tags": [
+          "configured-capture"
+        ]
+      }
+    },
+    "/v1/captured-sessions/prepared": {
+      "post": {
+        "operationId": "admit_prepared_captured_session_v1_captured_sessions_prepared_post",
+        "parameters": [
+          {
+            "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+            "in": "header",
+            "name": "X-Scribe-Creator-Actor-ID",
+            "required": true,
+            "schema": {
+              "description": "Creator reauthorized and asserted by the trusted platform, never the browser.",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "title": "X-Scribe-Creator-Actor-Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Tenant-ID",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "X-Tenant-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapturedAdmissionRequestV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedCapturedAdmissionReceiptV1"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Admit Prepared Captured Session",
         "tags": [
           "configured-capture"
         ]
