@@ -31,7 +31,7 @@ import { mountPatientMatch } from "./patient-match-view";
 import { PrivateNoteSession } from "./private-note-session";
 import "./private-note-editor";
 import type { PrivateNoteEditor } from "./private-note-editor";
-import { noteView } from "./note-view";
+import { draftSaveState, noteConversationView, noteView } from "./note-view";
 import { NoteAutosave } from "./note-autosave";
 import { PatientListObserver } from "./patient-list-observer";
 import { providerPreferences } from "./provider-preferences";
@@ -68,6 +68,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   type NavigationDestination = "encounters" | "review" | (() => void | Promise<void>);
   let pendingNavigation: NavigationDestination | null = null;
   let editorPosition: NoteEditorPosition | null = null;
+  let conversationPosition: NoteEditorPosition | null = null;
   let lastEditorField: HTMLTextAreaElement | null = null;
   let noteAutosave: NoteAutosave | null = null;
   let privateNoteSession: PrivateNoteSession | null = null;
@@ -76,6 +77,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let stagedEditTimer: ReturnType<typeof setTimeout> | undefined;
   let journalWrite: Promise<void> = Promise.resolve();
   let savedAt: Date | null = null;
+  let noteSaveUnconfirmed = false;
   let refreshNoteSources: (() => void) | null = null;
   let setupQuery = "";
   let pendingDateOfBirth: { date: string; key: string } | null = null;
@@ -150,7 +152,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     clearNavigation();
     encounterAbort?.abort(); encounterAbort = null;
     disposeContent?.(); disposeContent = null;
-    content.replaceChildren(); editorPosition = null; lastEditorField = null; draft = null; source = null; templates = []; noteTranscript = null;
+    content.replaceChildren(); editorPosition = null; conversationPosition = null; lastEditorField = null; savedAt = null; noteSaveUnconfirmed = false; draft = null; source = null; templates = []; noteTranscript = null;
     encounterLabel.textContent = ""; patientDetail.replaceChildren();
     consentRenewalOffered = false;
     consentAction = null;
@@ -930,6 +932,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (draft.status === "not_prepared") { show('<section class="provider-saved-card"><h1>Recording saved</h1><p>Your conversation is ready. Create a draft using your selected template.</p><button class="provider-primary" data-workspace-action="generate">Write visit note</button><details><summary>Details</summary><button class="provider-text-link" data-workspace-action="check-note">Check for note</button><button class="provider-text-link" data-workspace-action="review">Show the conversation</button></details></section>'); return; }
     const identity = identityOverride ?? context?.encounter.identity;
     show(noteView(draft, identity?.name ?? context?.encounter.patientName ?? context?.encounter.title ?? "Visit note", noteTranscript ? renderNoteTranscript(noteTranscript) : ""));
+    conversationPosition = null;
     if (identity && host.encounterSetup?.patientCandidates) content.querySelector(".provider-note-heading")?.insertAdjacentHTML("beforeend", `<button class="provider-text-link" data-workspace-action="match-patient">${identity.state === "provisional" ? "Match patient later" : identity.state === "matched" ? "Patient matched · Details" : "Patient confirmed · Details"}</button>`);
     const privateEditor = content.querySelector<PrivateNoteEditor>("scribe-private-note"); if (privateEditor) privateEditor.port = privateNotes();
     const buffered = journal.progress?.queuedNoteEdits;
@@ -977,24 +980,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const setNoteView = (transcript: boolean, rememberPosition = true): void => {
     const note = content.querySelector<HTMLElement>(".provider-note");
     requireValue(note);
-    if (transcript && rememberPosition) editorPosition = noteEditorPosition(content, lastEditorField);
-    const desktop = window.matchMedia("(min-width: 900px)").matches;
-    note.dataset.noteView = transcript && !desktop ? "transcript" : "note";
-    note.dataset.conversation = transcript ? "shown" : "hidden";
-    const evidence = note.querySelector<HTMLElement>(".provider-note-evidence"); if (evidence) evidence.hidden = !transcript;
-    const toggle = note.querySelector<HTMLButtonElement>('[data-workspace-action="transcript-view"]');
-    if (toggle) { toggle.textContent = transcript ? "Hide the conversation" : "Show the conversation"; toggle.setAttribute("aria-expanded", String(transcript)); }
-    for (const tab of note.querySelectorAll<HTMLButtonElement>(".provider-note-tabs button")) {
-      tab.setAttribute("aria-pressed", String(tab.dataset.workspaceAction === (transcript ? "transcript-view" : "note-view")));
-    }
-    if (transcript) {
-      const details = note.querySelector<HTMLDetailsElement>(".provider-note-evidence details");
-      if (details) details.open = true;
-      note.querySelector<HTMLElement>('.provider-note-evidence input, .provider-note-evidence summary')?.focus({ preventScroll: true });
-    } else restoreNoteEditorPosition(editorPosition);
+    conversationPosition = noteConversationView(note, transcript, lastEditorField, conversationPosition, rememberPosition);
   };
   const rememberEditorField = (event: FocusEvent): void => {
-    if (event.target instanceof HTMLTextAreaElement && event.target.hasAttribute("data-note-field")) lastEditorField = event.target;
+    if (event.target instanceof HTMLTextAreaElement && event.target.closest(".provider-note-editor, scribe-private-note")) lastEditorField = event.target;
   };
   const hasUnsavedEdits = (): boolean => [...content.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")]
     .some(field => field.value !== field.defaultValue);
@@ -1010,17 +999,27 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const noteChanged = (event: Event): void => {
     if (!(event.target instanceof HTMLTextAreaElement) || !event.target.hasAttribute("data-note-field")) return;
+    if (!journal.progress?.pendingSave) noteSaveUnconfirmed = false;
     updateSaveState(); noteAutosave?.changed();
     clearTimeout(stagedEditTimer);
-    stagedEditTimer = setTimeout(() => { void stageNoteEdits().catch(() => { notice.textContent = "Your edits haven’t saved yet. Keep this note open and try again."; }); }, 150);
+    const n = generation;
+    stagedEditTimer = setTimeout(() => { void stageNoteEdits().catch(() => {
+      if (!authorized(n)) return;
+      noteSaveUnconfirmed = true; updateSaveState(); notice.textContent = "Your edits haven’t saved yet. Keep this note open and try again.";
+    }); }, 150);
   };
   const updateSaveState = (): void => {
     refreshNoteSources?.();
     const status = content.querySelector<HTMLElement>("[data-note-save-state]");
-    if (status) status.textContent = journal.progress?.pendingSave ? "Saving…"
-      : hasUnsavedEdits() ? "Saving…" : savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "Saved";
+    if (status) status.textContent = draftSaveState({ pending: !!journal.progress?.pendingSave,
+      dirty: hasUnsavedEdits(), unconfirmed: noteSaveUnconfirmed, savedAt });
+  };
+  const restoreEditorAfterSave = (): void => {
+    // A background save must not move a reader out of Conversation.
+    if (content.querySelector<HTMLElement>(".provider-note")?.dataset.conversation !== "shown") restoreNoteEditorPosition(editorPosition);
   };
   const showSaveRecovery = (): void => {
+    noteSaveUnconfirmed = true; updateSaveState();
     if (!journal.progress?.pendingSave) {
       notice.textContent = "Your note hasn’t saved yet. Keep it open and try again.";
       if (!content.querySelector('[data-workspace-action="save"]')) content.querySelector(".provider-save-bar")?.insertAdjacentHTML("beforeend", '<button data-workspace-action="save">Try again</button>');
@@ -1033,7 +1032,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         recovery.innerHTML = '<button data-workspace-action="resolve">Check save status</button>';
         content.querySelector(".provider-save-bar")?.append(recovery);
       }
-      restoreNoteEditorPosition(editorPosition);
+      restoreEditorAfterSave();
     } else show('<h1>Confirm your previous save</h1><p>Your exact edits are retained. Checking the saved request automatically…</p><button data-workspace-action="resolve">Check save status</button>');
     startSaveStatusCheck();
   };
@@ -1069,7 +1068,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           draft = saved;
           await persist(value => ({ ...value, pendingSave: null, queuedNoteEdits: value.queuedNoteEdits ? pendingSave(saved, value.queuedNoteEdits.edit.fields) : null }));
           if (!authorized(n) || client !== activeClient) return;
-          savedAt = new Date();
+          savedAt = new Date(); noteSaveUnconfirmed = false;
           stop(); stopSaveCheck = null; source = fresh; noteTranscript = view; currentSchema = pending.schema;
           notice.textContent = content.querySelector("textarea[data-note-field]") ? ""
             : "Save confirmed. Your saved draft is shown; clinical review is still needed.";
@@ -1079,7 +1078,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
               if (field) { field.defaultValue = saved.fields![key]!; }
             }
             content.querySelector(".provider-save-recovery")?.remove(); setNoteEditorPending(content, false); updateSaveState();
-            restoreNoteEditorPosition(editorPosition); if (hasUnsavedEdits()) noteAutosave?.changed();
+            restoreEditorAfterSave(); if (hasUnsavedEdits()) noteAutosave?.changed();
           } else renderNote();
         } else if (result === "closed") stop();
       } catch { /* Uncertain reads retain the exact journal and never replay a save. */ }
@@ -1145,8 +1144,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const fields = Object.fromEntries(draft.field_order!.map((key, i) => [key, input(`note-${i}`)]));
     const pending = pendingSave(draft, fields);
     clearTimeout(stagedEditTimer);
-    const status = content.querySelector<HTMLElement>("[data-note-save-state]");
-    if (status) status.textContent = "Saving your edits…";
+    noteSaveUnconfirmed = false; updateSaveState();
     try {
       await persist(value => ({ ...value, pendingSave: pending, queuedNoteEdits: null }));
       const saved = await saveNote(client, session(), pending);
@@ -1154,7 +1152,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       draft = saved;
       await persist(value => ({ ...value, pendingSave: null, queuedNoteEdits: value.queuedNoteEdits ? pendingSave(saved, value.queuedNoteEdits.edit.fields) : null }));
       if (!authorized(n)) return false;
-      savedAt = new Date();
+      savedAt = new Date(); noteSaveUnconfirmed = false;
       for (const [i, key] of saved.field_order!.entries()) {
         const field = content.querySelector<HTMLTextAreaElement>(`[name="note-${i}"]`);
         if (field) { field.defaultValue = saved.fields![key]!; }
@@ -1162,7 +1160,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       setNoteEditorPending(content, false); updateSaveState();
       return true;
     } catch (error) {
-      if (authorized(n) && !journal.progress?.pendingSave) { setNoteEditorPending(content, false); updateSaveState(); }
+      if (authorized(n)) { noteSaveUnconfirmed = true; if (!journal.progress?.pendingSave) setNoteEditorPending(content, false); updateSaveState(); }
       throw error;
     }
   };
@@ -1306,6 +1304,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
             updated: identity => { if (authorized(n) && context === selected) {
               identityOverride = identity; encounterLabel.textContent = identity.name; renderPatientDetails(selected.encounter);
               const heading = content.querySelector<HTMLElement>(".provider-note-heading h1"); if (heading) heading.textContent = identity.name;
+              const conversationPatient = content.querySelector<HTMLElement>(".provider-note-mobile-context"); if (conversationPatient) conversationPatient.textContent = identity.name;
               const match = content.querySelector<HTMLButtonElement>('[data-workspace-action="match-patient"]');
               if (match) match.textContent = identity.state === "provisional" ? "Match patient later" : identity.state === "matched" ? "Patient matched · Details" : "Patient confirmed · Details";
               notice.textContent = "Patient details synced.";
@@ -1354,13 +1353,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           await persist(value => ({ ...value, pendingSave: null, queuedNoteEdits: pendingSave(confirmed, retainedFields) }));
           if (!authorized(n)) return;
           source = fresh; currentSchema = pending.schema; noteTranscript = view;
+          noteSaveUnconfirmed = false; if (result === "saved") savedAt = new Date();
           if (!content.querySelector("textarea[data-note-field]")) renderNote();
           pending.fieldOrder.forEach((key, i) => {
             const field = content.querySelector<HTMLTextAreaElement>(`[name="note-${i}"]`);
             if (field) { field.defaultValue = confirmed.fields![key]!; field.value = retainedFields[key]!; }
           });
           content.querySelector(".provider-save-recovery")?.remove(); setNoteEditorPending(content, false); updateSaveState();
-          restoreNoteEditorPosition(editorPosition); if (hasUnsavedEdits()) noteAutosave?.changed();
+          restoreEditorAfterSave(); if (hasUnsavedEdits()) noteAutosave?.changed();
           notice.textContent = result === "saved" ? "Previous save confirmed. Your saved draft is shown."
             : "The previous save did not complete. Your edits are restored; review and save again.";
           break;

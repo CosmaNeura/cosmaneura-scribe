@@ -113,19 +113,19 @@ try {
   assert.equal(button("resume-recording"), null);
   update({ phase: "paused", failure: "recoveryFailed", recordedChunks: 1, recordedPlaintextBytes: 204 });
   await resources.controller.refreshTranscriptionStatus();
-  await until(() => button("resume-recording")?.textContent.includes("Retry recovery and resume"));
-  assert.ok(button("stop-button").textContent.includes("Retry saving and upload"));
-  assert.ok(app.textContent.includes("saving could not be confirmed"));
+  await until(() => button("resume-recording")?.textContent.includes("Resume recording"));
+  assert.ok(button("stop-button").textContent.includes("Retry saving"));
+  assert.ok(app.textContent.includes("Saving is not confirmed."));
   button("stop-button").click();
   await app.updateComplete;
   await until(() => calls.includes("seal") && resources.controller.snapshot.statusCode === "capture_recovery_pending"
-    && !button("resume-recording").disabled && app.textContent.includes("saving could not be confirmed"));
-  assert.ok(app.textContent.includes("saving could not be confirmed"));
+    && !button("resume-recording").disabled && app.textContent.includes("Saving is not confirmed."));
+  assert.ok(app.textContent.includes("Saving is not confirmed."));
   const startsBeforeRecovery = calls.filter(kind => kind === "start").length;
   button("resume-recording").click();
   await until(() => app.querySelector("scribe-ios-input-meter"));
   assert.equal(calls.filter(kind => kind === "start").length, startsBeforeRecovery + 1);
-  assert.equal(app.textContent.includes("saving could not be confirmed"), false);
+  assert.equal(app.textContent.includes("Saving is not confirmed."), false);
   app.remove(); await resources.deactivate();
   assert.equal(calls.filter(kind => kind === "close").length, 1); assert.equal(locked, false);
   // The same compiled screen renders receipt-confirmed progress and keeps

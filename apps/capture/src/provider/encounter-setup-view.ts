@@ -13,5 +13,5 @@ export function encounterSetupMarkup(state: EncounterSetupState, query = ""): st
   return `<section class="provider-setup"><h1>Record a patient who isn’t on the schedule</h1>
     <form data-walk-in><label>Patient’s name<input name="walk-in-name" maxlength="200" value="${escape(query.trim())}" placeholder="First and last name" autocomplete="off" required></label>
     <p class="provider-start-help">A name is enough to start. You can match the patient using date of birth and other details later.</p>
-    <div class="provider-create-actions"><button type="button" class="provider-text-link" data-workspace-action="encounters">Cancel</button><button type="submit" class="provider-primary">Next: start recording</button></div></form></section>`;
+    <div class="provider-create-actions"><button type="button" class="provider-text-link" data-workspace-action="encounters">Cancel</button><button type="submit" class="provider-primary">Continue to recording setup</button></div></form></section>`;
 }

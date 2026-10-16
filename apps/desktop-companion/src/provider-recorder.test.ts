@@ -1819,6 +1819,10 @@ describe("deliberate desktop input selection", () => {
       expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
       expect(f.selectWindow).not.toHaveBeenCalled();expect(recorder.snapshot.desktop!.meetingWindows!.selectedId).not.toBe(old);
       expect(recorder.snapshot.desktop?.phase).toBe("ready");
+      const statusCode = change === "denied" ? "capture_call_unavailable" : change === "ambiguous" ? "capture_call_selection_required" : "capture_call_changed";
+      expect(recorder.snapshot.statusCode).toBe(statusCode);
+      expect(parseDesktopRecorderState({ recorderId: crypto.randomUUID(), revision: 1, snapshot: recorder.snapshot }).snapshot.statusCode).toBe(statusCode);
+      expect(recorder.snapshot.statusCode).not.toContain("Invented screen denial");
     } finally {await f.close();}
   });
   it("retains a closed preparation recommendation's provenance through its opaque-ID handoff", async () => {
@@ -1852,9 +1856,14 @@ describe("deliberate desktop input selection", () => {
     try {
       await vi.waitFor(()=>expect(recorder.snapshot.desktop?.phase).toBe("ready"));
       await expect(recorder.startRecording()).rejects.toThrow();expect(mount).not.toHaveBeenCalled();
+      expect(recorder.snapshot.statusCode).toBe("capture_call_selection_required");
       const id = recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id;await recorder.selectMeetingWindow(id);
+      expect(recorder.snapshot.statusCode).not.toBe("capture_call_selection_required");
       windows=[{...selected,title:"Invented changed document"}];await expect(recorder.startRecording()).rejects.toThrow();
       expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
+      expect(recorder.snapshot.statusCode).toBe("capture_call_changed");
+      await recorder.selectMeetingWindow(recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id);
+      expect(recorder.snapshot.statusCode).not.toBe("capture_call_changed");
       expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
     } finally {await f.close();}
   });
@@ -1870,6 +1879,7 @@ describe("deliberate desktop input selection", () => {
       windows=[{...selected,title:"Meet - klm-nopq-rst"}];reply.resolve();await rejected;
       expect(mount).toHaveBeenCalledOnce();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
       expect(f.indicator.current()?.visible).not.toBe(true);
+      expect(recorder.snapshot.statusCode).toBe("capture_call_changed");
     } finally {reply.resolve();await f.close();}
   });
   it.each(["pause", "finish", "close"] as const)("cancels delayed call metadata on %s without late mount or native Start", async action => {
@@ -1884,6 +1894,7 @@ describe("deliberate desktop input selection", () => {
       await (action==="pause"?recorder.pauseRecording():action==="finish"?recorder.stopRecording():recorder.deactivate());await rejected;
       reply.resolve([selected]);await Promise.resolve();await Promise.resolve();
       expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(recorder.snapshot.statusCode.startsWith("capture_call_")).toBe(false);
       if(action==="close")expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
     } finally {reply.resolve([selected]);await f.close();}
   });
@@ -1898,6 +1909,8 @@ describe("deliberate desktop input selection", () => {
       renew.mockClear();expect(f.authority).toHaveBeenCalledOnce();
       windows=[{...selected,title:"Meet - klm-nopq-rst"}];await expect(recorder.resumeRecording()).rejects.toThrow();
       expect(renew).not.toHaveBeenCalled();expect(f.authority).toHaveBeenCalledOnce();expect(f.nativeStart).toHaveBeenCalledOnce();
+      expect(recorder.snapshot.statusCode).toBe("capture_call_changed");
+      expect(recorder.snapshot.recordedChunks).toBeGreaterThan(0);
     } finally {await f.close();}
   });
   it("does not reconnect a replacement visible tab on the same native window", async () => {

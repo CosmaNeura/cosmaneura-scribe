@@ -116,6 +116,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private meetingWindowsUnavailable = false;
   private choosingWindow = false;
   private startFailed = false;
+  private callChoiceFailure: "capture_call_changed" | "capture_call_selection_required" | "capture_call_unavailable" | null = null;
   private operation: Promise<void> | null = null;
   private action: "prepare" | "start" | "resume" | "other" | null = null;
   private stopping: Promise<void> | null = null;
@@ -360,6 +361,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       : this.stopping && phase === "stopped" && flow.state === "recording" ? "capture_upload_settling"
       : this.reopenRequired && flow.state === "error" ? "capture_reopen_required"
       : setupExpired ? "capture_setup_expired"
+      : !this.captureMayBeActive && ["ready", "interrupted"].includes(phase) && this.callChoiceFailure !== null ? this.callChoiceFailure
       : phase === "ready" && this.startFailed && !["capture_storage_low", "capture_storage_unavailable"].includes(flow.statusCode) ? "capture_start_failed"
       : this.choosingWindow ? "capture_window_selection_pending" : flow.statusCode,
       sessionId: this.options.sessionId, transcript: null, transcriptionStatus: null,
@@ -394,6 +396,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     await this.run("other", async () => {
       await this.options.saveAudioMode?.(mode); this.requireOpen();
       this.audioMode = mode;
+      this.callChoiceFailure = null;
       this.unmountedAvailability = await this.availability(this.signal); this.requireOpen();
     });
     if (mode === "meeting" && this.options.listMeetingWindows) await this.refreshMeetingWindows();
@@ -458,6 +461,8 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
       // Preparation's first opaque-ID handoff retains its automatic provenance.
       // A later provider choice is explicit, including choosing among two calls.
       this.meetingWindowExplicit = !this.inheritedRecommendedIds.delete(id);
+      if (this.callChoiceFailure !== null) this.startFailed = false;
+      this.callChoiceFailure = null;
       this.publish(); return Promise.resolve();
     } catch { return Promise.reject(unavailable()); }
   }
@@ -466,6 +471,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     if (this.snapshot.desktop?.phase !== "ready" || this.operation || this.stopping || this.switchingInput || this.reconnecting) return Promise.reject(unavailable());
     const generation = this.continuationGeneration;
     this.startFailed = false;
+    this.callChoiceFailure = null;
     this.attempt = new AbortController();
     const attempt = this.attempt;
     return this.run("start", () => this.startAttempt(attempt, generation));
@@ -537,8 +543,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private async checkedInlineWindow(attempt: AbortController, generation: number,
     expected?: NativeMeetingWindow): Promise<NativeMeetingWindow> {
     const row = this.meetingWindows.find(row => row.id === this.meetingWindowId);
-    if (!row || this.meetingWindowsUnavailable) throw unavailable();
-    if (expected && !sameCallWindow(row.value, expected)) throw unavailable();
+    if (this.meetingWindowsUnavailable) throw this.callSelectionError("capture_call_unavailable");
+    if (!row) throw this.callSelectionError("capture_call_selection_required");
+    if (expected && !sameCallWindow(row.value, expected)) throw this.callSelectionError("capture_call_changed");
     const explicit = this.meetingWindowExplicit;
     // Re-read before mount/Start authority: a Chrome window may still have the
     // same PID/window ID after its visible tab changes. A changed/ambiguous
@@ -546,9 +553,17 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     // in this attempt. Native capture retains its independent identity checks.
     await this.loadMeetingWindows(AbortSignal.any([this.signal, attempt.signal])); this.requireAttempt(attempt, generation);
     const fresh = this.meetingWindows.find(candidate => sameCallWindow(candidate.value, row.value));
-    if (this.meetingWindowsUnavailable || !fresh || !explicit && recommendedCallWindow(this.meetingWindows)?.id !== fresh.id) throw unavailable();
+    if (this.meetingWindowsUnavailable) throw this.callSelectionError("capture_call_unavailable");
+    if (!fresh) throw this.callSelectionError("capture_call_changed");
+    if (!explicit && recommendedCallWindow(this.meetingWindows)?.id !== fresh.id) throw this.callSelectionError("capture_call_selection_required");
     this.meetingWindowId = fresh.id; this.meetingWindowExplicit = explicit; this.publish();
     return fresh.value;
+  }
+  private callSelectionError(code: NonNullable<DesktopProviderRecorder["callChoiceFailure"]>): Error {
+    // Presentation-only fixed reason. Never include a title, native identity or
+    // transport error; the current main-owned catalog remains the only choice.
+    this.callChoiceFailure = code;
+    return unavailable();
   }
   stopRecording(): Promise<void> { this.cancelContinuation(); return this.stopCapture(true); }
   pauseRecording(): Promise<void> { this.cancelContinuation(); return this.stopCapture(false); }
@@ -615,6 +630,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.requireContinuation(generation);
     if (this.flow.snapshot.state !== "paused" || this.stopConfirmationPending || this.operation || this.stopping) return Promise.reject(unavailable());
     this.startFailed = false;
+    this.callChoiceFailure = null;
     const attempt = this.attempt = new AbortController();
     return this.run("resume", async () => {
       let starting = false;
@@ -627,7 +643,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         await this.options.retireSource(); this.requireAttempt(attempt, generation);
         this.stopConfirmationPending = false;
         if (this.audioMode === "meeting" && this.options.listMeetingWindows) {
-          if (!this.lastSelectedWindow) throw unavailable();
+          if (!this.lastSelectedWindow) throw this.callSelectionError("capture_call_selection_required");
           await this.checkedInlineWindow(attempt, generation, this.lastSelectedWindow);
         }
         // Prior native and server ownership is retired. This read-only OS probe
