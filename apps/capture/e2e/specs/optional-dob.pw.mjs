@@ -226,7 +226,7 @@ test("desktop meeting consent stays prepare-only with visible inline window sele
   const start = page.getByRole("button", { name: "Start recording", exact: true });
   await expect(start).toBeDisabled();
   expect(await page.evaluate(() => window.dobLab.starts)).toBe(0);
-  await page.getByLabel("Meeting window").selectOption({ label: "Synthetic meeting" });
+  await page.getByLabel("Which call?").selectOption({ label: "Synthetic meeting" });
   await expect(start).toBeEnabled(); await start.click();
   await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
 });

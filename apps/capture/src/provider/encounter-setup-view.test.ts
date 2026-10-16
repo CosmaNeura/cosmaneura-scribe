@@ -13,7 +13,7 @@ describe("one-name patient selection", () => {
     const query = 'Synthetic <img src=x onerror="x">';
     const choices = encounterSetupMarkup(state, query);
     expect(choices).toContain('value="Synthetic &lt;img');
-    expect(choices).toContain("Next: start recording");
+    expect(choices).toContain("Continue to recording setup");
     expect(choices).not.toContain("<img");
     expect(choices).not.toContain("data-new-patient");
     const confirmation = encounterSetupMarkup(state, query);

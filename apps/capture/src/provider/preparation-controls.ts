@@ -17,7 +17,7 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
   const value = (name: string): string => root.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value ?? "";
   const ready = (): boolean => {
     const catalog = snapshot?.meetingWindows;
-    return !closed && !selecting && (!options.open || snapshot?.status === "ready")
+    return !closed && !selecting && !failed && (!options.open || snapshot?.status === "ready")
       && (!options.open || options.isIOS || snapshot?.desktopAudio === value("desktop-audio"))
       && (options.isIOS || value("desktop-audio") !== "meeting" || !windowPickerOpen && snapshot?.desktopAudio === "meeting" && catalog?.state === "ready"
         && catalog.windows.some(window => window.id === catalog.selectedId));
@@ -35,18 +35,45 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
       choice.setAttribute("aria-pressed", String(choice.dataset.preparationAudio === value("desktop-audio")));
       choice.disabled = selecting || !!options.open && !port;
     }
-    root.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = video ? "Close unrelated audio in the selected app before recording." : "Keep both voices near the microphone.";
-    root.querySelector<HTMLElement>("[data-preflight-verdict]")!.textContent = snapshot?.status === "permission_required" ? "Microphone access is needed. Check recording access, then allow Scribe in device settings."
-      : snapshot?.status === "unavailable" ? "Microphone unavailable. Check recording access and choose an available microphone."
-      : selecting || snapshot?.status === "checking" ? "Checking recording access…"
-      : !options.open ? "Microphone access will be checked before recording."
-      : deferredIOSInput ? "System microphone — checked at start. Not listening yet." : "Microphone selected. Not listening yet.";
+    root.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = video
+      ? "Records your microphone and the call app’s audio. Chrome may include other tabs; pause videos or music."
+      : "Keep both voices near the microphone.";
+    const screenNeeded = video && snapshot?.meetingWindows?.state === "permission_required";
+    const requiredAccess = failed || screenNeeded || snapshot?.status === "permission_required" || snapshot?.status === "unavailable";
+    root.querySelector<HTMLElement>("[data-preflight-verdict]")!.textContent = selecting || snapshot?.status === "checking" ? "Checking recording access…"
+      : failed ? "Recording access check did not complete."
+      : screenNeeded ? "Screen Recording access is needed."
+      : snapshot?.status === "permission_required" ? "Microphone access is needed."
+      : snapshot?.status === "unavailable" ? port ? "Microphone unavailable." : "Recording access could not be checked."
+      : !options.open ? "Microphone access is checked when recording starts."
+      : ready() ? "Ready to start. Not listening yet." : "Microphone ready. Not listening yet.";
     const access = root.querySelector<HTMLButtonElement>("[data-preflight-access]")!;
+    const optionalAccess = root.querySelector<HTMLButtonElement>("[data-preflight-access-optional]")!;
     access.hidden = !port?.requestRecordingAccess; access.disabled = selecting || !port;
-    root.querySelector<HTMLElement>("[data-preflight-access-help]")!.textContent = video && snapshot?.meetingWindows?.state === "permission_required"
-      ? "Screen Recording access is needed. If Scribe Desktop is already enabled, turn it off and on in System Settings → Privacy & Security → Screen Recording, reopen Scribe if macOS asks, then check again."
-      : failed ? "The check did not complete. Review recording access in device settings, then check again. No recording has started."
-      : "Microphone levels appear after consent and recording starts.";
+    optionalAccess.hidden = !port?.requestRecordingAccess || requiredAccess; optionalAccess.disabled = selecting || !port;
+    root.querySelector<HTMLElement>("[data-preflight-required-access]")!.hidden = !requiredAccess;
+    const accessHelp = root.querySelector<HTMLElement>("[data-preflight-access-help]")!;
+    accessHelp.textContent = failed ? "The check did not complete. Try again. No recording has started."
+      : !port ? "Choose Back, then reopen this visit to try again."
+      : screenNeeded || snapshot?.status === "permission_required" ? "Choose Check recording access to allow Scribe."
+      : "Connect a microphone, then choose it under Change.";
+    const repair = root.querySelector<HTMLDetailsElement>("[data-preflight-repair]")!;
+    const steps = screenNeeded ? [
+      "Open System Settings → Privacy & Security → Screen Recording.",
+      "Allow Scribe Desktop. If it is already on, turn it off and on.",
+      "Reopen Scribe if macOS asks, then choose Check recording access.",
+    ] : snapshot?.status === "permission_required" ? options.isIOS ? [
+      "Open Settings on this iPhone.", "Allow Microphone access for Scribe.", "Return to Scribe, then choose Check recording access.",
+    ] : [
+      "Open System Settings → Privacy & Security → Microphone.", "Allow Scribe Desktop.", "Return to Scribe, then choose Check recording access.",
+    ] : [];
+    repair.hidden = !steps.length;
+    root.querySelector<HTMLOListElement>("[data-preflight-repair-steps]")!.replaceChildren(...steps.map(text => {
+      const item = root.ownerDocument.createElement("li"); item.textContent = text; return item;
+    }));
+    root.querySelector<HTMLElement>("[data-preflight-details-help]")!.textContent = deferredIOSInput
+      ? "This iPhone’s microphone is checked when recording starts. Microphone levels appear only after consent and Start recording."
+      : "Microphone levels appear only after consent and Start recording. You can check access again without recording.";
     const inputs = select("[data-preflight-input]");
     const devices = snapshot?.inputDevices ?? [];
     const signature = JSON.stringify(devices.map(row => [row.id, row.label]));
@@ -76,10 +103,13 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
       root.querySelector<HTMLElement>("[data-preflight-call-picker]")!.hidden = !windowPickerOpen;
       root.querySelector<HTMLButtonElement>("[data-preflight-call-done]")!.disabled = selecting;
       root.querySelector<HTMLButtonElement>("[data-preflight-refresh]")!.disabled = selecting || !port;
-      root.querySelector<HTMLElement>("[data-preflight-window-help]")!.textContent = catalog?.state === "permission_required" ? "Screen Recording access is needed. Check recording access before choosing a call."
-        : catalog?.state === "unavailable" ? "Calls could not be loaded. Refresh calls or check recording access."
-        : selected ? "Records your microphone and audio from this application."
-        : catalog?.windows.length ? "Choose a call, then confirm the patient's consent." : "Open the visit in Zoom or Chrome, then refresh calls.";
+      const windowHelp = root.querySelector<HTMLElement>("[data-preflight-window-help]")!;
+      windowHelp.hidden = !!selected;
+      windowHelp.textContent = catalog?.state === "permission_required" ? "Allow access before choosing your call."
+        : catalog?.state === "unavailable" ? "Calls could not be loaded. Choose call to refresh the list."
+        : selecting || snapshot?.status === "checking" ? "Checking your calls…"
+        : selected ? ""
+        : catalog?.windows.length ? "Choose a call, then confirm the patient's consent." : "Open the visit in Zoom or Chrome, then choose call to refresh.";
     }
   };
   const remember = (): void => options.remember({ language: value("language") as ProviderPreferences["language"],
@@ -102,14 +132,21 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
     else { remember(); paint(); }
   };
   const clicked = (event: MouseEvent): void => {
-    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-change-audio], [data-audio-done], [data-preparation-audio], [data-preflight-refresh], [data-preflight-access], [data-preflight-call-change], [data-preflight-call-done]") : null;
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-change-audio], [data-audio-done], [data-preparation-audio], [data-preflight-refresh], [data-preflight-access], [data-preflight-access-optional], [data-preflight-call-change], [data-preflight-call-done]") : null;
     if (!button || closed) return;
     const dialog = root.querySelector<HTMLDialogElement>("[data-audio-settings]")!;
     if (button.hasAttribute("data-change-audio")) dialog.showModal();
     else if (button.hasAttribute("data-audio-done")) { dialog.close(); root.querySelector<HTMLButtonElement>("[data-change-audio]")?.focus(); }
     else if (button.hasAttribute("data-preflight-call-change")) { if (!selecting) { windowPickerOpen = true; paint(); select("[data-preflight-window]").focus(); } }
     else if (button.hasAttribute("data-preflight-call-done")) { if (!selecting) { windowPickerOpen = false; paint(); root.querySelector<HTMLButtonElement>("[data-preflight-call-change]")?.focus(); } }
-    else if (button.hasAttribute("data-preflight-access")) void apply(() => port!.requestRecordingAccess!());
+    else if (button.hasAttribute("data-preflight-access") || button.hasAttribute("data-preflight-access-optional")) void apply(() => port!.requestRecordingAccess!()).then(() => {
+      if (closed || signal.aborted || failed || snapshot?.status !== "ready") return;
+      // Granted access makes the direct setup action disappear. Keep keyboard
+      // focus on the next visible control without starting or consenting.
+      if (ready()) root.querySelector<HTMLElement>(root.querySelector<HTMLInputElement>('[name="consent"]')!.checked
+        ? '[data-workspace-action="prepare"]' : '[name="consent"]')?.focus();
+      else root.querySelector<HTMLButtonElement>("[data-preflight-call-change]")?.focus();
+    });
     else if (button.hasAttribute("data-preflight-refresh")) void apply(() => port!.refreshMeetingWindows!());
     else {
       if (selecting) return;

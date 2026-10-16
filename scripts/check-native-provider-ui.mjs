@@ -13,6 +13,9 @@ const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "capacitor:
 const window = dom.window, root = window.document.getElementById("root"), calls = [];
 Object.defineProperty(window, "crypto", { value: webcrypto });
 Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone, indexedDB: new IDBFactory() });
+// JSDOM lacks the browser dialog methods; retain the actual Change audio flow.
+window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+window.HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
 const forbidden = () => { throw new Error("No OS source, Core operation, key replacement or network permitted"); };
 window.fetch = forbidden;
 window.CapacitorCustomPlatform = { name: "ios" };
@@ -28,6 +31,8 @@ const sessionId = webcrypto.randomUUID(), abort = new window.AbortController();
 let heldStart, hold = true;
 let state = { version: 1, revision: 1, recorderId: webcrypto.randomUUID(), sessionId, phase: "ready", failure: null, busy: false,
   recordedChunks: 0, recordedPlaintextBytes: 0, capturedAudioFrames: 0, maximumPlaintextBytes: 402653184, input: "built_in", completion: null,
+  inputDevices: [{ id: "synthetic-built-in", label: "Synthetic built-in microphone", kind: "built_in", current: true },
+    { id: "synthetic-external", label: "Synthetic USB microphone", kind: "external", current: false }], selectedInputId: "synthetic-built-in",
   signal: { version: 2, signal: null } };
 const update = fields => { state = { ...state, ...fields, revision: state.revision + 1 }; };
 const response = requestId => ({ requestId, ok: true, recording: structuredClone(state) });
@@ -40,7 +45,8 @@ const nativeRecording = { open: async (_session, requestId) => response(requestI
       inputEverNonzero: true, convertedEverNonzero: true, inputLevel: 0.1, convertedLevel: 0.1,
       inputAgeMs: 0, convertedAgeMs: 0, zeroInputMs: 0, inputMuted: false, route: "usb" } } });
   } else if (request.kind === "pause") { update({ phase: "paused", busy: false }); heldStart?.(); }
-  else if (request.kind === "input") update({ input: request.input });
+  else if (request.kind === "input") update({ input: request.input, selectedInputId: request.inputId,
+    inputDevices: state.inputDevices.map(device => ({ ...device, current: device.id === request.inputId })) });
   return response(request.requestId);
 } };
 const encounter = { appointmentRef: "appointment_01j00000000000000000000000", title: "Synthetic visit", detail: "Invented all-party consent" };
@@ -78,7 +84,14 @@ try {
   assert.ok(app.textContent.includes("Starting microphone"));
   button("stop-button").click();
   await until(() => button("resume-recording") && !button("resume-recording").disabled);
-  const input = button("microphone-input"); input.value = "external"; input.dispatchEvent(new window.Event("change"));
+  const changeAudio = button("change-audio");
+  assert.ok(changeAudio); changeAudio.click();
+  const input = button("active-microphone");
+  assert.ok(input); input.value = "synthetic-external"; input.dispatchEvent(new window.Event("change"));
+  await until(() => resources.controller.snapshot.selectedInputId === "synthetic-external"
+    && !button("resume-recording").disabled);
+  await app.updateComplete;
+  app.querySelector("[data-active-audio] button").click();
   hold = false; button("resume-recording").click();
   await until(() => app.querySelector("scribe-ios-input-meter")?.shadowRoot?.textContent.includes("USB microphone"));
   const meter = app.querySelector("scribe-ios-input-meter").shadowRoot;
@@ -98,7 +111,7 @@ try {
   update({ phase: "paused", failure: "captureInterrupted" });
   await resources.controller.refreshTranscriptionStatus();
   await until(() => app.textContent.includes("Recording was interrupted."));
-  assert.ok(app.textContent.includes("Speech during the interruption was not recorded."));
+  assert.ok(app.textContent.includes("Speech during the gap was not recorded"));
   assert.equal(app.querySelector("scribe-ios-input-meter"), null);
   assert.equal(button("resume-recording").disabled, false);
   assert.equal(button("stop-button").disabled, false);
@@ -113,19 +126,19 @@ try {
   assert.equal(button("resume-recording"), null);
   update({ phase: "paused", failure: "recoveryFailed", recordedChunks: 1, recordedPlaintextBytes: 204 });
   await resources.controller.refreshTranscriptionStatus();
-  await until(() => button("resume-recording")?.textContent.includes("Retry recovery and resume"));
-  assert.ok(button("stop-button").textContent.includes("Retry saving and upload"));
-  assert.ok(app.textContent.includes("saving could not be confirmed"));
+  await until(() => button("resume-recording")?.textContent.includes("Resume recording"));
+  assert.ok(button("stop-button").textContent.includes("Retry saving"));
+  assert.ok(app.textContent.includes("Saving is not confirmed."));
   button("stop-button").click();
   await app.updateComplete;
   await until(() => calls.includes("seal") && resources.controller.snapshot.statusCode === "capture_recovery_pending"
-    && !button("resume-recording").disabled && app.textContent.includes("saving could not be confirmed"));
-  assert.ok(app.textContent.includes("saving could not be confirmed"));
+    && !button("resume-recording").disabled && app.textContent.includes("Saving is not confirmed."));
+  assert.ok(app.textContent.includes("Saving is not confirmed."));
   const startsBeforeRecovery = calls.filter(kind => kind === "start").length;
   button("resume-recording").click();
   await until(() => app.querySelector("scribe-ios-input-meter"));
   assert.equal(calls.filter(kind => kind === "start").length, startsBeforeRecovery + 1);
-  assert.equal(app.textContent.includes("saving could not be confirmed"), false);
+  assert.equal(app.textContent.includes("Saving is not confirmed."), false);
   app.remove(); await resources.deactivate();
   assert.equal(calls.filter(kind => kind === "close").length, 1); assert.equal(locked, false);
   // The same compiled screen renders receipt-confirmed progress and keeps

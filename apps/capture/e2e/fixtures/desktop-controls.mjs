@@ -10,9 +10,10 @@ import scribeIcon from "../../public/icon.svg?raw";
 const sessionId = "40000000-0000-4000-8000-000000000004";
 const inlineMeeting = new URLSearchParams(window.location.search).has("inline-meeting");
 const sourceChoice = new URLSearchParams(window.location.search).has("source-choice");
+const delayedSelection = new URLSearchParams(window.location.search).has("delayed-selection");
 const meetingWindowId = "50000000-0000-4000-8000-000000000005";
 const abort = new AbortController(), listeners = new Set(), commands = [];
-let finishChoice;
+let finishChoice, finishSelection;
 let snapshot = { sessionId, state: "ready", statusCode: "capture_ready", recordedChunks: 0,
   queuedChunks: 0, elapsedSeconds: 0, remainingBudgetSeconds: null, remainingAuthoritySeconds: 900,
   transcript: null, transcriptionStatus: null,
@@ -54,9 +55,11 @@ const controller = {
       windows: [{ id: meetingWindowId, title: "Zoom — Invented visit" }] } : undefined });
   } } : {}),
   async selectMeetingWindow(id) {
-    if (id !== meetingWindowId) forbidden();
+    if (!snapshot.desktop.meetingWindows?.windows.some(row => row.id === id)) forbidden();
     commands.push("meeting_window");
-    emit({}, { meetingWindows: { ...snapshot.desktop.meetingWindows, selectedId: id } });
+    if (delayedSelection) await new Promise(resolve => { finishSelection = resolve; });
+    emit({ statusCode: snapshot.state === "paused" ? "capture_paused" : "capture_ready" },
+      { meetingWindows: { ...snapshot.desktop.meetingWindows, selectedId: id } });
   },
   async refreshMeetingWindows() {
     commands.push("meeting_windows");
@@ -79,6 +82,9 @@ root.innerHTML = '<p class="provider-account">Local synthetic · Signed in as pr
 root.append(app);
 window.desktopControlsLab = {
   commands,
+  publish: emit,
+  acknowledgeSelection: () => finishSelection?.(),
+  finishStart: () => finishChoice?.(),
   choose: () => {
     emit({ state: "recording", statusCode: "capture_recording", elapsedSeconds: 83, recordedChunks: 8 },
       { phase: "recording", coverage: "aligned", inputSignal: { microphone: { level: 0.125, ageMs: 0 }, meetingAudio: { level: 0.25, ageMs: 0 } } });

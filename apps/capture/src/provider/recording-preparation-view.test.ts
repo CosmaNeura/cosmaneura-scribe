@@ -35,3 +35,14 @@ it("keeps the desktop call picker behind a separate explicit choice action", () 
   expect(html).toContain('aria-describedby="provider-start-consent" disabled');
   expect(recordingPreparationMarkup({ isIOS: true, language: "en-US", modality: "in_person", audio: "microphone" })).not.toContain("data-preflight-call");
 });
+
+it("keeps optional access details after consent and the primary Start action", () => {
+  const html = recordingPreparationMarkup({ isIOS: false, language: "en-US", modality: "virtual", audio: "meeting" });
+  const start = html.indexOf('data-workspace-action="prepare"');
+  expect(html.indexOf('name="consent"')).toBeLessThan(start);
+  expect(html.indexOf('data-preflight-details')).toBeGreaterThan(start);
+  expect(html).toContain('data-preflight-required-access hidden');
+  expect(html).toContain('data-preflight-repair hidden><summary>Show steps</summary><ol');
+  expect(html).toContain('data-preflight-access-optional hidden');
+  expect(html).not.toContain('type="checkbox" checked');
+});
