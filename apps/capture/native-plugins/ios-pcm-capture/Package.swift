@@ -10,6 +10,7 @@ let package = Package(
   ],
   products: [
     .library(name: "CosmaneuraIOSPCMCore", targets: ["CosmaneuraIOSPCMCore"]),
+    .library(name: "CosmaneuraRecordingActivity", targets: ["CosmaneuraRecordingActivity"]),
     .library(
       name: "CosmaneuraIOSAVFoundationDriver",
       targets: ["CosmaneuraIOSAVFoundationDriver"]
@@ -21,9 +22,10 @@ let package = Package(
   ],
   targets: [
     .target(name: "CosmaneuraIOSPCMCore"),
+    .target(name: "CosmaneuraRecordingActivity"),
     .target(
       name: "CosmaneuraIOSAVFoundationDriver",
-      dependencies: ["CosmaneuraIOSPCMCore"]
+      dependencies: ["CosmaneuraIOSPCMCore", "CosmaneuraRecordingActivity"]
     ),
     .target(
       name: "CosmaneuraIOSPCMBridgeCore",

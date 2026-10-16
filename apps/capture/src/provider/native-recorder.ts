@@ -4,11 +4,13 @@ import type { PreparedProviderRecorder, ProviderRecorderSnapshot } from "../prov
 import { CaptureQueue, QueueInvariantError, type CaptureQueueStorage, type DrainProgress } from "../queue";
 import { parseInputSignal } from "../native/ios-input-signal";
 import { isMicrophoneInput, type MicrophoneInput } from "../native/microphone-input";
+import { parseAudioInputDevices } from "./ios-audio-preflight";
+import type { AudioInputDevice } from "./audio-preflight";
 
 export type NativeRecordingCommand = "read" | "start" | "pause" | "seal" | "close" | "input";
 export interface NativeRecordingPort {
   open: (sessionId: string, requestId: string) => Promise<unknown>;
-  command(this: void, request: { requestId: string; recorderId: string; kind: NativeRecordingCommand; input?: MicrophoneInput }): Promise<unknown>;
+  command(this: void, request: { requestId: string; recorderId: string; kind: NativeRecordingCommand; input?: MicrophoneInput; inputId?: string }): Promise<unknown>;
 }
 export interface NativeRecordingState {
   readonly version: 1; readonly revision: number; readonly recorderId: string; readonly sessionId: string;
@@ -19,6 +21,8 @@ export interface NativeRecordingState {
   /** Accepted 16 kHz mono frames, including the retained pre-run baseline. Not custody proof. */
   readonly capturedAudioFrames?: number;
   readonly maximumPlaintextBytes: number; readonly input: MicrophoneInput; readonly signal: unknown;
+  readonly inputDevices?: readonly AudioInputDevice[];
+  readonly selectedInputId?: string | null;
   readonly completion: { readonly idempotencyKey: string; readonly leaseId: string; readonly leaseGeneration: number;
     readonly finalSequence: number } | null;
 }
@@ -63,6 +67,7 @@ export async function connectNativeProviderRecorder(options: {
       ?? Math.max(0, state.recordedPlaintextBytes - state.recordedChunks * 44) / 2) / 16_000),
     remainingBudgetSeconds: Math.floor((state.maximumPlaintextBytes - state.recordedPlaintextBytes) / 32_000),
     remainingAuthoritySeconds: null, transcriptionStatus: null, transcript: null,
+    ...(state.inputDevices ? { inputDevices: state.inputDevices, selectedInputId: state.selectedInputId ?? null } : {}),
     native: { phase: awaitingStart ? "starting" : phase, busy: state.busy,
       ...(uploadProgress ? { uploadProgress: { ...uploadProgress } } : {}) } };
   };
@@ -81,12 +86,12 @@ export async function connectNativeProviderRecorder(options: {
     }
     return response.ok;
   };
-  const invoke = async (kind: NativeRecordingCommand, input?: MicrophoneInput): Promise<void> => {
+  const invoke = async (kind: NativeRecordingCommand, input?: MicrophoneInput, inputId?: string): Promise<void> => {
     if (kind !== "close") current();
     if (!state) throw failure();
     const requestId = crypto.randomUUID();
     const ok = accept(await port.command({ requestId, recorderId: state.recorderId, kind,
-      ...(input === undefined ? {} : { input }) }), requestId, kind === "close");
+      ...(input === undefined ? {} : { input }), ...(inputId === undefined ? {} : { inputId }) }), requestId, kind === "close");
     if (kind !== "close") current();
     if (!ok) throw failure();
   };
@@ -204,15 +209,22 @@ export async function connectNativeProviderRecorder(options: {
     }, startRecording: start, resumeRecording: start, pauseRecording: pause, stopRecording: async () => {
       if (starting && ["ready", "paused"].includes(state?.phase ?? "") || state?.phase === "starting") { await pause(); return; }
       await upload();
-    }, selectMicrophoneInput: async input => { current(); if (state?.input !== input) await invoke("input", input); }, getCaptureSignal: async () => {
+    }, selectMicrophoneInput: async input => { current(); if (state?.input !== input) await invoke("input", input); }, selectAudioInput: async id => {
+      current(); const device = state?.inputDevices?.find(candidate => candidate.id === id);
+      if (!device || !isMicrophoneInput(device.kind)) throw failure();
+      if (state?.selectedInputId !== id) await invoke("input", device.kind, id);
+      if (state?.selectedInputId !== id) throw failure();
+    }, getCaptureSignal: async () => {
       await read(); return state!.signal;
     }, refreshTranscriptionStatus: read } };
 }
 
 export function parseNativeRecordingState(value: unknown): NativeRecordingState {
   const hasFrames = value !== null && typeof value === "object" && Object.hasOwn(value, "capturedAudioFrames");
+  const hasDevices = value !== null && typeof value === "object" && Object.hasOwn(value, "inputDevices");
   const data = exact(value, ["version", "revision", "recorderId", "sessionId", "phase", "failure", "busy", "recordedChunks",
-    "recordedPlaintextBytes", "maximumPlaintextBytes", "input", "completion", "signal", ...(hasFrames ? ["capturedAudioFrames"] : [])]);
+    "recordedPlaintextBytes", "maximumPlaintextBytes", "input", "completion", "signal", ...(hasFrames ? ["capturedAudioFrames"] : []),
+    ...(hasDevices ? ["inputDevices", "selectedInputId"] : [])]);
   if (data.version !== 1 || !integer(data.revision, 1, Number.MAX_SAFE_INTEGER)
     || typeof data.phase !== "string" || !["unopened", "opening", "ready", "starting", "recording", "pausing", "paused", "stopPending", "sealing", "sealed", "failed", "closed"].includes(data.phase)
     || data.failure !== null && (typeof data.failure !== "string" || !["preparationFailed", "startFailed", "stopPending", "recoveryFailed", "captureInterrupted", "recordingIncomplete"].includes(data.failure))
@@ -224,6 +236,12 @@ export function parseNativeRecordingState(value: unknown): NativeRecordingState 
     Math.max(0, Number(data.recordedPlaintextBytes) - Number(data.recordedChunks) * 44) / 2,
     2048 * 160_000)) throw failure();
   uuid(data.recorderId); uuid(data.sessionId); parseInputSignal(data.signal);
+  if (hasDevices) {
+    const devices = parseAudioInputDevices(data.inputDevices);
+    if (data.selectedInputId !== null && (typeof data.selectedInputId !== "string"
+      || !devices.some(device => device.id === data.selectedInputId && device.current))) throw failure();
+    if (data.selectedInputId === null && devices.some(device => device.current)) throw failure();
+  }
   if (data.completion !== null) {
     const completion = exact(data.completion, ["idempotencyKey", "leaseId", "leaseGeneration", "finalSequence"]);
     uuid(completion.idempotencyKey); uuid(completion.leaseId);

@@ -9,11 +9,11 @@ export class IosInputMeter extends LitElement {
     .feedback { padding: .75rem; border: 1px solid #b9d3ca; border-radius: .75rem; background: #f2f8f5; }
     .attention { border-color: #bb7926; background: #fff5e5; color: #64410d; }
     h3 { font-size: 1rem; margin: 0 0 .25rem; }
-    strong { font-size: .9rem; }
+    strong { font-size: 16px; }
     .bars { display: flex; align-items: end; gap: 4px; height: 32px; margin: .5rem 0; }
     .bar { width: 7px; border-radius: 3px; background: #d5ddd9; }
     .on { background: #167052; }
-    p { margin: .4rem 0; font-size: .9rem; }
+    p { margin: .4rem 0; font-size: 16px; }
   `;
   readSignal?: () => Promise<unknown>;
   #signal: IosInputSignal | null = null;

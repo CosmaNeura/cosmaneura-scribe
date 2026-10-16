@@ -53,6 +53,9 @@ function fixture() {
   };
   const plugin = {
     getProviderState: vi.fn(async () => state),
+    getProviderActiveRecording: vi.fn<NonNullable<ProviderNativePlugin["getProviderActiveRecording"]>>(async () => ({
+      version: 1, revision: state.revision, recording: { workspaceId: workspace, sessionId: session },
+    })),
     addListener: vi.fn<ProviderNativePlugin["addListener"]>(async (_event, callback) => {
       listener = callback; return { remove: removed };
     }),
@@ -74,6 +77,48 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it("maps a cold recording return against a fresh catalog without auto-start or admission", async () => {
+    const f = fixture(), freshAppointment = "appointment_01j00000000000000000000001";
+    f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+    const backend = await f.connect();
+    try {
+      await backend.listEncounters(backend.signal);
+      f.plugin.providerRequest.mockImplementation(async request => {
+        const value = JSON.parse(f.reply(request).body);
+        if (request.action === "catalog") value.encounters[0].appointmentRef = freshAppointment;
+        return f.reply(request, value);
+      });
+      expect(await backend.activeRecording!(backend.signal)).toEqual({ appointmentRef: freshAppointment, sessionId: session });
+      expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual(["catalog", "catalog"]);
+      expect(f.plugin.getProviderActiveRecording).toHaveBeenCalledTimes(2);
+      expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();
+      expect(f.plugin.providerRecordingCommand).not.toHaveBeenCalled();
+      expect(f.plugin.prepareProviderSource).not.toHaveBeenCalled();
+      expect(f.plugin.getToken).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+  it("does not route a native session that changed during catalog authorization", async () => {
+    const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+    const backend = await f.connect();
+    f.plugin.getProviderActiveRecording.mockResolvedValueOnce({ version: 1, revision: f.state.revision,
+      recording: { workspaceId: workspace, sessionId: session } }).mockResolvedValueOnce({
+      version: 1, revision: f.state.revision, recording: { workspaceId: workspace, sessionId: crypto.randomUUID() },
+    });
+    try {
+      expect(await backend.activeRecording!(backend.signal)).toBeNull();
+      expect(f.plugin.providerRecordingCommand).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
+  it("rejects recording navigation when the fresh catalog no longer authorizes that workspace", async () => {
+    const f = fixture(); f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
+    const backend = await f.connect();
+    f.plugin.providerRequest.mockImplementation(async request => f.reply(request, { revision: request.revision, encounters: [] }));
+    try {
+      await expect(backend.activeRecording!(backend.signal)).rejects.toThrow("provider_native_connection_unavailable");
+      expect(f.plugin.openProviderRecording).not.toHaveBeenCalled();
+      expect(f.plugin.providerRecordingCommand).not.toHaveBeenCalled();
+    } finally { await backend.dispose(); }
+  });
   it.each([undefined, 1, 2])("advertises acquisition review only for native context version %s", async version => {
     const f = fixture(); f.setState({ ...f.state, ...(version === undefined ? {} : { nativeRecordingVersion: version }) }, false);
     const backend = await f.connect();

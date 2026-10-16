@@ -37,6 +37,10 @@ MODULES = [
         sorted((PLUGINS / "ios-pcm-capture/Sources/CosmaneuraIOSPCMCore").glob("*.swift")),
     ),
     (
+        "CosmaneuraRecordingActivity",
+        sorted((PLUGINS / "ios-pcm-capture/Sources/CosmaneuraRecordingActivity").glob("*.swift")),
+    ),
+    (
         "CosmaneuraIOSAVFoundationDriver",
         sorted(
             (PLUGINS / "ios-pcm-capture/Sources/CosmaneuraIOSAVFoundationDriver").glob("*.swift")
@@ -67,6 +71,7 @@ BRIDGE = [
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--platform", choices=["mac", "ios", "both"], default="both")
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -105,7 +110,7 @@ def main() -> None:
         if result.returncode:
             raise SystemExit(result.returncode)
 
-    for platform in ["mac", "ios"]:
+    for platform in ["mac", "ios"] if args.platform == "both" else [args.platform]:
         target = out / platform
         target.mkdir()
         common = [

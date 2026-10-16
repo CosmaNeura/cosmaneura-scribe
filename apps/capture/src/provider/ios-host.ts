@@ -11,6 +11,7 @@ import { CaptureStopAcknowledgementPending } from "../capture/stop-confirmation"
 import type { CaptureChunkMetadata, CaptureQueueStorage } from "../queue/types";
 import { NativePluginQueueStorage, type NativeQueueRecordPlugin } from "../storage/native-plugin";
 import { createProviderIOSCaptureSource } from "./ios-capture-source";
+import { openIOSAudioPreflight } from "./ios-audio-preflight";
 import type { PreparedProviderRecorder } from "../provider-binding";
 import { connectNativeProviderRecorder, type NativeRecordingPort } from "./native-recorder";
 import { CoreCaptureBff, CoreCaptureClient } from "./core-client";
@@ -36,7 +37,7 @@ export interface PreparedProviderIOSCapture {
   readonly captureAuthorizedUntil: string;
   readonly firstSequenceNumber?: number;
 }
-export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account" | "providerDisplayName"> {
+export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account" | "providerDisplayName" | "activeRecording"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedProviderIOSMount>;
 }
 
@@ -50,6 +51,8 @@ export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWork
     get encounterSetup() { return backend.encounterSetup; },
     get account() { return backend.account; },
     signal: backend.signal,
+    audioPreflight: signal => openIOSAudioPreflight(signal, undefined, backend.signal),
+    ...(backend.activeRecording ? { activeRecording: signal => backend.activeRecording!(signal) } : {}),
     listEncounters: signal => backend.listEncounters(signal),
     createEncounter: signal => backend.createEncounter(signal),
     openEncounter: async (appointmentRef, signal) => {

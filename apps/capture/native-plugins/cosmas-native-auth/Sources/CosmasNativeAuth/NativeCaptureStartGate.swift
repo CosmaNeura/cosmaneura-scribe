@@ -36,6 +36,15 @@ public struct NativeCapturePermit: Sendable {
         legacyIdle.append(probe)
     }
 
+    /// Meter-only input checks use no source grant, key, queue or session. They
+    /// still must prove process-wide physical idle before opening AVFoundation.
+    /// Their registered idle probe then blocks every real recording start.
+    public static func requireIdleForMicrophoneCheck() throws {
+        guard owner == nil, !authorizing, !recovering, allIdle() else {
+            throw NativeAuthError.busy
+        }
+    }
+
     public static func install(owner: UUID,
                                authorize: @escaping @MainActor () async throws -> NativeCapturePermit) throws {
         try install(owner: owner, consumer: .legacyMicrophone, encryptedIdle: nil, authorize: authorize)

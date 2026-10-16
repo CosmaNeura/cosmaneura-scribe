@@ -65,6 +65,7 @@
           let signal = PCMSignalMonitor()
           return try NativeProviderRecordingRun(
             source: source, lease: lease, batch: batch,
+            priorAudioFrames: max(0, priorBytes - source.recordingPreparation.firstSequenceNumber * 44) / 2,
             requestPermission: {
               if permission.currentPermission() == .granted { return true }
               return await permission.requestPermission() == .granted

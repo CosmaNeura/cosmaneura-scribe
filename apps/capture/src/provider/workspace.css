@@ -1,246 +1,173 @@
-.provider-workspace { box-sizing: border-box; max-width: 1100px; margin: 0 auto; padding: 20px; background: #fff; color: #203035; font: 15px/1.5 system-ui, sans-serif; }
-.provider-header { position: sticky; top: 0; z-index: 3; background: #fff; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #ccded7; padding: 8px 0; }
-.provider-header[hidden] { display: none; }
-.provider-header > div { min-width: 0; overflow-wrap: anywhere; }
-.provider-header > button { flex-shrink: 0; margin-right: 0; }
-.provider-visit-navigation { display: flex; flex-shrink: 0; gap: 8px; }
-.provider-workspace .provider-visit-navigation button { min-height: 44px; margin: 0; padding: 10px 12px; }
-.provider-workspace h1 { font-size: clamp(1.5rem, 4vw, 1.85rem); line-height: 1.2; }
-.provider-workspace button { min-height: 44px; margin: 8px 12px 8px 0; padding: 10px 18px; border: 1px solid #306b5c; border-radius: 8px; background: #f2faf5; color: #17352f; cursor: pointer; font: inherit; }
-.provider-workspace button:hover { background: #e0f0e7; }
-.provider-workspace button[data-workspace-action="prepare"], .provider-workspace button[data-workspace-action="save"], .provider-workspace cosmaneura-capture .primary { background: var(--scribe-gradient, linear-gradient(135deg, #146f6c, #17273c)); color: #fff; border-color: #146f6c; }
-.provider-workspace button:focus-visible, .provider-workspace input:focus-visible, .provider-workspace select:focus-visible, .provider-workspace textarea:focus-visible, .provider-workspace summary:focus-visible { outline: 3px solid #648ad9; outline-offset: 2px; }
-.provider-workspace label { display: grid; gap: 6px; margin: 18px 0; font-weight: 600; }
-.provider-workspace input, .provider-workspace select, .provider-workspace textarea { box-sizing: border-box; max-width: 100%; min-height: 44px; padding: 10px; border: 1px solid #8ea99f; border-radius: 6px; font: inherit; color: #17352f; background: white; }
-/* Small form text makes iOS zoom the page on focus. Keep pinch zoom available. */
-@media (pointer: coarse) {
-  .provider-workspace input, .provider-workspace select, .provider-workspace textarea { font-size: max(16px, 1em); }
+@import "./tokens.css";
+.provider-workspace { box-sizing:border-box; max-width:1100px; margin:0 auto; padding:28px 24px 48px; color:var(--scribe-ink); font:18px/1.5 system-ui,sans-serif; }
+.provider-workspace *,.provider-workspace *::before,.provider-workspace *::after { box-sizing:border-box; }
+.provider-workspace [hidden] { display:none!important; }
+.provider-workspace h1 { margin:0 0 8px; color:var(--scribe-heading); font-size:2rem; line-height:1.2; }
+.provider-workspace h2 { margin:0 0 8px; font-size:1.25rem; color:var(--scribe-heading); }
+.provider-workspace p { margin:0 0 16px; }
+.provider-workspace small { display:block; font-size:15px; line-height:1.5; color:var(--scribe-muted); }
+.provider-workspace label { display:grid; gap:8px; margin:16px 0; font-weight:600; }
+.provider-workspace input:not([type=checkbox]),.provider-workspace select,.provider-workspace textarea { width:100%; min-height:52px; padding:12px 14px; border:1px solid #8ea99f; border-radius:10px; background:white; color:var(--scribe-ink); font:inherit; }
+.provider-workspace textarea { min-height:56px; resize:vertical; line-height:1.5; overflow:hidden; }
+.provider-workspace input[type=checkbox] { width:28px; height:28px; accent-color:var(--scribe-link); flex:0 0 auto; }
+.provider-workspace button { min-height:48px; padding:10px 18px; border:1px solid #306b5c; border-radius:12px; background:var(--scribe-mint); color:var(--scribe-link); font:inherit; cursor:pointer; }
+.provider-workspace button:disabled { opacity:.6; cursor:default; }
+.provider-workspace :is(button,input,select,textarea,[tabindex]):focus-visible { outline:3px solid #648ad9; outline-offset:3px; }
+.provider-workspace a,.provider-workspace .provider-text-link { color:var(--scribe-link); text-decoration:underline; text-underline-offset:3px; }
+.provider-workspace .provider-text-link { border:0; background:transparent; padding:8px 0; min-height:44px; }
+.provider-workspace .provider-primary,.provider-workspace button[data-workspace-action=prepare],.provider-workspace button[data-workspace-action=finish-note],.provider-workspace button[data-workspace-action=generate] { min-height:56px; background:var(--scribe-gradient); color:white; font-size:1.15rem; font-weight:600; border:0; }
+.provider-workspace summary { min-height:44px; padding:10px 0; cursor:pointer; color:var(--scribe-link); font-size:16px; }
+.provider-header { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:20px; }
+.provider-header>div>strong { display:none; }
+.provider-header nav { display:flex; gap:12px; }
+.provider-header nav button { background:transparent; border:0; text-decoration:underline; text-underline-offset:3px; padding:8px 0; }
+.provider-header nav button[data-workspace-action=refresh-visit] { display:none; }
+[data-provider-encounter] { margin:0; font-size:2rem; font-weight:700; line-height:1.2; color:var(--scribe-heading); }
+.provider-patient-detail { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:15px; color:var(--scribe-muted); }
+.provider-patient-detail button { background:transparent; border:0; padding:4px 0; font-size:15px; text-decoration:underline; }
+.provider-account { margin-bottom:16px; color:var(--scribe-muted); font-size:16px; }
+[data-workspace-content] { max-width:760px; margin:0 auto; }
+[data-workspace-content]:has(.provider-note[data-conversation=shown]) { max-width:1100px; }
+[data-workspace-notice]:empty,[data-workspace-progress]:empty,[data-encounter-progress]:empty { display:none; }
+[data-workspace-notice]:not(:empty) { max-width:760px; margin:0 auto 20px; padding:14px 16px; border:2px solid var(--scribe-warning-border); border-radius:12px; color:var(--scribe-warning-fg); background:var(--scribe-warning-bg); }
+[data-workspace-progress] { max-width:760px; margin:0 auto 16px; color:var(--scribe-muted); }
+.provider-list-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:24px; }
+.provider-list-heading h1 { margin:0; }
+.provider-day-navigation { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:6px; color:var(--scribe-muted); font-size:16px; }
+.provider-day-navigation button { min-width:44px; min-height:44px; padding:4px 8px; background:transparent; border:0; font-size:24px; }
+.provider-day-navigation [data-day-today] { font-size:16px; text-decoration:underline; }
+.provider-walk-in { flex-shrink:0; font-weight:600!important; }
+.provider-list-search { font-size:16px; }
+.provider-encounters { display:grid; gap:10px; list-style:none; padding:0; margin:0 0 20px; }
+.provider-encounters li { display:grid; grid-template-columns:72px minmax(0,1fr) auto; gap:16px; align-items:center; padding:16px 20px; border:1px solid var(--scribe-border); border-radius:16px; background:white; box-shadow:var(--scribe-shadow); }
+.provider-visit-time { color:var(--scribe-muted); font-size:16px; font-variant-numeric:tabular-nums; }
+.provider-visit-name { min-width:0; display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px; }
+.provider-visit-name strong { width:100%; font-size:1.15rem; overflow-wrap:anywhere; }
+.provider-visit-inline-time { display:none; color:var(--scribe-muted); font-size:15px; white-space:nowrap; }
+.provider-visit-status { width:fit-content; padding:2px 10px; border-radius:999px; color:var(--scribe-muted); background:#eff6f2; font-size:15px; font-weight:600; }
+.provider-visit-status[data-tone=ready] { color:var(--scribe-ready-fg); background:var(--scribe-ready-bg); }
+.provider-visit-status[data-tone=waiting],.provider-visit-status[data-tone=paused] { color:var(--scribe-warning-fg); background:var(--scribe-warning-bg); }
+.provider-visit-status i { display:inline-block; height:8px; width:8px; margin-right:6px; border-radius:50%; background:currentColor; animation:scribe-pulse 1.4s ease-in-out infinite; }
+.provider-workspace .provider-visit-action { min-width:140px; min-height:48px; font-size:18px; }
+.provider-workspace .provider-open-note { background:#17352f; color:white; font-weight:600; }
+.provider-visit-wait { color:var(--scribe-muted); font-size:15px; text-align:right; }
+.provider-support { color:var(--scribe-muted); margin-top:28px!important; font-size:16px; }
+.provider-support a { font-weight:600; }
+.provider-preparation,.provider-setup,.provider-note-editor,.provider-note-evidence,.provider-saved-card { padding:24px; background:white; border:1px solid var(--scribe-border); border-radius:16px; box-shadow:var(--scribe-shadow); }
+.provider-preparation h1 { display:none; }
+.provider-recording-fields { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.provider-recording-fields label { margin-top:0; }
+.provider-consent-script { padding:14px 18px; margin:0; border-left:4px solid #477c68; background:#eff6f2; font-size:1.15rem; font-style:italic; }
+.provider-workspace .provider-consent { display:flex; align-items:center; gap:14px; font-size:1.15rem; }
+.provider-preparation button[data-workspace-action=prepare] { width:100%; }
+.provider-consent-explanation,.provider-start-help { color:var(--scribe-muted); font-size:16px; }
+.provider-audio-summary { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; margin:0 0 20px; color:var(--scribe-muted); font-size:16px; }
+.provider-audio-summary button { background:transparent; border:0; padding:4px 0; text-decoration:underline; }
+.provider-source-cards { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.provider-source-cards button { display:grid; gap:2px; text-align:left; border-width:2px; background:white; min-height:56px; }
+.provider-source-cards button[aria-pressed=true] { background:var(--scribe-mint); border-color:var(--scribe-link); }
+.provider-source-cards small { font-weight:400; }
+.provider-workspace .provider-setup .provider-encounters li { display:block; box-shadow:none; padding:0; }
+.provider-setup .provider-encounters button { display:grid; text-align:left; width:100%; border:0; background:white; gap:4px; }
+.provider-setup .provider-encounters button span { font-size:16px; font-weight:400; }
+.provider-new-patient { margin-top:20px; padding-top:20px; border-top:1px solid var(--scribe-border); }
+.provider-setup [data-patient-search] { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:end; }
+.provider-setup [data-patient-search] label { margin-top:0; }
+.provider-setup [data-patient-search] button { margin-bottom:16px; }
+.provider-create-actions button { width:100%; min-height:56px; background:var(--scribe-gradient); color:white; font-weight:600; }
+.provider-unsaved-dialog,.provider-audio-dialog { box-sizing:border-box; width:min(480px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; padding:24px; border:1px solid #8ea99f; border-radius:16px; background:white; color:var(--scribe-ink); font:18px/1.5 system-ui,sans-serif; box-shadow:0 12px 48px #17352f40; }
+.provider-unsaved-dialog::backdrop,.provider-audio-dialog::backdrop { background:#10282066; }
+.provider-unsaved-dialog h2 { margin-top:0; }
+.provider-unsaved-dialog button { display:block; width:100%; margin-top:12px; }
+.provider-workspace cosmaneura-capture .shell { padding:0; font:inherit; }
+.provider-workspace cosmaneura-capture main { padding:0; gap:16px; }
+.provider-workspace cosmaneura-capture .eyebrow { display:none; }
+.provider-workspace cosmaneura-capture .recorder { max-width:640px; margin:0 auto; padding:32px 24px; gap:24px; background:white; border:1px solid var(--scribe-border); border-radius:16px; box-shadow:var(--scribe-shadow); }
+.provider-workspace cosmaneura-capture .recording-progress { display:grid; justify-items:center; gap:12px; text-align:center; }
+.provider-workspace cosmaneura-capture .recording-progress [role=status] { font-size:1.25rem; font-weight:600; margin:0; }
+.provider-workspace cosmaneura-capture .recording-duration { display:grid; justify-items:center; margin:0; }
+.provider-workspace cosmaneura-capture .recording-duration strong { color:var(--scribe-heading); font-size:72px; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.02em; }
+.provider-workspace cosmaneura-capture .recording-duration span,.provider-workspace cosmaneura-capture .recording-state-detail { font-size:15px; color:var(--scribe-muted); }
+.provider-workspace cosmaneura-capture .record-actions { display:grid; grid-template-columns:1fr 2fr; gap:12px; }
+.provider-workspace cosmaneura-capture .record-actions button { min-height:56px; margin:0; font-size:1.1rem; }
+.provider-workspace cosmaneura-capture .record-actions button[data-testid=stop-button] { background:var(--scribe-green); color:white; font-weight:600; border-color:var(--scribe-green); }
+.provider-workspace cosmaneura-capture .record-actions button[data-testid=record-button] { background:var(--scribe-gradient); color:white; grid-column:1/-1; }
+.provider-workspace cosmaneura-capture .recording-patient { color:var(--scribe-heading); font-size:2rem; }
+.provider-workspace cosmaneura-capture .recording-patient strong { display:none; }
+.provider-workspace cosmaneura-capture .recording-patient span { font-size:16px; color:var(--scribe-muted); }
+.provider-workspace cosmaneura-capture .recording-control-hint { display:none; }
+.provider-workspace cosmaneura-capture .meeting-window-selection { display:grid; gap:12px; }
+.provider-workspace cosmaneura-capture .meeting-window-selection label { margin:0; }
+.provider-workspace cosmaneura-capture .meeting-window-selection button { justify-self:start; background:transparent; border:0; padding:4px 0; text-decoration:underline; }
+.provider-workspace cosmaneura-capture .meeting-window-selection small { font-size:15px; }
+.provider-workspace cosmaneura-capture .recording-source-help,.provider-workspace cosmaneura-capture .recording-source-help p { font-size:16px; }
+.provider-workspace cosmaneura-capture .recording-state-detail { display:block; font-weight:400; }
+.provider-workspace scribe-desktop-input-meter,.provider-workspace scribe-ios-input-meter { width:100%; }
+.provider-workspace:has(.provider-desktop-compact) { padding:12px; }
+.provider-workspace:has(.provider-desktop-compact) .provider-account,.provider-workspace:has(.provider-desktop-compact) .provider-patient-detail { display:none; }
+.provider-workspace:has(.provider-desktop-compact) .provider-header { margin:0 0 12px; }
+.provider-workspace:has(.provider-desktop-compact) [data-provider-encounter] { font-size:18px; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recorder { padding:16px; gap:12px; box-shadow:none; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration strong { font-size:48px; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact .record-actions button { min-height:44px; font-size:16px; }
+.provider-workspace cosmaneura-capture .provider-desktop-compact main>h1,.provider-workspace cosmaneura-capture .provider-desktop-compact main>p,.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-patient { display:none; }
+.provider-note-heading { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
+.provider-note-heading h1 { font-size:2rem; }
+.provider-workspace:has(.provider-note) .provider-header>div { display:none; }
+.provider-workspace:has(.provider-note) .provider-header { justify-content:flex-end; }
+.provider-draft-status { color:var(--scribe-muted); font-size:16px; }
+.provider-save-bar { display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center; }
+.provider-save-bar p { margin:0; font-size:16px; color:var(--scribe-muted); }
+.provider-save-bar>div { display:flex; flex-wrap:wrap; gap:12px; }
+.provider-note-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:24px; align-items:start; }
+.provider-note-editor { min-width:0; }
+.provider-note-editor label { margin:0 0 20px; }
+.provider-note-editor textarea { font-size:1.05rem; font-weight:400; }
+.provider-note-source-matches { display:flex; flex-wrap:wrap; gap:4px 12px; margin:-16px 0 16px; }
+.provider-note-source-matches button,.provider-note-source-toolbar button { border:0; background:transparent; font-size:15px; padding:4px 0; min-height:44px; text-decoration:underline; text-underline-offset:3px; }
+.provider-note-evidence { min-width:0; }
+.provider-note-evidence .creator-transcript-heading { font-size:16px; }
+.provider-note-evidence .creator-help { font-size:15px; }
+.provider-note-evidence .creator-transcript-search { padding:8px 0; }
+.provider-note-evidence .creator-transcript-search label { font-size:16px; }
+.provider-note-evidence .creator-search-navigation { display:flex; flex-wrap:wrap; gap:8px; }
+.provider-note-evidence .creator-search-navigation button { font-size:15px; padding:6px 10px; }
+.provider-template-details,.provider-note-guidance { border-top:1px solid var(--scribe-border); padding-top:8px; margin-top:20px; font-size:16px; }
+.provider-note-footer { display:grid; gap:10px; margin-top:20px; padding-top:20px; border-top:1px solid #dce5e3; text-align:center; }
+.provider-note-footer button[data-workspace-action=finish-note] { width:100%; }
+.provider-note-footer p { font-size:16px; color:var(--scribe-muted); margin:0; }
+.provider-note[data-conversation=hidden] .provider-note-evidence { display:none; }
+.provider-note-tabs { display:flex; gap:8px; }
+.provider-note-tabs button { background:transparent; border:0; padding:4px 0; text-decoration:underline; }
+.provider-saved-card { max-width:640px; margin:0 auto; padding:32px 28px; }
+.provider-saved-card h1 { font-size:1.75rem; }
+.provider-saved-card>button { width:100%; }
+.provider-private-note { padding:14px 16px; border-radius:12px; background:#eff6f2; margin-bottom:20px; }
+@media(min-width:900px) { .provider-note[data-conversation=shown] .provider-note-grid { grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr); } .provider-note-evidence { position:sticky; top:24px; max-height:calc(100dvh - 48px); overflow:auto; } }
+@media(max-width:600px) {
+ .provider-workspace { padding:20px 16px 36px; } .provider-list-heading { flex-wrap:wrap; gap:12px; }
+ .provider-encounters li { grid-template-columns:minmax(0,1fr) auto; padding:16px; gap:12px; }
+ .provider-visit-time { display:none; } .provider-visit-inline-time { display:inline; } .provider-visit-name strong { width:auto; }
+ .provider-workspace .provider-visit-action { min-width:92px; padding:10px 12px; }
+ .provider-recording-fields { grid-template-columns:1fr; gap:0; }
+ .provider-preparation,.provider-setup,.provider-note-editor,.provider-note-evidence { padding:20px 16px; }
+ .provider-header { align-items:flex-start; flex-wrap:wrap; gap:12px; } [data-provider-encounter] { font-size:1.75rem; }
+ .provider-workspace cosmaneura-capture .recorder { padding:24px 16px; }
+ .provider-workspace cosmaneura-capture .recording-duration strong { font-size:72px; }
+ .provider-workspace cosmaneura-capture .record-actions button { font-size:18px; padding:10px 12px; }
+ .provider-saved-card { padding:28px 20px; }
 }
-.provider-workspace textarea { width: 100%; resize: vertical; font-weight: 400; }
-.provider-workspace small { font-weight: 400; }
-.provider-consent { display: flex !important; align-items: center; gap: 12px !important; }
-.provider-consent input { width: 22px; flex-shrink: 0; }
-.provider-list-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
-.provider-list-heading h1, .provider-list-heading button { margin: 0; }
-.provider-encounters { display: grid; gap: 12px; list-style: none; padding: 0; margin: 16px 0; }
-.provider-encounters li { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
-.provider-encounters button { display: grid; gap: 4px; width: 100%; margin: 0; text-align: left; padding: 18px; overflow-wrap: anywhere; }
-.provider-encounters span { font-size: .95rem; color: #526d63; }
-.provider-encounters [data-draft-action]:empty { display: none; }
-.provider-encounters .provider-open-draft { width: auto; padding: 12px; text-align: center; }
-.provider-encounter-help { margin-top: 20px; border-top: 1px solid #dce5e3; padding-top: 8px; color: #526d63; }
-.provider-encounter-help summary { box-sizing: border-box; min-height: 44px; padding: 10px 0; cursor: pointer; }
-.provider-encounter-help p { margin-top: 4px; }
-.provider-preparation { max-width: 760px; }
-.provider-preparation h1 { margin-bottom: 8px; }
-.provider-preparation label { margin: 12px 0; }
-.provider-recording-options { margin: 20px 0; padding: 4px 16px; border: 1px solid #dce5e3; border-radius: 12px; }
-.provider-recording-options summary { min-height: 44px; padding: 10px 0; cursor: pointer; font-weight: 600; }
-.provider-recording-options summary small { display: block; margin-top: 4px; color: #526d63; overflow-wrap: anywhere; }
-.provider-consent-explanation { max-width: 62ch; margin: 4px 0 8px; color: #526d63; font-size: .875rem; }
-.provider-start-help { margin: 6px 0; color: #526d63; font-size: .95rem; }
-.provider-recording-fields { display: grid; gap: 0 16px; }
-.provider-recording-fields label, .provider-recording-fields select { min-width: 0; width: 100%; }
-.provider-preparation .provider-consent { padding: 12px; border-radius: 8px; background: #f2faf5; }
-[data-workspace-notice]:not(:empty) { padding: 14px; border-left: 4px solid #477c68; background: #eff6f2; }
-.provider-save-bar { position: sticky; top: var(--provider-header-height, 76px); z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid #ccded7; border-radius: 10px; background: #fff; box-shadow: 0 3px 8px #17352f14; }
-.provider-save-bar p, .provider-save-bar button { margin: 0; }
-.provider-save-bar p { font-weight: 600; }
-[data-note-field] { scroll-margin-top: calc(var(--provider-header-height, 76px) + 84px); }
-[data-workspace-progress] { color: #526d63; font-variant-numeric: tabular-nums; }
-[data-workspace-notice]:empty { margin: 0; }
-.provider-workspace .shell { padding: 0; }
-.provider-workspace .shell > header { display: none; }
-.provider-workspace cosmaneura-capture main { grid-template-columns: minmax(0, 1fr); }
-.provider-workspace cosmaneura-capture main > *, .provider-workspace cosmaneura-capture .flow-card > * { min-width: 0; }
-.provider-workspace cosmaneura-capture label, .provider-workspace cosmaneura-capture select { min-width: 0; width: 100%; }
-.provider-workspace cosmaneura-capture [hidden] { display: none; }
-.provider-workspace .provider-native-capture main { gap: .65rem; }
-.provider-workspace .provider-native-capture .recorder { grid-template-columns: minmax(0, 1fr); gap: .75rem; }
-.provider-workspace .provider-native-capture .recorder label { margin: 0; }
-.provider-workspace .provider-native-capture .record-actions { gap: .5rem; }
-.provider-workspace .provider-native-capture .record-actions button { margin: 0; }
-.provider-workspace .provider-native-capture h1 { font-size: 1.75rem; }
-.provider-workspace .provider-native-capture .eyebrow { display: none; }
-.provider-workspace .provider-native-capture main > p { margin: 0; }
-.provider-workspace .provider-desktop-capture main { gap: .65rem; }
-.provider-workspace .provider-desktop-capture .eyebrow { display: none; }
-.provider-workspace .provider-desktop-capture main > p { margin: 0; }
-.provider-workspace .provider-desktop-capture .record-actions { gap: .5rem; }
-.provider-workspace .provider-desktop-capture .record-actions button { margin: 0; }
-[data-provider-encounter] { margin: 4px 0 0; font-size: 1rem; font-weight: 600; }
-@media (min-width: 601px) { .provider-recording-fields { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 600px) { .provider-workspace { margin: 12px; padding: 16px; } .provider-header { align-items: flex-start; flex-wrap: wrap; gap: 4px 16px; } .provider-preparation button[data-workspace-action="prepare"] { width: 100%; margin-right: 0; } }
+@media(max-width:360px) { .provider-encounters li { grid-template-columns:minmax(0,1fr); } .provider-visit-action { width:100%; } .provider-visit-wait { text-align:left; } .provider-workspace cosmaneura-capture .record-actions { grid-template-columns:1fr; } }
 
-.provider-account { margin: 0 0 14px; padding: 8px 12px; background: #eff6f2; border-radius: 8px; color: #31594e; overflow-wrap: anywhere; font-size: .9rem; }
-.provider-workspace button[data-workspace-action="new-encounter"], .provider-workspace [data-new-patient] button, .provider-workspace button[data-workspace-action="retry-creation"] { background: var(--scribe-gradient, linear-gradient(135deg, #146f6c, #17273c)); color: white; }
-.provider-setup { max-width: 760px; }
-.provider-setup [data-patient-search] { display: flex; align-items: end; gap: 12px; }
-.provider-setup [data-patient-search] label { flex: 1; min-width: 0; margin: 12px 0 8px; }
-.provider-setup [data-patient-search] input { width: 100%; }
-.provider-setup [data-patient-search] button { margin-right: 0; }
-.provider-setup .provider-recording-options { margin: 12px 0; padding: 0 12px; }
-.provider-setup [data-new-patient] label { margin: 12px 0; }
-.provider-new-patient-help { margin: 10px 0; font-size: .875rem; line-height: 1.4; }
-.provider-create-actions { padding: 8px 0; background: #fff; border-top: 1px solid #dce5e3; }
-.provider-create-actions button { width: 100%; margin: 0; }
-.provider-note-wait-time { color: #526d63; font-variant-numeric: tabular-nums; }
-.provider-note-options { margin-top: 20px; border-top: 1px solid #dce5e3; padding-top: 8px; }
-.provider-note-options summary { min-height: 44px; padding: 10px 0; cursor: pointer; }
-.provider-workspace[aria-busy="true"] button[data-workspace-action]:not([data-workspace-action="cancel-opening"]) { cursor: wait; opacity: .7; }
+.provider-microphone-check { display:flex; align-items:center; gap:12px; font-size:16px; }
+.provider-input-bar { width:84px; height:8px; background:#dbe9e2; border-radius:6px; overflow:hidden; }
+.provider-input-bar i { display:block; height:100%; width:0; background:var(--scribe-green); }
+.provider-workspace cosmaneura-capture .recording-live::before { content:""; display:inline-block; width:12px; height:12px; margin-right:10px; border-radius:50%; background:#9f3434; animation:scribe-pulse 2s ease-in-out infinite; }
+.provider-workspace cosmaneura-capture .recording-patient { display:grid; gap:4px; text-align:center; }
+.provider-workspace cosmaneura-capture .shell>header[hidden],.provider-workspace cosmaneura-capture main>h1[hidden] { display:none; }
+.provider-completion { max-width:620px; margin:auto; text-align:center; padding:40px 24px; }
+.provider-completion-check { font-size:48px; color:var(--scribe-green); }
+.provider-completion button { display:block; width:100%; margin:16px 0; }
 
-/* Match the main process's compact recording window, including the app wrapper. */
-.provider-workspace:has(.provider-desktop-compact) { margin: 0; padding: 10px 12px; }
-.provider-workspace:has(.provider-desktop-compact) .provider-account { margin: 0 0 6px; padding: 0; background: none; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.provider-workspace:has(.provider-desktop-capture.provider-desktop-compact) .provider-header { min-height: 44px; padding: 0; margin: 0; border-bottom: 0; }
-.provider-workspace:has(.provider-desktop-compact) .provider-header > button { display: block; min-height: 44px; margin: 0; padding: 8px 10px; font-size: 13px; }
-.provider-workspace:has(.provider-desktop-compact) [data-provider-encounter] { margin: 0; font-size: 13px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.provider-desktop-compact main > h1, .provider-desktop-compact main > p,
-.provider-desktop-compact [data-testid="desktop-coverage"]:not([open]) { display: none; }
-.provider-desktop-compact .recorder { padding: 0; border: 0; box-shadow: none; gap: 8px; }
-.provider-desktop-compact .recording-progress { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-.provider-desktop-compact .recording-progress > [role="status"] { font-size: 18px; line-height: 1.3; }
-.provider-desktop-compact .recording-state-detail { display: block; font-size: 13px; font-weight: 400; margin-top: 4px; }
-.provider-desktop-compact .recording-duration strong { font-size: 1.8rem; }
-.provider-desktop-compact .recording-duration span { font-size: 11px; }
-.provider-desktop-compact .recording-progress > p:not([role="status"]):not(.recording-duration):not(.recording-control-hint) { grid-column: 1 / -1; font-size: 11px; }
-.provider-desktop-compact .recording-control-hint { display: none; }
-.provider-desktop-compact .record-actions { gap: 8px; }
-.provider-desktop-compact .record-actions button { min-height: 44px; padding: 8px 12px; font-size: 14px; }
-.provider-desktop-compact .recording-source-help { margin: 0; padding-top: 8px; font-size: 11px; line-height: 1.3; }
-.provider-desktop-compact .recording-source-help summary { font-size: 11px; }
-
-/* A stable patient header and in-place editor keep context visible across interruptions. */
-.provider-header > div > strong { font-size: .75rem; font-weight: 500; color: #526d63; }
-.provider-header [data-provider-encounter] { margin: 0; }
-.provider-workspace button:disabled { opacity: .6; cursor: wait; }
-.provider-workspace textarea[readonly] { background: #f7faf9; }
-.provider-new-patient { margin-top: 16px; padding: 0 16px; border: 1px solid #ccded7; border-radius: 12px; }
-.provider-new-patient h2, .provider-results-heading { font-size: 1rem; }
-.provider-new-patient > p { font-size: .875rem; color: #526d63; }
-.provider-workspace .provider-create-choice { width: 100%; text-align: left; overflow-wrap: anywhere; }
-.provider-workspace button[data-workspace-action="new-encounter"] { min-width: 180px; font-size: 1.1rem; font-weight: 600; }
-.provider-note-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 16px; margin: 12px 0; }
-.provider-note-heading h1 { margin: 0; }
-.provider-draft-status { margin: 4px 0; color: #526d63; font-size: .875rem; }
-.provider-note-grid { scroll-margin-top: calc(var(--provider-header-height, 76px) + 76px); }
-.provider-note-grid > * { min-width: 0; min-height: 0; }
-.provider-note-evidence { display: flex; flex-direction: column; height: clamp(280px, calc(100dvh - var(--provider-header-height, 76px) - 184px), 680px); padding-top: 8px; }
-.provider-note-source-toolbar { flex: none; }
-.provider-note-source-toolbar:has(button:not([hidden])) { padding-bottom: 8px; border-bottom: 1px solid #dce5e3; }
-.provider-note-source-toolbar button { margin: 0; }
-[data-note-transcript-scroll] { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 4px; }
-.provider-note-editor:focus-visible, [data-note-transcript-scroll]:focus-visible { outline: 3px solid #648ad9; outline-offset: 2px; }
-.provider-note-source-matches { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: -12px; }
-.provider-note-source-matches[hidden] { display: none; }
-.provider-note-source-matches button { margin: 0; padding: 6px 10px; font-size: .85rem; }
-.provider-note-guidance { margin-top: 12px; font-size: .875rem; color: #526d63; }
-.provider-note-guidance summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
-.provider-save-bar:has(.provider-save-recovery) { background: #fff9ea; border-color: #c49640; }
-.provider-save-bar:has(.provider-save-recovery) > button[data-workspace-action="save"] { display: none; }
-.provider-save-recovery { flex-shrink: 0; }
-.provider-save-recovery button { margin: 0; }
-.provider-note-evidence .creator-transcript-heading { justify-content: flex-end; margin: 0; font-size: .8rem; }
-.provider-note-evidence .creator-transcript-heading h2, .provider-note-evidence .creator-help { display: none; }
-.provider-note-evidence .creator-transcript-search { padding: 4px 0; }
-.provider-note-evidence .creator-transcript-search label { margin: 4px 0; }
-.provider-note-evidence .creator-search-navigation { flex-wrap: nowrap; gap: 2px; }
-.provider-note-evidence .creator-search-navigation button { min-width: 44px; margin: 0; padding: 6px 8px; font-size: .8rem; }
-.provider-note-evidence .creator-segments { margin-top: 4px; }
-.provider-unsaved-dialog { width: min(440px, calc(100vw - 48px)); max-height: calc(100dvh - 48px); overflow: auto; box-sizing: border-box; padding: 20px; border: 1px solid #8ea99f; border-radius: 12px; background: #fff; color: #203035; box-shadow: 0 12px 48px #17352f40; }
-.provider-unsaved-dialog::backdrop { background: #10282066; }
-.provider-unsaved-dialog h2 { margin: 0 0 8px; font-size: 1.25rem; }
-.provider-unsaved-dialog button { display: block; width: 100%; margin-right: 0; }
-.provider-unsaved-dialog [data-workspace-action="keep-editing"], .provider-unsaved-dialog [data-workspace-action="save-and-leave"] { font-weight: 600; }
-@media (min-width: 900px) {
-  .provider-note-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 24px; }
-  .provider-note-grid { height: clamp(280px, calc(100dvh - var(--provider-header-height, 76px) - 184px), 680px); }
-  .provider-note-editor { overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 4px 8px 4px 4px; }
-  .provider-note-evidence { height: auto; border-left: 1px solid #dce5e3; padding: 4px 0 4px 20px; }
-}
-@media (max-width: 600px) {
-  .provider-workspace { margin: 0; padding: 12px; }
-  .provider-header { align-items: center; flex-wrap: nowrap; gap: 8px; }
-  .provider-header > button { padding: 8px; font-size: .8rem; }
-  .provider-header [data-provider-encounter] { font-size: .95rem; }
-  .provider-setup [data-patient-search] { gap: 8px; }
-  .provider-setup [data-patient-search] button { padding: 10px; }
-  .provider-save-bar { gap: 8px; }
-  .provider-save-bar p { font-size: .85rem; }
-  .provider-save-recovery button { max-width: 136px; padding: 8px 10px; font-size: .85rem; }
-}
-/* Use the existing patient header beside the exit, rather than repeating it below. */
-.provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-header [data-provider-encounter] { display: -webkit-box; font-size: 16px; }
-.provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-header > div > strong,
-.provider-workspace:has(.provider-desktop-compact .recording-patient) .provider-patient-detail,
-.provider-workspace .provider-desktop-compact .recording-patient { display: none; }
-.provider-workspace cosmaneura-capture .shell.provider-desktop-compact { padding-block: 8px; }
-
-.provider-workspace .recording-source-choice summary { min-height: 44px; box-sizing: border-box; padding: 10px 0; cursor: pointer; font-weight: 600; }
-.provider-workspace .recording-source-choice summary span { margin-left: 8px; font-size: .85rem; font-weight: 400; color: #526d63; }
-.provider-workspace .recording-source-choice label { margin-top: 8px; }
-
-/* Keep source choice and Start visible together in the normal desktop window. */
-.provider-workspace:has(.provider-desktop-capture) .provider-header [data-provider-encounter] { display: none; }
-.provider-workspace:has(.provider-desktop-capture) .provider-header { margin-bottom: 8px; padding-bottom: 8px; }
-.provider-workspace:has(.provider-desktop-capture) .provider-account { margin-bottom: 8px; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture { padding: 8px 0 16px; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture h1 { font-size: 1.5rem; line-height: 1.2; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .recorder { padding: 16px; gap: 12px; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-progress { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-progress > :not([role="status"]):not(.recording-duration) { grid-column: 1 / -1; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-duration { grid-column: 2; grid-row: 1; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-duration strong { font-size: 2rem; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .recording-duration span { font-size: .75rem; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture label { margin: 0; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .meeting-window-selection { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 8px; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .meeting-window-selection small { grid-column: 1 / -1; font-size: .8rem; line-height: 1.4; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .meeting-window-selection button { margin: 0; }
-.provider-workspace cosmaneura-capture .provider-desktop-capture .record-button { min-height: 44px; padding: 10px 16px; }
-@media (max-width: 540px) {
-  .provider-workspace cosmaneura-capture .provider-desktop-capture .meeting-window-selection { grid-template-columns: minmax(0, 1fr); }
-}
-.provider-patient-detail { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 0; font-size: .8rem; font-weight: 400; color: #526d63; }
-.provider-workspace .provider-patient-detail button { min-height: 44px; margin: 0; padding: 4px 8px; font-size: .8rem; }
-.provider-visit-status { width: fit-content; padding: 2px 8px; border-radius: 6px; background: #e3f1e9; font-weight: 600; }
-
-.provider-note-tabs { display: flex; gap: 8px; }
-.provider-note-tabs button { flex: 1; margin-right: 0; }
-.provider-note-tabs [aria-pressed="true"] { background: #dceee5; font-weight: 600; }
-@media (max-width: 899px) {
-  .provider-note[data-note-view="note"] .provider-note-evidence { display: none; }
-  .provider-note[data-note-view="transcript"] .provider-note-editor { display: none; }
-}
-@media (min-width: 900px) { .provider-note-tabs { display: none; } }
-
-/* Compact visit browsing and one page scroll for the clinical note. */
-.provider-list-filters { display: grid; gap: 8px; }
-.provider-list-filters label { margin: 12px 0 0; }
-.provider-visit-filters { display: flex; flex-wrap: wrap; gap: 6px; }
-.provider-visit-filters button { margin: 0; padding: 8px 12px; }
-.provider-visit-filters button[aria-pressed="true"] { background: #17352f; color: #fff; border-color: #17352f; }
-.provider-encounters { gap: 8px; }
-.provider-encounters li { grid-template-columns: minmax(0, 1fr) auto auto; }
-.provider-encounters li[hidden] { display: none; }
-.provider-encounters button { padding: 10px 14px; gap: 2px; }
-.provider-encounters .provider-hide-visit { width: auto; padding: 8px; background: transparent; border-color: transparent; font-size: .85rem; }
-.provider-header { padding: 4px 0; }
-.provider-header p { margin: 0; }
-.provider-account { padding: 0; background: none; margin: 0 0 8px; font-size: .8rem; }
-.provider-template-details { border-top: 1px solid #dce5e3; margin-top: 20px; }
-.provider-template-details summary { min-height: 44px; padding: 10px 0; cursor: pointer; font-weight: 600; }
-.provider-note-grid { height: auto; }
-.provider-note-editor { overflow: visible; }
-@media (max-width: 899px) {
-  .provider-note-evidence { height: auto; }
-  [data-note-transcript-scroll] { overflow: visible; }
-}
-.provider-note-editor label { margin: 12px 0; }
-.provider-note-editor textarea { overflow: hidden; min-height: 68px; }
-.provider-save-bar { flex-wrap: wrap; }
-.provider-save-bar > div { display: flex; gap: 8px; }
-.provider-save-bar button { padding: 8px 12px; font-size: .9rem; }
-.provider-workspace button[data-workspace-action="finish-note"] { color: white; background: #17352f; }
-@media (min-width: 900px) { .provider-note-evidence { position: sticky; top: calc(var(--provider-header-height, 76px) + 86px); height: min(70dvh, 680px); } }
-@media (max-width: 600px) { .provider-list-filters { grid-template-columns: 1fr; gap: 0; } }
-.provider-workspace cosmaneura-capture .provider-desktop-compact .recorder { padding: 0; }
+.provider-application .provider-account { display:none; }
+.provider-preparation .provider-start-help { margin:0; }

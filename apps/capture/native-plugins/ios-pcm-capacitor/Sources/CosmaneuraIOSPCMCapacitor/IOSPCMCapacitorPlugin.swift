@@ -7,6 +7,7 @@
   import Foundation
   import AVFAudio
   import CosmasNativeAuth
+  import CosmaneuraIOSAVFoundationDriver
 
   @objc(IOSPCMCapacitorPlugin)
   public final class IOSPCMCapacitorPlugin: CAPPlugin, CAPBridgedPlugin,
@@ -17,6 +18,10 @@
     public let pluginMethods: [CAPPluginMethod] = [
       CAPPluginMethod(name: "getCaptureSignal", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "selectMicrophoneInput", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "beginMicrophoneCheck", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "readMicrophoneCheck", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "selectMicrophoneDevice", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "endMicrophoneCheck", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getAppState", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "confirmCaptureIdle", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getCaptureCapabilities", returnType: CAPPluginReturnPromise),
@@ -42,7 +47,43 @@
       let native = IOSPCMCapacitorTransport(bridge: bridge)
       transport = native
       Task { @MainActor in
-        NativeCaptureStartGate.registerIdleProbe { native.confirmCaptureIdle() }
+        NativeCaptureStartGate.registerIdleProbe {
+          native.confirmCaptureIdle() && AppleMicrophoneCheck.shared.isIdle
+        }
+      }
+    }
+
+    @objc public func beginMicrophoneCheck(_ call: CAPPluginCall) {
+      guard call.options.isEmpty else { reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments); return }
+      Task { @MainActor in
+        do {
+          call.resolve(try await AppleMicrophoneCheck.shared.begin {
+            try NativeCaptureStartGate.requireIdleForMicrophoneCheck()
+          })
+        } catch { reject(call, error: error) }
+      }
+    }
+
+    @objc public func readMicrophoneCheck(_ call: CAPPluginCall) {
+      guard call.options.isEmpty else { reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments); return }
+      Task { @MainActor in call.resolve(AppleMicrophoneCheck.shared.snapshot()) }
+    }
+
+    @objc public func selectMicrophoneDevice(_ call: CAPPluginCall) {
+      guard let id = call.getString("id"), Set(call.options.keys) == Set(["id"]) else {
+        reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments); return
+      }
+      Task { @MainActor in
+        do { call.resolve(try AppleMicrophoneCheck.shared.select(id: id)) }
+        catch { reject(call, error: error) }
+      }
+    }
+
+    @objc public func endMicrophoneCheck(_ call: CAPPluginCall) {
+      guard call.options.isEmpty else { reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments); return }
+      Task { @MainActor in
+        do { try AppleMicrophoneCheck.shared.end(); call.resolve([:]) }
+        catch { reject(call, error: error) }
       }
     }
 

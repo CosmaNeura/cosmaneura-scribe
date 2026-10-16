@@ -30,10 +30,12 @@ struct NativeProviderRecordingCommand {
   enum Kind: String { case read, start, pause, seal, close, input }
   let requestID: UUID, recorderID: UUID, revision: String, kind: Kind
   let input: AppleMicrophoneInput?
+  let inputID: String?
   init(_ value: [String: Any]) throws {
     guard let raw = value["kind"] as? String, let kind = Kind(rawValue: raw),
       Set(value.keys)
-        == Set(["requestId", "recorderId", "revision", "kind"] + (kind == .input ? ["input"] : []))
+        == Set(["requestId", "recorderId", "revision", "kind"] + (kind == .input ? ["input"] : [])
+          + (kind == .input && value["inputId"] != nil ? ["inputId"] : []))
     else { throw ProviderNativeError.invalidRequest }
     requestID = try recordingUUID(value["requestId"])
     recorderID = try recordingUUID(value["recorderId"])
@@ -43,8 +45,15 @@ struct NativeProviderRecordingCommand {
       guard let raw = value["input"] as? String, let input = AppleMicrophoneInput(rawValue: raw)
       else { throw ProviderNativeError.invalidRequest }
       self.input = input
+      if let id = value["inputId"] {
+        guard let uid = id as? String, !uid.isEmpty, uid.utf8.count <= 512 else {
+          throw ProviderNativeError.invalidRequest
+        }
+        inputID = uid
+      } else { inputID = nil }
     } else {
       input = nil
+      inputID = nil
     }
   }
 }
@@ -67,6 +76,19 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
   private var generation = UUID()
   private var lastClosed: UUID?
   private var version = 0
+
+  // Read-only navigation metadata for the current authenticated native owner.
+  // The renderer must map the workspace against a fresh authorized catalog.
+  func navigationMetadata(revision: String) -> [String: Any]? {
+    guard let selected = entry, selected.selection.revision == revision,
+      !selected.host.requiresReopen,
+      selected.host.phase != .ready, selected.host.phase != .sealed
+    else { return nil }
+    return [
+      "workspaceId": selected.selection.workspaceID.uuidString.lowercased(),
+      "sessionId": selected.selection.sessionID.uuidString.lowercased(),
+    ]
+  }
 
   func authChanged(_ state: NativeAuthState) {
     let expected = entry?.selection.revision ?? openingRevision
@@ -153,7 +175,7 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
         if selected.host.phase != .recording { try await selected.host.start() }
       case .pause: try await selected.host.pause()
       case .seal: try await selected.host.sealForUpload()
-      case .input: try selected.host.selectMicrophoneInput(request.input!)
+      case .input: try await selected.host.selectMicrophoneInput(request.input!, uid: request.inputID)
       case .close: throw ProviderNativeError.invalidRequest
       }
     } catch { ok = false }
@@ -205,6 +227,7 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
       "capturedAudioFrames": host.capturedAudioFrames,
       "maximumPlaintextBytes": NativeRecordingFlowOwner.maximumPlaintextBytes,
       "input": host.microphoneInput.rawValue, "completion": completion as Any? ?? NSNull(),
+      "inputDevices": host.inputDevices, "selectedInputId": host.selectedInputID as Any? ?? NSNull(),
       "signal": ["version": 2, "signal": signal as Any? ?? NSNull()],
     ]
   }

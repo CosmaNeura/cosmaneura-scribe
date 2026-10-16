@@ -12,6 +12,8 @@ export interface ProviderApplicationHost {
   readonly supportsRecorderStopReauthentication?: true;
   /** Main may own a preparation before the renderer obtains its recorder. */
   readonly supportsWorkspaceCloseReauthentication?: true;
+  /** PHI-free native link request; only existing recording navigation is allowed. */
+  readonly recordingOpen?: (listener: () => void) => Promise<PluginListenerHandle>;
   /** Returns the current authorized provider workflow, never credentials. */
   connect(signal: AbortSignal): Promise<{ readonly workspace: ProviderWorkspaceHost; dispose(): Promise<void> }>;
 }
@@ -33,6 +35,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   const supportsStopReauthentication = host.supportsRecorderStopReauthentication === true;
   let state: ProviderSessionState | null = null, observations = 0;
   let scope: Scope | undefined, listener: PluginListenerHandle | undefined;
+  let recordingListener: PluginListenerHandle | undefined, recordingOpenPending = false;
   let disposed = false, busy = false, stopUnconfirmed = false, accessClosed = false, logoutPending = false;
   let operations = 0, signingOut = false;
   let recorderStopUnconfirmed = false;
@@ -46,6 +49,13 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   const message = root.querySelector<HTMLElement>("[data-session-message]")!;
   const recovery = root.querySelector<HTMLElement>("[data-session-recovery]")!;
   const workflow = root.querySelector<HTMLElement>("[data-provider-workflow]")!;
+  const flushRecordingOpen = (): void => {
+    if (!recordingOpenPending || disposed || accessClosed || stopUnconfirmed
+      || state?.phase !== "ready" || !scope?.unmount || scope.abort.signal.aborted) return;
+    recordingOpenPending = false;
+    workflow.dispatchEvent(new Event("scribe-open-recording"));
+  };
+  const requestRecordingOpen = (): void => { recordingOpenPending = true; flushRecordingOpen(); };
   const button = (action: string, label: string): string => `<button data-session-action="${action}"${(action === "sign-out" ? signingOut : busy) ? " disabled" : ""}>${label}</button>`;
   const render = (): void => {
     if (disposed) return;
@@ -53,7 +63,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     const shown: Record<ProviderSessionPhase, [string, string]> = {
       disabled: ["Setup required", "This installation has not been connected to your practice."],
       loading: ["Opening Scribe", "Checking your secure session…"],
-      signedOut: ["Welcome to Scribe", "Sign in to record, review and continue your encounter notes."],
+      signedOut: ["Be present. Leave with your note.", "Scribe records with consent and helps you prepare a visit note for review in the CosmaNeura dashboard."],
       signingIn: ["Complete sign-in", "Finish signing in using the secure sign-in window."],
       ready: [scope?.unmount && !scope.abort.signal.aborted ? "" : "Your workspace", ""],
       signOutPending: ["Sign-out needs attention", "Your workspace is closed. Retry sign-out to finish."],
@@ -61,7 +71,9 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     };
     [title.textContent, message.textContent] = shown[phase];
     if (notice) message.textContent = notice;
-    actions.innerHTML = phase === "ready" || phase === "signingIn" ? button("sign-out", "Sign out") : "";
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><p data-provider-name></p>${button("sign-out", "Sign out")}<a href="mailto:dev@cosmaneura.com">Get help</a></details>`
+      : phase === "signingIn" ? button("sign-out", "Sign out") : "";
+    const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
     if (stopUnconfirmed) {
       title.textContent = recorderStopUnconfirmed ? "Recording stop needs attention" : "Workspace close needs attention";
@@ -121,7 +133,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     // Native polling still observes revocation, but an identical observation
     // must not replace focused controls or retry a previously failed close.
     if (!changed) return;
-    state = { phase: value.phase, revision: value.revision };
+    state = { phase: value.phase, revision: value.revision,
+      ...(typeof value.providerDisplayName === "string" && value.providerDisplayName.length <= 200 ? { providerDisplayName: value.providerDisplayName } : {}) };
     if (value.phase === "signedOut") logoutPending = false;
     if (value.phase === "signOutPending") logoutPending = true;
     if (scope && (value.phase !== "ready" || value.revision !== scope.revision)) {
@@ -177,6 +190,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     await owned.connecting;
     if (owned.abort.signal.aborted) await close();
     render();
+    flushRecordingOpen();
   };
   const perform = async (action: string): Promise<void> => {
     if (disposed || (action === "sign-out" ? signingOut : busy)) return;
@@ -242,6 +256,13 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
   render();
   const starting = (async () => {
     try {
+      if (host.recordingOpen) {
+        try {
+          const added = await host.recordingOpen(requestRecordingOpen);
+          if (disposed) { await added.remove(); return; }
+          recordingListener = added;
+        } catch { /* Navigation failure does not weaken or replace authentication. */ }
+      }
       const added = await host.session.addListener("authStateChanged", accept);
       if (disposed) { await added.remove(); return; }
       listener = added;
@@ -260,7 +281,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     root.removeEventListener("click", clicked);
     document.removeEventListener("visibilitychange", resume);
     disposal = (async () => {
-      try { await starting; await close(); await listener?.remove(); root.replaceChildren(); }
+      try { await starting; await close(); await listener?.remove(); await recordingListener?.remove(); root.replaceChildren(); }
       catch { disposal = undefined; throw new Error("provider_close_unconfirmed"); }
     })();
     return disposal;

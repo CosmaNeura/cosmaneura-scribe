@@ -74,6 +74,8 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   private var sealing: Task<Void, Error>?
   private var generation = UUID()
   private var retired = false
+  private var changingInput = false
+  private var inputChangeGeneration = UUID()
   private var interruptionObserved = false
   private let input = AppleMicrophoneInputPreference()
   private(set) var phase: Phase = .unopened
@@ -97,6 +99,11 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     self.makeSource = makeSource
     self.makeRun = makeRun
     self.now = now
+    #if os(iOS)
+      if let selected = AppleMicrophoneCheck.shared.selectedPreference {
+        input.select(selected.0, uid: selected.1)
+      }
+    #endif
     flow = NativeRecordingFlowOwner(
       scope: scope, recoveryScope: recoveryScope, service: service, records: records)
     if let aggregate = service as? any NativeRecordingWindowService {
@@ -181,10 +188,11 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     try await task.value
   }
 
-  func start() async throws {
+  func start(allowInputChange: Bool = false) async throws {
     if let starting { return try await starting.value }
     guard [.ready, .paused].contains(phase), opening == nil, stopping == nil, sealing == nil,
       !retired, let cipher, let saved, saved.phase == .open,
+      (!changingInput || allowInputChange),
       saved.committedChunks < 2048,
       saved.committedPlaintextBytes < NativeRecordingFlowOwner.maximumPlaintextBytes
     else { throw ProviderNativeError.unavailable }
@@ -272,6 +280,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   }
 
   func pause() async throws {
+    inputChangeGeneration = UUID() // A deliberate Pause cancels an input restart.
     if let sealing { return try await sealing.value }
     guard [.ready, .starting, .recording, .pausing, .paused, .stopPending, .sealed].contains(phase)
     else { throw ProviderNativeError.unavailable }
@@ -282,6 +291,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   /// Stop and freeze completion before allowing the existing ciphertext uploader.
   /// A fresh Stop-and-upload performs one authenticated scan, not pause + scan.
   func sealForUpload() async throws {
+    inputChangeGeneration = UUID()
     if let sealing { return try await sealing.value }
     if phase == .sealed {
       try requireCurrent()
@@ -304,6 +314,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
         saved = try await flow.sealForUpload(encryption: cipher, lease: lease)
         try current(generation)
         phase = .sealed
+        #if os(iOS)
+          ScribeRecordingActivity.end()
+        #endif
         failure = nil
       } catch {
         if phase == .sealing {
@@ -335,22 +348,65 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
     // Add its accepted frames only to the baseline taken before that run.
     return max(retained, run.map { capturePriorAudioFrames + $0.capturedAudioFrames } ?? 0)
   }
-  var busy: Bool { opening != nil || starting != nil || stopping != nil || sealing != nil }
+  var busy: Bool { changingInput || opening != nil || starting != nil || stopping != nil || sealing != nil }
   var requiresReopen: Bool { retired }
   var microphoneInput: AppleMicrophoneInput { input.selected }
 
-  func selectMicrophoneInput(_ value: AppleMicrophoneInput) throws {
+  func selectMicrophoneInput(_ value: AppleMicrophoneInput, uid: String? = nil) async throws {
     try current(generation)
-    guard [.ready, .paused].contains(phase), !busy, run == nil || run?.isPhysicallyIdle == true
+    // Older Start callers supply a category default. Preserve a real named
+    // preflight choice; the current UI changes it through an exact native UID.
+    if uid == nil, input.selectedUID != nil { return }
+    guard [.ready, .paused, .recording].contains(phase), !busy
     else {
       throw ProviderNativeError.unavailable
     }
-    input.select(value)
+    #if os(iOS)
+      if let uid {
+        let selected = try AppleMicrophoneCheck.selection(id: uid)
+        guard selected.0 == value else { throw ProviderNativeError.invalidRequest }
+      }
+    #else
+      guard uid == nil else { throw ProviderNativeError.invalidRequest }
+    #endif
+    let resume = phase == .recording
+    let ticket = inputChangeGeneration
+    changingInput = true
+    defer { changingInput = false }
+    if resume {
+      // Close and durably reconcile the accepted tail before selecting a route.
+      // A new native source interval uses the same key/session/sequence. The
+      // visible pausing/starting phases disclose the real capture gap.
+      try await stop(reconcile: true)
+      try current(generation)
+      guard ticket == inputChangeGeneration, phase == .paused else {
+        throw ProviderNativeError.unavailable
+      }
+    }
+    guard run == nil || run?.isPhysicallyIdle == true else { throw ProviderNativeError.unavailable }
+    input.select(value, uid: uid)
+    if resume { try await start(allowInputChange: true) }
+  }
+
+  var inputDevices: [[String: Any]] {
+    #if os(iOS)
+      AppleMicrophoneCheck.devices().map(\.object)
+    #else
+      []
+    #endif
+  }
+  var selectedInputID: String? {
+    #if os(iOS)
+      AppleMicrophoneCheck.devices().first(where: \.current)?.id
+    #else
+      nil
+    #endif
   }
 
   /// Account changes fence synchronously. Same-account foreground recovery may
   /// still close its original source; a fresh authorized host is needed to start.
   func retire() {
+    inputChangeGeneration = UUID()
     retired = true
     generation = UUID()
     warming?.task.cancel()
@@ -365,6 +421,7 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
   /// No key/queue deletion. Await outstanding cancelled preparation before
   /// releasing native ownership, so late work cannot race the next host.
   func close() async throws {
+    inputChangeGeneration = UUID()
     if phase == .closed { return }
     retired = true
     generation = UUID()
@@ -388,6 +445,9 @@ extension NativeProviderRecordingRun: NativeProviderRecordingInterval {}
       throw ProviderNativeError.unavailable
     }
     phase = .closed
+    #if os(iOS)
+      ScribeRecordingActivity.end()
+    #endif
     if Self.owner == id { Self.owner = nil }
   }
 

@@ -3,6 +3,7 @@ import { mountProviderApplication } from "./application";
 import { createProviderIOSHost } from "./ios-host";
 import { connectNativeProviderIOSBackend, type NativeProviderOptions } from "./native-backend";
 import { nativeProviderPlugin as native } from "./native-plugin";
+import { subscribeIOSRecordingOpen } from "./recording-open";
 
 /** Standalone iOS startup after the host's upload/Core configuration is supplied.
  * Reuses the registered native sign-in/out UI and existing complete provider
@@ -16,6 +17,7 @@ export function mountNativeProviderIOSApplication(root: HTMLElement, options: Om
   return mountProviderApplication(root, {
     session: native,
     supportsRecorderStopReauthentication: true,
+    recordingOpen: listener => subscribeIOSRecordingOpen(native, listener),
     connect: async signal => {
       const backend = await connectNativeProviderIOSBackend({ ...options, signal }, native);
       try { return { workspace: createProviderIOSHost(backend), dispose: () => backend.dispose() }; }

@@ -40,6 +40,7 @@ let package = Package(
         .product(name: "CosmasNativeAuth", package: "cosmas-native-auth"),
         "CosmaneuraIOSPCMCapacitorTransport",
         .product(name: "CosmaneuraIOSPCMCore", package: "ios-pcm-capture"),
+        .product(name: "CosmaneuraIOSAVFoundationDriver", package: "ios-pcm-capture"),
         .product(
           name: "Capacitor",
           package: "capacitor-swift-pm",

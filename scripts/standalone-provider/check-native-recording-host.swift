@@ -585,12 +585,15 @@ import Security
       let other = f.host()
       try await rejects { try await other.open() }
       try await other.close()
-      try host.selectMicrophoneInput(.external)
+      try await host.selectMicrophoneInput(.external)
       try check(host.microphoneInput == .external)
       try await host.start()
-      try await rejects { try host.selectMicrophoneInput(.bluetooth) }
+      try await host.selectMicrophoneInput(.bluetooth)
+      try check(host.phase == .recording && host.microphoneInput == .bluetooth)
+      try check(f.runs.count == 2 && f.runs[1].first == 1 && f.runs[1].prior == 204)
+      try check(host.saved!.completionIntent == intent && f.keys.value == key)
       try await host.pause()
-      try check(host.saved!.committedChunks == 1 && host.saved!.committedPlaintextBytes == 204)
+      try check(host.saved!.committedChunks == 2 && host.saved!.committedPlaintextBytes == 408)
       try await host.close()
       let reopened = f.host()
       try await reopened.open()
@@ -598,11 +601,11 @@ import Security
         reopened.phase == .paused && reopened.saved!.completionIntent == intent
           && f.keys.value == key)
       try await reopened.start()
-      try check(f.runs[1].first == 1 && f.runs[1].prior == 204)
+      try check(f.runs[2].first == 2 && f.runs[2].prior == 408)
       try await reopened.sealForUpload()
       try check(
-        reopened.phase == .sealed && reopened.saved!.committedChunks == 2
-          && reopened.saved!.committedPlaintextBytes == 408)
+        reopened.phase == .sealed && reopened.saved!.committedChunks == 3
+          && reopened.saved!.committedPlaintextBytes == 612)
       let sealed = reopened.saved
       try await reopened.close()
       f.records.rows = f.records.rows.filter { !$0.key.hasPrefix("scribe-provider-queue:") }
@@ -636,6 +639,22 @@ import Security
       try await host.open()
       try await host.start()
       try check(await f.service.renewals == 1)
+      try await host.close()
+      checks += 1
+    }
+    do {
+      let f = try Fixture()
+      let host = f.host()
+      try await host.open()
+      try await host.start()
+      f.runs[0].failStop = true
+      try await rejects { try await host.selectMicrophoneInput(.bluetooth) }
+      try check(host.phase == .stopPending && f.runs.count == 1 && host.microphoneInput == .builtIn)
+      // A failed physical/Core stop cannot turn an input choice into another
+      // source interval. Retry Pause keeps the already committed audio.
+      f.runs[0].failStop = false
+      try await host.pause()
+      try check(host.phase == .paused && host.saved!.committedChunks == 1)
       try await host.close()
       checks += 1
     }
@@ -793,6 +812,7 @@ import Security
       let id = state["recorderId"] as! String
       try check(state["phase"] as? String == "ready" && f.sources.isEmpty)
       try check(JSONSerialization.isValidJSONObject(opened))
+      try check(bridge.navigationMetadata(revision: revision) == nil)
       func command(_ kind: String, revision override: String? = nil) throws
         -> NativeProviderRecordingCommand
       {
@@ -812,6 +832,11 @@ import Security
           selection, current: {}, make: { changed.host() }, inputMuted: { false })
       }
       _ = try await bridge.command(command("start"), current: {}, inputMuted: { false })
+      let navigation = bridge.navigationMetadata(revision: revision)
+      try check(navigation?["workspaceId"] as? String == f.scope.workspaceID.uuidString.lowercased())
+      try check(navigation?["sessionId"] as? String == f.scope.sessionID.uuidString.lowercased())
+      try check(Set(navigation!.keys) == ["workspaceId", "sessionId"] && f.runs.count == 1)
+      try check(bridge.navigationMetadata(revision: UUID().uuidString.lowercased()) == nil)
       f.runs[0].failStop = true
       let failed = try await bridge.command(
         command("close"), current: { throw Failed(line: #line) }, inputMuted: { true })
@@ -820,6 +845,7 @@ import Security
       let closed = try await bridge.command(
         command("close"), current: { throw Failed(line: #line) }, inputMuted: { true })
       try check(closed["ok"] as? Bool == true && closed["recording"] is NSNull)
+      try check(bridge.navigationMetadata(revision: revision) == nil)
       let duplicate = try await bridge.command(command("close"), current: {}, inputMuted: { false })
       try check(duplicate["ok"] as? Bool == true && f.sources[0].stops == 1)
       checks += 1

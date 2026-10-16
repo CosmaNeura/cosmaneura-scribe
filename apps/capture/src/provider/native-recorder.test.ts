@@ -27,6 +27,28 @@ async function fixture() {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 
 describe("native provider controller", () => {
+  it("uses the advertised device UID without replacing the session or saved capture position", async () => {
+    const h = await fixture(), command = h.port.command;
+    const devices = [
+      { id: "synthetic-phone", label: "Synthetic phone", kind: "built_in" as const, current: true },
+      { id: "synthetic-headset", label: "Synthetic headset", kind: "bluetooth" as const, current: false },
+    ] as const;
+    h.f.set({ phase: "recording", inputDevices: devices, selectedInputId: devices[0].id,
+      recordedChunks: 1, recordedPlaintextBytes: 204 });
+    h.port.command = request => {
+      if (request.kind === "input") h.f.set({ selectedInputId: request.inputId ?? null,
+        inputDevices: devices.map(device => ({ ...device, current: device.id === request.inputId })) });
+      return command(request);
+    };
+    const view = await h.open();
+    try {
+      await view.controller.selectAudioInput!(devices[1].id);
+      expect(h.commands).toHaveLength(1);
+      expect(h.commands[0]).toMatchObject({ kind: "input", input: "bluetooth", inputId: "synthetic-headset" });
+      expect(view.controller.snapshot).toMatchObject({ sessionId, state: "recording", recordedChunks: 1, selectedInputId: devices[1].id });
+      await expect(view.controller.selectAudioInput!("unadvertised")).rejects.toThrow();
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
   it("reports accepted frames before a chunk is committed and freezes without new frames", async () => {
     const h = await fixture();
     h.f.set({ phase: "recording", capturedAudioFrames: 16_000 });
