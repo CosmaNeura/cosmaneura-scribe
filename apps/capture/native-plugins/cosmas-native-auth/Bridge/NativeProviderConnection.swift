@@ -23,7 +23,7 @@ enum ProviderNativeAction: String, Sendable {
     var bodyLimit: Int {
         switch self {
         case .catalog: 2
-        case .encounters: 4096
+        case .encounters: 16384
         case .mount: 256
         case .recorder, .recorderContext, .noteOpening: 1024
         case .sourceStart: 4096
@@ -75,7 +75,10 @@ struct ProviderNativeRequest: Sendable {
               operation != .sourceStart, operation != .sourceStartReady,
               key.range(of: "^[A-Za-z0-9._:-]{8,255}$", options: .regularExpression) != nil,
               body.utf8.count <= operation.bodyLimit, let data = body.data(using: .utf8),
-              (try? JSONSerialization.jsonObject(with: data)) is [String: Any]
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (operation != .encounters || data.count <= 4096 ||
+                value["action"] as? String == "private_note_save" && Set(value.keys) ==
+                  ["action", "appointment_ref", "text", "expected_version", "change_key", "request_nonce"])
         else { throw ProviderNativeError.invalidRequest }
         self.id = identifier; self.revision = revision; self.action = operation
         self.key = key; self.body = data

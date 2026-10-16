@@ -17,7 +17,7 @@ import type { ProviderEncounter } from "./workspace";
 import { SecureQueue } from "@cosmaneura-scribe/capacitor-secure-queue";
 import { parseProviderAccount, type ProviderAccount, createEncounterSetup } from "./encounter-setup";
 
-const limits: Record<Action, number> = { catalog: 2, encounters: 4096, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024,
+const limits: Record<Action, number> = { catalog: 2, encounters: 16384, mount: 256, recorder: 1024, "recorder-context": 1024, "note-opening": 1024,
   "capture-admissions": 2048, "capture-operations": 4_194_304, "capture-notes": 262_144 + 8192 };
 type NativeReply = Awaited<ReturnType<ProviderNativePlugin["providerRequest"]>>;
 export type { ProviderNativePlugin } from "./native-plugin";
@@ -122,7 +122,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     signals: readonly AbortSignal[]): Promise<Response> => {
     current();
     const json = JSON.stringify(body), requestId = crypto.randomUUID(), expected = revision;
-    if (!/^[A-Za-z0-9._:-]{8,255}$/u.test(key) || new TextEncoder().encode(json).length > limits[action]) throw unavailable();
+    if (!/^[A-Za-z0-9._:-]{8,255}$/u.test(key) || new TextEncoder().encode(json).length > (action === "encounters" && body.action !== "private_note_save" ? 4096 : limits[action])) throw unavailable();
     const allSignals = [...new Set([abort.signal, ...signals])];
     if (allSignals.some(signal => signal.aborted)) return Promise.reject(unavailable());
     return new Promise<Response>((resolve, reject) => {

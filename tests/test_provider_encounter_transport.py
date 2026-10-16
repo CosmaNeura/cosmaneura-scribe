@@ -220,3 +220,45 @@ async def test_lookup_timing_has_only_fixed_phase_and_no_request_data(monkeypatc
         set(event) == {"action", "duration_ms"} and event["duration_ms"] >= 0 for event in recorded
     )
     assert "private" not in repr(recorded)
+
+
+@pytest.mark.parametrize("action", ["private_note_save", "create"])
+async def test_only_private_reminders_accept_the_bounded_unicode_body(action):
+    account = ProviderEncounterAccount(
+        "account", uuid4(), "actor", "tenant", SecretStr("synthetic-user-token")
+    )
+    key = str(uuid4())
+    sent = []
+
+    async def fresh():
+        return account
+
+    async def handle(request):
+        sent.append(request)
+        value = json.loads(request.content)
+        assert 4096 < len(request.content) <= 16384
+        assert value["text"] == "😀" * 2000
+        assert request.headers["idempotency-key"] == key
+        return httpx.Response(
+            200,
+            json={
+                **value, "version": "1",
+                "account": {"actor_ref": "actor", "tenant_ref": "tenant"},
+            },
+            headers={"Cache-Control": "no-store", "X-Cosmaneura-Scribe-Encounter-Version": "1"},
+        )
+
+    client = ProviderEncounterTransport(
+        "https://core.synthetic.invalid", fresh, transport=httpx.MockTransport(handle)
+    )
+    body = {"action": action, "request_nonce": str(uuid4()), "text": "😀" * 2000}
+    try:
+        if action == "private_note_save":
+            await client.request(body, key)
+            assert len(sent) == 1
+        else:
+            with pytest.raises(ProviderCoreUnavailable):
+                await client.request(body, key)
+            assert not sent
+    finally:
+        await client.close()

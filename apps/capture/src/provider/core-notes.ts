@@ -129,7 +129,7 @@ export function validPendingSave(value: unknown): value is PendingNoteSave {
     && isDigest(value.edit.expected_note_sha256) && isDigest(value.edit.expected_source_sha256)
     && validFields(value.edit.fields, value.fieldOrder);
 }
-function validSource(value: unknown): value is ReviewedSource {
+export function validSource(value: unknown): value is ReviewedSource {
   const withContinuity = record(value) && Object.hasOwn(value, "capture_continuity");
   if (withContinuity) { try { parseCaptureContinuity(value.capture_continuity); } catch { return false; } }
   return closed(value, "kind,source_version,working_transcript_id,working_version" + (withContinuity ? ",capture_continuity" : "")) && value.kind === "reviewed_english"
