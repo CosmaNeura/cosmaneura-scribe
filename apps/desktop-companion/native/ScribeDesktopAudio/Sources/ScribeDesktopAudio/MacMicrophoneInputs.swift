@@ -61,8 +61,29 @@ public enum MacMicrophoneInputs {
             throw DesktopAudioFailure.selectionChanged
         }
         var id = device.deviceID
-        guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
-            0, &id, UInt32(MemoryLayout<AudioDeviceID>.size)) == noErr else { throw DesktopAudioFailure.selectionChanged }
+        // Setting the device that HAL already selected can itself enqueue an
+        // engine configuration notification. Keep a same-device choice a no-op.
+        if try currentDevice(engine) != id {
+            guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
+                0, &id, UInt32(MemoryLayout<AudioDeviceID>.size)) == noErr else { throw DesktopAudioFailure.selectionChanged }
+        }
+        guard try currentDevice(engine) == id else { throw DesktopAudioFailure.selectionChanged }
+    }
+
+    static func selectedUID(engine: AVAudioEngine) throws -> String {
+        let id = try currentDevice(engine)
+        guard let device = try list().first(where: { $0.deviceID == id }) else { throw DesktopAudioFailure.selectionChanged }
+        return device.uid
+    }
+
+    private static func currentDevice(_ engine: AVAudioEngine) throws -> AudioDeviceID {
+        guard let unit = engine.inputNode.audioUnit else { throw DesktopAudioFailure.selectionChanged }
+        var id: AudioDeviceID = 0, size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global,
+            0, &id, &size) == noErr, size == UInt32(MemoryLayout<AudioDeviceID>.size), id != 0 else {
+            throw DesktopAudioFailure.selectionChanged
+        }
+        return id
     }
 
     private static func string(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) throws -> String {
