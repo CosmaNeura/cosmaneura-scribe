@@ -112,6 +112,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
         try {
           presentation = await NativeProviderPresentation.open({ enabled: true, ...presentationOptions,
             inlineMeetingSelection: true,
+            diagnostics,
             isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady(),
             ...(runtime.recordingWindow ? { primaryWindowId: () => runtime.recordingWindow!.primaryWindowId() } : {}) });
           diagnostics("presentation_ready");

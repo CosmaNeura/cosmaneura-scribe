@@ -1,9 +1,20 @@
 @preconcurrency import AppKit
 @preconcurrency import ScreenCaptureKit
+import CoreGraphics
 import Foundation
 
 public enum ProviderPresentationFailure: Error, Sendable {
     case disabled, unavailable, cancelled, busy, invalidTransition
+    case screenAccessDenied, windowDiscoveryFailed, windowLimitExceeded
+
+    var windowDiscoveryDiagnostic: String? {
+        switch self {
+        case .screenAccessDenied: "screen_access_denied"
+        case .windowDiscoveryFailed: "lookup_failed"
+        case .windowLimitExceeded: "window_limit_exceeded"
+        default: nil
+        }
+    }
 }
 
 public struct ProviderMeetingWindow: Sendable {
@@ -16,20 +27,39 @@ public struct ProviderMeetingWindow: Sendable {
 /// requests permission, captures a screenshot, or starts an audio source.
 @MainActor
 func providerMeetingWindows() async throws -> [ProviderMeetingWindow] {
-    guard MacMeetingAudio.permissionsGranted() else { throw ProviderPresentationFailure.unavailable }
-    let rows = try await ProviderWindowDiscovery<[ProviderMeetingWindow]>().load {
-        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        try Task.checkCancellation()
-        return content.windows.compactMap { window -> ProviderMeetingWindow? in
-            guard let owner = window.owningApplication,
-                  let app = MeetingAudioSelection.Application(rawValue: owner.bundleIdentifier), app != .microphone,
-                  let selection = try? MeetingAudioSelection(application: app, processID: owner.processID, windowID: window.windowID) else { return nil }
-            let title = String(String.UnicodeScalarView((window.title ?? "Untitled window").unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }.prefix(128)))
-            return ProviderMeetingWindow(selection: selection, title: (app == .chrome ? "Chrome — " : "Zoom — ") + title)
-        }.sorted { $0.selection.windowID < $1.selection.windowID }
+    // The presentation helper only enumerates window metadata. Microphone
+    // authorization belongs to the separate capture owner, which still checks
+    // both permissions before creating any recording source.
+    try await providerMeetingWindows(screenCaptureAuthorized: CGPreflightScreenCaptureAccess()) {
+        try await ProviderWindowDiscovery<[ProviderMeetingWindow]>().load {
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            try Task.checkCancellation()
+            return content.windows.compactMap { window -> ProviderMeetingWindow? in
+                guard let owner = window.owningApplication,
+                      let app = MeetingAudioSelection.Application(rawValue: owner.bundleIdentifier), app != .microphone,
+                      let selection = try? MeetingAudioSelection(application: app, processID: owner.processID, windowID: window.windowID) else { return nil }
+                let title = String(String.UnicodeScalarView((window.title ?? "Untitled window").unicodeScalars.filter { $0.value >= 32 && $0.value != 127 }.prefix(128)))
+                return ProviderMeetingWindow(selection: selection, title: (app == .chrome ? "Chrome — " : "Zoom — ") + title)
+            }.sorted { $0.selection.windowID < $1.selection.windowID }
+        }
+    }
+}
+
+/// Metadata lookup only: this seam has no audio source, permission requester,
+/// capture authority, or storage dependency. Denied screen access never looks up.
+@MainActor
+func providerMeetingWindows(screenCaptureAuthorized: Bool,
+                            lookup: @MainActor () async throws -> [ProviderMeetingWindow]) async throws -> [ProviderMeetingWindow] {
+    try Task.checkCancellation()
+    guard screenCaptureAuthorized else { throw ProviderPresentationFailure.screenAccessDenied }
+    let rows: [ProviderMeetingWindow]
+    do { rows = try await lookup() }
+    catch {
+        if Task.isCancelled { throw ProviderPresentationFailure.cancelled }
+        throw ProviderPresentationFailure.windowDiscoveryFailed
     }
     try Task.checkCancellation()
-    guard rows.count <= 64 else { throw ProviderPresentationFailure.unavailable }
+    guard rows.count <= 64 else { throw ProviderPresentationFailure.windowLimitExceeded }
     return rows
 }
 

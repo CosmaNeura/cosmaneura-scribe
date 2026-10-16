@@ -4,6 +4,7 @@ import type { Readable, Writable } from "node:stream";
 import { verifyNativeHelper, type AuthorizedDesktopSelection } from "./native-process-driver.js";
 import { exactKeys, nativeCommand, nativeMetadata, NativeProcessDecoder } from "./native-process-wire.js";
 import type { PersistentRecordingIndicator, RecordingIndicatorSnapshot } from "./recording-indicator.js";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 export interface NativePresentationEvent {
   readonly kind: "stop_requested" | "failed";
@@ -22,6 +23,7 @@ export interface NativePresentationOptions {
   /** Exact main-owned CGWindowID; never a renderer visibility assertion. */
   readonly primaryWindowId?: () => number | null;
   readonly inlineMeetingSelection?: boolean;
+  readonly diagnostics?: RuntimeDiagnostic;
 }
 export interface NativeMeetingWindow {
   readonly application: "com.google.Chrome" | "us.zoom.xos";
@@ -75,13 +77,13 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
       try { this.decoder.push(bytes, (kind, payload) => {
         if (kind !== 1) throw unavailable();
         this.receive(nativeMetadata(payload));
-      }); } catch { this.fail(); }
+      }); } catch { this.fail(true); }
     });
     this.child.stdin.on("error", () => this.fail());
     this.child.on("error", () => this.fail());
     this.child.once("close", code => {
       this.exited = true; clearInterval(this.heartbeat);
-      try { this.decoder.finish(); } catch { this.fail(); }
+      try { this.decoder.finish(); } catch { this.fail(true); }
       if (!this.closeAcknowledged || code !== 0) this.fail();
       this.exit.resolve();
     });
@@ -280,19 +282,36 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
     if (!pending || value.type !== pending.expected && value.type !== "unavailable") throw unavailable();
     if (value.type === "windows") {
       if (!pending.windows || !exactKeys(value, ["type", "request", "count"]) || value.count !== pending.windows.length) throw unavailable();
+      this.diagnose(pending.windows.length ? "meeting_windows_ready" : "meeting_windows_empty");
     } else if (value.type === "selected") {
       if (!exactKeys(value, ["type", "request", "application", "processID", "windowID"])
         || !["com.google.Chrome", "us.zoom.xos"].includes(value.application as string)
         || !integer(value.processID, 1, 2_147_483_647) || !integer(value.windowID, 1, 4_294_967_295)) throw unavailable();
-    } else if (!exactKeys(value, ["type", "request"])) throw unavailable();
+    } else {
+      const diagnostic = value.type === "unavailable" && Object.hasOwn(value, "diagnostic");
+      if (!exactKeys(value, ["type", "request", ...(diagnostic ? ["diagnostic"] : [])])) throw unavailable();
+      if (diagnostic) {
+        if (pending.expected !== "windows") throw unavailable();
+        if (value.diagnostic === "screen_access_denied") this.diagnose("meeting_windows_screen_access_denied");
+        else if (value.diagnostic === "lookup_failed") this.diagnose("meeting_windows_lookup_failed");
+        else if (value.diagnostic === "window_limit_exceeded") this.diagnose("meeting_windows_limit_exceeded");
+        else throw unavailable();
+      } else if (value.type === "unavailable" && pending.expected === "windows") this.diagnose("meeting_windows_unavailable");
+    }
     clearTimeout(pending.timer); this.pending.delete(value.request);
     if (this.choice === value.request) { this.choice = null; this.cancellingChoice = null; }
     if (value.type === "closed") this.closeAcknowledged = true;
     if (value.type === "unavailable") pending.response.reject(unavailable());
     else pending.response.resolve(value.type === "windows" ? { windows: pending.windows! } : value);
   }
-  private fail(): void {
+  private diagnose(event: Parameters<RuntimeDiagnostic>[0]): void {
+    try { this.options.diagnostics?.(event); } catch { /* Metadata observation cannot affect authority. */ }
+  }
+  private fail(protocolFailure = false): void {
     if (this.broken) return;
+    if ([...this.pending.values()].some(value => value.expected === "windows")) {
+      this.diagnose(protocolFailure ? "meeting_windows_protocol_failed" : "meeting_windows_transport_failed");
+    }
     this.broken = true; clearInterval(this.heartbeat); this.readiness.reject(unavailable());
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.response.reject(unavailable()); }
     this.pending.clear(); this.choice = null; this.cancellingChoice = null; this.decoder.clear();

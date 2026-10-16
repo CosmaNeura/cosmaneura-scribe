@@ -7,8 +7,10 @@ private final class InlineSurface: ProviderPresentationSurface {
     var onEvent: (@MainActor (ProviderPresentationEvent) -> Void)?
     var discoveries = 0
     var choices = 0
+    var failure: ProviderPresentationFailure?
     func meetingWindows() async throws -> [ProviderMeetingWindow] {
         discoveries += 1
+        if let failure { throw failure }
         return try (1...64).map { index in
             ProviderMeetingWindow(selection: try MeetingAudioSelection(application: .zoom, processID: 42, windowID: UInt32(index)),
                                   title: "Zoom — Synthetic visit \(index)")
@@ -17,6 +19,34 @@ private final class InlineSurface: ProviderPresentationSurface {
     func choose() async throws -> MeetingAudioSelection { choices += 1; throw ProviderPresentationFailure.unavailable }
     func publish(_ state: ProviderRecordingPresentation) throws {}
     func verifyVisibility() {}
+}
+
+@Test(arguments: [ProviderPresentationFailure.screenAccessDenied, .windowDiscoveryFailed, .windowLimitExceeded])
+@MainActor
+func inlineWindowFailureUsesOnlyBoundedDiagnosticCodes(_ failure: ProviderPresentationFailure) async throws {
+    let input = Pipe(), output = Pipe(), surface = InlineSurface(), reader = InlinePipeReader(output.fileHandleForReading)
+    surface.failure = failure
+    func send(_ type: String, _ request: Int) throws {
+        let bytes = try JSONSerialization.data(withJSONObject: ["type": type, "request": request]), length = bytes.count + 1
+        var frame = Data([UInt8((length >> 24) & 255), UInt8((length >> 16) & 255), UInt8((length >> 8) & 255), UInt8(length & 255), 1])
+        frame.append(bytes); try input.fileHandleForWriting.write(contentsOf: frame)
+    }
+    let host = Task { await ProviderPresentationProcess.run(surface: surface, input: input.fileHandleForReading,
+                                                           output: output.fileHandleForWriting, protocolVersion: 3) }
+    #expect(try await Task.detached { try reader.read()["version"] as? Int }.value == 3)
+    try send("windows", 1)
+    let result = try await Task.detached {
+        let row = try reader.read()
+        return (row.keys.sorted(), row["type"] as? String, row["request"] as? Int, row["diagnostic"] as? String)
+    }.value
+    #expect(result.0 == ["diagnostic", "request", "type"])
+    #expect(result.1 == "unavailable" && result.2 == 1)
+    #expect(result.3 == failure.windowDiscoveryDiagnostic)
+    #expect(surface.discoveries == 1 && surface.choices == 0)
+    try send("close", 2)
+    #expect(try await Task.detached { try reader.read()["type"] as? String }.value == "closed")
+    #expect(await host.value == 0)
+    try input.fileHandleForWriting.close()
 }
 
 private final class InlinePipeReader: @unchecked Sendable {
