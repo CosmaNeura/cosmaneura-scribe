@@ -14,6 +14,8 @@ const EVENTS = ["host_open", "window_ready", "connect_begin", "backend_ready", "
   "before_quit", "window_close", "renderer_gone", "renderer_navigation", "close_begin", "boundary_closed", "owner_closed", "close_failed", "quit_ready",
   "audio_start_pending", "audio_helper_spawned", "audio_ready", "audio_start_timeout", "audio_stop_confirmed",
   "audio_permission_required", "audio_device_changed", "audio_session_locked", "audio_clock_discontinuity", "audio_overflow", "audio_failed",
+  "meeting_windows_ready", "meeting_windows_empty", "meeting_windows_screen_access_denied", "meeting_windows_lookup_failed",
+  "meeting_windows_limit_exceeded", "meeting_windows_unavailable", "meeting_windows_protocol_failed", "meeting_windows_transport_failed",
   ...TIMING_EVENTS] as const;
 export type RuntimeDiagnostic = (event: typeof EVENTS[number], durationMilliseconds?: number) => void;
 export const NO_DIAGNOSTICS: RuntimeDiagnostic = () => undefined;

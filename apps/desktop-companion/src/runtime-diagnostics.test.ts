@@ -5,6 +5,21 @@ import { describe, expect, it, vi } from "vitest";
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 describe("local runtime diagnostics", () => {
+  it("records window discovery outcomes as fixed events without window metadata", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-window-")));
+    try {
+      const events = ["meeting_windows_ready", "meeting_windows_empty", "meeting_windows_screen_access_denied",
+        "meeting_windows_lookup_failed", "meeting_windows_limit_exceeded", "meeting_windows_unavailable",
+        "meeting_windows_protocol_failed", "meeting_windows_transport_failed"] as const;
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (const event of events) record(event);
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(events.length));
+      (await readFile(path, "utf8")).trim().split("\n").forEach((line, index) => {
+        expect(JSON.parse(line)).toEqual({ utc: expect.any(String), pid: process.pid, event: events[index] });
+      });
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it("records only fixed lifecycle metadata with private permissions and a bounded event count", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-diagnostic-")));
     try {

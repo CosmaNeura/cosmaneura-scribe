@@ -200,7 +200,13 @@ private final class PresentationHost {
                     }
                     output.metadata(["type": "windows", "request": request, "count": rows.count])
                 } catch {
-                    if !disconnected { output.metadata(["type": "unavailable", "request": request]) }
+                    if !disconnected {
+                        var failure: [String: Any] = ["type": "unavailable", "request": request]
+                        if let diagnostic = (error as? ProviderPresentationFailure)?.windowDiscoveryDiagnostic {
+                            failure["diagnostic"] = diagnostic
+                        }
+                        output.metadata(failure)
+                    }
                 }
                 if choice?.request == request { choice = nil }
             }

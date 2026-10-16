@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { NativeProviderPresentation } from "./native-provider-presentation.js";
 import { DesktopCaptureController } from "./controller.js";
 import { nativeCommand } from "./native-process-wire.js";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 // Existing main-process injection seams only. No real child, audio source,
 // device, permission request, key store, file payload or network request.
@@ -25,6 +26,7 @@ afterEach(async () => {
 async function fixture(withholdChoice = false, inlineMeetingSelection = false) {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const lifetime = new AbortController();
+  const diagnostics = vi.fn<RuntimeDiagnostic>();
   const commands: Record<string, unknown>[] = [];
   const child = new EventEmitter() as EventEmitter & { stdin: Writable; stdout: PassThrough; kill: ReturnType<typeof vi.fn> };
   child.stdout = new PassThrough();
@@ -54,7 +56,7 @@ async function fixture(withholdChoice = false, inlineMeetingSelection = false) {
   });
   const presentation = await NativeProviderPresentation.open({ enabled: true,
     helperPath: "/never-executed-presentation-fixture", helperSha256: "0".repeat(64),
-    inlineMeetingSelection,
+    inlineMeetingSelection, diagnostics,
     isSessionActive: () => !lifetime.signal.aborted });
   const adapter = {
     initialize: vi.fn(async () => "ready" as const), refreshPermissions: vi.fn(async () => "ready" as const),
@@ -72,7 +74,7 @@ async function fixture(withholdChoice = false, inlineMeetingSelection = false) {
     await presentation.publish(inactive).catch(() => undefined);
     await presentation.dispose();
   });
-  return { lifetime, presentation, controller, adapter, commands,
+  return { lifetime, presentation, controller, adapter, commands, diagnostics,
     reply: (value: Record<string, unknown>) => child.stdout.write(nativeCommand(value)) };
 }
 
@@ -82,10 +84,86 @@ it("lists bounded inline metadata without choosing a window, publishing recordin
     { application: "us.zoom.xos", processID: 42, windowID: 74, title: "Zoom — Synthetic visit" },
   ]);
   expect(f.commands.filter(command => command.type === "choose")).toHaveLength(0);
+  expect(f.diagnostics).toHaveBeenCalledExactlyOnceWith("meeting_windows_ready");
   expect(f.adapter.start).not.toHaveBeenCalled();
   await f.presentation.publish({ visibility: "persistent", visible: true, phase: "recording", captureSessionId: "30000000-0000-4000-8000-000000000003" });
   await expect(f.presentation.listMeetingWindows(new AbortController().signal)).rejects.toThrow();
   await f.presentation.publish(inactive);
+});
+
+it.each([
+  ["screen_access_denied", "meeting_windows_screen_access_denied"],
+  ["lookup_failed", "meeting_windows_lookup_failed"],
+  ["window_limit_exceeded", "meeting_windows_limit_exceeded"],
+] as const)("accepts only bounded window failure metadata (%s) without starting capture", async (diagnostic, event) => {
+  const f = await fixture(true, true);
+  const listing = f.presentation.listMeetingWindows(new AbortController().signal);
+  const rejected = expect(listing).rejects.toThrow();
+  const request = f.commands.find(command => command.type === "windows")!.request;
+  f.reply({ type: "unavailable", request, diagnostic });
+  await rejected;
+  expect(f.presentation.isHealthy()).toBe(true);
+  expect(f.diagnostics).toHaveBeenCalledExactlyOnceWith(event);
+  expect(f.commands.filter(command => command.type === "choose")).toHaveLength(0);
+  expect(f.adapter.start).not.toHaveBeenCalled();
+});
+
+it("retains compatibility with unavailable metadata replies without a diagnostic", async () => {
+  const f = await fixture(true, true);
+  const listing = f.presentation.listMeetingWindows(new AbortController().signal);
+  const rejected = expect(listing).rejects.toThrow();
+  const request = f.commands.find(command => command.type === "windows")!.request;
+  f.reply({ type: "unavailable", request });
+  await rejected;
+  expect(f.presentation.isHealthy()).toBe(true);
+  expect(f.diagnostics).toHaveBeenCalledExactlyOnceWith("meeting_windows_unavailable");
+  expect(f.adapter.start).not.toHaveBeenCalled();
+});
+
+it.each([
+  { diagnostic: "invented private detail" },
+  { diagnostic: "lookup_failed", title: "Synthetic forbidden field" },
+])("fails closed on unexpected window diagnostic data without logging it", async metadata => {
+  const f = await fixture(true, true);
+  const listing = f.presentation.listMeetingWindows(new AbortController().signal);
+  const rejected = expect(listing).rejects.toThrow();
+  const request = f.commands.find(command => command.type === "windows")!.request;
+  f.reply({ type: "unavailable", request, ...metadata });
+  await rejected;
+  expect(f.presentation.isHealthy()).toBe(false);
+  expect(f.diagnostics).toHaveBeenCalledExactlyOnceWith("meeting_windows_protocol_failed");
+  expect(f.adapter.start).not.toHaveBeenCalled();
+});
+
+it("reports an empty successful list separately from discovery failure", async () => {
+  const f = await fixture(true, true);
+  const listing = f.presentation.listMeetingWindows(new AbortController().signal);
+  const request = f.commands.find(command => command.type === "windows")!.request;
+  f.reply({ type: "windows", request, count: 0 });
+  expect(await listing).toEqual([]);
+  expect(f.presentation.isHealthy()).toBe(true);
+  expect(f.diagnostics).toHaveBeenCalledExactlyOnceWith("meeting_windows_empty");
+  expect(f.adapter.start).not.toHaveBeenCalled();
+});
+
+it("keeps diagnostic callbacks outside metadata authority", async () => {
+  const f = await fixture(false, true);
+  f.diagnostics.mockImplementation(() => { throw new Error("invented observer failure"); });
+  expect(await f.presentation.listMeetingWindows(new AbortController().signal)).toHaveLength(1);
+  expect(f.presentation.isHealthy()).toBe(true);
+  expect(f.adapter.start).not.toHaveBeenCalled();
+});
+
+it("does not accept window diagnostics on a picker-selection reply", async () => {
+  const f = await fixture(true, true);
+  const selection = f.presentation.selectWindow(new AbortController().signal);
+  const rejected = expect(selection).rejects.toThrow();
+  const request = f.commands.find(command => command.type === "choose")!.request;
+  f.reply({ type: "unavailable", request, diagnostic: "lookup_failed" });
+  await rejected;
+  expect(f.presentation.isHealthy()).toBe(false);
+  expect(f.diagnostics).not.toHaveBeenCalled();
+  expect(f.adapter.start).not.toHaveBeenCalled();
 });
 
 it("rejects a late inline list after cancellation and waits for its acknowledgement before cleanup", async () => {
