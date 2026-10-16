@@ -113,14 +113,14 @@ export function bindNoteSourceNavigation(root: HTMLElement, options: Options): {
     row.dataset.searchCurrent = "true";
     const pane = row.closest<HTMLElement>("[data-note-transcript-scroll]");
     if (pane) {
-      // Reveal the bounded comparison, then scroll only its panes. A late
-      // transcript match must not move the note offscreen with the whole page.
+      // Desktop may have a bounded comparison pane. Mobile uses page flow,
+      // so its automatic-height transcript cannot reveal a match via scrollTop.
       root.querySelector(".provider-note-grid")?.scrollIntoView({ block: "nearest", behavior: "auto" });
       if (window.matchMedia("(min-width: 900px)").matches) {
         const editor = item.field.field.closest<HTMLElement>(".provider-note-editor");
         if (editor) centerWithin(editor, item.field.field.closest("label") ?? item.field.field);
       }
-      centerWithin(pane, row);
+      scrollNoteSourceMatch(pane, row);
     } else row.scrollIntoView({ block: "center", behavior: "auto" });
     row.focus({ preventScroll: true });
   };
@@ -135,4 +135,21 @@ export function bindNoteSourceNavigation(root: HTMLElement, options: Options): {
 function centerWithin(pane: HTMLElement, target: Element): void {
   const item = target.getBoundingClientRect(), viewport = pane.getBoundingClientRect();
   pane.scrollTop += item.top - viewport.top - Math.max(0, (pane.clientHeight - item.height) / 2);
+}
+
+/** Keep bounded desktop comparisons in their pane; reveal mobile page-flow matches. */
+export function scrollNoteSourceMatch(pane: HTMLElement, target: HTMLElement): void {
+  const evidence = pane.closest<HTMLElement>(".provider-note-evidence");
+  let candidate: HTMLElement | null = pane;
+  while (candidate) {
+    const overflow = window.getComputedStyle(candidate).overflowY;
+    if (candidate.clientHeight > 0 && candidate.scrollHeight > candidate.clientHeight
+      && (overflow === "auto" || overflow === "scroll")) {
+      centerWithin(candidate, target); return;
+    }
+    // Only the actual transcript/evidence comparison may own the scroll.
+    if (!evidence || candidate === evidence) break;
+    candidate = candidate.parentElement;
+  }
+  target.scrollIntoView({ block: "center", behavior: "auto" });
 }

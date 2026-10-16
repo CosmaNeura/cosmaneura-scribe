@@ -425,7 +425,7 @@ export class CaptureApp extends LitElement {
                   : "Start silent synthetic recording"}
                 ?disabled=${this.#snapshot.state !== "ready" || this.#busy || this.#stopping
                   || this.#meetingWindowPickerOpen
-                  || this.#snapshot.statusCode === "capture_call_changed"
+                  || this.#needsCallConfirmation()
                   || this.#snapshot.desktop !== undefined && this.#snapshot.desktop.phase !== "ready"
                   || this.#meetingWindowRequired()}
                 @click=${this.#record}
@@ -443,7 +443,7 @@ export class CaptureApp extends LitElement {
                 && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
                 class=${this.#snapshot.statusCode === "capture_recovery_pending" ? "secondary" : "primary"} data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping
                   || this.#meetingWindowPickerOpen
-                  || this.#snapshot.statusCode === "capture_call_changed"
+                  || this.#needsCallConfirmation()
                   || this.#meetingWindowRequired()}
                 @click=${this.#resume}>${this.#isCancelledEmptyStart() || this.#isExpiredEmptyStart()
                     ? "Start recording" : "Resume recording"}</button>` : ""}
@@ -572,7 +572,7 @@ export class CaptureApp extends LitElement {
   #meetingWindowRequired(): boolean {
     const desktop = this.#snapshot.desktop;
     return desktop?.audioMode === "meeting" && ["ready", "interrupted", "stopped"].includes(desktop.phase)
-      && desktop.meetingWindows !== undefined && !this.#selectedMeetingWindow();
+      && desktop.meetingWindows !== undefined && (!this.#selectedMeetingWindow() || this.#needsCallConfirmation());
   }
 
   #selectedMeetingWindow() {
@@ -580,12 +580,22 @@ export class CaptureApp extends LitElement {
     return catalog?.state === "ready" ? catalog.windows.find(row => row.id === catalog.selectedId) : undefined;
   }
 
+  #hasRecordedCall(): boolean {
+    return this.#snapshot.recordedChunks > 0 || this.#snapshot.elapsedSeconds > 0
+      || this.#snapshot.desktop !== undefined && this.#snapshot.desktop.coverage !== "not_started";
+  }
+
+  #needsCallConfirmation(): boolean {
+    return ["capture_call_changed", "capture_call_selection_required"].includes(this.#snapshot.statusCode);
+  }
+
   #renderMeetingWindowSelection(): TemplateResult {
     const desktop = this.#snapshot.desktop!, catalog = desktop.meetingWindows!, selected = this.#selectedMeetingWindow();
+    const confirmed = this.#needsCallConfirmation() ? undefined : selected;
     const open = this.#meetingWindowPickerOpen || !selected;
     const disabled = this.#busy || this.#stopping || desktop.phase === "preparing";
     return html`<div class="meeting-window-selection">
-      <div class="provider-call-summary" aria-live="polite"><div><strong>${selected ? "Call selected" : "Choose your call"}</strong>
+      <div class="provider-call-summary" aria-live="polite"><div><strong>${confirmed ? "Call selected" : selected ? "Confirm your call" : "Choose your call"}</strong>
         <span data-testid="selected-meeting-window">${selected?.title ?? "Select the Zoom or Chrome window for this visit."}</span></div>
         ${selected ? html`<button class="provider-text-link" data-testid="change-meeting-window" ?disabled=${disabled}
           aria-expanded=${String(open)} aria-controls="recording-call-picker" @click=${this.#openMeetingWindowPicker}>Change</button>` : ""}</div>
@@ -594,12 +604,12 @@ export class CaptureApp extends LitElement {
       <div class="provider-call-picker" id="recording-call-picker" ?hidden=${!open}>
         <label>Which call?<select data-testid="meeting-window" aria-describedby="meeting-window-help"
           ?disabled=${disabled} @change=${this.#changeMeetingWindow}>
-          <option value="" ?selected=${!selected}>Choose the window for this visit</option>
-          ${catalog.windows.map(row => html`<option value=${row.id} ?selected=${selected?.id === row.id}>${row.title}</option>`)}
+          <option value="" ?selected=${!confirmed}>Choose the window for this visit</option>
+          ${catalog.windows.map(row => html`<option value=${row.id} ?selected=${confirmed?.id === row.id}>${row.title}</option>`)}
         </select></label><div class="provider-call-picker-actions">
           <button class="provider-text-link" data-testid="refresh-meeting-windows" ?disabled=${disabled}
             @click=${this.#refreshMeetingWindows}>Refresh calls</button>
-          ${selected ? html`<button class="provider-text-link" data-testid="close-meeting-window-picker" ?disabled=${disabled}
+          ${confirmed ? html`<button class="provider-text-link" data-testid="close-meeting-window-picker" ?disabled=${disabled}
             @click=${this.#closeMeetingWindowPicker}>Done</button>` : ""}</div>
       </div><small id="meeting-window-help">${desktop.phase === "preparing" ? "Checking your calls… No recording has started."
         : catalog.state === "unavailable" ? "Calls could not be loaded. Check recording access, then refresh calls."
@@ -664,7 +674,9 @@ export class CaptureApp extends LitElement {
                 : "Microphone and application-audio access are needed. Choose Set up recording access. macOS may ask for microphone and screen-recording permission."
               : this.#snapshot.statusCode === "capture_stopping" ? "Stopping recording…"
               : this.#snapshot.statusCode === "capture_sealing" ? "Saving recording before upload…"
-              : this.#snapshot.statusCode === "capture_call_changed" ? `The call changed. Bring this visit’s call to the front, then ${this.#selectedMeetingWindow() ? "choose Change to select it again" : "select it below"}. No audio is being recorded.`
+              : this.#snapshot.statusCode === "capture_call_changed" ? this.#hasRecordedCall()
+                ? `Return to this visit’s original call, then ${this.#selectedMeetingWindow() ? "choose Change to select it" : "select it below"}. If it has ended, choose Finish visit. No audio is being recorded.`
+                : `The call changed. Bring this visit’s call to the front, then ${this.#selectedMeetingWindow() ? "choose Change to select it again" : "select it below"}. No audio is being recorded.`
               : this.#snapshot.statusCode === "capture_call_selection_required" ? "Choose the call for this visit below, then try recording again. No audio is being recorded."
               : this.#snapshot.statusCode === "capture_call_unavailable" ? "Your calls could not be checked. Refresh calls below, then try recording again. No audio is being recorded."
               : this.#snapshot.statusCode === "capture_start_failed" ? this.#snapshot.desktop
@@ -802,7 +814,7 @@ export class CaptureApp extends LitElement {
     void this.updateComplete.then(() => { if (!this.#providerClosed) this.querySelector<HTMLSelectElement>('[data-testid="meeting-window"]')?.focus(); });
   };
   readonly #closeMeetingWindowPicker = (): void => {
-    if (this.#busy || this.#stopping || !this.#selectedMeetingWindow()) return;
+    if (this.#busy || this.#stopping || !this.#selectedMeetingWindow() || this.#needsCallConfirmation()) return;
     this.#meetingWindowPickerOpen = false; this.requestUpdate();
     void this.updateComplete.then(() => { if (!this.#providerClosed) this.querySelector<HTMLButtonElement>('[data-testid="change-meeting-window"]')?.focus(); });
   };

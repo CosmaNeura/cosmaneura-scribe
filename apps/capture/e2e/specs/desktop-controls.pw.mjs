@@ -209,6 +209,8 @@ test("changed call requires explicit reselection and pending choice never enable
   const start = page.getByTestId("record-button");
   await expect(page.getByRole("region", { name: "Recording progress", exact: true })).toContainText("The call changed.");
   await expect(start).toBeDisabled(); await page.getByTestId("change-meeting-window").click();
+  await expect(page.getByTestId("meeting-window")).toHaveValue("");
+  await expect(page.getByTestId("close-meeting-window-picker")).toHaveCount(0);
   await page.getByTestId("meeting-window").selectOption({ label: "Zoom — Invented visit" });
   await expect(start).toBeDisabled();
   await page.evaluate(() => window.desktopControlsLab.acknowledgeSelection());
@@ -230,5 +232,21 @@ test("paused recording says Resume recording and saving recovery retains its sto
   await page.evaluate(() => window.desktopControlsLab.confirmationLost());
   await expect(page.getByTestId("resume-recording")).toHaveCount(0);
   await expect(page.getByTestId("stop-button")).toHaveText("Retry confirmation and upload");
+  await page.evaluate(() => window.desktopControlsLab.close());
+});
+
+test("a paused replacement call directs the provider to the original call or Finish visit", async ({ page }) => {
+  await page.goto("/e2e/fixtures/desktop-controls.html?inline-meeting");
+  await page.evaluate(() => window.desktopControlsLab.publish({ state: "paused", statusCode: "capture_call_changed", recordedChunks: 2, elapsedSeconds: 2 },
+    { phase: "interrupted", coverage: "incomplete", meetingWindows: { state: "ready", selectedId: "50000000-0000-4000-8000-000000000005",
+      windows: [{ id: "50000000-0000-4000-8000-000000000005", title: "Zoom — Invented replacement visit" }] } }));
+  const progress = page.getByRole("region", { name: "Recording progress", exact: true });
+  await expect(progress).toContainText("Return to this visit’s original call");
+  await expect(progress).toContainText("If it has ended, choose Finish visit.");
+  await expect(page.getByTestId("resume-recording")).toBeDisabled();
+  await page.getByTestId("change-meeting-window").click();
+  await expect(page.getByTestId("meeting-window")).toHaveValue("");
+  await expect(page.getByTestId("stop-button")).toBeEnabled();
+  expect(await page.evaluate(() => window.desktopControlsLab.commands)).toEqual([]);
   await page.evaluate(() => window.desktopControlsLab.close());
 });

@@ -1823,6 +1823,10 @@ describe("deliberate desktop input selection", () => {
       expect(recorder.snapshot.statusCode).toBe(statusCode);
       expect(parseDesktopRecorderState({ recorderId: crypto.randomUUID(), revision: 1, snapshot: recorder.snapshot }).snapshot.statusCode).toBe(statusCode);
       expect(recorder.snapshot.statusCode).not.toContain("Invented screen denial");
+      if (change === "denied") denied = false;
+      await recorder.refreshMeetingWindows();
+      expect(recorder.snapshot.statusCode).toBe(change === "denied" ? "synthetic_preview_ready" : statusCode);
+      expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
     } finally {await f.close();}
   });
   it("retains a closed preparation recommendation's provenance through its opaque-ID handoff", async () => {

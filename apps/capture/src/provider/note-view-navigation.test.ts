@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { noteConversationView } from "./note-view";
+import { scrollNoteSourceMatch } from "./note-source-navigation";
 
 // DOM-position fixture: real navigation and memory-only selection helpers run.
 // Browser layout is checked separately; this fixture does not claim viewport geometry.
@@ -41,7 +42,7 @@ function fixture(desktop = false) {
   note.children.set('[data-workspace-action="transcript-view"]', toggle);
   evidence.children.set("[data-note-back]", back); evidence.children.set("input, summary", search); evidence.children.set("details", details);
   note.dataset.conversation = "hidden"; evidence.hidden = true;
-  const page = { scrollX: 12, scrollY: 710, matchMedia: () => ({ matches: desktop }), scrollTo: vi.fn((x: number, y: number) => { page.scrollX = x; page.scrollY = y; }) };
+  const page = { scrollX: 12, scrollY: 710, matchMedia: () => ({ matches: desktop }), getComputedStyle: () => ({ overflowY: "visible" }), scrollTo: vi.fn((x: number, y: number) => { page.scrollX = x; page.scrollY = y; }) };
   vi.stubGlobal("HTMLTextAreaElement", TextArea);
   vi.stubGlobal("document", { get activeElement() { return active; } });
   vi.stubGlobal("window", page);
@@ -87,4 +88,17 @@ it("does not restore a field from another visit and returns keyboard focus to th
   expect(position?.field).toBeNull();
   noteConversationView(f.note as unknown as HTMLElement, false, null, position);
   expect(active).toBe(f.toggle); expect(f.page.scrollTo).toHaveBeenLastCalledWith(12, 710);
+});
+
+it("restores the private editor's original caret and page after a late transcript match scrolls mobile page flow", () => {
+  const f = fixture(); active = f.privateField;
+  f.privateField.scrollTop = 23;
+  const position = f.show(f.privateField);
+  const pane = { clientHeight: 6400, scrollHeight: 6400, closest: () => null };
+  const row = { scrollIntoView: vi.fn(() => { f.page.scrollY = 5450; }) };
+  scrollNoteSourceMatch(pane as unknown as HTMLElement, row as unknown as HTMLElement);
+  expect(f.page.scrollY).toBe(5450);
+  noteConversationView(f.note as unknown as HTMLElement, false, null, position);
+  expect(f.page.scrollY).toBe(710); expect(active).toBe(f.privateField); expect(f.privateField.scrollTop).toBe(23);
+  expect([f.privateField.selectionStart, f.privateField.selectionEnd, f.privateField.selectionDirection]).toEqual([7, 14, "backward"]);
 });

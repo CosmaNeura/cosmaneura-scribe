@@ -138,14 +138,42 @@ describe("compact audio-free recording setup", () => {
     expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
     expect(f.requestAccess).not.toHaveBeenCalled();
   });
-  it("reports a failed optional check without a stale ready verdict", async () => {
+  it("keeps Start disabled after a failed optional check until a successful recheck", async () => {
     const f = fixture(true, readyIOS);
     await vi.waitFor(() => expect(f.controls.ready()).toBe(true));
+    f.root.node('[name="consent"]').checked = true; f.root.emit("change", '[name="consent"]');
+    expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(false);
     f.requestAccess.mockRejectedValueOnce(new Error("Invented check failure"));
     f.root.emit("click", "[data-preflight-access-optional]");
+    expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
     await vi.waitFor(() => expect(f.root.node("[data-preflight-verdict]").textContent).toBe("Recording access check did not complete."));
     expect(f.root.node("[data-preflight-required-access]").hidden).toBe(false);
+    expect(f.controls.snapshot()?.status).toBe("ready");
+    expect(f.controls.ready()).toBe(false);
+    expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
+    expect(f.root.node('[name="consent"]').checked).toBe(true);
+    f.root.emit("change", '[name="consent"]');
+    expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
+    f.root.emit("click", "[data-preflight-access]");
+    expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
+    await vi.waitFor(() => expect(f.controls.ready()).toBe(true));
+    expect(f.requestAccess).toHaveBeenCalledTimes(2);
+    expect(f.root.node("[data-preflight-required-access]").hidden).toBe(true);
+    expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(false);
+    expect(f.root.node('[name="consent"]').checked).toBe(true);
+  });
+  it.each([true, false])("offers Back and reopen after initial access setup rejects (iOS: %s)", async isIOS => {
+    const f = fixture(isIOS, isIOS ? readyIOS : { ...readyMac, desktopAudio: "microphone" },
+      Promise.reject(new Error("Invented metadata setup failure")));
+    await vi.waitFor(() => expect(f.root.node("[data-preflight-verdict]").textContent).toBe("Recording access could not be checked."));
+    expect(f.controls.ready()).toBe(false);
+    expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
     expect(f.root.node('[name="consent"]').checked).toBe(false);
+    expect(f.root.node("[data-preflight-access]").hidden).toBe(true);
+    expect(f.root.node("[data-preflight-access-optional]").hidden).toBe(true);
+    expect(f.root.node("[data-preflight-access-help]").textContent).toBe("Choose Back, then reopen this visit to try again.");
+    expect(f.root.node("[data-preflight-access-help]").textContent).not.toContain("Refresh");
+    expect(f.requestAccess).not.toHaveBeenCalled();
   });
   it("joins a late metadata open on Close without reactivating controls", async () => {
     let release!: () => void;

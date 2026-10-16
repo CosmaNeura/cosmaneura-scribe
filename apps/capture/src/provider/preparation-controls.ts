@@ -17,7 +17,7 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
   const value = (name: string): string => root.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value ?? "";
   const ready = (): boolean => {
     const catalog = snapshot?.meetingWindows;
-    return !closed && !selecting && (!options.open || snapshot?.status === "ready")
+    return !closed && !selecting && !failed && (!options.open || snapshot?.status === "ready")
       && (!options.open || options.isIOS || snapshot?.desktopAudio === value("desktop-audio"))
       && (options.isIOS || value("desktop-audio") !== "meeting" || !windowPickerOpen && snapshot?.desktopAudio === "meeting" && catalog?.state === "ready"
         && catalog.windows.some(window => window.id === catalog.selectedId));
@@ -54,7 +54,7 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
     root.querySelector<HTMLElement>("[data-preflight-required-access]")!.hidden = !requiredAccess;
     const accessHelp = root.querySelector<HTMLElement>("[data-preflight-access-help]")!;
     accessHelp.textContent = failed ? "The check did not complete. Try again. No recording has started."
-      : !port ? "Choose Refresh to try again."
+      : !port ? "Choose Back, then reopen this visit to try again."
       : screenNeeded || snapshot?.status === "permission_required" ? "Choose Check recording access to allow Scribe."
       : "Connect a microphone, then choose it under Change.";
     const repair = root.querySelector<HTMLDetailsElement>("[data-preflight-repair]")!;

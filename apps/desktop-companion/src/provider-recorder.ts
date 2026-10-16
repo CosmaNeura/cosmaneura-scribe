@@ -429,7 +429,12 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     this.requireOpen();
     if (!this.options.listMeetingWindows || this.audioMode !== "meeting" || this.captureMayBeActive || this.stopping
       || !["ready", "permission_required", "interrupted", "stopped"].includes(this.snapshot.desktop!.phase)) throw unavailable();
-    return this.run("other", () => this.loadMeetingWindows());
+    return this.run("other", async () => {
+      await this.loadMeetingWindows();
+      if (!this.meetingWindowsUnavailable && this.callChoiceFailure === "capture_call_unavailable") {
+        this.callChoiceFailure = null; this.startFailed = false; this.publish();
+      }
+    });
   }
   private async loadMeetingWindows(signal = this.signal): Promise<void> {
     const host = this.options.meetingWindowChoices?.() ?? [];
