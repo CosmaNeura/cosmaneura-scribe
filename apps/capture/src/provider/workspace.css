@@ -171,3 +171,10 @@
 
 .provider-application .provider-account { display:none; }
 .provider-preparation .provider-start-help { margin:0; }
+.provider-call-summary { display:flex; align-items:center; gap:16px; padding:16px; border:1px solid var(--scribe-border); border-radius:12px; background:var(--scribe-mint); }
+.provider-call-summary>div { display:grid; gap:4px; min-width:0; flex:1; }
+.provider-call-summary span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--scribe-muted); }
+.provider-call-summary button { flex-shrink:0; }
+.provider-call-picker { margin-top:12px; }
+.provider-call-picker[hidden] { display:none; }
+.provider-call-picker-actions { display:flex; justify-content:space-between; gap:16px; }

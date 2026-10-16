@@ -12,12 +12,16 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
   options.signal.addEventListener("abort", externalAbort, { once: true }); if (options.signal.aborted) lifetime.abort();
   let port: ProviderAudioPreflight | null = null, snapshot: AudioPreflightSnapshot | null = null;
   let failed = false;
-  let selecting = false, closed = false, unsubscribe: (() => void) | undefined, closing: Promise<void> | null = null;
+  let selecting = false, windowPickerOpen = false, closed = false, unsubscribe: (() => void) | undefined, closing: Promise<void> | null = null;
   const select = (selector: string): HTMLSelectElement => root.querySelector<HTMLSelectElement>(selector)!;
   const value = (name: string): string => root.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value ?? "";
-  const ready = (): boolean => !closed && !selecting && (!options.open || snapshot?.status === "ready")
-    && (!options.open || options.isIOS || snapshot?.desktopAudio === value("desktop-audio"))
-    && (options.isIOS || value("desktop-audio") !== "meeting" || snapshot?.desktopAudio === "meeting" && snapshot.meetingWindows?.state === "ready" && !!snapshot.meetingWindows.selectedId);
+  const ready = (): boolean => {
+    const catalog = snapshot?.meetingWindows;
+    return !closed && !selecting && (!options.open || snapshot?.status === "ready")
+      && (!options.open || options.isIOS || snapshot?.desktopAudio === value("desktop-audio"))
+      && (options.isIOS || value("desktop-audio") !== "meeting" || !windowPickerOpen && snapshot?.desktopAudio === "meeting" && catalog?.state === "ready"
+        && catalog.windows.some(window => window.id === catalog.selectedId));
+  };
   const paint = (): void => {
     if (closed || signal.aborted) return;
     const video = !options.isIOS && value("desktop-audio") === "meeting";
@@ -31,7 +35,7 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
       choice.setAttribute("aria-pressed", String(choice.dataset.preparationAudio === value("desktop-audio")));
       choice.disabled = selecting || !!options.open && !port;
     }
-    root.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = video ? "Choose the call before recording. Close unrelated audio in that app." : "Keep both voices near the microphone.";
+    root.querySelector<HTMLElement>("[data-recording-guidance]")!.textContent = video ? "Close unrelated audio in the selected app before recording." : "Keep both voices near the microphone.";
     root.querySelector<HTMLElement>("[data-preflight-verdict]")!.textContent = snapshot?.status === "permission_required" ? "Microphone access is needed. Check recording access, then allow Scribe in device settings."
       : snapshot?.status === "unavailable" ? "Microphone unavailable. Check recording access and choose an available microphone."
       : selecting || snapshot?.status === "checking" ? "Checking recording access…"
@@ -56,15 +60,26 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
     if (meeting) {
       meeting.hidden = !video;
       const windows = select("[data-preflight-window]"), catalog = snapshot?.meetingWindows;
+      const selected = snapshot?.desktopAudio === "meeting" && catalog?.state === "ready"
+        ? catalog.windows.find(window => window.id === catalog.selectedId) : undefined;
       const signature = JSON.stringify(catalog?.windows ?? []);
       if (windows.dataset.windows !== signature) {
         windows.replaceChildren(new Option("Choose your Zoom or Chrome window", ""), ...(catalog?.windows ?? []).map(row => new Option(row.title, row.id)));
         windows.dataset.windows = signature;
       }
-      windows.value = catalog?.selectedId ?? ""; windows.disabled = selecting || !port;
+      windows.value = selected?.id ?? ""; windows.disabled = selecting || !port;
+      root.querySelector<HTMLElement>("[data-preflight-call-heading]")!.textContent = selected ? "Call selected" : "Choose your call";
+      root.querySelector<HTMLElement>("[data-preflight-call-title]")!.textContent = selected?.title ?? (catalog?.state === "ready" && catalog.windows.length ? "Choose the visit you want to record." : "");
+      const change = root.querySelector<HTMLButtonElement>("[data-preflight-call-change]")!;
+      change.textContent = selected ? "Change" : "Choose call";
+      change.disabled = selecting || !port; change.setAttribute("aria-expanded", String(windowPickerOpen));
+      root.querySelector<HTMLElement>("[data-preflight-call-picker]")!.hidden = !windowPickerOpen;
+      root.querySelector<HTMLButtonElement>("[data-preflight-call-done]")!.disabled = selecting;
+      root.querySelector<HTMLButtonElement>("[data-preflight-refresh]")!.disabled = selecting || !port;
       root.querySelector<HTMLElement>("[data-preflight-window-help]")!.textContent = catalog?.state === "permission_required" ? "Screen Recording access is needed. Check recording access before choosing a call."
         : catalog?.state === "unavailable" ? "Calls could not be loaded. Refresh calls or check recording access."
-        : catalog?.windows.length ? "Records your microphone and audio from this application." : "Open the visit in Zoom or Chrome, then refresh calls.";
+        : selected ? "Records your microphone and audio from this application."
+        : catalog?.windows.length ? "Choose a call, then confirm the patient's consent." : "Open the visit in Zoom or Chrome, then refresh calls.";
     }
   };
   const remember = (): void => options.remember({ language: value("language") as ProviderPreferences["language"],
@@ -78,19 +93,27 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
   };
   const changed = (event: Event): void => {
     if (event.target === root.querySelector("[data-preflight-input]")) { const id = select("[data-preflight-input]").value; void apply(() => port!.selectMicrophone(id)); }
-    else if (event.target === root.querySelector("[data-preflight-window]")) { const id = select("[data-preflight-window]").value; void apply(() => port!.selectMeetingWindow!(id)); }
+    else if (event.target === root.querySelector("[data-preflight-window]")) {
+      const id = select("[data-preflight-window]").value;
+      void apply(async () => { await port!.selectMeetingWindow!(id); windowPickerOpen = false; }).then(() => {
+        if (!closed && !windowPickerOpen) root.querySelector<HTMLButtonElement>("[data-preflight-call-change]")?.focus();
+      });
+    }
     else { remember(); paint(); }
   };
   const clicked = (event: MouseEvent): void => {
-    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-change-audio], [data-audio-done], [data-preparation-audio], [data-preflight-refresh], [data-preflight-access]") : null;
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-change-audio], [data-audio-done], [data-preparation-audio], [data-preflight-refresh], [data-preflight-access], [data-preflight-call-change], [data-preflight-call-done]") : null;
     if (!button || closed) return;
     const dialog = root.querySelector<HTMLDialogElement>("[data-audio-settings]")!;
     if (button.hasAttribute("data-change-audio")) dialog.showModal();
     else if (button.hasAttribute("data-audio-done")) { dialog.close(); root.querySelector<HTMLButtonElement>("[data-change-audio]")?.focus(); }
+    else if (button.hasAttribute("data-preflight-call-change")) { if (!selecting) { windowPickerOpen = true; paint(); select("[data-preflight-window]").focus(); } }
+    else if (button.hasAttribute("data-preflight-call-done")) { if (!selecting) { windowPickerOpen = false; paint(); root.querySelector<HTMLButtonElement>("[data-preflight-call-change]")?.focus(); } }
     else if (button.hasAttribute("data-preflight-access")) void apply(() => port!.requestRecordingAccess!());
     else if (button.hasAttribute("data-preflight-refresh")) void apply(() => port!.refreshMeetingWindows!());
     else {
       if (selecting) return;
+      windowPickerOpen = false;
       const mode = button.dataset.preparationAudio as "microphone" | "meeting";
       select('[name="desktop-audio"]').value = mode; select('[name="modality"]').value = mode === "meeting" ? "virtual" : "in_person";
       remember(); paint(); if (port?.selectDesktopAudio) void apply(() => port!.selectDesktopAudio!(mode));
