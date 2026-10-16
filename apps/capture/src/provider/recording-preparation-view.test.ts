@@ -23,3 +23,15 @@ it("offers explicit access setup without a pre-consent level meter", () => {
   expect(html).not.toContain("data-preflight-level");
   expect(html).not.toContain("Speak to check");
 });
+
+it("keeps the desktop call picker behind a separate explicit choice action", () => {
+  const html = recordingPreparationMarkup({ isIOS: false, language: "en-US", modality: "virtual", audio: "meeting" });
+  expect(html).toContain("data-preflight-call-heading>Choose your call");
+  expect(html).toContain('data-preflight-call-change aria-expanded="false" aria-controls="provider-call-picker"');
+  expect(html).toContain('data-preflight-call-picker hidden');
+  expect(html).toContain("data-preflight-call-done>Done");
+  expect(html).toContain('name="consent" type="checkbox"');
+  expect(html).not.toContain('type="checkbox" checked');
+  expect(html).toContain('aria-describedby="provider-start-consent" disabled');
+  expect(recordingPreparationMarkup({ isIOS: true, language: "en-US", modality: "in_person", audio: "microphone" })).not.toContain("data-preflight-call");
+});

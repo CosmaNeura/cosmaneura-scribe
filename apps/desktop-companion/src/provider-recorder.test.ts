@@ -24,6 +24,8 @@ import { nativePipeFixtureFence } from "./native-pipe-fixture.js";
 import { CoreCaptureClient } from "../../capture/src/provider/core-client";
 import { DesktopPreparationBff } from "./preparation-metadata.js";
 import type { NativeMicrophoneInputService } from "./native-microphone-inputs.js";
+import { DesktopAudioPreflight } from "./desktop-audio-preflight.js";
+import type { NativeMeetingWindow } from "./native-provider-presentation.js";
 
 const helperPath = process.env.SCRIBE_DESKTOP_PIPE_FIXTURE;
 const workspaceId = "10000000-0000-4000-8000-000000000001", recoveryScope = "20000000-0000-4000-8000-000000000002";
@@ -1785,6 +1787,132 @@ describe("start readiness overlap", () => {
 
 
 describe("deliberate desktop input selection", () => {
+  it("recommends the unique visible call among thirty windows without mounting or starting capture", async () => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);
+    const meet = { application: "com.google.Chrome" as const, processID: 41, windowID: 42, title: "Chrome — Meet - abc-defg-hij" };
+    const windows = [...Array.from({length:30},(_,n)=>({...meet,windowID:n+100,title:`Invented document ${n}`})),meet];
+    const recorder = await f.open({prepareInBackground:true,listMeetingWindows:async()=>windows,authorizeMount:mount});
+    try {
+      await vi.waitFor(()=>expect(recorder.snapshot.desktop?.phase).toBe("ready"));
+      const catalog = recorder.snapshot.desktop!.meetingWindows!;
+      expect(catalog.windows).toHaveLength(31);expect(catalog.windows.find(row=>row.id===catalog.selectedId)?.title).toBe(meet.title);
+      expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.selectWindow).not.toHaveBeenCalled();expect(recorder.snapshot.desktop?.inputSignal).toEqual({microphone:null,meetingAudio:null});
+    } finally {await f.close();}
+  });
+  it.each(["title", "pid", "window", "ambiguous", "denied"] as const)("revalidates %s before mount or Core Start and never substitutes a newly recommended call", async change => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);
+    const meet = { application: "com.google.Chrome" as const, processID: 41, windowID: 42, title: "Meet - abc-defg-hij" };
+    let windows: NativeMeetingWindow[] = [meet], denied = false;
+    const recorder = await f.open({prepareInBackground:true,authorizeMount:mount,listMeetingWindows:async()=>{
+      if(denied)throw new Error("Invented screen denial");return windows;
+    }});
+    try {
+      await vi.waitFor(()=>expect(recorder.snapshot.desktop?.phase).toBe("ready"));
+      const old = recorder.snapshot.desktop!.meetingWindows!.selectedId;
+      if(change==="title") windows=[{...meet,title:"Meet - klm-nopq-rst"}];
+      if(change==="pid") windows=[{...meet,processID:43}];
+      if(change==="window") windows=[{...meet,windowID:44}];
+      if(change==="ambiguous") windows=[meet,{application:"us.zoom.xos",processID:45,windowID:46,title:"Zoom Meeting"}];
+      if(change==="denied") denied=true;
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.selectWindow).not.toHaveBeenCalled();expect(recorder.snapshot.desktop!.meetingWindows!.selectedId).not.toBe(old);
+      expect(recorder.snapshot.desktop?.phase).toBe("ready");
+    } finally {await f.close();}
+  });
+  it("retains a closed preparation recommendation's provenance through its opaque-ID handoff", async () => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);
+    const meet = {application:"com.google.Chrome" as const,processID:41,windowID:42,title:"Meet - abc-defg-hij"};
+    let windows: NativeMeetingWindow[] = [meet];
+    const inputs = {getSnapshot:()=>({status:"ready",inputDevices:[],selectedInputId:null,microphone:null}),
+      subscribe:()=>()=>undefined,startCheck:async()=>undefined,close:async()=>undefined} as unknown as NativeMicrophoneInputService;
+    const preflight = new DesktopAudioPreflight(inputs,async()=>windows), port = await preflight.open(new AbortController().signal);
+    await port.selectDesktopAudio!("meeting");const id = port.getSnapshot().meetingWindows!.selectedId!;await port.close();
+    expect(preflight.selectedMeetingWindowId).toBeNull();
+    const recorder = await f.open({prepareInBackground:true,authorizeMount:mount,listMeetingWindows:async()=>windows,
+      meetingWindowChoices:()=>preflight.meetingWindowChoices,selectedMeetingWindowId:()=>preflight.selectedMeetingWindowId});
+    try {
+      await vi.waitFor(()=>expect(recorder.snapshot.desktop?.phase).toBe("ready"));await recorder.selectMeetingWindow(id);
+      windows=[meet,{application:"us.zoom.xos",processID:43,windowID:44,title:"Zoom Webinar"}];
+      await expect(recorder.startRecording()).rejects.toThrow();
+      expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
+      expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
+      // A subsequent deliberate choice among these calls is permitted, with
+      // its own fresh title check before any capture authority is requested.
+      await recorder.selectMeetingWindow(id);await recorder.refreshMeetingWindows();
+      expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBe(id);
+    } finally {await f.close();}
+  });
+  it("checks an explicit manual window's current title before capture authority", async () => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);
+    const selected = {application:"com.google.Chrome" as const,processID:41,windowID:42,title:"Invented manual call"};
+    let windows = [selected];
+    const recorder = await f.open({prepareInBackground:true,authorizeMount:mount,listMeetingWindows:async()=>windows});
+    try {
+      await vi.waitFor(()=>expect(recorder.snapshot.desktop?.phase).toBe("ready"));
+      await expect(recorder.startRecording()).rejects.toThrow();expect(mount).not.toHaveBeenCalled();
+      const id = recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id;await recorder.selectMeetingWindow(id);
+      windows=[{...selected,title:"Invented changed document"}];await expect(recorder.startRecording()).rejects.toThrow();
+      expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
+      expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
+    } finally {await f.close();}
+  });
+  it("rechecks a changed tab after delayed mount preparation and before Core Start", async () => {
+    const f = await fixture(true), entered = deferred(), reply = deferred();
+    const selected = {application:"com.google.Chrome" as const,processID:41,windowID:42,title:"Meet - abc-defg-hij"};
+    let windows = [selected];
+    const mount = vi.fn(async (...args:Parameters<typeof f.options.authorizeMount>)=>{entered.resolve();await reply.promise;return f.options.authorizeMount(...args);});
+    const recorder = await f.open({prepareInBackground:true,authorizeMount:mount,listMeetingWindows:async()=>windows});
+    try {
+      await vi.waitFor(()=>expect(recorder.snapshot.desktop?.phase).toBe("ready"));
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();await entered.promise;
+      windows=[{...selected,title:"Meet - klm-nopq-rst"}];reply.resolve();await rejected;
+      expect(mount).toHaveBeenCalledOnce();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(f.indicator.current()?.visible).not.toBe(true);
+    } finally {reply.resolve();await f.close();}
+  });
+  it.each(["pause", "finish", "close"] as const)("cancels delayed call metadata on %s without late mount or native Start", async action => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount), reply = deferred<readonly NativeMeetingWindow[]>();
+    const selected = {application:"us.zoom.xos" as const,processID:41,windowID:42,title:"Zoom Meeting"};
+    const list = vi.fn().mockResolvedValueOnce([selected]).mockImplementationOnce(()=>reply.promise);
+    const recorder = await f.open({prepareInBackground:true,authorizeMount:mount,listMeetingWindows:list});
+    try {
+      await vi.waitFor(()=>expect(recorder.snapshot.desktop?.phase).toBe("ready"));
+      const starting = recorder.startRecording(), rejected = expect(starting).rejects.toThrow();
+      await vi.waitFor(()=>expect(list).toHaveBeenCalledTimes(2));
+      await (action==="pause"?recorder.pauseRecording():action==="finish"?recorder.stopRecording():recorder.deactivate());await rejected;
+      reply.resolve([selected]);await Promise.resolve();await Promise.resolve();
+      expect(mount).not.toHaveBeenCalled();expect(f.authority).not.toHaveBeenCalled();expect(f.nativeStart).not.toHaveBeenCalled();
+      if(action==="close")expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
+    } finally {reply.resolve([selected]);await f.close();}
+  });
+  it("rejects a changed visible call before preparing Resume metadata or obtaining renewed authority", async () => {
+    const f = await fixture(true), driver = interruptedDriver(f);
+    const selected = {application:"com.google.Chrome" as const,processID:41,windowID:42,title:"Meet - abc-defg-hij"};
+    let windows = [selected];const recorder = await f.open({listMeetingWindows:async()=>windows});
+    const bff = f.options.createBff(f.abort.signal), renew = vi.spyOn(bff,"renewLease");
+    try {
+      await recorder.startRecording();await driver.interrupt(true);
+      await vi.waitFor(()=>expect(recorder.snapshot).toMatchObject({state:"paused",desktop:{phase:"interrupted"}}));
+      renew.mockClear();expect(f.authority).toHaveBeenCalledOnce();
+      windows=[{...selected,title:"Meet - klm-nopq-rst"}];await expect(recorder.resumeRecording()).rejects.toThrow();
+      expect(renew).not.toHaveBeenCalled();expect(f.authority).toHaveBeenCalledOnce();expect(f.nativeStart).toHaveBeenCalledOnce();
+    } finally {await f.close();}
+  });
+  it("does not reconnect a replacement visible tab on the same native window", async () => {
+    const f = await fixture(true);let sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
+    f.nativeStart!.mockImplementation((_configuration,next)=>{sink=next;return {ready:Promise.resolve({hostTimeNanoseconds:"1000000000",microphonePrerollNanoseconds:"0",systemPrerollNanoseconds:"0"}),
+      activate:()=>undefined,stop:async()=>null};});
+    const selected = {application:"com.google.Chrome" as const,processID:41,windowID:42,title:"Meet - abc-defg-hij"};
+    let windows = [selected];const list = vi.fn(async()=>windows), recorder = await f.open({autoReconnectMeeting:true,listMeetingWindows:list});
+    try {
+      await recorder.startRecording();windows=[{...selected,title:"Meet - klm-nopq-rst"}];sink.onFailure("meeting_disconnected");
+      await vi.waitFor(()=>expect(list).toHaveBeenCalledTimes(3));
+      expect(f.authority).toHaveBeenCalledOnce();expect(f.nativeStart).toHaveBeenCalledOnce();
+      await recorder.pauseRecording();expect(recorder.snapshot.state).toBe("paused");
+    } finally {await f.close();}
+  });
   it.each(["pause", "finish"] as const)("joins a delayed microphone preference on %s without restarting capture", async action => {
     const f = await fixture(true), saved = deferred(); let saving = false;
     let sink!: Parameters<NativeProcessPCMDriver["start"]>[1];
@@ -1941,9 +2069,10 @@ describe("deliberate desktop input selection", () => {
       expect(f.selectWindow).not.toHaveBeenCalled(); expect(f.complete).not.toHaveBeenCalled();
     } finally { stopped.resolve();retirement.resolve();await f.close(); }
   });
-  it("uses only an explicit current inline choice, refresh invalidates it, and selection never captures", async () => {
+  it("preserves an explicit current inline choice, invalidates its changed title, and selection never captures", async () => {
     const f = await fixture(true); interruptedDriver(f);
-    const list = vi.fn(async () => [{ application: "us.zoom.xos" as const, processID: 42, windowID: 74, title: "Zoom — Synthetic visit" }]);
+    let values = [{ application: "us.zoom.xos" as const, processID: 42, windowID: 74, title: "Zoom — Synthetic visit" }];
+    const list = vi.fn(async () => values);
     const recorder = await f.open({ listMeetingWindows: list });
     try {
       expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();
@@ -1952,6 +2081,9 @@ describe("deliberate desktop input selection", () => {
       const id = recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id;
       await recorder.selectMeetingWindow(id);
       expect(f.nativeStart).not.toHaveBeenCalled();
+      await recorder.refreshMeetingWindows();
+      expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBe(id);
+      values = [{ ...values[0]!, title: "Zoom — Changed synthetic visit" }];
       await recorder.refreshMeetingWindows();
       await expect(recorder.selectMeetingWindow(id)).rejects.toThrow();
       expect(recorder.snapshot.desktop?.meetingWindows?.selectedId).toBeNull();

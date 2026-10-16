@@ -21,7 +21,10 @@ export function recordingPreparationMarkup(options: { isIOS: boolean; language: 
     <div class="provider-microphone-check"><span data-preflight-verdict role="status">Checking recording access…</span></div>
     <button type="button" class="provider-text-link" data-preflight-access>Check recording access</button>
     <p data-preflight-access-help>Microphone levels appear after consent and recording starts.</p>
-    ${options.isIOS ? '' : '<div data-preflight-meeting hidden><label>Which call?<select data-preflight-window><option value="">Choose your Zoom or Chrome window</option></select></label><button type="button" class="provider-text-link" data-preflight-refresh>Refresh calls</button><p data-preflight-window-help></p></div>'}
+    ${options.isIOS ? '' : `<div data-preflight-meeting hidden>
+      <div class="provider-call-summary" data-preflight-call-summary aria-live="polite"><div><strong data-preflight-call-heading>Choose your call</strong><span data-preflight-call-title></span></div><button type="button" class="provider-text-link" data-preflight-call-change aria-expanded="false" aria-controls="provider-call-picker">Choose call</button></div>
+      <div class="provider-call-picker" id="provider-call-picker" data-preflight-call-picker hidden><label>Which call?<select data-preflight-window><option value="">Choose your Zoom or Chrome window</option></select></label><div class="provider-call-picker-actions"><button type="button" class="provider-text-link" data-preflight-refresh>Refresh calls</button><button type="button" class="provider-text-link" data-preflight-call-done>Done</button></div></div>
+      <p data-preflight-window-help role="status"></p></div>`}
     <p>Say to the patient:</p><blockquote class="provider-consent-script" data-consent-script></blockquote>
     <label class="provider-consent"><input name="consent" type="checkbox">The patient said yes</label>
     <button data-workspace-action="prepare" aria-describedby="provider-start-consent" disabled>Start recording</button>
