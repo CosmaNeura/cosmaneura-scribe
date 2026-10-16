@@ -10,7 +10,8 @@ const { JSDOM } = await import(pathToFileURL(jsdomPath));
 const code = await readFile(bundle, "utf8"), id = "01j" + "0".repeat(23);
 const scope = { workspaceId: webcrypto.randomUUID(), appointmentRef: "appointment_" + id, bindingRef: "scribe_capture_binding_" + id };
 const session = webcrypto.randomUUID(), working = webcrypto.randomUUID(), segment = webcrypto.randomUUID();
-const encounter = { appointmentRef: scope.appointmentRef, title: "Synthetic note opening", detail: "Invented fixture" };
+const identity = { state: "provisional", version: 0, canonicalPatientRef: "patient_" + id, name: "Synthetic note opening", dateOfBirth: null };
+const encounter = { appointmentRef: scope.appointmentRef, patientRef: identity.canonicalPatientRef, identity, dateOfBirth: "1990-01-01", title: identity.name, detail: "Invented fixture" };
 const review = { schema_version: "1.0", session_id: session, status: "transcript_ready",
   source: { source_transcript_version: 1, segments: [{ source_segment_id: segment, source_segment_version: 1,
     content: "Invented speech.", source_locale: "en-US", speaker_id: webcrypto.randomUUID(), speaker_role: "unknown", start_ms: 0, end_ms: 1000 }] },
@@ -33,7 +34,8 @@ const forbidden = () => { throw new Error("Unrequested write, recording, or exte
 const flush = async () => { await new Promise(done => setTimeout(done, 5)); };
 const results = [];
 for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "hidden", "departed", "revoked", "hung-manual",
-  "changed-source", "invalid-draft", "access-denied", "review-failed", "read-only"]) {
+  "changed-source", "invalid-draft", "access-denied", "review-failed", "retain-failed", "read-only", "invalid-dob", "saved-invalid-dob", "canonical-match", "private-close"]) {
+  const readOnly = ["read-only", "invalid-dob", "saved-invalid-dob", "canonical-match", "private-close"].includes(scenario);
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "capacitor://localhost/index.html",
     runScripts: "outside-only", pretendToBeVisual: true });
   const window = dom.window, root = window.document.getElementById("root");
@@ -41,11 +43,15 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
   Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
   window.ResizeObserver = class { observe() {} disconnect() {} };
   window.matchMedia = () => ({ matches: false });
+  window.scrollTo = () => {}; // This fixture checks saved state, not browser scrolling.
   window.fetch = forbidden;
+  window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   // Drive only long application deadlines. DOM/microtask delivery stays real.
   const timers = new Map(), realTimeout = window.setTimeout.bind(window), realClear = window.clearTimeout.bind(window);
   const origin = Date.now(); let elapsed = 0, timerId = 1_000_000, visible = true;
   window.Date.now = () => origin + elapsed;
+  Object.defineProperty(window.performance, "now", { value: () => elapsed });
   Object.defineProperty(window.document, "visibilityState", { get: () => visible ? "visible" : "hidden" });
   window.setTimeout = (fn, ms = 0, ...args) => {
     if (ms < 3000) return realTimeout(fn, ms, ...args);
@@ -87,7 +93,9 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
       if (scenario === "review-failed") return new Response(null, { status: 503 });
       return Response.json({ ...envelope, operation: kind, receipt: currentReview() });
     }
-    assert.equal(action, "capture-notes"); assert.ok(["prepare", "read"].includes(kind));
+    assert.equal(action, "capture-notes");
+    if (["save", "save_status"].includes(kind)) return new Response(null, { status: 503 });
+    assert.ok(["prepare", "read"].includes(kind));
     assert.equal(body.expected_session_id, session); assert.equal(body.schema_ref, schema);
     if (kind === "prepare") {
       if (scenario === "lost-reply") { available = true; return new Response(null, { status: 503 }); }
@@ -103,13 +111,17 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
     }
     const receipt = scenario === "invalid-draft" && !available ? { ...note, note_sha256: "b".repeat(64) }
       : scenario === "changed-source" ? { ...note, reviewed_source: { ...note.reviewed_source, source_version: 2, working_version: 2 } }
-      : available || scenario === "read-only" ? note : absent;
+      : available || readOnly ? note : absent;
     return Response.json({ ...envelope, action: kind, receipt });
   };
+  let pendingMatch = scenario === "saved-invalid-dob" ? { key: webcrypto.randomUUID(), expectedVersion: 0, selection: { kind: "confirm_new", dateOfBirth: "9999-01-01" } } : null;
+  let matchWrites = 0, matches = 0, lastProgress = null, privateWritable = false, privateRetains = 0;
   const host = { signal: lifetime.signal, listEncounters: async () => [encounter], createEncounter: forbidden,
+    encounterSetup: { ...(scenario === "private-close" ? { readPrivateNote: async () => ({ text: "", version: 0, updatedAt: null }), savePrivateNote: forbidden } : {}), patientCandidates: async () => ({ identity, moreResults: false, patients: [{ patientRef: "patient_" + "01j" + "1".repeat(23), name: "Canonical invented name", dateOfBirth: "1985-02-03" }] }),
+      matchPatient: async (_encounter, selection) => { matches++; assert.deepEqual(JSON.parse(JSON.stringify(pendingMatch.selection)), JSON.parse(JSON.stringify(selection))); return { encounter, identity: { ...identity, state: "matched", version: 1, name: "Canonical invented name", dateOfBirth: "1985-02-03" } }; } },
     openEncounter: async () => ({ encounter, scope, signal: encounterLifetime.signal, request, noteOpeningSupported: true,
       openingReview: { scope, receivedAt: window.Date.now(), view: review },
-      journal: { load: async () => ({ revision: "1", progress: { admission: null, sessionId: session, uploaded: true, pendingSave: null } }), save: forbidden },
+      journal: { load: async () => ({ revision: "1", progress: { admission: null, sessionId: session, uploaded: true, pendingSave: null, pendingPatientMatch: pendingMatch } }), save: async (_previous, progress) => { if (scenario === "retain-failed" && progress.notePreparation?.state === "submitted") throw new Error("Storage unavailable"); if (scenario === "private-close" && progress.privateNoteState?.text === "Latest private reminder") { privateRetains++; if (!privateWritable) throw new Error("Private storage unavailable"); } if (JSON.stringify(pendingMatch) !== JSON.stringify(progress.pendingPatientMatch ?? null)) { matchWrites++; pendingMatch = progress.pendingPatientMatch ?? null; } lastProgress = progress; return { revision: "2", progress }; } },
       recorder: forbidden, openInCore: forbidden, reviewJournal: () => ({ load: async () => null, save: forbidden, clear: forbidden }) }) };
   const until = async predicate => {
     for (let i = 0; i < 200; i++) { if (predicate()) return; await flush(); }
@@ -124,7 +136,7 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
     root.querySelector('[data-review-action="continue"]').click();
     await until(() => root.querySelector('[data-workspace-action="generate"]') && !root.hasAttribute("aria-busy"));
     const prepareButton = root.querySelector('[data-workspace-action="generate"]');
-    click(scenario === "read-only" ? "check-note" : "generate");
+    click(readOnly ? "check-note" : "generate");
     if (scenario === "pending-review") {
       assert.match(root.querySelector("h1").textContent, /Preparing your draft note/);
       assert.equal(root.querySelector('[data-workspace-action="generate"]'), null);
@@ -134,11 +146,13 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
       assert.equal(calls.filter(c => c === "creator_review").length, 1);
       releaseReview();
     }
-    if (scenario === "review-failed") {
+    if (["review-failed", "retain-failed"].includes(scenario)) {
       await until(() => !root.hasAttribute("aria-busy") && root.textContent.includes("could not be confirmed"));
       assert.equal(calls.filter(c => c === "prepare").length, 0); assert.equal(readCount, 0);
+      assert.equal(root.querySelector("[data-note-readiness]"), null);
+      assert.ok(!root.textContent.includes("Writing your visit note"));
       assert.ok(root.querySelector('[data-workspace-action="generate"]')); await advance(120_000);
-    } else if (["lost-reply", "read-only"].includes(scenario)) {
+    } else if (scenario === "lost-reply" || readOnly) {
       await until(fieldsReady);
     } else {
       await until(() => readCount === 1 && !root.hasAttribute("aria-busy"));
@@ -159,7 +173,9 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
       if (scenario === "hidden") {
         await until(() => held.length === 1); await visibility(false);
         assert.equal(held[0].signal.aborted, true); await advance(12_000); assert.equal(readCount, 1);
-        available = true; await visibility(true); await until(fieldsReady); held[0].resolve(); await flush();
+        available = true; await visibility(true); await flush();
+        assert.equal(readCount, 1, "Visibility must not overlap a still-settling wire read");
+        held[0].resolve(); await flush(); await advance(3000); await until(fieldsReady);
       }
       if (["departed", "revoked"].includes(scenario)) {
         await until(() => held.length === 1);
@@ -173,9 +189,11 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
         click("check-note"); await until(() => held.length === 1);
         assert.equal(root.hasAttribute("aria-busy"), false); click("check-note"); assert.equal(readCount, 2);
         await advance(30_000); assert.equal(held[0].signal.aborted, true);
-        assert.equal(root.querySelector('[data-workspace-action="check-note"]').disabled, false);
-        available = true; click("check-note"); await until(fieldsReady);
-        held[0].resolve(); await flush(); assert.equal(readCount, 3);
+        assert.equal(root.querySelector('[data-workspace-action="check-note"]').disabled, true);
+        available = true; click("check-note"); await flush();
+        assert.equal(readCount, 2, "Timeout must not overlap a still-settling wire read");
+        held[0].resolve(); await flush(); click("check-note"); await until(fieldsReady);
+        assert.equal(readCount, 3);
       }
       if (["changed-source", "invalid-draft", "access-denied"].includes(scenario)) {
         await until(() => root.textContent.includes("note check could not be confirmed"));
@@ -191,18 +209,46 @@ for (const scenario of ["pending-review", "lost-reply", "delayed", "expired", "h
       assert.equal(legacyField.value, fields[legacyHeading]);
       assert.match(legacyField.closest("label").textContent, /^Deferred examination/);
       assert.equal(legacyField.closest("label").textContent.includes("08/26/2026"), false);
-      const original = [...root.querySelectorAll("details")].find(detail => detail.querySelector("summary")?.textContent === "Original template headings");
-      assert.ok(original && !original.open && original.textContent.includes(legacyHeading));
+      assert.ok(legacyField.closest("label").textContent.includes("Deferred examination"));
       fieldsReady().value += " Unsubmitted synthetic edit.";
       fieldsReady().dispatchEvent(new window.Event("input", { bubbles: true }));
-      assert.equal(root.querySelector("[data-note-save-state]").textContent, "Unsaved edits");
+      assert.equal(root.querySelector("[data-note-save-state]").textContent, "Saving…");
       const count = readCount; await advance(120_000); await visibility(false); await visibility(true);
       assert.equal(readCount, count); assert.match(fieldsReady().value, /Unsubmitted synthetic edit/);
+      if (scenario === "private-close") {
+        await until(() => lastProgress?.pendingSave);
+        const retainedKey = lastProgress.pendingSave.edit.client_key, privateEditor = root.querySelector("scribe-private-note");
+        await privateEditor.port.load(); await privateEditor.port.change("Latest private reminder");
+        assert.equal(privateEditor.port.getSnapshot().status, "unconfirmed"); assert.ok(privateRetains > 0);
+        let closes = 0;
+        const close = () => { const event = new window.CustomEvent("scribe-desktop-close-request", { cancelable: true, detail: () => { closes++; } }); root.dispatchEvent(event); assert.equal(event.defaultPrevented, true); };
+        close(); await until(() => root.textContent.includes("Your private reminder hasn’t been retained"));
+        assert.equal(closes, 0); assert.equal(lastProgress.privateNoteState?.text ?? null, null);
+        assert.equal(privateEditor.port.getSnapshot().text, "Latest private reminder");
+        privateWritable = true; close(); await until(() => closes === 1);
+        assert.equal(lastProgress.privateNoteState.text, "Latest private reminder");
+        assert.equal(lastProgress.pendingSave.edit.client_key, retainedKey);
+      }
+      if (["invalid-dob", "saved-invalid-dob", "canonical-match"].includes(scenario)) {
+        const edited = fieldsReady().value; click("match-patient");
+        await until(() => root.querySelector(scenario === "saved-invalid-dob" ? "[data-match-correct]" : "[data-match-new]")?.disabled === false);
+        const dob = root.querySelector('[name="match-dob"]'); assert.equal(dob.max, new Date().toISOString().slice(0, 10));
+        if (scenario === "saved-invalid-dob") { assert.equal(root.querySelector("[data-match-retry]"), null); root.querySelector("[data-match-correct]").click(); await until(() => root.querySelector("[data-match-new]")?.disabled === false); assert.equal(matchWrites, 1); assert.equal(pendingMatch, null); }
+        if (scenario !== "canonical-match") {
+          const before = matchWrites; dob.value = "9999-01-01"; root.querySelector("[data-match-new]").click(); await flush();
+          assert.equal(matchWrites, before); assert.equal(matches, 0); assert.match(root.querySelector("[data-match-status]").textContent, /valid date/);
+          dob.value = ""; root.querySelector("[data-match-new]").click();
+        } else { await until(() => root.querySelector("[data-match-patient]")?.disabled === false); root.querySelector("[data-match-patient]").click(); }
+        await until(() => !root.querySelector("dialog")); assert.equal(matches, 1);
+        assert.equal(root.querySelector("[data-provider-patient-detail]").textContent, "DOB: 1985-02-03");
+        assert.match(root.querySelector("[data-provider-encounter]").textContent, /Canonical invented name/);
+        assert.equal(fieldsReady().value, edited); assert.equal(root.querySelector('[data-workspace-action="add-dob"]'), null);
+      }
     }
-    assert.equal(calls.filter(c => c === "prepare").length, ["review-failed", "read-only"].includes(scenario) ? 0 : 1);
-    assert.ok(calls.every(c => ["note-opening", "creator_review", "prepare", "read"].includes(c)));
+    assert.equal(calls.filter(c => c === "prepare").length, readOnly || ["review-failed", "retain-failed"].includes(scenario) ? 0 : 1);
+    assert.ok(calls.every(c => ["note-opening", "creator_review", "prepare", "read", "save", "save_status"].includes(c)));
     results.push({ scenario, prepare_calls: calls.filter(c => c === "prepare").length, read_calls: readCount, passed: true });
   } finally { for (const pending of held) pending.resolve(); await dispose(); dom.window.close(); }
 }
 process.stdout.write(JSON.stringify({ compiled_workspace: true, synthetic_only: true, actual_device: false,
-  microphone_calls: 0, save_calls: 0, checks: results.length, results }, null, 2) + "\n");
+  microphone_calls: 0, save_recovery_checked: true, checks: results.length, results }, null, 2) + "\n");

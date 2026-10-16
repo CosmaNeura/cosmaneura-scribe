@@ -16,6 +16,11 @@ const window = dom.window, root = window.document.getElementById("root");
 Object.defineProperty(window.AbortSignal, "any", { value: undefined, configurable: true });
 Object.defineProperty(window, "crypto", { value: webcrypto });
 Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
+window.ResizeObserver = class { observe() {} disconnect() {} };
+window.matchMedia = () => ({ matches: false });
+window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+window.HTMLElement.prototype.scrollIntoView = function () {};
 window.fetch = () => { throw new Error("Unexpected network request"); };
 let nativeState = { phase: "signedOut", revision: webcrypto.randomUUID() };
 const nativeCalls = [], nativeListeners = new Map(), warnings = [];
@@ -23,18 +28,24 @@ let mountGate = null, mountFailure = false, journalFailure = false;
 window.console.warn = value => { warnings.push(value); };
 window.CapacitorCustomPlatform = { name: "ios" };
 window.Capacitor = {
-  PluginHeaders: [{ name: "IOSPCM", methods: [] },
+  PluginHeaders: [{ name: "IOSPCM", methods: ["beginMicrophoneCheck", "readMicrophoneCheck", "endMicrophoneCheck"].map(name => ({ name, rtype: "promise" })) },
     { name: "CosmasWorkspaceAuth", methods: [
-      ...["getState", "getProviderState", "signIn", "signOut", "providerRequest", "cancelProviderRequest", "removeListener"]
+      ...["getState", "getProviderState", "takeRecordingOpenRequest", "signIn", "signOut", "providerRequest", "cancelProviderRequest", "removeListener"]
         .map(name => ({ name, rtype: "promise" })), { name: "addListener", rtype: "callback" },
     ] }, { name: "SecureQueue", methods: [{ name: "get", rtype: "promise" }] }],
   nativeCallback(plugin, method, options, callback) {
     assert.equal(plugin, "CosmasWorkspaceAuth"); assert.equal(method, "addListener");
-    assert.equal(options.eventName, "authStateChanged");
+    assert.ok(["authStateChanged", "recordingOpen"].includes(options.eventName));
     const id = webcrypto.randomUUID(); nativeListeners.set(id, callback); return id;
   },
   async nativePromise(plugin, method, options) {
     nativeCalls.push(`${plugin}.${method}`);
+    if (plugin === "IOSPCM") {
+      assert.ok(["beginMicrophoneCheck", "readMicrophoneCheck", "endMicrophoneCheck"].includes(method), "Preparation cannot record audio");
+      if (method === "endMicrophoneCheck") return;
+      return { version: 1, status: "ready", inputDevices: [{ id: "fixture-microphone", label: "Fixture microphone", kind: "built_in", current: true }],
+        selectedInputId: "fixture-microphone", microphone: { level: .08, ageMs: 0 } };
+    }
     if (plugin === "SecureQueue" && method === "get") {
       if (journalFailure) throw Object.assign(new Error("Private storage detail must not be displayed"), { code: "SECURE_QUEUE_UNAVAILABLE" });
       throw Object.assign(new Error("No saved fixture record"), { code: "SECURE_QUEUE_NOT_FOUND" });
@@ -43,6 +54,7 @@ window.Capacitor = {
     if (method === "removeListener") { nativeListeners.delete(options.callbackId); return; }
     if (method === "getState") return nativeState;
     if (method === "getProviderState") return { ...nativeState, providerReady: true };
+    if (method === "takeRecordingOpenRequest") return { version: 1, pending: false };
     if (method === "signIn" || method === "signOut") {
       nativeState = { phase: method === "signIn" ? "ready" : "signedOut", revision: webcrypto.randomUUID() };
       for (const listener of [...nativeListeners.values()]) listener(nativeState);
@@ -86,7 +98,7 @@ const until = async predicate => {
     if (predicate()) return;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  throw new Error("Expected application state did not arrive");
+  throw new Error(`Expected application state did not arrive: ${root.textContent}`);
 };
 const turn = () => new Promise(resolve => setTimeout(resolve, 20));
 const click = action => {
@@ -120,6 +132,55 @@ function fixture(phase = "ready") {
 let checks = 0;
 async function check(run) { root.replaceChildren(); await run(); checks++; }
 try {
+  await check(async () => {
+    const f = fixture(), connect = f.host.connect;
+    const sessionId = "10000000-0000-4000-8000-000000000001";
+    const scope = { workspaceId: "20000000-0000-4000-8000-000000000002",
+      bindingRef: "scribe_capture_binding_01j00000000000000000000000",
+      appointmentRef: "appointment_01j00000000000000000000000" };
+    let opened = 0, activeReads = 0, navigation, removed = 0, deactivated = 0;
+    const forbidden = () => { throw new Error("A recording link cannot start, resume, admit, upload or write"); };
+    f.host.recordingOpen = async listener => { navigation = listener; listener(); return { async remove() { removed++; } }; };
+    f.host.connect = async signal => {
+      const connected = await connect(signal), workspace = connected.workspace;
+      workspace.activeRecording = async () => { activeReads++; return { appointmentRef: scope.appointmentRef, sessionId }; };
+      workspace.openEncounter = async appointmentRef => {
+        assert.equal(appointmentRef, scope.appointmentRef); opened++;
+        return { encounter: (await workspace.listEncounters())[0], scope, signal,
+          request: async (_path, body) => {
+            assert.equal(body.operation.kind, "creator_review");
+            return Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+              operation: "creator_review", receipt: { schema_version: "1.0", session_id: sessionId,
+                status: "capturing", source: null, working: null, review_queue: null } });
+          },
+          journal: { load: async () => ({ revision: "1", progress: { sessionId, uploaded: false, pendingSave: null,
+            admission: { key: webcrypto.randomUUID(), languageMode: "en-US", attestation: {
+              modality: "in_person", participant_regions: ["US-NY"], method: "verbal_attestation",
+              all_parties_consented: true, granted_at: new Date().toISOString(),
+            } } } }), save: forbidden },
+          reviewJournal: () => ({ load: forbidden, save: forbidden }), openInCore: forbidden,
+          recorder: async () => ({ sourceKind: "microphone", controller: {
+            snapshot: { sessionId, state: "paused", statusCode: "capture_recovered_paused",
+              recordedChunks: 1, queuedChunks: 1, elapsedSeconds: 1, remainingBudgetSeconds: 60,
+              remainingAuthoritySeconds: 60, transcriptionStatus: null, transcript: null },
+            subscribe(listener) { listener(this.snapshot); return () => {}; },
+            startRecording: forbidden, resumeRecording: forbidden, stopRecording: forbidden,
+          }, deactivate: async () => { deactivated++; }, resumePendingWork: forbidden, releaseUploadedCapture: forbidden }),
+        };
+      };
+      return connected;
+    };
+    const dispose = mountProviderApplication(root, f.host);
+    try {
+      await until(() => root.querySelector("cosmaneura-capture") && root.getAttribute("aria-busy") === "false");
+      assert.equal(activeReads, 1); assert.equal(opened, 1); assert.equal(deactivated, 0);
+      const capture = root.querySelector("cosmaneura-capture"); navigation(); await turn();
+      assert.equal(root.querySelector("cosmaneura-capture"), capture);
+      assert.equal(activeReads, 1); assert.equal(opened, 1); assert.equal(deactivated, 0);
+      assert.equal(window.document.activeElement, capture);
+    } finally { await dispose(); }
+    assert.equal(removed, 1); assert.equal(deactivated, 1);
+  });
   for (const failureAt of ["initial", "refresh"]) await check(async () => {
     const f = fixture(), connect = f.host.connect, revision = f.state.revision;
     let failList = failureAt === "initial", listCalls = 0;
@@ -162,8 +223,7 @@ try {
     });
     try {
       await until(visible);
-      assert.equal(root.querySelector('[data-workspace-action="create"]').textContent, "Open Core dashboard");
-      assert.ok(root.textContent.includes("It does not create an encounter"));
+      assert.equal(root.querySelector('[data-workspace-action="create"]').textContent, "Open the dashboard");
       root.querySelector('[data-workspace-action="create"]').click();
       await until(() => coreOpens === 1 && root.getAttribute("aria-busy") === "false");
       await turn();
@@ -182,13 +242,14 @@ try {
       assert.equal(root.textContent.includes("Private storage detail"), false);
       journalFailure = false;
       root.querySelector('[data-workspace-action="open"]').click();
-      await until(() => root.textContent.includes("Record this visit"));
+      await until(() => root.querySelector('[data-workspace-action="prepare"]'));
       assert.equal(root.querySelector('[name="regions"]'), null);
-      const consent = root.querySelector('[data-workspace-action="prepare"]'); consent.focus();
+      const consent = root.querySelector('[name="consent"]'); consent.focus();
       await new Promise(resolve => setTimeout(resolve, 5200));
-      assert.equal(root.querySelector('[data-workspace-action="prepare"]'), consent, "Polling must retain the opened encounter and consent control");
-      assert.equal(window.document.activeElement, consent); assert.equal(consent.textContent, "Confirm consent & record");
-      assert.equal(nativeCalls.some(call => call.startsWith("IOSPCM.")), false);
+      assert.equal(root.querySelector('[name="consent"]'), consent, "Polling must retain the opened encounter and consent control");
+      assert.equal(window.document.activeElement, consent); assert.equal(root.querySelector('[data-workspace-action="prepare"]').textContent, "Start recording");
+      assert.ok(nativeCalls.includes("IOSPCM.beginMicrophoneCheck"));
+      assert.equal(nativeCalls.includes("IOSPCM.start"), false);
     } finally {
       mountGate?.resolve(); mountGate = null; mountFailure = false; journalFailure = false;
       await dispose(); nativeState = { phase: "signedOut", revision: webcrypto.randomUUID() };
@@ -229,7 +290,10 @@ try {
       assert.equal(root.querySelector('[name="timezone"]'), null);
       await turn();
       assert.equal(admissions, 0); assert.equal(saved, null);
-      assert.ok(root.textContent.includes("everyone has agreed to recording and transcription"));
+      assert.ok(root.textContent.includes("The patient said yes"));
+      assert.equal(root.querySelector('[data-workspace-action="prepare"]').disabled, true);
+      root.querySelector('[name="consent"]').checked = true;
+      root.querySelector('[name="consent"]').dispatchEvent(new window.Event("change", { bubbles: true }));
       root.querySelector('[data-workspace-action="prepare"]').click();
       await until(() => admissions === 1); await turn();
       assert.deepEqual(saved.admission.attestation.participant_regions, []);
@@ -344,7 +408,7 @@ try {
         retry.click(); retry.click();
         await until(() => uploads === 2 && retry.disabled);
         assert.equal(opened, 1); assert.equal(deactivated, 0); assert.equal(resumed, 0);
-        retryGate.resolve(); await until(() => root.textContent.includes("Recording uploaded."));
+        retryGate.resolve(); await until(() => root.textContent.includes("Recording saved"));
         assert.equal(root.querySelector("cosmaneura-capture"), capture);
         assert.equal(root.querySelector('[data-testid="retry-upload"]'), null);
         assert.equal(uploads, 2);
@@ -489,9 +553,10 @@ try {
       await until(() => root.querySelector('[data-session-action="sign-in"]'));
       click("sign-in"); await until(visible);
       root.querySelector('[data-workspace-action="open"]').click();
-      await until(() => root.textContent.includes("Record this visit"));
+      await until(() => root.querySelector('[data-workspace-action="prepare"]'));
       assert.equal(nativeCalls.filter(call => call.endsWith(".providerRequest")).length, 3);
-      assert.equal(nativeCalls.some(call => call.startsWith("IOSPCM.")), false);
+      assert.equal(nativeCalls.some(call => call === "IOSPCM.beginMicrophoneCheck"), true);
+      assert.equal(nativeCalls.some(call => call === "IOSPCM.start"), false);
       assert.equal(nativeCalls.some(call => call.endsWith(".getToken")), false);
       click("sign-out"); assert.equal(visible(), false);
       await until(() => root.querySelector('[data-session-action="sign-in"]'));

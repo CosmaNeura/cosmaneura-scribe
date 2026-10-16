@@ -1,3 +1,4 @@
+import { Surface } from "./test-workspace-surface";
 import { afterEach, expect, it, vi } from "vitest";
 import { parseCreatorReview, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
 import { mountCreatorReview } from "../../../review-ui/src/creator-review-panel";
@@ -31,48 +32,6 @@ function deferred<T>() {
   return { promise: new Promise<T>(done => { resolve = done; }), resolve: (value: T) => resolve(value) };
 }
 
-// Minimal event tree, not a browser/layout or assistive-technology simulation.
-class Surface extends EventTarget {
-  private markup = "";
-  readonly nodes = new Map<string, Surface>();
-  readonly dataset: Record<string, string> = {};
-  readonly attributes = new Set<string>();
-  readonly classList = { add: vi.fn() };
-  readonly style = { setProperty: vi.fn() };
-  buttons: Surface[] = [];
-  parent: Surface | null = null;
-  textContent = "";
-  hidden = false;
-  disabled = false;
-  isConnected = true;
-  get innerHTML(): string { return this.markup; }
-  set innerHTML(value: string) {
-    this.markup = value; this.nodes.clear(); this.buttons = [];
-    for (const key of ["data-workspace-content", "data-workspace-notice", "data-workspace-progress", "data-workspace-navigation",
-      "data-provider-encounter", "data-provider-account", "data-provider-patient-detail", "data-encounter-progress"]) {
-      if (value.includes(key)) this.nodes.set(`[${key}]`, new Surface());
-    }
-    if (value.includes('class="provider-header"')) this.nodes.set(".provider-header", new Surface());
-    if (value.includes('class="provider-encounters"')) {
-      const list = new Surface(); this.nodes.set(".provider-encounters", list);
-      for (const match of value.matchAll(/<li[^>]*><button data-workspace-action="open" data-appointment="([^"]+)"/gu)) {
-        const button = new Surface(), row = new Surface(); button.dataset.appointment = match[1]!;
-        button.dataset.workspaceAction = "open"; button.parent = row; row.nodes.set("[data-draft-action]", new Surface());
-        button.nodes.set(".provider-visit-status", new Surface()); list.buttons.push(button);
-      }
-    }
-  }
-  querySelector(selector: string): Surface | null { return this.nodes.get(selector) ?? null; }
-  querySelectorAll(selector: string): Surface[] { return selector === '[data-workspace-action="open"]' ? this.buttons : []; }
-  contains(value: unknown): boolean { return value instanceof Surface && value.isConnected; }
-  closest(selector: string): Surface | null { return selector === "li" ? this.parent : selector === "button[data-workspace-action]" ? this : null; }
-  setAttribute(name: string): void { this.attributes.add(name); }
-  removeAttribute(name: string): void { this.attributes.delete(name); }
-  getBoundingClientRect(): { height: number } { return { height: 0 }; }
-  remove(): void { this.isConnected = false; }
-  replaceChildren(): void { this.innerHTML = ""; }
-  close(): void {}
-}
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 function mount(options: { catalog?: ProviderEncounter[]; snapshot?: JournalSnapshot; view?: CreatorReviewView | null;
@@ -105,7 +64,7 @@ function mount(options: { catalog?: ProviderEncounter[]; snapshot?: JournalSnaps
 const lastOptions = (): CreatorReviewOptions => mounted.mock.lastCall![2]!;
 
 it.each(["open-draft", "open"])("propagates only the explicit %s intent after authorized mount and saved journal", async action => {
-  const f = mount(); await vi.waitFor(() => expect(f.content.innerHTML).toContain("Open draft"));
+  const f = mount(); await vi.waitFor(() => expect(f.content.innerHTML).toContain("Open note"));
   await f.click(action);
   expect(f.host.openEncounter).toHaveBeenCalledOnce(); expect(f.journal.load).toHaveBeenCalledOnce();
   expect(mounted).toHaveBeenCalledOnce(); expect(lastOptions().initialAction).toBe(action === "open-draft" ? action : undefined);
@@ -113,7 +72,7 @@ it.each(["open-draft", "open"])("propagates only the explicit %s intent after au
   expect(f.request).not.toHaveBeenCalled(); // Current host read reused only before the later fresh note-opening check.
 });
 it("refreshes the same authorized visit without admission, recorder acquisition, or replaying a save", async () => {
-  const f = mount(); await vi.waitFor(() => expect(f.content.innerHTML).toContain("Open draft"));
+  const f = mount(); await vi.waitFor(() => expect(f.content.innerHTML).toContain("Open note"));
   await f.click("open");
   await f.click("refresh-visit");
   expect(f.host.openEncounter).toHaveBeenCalledTimes(2);
@@ -190,16 +149,16 @@ it.each(["missing", "created", "capturing", "transcript_ready"])("handles %s dis
 it("adds a shortcut only when a pending row receives fresh authorized draft evidence", async () => {
   vi.useFakeTimers(); const f = mount({ catalog: [{ ...encounter, status: "processing" }] });
   await vi.waitFor(() => expect(f.content.innerHTML).toContain("Authorized encounters"));
-  const list = f.content.querySelector(".provider-encounters")!, row = list.buttons[0]!.parent!;
+  const list = f.content.querySelector(".provider-encounters")!, row = list.rows[0]!;
   vi.mocked(f.host.listEncounters).mockResolvedValueOnce([encounter]);
   await vi.advanceTimersByTimeAsync(3000);
-  expect(row.querySelector("[data-draft-action]")!.innerHTML).toContain("Open draft");
+  expect(row.innerHTML).toContain("Open note");
   await f.click("open-draft"); expect(lastOptions().initialAction).toBe("open-draft");
 });
 it("removes an unauthorized pending row and rejects removed or forged shortcut references", async () => {
   vi.useFakeTimers(); const f = mount({ catalog: [{ ...encounter, status: "processing" }] });
   await vi.waitFor(() => expect(f.content.innerHTML).toContain("Authorized encounters"));
-  const row = f.content.querySelector(".provider-encounters")!.buttons[0]!.parent!;
+  const row = f.content.querySelector(".provider-encounters")!.rows[0]!;
   vi.mocked(f.host.listEncounters).mockResolvedValueOnce([]);
   await vi.advanceTimersByTimeAsync(3000); expect(row.isConnected).toBe(false);
   await f.click("open-draft"); await f.click("open-draft", ref.slice(0, -1) + "9");
