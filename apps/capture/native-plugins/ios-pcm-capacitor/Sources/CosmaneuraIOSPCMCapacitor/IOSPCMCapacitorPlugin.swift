@@ -19,6 +19,7 @@
       CAPPluginMethod(name: "getCaptureSignal", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "selectMicrophoneInput", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "beginMicrophoneCheck", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "requestRecordingAccess", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "readMicrophoneCheck", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "selectMicrophoneDevice", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "endMicrophoneCheck", returnType: CAPPluginReturnPromise),
@@ -57,7 +58,7 @@
       guard call.options.isEmpty else { reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments); return }
       Task { @MainActor in
         do {
-          call.resolve(try await AppleMicrophoneCheck.shared.begin {
+          call.resolve(try AppleMicrophoneCheck.shared.begin {
             try NativeCaptureStartGate.requireIdleForMicrophoneCheck()
           })
         } catch { reject(call, error: error) }
@@ -67,6 +68,14 @@
     @objc public func readMicrophoneCheck(_ call: CAPPluginCall) {
       guard call.options.isEmpty else { reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments); return }
       Task { @MainActor in call.resolve(AppleMicrophoneCheck.shared.snapshot()) }
+    }
+
+    @objc public func requestRecordingAccess(_ call: CAPPluginCall) {
+      guard call.options.isEmpty else { reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments); return }
+      Task { @MainActor in
+        do { call.resolve(try await AppleMicrophoneCheck.shared.requestRecordingAccess()) }
+        catch { reject(call, error: error) }
+      }
     }
 
     @objc public func selectMicrophoneDevice(_ call: CAPPluginCall) {
@@ -82,8 +91,7 @@
     @objc public func endMicrophoneCheck(_ call: CAPPluginCall) {
       guard call.options.isEmpty else { reject(call, error: IOSPCMCapacitorErrorCode.invalidArguments); return }
       Task { @MainActor in
-        do { try AppleMicrophoneCheck.shared.end(); call.resolve([:]) }
-        catch { reject(call, error: error) }
+        AppleMicrophoneCheck.shared.end(); call.resolve([:])
       }
     }
 

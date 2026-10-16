@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { afterEach, expect, it, vi } from "vitest";
-import { NativeProviderPresentation } from "./native-provider-presentation.js";
+import { NativeProviderPresentation, NativeScreenAccessRequired } from "./native-provider-presentation.js";
 import { DesktopCaptureController } from "./controller.js";
 import { nativeCommand } from "./native-process-wire.js";
 import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
@@ -98,7 +98,7 @@ it.each([
 ] as const)("accepts only bounded window failure metadata (%s) without starting capture", async (diagnostic, event) => {
   const f = await fixture(true, true);
   const listing = f.presentation.listMeetingWindows(new AbortController().signal);
-  const rejected = expect(listing).rejects.toThrow();
+  const rejected = diagnostic === "screen_access_denied" ? expect(listing).rejects.toBeInstanceOf(NativeScreenAccessRequired) : expect(listing).rejects.toThrow();
   const request = f.commands.find(command => command.type === "windows")!.request;
   f.reply({ type: "unavailable", request, diagnostic });
   await rejected;

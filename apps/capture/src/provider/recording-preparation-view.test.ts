@@ -15,3 +15,11 @@ it("uses the requested room/call consent scripts and Spanish wording", () => {
   expect(consentScript(true, true)).toContain("grabar nuestra llamada");
   expect(consentScript(true, false)).toContain("usar una grabadora");
 });
+
+it("offers explicit access setup without a pre-consent level meter", () => {
+  const html=recordingPreparationMarkup({isIOS:false,language:"en-US",modality:"virtual",audio:"meeting"});
+  expect(html).toContain('type="button" class="provider-text-link" data-preflight-access');
+  expect(html).toContain("Microphone levels appear after consent and recording starts.");
+  expect(html).not.toContain("data-preflight-level");
+  expect(html).not.toContain("Speak to check");
+});

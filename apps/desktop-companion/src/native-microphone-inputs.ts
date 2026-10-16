@@ -2,7 +2,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { dirname } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { AudioInputDevice, AudioPreflightSnapshot } from "../../capture/src/provider/audio-preflight";
-import { verifyNativeHelper } from "./native-process-driver.js";
+import { requestNativeRecordingAccess, verifyNativeHelper } from "./native-process-driver.js";
 import { exactKeys, nativeCommand, nativeMetadata, NativeProcessDecoder } from "./native-process-wire.js";
 
 interface Input { readonly id: string; readonly uid: string; readonly label: string; readonly kind: AudioInputDevice["kind"] }
@@ -14,14 +14,14 @@ interface Options {
   readonly saveSelectedUID?: (uid: string) => Promise<void>;
 }
 type Child = ChildProcessByStdio<Writable, Readable, null>;
-/** Main-only advisory input check. No PCM, recording grant, storage key, patient
+/** Main-only device catalogue. No audio samples, recording grant, storage key, patient
  * or encounter crosses this service. close awaits observed helper exit before
  * clinical recording may acquire the microphone. Hardware UIDs stay private. */
 export class NativeMicrophoneInputService {
   private inputs: Input[] = [];
   private selected: string | null;
   private status: AudioPreflightSnapshot["status"] = "unavailable";
-  private level: { level: number; receivedAt: number } | null = null;
+  private available = false;
   private readonly listeners = new Set<(value: AudioPreflightSnapshot) => void>();
   private child: Child | null = null;
   private exited: Promise<void> | null = null;
@@ -39,7 +39,7 @@ export class NativeMicrophoneInputService {
     const selectedInputId = this.inputs.find(input => input.uid === this.selected)?.id ?? null;
     return { status: this.status, inputDevices: this.inputs.map(input => ({ id: input.id, label: input.label,
       kind: input.kind, current: input.id === selectedInputId })), selectedInputId,
-      microphone: this.level ? { level: this.level.level, ageMs: Math.max(0, Math.floor(performance.now() - this.level.receivedAt)) } : null };
+      microphone: null };
   }
   subscribe(listener: (snapshot: AudioPreflightSnapshot) => void): () => void {
     this.listeners.add(listener); listener(this.getSnapshot()); return () => this.listeners.delete(listener);
@@ -47,9 +47,9 @@ export class NativeMicrophoneInputService {
   startCheck(signal: AbortSignal): Promise<void> {
     requireMain();
     if (this.opening || this.child || this.closing || signal.aborted || !this.options.isSessionActive()) return Promise.reject(failure());
-    this.status = "checking"; this.level = null; this.publish();
+    this.status = "checking"; this.publish();
     this.opening = this.open(signal, ++this.checkGeneration).catch(error => {
-      this.status = "unavailable"; this.level = null; this.publish(); throw error;
+      this.status = "unavailable"; this.publish(); throw error;
     }).finally(() => { this.opening = null; });
     return this.opening;
   }
@@ -67,11 +67,11 @@ export class NativeMicrophoneInputService {
     });
     this.child = child; this.signal = signal;
     const decoder = new NativeProcessDecoder();
-    let sequence = 0, catalogSeen = false;
+    let catalogSeen = false;
     const received: { uid: string; label: string; kind: AudioInputDevice["kind"] }[] = [];
     let readyResolve!: () => void, readyReject!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
-    const invalidate = (): void => { this.status = "unavailable"; this.level = null; readyReject(failure());
+    const invalidate = (): void => { this.status = "unavailable"; readyReject(failure());
       this.pending?.reject(failure()); this.pending = null; child.kill("SIGKILL"); this.publish(); };
     const startup = setTimeout(invalidate, 15_000);
     const heartbeat = setInterval(() => {
@@ -85,7 +85,7 @@ export class NativeMicrophoneInputService {
         clearTimeout(startup); clearInterval(heartbeat);
         try { decoder.finish(); } catch { this.status = "unavailable"; }
         readyReject(failure()); this.pending?.reject(failure()); this.pending = null;
-        if (this.child === child) { this.child = null; this.level = null; }
+        if (this.child === child) { this.child = null; }
         resolve(); this.publish();
       });
     });
@@ -112,7 +112,7 @@ export class NativeMicrophoneInputService {
               this.inputs = received.map(input => ({ ...input, id: this.inputs.find(old => old.uid === input.uid)?.id ?? crypto.randomUUID() }));
               this.selected ??= value.selectedUID;
               clearTimeout(startup);
-              if (!value.available) { this.status = "permission_required"; readyResolve(); this.publish(); return; }
+              this.available = value.available;
               const choice = this.inputs.find(input => input.uid === this.selected);
               if (!choice) { this.status = "unavailable"; readyResolve(); this.publish(); return; }
               void this.selectMicrophone(choice.id).then(readyResolve, readyReject); this.publish(); return;
@@ -121,17 +121,13 @@ export class NativeMicrophoneInputService {
               const pending = this.pending;
               if (!catalogSeen || !pending || !exactKeys(value, ["type", "request", "uid"])
                 || value.request !== pending.id || value.uid !== pending.uid) throw failure();
-              this.pending = null; this.selected = pending.uid; this.status = "ready"; pending.resolve(); this.publish(); return;
+              this.pending = null; this.selected = pending.uid; this.status = this.available ? "ready" : "permission_required"; pending.resolve(); this.publish(); return;
             }
             case "selectionFailed": {
               const pending = this.pending;
               if (!pending || !exactKeys(value, ["type", "request"]) || value.request !== pending.id) throw failure();
-              this.pending = null; this.level = null; this.status = "unavailable"; pending.reject(failure()); this.publish(); return;
+              this.pending = null; this.status = "unavailable"; pending.reject(failure()); this.publish(); return;
             }
-            case "checkLevel":
-              if (!catalogSeen || !exactKeys(value, ["type", "sequence", "level"]) || value.sequence !== sequence + 1
-                || typeof value.level !== "number" || !Number.isFinite(value.level) || value.level < 0 || value.level > 1) throw failure();
-              sequence++; this.level = { level: value.level, receivedAt: performance.now() }; this.publish(); return;
             case "checkStopped":
               if (!this.closing || !exactKeys(value, ["type", "request"]) || value.request !== this.request) throw failure(); return;
             case "unavailable":
@@ -148,14 +144,20 @@ export class NativeMicrophoneInputService {
       throw error;
     }
   }
+  /** Explicit setup only; the fixed native permission mode has no audio source. */
+  requestRecordingAccess(signal: AbortSignal, microphoneOnly: boolean): Promise<boolean> {
+    return requestNativeRecordingAccess({ ...this.options, enabled: true }, signal, microphoneOnly);
+  }
   async selectMicrophone(id: string): Promise<void> {
     requireMain();
+    const generation = this.checkGeneration;
+    const current = (): void => { if (generation !== this.checkGeneration || this.signal?.aborted || !this.options.isSessionActive()) throw failure(); };
     const input = this.inputs.find(value => value.id === id);
     if (!input || this.pending || this.closing || this.signal?.aborted || !this.options.isSessionActive()) throw failure();
     // With no checker running, retain a deliberate main-owned choice for the
     // next clinical start; the capture helper re-resolves the physical device.
-    if (!this.child) { await this.options.saveSelectedUID?.(input.uid); this.selected = input.uid; this.publish(); return; }
-    this.status = "checking"; this.level = null; this.publish();
+    if (!this.child) { await this.options.saveSelectedUID?.(input.uid); current(); this.selected = input.uid; this.publish(); return; }
+    this.status = "checking"; this.publish();
     const request = ++this.request;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -164,18 +166,18 @@ export class NativeMicrophoneInputService {
         timer = setTimeout(() => { this.pending = null; reject(failure()); void this.close(); }, 15_000);
         this.send({ type: "selectMicrophone", request, microphoneUID: input.uid });
       });
-      await this.options.saveSelectedUID?.(input.uid);
+      current(); await this.options.saveSelectedUID?.(input.uid); current();
     } finally { clearTimeout(timer); }
   }
   close(): Promise<void> {
     requireMain();
     if (this.closing) return this.closing;
-    this.checkGeneration++;
+    this.checkGeneration++; this.status = "unavailable"; this.publish();
     const child = this.child, exited = this.exited;
     // Hash verification may still be awaiting the filesystem. Fence its late
     // continuation and join it before allowing recording to acquire the mic.
     if (!child || !exited) return this.opening?.catch(() => undefined) ?? Promise.resolve();
-    this.level = null;
+
     this.closing = Promise.resolve().then(async () => {
       this.pending?.reject(failure()); this.pending = null;
       const request = ++this.request;

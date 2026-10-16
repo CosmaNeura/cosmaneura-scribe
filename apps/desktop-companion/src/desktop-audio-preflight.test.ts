@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { DesktopAudioPreflight } from "./desktop-audio-preflight.js";
 import type { NativeMicrophoneInputService } from "./native-microphone-inputs.js";
-import type { NativeMeetingWindow } from "./native-provider-presentation.js";
+import { NativeScreenAccessRequired, type NativeMeetingWindow } from "./native-provider-presentation.js";
 
 function inputs(): NativeMicrophoneInputService {
   return {getSnapshot:()=>({status:"ready",inputDevices:[],selectedInputId:null,microphone:null}),
@@ -36,4 +36,39 @@ it("does not let a late closed discovery erase another preparation's current cho
     pending.resolve([]); await rejected;
     expect(current.getSnapshot().meetingWindows).toMatchObject({state:"ready",selectedId:selected,windows:[{id:selected,title:"Synthetic call"}]});
   } finally { pending.resolve([]);await current.close(); }
+});
+
+it("keeps screen denial distinct from lookup failure and does not request access automatically", async () => {
+  let denied = true;
+  const request = vi.fn(async () => true), device = inputs();
+  Object.assign(device,{requestRecordingAccess:request});
+  const preflight = new DesktopAudioPreflight(device,async()=>{if(denied)throw new NativeScreenAccessRequired();return [];});
+  const port = await preflight.open(new AbortController().signal);
+  try {
+    await expect(port.selectDesktopAudio!("meeting")).rejects.toThrow();
+    expect(port.getSnapshot().meetingWindows?.state).toBe("permission_required");
+    await expect(port.refreshMeetingWindows!()).rejects.toThrow();expect(request).not.toHaveBeenCalled();
+    await expect(port.requestRecordingAccess!()).rejects.toThrow();
+    expect(request).toHaveBeenCalledWith(expect.any(AbortSignal),false);
+    denied=false;await port.requestRecordingAccess!();
+    expect(port.getSnapshot()).toMatchObject({status:"ready",microphone:null,meetingWindows:{state:"ready",selectedId:null,windows:[]}});
+  } finally {await port.close();}
+  const failed = new DesktopAudioPreflight(inputs(),async()=>{throw new Error("invented lookup failure");});
+  const other = await failed.open(new AbortController().signal);
+  try {await expect(other.selectDesktopAudio!("meeting")).rejects.toThrow();expect(other.getSnapshot().meetingWindows?.state).toBe("unavailable");}
+  finally {await other.close();}
+});
+it("cancels and joins an explicit setup helper before releasing preparation ownership",async()=>{
+  const entered=deferred<void>(), exited=deferred<boolean>(), device=inputs();
+  const start=vi.fn(async()=>undefined), request=vi.fn(async(signal:AbortSignal)=>{
+    entered.resolve();expect(signal.aborted).toBe(false);return exited.promise;
+  });Object.assign(device,{startCheck:start,requestRecordingAccess:request});
+  const preflight=new DesktopAudioPreflight(device), port=await preflight.open(new AbortController().signal);
+  const access=port.requestRecordingAccess!(), rejected=expect(access).rejects.toThrow();await entered.promise;
+  await expect(port.selectDesktopAudio!("meeting")).rejects.toThrow();
+  let closed=false;const close=port.close().then(()=>{closed=true;});await Promise.resolve();
+  expect(request.mock.calls[0]![0].aborted).toBe(true);expect(closed).toBe(false);
+  await expect(preflight.open(new AbortController().signal)).rejects.toThrow();
+  exited.resolve(false);await rejected;await close;
+  expect(start).toHaveBeenCalledOnce();expect(port.getSnapshot()).toMatchObject({status:"unavailable",microphone:null});
 });

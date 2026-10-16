@@ -25,6 +25,11 @@ export interface NativePresentationOptions {
   readonly inlineMeetingSelection?: boolean;
   readonly diagnostics?: RuntimeDiagnostic;
 }
+/** Closed native screen-denial outcome; contains no titles or OS error text. */
+export class NativeScreenAccessRequired extends Error {
+  constructor() { super("Screen recording access is required."); }
+}
+
 export interface NativeMeetingWindow {
   readonly application: "com.google.Chrome" | "us.zoom.xos";
   readonly processID: number;
@@ -301,7 +306,7 @@ export class NativeProviderPresentation implements PersistentRecordingIndicator,
     clearTimeout(pending.timer); this.pending.delete(value.request);
     if (this.choice === value.request) { this.choice = null; this.cancellingChoice = null; }
     if (value.type === "closed") this.closeAcknowledged = true;
-    if (value.type === "unavailable") pending.response.reject(unavailable());
+    if (value.type === "unavailable") pending.response.reject(value.diagnostic === "screen_access_denied" ? new NativeScreenAccessRequired() : unavailable());
     else pending.response.resolve(value.type === "windows" ? { windows: pending.windows! } : value);
   }
   private diagnose(event: Parameters<RuntimeDiagnostic>[0]): void {
