@@ -16,9 +16,10 @@ import type { DesktopPCMCoverage, DesktopPCMDriver, DesktopPCMDriverSession,
  */
 export class DesktopPcmCaptureSource extends NativePcmCaptureSource {
   public constructor(driver: DesktopPCMDriver, persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
-    inputSignal?: (value: DesktopInputSignal | null) => void, capturedFrames?: (frames: number) => void) {
+    inputSignal?: (value: DesktopInputSignal | null) => void, capturedFrames?: (frames: number) => void,
+    inputFailure?: (code: DesktopPCMFailure) => void) {
     requireMainProcess();
-    super(new DesktopChunkBridge(driver, persistCoverage, inputSignal, capturedFrames), "mixed");
+    super(new DesktopChunkBridge(driver, persistCoverage, inputSignal, capturedFrames, inputFailure), "mixed");
   }
 }
 
@@ -29,7 +30,8 @@ class DesktopChunkBridge implements NativePcmBridge {
   constructor(private readonly driver: DesktopPCMDriver,
     private readonly persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
     private readonly inputSignal?: (value: DesktopInputSignal | null) => void,
-    private readonly capturedFrames?: (frames: number) => void) {
+    private readonly capturedFrames?: (frames: number) => void,
+    private readonly inputFailure?: (code: DesktopPCMFailure) => void) {
     if (driver.checksAvailabilityOnStart === true) this.checksAvailabilityOnStart = true;
   }
 
@@ -53,7 +55,8 @@ class DesktopChunkBridge implements NativePcmBridge {
     const terminal = (code: DesktopPCMFailure): void => {
       if (closed || notified) return;
       notified = true; discard = true; chunker.discard();
-      if (code === "device_changed") sink.onInterruption("audio_device_disconnected");
+      try { this.inputFailure?.(code); } catch { /* Observer cannot alter physical cleanup. */ }
+      if (code === "device_changed" || code === "meeting_disconnected") sink.onInterruption("audio_device_disconnected");
       else if (code === "session_locked") sink.onInterruption("capture_backgrounded");
       else sink.onError(code === "permission_required" ? "permission_revoked"
         : code === "clock_discontinuity" || code === "overflow" ? "stalled" : "failed");

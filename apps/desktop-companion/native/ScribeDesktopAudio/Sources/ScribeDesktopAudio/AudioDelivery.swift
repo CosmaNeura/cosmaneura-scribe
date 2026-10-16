@@ -3,7 +3,7 @@ import Foundation
 public enum DesktopAudioFailure: String, Error, Sendable {
     case unavailable, permissionRequired, selectionChanged, cancelled, inputChanged
     case invalidAudio, bufferOverflow, sinkRejected, stopUnconfirmed, windowExpired
-    case clockDiscontinuity
+    case clockDiscontinuity, meetingDisconnected
 }
 
 public enum DesktopAudioChannel: Sendable, Hashable { case microphone, systemAudio }

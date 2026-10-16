@@ -12,6 +12,7 @@ struct ScribeDesktopAudioHelper {
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard arguments == ["--availability-v1"] || arguments == ["--request-permissions-v1"]
             || arguments == ["--microphone-availability-v1"] || arguments == ["--microphone-permissions-v1"]
+            || arguments == ["--microphone-check-v1"]
             || arguments == ["--capture-v2"] || arguments == ["--capture-v3"] else { _exit(64) }
         // This headless helper still uses AppKit/WindowServer through
         // ScreenCaptureKit. Establish its application on the OS main thread
@@ -25,6 +26,9 @@ struct ScribeDesktopAudioHelper {
     }
 
     private static func run(_ arguments: [String]) async {
+        if arguments == ["--microphone-check-v1"] {
+            _exit(await MicrophoneCheckProcess.run())
+        }
         if arguments == ["--availability-v1"] || arguments == ["--microphone-availability-v1"] {
             await DesktopAudioProcess.writeAvailability(MacMeetingAudio.permissionsGranted(microphoneOnly: arguments == ["--microphone-availability-v1"]))
             _exit(0)

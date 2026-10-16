@@ -1,7 +1,7 @@
 import type { PreparedProviderRecorder, ProviderRecorderController, ProviderRecorderSnapshot } from "../provider-binding";
 
 export const DESKTOP_RECORDER_CHANNELS = Object.freeze({ request: "scribe:provider:recorder:v1", state: "scribe:provider:recorder-state:v1" });
-export type DesktopRecorderCommand = "read" | "start" | "stop" | "pause" | "continue" | "permissions" | "show_chooser" | "resume" | "release" | "deactivate" | "audio_microphone" | "audio_meeting" | "meeting_windows" | "meeting_window";
+export type DesktopRecorderCommand = "read" | "start" | "stop" | "pause" | "continue" | "permissions" | "show_chooser" | "resume" | "release" | "deactivate" | "audio_microphone" | "audio_meeting" | "meeting_windows" | "meeting_window" | "audio_input";
 export interface DesktopRecorderState {
   readonly recorderId: string;
   readonly revision: number;
@@ -12,7 +12,7 @@ export interface DesktopRecorderPort {
   request(command: DesktopRecorderRequest): Promise<unknown>;
   subscribe(listener: (state: unknown) => void): () => void;
 }
-export interface DesktopRecorderRequest { readonly kind: DesktopRecorderCommand; readonly requestId: string; readonly recorderId: string | null; readonly windowId?: string }
+export interface DesktopRecorderRequest { readonly kind: DesktopRecorderCommand; readonly requestId: string; readonly recorderId: string | null; readonly windowId?: string; readonly inputId?: string }
 
 /** Renderer-only view of the recorder selected and initialized by trusted main. */
 export async function connectDesktopRecorderView(port: DesktopRecorderPort, sessionId: string,
@@ -29,11 +29,11 @@ export async function connectDesktopRecorderView(port: DesktopRecorderPort, sess
     for (const listener of listeners) { try { listener(structuredClone(next.snapshot)); } catch { /* Observer isolation. */ } }
   };
   const stopListening = port.subscribe(value => { try { accept(value); } catch { void deactivate().catch(() => undefined); } });
-  const invoke = async (kind: DesktopRecorderCommand, windowId?: string): Promise<void> => {
+  const invoke = async (kind: DesktopRecorderCommand, choiceId?: string): Promise<void> => {
     if (kind !== "deactivate" && (ended || signal.aborted)) throw failure();
     const requestId = crypto.randomUUID();
     const response = exact(await port.request({ kind, requestId, recorderId: state?.recorderId ?? null,
-      ...(windowId ? { windowId } : {}) }), ["requestId", "ok", "state"]);
+      ...(choiceId ? kind === "audio_input" ? { inputId: choiceId } : { windowId: choiceId } : {}) }), ["requestId", "ok", "state"]);
     if (response.requestId !== requestId || typeof response.ok !== "boolean") throw failure();
     if (kind === "deactivate") { if (response.state !== null) throw failure(); }
     else accept(response.state);
@@ -61,6 +61,7 @@ export async function connectDesktopRecorderView(port: DesktopRecorderPort, sess
     showWindowChooser: () => invoke("show_chooser"),
     selectDesktopAudio: mode => invoke(mode === "microphone" ? "audio_microphone" : "audio_meeting"),
     refreshMeetingWindows: () => invoke("meeting_windows"), selectMeetingWindow: id => invoke("meeting_window", id),
+    selectAudioInput: id => invoke("audio_input", id),
     refreshTranscriptionStatus: () => invoke("read"),
   };
   return { controller, sourceKind: "microphone", captureMode: "desktop_meeting", deactivate,
@@ -69,18 +70,36 @@ export async function connectDesktopRecorderView(port: DesktopRecorderPort, sess
 
 export function parseDesktopRecorderRequest(value: unknown): DesktopRecorderRequest {
   const selected = !!value && typeof value === "object" && "kind" in value && value.kind === "meeting_window";
-  const data = exact(value, ["kind", "requestId", "recorderId", ...(selected ? ["windowId"] : [])]);
-  if (typeof data.kind !== "string" || !["read", "start", "stop", "pause", "continue", "permissions", "show_chooser", "resume", "release", "deactivate", "audio_microphone", "audio_meeting", "meeting_windows", "meeting_window"].includes(data.kind)
+  const input = !!value && typeof value === "object" && "kind" in value && value.kind === "audio_input";
+  const data = exact(value, ["kind", "requestId", "recorderId", ...(selected ? ["windowId"] : []), ...(input ? ["inputId"] : [])]);
+  if (typeof data.kind !== "string" || !["read", "start", "stop", "pause", "continue", "permissions", "show_chooser", "resume", "release", "deactivate", "audio_microphone", "audio_meeting", "meeting_windows", "meeting_window", "audio_input"].includes(data.kind)
     || data.recorderId !== null && typeof data.recorderId !== "string") throw failure();
   return { kind: data.kind as DesktopRecorderCommand, requestId: uuid(data.requestId),
-    recorderId: data.recorderId === null ? null : uuid(data.recorderId), ...(selected ? { windowId: uuid(data.windowId) } : {}) };
+    recorderId: data.recorderId === null ? null : uuid(data.recorderId), ...(selected ? { windowId: uuid(data.windowId) } : {}),
+    ...(input ? { inputId: uuid(data.inputId) } : {}) };
 }
 /** Strict metadata allowlist. Legacy transcript fields must remain null here. */
 export function parseDesktopRecorderState(value: unknown): DesktopRecorderState {
   const envelope = exact(value, ["recorderId", "revision", "snapshot"]);
   const hasProgress = !!envelope.snapshot && typeof envelope.snapshot === "object" && "uploadProgress" in envelope.snapshot;
+  const inputFields = ["inputDevices", "selectedInputId", "reconnecting"].filter(key => !!envelope.snapshot && typeof envelope.snapshot === "object" && key in envelope.snapshot);
   const snapshot = exact(envelope.snapshot, ["state", "statusCode", "sessionId", "recordedChunks", "queuedChunks", "elapsedSeconds",
-    "remainingBudgetSeconds", "remainingAuthoritySeconds", "transcriptionStatus", "transcript", "desktop", ...(hasProgress ? ["uploadProgress"] : [])]);
+    "remainingBudgetSeconds", "remainingAuthoritySeconds", "transcriptionStatus", "transcript", "desktop", ...(hasProgress ? ["uploadProgress"] : []), ...inputFields]);
+  if (inputFields.includes("reconnecting") && typeof snapshot.reconnecting !== "boolean") throw failure();
+  if (inputFields.includes("inputDevices") !== inputFields.includes("selectedInputId")) throw failure();
+  if (inputFields.includes("inputDevices")) {
+    if (!Array.isArray(snapshot.inputDevices) || snapshot.inputDevices.length > 32) throw failure();
+    const ids = new Set<string>();
+    for (const item of snapshot.inputDevices) {
+      const row = exact(item, ["id", "label", "kind", "current"]), id = uuid(row.id);
+      if (ids.has(id) || typeof row.label !== "string" || row.label.length < 1 || [...row.label].length > 160
+        || [...row.label].some(character => character.codePointAt(0)! < 32 || character.codePointAt(0) === 127)
+        || !["built_in", "bluetooth", "external", "unknown"].includes(row.kind as string)
+        || typeof row.current !== "boolean" || row.current !== (id === snapshot.selectedInputId)) throw failure();
+      ids.add(id);
+    }
+    if (snapshot.selectedInputId !== null && !ids.has(uuid(snapshot.selectedInputId))) throw failure();
+  }
   const hasInput = !!snapshot.desktop && typeof snapshot.desktop === "object" && "inputSignal" in snapshot.desktop;
   const hasMode = !!snapshot.desktop && typeof snapshot.desktop === "object" && "audioMode" in snapshot.desktop;
   const hasWindows = !!snapshot.desktop && typeof snapshot.desktop === "object" && "meetingWindows" in snapshot.desktop;

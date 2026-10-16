@@ -11,6 +11,7 @@ enum ProcessCommand: Sendable {
     case activate, heartbeat
     case acknowledge(Int)
     case stop(Int, DesktopAudioStopMode)
+    case selectMicrophone(Int, String)
 
     static func parse(_ bytes: Data) throws -> ProcessCommand {
         guard bytes.first == 1, bytes.count <= 2048,
@@ -21,18 +22,18 @@ enum ProcessCommand: Sendable {
         }
         switch kind {
         case "startRenewable":
-            try keys(["type", "application", "processID", "windowID", "authorization", "processFence"])
+            try keys(Set(["type", "application", "processID", "windowID", "authorization", "processFence"]).union(value["microphoneUID"] == nil ? [] : ["microphoneUID"]))
             guard let raw = value["application"] as? String,
                   let application = MeetingAudioSelection.Application(rawValue: raw) else { throw DesktopAudioFailure.selectionChanged }
             let pid = try integer(value["processID"], minimum: application == .microphone ? 0 : 1, maximum: Int(Int32.max))
             let window = try integer(value["windowID"], minimum: application == .microphone ? 0 : 1, maximum: Int(UInt32.max))
-            return .startRenewable(try MeetingAudioSelection(application: application, processID: Int32(pid), windowID: UInt32(window)),
+            return .startRenewable(try MeetingAudioSelection(application: application, processID: Int32(pid), windowID: UInt32(window), microphoneUID: microphoneUID(value)),
                 try authorization(value["authorization"]), try NativeFenceTicket(value["processFence"]))
         case "extend":
             try keys(["type", "request", "authorization"])
             return .extend(try integer(value["request"], maximum: 1_000_000), try authorization(value["authorization"]))
         case "start":
-            try keys(["type", "application", "processID", "windowID", "maximumDurationSeconds", "maximumOutputFrames", "processFence"])
+            try keys(Set(["type", "application", "processID", "windowID", "maximumDurationSeconds", "maximumOutputFrames", "processFence"]).union(value["microphoneUID"] == nil ? [] : ["microphoneUID"]))
             guard let raw = value["application"] as? String,
                   let application = MeetingAudioSelection.Application(rawValue: raw) else { throw DesktopAudioFailure.selectionChanged }
             let pid = try integer(value["processID"], minimum: application == .microphone ? 0 : 1, maximum: Int(Int32.max))
@@ -40,10 +41,14 @@ enum ProcessCommand: Sendable {
             let duration = try integer(value["maximumDurationSeconds"], maximum: 86_400)
             let frames = try integer(value["maximumOutputFrames"], maximum: 1_382_400_000)
             guard frames <= duration * 16_000 else { throw DesktopAudioFailure.invalidAudio }
-            return .start(try MeetingAudioSelection(application: application, processID: Int32(pid), windowID: UInt32(window)),
+            return .start(try MeetingAudioSelection(application: application, processID: Int32(pid), windowID: UInt32(window), microphoneUID: microphoneUID(value)),
                           duration: duration, frames: frames, fence: try NativeFenceTicket(value["processFence"]))
         case "activate": try keys(["type"]); return .activate
         case "heartbeat": try keys(["type"]); return .heartbeat
+        case "selectMicrophone":
+            try keys(["type", "request", "microphoneUID"])
+            guard let uid = try microphoneUID(value) else { throw DesktopAudioFailure.invalidAudio }
+            return .selectMicrophone(try integer(value["request"], maximum: 1_000_000), uid)
         case "ack": try keys(["type", "firstFrame"]); return .acknowledge(try integer(value["firstFrame"], minimum: 0))
         case "stop":
             try keys(["type", "request", "mode"])
@@ -51,6 +56,13 @@ enum ProcessCommand: Sendable {
             return .stop(try integer(value["request"], maximum: 32), mode == "drain" ? .drain : .discard)
         default: throw DesktopAudioFailure.invalidAudio
         }
+    }
+
+    private static func microphoneUID(_ value: [String: Any]) throws -> String? {
+        guard let raw = value["microphoneUID"] else { return nil }
+        guard let uid = raw as? String, !uid.isEmpty, uid.utf8.count <= 511,
+              !uid.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { throw DesktopAudioFailure.invalidAudio }
+        return uid
     }
 
     private static func authorization(_ value: Any?) throws -> DesktopCaptureAuthorization {

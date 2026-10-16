@@ -20,6 +20,7 @@ import { readBoundedJson } from "../../review-ui/src/beta-api";
 import { coreCaptureResponseLimit } from "../../review-ui/src/capture-response-limits";
 import { canonical } from "../../capture/src/provider/core-notes";
 import { DesktopInitialWindowOwner, type DesktopInitialWindowProof } from "./desktop-initial-window.js";
+import type { DesktopAudioPreflight } from "./desktop-audio-preflight.js";
 
 export interface AuthorizedDesktopProviderMount extends Omit<AuthorizedProviderEncounter,
   "journal" | "reviewJournal" | "recorder"> {
@@ -54,6 +55,7 @@ export interface DesktopProviderResources {
   }>;
   readonly indicator: DesktopProviderRecorderOptions["indicator"];
   readonly native: DesktopProviderRecorderOptions["native"];
+  readonly audioPreflight?: DesktopAudioPreflight;
   readonly selectWindow: DesktopProviderRecorderOptions["selectWindow"];
   readonly listMeetingWindows?: DesktopProviderRecorderOptions["listMeetingWindows"];
   readonly showWindowChooser?: () => Promise<void>;
@@ -120,6 +122,7 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
     return closing ??= (async () => {
       await Promise.allSettled([...work]);
       await closeMount();
+      await resources.audioPreflight?.close();
       await resources.presentation?.dispose();
       await backend.dispose();
       removePresentation?.();
@@ -150,6 +153,10 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
   };
   return { dispose, workspace: {
     signal: lifetime,
+    ...(resources.audioPreflight ? { audioPreflight: async (operation: AbortSignal) => {
+      current(operation); if (!mount || mount.recorder || mount.recorderOpening) throw unavailable();
+      return resources.audioPreflight!.open(AbortSignal.any([lifetime, mount.abort.signal, operation]));
+    } } : {}),
     listEncounters: operation => transition(operation, () => backend.listEncounters(AbortSignal.any([lifetime, operation]))),
     get encounterSetup() { return backend.encounterSetup; },
     get account() { return backend.account; },
@@ -352,7 +359,11 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
                 return preparationBff = new DesktopPreparationBff(new CoreCaptureClient(selected.scope, request, captureSignal), sessionId,
                   initialMetadata?.signal.aborted ? undefined : matchingMetadata);
               };
+              await resources.audioPreflight?.close(); check();
               owned.recorder = await DesktopProviderRecorder.open({ enabled: true, uploadWhileRecording: true, prepareInBackground: resources.prepareInBackground === true, sessionId, audioMode, saveAudioMode, signal: linked,
+                ...(resources.audioPreflight ? { audioInputs: resources.audioPreflight.inputs, autoReconnectMeeting: true,
+                  meetingWindowChoices: () => resources.audioPreflight!.meetingWindowChoices,
+                  selectedMeetingWindowId: () => resources.audioPreflight!.selectedMeetingWindowId } : {}),
                 createBff: bff,
                 authorizePreparation: async captureSignal => {
                   const retained = await Promise.allSettled([

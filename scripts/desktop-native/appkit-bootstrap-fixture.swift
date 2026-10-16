@@ -6,7 +6,16 @@ import Foundation
 public struct MacMeetingAudio: Sendable {
     public let enabled: Bool
     public init(enabled: Bool) { self.enabled = enabled }
-    public static func permissionsGranted() -> Bool { applicationReady() }
+    public static func permissionsGranted(microphoneOnly: Bool = false) -> Bool { applicationReady() }
+}
+
+public enum MicrophoneCheckProcess {
+    @MainActor public static func run() async -> Int32 {
+        let ready = applicationReady()
+        let bytes = try! JSONSerialization.data(withJSONObject: ["mode": "microphone_check", "application_ready": ready], options: [.sortedKeys])
+        FileHandle.standardOutput.write(bytes + Data([10]))
+        return ready ? 0 : 70
+    }
 }
 
 private func applicationReady() -> Bool {
