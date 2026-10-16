@@ -4,19 +4,20 @@ import type { AudioInputDevice, AudioPreflightSnapshot, ProviderAudioPreflight }
 
 export interface IOSMicrophoneCheckPlugin {
   beginMicrophoneCheck(this: void): Promise<unknown>;
+  requestRecordingAccess(this: void): Promise<unknown>;
   readMicrophoneCheck(this: void): Promise<unknown>;
   selectMicrophoneDevice(this: void, request: { id: string }): Promise<unknown>;
   endMicrophoneCheck(this: void): Promise<unknown>;
 }
 const nativeCheck = IOSPCM as unknown as IOSMicrophoneCheckPlugin;
 
-/** Native RMS metadata only; this path cannot create a capture session, grant,
- * key, audio packet or queue row. A late permission result is fenced natively. */
+/** Native catalogue and permission metadata only. No automatic permission
+ * request or audio sampling; a deliberate access action is fenced at both ends. */
 export async function openIOSAudioPreflight(signal: AbortSignal,
   plugin: IOSMicrophoneCheckPlugin = nativeCheck, inheritedSignal?: AbortSignal): Promise<ProviderAudioPreflight> {
   let closed = false, closing: Promise<void> | null = null, timer: ReturnType<typeof setTimeout> | undefined;
   const listeners = new Set<(snapshot: AudioPreflightSnapshot) => void>();
-  let generation = 0, selecting = false;
+  let generation = 0, selecting = false, requesting = false;
   let snapshot: AudioPreflightSnapshot = { status: "checking", inputDevices: [], selectedInputId: null, microphone: null };
   const current = (): void => { if (closed || signal.aborted || inheritedSignal?.aborted) throw unavailable(); };
   const publish = (value: unknown): void => {
@@ -38,11 +39,11 @@ export async function openIOSAudioPreflight(signal: AbortSignal,
       const observed = generation;
       try {
         current();
-        if (!selecting && document.visibilityState === "visible") {
+        if (!selecting && !requesting && document.visibilityState === "visible") {
           const value = await plugin.readMicrophoneCheck();
-          if (!selecting && observed === generation && !closed && !signal.aborted && !inheritedSignal?.aborted) publish(value);
+          if (!selecting && !requesting && observed === generation && !closed && !signal.aborted && !inheritedSignal?.aborted) publish(value);
         }
-      } catch { if (!closed && !signal.aborted && !inheritedSignal?.aborted && !selecting && observed === generation) {
+      } catch { if (!closed && !signal.aborted && !inheritedSignal?.aborted && !selecting && !requesting && observed === generation) {
         snapshot = { ...snapshot, status: "unavailable", microphone: null };
         for (const listener of listeners) { try { listener(snapshot); } catch { /* Observer isolation. */ } }
       } }
@@ -51,8 +52,23 @@ export async function openIOSAudioPreflight(signal: AbortSignal,
     timer = setTimeout(() => { void poll(); }, 250);
     return { getSnapshot: () => snapshot, subscribe: listener => {
       current(); listeners.add(listener); listener(snapshot); return () => listeners.delete(listener);
+    }, requestRecordingAccess: async () => {
+      current(); if (selecting || requesting) throw unavailable();
+      requesting = true; const requested = ++generation;
+      snapshot = { ...snapshot, status: "checking", microphone: null };
+      for (const listener of listeners) { try { listener(snapshot); } catch { /* Observer isolation. */ } }
+      try {
+        const value = await plugin.requestRecordingAccess(); current();
+        if (requested === generation) publish(value);
+      } catch (error) {
+        if (!closed && !signal.aborted && !inheritedSignal?.aborted && requested === generation) {
+          snapshot = { ...snapshot, status: "unavailable", microphone: null };
+          for (const listener of listeners) { try { listener(snapshot); } catch { /* Observer isolation. */ } }
+        }
+        throw error;
+      } finally { requesting = false; }
     }, selectMicrophone: async id => {
-      current(); if (selecting || !snapshot.inputDevices.some(device => device.id === id)) throw unavailable();
+      current(); if (selecting || requesting || !snapshot.inputDevices.some(device => device.id === id)) throw unavailable();
       selecting = true; const selected = ++generation;
       try {
         const value = await plugin.selectMicrophoneDevice({ id }); current();
@@ -81,18 +97,14 @@ export function parseIOSAudioPreflight(value: unknown): AudioPreflightSnapshot {
   const data = exact(value, ["version", "status", "inputDevices", "selectedInputId", "microphone"]);
   if (data.version !== 1 || !["checking", "ready", "permission_required", "unavailable"].includes(String(data.status))) throw unavailable();
   const inputDevices = parseAudioInputDevices(data.inputDevices);
+  // Preparation selects a next-start UID without activating the input. The
+  // `current` flags still describe the actual route; capture validates it later.
   if (data.selectedInputId !== null && (typeof data.selectedInputId !== "string"
-    || !inputDevices.some(device => device.id === data.selectedInputId && device.current))) throw unavailable();
+    || !inputDevices.some(device => device.id === data.selectedInputId))) throw unavailable();
   if (data.selectedInputId === null && inputDevices.some(device => device.current)) throw unavailable();
-  let microphone: AudioPreflightSnapshot["microphone"] = null;
-  if (data.microphone !== null) {
-    const meter = exact(data.microphone, ["level", "ageMs"]);
-    if (typeof meter.level !== "number" || !Number.isFinite(meter.level) || meter.level < 0 || meter.level > 1
-      || typeof meter.ageMs !== "number" || !Number.isFinite(meter.ageMs) || meter.ageMs < 0) throw unavailable();
-    microphone = Object.freeze({ level: meter.level, ageMs: meter.ageMs });
-  }
+  if (data.microphone !== null) throw unavailable();
   return Object.freeze({ status: data.status as AudioPreflightSnapshot["status"], inputDevices,
-    selectedInputId: data.selectedInputId, microphone });
+    selectedInputId: data.selectedInputId, microphone: null });
 }
 function exact(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)

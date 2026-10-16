@@ -10,13 +10,16 @@ export interface AudioPreflightSnapshot {
   readonly selectedInputId: string | null;
   readonly microphone: { readonly level: number; readonly ageMs: number } | null;
   readonly desktopAudio?: "microphone" | "meeting";
-  readonly meetingWindows?: { readonly state: "ready" | "unavailable"; readonly windows: readonly { readonly id: string; readonly title: string }[]; readonly selectedId: string | null };
+  readonly meetingWindows?: { readonly state: "ready" | "permission_required" | "unavailable"; readonly windows: readonly { readonly id: string; readonly title: string }[]; readonly selectedId: string | null };
 }
-/** Advisory native meter. It emits no PCM and owns no recording or consent grant. */
+/** Catalogue/permission metadata before admission. Audio samples and live input
+ * levels require the separate consent-authorized recorder. */
 export interface ProviderAudioPreflight {
   getSnapshot(): AudioPreflightSnapshot;
   subscribe(listener: (snapshot: AudioPreflightSnapshot) => void): () => void;
   selectMicrophone(id: string): Promise<void>;
+  /** Called only by an explicit provider setup action; never starts audio. */
+  requestRecordingAccess?(): Promise<void>;
   selectDesktopAudio?(mode: "microphone" | "meeting"): Promise<void>;
   refreshMeetingWindows?(): Promise<void>;
   selectMeetingWindow?(id: string): Promise<void>;

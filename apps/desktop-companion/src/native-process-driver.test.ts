@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CaptureCapabilities } from "../../capture/src/bff/contracts";
 import { DesktopPcmCaptureSource } from "./pcm-capture-source.js";
 import type { DesktopPCMCoverage, DesktopPCMFailure } from "./native-pcm-driver.js";
-import { NativeProcessPCMDriver } from "./native-process-driver.js";
+import { requestNativeRecordingAccess, NativeProcessPCMDriver } from "./native-process-driver.js";
 import { NativeProcessDecoder, nativeCommand, nativeMetadata } from "./native-process-wire.js";
 import { nativePipeFixtureFence } from "./native-pipe-fixture.js";
 import type { NativeProcessFence } from "./native-process-fence.js";
@@ -89,6 +89,16 @@ setTimeout(() => process.stdout.write(Buffer.concat([header, payload]), () => pr
       await run({ helperPath, helperSha256: createHash("sha256").update(probeScript).digest("hex") });
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
+  it("opens only fixed setup modes without requiring or constructing capture authority", async () => {
+    await fixture(async helper => {
+      const options = {...helper,enabled:true,isSessionActive:()=>true};
+      expect(await requestNativeRecordingAccess(options,new AbortController().signal,true)).toBe(true);
+      expect(await requestNativeRecordingAccess(options,new AbortController().signal,false)).toBe(true);
+      const abort=new AbortController();abort.abort();
+      expect(await requestNativeRecordingAccess(options,abort.signal,false)).toBe(false);
+      expect(await requestNativeRecordingAccess({...options,enabled:false},new AbortController().signal,true)).toBe(false);
+    });
+  });
   it("uses microphone permission probes without application-audio access", async () => {
     await fixture(async helper => {
       const driver = new NativeProcessPCMDriver({ ...helper, enabled: true, audioMode: () => "microphone",

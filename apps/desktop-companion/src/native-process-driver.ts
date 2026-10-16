@@ -61,15 +61,9 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
   }
   /** Explicit provider setup only. This helper mode cannot start an audio source. */
   async requestPermissions(signal: AbortSignal): Promise<boolean> {
-    requireMain();
-    try {
-      if (!this.options.enabled || signal.aborted || !this.options.isSessionActive()) return false;
-      await timed(this.options, "audio_permission_helper_check", () => verifyNativeHelper(this.options));
-      if (signal.aborted || !this.options.isSessionActive()) return false;
-      return await timed(this.options, "audio_permission_probe", () => probe(this.options.helperPath, signal, this.options.audioMode?.() === "microphone"))
-        && !signal.aborted && this.options.isSessionActive();
-    } catch { return false; }
+    return requestNativeRecordingAccess(this.options, signal, this.options.audioMode?.() === "microphone");
   }
+
   start(configuration: Parameters<DesktopPCMDriver["start"]>[0], sink: Sink): DesktopPCMDriverSession {
     requireMain();
     if (!this.options.enabled || !this.options.isSessionActive() || configuration.sampleRateHz !== 16_000
@@ -331,7 +325,7 @@ class ProcessSession implements DesktopPCMDriverSession {
 }
 
 /** Observe an existing await, including failure, without changing its result. */
-async function timed<T>(options: NativeProcessDriverOptions, event: RuntimeTimingEvent, operation: () => Promise<T>): Promise<T> {
+async function timed<T>(options: Pick<NativeProcessDriverOptions, "diagnostics">, event: RuntimeTimingEvent, operation: () => Promise<T>): Promise<T> {
   const started = process.hrtime.bigint();
   try { return await operation(); }
   finally {
@@ -368,6 +362,20 @@ export async function verifyNativeHelper(options: Pick<NativeProcessDriverOption
     if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
       || after.mtimeMs !== before.mtimeMs || length !== before.size || hash.digest("hex") !== options.helperSha256) throw failure();
   } finally { bytes.fill(0); await file.close(); }
+}
+/** Explicit provider setup without a recorder, capture selection or consent grant.
+ * The packaged helper/hash and live session gate remain trusted main inputs. */
+export async function requestNativeRecordingAccess(options: Pick<NativeProcessDriverOptions,
+  "enabled" | "helperPath" | "helperSha256" | "isSessionActive" | "diagnostics">,
+  signal: AbortSignal, microphoneOnly: boolean): Promise<boolean> {
+  requireMain();
+  try {
+    if (!options.enabled || signal.aborted || !options.isSessionActive()) return false;
+    await timed(options, "audio_permission_helper_check", () => verifyNativeHelper(options));
+    if (signal.aborted || !options.isSessionActive()) return false;
+    return await timed(options, "audio_permission_probe", () => probe(options.helperPath, signal, microphoneOnly))
+      && !signal.aborted && options.isSessionActive();
+  } catch { return false; }
 }
 async function probe(path: string, permissionSignal?: AbortSignal, microphoneOnly = false): Promise<boolean> {
   if (permissionSignal?.aborted) return false;

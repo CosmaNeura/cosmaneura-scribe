@@ -104,17 +104,21 @@ describe("trusted desktop provider workspace", () => {
   it("opens advisory audio only for the authorized encounter and rejects hardware identities without admitting a recorder", async () => {
     const input=crypto.randomUUID(), window=crypto.randomUUID();
     const snapshot: AudioPreflightSnapshot = {status:"ready",inputDevices:[{id:input,label:"USB microphone",kind:"external",current:true}],
-      selectedInputId:input,microphone:{level:.25,ageMs:0},desktopAudio:"meeting",meetingWindows:{state:"ready",selectedId:null,windows:[{id:window,title:"Synthetic call"}]}};
+      selectedInputId:input,microphone:null,desktopAudio:"meeting",meetingWindows:{state:"ready",selectedId:null,windows:[{id:window,title:"Synthetic call"}]}};
     const selectInput=vi.fn(async(id:string)=>{if(id!==input)throw new Error("invented unknown native input");});
     const selectWindow=vi.fn(async(id:string)=>{if(id!==window)throw new Error("invented unknown native window");});
-    const close=vi.fn(async()=>undefined);
-    const port: ProviderAudioPreflight={getSnapshot:()=>snapshot,subscribe:()=>()=>undefined,selectMicrophone:selectInput,selectMeetingWindow:selectWindow,close};
+    const close=vi.fn(async()=>undefined), requestAccess=vi.fn(async()=>undefined);
+    const port: ProviderAudioPreflight={getSnapshot:()=>snapshot,subscribe:()=>()=>undefined,selectMicrophone:selectInput,selectMeetingWindow:selectWindow,requestRecordingAccess:requestAccess,close};
     const opening=vi.fn(async()=>port), f=await fixture(undefined,false,true,opening);
     try {
       expect((await f.invoke("preflight",{action:"open"})).ok).toBe(false);
       await f.connect();expect((await f.invoke("preflight",{action:"open"})).ok).toBe(false);expect(opening).not.toHaveBeenCalled();
       await f.open();expect((await f.invoke("preflight",{action:"open"})).result).toEqual(snapshot);
       expect((await f.invoke("preflight",{action:"read"})).result).toEqual(snapshot);
+      expect(requestAccess).not.toHaveBeenCalled();
+      expect((await f.invoke("preflight",{action:"access",mode:"meeting"})).ok).toBe(false);
+      expect(requestAccess).not.toHaveBeenCalled();
+      expect((await f.invoke("preflight",{action:"access"})).ok).toBe(true);expect(requestAccess).toHaveBeenCalledOnce();
       for(const payload of [{action:"input",id:"invented-hardware-uid"},{action:"input",id:input,microphoneUID:"invented-hardware-uid"},
         {action:"window",id:window,processID:41}]) expect((await f.invoke("preflight",payload)).ok).toBe(false);
       expect(selectInput).not.toHaveBeenCalled();expect(selectWindow).not.toHaveBeenCalled();
@@ -126,9 +130,20 @@ describe("trusted desktop provider workspace", () => {
       expect(f.acquireRecorder).not.toHaveBeenCalled();expect(f.attached).not.toHaveBeenCalled();
     } finally {await f.main.dispose();}
   });
+  it("cannot open a recorder until explicit access preparation is confirmed closed",async()=>{
+    const port: ProviderAudioPreflight={getSnapshot:()=>({status:"ready",inputDevices:[],selectedInputId:null,microphone:null}),
+      subscribe:()=>()=>undefined,selectMicrophone:async()=>undefined,close:async()=>undefined};
+    const f=await fixture(undefined,false,false,async()=>port);
+    try {
+      await f.connect();await f.open();expect((await f.invoke("preflight",{action:"open"})).ok).toBe(true);
+      expect((await f.invoke("recorder",{sessionId})).ok).toBe(false);expect(f.acquireRecorder).not.toHaveBeenCalled();
+      expect((await f.invoke("preflight",{action:"close"})).ok).toBe(true);
+      expect((await f.invoke("recorder",{sessionId})).ok).toBe(true);expect(f.acquireRecorder).toHaveBeenCalledOnce();
+    }finally{await f.main.dispose();}
+  });
   it("waits for the advisory native close and retains its exact owner after uncertain closure", async()=>{
     const entered=deferred<void>(), stopped=deferred<void>();let refuse=true;
-    let snapshot: AudioPreflightSnapshot={status:"ready",inputDevices:[],selectedInputId:null,microphone:{level:.25,ageMs:0}};
+    let snapshot: AudioPreflightSnapshot={status:"ready",inputDevices:[],selectedInputId:null,microphone:null};
     const close=vi.fn(async()=>{snapshot={...snapshot,microphone:null};entered.resolve();await stopped.promise;if(refuse)throw new Error("invented advisory stop uncertain");});
     const port: ProviderAudioPreflight={getSnapshot:()=>snapshot,subscribe:()=>()=>undefined,selectMicrophone:async()=>undefined,close};
     const opening=vi.fn(async()=>port),f=await fixture(undefined,false,true,opening);

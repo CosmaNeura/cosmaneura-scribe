@@ -13,11 +13,11 @@ function send(value) { const bytes=Buffer.from(JSON.stringify(value)), header=Bu
 send({type:"input",device:{uid:"invented-default-device",label:"Built-in microphone",kind:"built_in"}});
 send({type:"input",device:{uid:"invented-external-device",label:"USB microphone",kind:"external"}});
 send({type:"inputs",available:true,count:2,selectedUID:"invented-default-device"});
-let buffer=Buffer.alloc(0), sequence=0;
+let buffer=Buffer.alloc(0);
 process.stdin.on("data", data => { buffer=Buffer.concat([buffer,data]); while(buffer.length>=4) {
  const size=buffer.readUInt32BE(0); if(buffer.length<4+size) return;
  const value=JSON.parse(buffer.subarray(5,4+size).toString()); buffer=buffer.subarray(4+size);
- if(value.type==="selectMicrophone") { send({type:"selected",request:value.request,uid:value.microphoneUID}); send({type:"checkLevel",sequence:++sequence,level:.25}); }
+ if(value.type==="selectMicrophone") { send({type:"selected",request:value.request,uid:value.microphoneUID}); }
  else if(value.type==="stop") { send({type:"checkStopped",request:value.request}); setTimeout(()=>process.exit(0),80); }
  else if(value.type!=="heartbeat") process.exit(65);
 } });
@@ -45,7 +45,7 @@ describe("native advisory microphone ownership", () => {
         const initial=service.getSnapshot();
         expect(initial.status).toBe("ready"); expect(initial.inputDevices).toHaveLength(2);
         expect(JSON.stringify(initial)).not.toContain("invented-default-device");
-        await vi.waitFor(() => expect(service.getSnapshot().microphone?.level).toBe(.25));
+        expect(service.getSnapshot().microphone).toBeNull();
         const external=initial.inputDevices.find(input=>input.kind==="external")!;
         await service.selectMicrophone(external.id);
         expect(service.selectedUID).toBe("invented-external-device"); expect(saved).toHaveBeenLastCalledWith("invented-external-device");
@@ -57,6 +57,27 @@ describe("native advisory microphone ownership", () => {
         expect(service.getSnapshot().selectedInputId).toBe(external.id);
       } finally { await service.close(); }
     });
+  });
+  it("never accepts a live-level payload in catalogue-only preparation", async () => {
+    const legacy = script.replace('send({type:"selected",request:value.request,uid:value.microphoneUID});',
+      'send({type:"checkLevel",sequence:1,level:.25});');
+    await fixture(async helper => {
+      const service = new NativeMicrophoneInputService({...helper,isSessionActive:()=>true});
+      await expect(service.startCheck(new AbortController().signal)).rejects.toThrow();
+      await service.close();expect(service.getSnapshot().microphone).toBeNull();
+    }, legacy);
+  });
+  it("advertises and deliberately selects hardware while denied without acquiring audio", async () => {
+    await fixture(async helper => {
+      const service = new NativeMicrophoneInputService({...helper,isSessionActive:()=>true});
+      try {
+        await service.startCheck(new AbortController().signal);
+        expect(service.getSnapshot()).toMatchObject({status:"permission_required",microphone:null});
+        const external=service.getSnapshot().inputDevices.find(input=>input.kind==="external")!;
+        await service.selectMicrophone(external.id);
+        expect(service.getSnapshot()).toMatchObject({status:"permission_required",selectedInputId:external.id,microphone:null});
+      } finally { await service.close(); }
+    }, script.replace('available:true','available:false'));
   });
   it("joins a cancelled helper verification and cannot spawn a late input check", async () => {
     await fixture(async helper => {

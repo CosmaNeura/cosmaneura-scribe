@@ -211,6 +211,7 @@ export class DesktopProviderWorkspaceMain {
             const port = encounter.preflight;
             if (!port) throw unavailable();
             if (action === "read") exact(payload, ["action"]);
+            else if (action === "access") { exact(payload, ["action"]); if (!port.requestRecordingAccess) throw unavailable(); await port.requestRecordingAccess(); }
             else if (action === "input") { exact(payload, ["action", "id"]); await port.selectMicrophone(uuid(payload.id)); }
             else if (action === "mode") { exact(payload, ["action", "mode"]); if (!port.selectDesktopAudio || payload.mode !== "microphone" && payload.mode !== "meeting") throw unavailable(); await port.selectDesktopAudio(payload.mode); }
             else if (action === "windows") { exact(payload, ["action"]); if (!port.refreshMeetingWindows) throw unavailable(); await port.refreshMeetingWindows(); }
@@ -297,7 +298,7 @@ export class DesktopProviderWorkspaceMain {
           const preparationStarted = performance.now();
           exact(payload, ["sessionId"]); const saved = await this.requireSession(encounter, payload.sessionId);
           this.requireEncounter(connection, encounter, signal);
-          if (encounter.recorder || encounter.recorderOpening) throw unavailable();
+          if (encounter.recorder || encounter.recorderOpening || encounter.preflight || encounter.preflightOpening) throw unavailable();
           encounter.recorderOpening = true;
           try {
             const recorder = await encounter.value.recorder(uuid(payload.sessionId), AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal]));

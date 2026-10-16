@@ -18,7 +18,9 @@ export function recordingPreparationMarkup(options: { isIOS: boolean; language: 
     <select name="modality" hidden><option value="in_person"${options.modality === "in_person" ? " selected" : ""}>In person</option><option value="virtual"${options.modality === "virtual" ? " selected" : ""}>Video call</option><option value="phone"${options.modality === "phone" ? " selected" : ""}>Phone call</option></select>
     ${options.isIOS ? '' : `<select name="desktop-audio" hidden><option value="microphone"${options.audio === "microphone" ? " selected" : ""}>Microphone</option><option value="meeting"${options.audio === "meeting" ? " selected" : ""}>Microphone and call audio</option></select>`}
     <p class="provider-start-help" data-recording-guidance role="status"></p>
-    <div class="provider-microphone-check"><span class="provider-input-bar" aria-hidden="true"><i data-preflight-level></i></span><span data-preflight-verdict role="status">Checking microphone…</span></div>
+    <div class="provider-microphone-check"><span data-preflight-verdict role="status">Checking recording access…</span></div>
+    <button type="button" class="provider-text-link" data-preflight-access>Check recording access</button>
+    <p data-preflight-access-help>Microphone levels appear after consent and recording starts.</p>
     ${options.isIOS ? '' : '<div data-preflight-meeting hidden><label>Which call?<select data-preflight-window><option value="">Choose your Zoom or Chrome window</option></select></label><button type="button" class="provider-text-link" data-preflight-refresh>Refresh calls</button><p data-preflight-window-help></p></div>'}
     <p>Say to the patient:</p><blockquote class="provider-consent-script" data-consent-script></blockquote>
     <label class="provider-consent"><input name="consent" type="checkbox">The patient said yes</label>
