@@ -133,10 +133,12 @@ public actor MacMeetingAudio {
                 }
             }
             try stream?.addStreamOutput(output, type: .audio, sampleHandlerQueue: output.queue)
-            try MacMicrophoneInputs.select(selection.microphoneUID ?? MacMicrophoneInputs.defaultUID(), engine: session.engine)
+            let microphoneUID = try selection.microphoneUID ?? MacMicrophoneInputs.defaultUID()
+            try MacMicrophoneInputs.select(microphoneUID, engine: session.engine)
             let format = session.engine.inputNode.outputFormat(forBus: 0)
             guard format.commonFormat == .pcmFormatFloat32, (1...2).contains(format.channelCount),
                   (16_000...96_000).contains(format.sampleRate) else { throw DesktopAudioFailure.invalidAudio }
+            session.microphoneConfiguration = MicrophoneConfiguration(selectedUID: microphoneUID, format: Self.captureFormat(format))
             session.engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, time in
                 guard time.isHostTimeValid, time.isSampleTimeValid,
                       time.sampleRate == buffer.format.sampleRate else { delivery.fail(.invalidAudio); return }
@@ -147,7 +149,11 @@ public actor MacMeetingAudio {
                 } catch { delivery.fail(.invalidAudio) }
             }
             session.tapInstalled = true
-            session.observeInterruptions(workspaceCenter: workspaceCenter)
+            session.observeInterruptions(workspaceCenter: workspaceCenter) { [weak self, weak session] in
+                // HAL can notify while prepare/start is still configuring the
+                // engine. Inspect after its callback, on the source owner actor.
+                Task { if let session { await self?.configurationChanged(session) } }
+            }
             session.engine.prepare()
             let starting = Task { if let stream { try await stream.startCapture() } }
             session.starting = starting
@@ -164,6 +170,7 @@ public actor MacMeetingAudio {
             // still starting. Recheck ownership after its suspension so a
             // cancelled/stopped start cannot restart the microphone.
             try session.engine.start()
+            guard microphoneMatches(session, starting: false) else { throw DesktopAudioFailure.inputChanged }
             phase = .recording
         } catch {
             do { try await stop() }
@@ -217,6 +224,27 @@ public actor MacMeetingAudio {
         catch { phase = .failed } // Host has already received fixed failure metadata.
     }
 
+    private func configurationChanged(_ session: CaptureSession) {
+        guard active === session, phase == .starting || phase == .recording else { return }
+        // Startup notifications with unchanged hardware/format are expected.
+        // A missing/replaced device always fails; an established recording also
+        // fails if HAL stopped the engine, even when its format stayed the same.
+        if !microphoneMatches(session, starting: phase == .starting) { session.delivery.fail(.inputChanged) }
+    }
+
+    private func microphoneMatches(_ session: CaptureSession, starting: Bool) -> Bool {
+        guard let configuration = session.microphoneConfiguration,
+              let uid = try? MacMicrophoneInputs.selectedUID(engine: session.engine) else { return false }
+        return configuration.permits(observedUID: uid,
+            observedFormat: Self.captureFormat(session.engine.inputNode.outputFormat(forBus: 0)),
+            engineRunning: session.engine.isRunning, starting: starting)
+    }
+
+    private static func captureFormat(_ format: AVAudioFormat) -> MicrophoneCaptureFormat {
+        MicrophoneCaptureFormat(sampleRate: format.sampleRate, channelCount: format.channelCount,
+            float32: format.commonFormat == .pcmFormatFloat32, interleaved: format.isInterleaved)
+    }
+
     private func armRenewableDeadline(_ session: CaptureSession) {
         session.deadline?.cancel()
         guard let window = session.window else { return }
@@ -246,6 +274,7 @@ private final class CaptureSession: @unchecked Sendable {
     let delivery: AudioDelivery
     let window: DesktopCaptureWindowOwner?
     let engine = AVAudioEngine()
+    var microphoneConfiguration: MicrophoneConfiguration?
     var tapInstalled = false
     var starting: Task<Void, Error>?
     var closing: CaptureStopAttempt?
@@ -259,10 +288,10 @@ private final class CaptureSession: @unchecked Sendable {
         self.window = window
     }
 
-    func observeInterruptions(workspaceCenter: NotificationCenter) {
+    func observeInterruptions(workspaceCenter: NotificationCenter, configurationChanged: @escaping @Sendable () -> Void) {
         self.workspaceCenter = workspaceCenter
         engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
-            object: engine, queue: nil) { [delivery] _ in delivery.fail(.inputChanged) }
+            object: engine, queue: nil) { _ in configurationChanged() }
         workspaceObservers = [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification].map { name in
             workspaceCenter.addObserver(forName: name, object: nil, queue: nil) { [delivery] _ in delivery.fail(.inputChanged) }
         }
