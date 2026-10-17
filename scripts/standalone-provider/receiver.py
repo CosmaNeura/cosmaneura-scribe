@@ -20,6 +20,7 @@ from uuid import UUID, uuid4, uuid5
 
 import httpx
 from cosmaneura_scribe.provider_core_connections import ProviderCoreConnections
+from cosmaneura_scribe.provider_core_timing import PROVIDER_CORE_HEADER
 from cosmaneura_scribe.provider_core_transport import (
     AuthorizedCoreProvider,
     CoreProviderMount,
@@ -272,6 +273,12 @@ class ProviderReceiver:
                     del response.headers["x-scribe-provider-trace"]
                 if trace := timing.trace_header():
                     response.headers["X-Scribe-Provider-Trace"] = trace
+                # Never forward arbitrary diagnostics from another layer. Old
+                # Server-Timing remains byte-compatible; this is optional v1.
+                if PROVIDER_CORE_HEADER in response.headers:
+                    del response.headers[PROVIDER_CORE_HEADER]
+                if core := timing.core_header():
+                    response.headers[PROVIDER_CORE_HEADER] = core
                 return response
             except Exception:
                 # Framework/SQL/credential exceptions must not echo request data.

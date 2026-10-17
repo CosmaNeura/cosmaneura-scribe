@@ -5,9 +5,9 @@ import Foundation
 // account, microphone, clinical content, network or persistent store is used.
 private final class Fixture: URLProtocol, @unchecked Sendable {
   static let lock = NSLock()
-  static var seen: [URLRequest] = []
-  static var held: [String: Fixture] = [:]
-  static var stopped: Set<String> = []
+  nonisolated(unsafe) static var seen: [URLRequest] = []
+  nonisolated(unsafe) static var held: [String: Fixture] = [:]
+  nonisolated(unsafe) static var stopped: Set<String> = []
   override class func canInit(with request: URLRequest) -> Bool { true }
   override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
   override func startLoading() {
@@ -20,6 +20,8 @@ private final class Fixture: URLProtocol, @unchecked Sendable {
                    "Cache-Control": key.contains("invalid") ? "public" : "no-store"]
     if key.contains("timing-good") { headers["Server-Timing"] = timingHeader }
     if key.contains("timing-malformed") { headers["Server-Timing"] = "private-forbidden-header" }
+    if key.contains("timing-good") { headers["X-Scribe-Core-Timing"] = coreTimingHeader }
+    if key.contains("timing-malformed") { headers["X-Scribe-Core-Timing"] = "private-forbidden-header" }
     let response = HTTPURLResponse(
       url: request.url!, statusCode: key.contains("not-found") ? 404 : 200, httpVersion: "HTTP/1.1",
       headerFields: headers)!
@@ -87,7 +89,7 @@ private func request(_ action: String = "recorder", key: String = "offline-norma
     id: UUID().uuidString.lowercased(), revision: UUID().uuidString.lowercased(),
     action: action, key: key, body: "{}")
 }
-private func wait(_ condition: () -> Bool) async throws {
+private func wait(_ condition: @Sendable () -> Bool) async throws {
   for _ in 0..<2000 {
     if condition() { return }
     try await Task.sleep(for: .milliseconds(1))
@@ -104,6 +106,7 @@ private func rejected(_ operation: Task<ProviderNativeReply, Error>) async throw
 private let timingHeader = ProviderServerTiming.Phase.allCases.map {
   "scribe_\($0.rawValue);dur=123.456"
 }.joined(separator: ", ")
+private let coreTimingHeader = "v=1;observations=3;accepted=1;missing=1;invalid=1;response_start_only=1;nonadditive=1;workflow_token_ms=12.25;workflow_token_count=1;workflow_token_failures=0;workflow_http_ms=47.50;workflow_http_count=2;workflow_http_failures=1;capture_transaction_ms=88.75;capture_transaction_count=1;capture_transaction_failures=0"
 
 private func checkTimingMetadata() throws {
   let expected = ProviderServerTiming.parse([timingHeader])
@@ -125,6 +128,32 @@ private func checkTimingMetadata() throws {
   let response = HTTPURLResponse(url: URL(string: "https://synthetic.invalid")!, statusCode: 200,
     httpVersion: "HTTP/1.1", headerFields: ["Server-Timing":timingHeader,"Unrelated":"private-forbidden"])!
   try require(ProviderServerTiming.from(response) == expected, "only fixed header extracted")
+  let core = ProviderCoreTiming.parse([coreTimingHeader])
+  try require(core?.measurement(.workflow_http).milliseconds == 47.5, "optional numeric phase")
+  try require(core?.measurement(.workflow_http).failures == 1, "optional failure count")
+  try require(core?.observations == 3 && core?.missing == 1, "explicit incomplete observations")
+  for invalid in [
+    [], [coreTimingHeader, coreTimingHeader], [coreTimingHeader + ";v=1"],
+    [coreTimingHeader.replacingOccurrences(of: "workflow_http_ms", with: "private_identity")],
+    [coreTimingHeader.replacingOccurrences(of: "v=1", with: "v=2")],
+    [coreTimingHeader.replacingOccurrences(of: "response_start_only=1", with: "response_start_only=0")],
+    [coreTimingHeader.replacingOccurrences(of: "nonadditive=1", with: "nonadditive=0")],
+    [coreTimingHeader.replacingOccurrences(of: "observations=3", with: "observations=16")],
+    [coreTimingHeader.replacingOccurrences(of: "accepted=1", with: "accepted=0")],
+    [coreTimingHeader.replacingOccurrences(of: "workflow_http_count=2", with: "workflow_http_count=10001")],
+    [coreTimingHeader.replacingOccurrences(of: "workflow_http_failures=1", with: "workflow_http_failures=3")],
+    [String(repeating: "x", count: 1025)],
+  ] {
+    try require(ProviderCoreTiming.parse(invalid) == nil, "closed optional numeric vocabulary")
+  }
+  for invalid in ["-1", "NaN", "inf", "1e3", "600000.001", "123.4567", "+1", "true", "", "1\n"] {
+    try require(ProviderCoreTiming.parse([coreTimingHeader.replacingOccurrences(of: "47.50", with: invalid)]) == nil,
+                "invalid optional duration discarded")
+  }
+  let both = HTTPURLResponse(url: URL(string: "https://synthetic.invalid")!, statusCode: 200,
+    httpVersion: "HTTP/1.1", headerFields: ["Server-Timing": timingHeader, "X-Scribe-Core-Timing": coreTimingHeader])!
+  try require(ProviderCoreTiming.from(both) == core && ProviderServerTiming.from(both) == expected,
+              "legacy eight metrics unaffected by optional header")
 }
 
 @main struct CheckNativeTransport {
@@ -249,6 +278,8 @@ private func checkTimingMetadata() throws {
       try require(reply.status == 200 && reply.body == Data("{}".utf8), "diagnostics never change response")
       try require(reply.serverTiming == (key.contains("good") ? ProviderServerTiming.parse([timingHeader]) : nil),
                   "actual URLProtocol header reaches only its own reply")
+      try require(reply.coreTiming == (key.contains("good") ? ProviderCoreTiming.parse([coreTimingHeader]) : nil),
+                  "optional URLProtocol timing never inherits a previous reply")
     }
     checks += 1
 

@@ -162,7 +162,7 @@ struct CheckNativeProvider {
             let reply = try await connection.send(input)
             let count = await wire.count
             try require(reply.status == 200 && count == 1 && driver.tokens == 1)
-            try require(input.action.bodyLimit == 4096 && input.action.responseLimit == 1_048_576)
+            try require(input.action.bodyLimit == 16384 && input.action.responseLimit == 1_048_576)
             connection.close(); checks += 1
         }
         do {
@@ -182,11 +182,16 @@ struct CheckNativeProvider {
             let (auth, _, wire, connection) = try make(requestTiming: { timings.append($0) })
             let header = ProviderServerTiming.Phase.allCases.map { "scribe_\($0.rawValue);dur=12.345" }.joined(separator: ", ")
             let measured = ProviderServerTiming.parse([header])
+            let coreHeader = "v=1;observations=1;accepted=1;missing=0;invalid=0;response_start_only=1;nonadditive=1;workflow_token_ms=12.25;workflow_token_count=1;workflow_token_failures=0;workflow_http_ms=47.50;workflow_http_count=2;workflow_http_failures=1;capture_transaction_ms=88.75;capture_transaction_count=1;capture_transaction_failures=0"
+            let core = ProviderCoreTiming.parse([coreHeader])
             try require(measured != nil)
             for metadata in [measured, nil] {
-                await wire.setResponse(ProviderNativeReply(status: 200, body: Data("{}".utf8), serverTiming: metadata))
+                let currentCore = metadata == nil ? nil : core
+                await wire.setResponse(ProviderNativeReply(status: 200, body: Data("{}".utf8), serverTiming: metadata,
+                                                          coreTiming: currentCore))
                 _ = try await connection.send(request(auth))
                 try require(timings.last?.serverTiming == metadata)
+                try require(timings.last?.coreTiming == currentCore)
             }
             try require(timings.count == 2 && timings.allSatisfy { $0.completed })
             connection.close(); checks += 1

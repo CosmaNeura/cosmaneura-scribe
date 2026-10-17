@@ -193,7 +193,8 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
       }
       try Task.checkCancellation()
       return ProviderNativeReply(status: http.statusCode, body: data,
-                                 serverTiming: ProviderServerTiming.from(http))
+                                 serverTiming: ProviderServerTiming.from(http),
+                                 coreTiming: ProviderCoreTiming.from(http))
     } catch {
       // No HTTP body, URL, token, framework exception or TLS detail escapes.
       throw ProviderNativeError.unavailable
