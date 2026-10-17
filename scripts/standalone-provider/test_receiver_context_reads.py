@@ -65,9 +65,19 @@ async def selected(h):
 
 
 @pytest.mark.asyncio
-async def test_trace_identity_spans_survive_actual_async_registry_handoff(async_receiver):
+async def test_trace_identity_spans_survive_actual_async_registry_handoff(
+    async_receiver, monkeypatch
+):
     h = async_receiver
     h.receiver._provider_trace_enabled = True
+    legacy_reads = []
+    original_exists = h.receiver.legacy_workspace_exists
+
+    def legacy_exists(*args, **kwargs):
+        legacy_reads.append(True)
+        return original_exists(*args, **kwargs)
+
+    monkeypatch.setattr(h.receiver, "legacy_workspace_exists", legacy_exists)
     workspace, lookups = core_created_opening(h)
     async with client(h) as connection:
         result = await connection.post(
@@ -81,7 +91,10 @@ async def test_trace_identity_spans_survive_actual_async_registry_handoff(async_
     trace = json.loads(result.headers["x-scribe-provider-trace"])
     assert trace["counts"]["selection_check"] == len(lookups) == 6
     assert trace["counts"]["identity_check"] == 24
-    assert trace["counts"]["registry"] == 30
+    # The routing guard precedes six selections; each selection also performs
+    # its legacy-workspace guard and four current identity registry reads.
+    assert len(legacy_reads) == 1
+    assert trace["counts"]["registry"] == 31
     assert len(h.wire.calls) == 3
 
 
