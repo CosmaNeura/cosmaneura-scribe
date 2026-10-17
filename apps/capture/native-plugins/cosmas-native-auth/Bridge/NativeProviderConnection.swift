@@ -142,13 +142,80 @@ struct ProviderServerTiming: Sendable, Equatable {
     }
 }
 
+/// Optional v1 Core snapshots for this provider request. Nested totals overlap;
+/// response-start observations omit unfinished work and are never authority.
+struct ProviderCoreTiming: Sendable, Equatable {
+    enum Phase: String, CaseIterable, Sendable {
+        case workflow_token, workflow_http, capture_transaction
+    }
+    struct Measurement: Sendable, Equatable {
+        let milliseconds: Double
+        let count: Int
+        let failures: Int
+    }
+    let observations: Int, accepted: Int, missing: Int, invalid: Int
+    private let values: [Phase: Measurement]
+
+    func measurement(_ phase: Phase) -> Measurement { values[phase]! }
+
+    static func parse(_ fields: [String]) -> ProviderCoreTiming? {
+        guard fields.count == 1, let field = fields.first, field.utf8.count <= 1024,
+              field.unicodeScalars.allSatisfy({ (32...126).contains($0.value) }) else { return nil }
+        let base = ["v", "observations", "accepted", "missing", "invalid", "response_start_only", "nonadditive"]
+        let allowed = Set(base + Phase.allCases.flatMap {
+            ["\($0.rawValue)_ms", "\($0.rawValue)_count", "\($0.rawValue)_failures"]
+        })
+        let parts = field.split(separator: ";", omittingEmptySubsequences: false)
+        guard parts.count == allowed.count else { return nil }
+        var row: [String: String] = [:]
+        for part in parts {
+            let item = part.split(separator: "=", omittingEmptySubsequences: false)
+            guard item.count == 2, allowed.contains(String(item[0])), row[String(item[0])] == nil
+            else { return nil }
+            row[String(item[0])] = String(item[1])
+        }
+        func count(_ key: String, _ maximum: Int) -> Int? {
+            guard let raw = row[key],
+                  raw.range(of: "^(?:0|[1-9][0-9]{0,5})$", options: .regularExpression) != nil,
+                  let value = Int(raw), (0...maximum).contains(value) else { return nil }
+            return value
+        }
+        guard row["v"] == "1", row["response_start_only"] == "1", row["nonadditive"] == "1",
+              let observations = count("observations", 16), let accepted = count("accepted", 16),
+              let missing = count("missing", 16), let invalid = count("invalid", 16),
+              accepted > 0, accepted + missing + invalid == observations else { return nil }
+        var values: [Phase: Measurement] = [:]
+        for phase in Phase.allCases {
+            guard let raw = row["\(phase.rawValue)_ms"],
+                  raw.range(of: "^[0-9]{1,7}(?:\\.[0-9]{1,3})?$", options: .regularExpression) != nil,
+                  let ms = Double(raw), ms.isFinite, (0...Double(accepted * 600_000)).contains(ms),
+                  let observedCount = count("\(phase.rawValue)_count", accepted * 10_000),
+                  let failures = count("\(phase.rawValue)_failures", observedCount) else { return nil }
+            values[phase] = Measurement(milliseconds: ms, count: observedCount, failures: failures)
+        }
+        return ProviderCoreTiming(observations: observations, accepted: accepted,
+                                  missing: missing, invalid: invalid, values: values)
+    }
+
+    static func from(_ response: HTTPURLResponse) -> ProviderCoreTiming? {
+        let fields = response.allHeaderFields.filter {
+            ($0.key as? String)?.lowercased() == "x-scribe-core-timing"
+        }
+        guard fields.count == 1, let value = fields.first?.value as? String else { return nil }
+        return parse([value])
+    }
+}
+
 struct ProviderNativeReply: Sendable {
     let status: Int
     let body: Data
     let serverTiming: ProviderServerTiming?
+    let coreTiming: ProviderCoreTiming?
 
-    init(status: Int, body: Data, serverTiming: ProviderServerTiming? = nil) {
+    init(status: Int, body: Data, serverTiming: ProviderServerTiming? = nil,
+         coreTiming: ProviderCoreTiming? = nil) {
         self.status = status; self.body = body; self.serverTiming = serverTiming
+        self.coreTiming = coreTiming
     }
 }
 
@@ -162,6 +229,7 @@ struct ProviderNativeRequestTiming: Sendable {
     let status: Int?
     let completed: Bool
     let serverTiming: ProviderServerTiming?
+    var coreTiming: ProviderCoreTiming? = nil
 
     private static let logger = Logger(subsystem: "com.cosmaneura.scribe.performance", category: "provider")
     private static let signposter = OSSignposter(logger: logger)
@@ -176,6 +244,11 @@ struct ProviderNativeRequestTiming: Sendable {
 
     func log() {
         Self.logger.info("provider_request action=\(action.rawValue, privacy: .public) token_ms=\(tokenMilliseconds) receiver_ms=\(receiverMilliseconds ?? -1) total_ms=\(totalMilliseconds) status=\(status ?? 0) completed=\(completed) server_registry_ms=\(serverTiming?.milliseconds(.registry) ?? -1) server_workload_token_ms=\(serverTiming?.milliseconds(.workload_token) ?? -1) server_core_exchange_ms=\(serverTiming?.milliseconds(.core_exchange) ?? -1) server_core_mount_ms=\(serverTiming?.milliseconds(.core_mount) ?? -1) server_core_binding_ms=\(serverTiming?.milliseconds(.core_binding) ?? -1) server_core_operation_ms=\(serverTiming?.milliseconds(.core_operation) ?? -1) server_core_encounter_lookup_ms=\(serverTiming?.milliseconds(.core_encounter_lookup) ?? -1) server_total_ms=\(serverTiming?.milliseconds(.total) ?? -1)")
+        if let core = coreTiming {
+            let token = core.measurement(.workflow_token), http = core.measurement(.workflow_http)
+            let transaction = core.measurement(.capture_transaction)
+            Self.logger.info("provider_core_timing action=\(action.rawValue, privacy: .public) request_total_ms=\(totalMilliseconds) observations=\(core.observations) accepted=\(core.accepted) missing=\(core.missing) invalid=\(core.invalid) response_start_only=true nonadditive=true workflow_token_ms=\(token.milliseconds) workflow_token_count=\(token.count) workflow_token_failures=\(token.failures) workflow_http_ms=\(http.milliseconds) workflow_http_count=\(http.count) workflow_http_failures=\(http.failures) capture_transaction_ms=\(transaction.milliseconds) capture_transaction_count=\(transaction.count) capture_transaction_failures=\(transaction.failures)")
+        }
     }
 
     static func milliseconds(from start: ContinuousClock.Instant, to end: ContinuousClock.Instant) -> Int {
@@ -870,7 +943,7 @@ protocol ProviderNativeWire: Sendable {
         var value = value
         value.removeValue(forKey: "native_recording_preparation")
         return ProviderNativeReply(status: reply.status, body: try JSONSerialization.data(withJSONObject: value),
-            serverTiming: reply.serverTiming)
+            serverTiming: reply.serverTiming, coreTiming: reply.coreTiming)
     }
 
     func send(_ request: ProviderNativeRequest) async throws -> ProviderNativeReply {
@@ -1268,6 +1341,7 @@ protocol ProviderNativeWire: Sendable {
             var receiverEnd: ContinuousClock.Instant?, status: Int?
             var completed = false
             var serverTiming: ProviderServerTiming?
+            var coreTiming: ProviderCoreTiming?
             defer {
                 if let tokenInterval { ProviderNativeRequestTiming.end("Provider token", tokenInterval) }
                 if let receiverInterval { ProviderNativeRequestTiming.end("Provider receiver", receiverInterval) }
@@ -1278,7 +1352,7 @@ protocol ProviderNativeWire: Sendable {
                     receiverMilliseconds: receiverStart.map {
                         ProviderNativeRequestTiming.milliseconds(from: $0, to: receiverEnd ?? ended)
                     }, totalMilliseconds: ProviderNativeRequestTiming.milliseconds(from: started, to: ended),
-                    status: status, completed: completed, serverTiming: serverTiming))
+                    status: status, completed: completed, serverTiming: serverTiming, coreTiming: coreTiming))
             }
             try Task.checkCancellation()
             var token: String
@@ -1363,6 +1437,7 @@ protocol ProviderNativeWire: Sendable {
             receiverInterval = ProviderNativeRequestTiming.begin("Provider receiver")
             let reply = try await wire.send(request, token: token)
             receiverEnd = timingNow(); status = reply.status; serverTiming = reply.serverTiming
+            coreTiming = reply.coreTiming
             if let interval = receiverInterval { ProviderNativeRequestTiming.end("Provider receiver", interval) }
             receiverInterval = nil
             try Task.checkCancellation()

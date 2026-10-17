@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from threading import Lock
 from time import perf_counter_ns
 
+import httpx
+
+from .provider_core_timing import CORE_HEADER, CoreTiming
 from .safe_logging import log_event
 
 # Keep literal action labels visible to the existing PHI-log AST policy.
@@ -70,6 +73,14 @@ class _Timing:
     spans: list[_Span] = field(default_factory=lambda: list[_Span]())
     trace_invalid: bool = False
     lock: Lock = field(default_factory=Lock, repr=False)
+    core: CoreTiming = field(default_factory=CoreTiming)
+
+    def core_header(self) -> str | None:
+        try:
+            with self.lock:
+                return self.core.header() if self.closed else None
+        except Exception:
+            return None
 
     def begin_span(self, phase: str, started: int) -> _Span | None:
         if not self.trace_enabled:
@@ -151,6 +162,19 @@ class _Timing:
 
 
 _CURRENT: ContextVar[_Timing | None] = ContextVar("provider_performance", default=None)
+
+
+def observe_core_response(headers: httpx.Headers) -> None:
+    """Optional numeric observation; never alter a response, error or body read."""
+    timing = _CURRENT.get()
+    if timing is None:
+        return
+    try:
+        with timing.lock:
+            if not timing.closed:
+                timing.core.observe(headers.get_list(CORE_HEADER))
+    except Exception:
+        pass
 
 
 @contextmanager

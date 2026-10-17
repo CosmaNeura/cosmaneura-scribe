@@ -39,7 +39,7 @@ from .provider_core_transport import (
     core_wire_uuid as _uuid,
 )
 from .provider_encounter_transport import ProviderEncounterAccount
-from .provider_performance import provider_phase_timing
+from .provider_performance import observe_core_response, provider_phase_timing
 from .provider_preparation_handoff import PreparationHandoff, PreparedContext
 from .schemas import AudioEncryptionPublicKey, CaptureCapabilities
 
@@ -194,6 +194,7 @@ class ProviderNativeCoreTransport:
                         "Cache-Control": "no-store",
                     },
                 ) as response:
+                    observe_core_response(response.headers)
                     if response.status_code != 200:
                         raise ProviderCoreUnavailable(
                             "core_provider_request_unconfirmed",
@@ -425,6 +426,7 @@ class ProviderNativeCoreTransport:
                             "Cache-Control": "no-store",
                         },
                     ) as response:
+                        observe_core_response(response.headers)
                         if response.status_code != 200:
                             status = (
                                 response.status_code
