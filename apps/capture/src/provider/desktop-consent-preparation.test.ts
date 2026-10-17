@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { CaptureApp } from "../capture-app";
 import type { ProviderCaptureBinding, ProviderRecorderController, ProviderRecorderSnapshot } from "../provider-binding";
+import { configureConsentedRecorder } from "./consent-preparation";
 
 // Run the real element's consent continuation with a synthetic recorder only.
 // Rendering/OS audio are outside this unit; no microphone or meeting is opened.
@@ -40,7 +41,7 @@ function fixture(phase: "preparing" | "ready", audioMode: "microphone" | "meetin
   cleanups.push(() => abort.abort());
   const ready = () => emit({ state: "ready", desktop: { ...snapshot.desktop!, phase: "ready" } });
   const subscribe = (): void => { (app as unknown as { firstUpdated(): void }).firstUpdated(); };
-  return { app, abort, startRecording, selectDesktopAudio, ready, listeners, emit, subscribe,
+  return { app, abort, controller, startRecording, selectDesktopAudio, ready, listeners, emit, subscribe,
     get snapshot() { return snapshot; },
     disconnect: () => Object.defineProperty(app, "isConnected", { configurable: true, value: false }) };
 }
@@ -190,4 +191,27 @@ it("a non-desktop local recorder retains its existing consent-and-record continu
   const f = fixture("ready", "microphone", true, true); f.subscribe();
   await f.app.startFromProviderAction("built_in", undefined, undefined, new AbortController().signal);
   expect(f.startRecording).toHaveBeenCalledOnce(); expect(f.selectDesktopAudio).not.toHaveBeenCalled();
+});
+
+it.each(["accepted", "pending-handoff"])("queued Record preserves the %s automatic call recommendation and its fresh ambiguity refusal", async origin => {
+  const f = fixture("ready", "meeting"); f.subscribe();
+  f.emit({ desktop: { ...f.snapshot.desktop!, meetingWindows: { state: "ready", selectedId: origin === "accepted" ? "synthetic-call" : null,
+    windows: [{ id: "synthetic-call", title: "Invented meeting" }, { id: "second-call", title: "Another invented meeting" }] } } });
+  let explicit = false;
+  const selectMeetingWindow = vi.fn(async (selectedId: string) => {
+    // The native main owner preserves the first inherited recommended-ID
+    // handoff. A second selection of that same ID would make it explicit.
+    if (selectMeetingWindow.mock.calls.length > 1) explicit = true;
+    f.emit({ desktop: { ...f.snapshot.desktop!, meetingWindows: { ...f.snapshot.desktop!.meetingWindows!, selectedId } } });
+  });
+  // The real controller's Start re-reads native metadata and refuses a now
+  // ambiguous automatic choice. The continuation must not override its origin.
+  f.startRecording.mockImplementationOnce(async () => { if (!explicit) throw new Error("capture_call_selection_required"); });
+  Object.assign(f.controller, { selectMeetingWindow });
+  const signal = new AbortController().signal;
+  expect(await configureConsentedRecorder(f.controller, { microphone: "built_in", desktopAudio: "meeting", meetingWindowId: "synthetic-call", signal }, () => true)).toBe(true);
+  expect(f.startRecording).not.toHaveBeenCalled();
+  await f.app.startFromProviderAction("built_in", "meeting", "meeting", signal, "synthetic-call");
+  expect(selectMeetingWindow).toHaveBeenCalledTimes(origin === "accepted" ? 0 : 1); expect(explicit).toBe(false);
+  expect(f.startRecording).toHaveBeenCalledOnce();
 });

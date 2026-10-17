@@ -88,7 +88,7 @@ export class CaptureApp extends LitElement {
     binding.signal.addEventListener("abort", this.#closeProvider, { once: true });
   }
 
-  /** A fresh checked consent action may start only this empty prepared visit. */
+  /** One explicit Record action may start only this empty prepared visit. */
   public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting", desktopRecordAction?: "microphone" | "meeting", actionSignal?: AbortSignal, meetingWindowId?: string): Promise<void> {
     if (desktopRecordAction !== undefined) {
       if (this.#desktopRecordActionConsumed) return;
@@ -137,7 +137,9 @@ export class CaptureApp extends LitElement {
       if (desktopAudio === "meeting") {
         if (!meetingWindowId || !binding.controller.selectMeetingWindow
           || !this.#snapshot.desktop?.meetingWindows?.windows.some(row => row.id === meetingWindowId)) return;
-        await binding.controller.selectMeetingWindow(meetingWindowId);
+        // Start confirms the current choice; only a provider's Change action
+        // turns an automatic recommendation into an explicit window selection.
+        if (this.#snapshot.desktop.meetingWindows?.selectedId !== meetingWindowId) await binding.controller.selectMeetingWindow(meetingWindowId);
       }
       const emptyPreparedVisit = (): boolean => {
         if (!current() || this.#stopping) return false;

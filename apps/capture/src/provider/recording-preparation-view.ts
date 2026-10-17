@@ -9,7 +9,7 @@ export function consentScript(spanish: boolean, videoCall: boolean): string {
 }
 
 export function recordingPreparationMarkup(options: { isIOS: boolean; language: LanguageMode;
-  modality: "in_person" | "virtual" | "phone"; audio: "microphone" | "meeting" }): string {
+  modality: "in_person" | "virtual" | "phone"; audio: "microphone" | "meeting"; consentPreparation?: boolean }): string {
   return `<section class="provider-preparation"><h1>Start recording</h1>
     <p class="provider-audio-summary"><span data-audio-summary></span><button type="button" data-change-audio>Change</button></p>
     ${options.isIOS ? '' : `<p class="provider-preparation-label">Where is the patient?</p><div class="provider-source-cards">
@@ -31,7 +31,7 @@ export function recordingPreparationMarkup(options: { isIOS: boolean; language: 
     <p class="provider-preparation-label">Ask the patient:</p><blockquote class="provider-consent-script" data-consent-script></blockquote>
     <label class="provider-consent"><input name="consent" type="checkbox">The patient said yes</label>
     <button data-workspace-action="prepare" aria-describedby="provider-start-consent" disabled>Start recording</button>
-    <p class="provider-consent-explanation" id="provider-start-consent">Recording starts after you confirm consent.</p>
+    <p class="provider-consent-explanation" id="provider-start-consent">${options.consentPreparation ? "Confirming consent prepares secure recording. Choose Start recording to turn on the microphone." : "Recording starts after you confirm consent."}</p>
     <details class="provider-preparation-details" data-preflight-details><summary>Recording access and microphone details</summary>
       <p data-preflight-details-help>Microphone levels appear after consent and recording starts.</p>
       <button type="button" class="provider-text-link" data-preflight-access-optional hidden>Check recording access</button>
