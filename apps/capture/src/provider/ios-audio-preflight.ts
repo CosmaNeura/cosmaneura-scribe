@@ -17,62 +17,93 @@ export async function openIOSAudioPreflight(signal: AbortSignal,
   plugin: IOSMicrophoneCheckPlugin = nativeCheck, inheritedSignal?: AbortSignal): Promise<ProviderAudioPreflight> {
   let closed = false, closing: Promise<void> | null = null, timer: ReturnType<typeof setTimeout> | undefined;
   const listeners = new Set<(snapshot: AudioPreflightSnapshot) => void>();
-  let generation = 0, selecting = false, requesting = false;
+  let generation = 0, selecting = false, requesting = false, recovering = false, recoveryAttempted = false;
+  let wasVisible = document.visibilityState === "visible";
+  let operations: Promise<void> = Promise.resolve();
   let snapshot: AudioPreflightSnapshot = { status: "checking", inputDevices: [], selectedInputId: null, microphone: null };
-  const current = (): void => { if (closed || signal.aborted || inheritedSignal?.aborted) throw unavailable(); };
-  const publish = (value: unknown): void => {
-    current(); snapshot = parseIOSAudioPreflight(value);
+  const active = (): boolean => !closed && !signal.aborted && !inheritedSignal?.aborted;
+  const current = (): void => { if (!active()) throw unavailable(); };
+  const visibleCurrent = (): void => { current(); if (document.visibilityState !== "visible") throw unavailable(); };
+  const accepted = (observed: number): boolean => active() && observed === generation && document.visibilityState === "visible";
+  const notify = (): void => {
     for (const listener of listeners) { try { listener(snapshot); } catch { /* Observer isolation. */ } }
+  };
+  const unavailableSnapshot = (): void => { snapshot = { ...snapshot, status: "unavailable", microphone: null }; notify(); };
+  const publish = (value: unknown, observed: number): void => {
+    visibleCurrent(); if (observed !== generation) throw unavailable();
+    snapshot = parseIOSAudioPreflight(value);
+    if (snapshot.status === "ready" || snapshot.status === "permission_required") recoveryAttempted = false;
+    notify();
+  };
+  // Serialize native metadata work, including reads. Invalid queued work never
+  // dispatches, and close joins every dispatched begin before the final end.
+  const operate = (operation: () => Promise<unknown>, observed: number): Promise<unknown> => {
+    const result = operations.then(() => {
+      visibleCurrent(); if (observed !== generation) throw unavailable();
+      return operation();
+    });
+    operations = result.then(() => undefined, () => undefined);
+    return result;
+  };
+  const visibilityChanged = (): void => {
+    const visible = document.visibilityState === "visible";
+    if (visible === wasVisible || !active()) return;
+    wasVisible = visible; generation++;
+    if (visible) recoveryAttempted = false;
+    unavailableSnapshot();
   };
   const close = (): Promise<void> => {
     closed = true; generation++; snapshot = { ...snapshot, status: "unavailable", microphone: null };
     clearTimeout(timer); listeners.clear(); signal.removeEventListener("abort", aborted);
     inheritedSignal?.removeEventListener("abort", aborted);
-    return closing ??= plugin.endMicrophoneCheck().then(() => undefined).catch(error => { closing = null; throw error; });
+    document.removeEventListener("visibilitychange", visibilityChanged);
+    return closing ??= operations.then(() => plugin.endMicrophoneCheck()).then(() => undefined)
+      .catch(error => { closing = null; throw error; });
   };
   const aborted = (): void => { void close().catch(() => undefined); };
   signal.addEventListener("abort", aborted, { once: true });
   inheritedSignal?.addEventListener("abort", aborted, { once: true });
+  document.addEventListener("visibilitychange", visibilityChanged);
+  const recover = async (): Promise<void> => {
+    visibleCurrent();
+    if (selecting || requesting || recovering || recoveryAttempted || snapshot.status !== "unavailable") return;
+    recovering = true; recoveryAttempted = true; const restarted = ++generation;
+    snapshot = { ...snapshot, status: "checking", microphone: null }; notify();
+    try { publish(await operate(() => plugin.beginMicrophoneCheck(), restarted), restarted); }
+    catch { if (accepted(restarted)) unavailableSnapshot(); }
+    finally { recovering = false; }
+  };
   try {
-    current(); publish(await plugin.beginMicrophoneCheck());
+    current(); const opened = generation; publish(await operate(() => plugin.beginMicrophoneCheck(), opened), opened);
     const poll = async (): Promise<void> => {
-      const observed = generation;
+      visibilityChanged(); const observed = generation;
       try {
         current();
-        if (!selecting && !requesting && document.visibilityState === "visible") {
-          const value = await plugin.readMicrophoneCheck();
-          if (!selecting && !requesting && observed === generation && !closed && !signal.aborted && !inheritedSignal?.aborted) publish(value);
+        if (!selecting && !requesting && !recovering && document.visibilityState === "visible") {
+          const value = await operate(() => plugin.readMicrophoneCheck(), observed);
+          if (!selecting && !requesting && !recovering && accepted(observed)) publish(value, observed);
         }
-      } catch { if (!closed && !signal.aborted && !inheritedSignal?.aborted && !selecting && !requesting && observed === generation) {
-        snapshot = { ...snapshot, status: "unavailable", microphone: null };
-        for (const listener of listeners) { try { listener(snapshot); } catch { /* Observer isolation. */ } }
-      } }
-      if (!closed && !signal.aborted) timer = setTimeout(() => { void poll(); }, 250);
+      } catch {
+        if (!selecting && !requesting && !recovering && accepted(observed)) unavailableSnapshot();
+      }
+      if (active() && document.visibilityState === "visible" && !selecting && !requesting && !recovering) await recover();
+      if (active()) timer = setTimeout(() => { void poll(); }, 250);
     };
     timer = setTimeout(() => { void poll(); }, 250);
     return { getSnapshot: () => snapshot, subscribe: listener => {
       current(); listeners.add(listener); listener(snapshot); return () => listeners.delete(listener);
     }, requestRecordingAccess: async () => {
-      current(); if (selecting || requesting) throw unavailable();
+      visibleCurrent(); if (selecting || requesting || recovering) throw unavailable();
       requesting = true; const requested = ++generation;
-      snapshot = { ...snapshot, status: "checking", microphone: null };
-      for (const listener of listeners) { try { listener(snapshot); } catch { /* Observer isolation. */ } }
-      try {
-        const value = await plugin.requestRecordingAccess(); current();
-        if (requested === generation) publish(value);
-      } catch (error) {
-        if (!closed && !signal.aborted && !inheritedSignal?.aborted && requested === generation) {
-          snapshot = { ...snapshot, status: "unavailable", microphone: null };
-          for (const listener of listeners) { try { listener(snapshot); } catch { /* Observer isolation. */ } }
-        }
-        throw error;
-      } finally { requesting = false; }
+      snapshot = { ...snapshot, status: "checking", microphone: null }; notify();
+      try { publish(await operate(() => plugin.requestRecordingAccess(), requested), requested); }
+      catch (error) { if (accepted(requested)) unavailableSnapshot(); throw error; }
+      finally { requesting = false; }
     }, selectMicrophone: async id => {
-      current(); if (selecting || requesting || !snapshot.inputDevices.some(device => device.id === id)) throw unavailable();
+      visibleCurrent(); if (selecting || requesting || recovering || !snapshot.inputDevices.some(device => device.id === id)) throw unavailable();
       selecting = true; const selected = ++generation;
       try {
-        const value = await plugin.selectMicrophoneDevice({ id }); current();
-        if (selected === generation) publish(value);
+        publish(await operate(() => plugin.selectMicrophoneDevice({ id }), selected), selected);
         if (snapshot.selectedInputId !== id) throw unavailable();
       } finally { selecting = false; }
     }, close };
