@@ -462,7 +462,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     show(recordingPreparationMarkup({ isIOS, language: preferredLanguage, modality: preferredModality, audio: preferredDesktopAudio, consentPreparation: prepareOnConsent }));
     const controls = bindPreparationControls(content, { isIOS, signal: client!.signal,
       ...(host.audioPreflight ? { open: host.audioPreflight } : {}), remember: value => { savedPreferences?.save(value); },
-      ...(prepareOnConsent ? { onConsent: () => { void run(() => initialConsentPreparation(false), "prepare"); } } : {}) });
+      ...(prepareOnConsent ? { onConsent: () => {
+        if (consentPreparationEnabled(host.consentPreparation)) void run(() => initialConsentPreparation(false), "prepare");
+      } } : {}) });
     preparationControls = controls;
     disposeContent = () => { void controls.close().catch(() => { notice.textContent = "Microphone check could not close. Reopen this visit before recording."; }); };
     consentAction = content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]');

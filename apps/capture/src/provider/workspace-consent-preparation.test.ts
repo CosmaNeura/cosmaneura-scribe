@@ -119,6 +119,19 @@ it("checkbox alone prepares exactly once and never invokes any recording continu
   expect(f.controller.selectAudioInput).toHaveBeenCalledWith("microphone-fixture");
   await f.binding()!.controller.startRecording(); expect(f.start).toHaveBeenCalledOnce();
 });
+it("an open screen stops checkbox preparation at expiry and retains explicit Start preparation", async () => {
+  const expiry = Date.parse("2026-11-01T00:00:00Z");
+  const now = vi.spyOn(Date, "now").mockReturnValue(expiry - 1);
+  const f = fixture(); await f.opened(); expect(metadata.options?.onConsent).toBeDefined();
+  now.mockReturnValue(expiry); f.consent(true);
+  expect(f.journal.save).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled();
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.app.startFromProviderAction).not.toHaveBeenCalled();
+  f.click("prepare"); // The explicit click evaluates the expired release control.
+  now.mockRestore(); // Keep backend checked_at freshness on its unchanged clock.
+  await vi.waitFor(() => expect(f.start).toHaveBeenCalledOnce());
+  expect(f.request.mock.calls.filter(([p]) => p.endsWith("capture-admissions"))).toHaveLength(1);
+  expect(f.recorder).toHaveBeenCalledOnce(); expect(f.app.startFromProviderAction).toHaveBeenCalledOnce();
+});
 it("one immediate Record tap joins pending preparation; duplicate taps never start twice", async () => {
   const waiting = gate<void>(); const f = fixture({ preparing: true, admission: waiting.promise }); await f.opened();
   f.consent(true); f.click("prepare"); f.click("prepare"); expect(f.start).not.toHaveBeenCalled();
