@@ -135,14 +135,23 @@ async def test_native_https_receiver(harness):
             output, errors = await process.communicate(json.dumps(configuration).encode())
         assert process.returncode == 0, "Native roundtrip failed; raw diagnostics suppressed"
         assert not errors
-        assert len(h.wire.calls) == 15
+        exchange = "/embed/v1/context-tokens/exchange"
+        mount = "/service/v1/agent/mount-context/resolve"
+        binding = "/service/v1/agent/scribe/capture-bindings/resolve"
+        assert h.wire.calls == [
+            exchange, mount, binding,
+            exchange, mount, binding, "/service/v1/agent/scribe/capture-admissions",
+            exchange, mount, "/service/v1/agent/scribe/capture-operations",
+            exchange, mount, binding, "/service/v1/agent/scribe/capture-notes",
+        ]
+        assert h.wire.operations == ["creator_review"]
         (root / "native-https-check.log").write_bytes(output)
         (root / "native-https-receipt.json").write_text(
             json.dumps(
                 {
                     "result": "pass",
                     "native_requests": 5,
-                    "offline_core_wire_requests": 15,
+                    "offline_core_wire_requests": len(h.wire.calls),
                     "leaf_sha256": profile["leafSHA256"],
                     "tls_pin_used": True,
                     "wrong_pin_rejected": True,

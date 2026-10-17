@@ -130,6 +130,7 @@ async def prepare_then_dispatch(
         )
         prepared_answer = None
         native_read_supported = retained.native_read_supported if retained is not None else False
+        source_start_supported = retained.source_start_supported if retained is not None else False
         combined_native_metadata = (
             native_metadata_requested
             and retained is not None
@@ -229,6 +230,21 @@ async def prepare_then_dispatch(
                         native_read_supported = response.headers.get_list(
                             "x-cosmaneura-prepared-native-read-version"
                         ) == ["1"]
+                        source_start_supported = response.headers.get_list(
+                            "x-cosmaneura-prepared-source-start-version"
+                        ) == ["1"]
+                        combined_native_metadata = native_metadata_requested and (
+                            response.headers.get_list(
+                                "x-cosmaneura-admission-native-preparation-version"
+                            )
+                            == ["1"]
+                        )
+                        combined_metadata = metadata_requested and (
+                            response.headers.get_list(
+                                "x-cosmaneura-admission-preparation-metadata-version"
+                            )
+                            == ["1"]
+                        )
                         raw = bytearray()
                         async for chunk in response.aiter_bytes():
                             need(len(raw) + len(chunk) <= 16384)
@@ -297,6 +313,42 @@ async def prepare_then_dispatch(
 
         if await fresh() != before:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+
+        if retained is None and (combined_native_metadata or combined_metadata):
+            # Use only this invocation's freshly validated, advertised context.
+            # A missing capability selects compatibility before admission I/O;
+            # a dispatched failure never retries or returns partial admission.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
+            if handoff is not None:
+                need(0 <= handoff.now() - issued_at < 15)
+            native = ProviderNativeCoreTransport(
+                origin, fresh, workload, transport=transport, connections=connections
+            )
+            try:
+                prepared_answer = await native.prepared_operation(
+                    payload,
+                    key,
+                    before,
+                    PreparedContext(mount, context, cast(str, interaction), turn, issued_at),
+                    credential,
+                    admission=True,
+                    admission_native_preparation=combined_native_metadata,
+                    admission_preparation_metadata=combined_metadata,
+                )
+            finally:
+                await native.close()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
+            if handoff is not None:
+                need(0 <= handoff.now() - issued_at < 30)
+            # Core retains the combined operation's intermediate admission and
+            # metadata authority checks. Keep both receiver metadata-publication
+            # snapshots as well as the existing final snapshot below (nine total).
+            for _ in range(2):
+                if await fresh() != before:
+                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
 
         async def current():
             if await fresh() != before:
@@ -415,9 +467,7 @@ async def prepare_then_dispatch(
                         issued_at,
                         native_read_supported=native_read_supported,
                         native_read_done=native_metadata_requested,
-                        source_start_supported=(
-                            retained.source_start_supported if retained is not None else False
-                        ),
+                        source_start_supported=source_start_supported,
                     ),
                 )
             return answer
