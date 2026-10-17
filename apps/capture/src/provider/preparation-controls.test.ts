@@ -48,7 +48,7 @@ class Controls {
 }
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); vi.unstubAllGlobals(); });
-function fixture(isIOS: boolean, initial: AudioPreflightSnapshot, openGate?: Promise<void>) {
+function fixture(isIOS: boolean, initial: AudioPreflightSnapshot, openGate?: Promise<void>, onConsent?: () => void) {
   const root = new Controls(isIOS, initial.desktopAudio === "meeting");
   vi.stubGlobal("Element", Control);
   vi.stubGlobal("Option", class extends Control { constructor(label: string, value: string) { super(root); this.textContent = label; this.value = value; } });
@@ -68,7 +68,7 @@ function fixture(isIOS: boolean, initial: AudioPreflightSnapshot, openGate?: Pro
   };
   const abort = new AbortController();
   const controls = bindPreparationControls(root as unknown as HTMLElement, { isIOS, signal: abort.signal,
-    open: async () => { await openGate; return port; }, remember: vi.fn() });
+    open: async () => { await openGate; return port; }, remember: vi.fn(), ...(onConsent ? { onConsent } : {}) });
   cleanups.push(() => controls.close());
   return { root, port, controls, publish, abort, requestAccess, selectWindow, closePort };
 }
@@ -78,6 +78,28 @@ const readyMac: AudioPreflightSnapshot = { status: "ready", inputDevices: [{ id:
   selectedInputId: "synthetic-microphone", microphone: null, desktopAudio: "meeting", meetingWindows: { state: "ready", windows, selectedId: windows[0]!.id } };
 
 describe("compact audio-free recording setup", () => {
+  it("begins preparation only on a fresh checkbox action after metadata is ready", async () => {
+    const consent = vi.fn(); const f = fixture(true, { ...readyIOS, status: "checking" }, undefined, consent);
+    await vi.waitFor(() => expect(f.controls.snapshot()?.status).toBe("checking"));
+    expect(f.root.node('[name="consent"]').disabled).toBe(true);
+    f.root.node('[name="consent"]').checked = true; f.root.emit("change", '[name="consent"]');
+    expect(consent).not.toHaveBeenCalled(); f.publish(readyIOS);
+    expect(f.root.node('[name="consent"]').disabled).toBe(false); expect(consent).not.toHaveBeenCalled();
+    f.root.node('[name="consent"]').checked = false; f.root.emit("change", '[name="consent"]');
+    f.root.node('[name="consent"]').checked = true; f.root.emit("change", '[name="consent"]');
+    f.root.emit("change", '[name="consent"]'); expect(consent).toHaveBeenCalledOnce();
+    expect(f.requestAccess).not.toHaveBeenCalled();
+  });
+  it("permission checks and late readiness cannot replay a checked attestation", async () => {
+    const consent = vi.fn(); const f = fixture(true, { ...readyIOS, status: "permission_required" }, undefined, consent);
+    await vi.waitFor(() => expect(f.controls.snapshot()?.status).toBe("permission_required"));
+    f.root.node('[name="consent"]').checked = true; f.root.emit("change", '[name="consent"]');
+    f.root.emit("click", "[data-preflight-access]"); await vi.waitFor(() => expect(f.controls.ready()).toBe(true));
+    expect(consent).not.toHaveBeenCalled(); await f.controls.close();
+    f.root.node('[name="consent"]').checked = false; f.root.emit("change", '[name="consent"]');
+    f.root.node('[name="consent"]').checked = true; f.root.emit("change", '[name="consent"]');
+    expect(consent).not.toHaveBeenCalled();
+  });
   it("puts ready diagnostics behind the optional action and leaves consent unchecked", async () => {
     const f = fixture(true, readyIOS);
     await vi.waitFor(() => expect(f.controls.ready()).toBe(true));

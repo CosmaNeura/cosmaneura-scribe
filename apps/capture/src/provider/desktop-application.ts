@@ -12,21 +12,23 @@ import { parsePendingReviewDecision } from "../../../review-ui/src/creator-revie
 import { connectDesktopRecorderView, type DesktopRecorderPort } from "./desktop-recorder-view";
 import { reference, type CoreCaptureScope } from "./core-client";
 import { parseOpeningReview } from "./opening-review";
+import type { ConsentPreparationRelease } from "./consent-preparation";
 import { parseDesktopProviderEvent, sessionState, exact, object, uuid, jsonCopy, unavailable,
   type DesktopProviderMethod, type DesktopProviderPort, type DesktopProviderRequest } from "./desktop-host-protocol";
 
 /** Mount the complete provider UI with the reviewed sandboxed desktop preload.
  * No backend origin, token, native source or storage/key object enters this page. */
 export function mountDesktopProviderApplication(root: HTMLElement, provider: DesktopProviderPort,
-  recorder: DesktopRecorderPort): () => Promise<void> {
-  const connection = createDesktopProviderApplicationHost(provider, recorder);
+  recorder: DesktopRecorderPort, consentPreparation?: ConsentPreparationRelease): () => Promise<void> {
+  const connection = createDesktopProviderApplicationHost(provider, recorder, consentPreparation);
   let unmount: () => Promise<void>;
   try { unmount = mountProviderApplication(root, connection.host); }
   catch (error) { void connection.dispose().catch(() => undefined); throw error; }
   return async () => { await unmount(); await connection.dispose(); };
 }
 
-export function createDesktopProviderApplicationHost(port: DesktopProviderPort, recorderPort: DesktopRecorderPort): {
+export function createDesktopProviderApplicationHost(port: DesktopProviderPort, recorderPort: DesktopRecorderPort,
+  consentPreparation?: ConsentPreparationRelease): {
   readonly host: ProviderApplicationHost; dispose(): Promise<void>;
 } {
   const lifetime = new AbortController();
@@ -169,6 +171,7 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         }, null, extra)),
       };
       const workspace: ProviderWorkspaceHost = {
+        ...(consentPreparation ? { consentPreparation } : {}),
         audioPreflight: extra => {
           if (!currentEncounter) return Promise.reject(unavailable());
           const selectedId = currentEncounter.id;

@@ -30,4 +30,5 @@ export { connectNativeProviderIOSBackend } from "./provider/native-backend";
 export type { NativeProviderBackend, NativeProviderOptions } from "./provider/native-backend";
 export { mountNativeProviderIOSApplication } from "./provider/native-application";
 export { mountProviderApplication } from "./provider/application";
+export { BETA_CONSENT_PREPARATION } from "./provider/beta-consent-preparation";
 export type { ProviderApplicationHost, ProviderSessionState } from "./provider/application";

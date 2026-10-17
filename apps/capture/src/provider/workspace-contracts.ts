@@ -12,6 +12,7 @@ import type { ProviderOpeningReview } from "./opening-review";
 import type { ProviderEncounterSetup, ProviderAccount } from "./encounter-setup";
 import type { ProviderAudioPreflight } from "./audio-preflight";
 import type { PatientIdentity } from "./visit-features";
+import type { ConsentPreparationRelease } from "./consent-preparation";
 
 /** Core supplies display values through its existing authorized encounter list. */
 export interface ProviderEncounter {
@@ -49,6 +50,8 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
+  /** Trusted, reversible beta control; omitted controls retain explicit-start preparation. */
+  readonly consentPreparation?: ConsentPreparationRelease;
   /** Actual native owner mapped only against a fresh authorized encounter catalog. */
   readonly activeRecording?: (signal: AbortSignal) => Promise<{ appointmentRef: string; sessionId: string } | null>;
   readonly audioPreflight?: (signal: AbortSignal) => Promise<ProviderAudioPreflight>;

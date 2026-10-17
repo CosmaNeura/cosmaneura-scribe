@@ -17,6 +17,7 @@ import { connectNativeProviderRecorder, type NativeRecordingPort } from "./nativ
 import { CoreCaptureBff, CoreCaptureClient } from "./core-client";
 import { NativeProviderWorkspaceJournal } from "./workspace-journal";
 import type { AuthorizedProviderEncounter, ProviderRecorderResources, ProviderWorkspaceHost } from "./workspace";
+import type { ConsentPreparationRelease } from "./consent-preparation";
 
 /** Supplied by the existing authenticated Core/native connection, never by a form. */
 export interface AuthorizedProviderIOSMount extends Omit<AuthorizedProviderEncounter, "journal" | "reviewJournal" | "recorder"> {
@@ -44,9 +45,10 @@ export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal"
 /** Compose the real native recorder and recovery stores with the existing Core host.
  * This neither creates an identity nor substitutes a transport for Core authority.
  */
-export function createProviderIOSHost(backend: ProviderIOSBackend): ProviderWorkspaceHost {
+export function createProviderIOSHost(backend: ProviderIOSBackend, consentPreparation?: ConsentPreparationRelease): ProviderWorkspaceHost {
   requireNative();
   return {
+    ...(consentPreparation ? { consentPreparation } : {}),
     get providerDisplayName() { return backend.signal.aborted ? undefined : backend.providerDisplayName; },
     get encounterSetup() { return backend.encounterSetup; },
     get account() { return backend.account; },

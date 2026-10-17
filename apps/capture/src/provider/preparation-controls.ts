@@ -6,12 +6,15 @@ import type { ProviderPreferences } from "./provider-preferences";
 export function bindPreparationControls(root: HTMLElement, options: { isIOS: boolean; signal: AbortSignal;
   open?: (signal: AbortSignal) => Promise<ProviderAudioPreflight>;
   remember(value: ProviderPreferences): void;
+  /** Fresh checkbox action only; advisory readiness changes never replay consent. */
+  onConsent?: () => void;
 }): { snapshot(): AudioPreflightSnapshot | null; ready(): boolean; close(): Promise<void> } {
   const lifetime = new AbortController(), signal = lifetime.signal;
   const externalAbort = (): void => lifetime.abort();
   options.signal.addEventListener("abort", externalAbort, { once: true }); if (options.signal.aborted) lifetime.abort();
   let port: ProviderAudioPreflight | null = null, snapshot: AudioPreflightSnapshot | null = null;
   let failed = false;
+  let consentChecked = false;
   let selecting = false, windowPickerOpen = false, closed = false, unsubscribe: (() => void) | undefined, closing: Promise<void> | null = null;
   const select = (selector: string): HTMLSelectElement => root.querySelector<HTMLSelectElement>(selector)!;
   const value = (name: string): string => root.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value ?? "";
@@ -27,6 +30,7 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
     const video = !options.isIOS && value("desktop-audio") === "meeting";
     const start = root.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!;
     start.disabled = !root.querySelector<HTMLInputElement>('[name="consent"]')?.checked || !ready();
+    if (options.onConsent) root.querySelector<HTMLInputElement>('[name="consent"]')!.disabled = !ready();
     root.querySelector<HTMLElement>("[data-consent-script]")!.textContent = `“${consentScript(value("language") !== "en-US", video)}”`;
     const device = snapshot?.inputDevices.find(input => input.id === snapshot?.selectedInputId);
     const deferredIOSInput = options.isIOS && snapshot?.status === "ready" && !snapshot.inputDevices.length;
@@ -122,7 +126,13 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
     finally { selecting = false; paint(); }
   };
   const changed = (event: Event): void => {
-    if (event.target === root.querySelector("[data-preflight-input]")) { const id = select("[data-preflight-input]").value; void apply(() => port!.selectMicrophone(id)); }
+    if (event.target === root.querySelector('[name="consent"]')) {
+      const checked = root.querySelector<HTMLInputElement>('[name="consent"]')!.checked;
+      const fresh = checked && !consentChecked; consentChecked = checked;
+      paint();
+      if (fresh && ready()) options.onConsent?.();
+    }
+    else if (event.target === root.querySelector("[data-preflight-input]")) { const id = select("[data-preflight-input]").value; void apply(() => port!.selectMicrophone(id)); }
     else if (event.target === root.querySelector("[data-preflight-window]")) {
       const id = select("[data-preflight-window]").value;
       void apply(async () => { await port!.selectMeetingWindow!(id); windowPickerOpen = false; }).then(() => {

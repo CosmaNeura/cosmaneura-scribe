@@ -37,6 +37,7 @@ import { PatientListObserver } from "./patient-list-observer";
 import { providerPreferences } from "./provider-preferences";
 import { recordingPreparationMarkup } from "./recording-preparation-view";
 import { bindPreparationControls } from "./preparation-controls";
+import { configureConsentedRecorder, consentPreparationEnabled, type ConsentedSourceChoice } from "./consent-preparation";
 import { adjacentVisitDay, bindDaySwipe, visitDay, visitIsOnDay, visitRow } from "./visit-list-view";
 
 /** Product entry for the authorized native/BFF host; default preview never mounts it. */
@@ -62,6 +63,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let preparationControls: ReturnType<typeof bindPreparationControls> | null = null;
   type RecordingAction = Readonly<{ microphone: MicrophoneInput; signal: AbortSignal; desktopAudio?: "microphone" | "meeting"; desktopRecordAction?: "microphone" | "meeting"; meetingWindowId?: string }>;
   let pendingRecordingAction: AbortController | null = null;
+  let consentPreparationPending = false;
+  let consentRecordAction: HTMLButtonElement | null = null;
+  let queuedConsentRecord: AbortSignal | null = null;
   let leaveAfterRecordingPreparation = false;
   let openingRef: string | null = null;
   let cancelOpening: (() => void) | null = null;
@@ -146,7 +150,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     await preparationControls?.close(); preparationControls = null;
     privateNoteSession?.dispose(); privateNoteSession = null; identityOverride = null;
     recorderBlocksRefresh = false; updateRefresh();
-    pendingRecordingAction?.abort(); pendingRecordingAction = null; leaveAfterRecordingPreparation = false;
+    pendingRecordingAction?.abort(); pendingRecordingAction = null; consentPreparationPending = false; consentRecordAction = null; queuedConsentRecord = null; leaveAfterRecordingPreparation = false;
     listedDraftRefs.clear();
     stopSaveCheck?.(); stopSaveCheck = null; pendingDateOfBirth = null;
     clearNavigation();
@@ -454,9 +458,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   };
   const preparation = (): void => {
     requireValue(context);
-    show(recordingPreparationMarkup({ isIOS, language: preferredLanguage, modality: preferredModality, audio: preferredDesktopAudio }));
+    const prepareOnConsent = consentPreparationEnabled(host.consentPreparation);
+    show(recordingPreparationMarkup({ isIOS, language: preferredLanguage, modality: preferredModality, audio: preferredDesktopAudio, consentPreparation: prepareOnConsent }));
     const controls = bindPreparationControls(content, { isIOS, signal: client!.signal,
-      ...(host.audioPreflight ? { open: host.audioPreflight } : {}), remember: value => { savedPreferences?.save(value); } });
+      ...(host.audioPreflight ? { open: host.audioPreflight } : {}), remember: value => { savedPreferences?.save(value); },
+      ...(prepareOnConsent ? { onConsent: () => {
+        if (consentPreparationEnabled(host.consentPreparation)) void run(() => initialConsentPreparation(false), "prepare");
+      } } : {}) });
     preparationControls = controls;
     disposeContent = () => { void controls.close().catch(() => { notice.textContent = "Microphone check could not close. Reopen this visit before recording."; }); };
     consentAction = content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]');
@@ -464,18 +472,55 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const initialPreparationStatus = (): void => {
     const status = content.querySelector<HTMLElement>("[data-recording-preparation-status]");
     requireValue(status); status.hidden = false;
-    status.textContent = pendingRecordingAction?.signal.aborted
+    status.textContent = consentPreparationPending ? pendingRecordingAction?.signal.aborted
+      ? "Recording preparation canceled. Recording has not started. Prepared work is retained."
+      : queuedConsentRecord === pendingRecordingAction?.signal
+        ? "Preparing secure recording. Your Start request is waiting. Not listening yet."
+        : "Preparing secure recording. Not listening yet. You can choose Start recording now or when it is ready."
+      : pendingRecordingAction?.signal.aborted
       ? "Recording start canceled. Secure setup may finish without recording."
       : "Preparing your recording… Checking consent and secure storage. Recording has not started yet.";
   };
   const cancelRecordingAction = (): boolean => {
     if (!pendingRecordingAction) return false;
     pendingRecordingAction.abort(); // A leave/cancel click takes effect before the busy guard.
+    queuedConsentRecord = null;
+    if (consentRecordAction) consentRecordAction.disabled = true;
     const status = content.querySelector<HTMLElement>("[data-recording-preparation-status]");
-    if (status) status.textContent = "Recording start canceled. Secure setup may finish without recording.";
+    if (status) status.textContent = consentPreparationPending
+      ? "Recording preparation canceled. Recording has not started. Prepared work is retained."
+      : "Recording start canceled. Secure setup may finish without recording.";
     const cancel = content.querySelector<HTMLButtonElement>('[data-workspace-action="cancel-recording-action"]');
     if (cancel) cancel.disabled = true;
     return true;
+  };
+  const showPreparationCanceled = (): void => {
+    pendingRecordingAction = null; consentPreparationPending = false; queuedConsentRecord = null; consentRecordAction = null;
+    show('<h1>Recording preparation canceled</h1><p>Recording has not started. Prepared work is retained. Confirm consent again before recording.</p><button data-workspace-action="admit">Review prepared recording</button>');
+  };
+  const confirmPreparedConsent = async (n: number): Promise<boolean> => {
+    const retained = progress().admission;
+    requireValue(retained);
+    const pending = new AbortController(); pendingRecordingAction = pending; consentPreparationPending = true;
+    const visit = { in_person: "In person", virtual: "Video visit", phone: "Phone call" }[retained.attestation.modality];
+    show(`<section class="provider-preparation"><h1>Confirm consent to continue</h1><p>${visit} · ${retained.languageMode === "en-US" ? "English" : "Spanish and English · note in English"}</p>
+      <p>Your saved language and visit type are retained. Recording has not started. Confirm that everyone still agrees before recording.</p>
+      <label class="provider-consent"><input name="consent" type="checkbox">The patient said yes</label>
+      <p>Check the audio source on the next screen, then choose Start recording to turn on the microphone.</p>
+      <button data-workspace-action="cancel-recording-action">Cancel</button></section>`);
+    const checkbox = content.querySelector<HTMLInputElement>('[name="consent"]')!;
+    return new Promise<boolean>(resolve => {
+      const finish = (confirmed: boolean): void => {
+        content.removeEventListener("change", changed); pending.signal.removeEventListener("abort", abort);
+        resolve(confirmed);
+      };
+      const changed = (event: Event): void => {
+        if (event.target === checkbox && checkbox.checked && authorized(n) && document.visibilityState === "visible" && !pending.signal.aborted) finish(true);
+      };
+      const abort = (): void => finish(false);
+      content.addEventListener("change", changed); pending.signal.addEventListener("abort", abort, { once: true });
+      disposeContent = () => pending.abort();
+    });
   };
   const renewConsent = (): void => {
     const saved = progress();
@@ -518,11 +563,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const endOpening = (): void => {
     cancelOpening = null; content.querySelector('[data-workspace-action="cancel-opening"]')?.remove();
   };
-  const recordOrReview = async (startRequested?: RecordingAction, openingView?: CreatorReviewView, openingSignal?: AbortSignal, initialAction?: "open-draft"): Promise<void> => {
+  const recordOrReview = async (startRequested?: RecordingAction, openingView?: CreatorReviewView, openingSignal?: AbortSignal, initialAction?: "open-draft", sourceChoice?: ConsentedSourceChoice, renewedConsent = false): Promise<void> => {
     requireValue(client && context);
     const n = generation, id = session(), activeClient = client, activeContext = context;
     step = "recording status check";
-    const view = startRequested !== undefined && (host.recorderRechecksReview === true || activeContext.recorderRechecksReview === true) ? null : openingView?.session_id === id ? openingView
+    const view = (startRequested !== undefined || sourceChoice !== undefined) && (host.recorderRechecksReview === true || activeContext.recorderRechecksReview === true) ? null : openingView?.session_id === id ? openingView
       : await interruptibleRead(new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read(), openingSignal);
     if (!authorized(n)) return;
     if (view) observeReview(view, n);
@@ -574,6 +619,35 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     }
     requireValue(controller.snapshot.sessionId === id);
     if (!authorized(n)) { await close(); return; }
+    if (!startRequested && !sourceChoice && !renewedConsent && consentPreparationEnabled(host.consentPreparation)
+      && ["preparing", "ready", "paused"].includes(controller.snapshot.state)
+      && controller.snapshot.recordedChunks === 0 && controller.snapshot.elapsedSeconds === 0) {
+      const confirmed = await confirmPreparedConsent(n);
+      if (!confirmed || !authorized(n) || pendingRecordingAction?.signal.aborted) {
+        await close(); if (authorized(n)) showPreparationCanceled(); return;
+      }
+      pendingRecordingAction = null; consentPreparationPending = false;
+    }
+    let recordingAction = startRequested;
+    if (sourceChoice) {
+      step = "secure recording preparation";
+      let configured: boolean;
+      try { configured = await configureConsentedRecorder(controller, sourceChoice, () => authorized(n) && context === activeContext && document.visibilityState === "visible"); }
+      catch (error) {
+        await close();
+        if (sourceChoice.signal.aborted || !authorized(n)) { if (authorized(n)) showPreparationCanceled(); return; }
+        throw error;
+      }
+      if (!configured || !authorized(n)) {
+        await close();
+        if (authorized(n)) showPreparationCanceled();
+        return;
+      }
+      if (queuedConsentRecord === sourceChoice.signal && !sourceChoice.signal.aborted) {
+        recordingAction = { ...sourceChoice, ...(sourceChoice.desktopAudio ? { desktopRecordAction: sourceChoice.desktopAudio } : {}) };
+      } else pendingRecordingAction = null;
+      queuedConsentRecord = null; consentRecordAction = null; consentPreparationPending = false;
+    }
     show("");
     const app = document.createElement("cosmaneura-capture") as CaptureApp;
     app.bindProvider({ sessionId: id, controller, encounterLabel: activeContext.encounter.identity?.name ?? activeContext.encounter.patientName ?? activeContext.encounter.title,
@@ -615,35 +689,86 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     // Only the current consent action carries this in-memory source choice.
     // The explicit microphone button records; meeting preparation waits for Start.
     // Reopening/recovering a journal never starts a microphone or meeting.
-    if (startRequested !== undefined && !startRequested.signal.aborted) {
+    if (recordingAction !== undefined && !recordingAction.signal.aborted) {
       await app.updateComplete;
-      if (authorized(n) && app.isConnected) {
+      if (authorized(n) && app.isConnected && document.visibilityState === "visible") {
         // Visible preparation must not hold the workspace navigation busy guard.
         // The bound view discards this one intent on removal/revocation.
-        void app.startFromProviderAction(startRequested.microphone,
-          native?.controller.selectDesktopAudio ? startRequested.desktopAudio : undefined,
+        void app.startFromProviderAction(recordingAction.microphone,
+          native?.controller.selectDesktopAudio ? recordingAction.desktopAudio : undefined,
           native?.captureMode === "desktop_meeting" && native.controller.selectDesktopAudio && native.controller.snapshot.desktop
-            ? startRequested.desktopRecordAction : undefined, startRequested.signal, startRequested.meetingWindowId)
+            ? recordingAction.desktopRecordAction : undefined, recordingAction.signal, recordingAction.meetingWindowId)
           .catch(() => { if (authorized(n) && app.isConnected) notice.textContent = "Recording could not start. Check the audio source and recording access, then retry."; })
-          .finally(() => { if (pendingRecordingAction?.signal === startRequested.signal) pendingRecordingAction = null; });
+          .finally(() => { if (pendingRecordingAction?.signal === recordingAction.signal) pendingRecordingAction = null; });
       }
-    } else if (pendingRecordingAction?.signal === startRequested?.signal) pendingRecordingAction = null;
+    } else if (pendingRecordingAction?.signal === recordingAction?.signal) pendingRecordingAction = null;
   };
-  const admit = async (mode: "initial" | "recover" | "renew" = "initial", startRequested?: RecordingAction): Promise<void> => {
+  const admit = async (mode: "initial" | "recover" | "renew" = "initial", startRequested?: RecordingAction, sourceChoice?: ConsentedSourceChoice): Promise<void> => {
     requireValue(client);
     const n = generation;
     step = "recording admission";
-    if (mode === "initial" && startRequested) initialPreparationStatus();
+    if (mode === "initial" && (startRequested || sourceChoice)) initialPreparationStatus();
     else show("<h2>Preparing your recording…</h2><p role=\"status\">Restoring your saved visit.</p>");
     const intent = progress().admission;
     requireValue(intent);
+    if (mode === "initial" && sourceChoice?.signal.aborted) { showPreparationCanceled(); return; }
     const id = await (mode === "recover" ? client.recoverAdmission(intent)
       : mode === "renew" ? client.renewAdmission(intent) : client.admit(intent));
     if (!authorized(n)) return;
-    if (id === null) { pendingRecordingAction?.abort(); pendingRecordingAction = null; renewConsent(); return; }
+    if (id === null) {
+      pendingRecordingAction?.abort(); pendingRecordingAction = null; consentPreparationPending = false; queuedConsentRecord = null; consentRecordAction = null;
+      renewConsent(); return;
+    }
     requireValue(progress().sessionId === null || progress().sessionId === id);
     if (progress().sessionId === null) await persist(value => ({ ...value, sessionId: id }));
-    if (authorized(n)) await recordOrReview(startRequested);
+    if (authorized(n) && sourceChoice?.signal.aborted) {
+      showPreparationCanceled();
+    } else if (authorized(n)) await recordOrReview(startRequested, undefined, undefined, undefined, sourceChoice, mode === "renew");
+  };
+  const initialConsentPreparation = async (recordRequested: boolean): Promise<void> => {
+    // The fresh checkbox or explicit legacy Start owns this attestation.
+    // Recovery never recreates source configuration or recording intent.
+    const button = consentAction;
+    if (!button || document.visibilityState !== "visible" || button !== content.querySelector('[data-workspace-action="prepare"]') || journal.progress !== null || !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked || !preparationControls?.ready()) return;
+    const language = input("language"), modality = input("modality");
+    if (!["en-US", "en-US+es-US"].includes(language) || !["in_person", "virtual", "phone"].includes(modality)) {
+      notice.textContent = "Check the spoken language and visit type before continuing."; return;
+    }
+    const next: ProviderProgress = { admission: { key: crypto.randomUUID(), languageMode: language as LanguageMode,
+      attestation: { modality: modality as "in_person" | "virtual" | "phone", participant_regions: [],
+        method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } },
+    sessionId: null, uploaded: false, pendingSave: null };
+    const desktopAudio = content.querySelector<HTMLSelectElement>('[name="desktop-audio"]')?.value;
+    if (desktopAudio === "microphone" || desktopAudio === "meeting") preferredDesktopAudio = desktopAudio;
+    const microphone = content.querySelector<HTMLSelectElement>('[name="microphone"]')?.value ?? "built_in";
+    requireValue(isMicrophoneInput(microphone));
+    const preflight = preparationControls?.snapshot();
+    pendingRecordingAction = new AbortController();
+    const sourceChoice: ConsentedSourceChoice = Object.freeze({ microphone, signal: pendingRecordingAction.signal,
+      ...(preflight?.selectedInputId ? { inputId: preflight.selectedInputId } : {}),
+      ...(!isIOS && (desktopAudio === "microphone" || desktopAudio === "meeting") ? { desktopAudio,
+          ...(preflight?.meetingWindows?.selectedId ? { meetingWindowId: preflight.meetingWindows.selectedId } : {}) } : {}) });
+    const startRequested: RecordingAction | undefined = recordRequested ? { ...sourceChoice,
+      ...(sourceChoice.desktopAudio ? { desktopRecordAction: sourceChoice.desktopAudio } : {}) } : undefined;
+    consentPreparationPending = !recordRequested;
+    consentRecordAction = recordRequested ? null : button;
+    queuedConsentRecord = null;
+    assertProgress(next); consentAction = null;
+    for (const field of content.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(".provider-preparation input, .provider-preparation select, .provider-preparation button")) field.disabled = true;
+    if (!recordRequested) {
+      button.disabled = false;
+      content.querySelector<HTMLInputElement>('[name="consent"]')!.disabled = false;
+    }
+    const cancel = content.querySelector<HTMLButtonElement>('[data-workspace-action="cancel-recording-action"]');
+    if (cancel && (!recordRequested || isIOS || desktopAudio === "microphone")) { cancel.hidden = false; cancel.disabled = false; }
+    await preparationControls?.close(); preparationControls = null;
+    disposeContent?.(); disposeContent = null; // Source choices are fixed before journal/admission waits.
+    initialPreparationStatus();
+    button.textContent = recordRequested ? "Starting…" : "Start recording";
+    await persist(next);
+    preferredLanguage = next.admission.languageMode;
+    preferredModality = next.admission.attestation.modality;
+    await admit("initial", startRequested, recordRequested ? undefined : sourceChoice);
   };
   const open = async (ref: string, initialAction?: "open-draft"): Promise<void> => {
     await clearEncounter(); const n = generation;
@@ -1167,6 +1292,16 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const click = (event: MouseEvent): void => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-workspace-action]") : null;
     if (!button || !root.contains(button)) return;
+    if (button.dataset.workspaceAction === "prepare" && consentPreparationPending) {
+      // Only this explicit, current Record click may join the owned consent
+      // flight. Readiness, consent and recovered journals never create intent.
+      if (button !== consentRecordAction || button.disabled || !authorized(generation) || document.visibilityState !== "visible"
+        || !pendingRecordingAction || pendingRecordingAction.signal.aborted
+        || !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked) return;
+      queuedConsentRecord = pendingRecordingAction.signal;
+      button.disabled = true; button.textContent = "Starting when ready…"; initialPreparationStatus();
+      return;
+    }
     if (button.dataset.workspaceAction === "cancel-recording-action") { cancelRecordingAction(); return; }
     if (button.dataset.workspaceAction === "refresh-visit" && (button.disabled || recorderBlocksRefresh || !context)) return;
     if (["encounters", "refresh-visit", "review", "core", "create", "new-encounter", "open", "open-draft"].includes(button.dataset.workspaceAction ?? "")) {
@@ -1241,41 +1376,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           if (ref && listedDraftRefs.has(ref)) await open(ref, "open-draft");
           break;
         }
-        case "prepare": {
-          // Only this currently displayed, explicit attestation can initiate a
-          // new recording. Reopening or recovering never replays the action.
-          if (button !== consentAction || journal.progress !== null || !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked || !preparationControls?.ready()) return;
-          const language = input("language"), modality = input("modality");
-          if (!["en-US", "en-US+es-US"].includes(language) || !["in_person", "virtual", "phone"].includes(modality)) {
-            notice.textContent = "Check the spoken language and visit type before continuing."; return;
-          }
-          const next: ProviderProgress = { admission: { key: crypto.randomUUID(), languageMode: language as LanguageMode,
-            attestation: { modality: modality as "in_person" | "virtual" | "phone", participant_regions: [],
-              method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } },
-          sessionId: null, uploaded: false, pendingSave: null };
-          const desktopAudio = content.querySelector<HTMLSelectElement>('[name="desktop-audio"]')?.value;
-          if (desktopAudio === "microphone" || desktopAudio === "meeting") preferredDesktopAudio = desktopAudio;
-          const microphone = content.querySelector<HTMLSelectElement>('[name="microphone"]')?.value ?? "built_in";
-          requireValue(isMicrophoneInput(microphone));
-          const preflight = preparationControls?.snapshot();
-          pendingRecordingAction = new AbortController();
-          const startRequested: RecordingAction = Object.freeze({ microphone, signal: pendingRecordingAction.signal,
-            ...(!isIOS && (desktopAudio === "microphone" || desktopAudio === "meeting") ? { desktopAudio,
-              desktopRecordAction: desktopAudio,
-              ...(preflight?.meetingWindows?.selectedId ? { meetingWindowId: preflight.meetingWindows.selectedId } : {}) } : {}) });
-          assertProgress(next); consentAction = null;
-          for (const field of content.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(".provider-preparation input, .provider-preparation select, .provider-preparation button")) field.disabled = true;
-          const cancel = content.querySelector<HTMLButtonElement>('[data-workspace-action="cancel-recording-action"]');
-          if (cancel && (isIOS || desktopAudio === "microphone")) { cancel.hidden = false; cancel.disabled = false; }
-          await preparationControls?.close(); preparationControls = null;
-          disposeContent?.(); disposeContent = null; // Source choices are fixed before journal/admission waits.
-          initialPreparationStatus();
-          button.textContent = "Starting…";
-          await persist(next);
-          preferredLanguage = next.admission.languageMode;
-          preferredModality = next.admission.attestation.modality;
-          await admit("initial", startRequested); break;
-        }
+        case "prepare": await initialConsentPreparation(!consentPreparationEnabled(host.consentPreparation)); break;
         case "admit": await admit("recover"); break;
         case "renew-consent": {
           requireValue(consentRenewalOffered && progress().sessionId === null);
@@ -1371,6 +1472,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   function input(name: string): string {
     return content.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${name}"]`)?.value ?? "";
   }
+  const consentChanged = (event: Event): void => {
+    if (consentPreparationPending && event.target === content.querySelector('[name="consent"]')
+      && !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked) cancelRecordingAction();
+  };
+  const foregroundChanged = (): void => {
+    if (document.visibilityState !== "visible" && pendingRecordingAction) cancelRecordingAction();
+  };
   let disposing: Promise<void> | null = null;
   const returnToRecording = async (): Promise<void> => {
     const mounted = content.querySelector<HTMLElement>("cosmaneura-capture");
@@ -1397,6 +1505,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (!disposed) {
       recentStates.clear();
       disposed = true; headerObserver.disconnect(); root.removeEventListener("click", click);
+      root.removeEventListener("change", consentChanged);
+      document.removeEventListener("visibilitychange", foregroundChanged);
       root.removeEventListener("scribe-desktop-close-request", requestDesktopClose); host.signal.removeEventListener("abort", abort);
       root.removeEventListener("scribe-open-recording", requestRecordingOpen);
       root.replaceChildren();
@@ -1409,6 +1519,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     return disposing;
   };
   root.addEventListener("click", click); root.addEventListener("scribe-desktop-close-request", requestDesktopClose);
+  root.addEventListener("change", consentChanged);
+  document.addEventListener("visibilitychange", foregroundChanged);
   root.addEventListener("scribe-open-recording", requestRecordingOpen);
   host.signal.addEventListener("abort", abort, { once: true });
   if (host.signal.aborted) abort(); else void run(list, "startup");

@@ -1,6 +1,7 @@
 import { mountNativeProviderIOSApplication } from "../src/provider/native-application";
 import { HttpCiphertextUploadTarget } from "../src/bff/upload-target";
 import { nativeProviderPlugin as native, type StandaloneProviderNative } from "../src/provider/native-plugin";
+import { BETA_CONSENT_PREPARATION } from "../src/provider/beta-consent-preparation";
 
 export function mount(root: HTMLElement,
   configuration: Awaited<ReturnType<StandaloneProviderNative["getProviderConfiguration"]>>): () => Promise<void> {
@@ -10,5 +11,5 @@ export function mount(root: HTMLElement,
       createEncounter: signal => { signal.throwIfAborted(); return native.openProviderCore({ appointmentRef: null }); },
       openEncounter: (appointmentRef, _note, signal) => { signal.throwIfAborted(); return native.openProviderCore({ appointmentRef }); },
     },
-  });
+  }, BETA_CONSENT_PREPARATION);
 }

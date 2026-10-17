@@ -18,6 +18,7 @@ import type { CaptureFlowLockManager } from "../flow/capture-lock";
 import { recordingFixture } from "./native-recorder.fixture";
 import * as sourceFactory from "./ios-capture-source";
 import { createProviderIOSHost, type AuthorizedProviderIOSMount, type ProviderIOSBackend } from "./ios-host";
+import { BETA_CONSENT_PREPARATION } from "./beta-consent-preparation";
 
 const native = vi.hoisted(() => ({ getStorageCapacity: vi.fn(), create: vi.fn(), get: vi.fn(), list: vi.fn(), compareAndSwap: vi.fn() }));
 vi.mock("@cosmaneura-scribe/capacitor-secure-queue", () => ({ SecureQueue: native }));
@@ -105,6 +106,15 @@ const preparation = { mode: "configured_core" as const, schemaVersion: 2 as cons
   leaseIdempotencyKey: null, leaseRequest: null };
 
 describe("native provider host composition", () => {
+  it("keeps early preparation off without a packaged beta control and starts no native work when enabled", () => {
+    const service = connection();
+    expect(createProviderIOSHost(service.backend).consentPreparation).toBeUndefined();
+    expect(createProviderIOSHost(service.backend, BETA_CONSENT_PREPARATION).consentPreparation).toBe(BETA_CONSENT_PREPARATION);
+    expect(service.mount.prepareNativeSource).not.toHaveBeenCalled();
+    expect(service.mount.reauthorizeRecorder).not.toHaveBeenCalled();
+    expect(source.start).not.toHaveBeenCalled();
+    service.abort.abort();
+  });
   it.each([undefined, true])("retains only the mount's trusted acquisition-review capability %s", async capability => {
     const service = connection(capability ? { recorderRechecksReview: true } : {});
     const encounter = await service.openAny();
