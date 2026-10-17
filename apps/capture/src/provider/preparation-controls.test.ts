@@ -154,6 +154,13 @@ describe("compact audio-free recording setup", () => {
     expect(f.root.node('[name="consent"]').checked).toBe(true);
     f.root.emit("change", '[name="consent"]');
     expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
+    // Foreground metadata recovery can report ready, but cannot acknowledge a
+    // failed explicit access action. Only the current successful retry clears it.
+    f.publish({ ...readyIOS, status: "checking" }); f.publish(readyIOS);
+    expect(f.controls.ready()).toBe(false);
+    expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
+    expect(f.root.node('[name="consent"]').checked).toBe(true);
+    expect(f.requestAccess).toHaveBeenCalledOnce();
     f.root.emit("click", "[data-preflight-access]");
     expect(f.root.node('[data-workspace-action="prepare"]').disabled).toBe(true);
     await vi.waitFor(() => expect(f.controls.ready()).toBe(true));
