@@ -80,6 +80,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let closePatientMatch: (() => void) | null = null;
   let stagedEditTimer: ReturnType<typeof setTimeout> | undefined;
   let journalWrite: Promise<void> = Promise.resolve();
+  let consentPreparationBarrier: Promise<void> | null = null;
   let savedAt: Date | null = null;
   let noteSaveUnconfirmed = false;
   let refreshNoteSources: (() => void) | null = null;
@@ -147,7 +148,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
-    await preparationControls?.close(); preparationControls = null;
+    const controls = preparationControls;
+    // A canceled consent flight may still be closing metadata or finishing its
+    // encrypted journal write. Join both before releasing this encounter.
+    const [closed] = await Promise.allSettled([
+      Promise.resolve().then(() => controls?.close()), consentPreparationBarrier,
+    ]);
+    if (closed.status === "rejected") throw closed.reason;
+    preparationControls = null;
     privateNoteSession?.dispose(); privateNoteSession = null; identityOverride = null;
     recorderBlocksRefresh = false; updateRefresh();
     pendingRecordingAction?.abort(); pendingRecordingAction = null; consentPreparationPending = false; consentRecordAction = null; queuedConsentRecord = null; leaveAfterRecordingPreparation = false;
@@ -728,7 +736,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const initialConsentPreparation = async (recordRequested: boolean): Promise<void> => {
     // The fresh checkbox or explicit legacy Start owns this attestation.
     // Recovery never recreates source configuration or recording intent.
-    const button = consentAction;
+    const button = consentAction, n = generation;
     if (!button || document.visibilityState !== "visible" || button !== content.querySelector('[data-workspace-action="prepare"]') || journal.progress !== null || !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked || !preparationControls?.ready()) return;
     const language = input("language"), modality = input("modality");
     if (!["en-US", "en-US+es-US"].includes(language) || !["in_person", "virtual", "phone"].includes(modality)) {
@@ -761,11 +769,25 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     }
     const cancel = content.querySelector<HTMLButtonElement>('[data-workspace-action="cancel-recording-action"]');
     if (cancel && (!recordRequested || isIOS || desktopAudio === "microphone")) { cancel.hidden = false; cancel.disabled = false; }
-    await preparationControls?.close(); preparationControls = null;
-    disposeContent?.(); disposeContent = null; // Source choices are fixed before journal/admission waits.
     initialPreparationStatus();
     button.textContent = recordRequested ? "Starting…" : "Start recording";
-    await persist(next);
+    const controls = preparationControls;
+    // Advisory metadata teardown and the scoped encrypted consent intent are
+    // independent. Neither permits admission; join both even when either fails.
+    const settling = Promise.allSettled([
+      Promise.resolve().then(() => controls?.close()),
+      Promise.resolve().then(() => persist(next)),
+    ]).then(([closed, saved]) => {
+      if (closed.status === "rejected") throw closed.reason;
+      if (saved.status === "rejected") throw saved.reason;
+    });
+    consentPreparationBarrier = settling;
+    try { await settling; }
+    finally { if (consentPreparationBarrier === settling) consentPreparationBarrier = null; }
+    if (preparationControls === controls) preparationControls = null;
+    if (!authorized(n)) return;
+    if (sourceChoice.signal.aborted) { showPreparationCanceled(); return; }
+    disposeContent?.(); disposeContent = null; // Only this completed, current flight can admit.
     preferredLanguage = next.admission.languageMode;
     preferredModality = next.admission.attestation.modality;
     await admit("initial", startRequested, recordRequested ? undefined : sourceChoice);

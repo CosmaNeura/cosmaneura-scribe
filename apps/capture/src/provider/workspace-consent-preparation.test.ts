@@ -6,6 +6,7 @@ import { mountProviderWorkspace, type ProviderWorkspaceHost } from "./workspace"
 import type { ProviderCaptureBinding, ProviderRecorderSnapshot } from "../provider-binding";
 import type { JournalSnapshot, ProviderProgress } from "./workspace-journal";
 import type { bindPreparationControls } from "./preparation-controls";
+import { CaptureDeviceCustodyError } from "../capture/device-custody";
 
 // Run the actual workspace/admission/ownership flow. The tiny command surface
 // and recorder contain no audio implementation; fictional parties consent.
@@ -38,12 +39,13 @@ class CommandSurface extends Surface {
   }
   override replaceChildren(...children: Surface[]): void { super.replaceChildren(); if (children[0]) this.nodes.set("cosmaneura-capture", children[0]); }
 }
-function gate<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
+function gate<T>() { let resolve!: (v: T) => void, reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 const sid = "00000000-0000-4000-8000-000000000001", suffix = "01j" + "0".repeat(23);
 const ref = "appointment_" + suffix;
-function fixture(options: { preparing?: boolean; admission?: Promise<void>; acquisition?: Promise<void>; release?: boolean; saved?: JournalSnapshot; metadataClose?: Promise<void>;
+function fixture(options: { preparing?: boolean; admission?: Promise<void>; acquisition?: Promise<void>; release?: boolean; saved?: JournalSnapshot; metadataClose?: Promise<void>; journalSave?: Promise<void>;
   ios?: boolean; admissionFailure?: boolean; selection?: Promise<void> } = {}) {
   vi.stubGlobal("Element", Surface); vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
@@ -84,6 +86,7 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
     return Response.json({ ...envelope, operation: "creator_review", receipt: { schema_version: "1.0", session_id: sid, status: "created", source: null, working: null, review_queue: null } });
   });
   const journal = { load: vi.fn(async () => stored), save: vi.fn(async (_previous: JournalSnapshot, progress: ProviderProgress) => {
+    await options.journalSave;
     stored = { revision: String(Number(stored.revision ?? 0) + 1), progress: structuredClone(progress) }; return stored;
   }) };
   const scope = { appointmentRef: ref, bindingRef: "scribe_capture_binding_" + suffix, workspaceId: sid };
@@ -174,10 +177,85 @@ it("recovered virtual visits keep a microphone fallback without replaying or inf
   expect(f.controller.selectMeetingWindow).not.toHaveBeenCalled(); expect(f.app.startFromProviderAction).not.toHaveBeenCalled();
   expect(f.stored().progress?.admission).toEqual(saved.progress?.admission);
 });
-it("metadata close must settle before durable admission or recorder acquisition", async () => {
+it("encrypted consent persistence overlaps metadata close; admission waits for both", async () => {
   const closing = gate<void>(); const f = fixture({ metadataClose: closing.promise }); await f.opened(); f.consent(true); f.click("prepare");
-  expect(f.journal.save).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled(); closing.resolve();
+  await vi.waitFor(() => expect(f.journal.save).toHaveBeenCalledOnce());
+  expect(metadata.close).toHaveBeenCalledOnce(); expect(f.stored().progress?.admission?.attestation.all_parties_consented).toBe(true);
+  expect(f.request).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled(); closing.resolve();
   await vi.waitFor(() => expect(f.start).toHaveBeenCalledOnce());
+});
+it("settled metadata cannot admit before the encrypted consent write finishes", async () => {
+  const writing = gate<void>(); const f = fixture({ journalSave: writing.promise }); await f.opened(); f.consent(true); f.click("prepare");
+  await vi.waitFor(() => expect(f.journal.save).toHaveBeenCalledOnce());
+  expect(metadata.close).toHaveBeenCalledOnce(); expect(f.stored().progress).toBeNull();
+  expect(f.request).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled(); writing.resolve();
+  await vi.waitFor(() => expect(f.start).toHaveBeenCalledOnce());
+});
+it("a metadata close failure still joins the consent write and never admits", async () => {
+  const closing = gate<void>(), writing = gate<void>(); const f = fixture({ metadataClose: closing.promise, journalSave: writing.promise });
+  await f.opened(); f.consent(true); f.click("prepare"); await vi.waitFor(() => expect(f.journal.save).toHaveBeenCalledOnce());
+  closing.reject(new Error("Synthetic metadata close failure")); await Promise.resolve();
+  expect(f.root.attributes.has("aria-busy")).toBe(true); expect(f.request).not.toHaveBeenCalled(); writing.resolve();
+  await vi.waitFor(() => expect(f.root.attributes.has("aria-busy")).toBe(false));
+  expect(f.stored().progress?.admission?.key).toBeDefined(); expect(f.request).not.toHaveBeenCalled();
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+  metadata.close = vi.fn(async () => undefined); // Explicit teardown can now finish the failed metadata owner.
+});
+it("a journal failure still joins metadata close and never admits", async () => {
+  const closing = gate<void>(), writing = gate<void>(); const f = fixture({ metadataClose: closing.promise, journalSave: writing.promise });
+  await f.opened(); f.consent(true); f.click("prepare"); await vi.waitFor(() => expect(f.journal.save).toHaveBeenCalledOnce());
+  writing.reject(new Error("Synthetic encrypted journal failure")); await Promise.resolve();
+  expect(f.root.attributes.has("aria-busy")).toBe(true); expect(f.request).not.toHaveBeenCalled(); closing.resolve();
+  await vi.waitFor(() => expect(f.root.attributes.has("aria-busy")).toBe(false));
+  expect(f.stored().progress).toBeNull(); expect(f.request).not.toHaveBeenCalled();
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+});
+it("both failures retain the original metadata-close error classification", async () => {
+  const closing = gate<void>(), writing = gate<void>(); const f = fixture({ metadataClose: closing.promise, journalSave: writing.promise });
+  await f.opened(); f.consent(true); f.click("prepare"); await vi.waitFor(() => expect(f.journal.save).toHaveBeenCalledOnce());
+  writing.reject(new Error("Synthetic journal failure")); closing.reject(new CaptureDeviceCustodyError());
+  await vi.waitFor(() => expect(f.root.attributes.has("aria-busy")).toBe(false));
+  expect(f.content.innerHTML).toContain("Recording access needed on this device");
+  expect(f.stored().progress).toBeNull(); expect(f.request).not.toHaveBeenCalled();
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+  metadata.close = vi.fn(async () => undefined);
+});
+it("reopening an intent saved before metadata failure requires fresh consent and never replays Record", async () => {
+  const closing = gate<void>(); const f = fixture({ metadataClose: closing.promise }); await f.opened(); f.consent(true); f.click("prepare");
+  await vi.waitFor(() => expect(f.journal.save).toHaveBeenCalledOnce()); closing.reject(new Error("Synthetic metadata close failure"));
+  await vi.waitFor(() => expect(f.root.attributes.has("aria-busy")).toBe(false));
+  const saved = structuredClone(f.stored()), original = saved.progress!.admission;
+  expect(f.request).not.toHaveBeenCalled(); metadata.close = vi.fn(async () => undefined); await f.dispose();
+  const reopened = fixture({ saved }); await reopened.opened();
+  expect(reopened.content.innerHTML).toContain("Recover recording preparation");
+  expect(reopened.request).not.toHaveBeenCalled(); expect(reopened.recorder).not.toHaveBeenCalled();
+  reopened.click("admit"); await vi.waitFor(() => expect(reopened.content.innerHTML).toContain("Confirm consent to continue"));
+  const admissions = reopened.request.mock.calls.filter(([path]) => path.endsWith("capture-admissions"));
+  expect(admissions).toHaveLength(1); expect(admissions[0]![2]).toBe(original!.key); expect(admissions[0]![1].attestation).toBeNull();
+  expect((reopened.content.querySelector('[name="consent"]') as CommandSurface).checked).toBe(false);
+  expect(reopened.app.startFromProviderAction).not.toHaveBeenCalled(); expect(reopened.start).not.toHaveBeenCalled();
+  reopened.consent(true); await vi.waitFor(() => expect(reopened.app.bindProvider).toHaveBeenCalledOnce());
+  expect(reopened.stored().progress!.admission).toEqual(original); expect(reopened.app.startFromProviderAction).not.toHaveBeenCalled();
+  expect(reopened.controller.selectAudioInput).not.toHaveBeenCalled(); expect(reopened.start).not.toHaveBeenCalled();
+});
+it("disposal joins both in-flight operations before releasing the old encounter", async () => {
+  const closing = gate<void>(), writing = gate<void>(); const f = fixture({ metadataClose: closing.promise, journalSave: writing.promise });
+  await f.opened(); f.consent(true); f.click("prepare"); await vi.waitFor(() => expect(f.journal.save).toHaveBeenCalledOnce());
+  let disposed = false; const disposal = f.dispose().then(() => { disposed = true; });
+  closing.resolve(); await Promise.resolve(); expect(disposed).toBe(false); writing.resolve(); await disposal;
+  expect(f.stored().progress?.admission?.key).toBeDefined(); expect(f.journal.save).toHaveBeenCalledOnce();
+  expect(f.request).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+});
+it.each(["withdraw", "background", "host-abort"])("%s during the join cannot revive a queued Record", async action => {
+  const closing = gate<void>(), writing = gate<void>(); const f = fixture({ metadataClose: closing.promise, journalSave: writing.promise });
+  await f.opened(); f.consent(true); f.click("prepare"); await vi.waitFor(() => expect(f.journal.save).toHaveBeenCalledOnce());
+  const key = f.journal.save.mock.calls[0]![1].admission!.key;
+  if (action === "withdraw") f.consent(false);
+  else if (action === "background") { f.doc.visibilityState = "hidden"; f.doc.dispatchEvent(new Event("visibilitychange")); }
+  else f.abort.abort();
+  closing.resolve(); writing.resolve(); await vi.waitFor(() => expect(f.root.attributes.has("aria-busy")).toBe(false));
+  expect(f.stored().progress?.admission?.key).toBe(key); expect(f.request).not.toHaveBeenCalled();
+  expect(f.recorder).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
 });
 it("default-off hosts do no work on checkbox and preserve the explicit Start path", async () => {
   const f = fixture({ release: false }); await f.opened(); f.consent(true);
