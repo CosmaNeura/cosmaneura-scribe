@@ -39,7 +39,10 @@ from .provider_core_transport import (
     core_wire_uuid as uid,
 )
 from .provider_encounter_transport import ProviderEncounterAccount
-from .provider_native_core_transport import PreparationMetadata, ProviderNativeCoreTransport
+from .provider_native_core_transport import (
+    PreparationMetadata,
+    ProviderNativeCoreTransport,
+)
 from .provider_performance import observe_core_response, provider_phase_timing
 from .provider_preparation_handoff import (
     PreparationHandoff,
@@ -94,7 +97,13 @@ async def prepare_then_dispatch(
         (
             action == "capture-admissions"
             and set(payload)
-            == {"workspace_id", "binding_ref", "request_nonce", "attestation", "configured_capture"}
+            == {
+                "workspace_id",
+                "binding_ref",
+                "request_nonce",
+                "attestation",
+                "configured_capture",
+            }
         )
         or (
             action == "capture-operations"
@@ -124,10 +133,87 @@ async def prepare_then_dispatch(
         if await fresh() != before:
             raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
         retained = (
-            handoff.take(origin, before, revision, workspace, cast(str, binding), stage=preparation)
+            handoff.take(
+                origin,
+                before,
+                revision,
+                workspace,
+                cast(str, binding),
+                stage=preparation,
+            )
             if handoff is not None
             else None
         )
+        # Capabilities come only from the current validated mount, not caller flags.
+        # Unlike an opaque context, protocol support may survive a long setup read;
+        # every request still provides a fresh exact account/session and mount scope.
+        capability = (
+            handoff.compound_capability(origin, before, revision, workspace, cast(str, binding))
+            if handoff is not None and preparation == "admission"
+            else None
+        )
+        if retained is None and capability is not None:
+            assert handoff is not None
+            capability = handoff.acquire_compound(
+                origin, before, revision, workspace, cast(str, binding)
+            )
+            assert capability is not None
+            issued_at = handoff.now()  # Original receiver epoch, never reset by reply.
+            close_settled = False
+            try:
+                native = ProviderNativeCoreTransport(
+                    origin, fresh, workload, transport=transport, connections=connections
+                )
+                try:
+                    if not 0 <= handoff.now() - issued_at < 15:
+                        raise ProviderCoreUnavailable()
+                    if await fresh() != before:
+                        raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                    answer, context = await native.fresh_admission(
+                        payload,
+                        key,
+                        before,
+                        credential,
+                        revision,
+                        issued_at,
+                        native_metadata=native_metadata_requested,
+                        metadata=metadata_requested,
+                    )
+                finally:
+                    # Settle owning transport cleanup before any private handoff.
+                    # Close/cancellation failure is inside the generation guard.
+                    await native.close()
+                    close_settled = True
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise asyncio.CancelledError
+                need(0 <= handoff.now() - issued_at < 30)
+                # Final publication boundary: reply metadata and private context
+                # have already been validated with their separate current-account
+                # snapshots. Nothing awaits between this check and retaining the
+                # server-only credential. This cannot undo a remote durable claim.
+                if await fresh() != before:
+                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+                # The last account read may itself await. Recheck original age
+                # and cancellation afterward; no await remains before custody.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise asyncio.CancelledError
+                need(0 <= handoff.now() - issued_at < 30)
+                handoff.retain(origin, before, revision, workspace, cast(str, binding), context)
+                return answer
+            except BaseException:
+                # An uncertain new request never retries/falls back. A future
+                # admission requires a newly validated mount advertisement.
+                handoff.invalidate_compound(
+                    origin, before, revision, workspace, cast(str, binding), capability
+                )
+                raise
+            finally:
+                if close_settled:
+                    handoff.release_compound(
+                        origin, before, revision, workspace, cast(str, binding)
+                    )
         prepared_answer = None
         native_read_supported = retained.native_read_supported if retained is not None else False
         source_start_supported = retained.source_start_supported if retained is not None else False
@@ -251,7 +337,11 @@ async def prepare_then_dispatch(
                             need(len(raw) + len(chunk) <= 16384)
                             raw.extend(chunk)
                 value = obj(
-                    json.loads(raw, object_pairs_hook=unique, parse_constant=lambda _: need(False))
+                    json.loads(
+                        raw,
+                        object_pairs_hook=unique,
+                        parse_constant=lambda _: need(False),
+                    )
                 )
                 need(
                     set(value) == {"version", "action", "actor_ref", "tenant_ref", "result"}
@@ -390,7 +480,11 @@ async def prepare_then_dispatch(
                 # Old Core takes the original read path. This is a supported
                 # compatibility choice made before I/O, never failure fallback.
                 native = ProviderNativeCoreTransport(
-                    origin, fresh, workload, transport=transport, connections=connections
+                    origin,
+                    fresh,
+                    workload,
+                    transport=transport,
+                    connections=connections,
                 )
                 try:
                     _, metadata = await native.request(
