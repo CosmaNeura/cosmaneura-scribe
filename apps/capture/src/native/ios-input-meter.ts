@@ -6,14 +6,16 @@ import { parseInputSignal, presentInputSignal, type IosInputSignal } from "./ios
 export class IosInputMeter extends LitElement {
   static override styles = css`
     :host { display: block; min-width: 0; }
-    .feedback { padding: .75rem; border: 1px solid #b9d3ca; border-radius: .75rem; background: #f2f8f5; }
+    .feedback { box-sizing: border-box; display: flex; flex-direction: column; min-block-size: 16rem;
+      padding: .75rem; border: 1px solid #b9d3ca; border-radius: .75rem; background: #f2f8f5; }
     .attention { border-color: #bb7926; background: #fff5e5; color: #64410d; }
-    h3 { font-size: 1rem; margin: 0 0 .25rem; }
-    strong { font-size: 16px; }
+    h3 { font-size: 1rem; margin: 0 0 .25rem; line-height: 1.4; }
+    strong { font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
+    .input { margin-block-start: auto; }
     .bars { display: flex; align-items: end; gap: 4px; height: 32px; margin: .5rem 0; }
     .bar { width: 7px; border-radius: 3px; background: #d5ddd9; }
     .on { background: #167052; }
-    p { margin: .4rem 0; font-size: 16px; }
+    p { margin: .4rem 0; font-size: 16px; line-height: 1.4; }
   `;
   readSignal?: () => Promise<unknown>;
   #signal: IosInputSignal | null = null;
@@ -62,12 +64,12 @@ export class IosInputMeter extends LitElement {
     const bars = Math.ceil(state.level * 12);
     return html`<div class=${state.attention ? "feedback attention" : "feedback"}>
       <div role="status" aria-atomic="true"><h3>${state.title}</h3><p>${state.message}</p></div>
-      <strong>${state.route}</strong>
+      <div class="input"><strong>${state.route}</strong>
       <div class="bars" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100"
         aria-valuenow=${Math.round(state.level * 100)}>
         ${Array.from({ length: 12 }, (_, i) => html`<span aria-hidden="true"
           class=${i < bars ? "bar on" : "bar"} style=${`height:${8 + i * 2}px`}></span>`)}
-      </div></div>`;
+      </div></div></div>`;
   }
 }
 
