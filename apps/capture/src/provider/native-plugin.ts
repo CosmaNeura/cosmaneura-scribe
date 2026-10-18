@@ -7,6 +7,7 @@ export type ProviderSessionPhase = "disabled" | "loading" | "signedOut" | "signi
 export interface ProviderSessionState {
   readonly phase: ProviderSessionPhase; readonly revision: string;
   readonly providerDisplayName?: string;
+  readonly recordingSignInPreparationVersion?: 1;
 }
 export interface NativeProviderSession {
   getState(): Promise<ProviderSessionState>;
@@ -17,8 +18,12 @@ export interface NativeProviderSession {
 export interface NativeProviderState {
   readonly phase: string; readonly revision: string; readonly providerReady?: boolean; readonly nativeRecordingVersion?: number;
   readonly providerDisplayName?: string;
+  readonly recordingSignInPreparationVersion?: 1;
 }
 export interface ProviderNativePlugin {
+  /** Optional current-mount auth work only; no consent, session or source grant. */
+  prepareProviderSignIn?(request: { preparationId: string; revision: string; workspaceId: string; bindingRef: string }): Promise<{ revision: string }>;
+  abandonProviderSignIn?(request: { preparationId: string }): Promise<void>;
   /** Read-only metadata; never starts or admits a recording. */
   getProviderActiveRecording?(request: { revision: string }): Promise<unknown>;
   openProviderRecording?(request: { requestId: string; revision: string; workspaceId: string; bindingRef: string; sessionId: string; authorizationId?: string }): Promise<unknown>;

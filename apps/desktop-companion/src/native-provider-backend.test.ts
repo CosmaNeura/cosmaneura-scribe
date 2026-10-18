@@ -315,3 +315,31 @@ it("does not add an idle metadata-abandon reply wait to encounter release", asyn
     expect(request.mock.calls.some(([method]) => method.startsWith("source"))).toBe(false);
   } finally { acknowledge(); await backend.dispose(); }
 });
+
+
+it("binds desktop setup auth to the native version and current mount, with no source/admission call", async () => {
+  const host = new AbortController(), revision = crypto.randomUUID(), workspaceId = crypto.randomUUID();
+  const suffix = "01j" + "0".repeat(23), appointmentRef = "appointment_" + suffix, bindingRef = "scribe_capture_binding_" + suffix;
+  const encounter = { appointmentRef, title: "Invented visit", detail: "Metadata-only setup" };
+  const request = vi.fn(async (method: string, payload: Record<string, unknown>) => {
+    if (method === "providerRequest") return { status: 200, body: JSON.stringify(payload.action === "catalog"
+      ? { revision, encounters: [{ ...encounter, workspaceId }] }
+      : { revision, workspaceId, appointmentRef, bindingRef, encounter, recoveryScope: crypto.randomUUID() }) };
+    if (method === "prepareProviderSignIn") return { revision };
+    if (method === "abandonProviderSignIn" || method === "providerInitialWindowAbandon") return null;
+    throw new Error("Unexpected source or recording request");
+  });
+  const native = { signal: host.signal, request, isReady: () => true,
+    getState: async () => ({ phase: "ready", revision, recordingSignInPreparationVersion: 1 }),
+    addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
+  const backend = await connectDesktopNativeBackend(native, { signal: host.signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined } });
+  await backend.listEncounters(host.signal); const mount = await backend.openEncounter(appointmentRef, host.signal);
+  const action = new AbortController(); await mount.signInPreparation!.prepare(action.signal);
+  const payload = request.mock.calls.find(([method]) => method === "prepareProviderSignIn")![1];
+  expect(payload).toEqual({ preparationId: expect.any(String), revision, workspaceId, bindingRef });
+  expect(request.mock.calls.filter(([method]) => method === "providerRequest").map(([, payload]) => payload.action)).toEqual(["catalog", "mount"]);
+  action.abort(); await vi.waitFor(() => expect(request).toHaveBeenCalledWith("abandonProviderSignIn", { preparationId: payload.preparationId }));
+  host.abort(); expect(() => mount.signInPreparation!.prepare(new AbortController().signal)).toThrow();
+  await backend.dispose();
+});

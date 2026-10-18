@@ -5,7 +5,7 @@ import type { ProviderSessionState } from "./native-plugin";
 
 export const DESKTOP_PROVIDER_CHANNELS = Object.freeze({ request: "scribe:provider:workspace:v1", event: "scribe:provider:workspace-event:v1" });
 export type DesktopProviderMethod = "session_read" | "sign_in" | "sign_out" | "connect" | "disconnect" | "cancel"
-  | "list" | "create" | "encounter_setup" | "add_birth_date" | "visit_features" | "preflight" | "open" | "core" | "journal_load" | "journal_save" | "edit_load" | "edit_save" | "edit_clear" | "review_load" | "review_save" | "review_clear" | "recorder" | "open_core" | "play_passage";
+  | "signin_preparation" | "list" | "create" | "encounter_setup" | "add_birth_date" | "visit_features" | "preflight" | "open" | "core" | "journal_load" | "journal_save" | "edit_load" | "edit_save" | "edit_clear" | "review_load" | "review_save" | "review_clear" | "recorder" | "open_core" | "play_passage";
 export interface DesktopProviderRequest {
   readonly requestId: string;
   readonly method: DesktopProviderMethod;
@@ -22,7 +22,7 @@ export interface DesktopProviderPort {
   request(value: DesktopProviderRequest): Promise<unknown>;
   subscribe(listener: (event: unknown) => void): () => void;
 }
-const methods: readonly string[] = ["session_read", "sign_in", "sign_out", "connect", "disconnect", "cancel", "list", "create", "encounter_setup", "add_birth_date", "visit_features", "preflight", "open", "core",
+const methods: readonly string[] = ["session_read", "sign_in", "sign_out", "connect", "disconnect", "cancel", "signin_preparation", "list", "create", "encounter_setup", "add_birth_date", "visit_features", "preflight", "open", "core",
   "journal_load", "journal_save", "edit_load", "edit_save", "edit_clear", "review_load", "review_save", "review_clear", "recorder", "open_core", "play_passage"];
 
 export function parseDesktopProviderRequest(value: unknown): DesktopProviderRequest {
@@ -46,7 +46,8 @@ export function sessionState(value: unknown): ProviderSessionState {
   if (typeof state.phase !== "string" || !["disabled", "loading", "signedOut", "signingIn", "ready", "signOutPending", "unavailable"].includes(state.phase)) throw unavailable();
   const name = state.phase === "ready" ? speakerNameSuggestion(state.providerDisplayName) : undefined;
   return { phase: state.phase as ProviderSessionState["phase"], revision: uuid(state.revision),
-    ...(name !== undefined ? { providerDisplayName: name } : {}) };
+    ...(name !== undefined ? { providerDisplayName: name } : {}),
+    ...(state.phase === "ready" && state.recordingSignInPreparationVersion === 1 ? { recordingSignInPreparationVersion: 1 as const } : {}) };
 }
 export function exact(value: unknown, keys: readonly string[]): Record<string, unknown> {
   const data = object(value);

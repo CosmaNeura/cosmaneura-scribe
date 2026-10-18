@@ -22,6 +22,8 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "takeRecordingOpenRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "providerRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancelProviderRequest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "prepareProviderSignIn", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "abandonProviderSignIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "prepareProviderSource", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "closeProviderSource", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openProviderRecording", returnType: CAPPluginReturnPromise),
@@ -238,8 +240,37 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 value["providerDisplayName"] = name
             }
             value["providerReady"] = self.providerRequestsAvailable
-            if self.nativeRecordingAvailable { value["nativeRecordingVersion"] = 2 }
+            if self.nativeRecordingAvailable {
+                value["nativeRecordingVersion"] = 2
+                value["recordingSignInPreparationVersion"] = 1
+            }
             call.resolve(value)
+        }
+    }
+
+    @objc nonisolated public func prepareProviderSignIn(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            guard self.nativeRecordingAvailable, self.providerRequestsAvailable,
+                  Set(call.options.keys) == ["preparationId", "revision", "workspaceId", "bindingRef"],
+                  let preparation = call.getString("preparationId"), let revision = call.getString("revision"),
+                  let workspace = call.getString("workspaceId"), let binding = call.getString("bindingRef"),
+                  let connection = self.providerConnection else { return Self.rejectProvider(call) }
+            do {
+                try connection.prepareVisitSignIn(revision: revision, workspaceID: workspace,
+                    bindingRef: binding, preparationID: preparation)
+                call.resolve(["revision": revision])
+            } catch { Self.rejectProvider(call) }
+        }
+    }
+
+    @objc nonisolated public func abandonProviderSignIn(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            guard Set(call.options.keys) == ["preparationId"], let preparation = call.getString("preparationId")
+            else { return Self.rejectProvider(call) }
+            do {
+                try self.providerConnection?.abandonVisitSignIn(preparationID: preparation)
+                call.resolve()
+            } catch { Self.rejectProvider(call) }
         }
     }
 
@@ -260,7 +291,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                     else { throw ProviderNativeError.unavailable }
                     self.providerConnection = NativeProviderConnection(auth: auth,
                         wire: try ProviderNativeTransport(settings: settings),
-                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable)
+                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable, setupVisitSignInEnabled: self.nativeRecordingAvailable)
                 }
                 guard let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
                 try await self.recoverSources(connection: connection)
@@ -349,7 +380,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                     else { throw ProviderNativeError.unavailable }
                     self.providerConnection = NativeProviderConnection(auth: auth,
                         wire: try ProviderNativeTransport(settings: settings),
-                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable)
+                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable, setupVisitSignInEnabled: self.nativeRecordingAvailable)
                 }
                 self.providerConnection?.cancel(id)
                 call.resolve()
@@ -431,7 +462,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                     else { throw ProviderNativeError.unavailable }
                     self.providerConnection = NativeProviderConnection(auth: auth,
                         wire: try ProviderNativeTransport(settings: settings),
-                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable)
+                        nativeAdmissionPreparationEnabled: self.nativeRecordingAvailable, setupVisitSignInEnabled: self.nativeRecordingAvailable)
                 }
                 guard let connection = self.providerConnection else { throw ProviderNativeError.unavailable }
                 try await self.recoverSources(connection: connection)

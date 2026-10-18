@@ -1,3 +1,4 @@
+import { scopedSignInPreparation } from "./signin-preparation";
 import { parseEncounterDisplay } from "./encounter-display";
 import { speakerNameSuggestion } from "../../../review-ui/src/creator-edit";
 import { openingReviewFromCore } from "./opening-review";
@@ -41,6 +42,7 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
   if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "ios"
     || !Capacitor.isPluginAvailable("CosmasWorkspaceAuth")) throw unavailable();
   const abort = new AbortController();
+  let signInPreparationSupported = false;
   let nativeRecording = false;
   let nativeContextReuse = false;
   let revision: string | null = null, observed: NativeState | null = null;
@@ -114,6 +116,8 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     nativeRecording = [1, 2].includes(state.nativeRecordingVersion ?? 0) && typeof plugin.openProviderRecording === "function"
       && typeof plugin.providerRecordingCommand === "function";
     nativeContextReuse = nativeRecording && state.nativeRecordingVersion === 2;
+    signInPreparationSupported = state.recordingSignInPreparationVersion === 1
+      && typeof plugin.prepareProviderSignIn === "function" && typeof plugin.abandonProviderSignIn === "function";
     document.addEventListener("visibilitychange", resume);
     timer = setInterval(() => { void refresh(); }, 5000); // Existing native state check, no SDK token request.
   } catch (error) { await dispose(); throw error; }
@@ -247,6 +251,18 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       let recordingAuthorization: string | null = null;
       return {
         encounter: displayed, recoveryScope: value.recoveryScope, scope, signal,
+        ...(signInPreparationSupported ? { signInPreparation: scopedSignInPreparation({
+          signal: AbortSignal.any([abort.signal, signal]), current: () => current(signal),
+          prepare: async (preparationId, operationSignal) => {
+            current(signal); current(operationSignal);
+            const expected = revision;
+            const reply = await plugin.prepareProviderSignIn!({ preparationId, revision: expected,
+              workspaceId: scope.workspaceId, bindingRef: scope.bindingRef });
+            current(signal); current(operationSignal);
+            if (!record(reply) || Object.keys(reply).join() !== "revision" || reply.revision !== expected) throw unavailable();
+          },
+          abandon: preparationId => plugin.abandonProviderSignIn!({ preparationId }),
+        }) } : {}),
         ...(nativeContextReuse ? { recorderRechecksReview: true as const } : {}),
         ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
         ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),

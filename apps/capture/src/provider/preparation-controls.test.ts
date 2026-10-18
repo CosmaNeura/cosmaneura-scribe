@@ -48,7 +48,7 @@ class Controls {
 }
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); vi.unstubAllGlobals(); });
-function fixture(isIOS: boolean, initial: AudioPreflightSnapshot, openGate?: Promise<void>, onConsent?: () => void) {
+function fixture(isIOS: boolean, initial: AudioPreflightSnapshot, openGate?: Promise<void>, onConsent?: () => void, setup?: { ready: () => void; invalidated: () => void }) {
   const root = new Controls(isIOS, initial.desktopAudio === "meeting");
   vi.stubGlobal("Element", Control);
   vi.stubGlobal("Option", class extends Control { constructor(label: string, value: string) { super(root); this.textContent = label; this.value = value; } });
@@ -68,7 +68,8 @@ function fixture(isIOS: boolean, initial: AudioPreflightSnapshot, openGate?: Pro
   };
   const abort = new AbortController();
   const controls = bindPreparationControls(root as unknown as HTMLElement, { isIOS, signal: abort.signal,
-    open: async () => { await openGate; return port; }, remember: vi.fn(), ...(onConsent ? { onConsent } : {}) });
+    open: async () => { await openGate; return port; }, remember: vi.fn(), ...(onConsent ? { onConsent } : {}),
+    ...(setup ? { onSetupReady: setup.ready, onSetupInvalidated: setup.invalidated } : {}) });
   cleanups.push(() => controls.close());
   return { root, port, controls, publish, abort, requestAccess, selectWindow, closePort };
 }
@@ -214,4 +215,17 @@ describe("compact audio-free recording setup", () => {
     f.root.emit("click", "[data-preflight-access-optional]");
     expect(f.requestAccess).not.toHaveBeenCalled();
   });
+});
+
+
+it("emits setup readiness once across metadata polls, and only refreshes on a real config/readiness change", async () => {
+  const setup = { ready: vi.fn(), invalidated: vi.fn() }, f = fixture(true, readyIOS, undefined, undefined, setup);
+  await vi.waitFor(() => expect(setup.ready).toHaveBeenCalledOnce());
+  for (let n = 0; n < 20; n++) f.publish({ ...readyIOS });
+  expect(setup.ready).toHaveBeenCalledOnce(); expect(setup.invalidated).not.toHaveBeenCalled();
+  f.root.node('[name="language"]').value = "en-US+es-US"; f.root.emit("change", '[name="language"]');
+  expect(setup.invalidated).toHaveBeenCalledOnce(); expect(setup.ready).toHaveBeenCalledTimes(2);
+  f.publish({ ...readyIOS, status: "unavailable" }); expect(setup.invalidated).toHaveBeenCalledTimes(2);
+  f.publish(readyIOS); expect(setup.ready).toHaveBeenCalledTimes(3);
+  expect(f.requestAccess).not.toHaveBeenCalled(); expect(f.root.node('[name="consent"]').checked).toBe(false);
 });

@@ -186,6 +186,7 @@ export class DesktopProviderWorkspaceMain {
             connection.encounter = encounter;
             opened.signal.addEventListener("abort", () => { void this.closeEncounter(connection, encounter).catch(() => undefined); }, { once: true });
             return { encounterId: encounter.id, encounter: opened.encounter, scope: opened.scope,
+              ...(opened.signInPreparation ? { signInPreparationSupported: true as const } : {}),
               ...(opened.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
               ...(opened.openingReview ? { openingReview: opened.openingReview } : {}) };
           } catch (error) { opening.abort(); throw error; }
@@ -198,6 +199,17 @@ export class DesktopProviderWorkspaceMain {
       this.requireEncounter(connection, encounter, signal);
       let result: unknown;
       switch (request.method) {
+        case "signin_preparation": {
+          exact(payload, ["action"]);
+          const handle = encounter.value.signInPreparation;
+          if (!handle) throw unavailable();
+          if (payload.action === "abandon") await handle.abandon();
+          else if (payload.action === "prepare") {
+            if (encounter.recorder || encounter.recorderOpening) throw unavailable();
+            await handle.prepare(AbortSignal.any([signal, encounter.abort.signal, connection.abort.signal]));
+          } else throw unavailable();
+          result = null; break;
+        }
         case "preflight": {
           const action = payload.action;
           if (action === "open") {

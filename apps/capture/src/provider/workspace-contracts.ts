@@ -12,6 +12,7 @@ import type { ProviderOpeningReview } from "./opening-review";
 import type { ProviderEncounterSetup, ProviderAccount } from "./encounter-setup";
 import type { ProviderAudioPreflight } from "./audio-preflight";
 import type { PatientIdentity } from "./visit-features";
+import type { ProviderSignInPreparation } from "./signin-preparation";
 import type { ConsentPreparationRelease } from "./consent-preparation";
 
 /** Core supplies display values through its existing authorized encounter list. */
@@ -42,6 +43,8 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly recorderRechecksReview?: true;
   readonly signal: AbortSignal;
   readonly journal: ProviderWorkspaceJournal;
+  /** Optional native auth preparation for this mounted setup; never an admission. */
+  readonly signInPreparation?: ProviderSignInPreparation;
   readonly reviewJournal: (sessionId: string) => CreatorReviewJournal;
   readonly editJournal?: (sessionId: string) => CreatorEditJournal;
   /** Reauthorize and acquire the existing exclusive, creator-scoped recorder. */
