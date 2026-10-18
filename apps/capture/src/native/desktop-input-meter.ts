@@ -16,10 +16,12 @@ export function desktopInputLevel(value: { level: number; ageMs: number } | null
 export class DesktopInputMeter extends LitElement {
   static override styles = css`
     :host { display: block; min-width: 0; }
-    .inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .microphone-only { grid-template-columns: minmax(0, 1fr); }
     .input { display: grid; gap: 3px; min-width: 0; }
-    strong { font-size: 16px; color: #12372d; }
+    strong { font-size: 16px; color: #12372d; line-height: 1.4; }
     span, p { font-size: 15px; color: #536860; }
+    span { min-block-size: 2.8em; line-height: 1.4; }
     meter { width: 100%; height: 12px; accent-color: #167052; }
     p { margin: 6px 0 0; line-height: 1.4; }
   `;
@@ -47,14 +49,13 @@ export class DesktopInputMeter extends LitElement {
     const age = performance.now() - this.#receivedAt;
     const microphone = desktopInputLevel(this.#signal?.microphone, age);
     const meeting = desktopInputLevel(this.#signal?.meetingAudio, age);
-    return html`<div class="inputs" aria-label="Audio input activity">
+    return html`<div class=${this.microphoneOnly ? "inputs microphone-only" : "inputs"} aria-label="Audio input activity">
       ${(this.microphoneOnly ? [["Microphone", microphone]] : [["Microphone", microphone], ["Application audio", meeting]]).map(([name, value]) => {
         const state = value as ReturnType<typeof desktopInputLevel>;
         return html`<div class="input"><strong>${name}</strong><meter min="0" max="100"
           value=${Math.round(state.level * 100)} aria-label=${name}></meter><span>${state.label}</span></div>`;
       })}
-    </div>${microphone.level === 0 || !this.microphoneOnly && meeting.level === 0
-      ? html`<p>${this.microphoneOnly ? "Say a few words and check that both voices move the microphone bar." : "Check Microphone when you speak and Application audio when the other participant speaks."}</p>` : ""}`;
+    </div><p>${this.microphoneOnly ? "Say a few words and check that both voices move the microphone bar." : "Check Microphone when you speak and Application audio when the other participant speaks."}</p>`;
   }
 }
 if (!customElements.get("scribe-desktop-input-meter")) customElements.define("scribe-desktop-input-meter", DesktopInputMeter);
