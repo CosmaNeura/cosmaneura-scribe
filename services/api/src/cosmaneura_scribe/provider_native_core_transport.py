@@ -127,10 +127,97 @@ class ProviderNativeCoreTransport:
         admission_native_preparation: bool = False,
         admission_preparation_metadata: bool = False,
     ) -> dict[str, object]:
-        """Use one server-only context through the fully authenticated native route."""
-        selection = context.mount.selection
+        result, _, _ = await self._prepared_operation(
+            payload,
+            key,
+            before,
+            context,
+            workload,
+            admission=admission,
+            native_read=native_read,
+            admission_native_preparation=admission_native_preparation,
+            admission_preparation_metadata=admission_preparation_metadata,
+        )
+        return result
+
+    async def fresh_admission(
+        self,
+        payload: dict[str, object],
+        key: str,
+        before: ProviderEncounterAccount,
+        workload: SecretStr,
+        revision: UUID,
+        issued_at: float,
+        *,
+        native_metadata: bool,
+        metadata: bool,
+    ) -> tuple[dict[str, object], PreparedContext]:
+        result, private, capabilities = await self._prepared_operation(
+            payload,
+            key,
+            before,
+            None,
+            workload,
+            admission=True,
+            fresh_admission=True,
+            admission_native_preparation=native_metadata,
+            admission_preparation_metadata=metadata,
+        )
+        _require(private is not None)
+        private = _object(private)
+        _require(set(private) == {"context_token", "interaction_ref", "client_turn_id"})
+        _require(isinstance(private.get("context_token"), str))
+        context_token = SecretStr(cast(str, private.get("context_token")))
+        _secret(context_token)
+        interaction = private.get("interaction_ref")
         _require(
-            not (admission and native_read)
+            isinstance(interaction, str) and re.fullmatch(r"[A-Za-z0-9._~-]{16,160}", interaction)
+        )
+        selection = CoreProviderSelection(
+            before.recovery_scope,
+            uuid5(before.recovery_scope, str(revision)),
+            UUID(_uuid(payload["workspace_id"])),
+            cast(str, result["appointment_ref"]),
+            before.actor_ref,
+            before.tenant_ref,
+        )
+        context = PreparedContext(
+            CoreProviderMount(selection, cast(str, payload["binding_ref"])),
+            context_token,
+            cast(str, interaction),
+            UUID(_uuid(private["client_turn_id"])),
+            issued_at,
+            native_read_supported=capabilities["native_read"],
+            native_read_done=native_metadata,
+            source_start_supported=capabilities["source_start"],
+        )
+        # Private custody boundary, after token/interaction/turn validation and
+        # construction of the exact current mount scope. Never publish a context
+        # produced for an account that changed during the preceding reply work.
+        if await self.fresh() != before:
+            raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
+        return result, context
+
+    async def _prepared_operation(
+        self,
+        payload: dict[str, object],
+        key: str,
+        before: ProviderEncounterAccount,
+        context: PreparedContext | None,
+        workload: SecretStr,
+        *,
+        admission: bool = False,
+        fresh_admission: bool = False,
+        native_read: bool = False,
+        admission_native_preparation: bool = False,
+        admission_preparation_metadata: bool = False,
+    ) -> tuple[dict[str, object], dict[str, object] | None, dict[str, bool]]:
+        """Use one server-only context through the fully authenticated native route."""
+        selection = context.mount.selection if context is not None else None
+        _require(
+            (not fresh_admission or (admission and context is None))
+            and (fresh_admission or context is not None)
+            and not (admission and native_read)
             and (not (admission_native_preparation or admission_preparation_metadata) or admission)
             and not (admission_native_preparation and admission_preparation_metadata)
         )
@@ -150,23 +237,37 @@ class ProviderNativeCoreTransport:
                 == ("native_recording_preparation" if native_read else "prepare_recording_window")
                 and (not native_read or set(_object(payload["operation"])) == {"kind"})
             )
-            and payload["workspace_id"] == str(selection.workspace_id)
-            and payload["binding_ref"] == context.mount.binding_ref
-            and (before.actor_ref, before.tenant_ref) == (selection.actor_ref, selection.tenant_ref)
+            and (
+                fresh_admission
+                or (
+                    selection is not None
+                    and context is not None
+                    and payload["workspace_id"] == str(selection.workspace_id)
+                    and payload["binding_ref"] == context.mount.binding_ref
+                    and (before.actor_ref, before.tenant_ref)
+                    == (selection.actor_ref, selection.tenant_ref)
+                )
+            )
         )
         request = {
             **payload,
-            "action": "prepared_admission"
+            "action": "fresh_admission"
+            if fresh_admission
+            else "prepared_admission"
             if admission
             else ("prepared_native_read" if native_read else "prepared_window"),
             "expected_actor_ref": before.actor_ref,
             "expected_tenant_ref": before.tenant_ref,
-            "prepared_context": {
+        }
+        if fresh_admission:
+            request["retain_preparation_context"] = True
+        else:
+            assert context is not None
+            request["prepared_context"] = {
                 "context_token": _secret(context.token),
                 "interaction_ref": context.interaction_ref,
                 "client_turn_id": str(context.turn),
-            },
-        }
+            }
         if admission_native_preparation:
             request["include_native_preparation"] = True
         if admission_preparation_metadata:
@@ -213,7 +314,11 @@ class ProviderNativeCoreTransport:
                         _require(len(raw) + len(chunk) <= MAX_CORE_CAPTURE_RESPONSE_BYTES)
                         raw.extend(chunk)
             value = _object(
-                json.loads(raw, object_pairs_hook=_unique, parse_constant=lambda _: _require(False))
+                json.loads(
+                    raw,
+                    object_pairs_hook=_unique,
+                    parse_constant=lambda _: _require(False),
+                )
             )
             _require(
                 set(value) == {"version", "action", "actor_ref", "tenant_ref", "result"}
@@ -223,6 +328,21 @@ class ProviderNativeCoreTransport:
                 and value["tenant_ref"] == before.tenant_ref
             )
             result = _object(value["result"])
+            private = None
+            if fresh_admission:
+                _require("prepared_context" in result)
+                private = _object(result.pop("prepared_context"))
+                _require(set(private) == {"context_token", "interaction_ref", "client_turn_id"})
+            capabilities = {
+                "native_read": response.headers.get_list(
+                    "x-cosmaneura-prepared-native-read-version"
+                )
+                == ["1"],
+                "source_start": response.headers.get_list(
+                    "x-cosmaneura-prepared-source-start-version"
+                )
+                == ["1"],
+            }
             if admission:
                 _require(
                     set(result)
@@ -241,16 +361,30 @@ class ProviderNativeCoreTransport:
                     }
                     | ({"native_recording_preparation"} if admission_native_preparation else set())
                     | ({"preparation_metadata"} if admission_preparation_metadata else set())
-                    and result["appointment_ref"] == selection.appointment_ref
+                    and (
+                        isinstance(result["appointment_ref"], str)
+                        and re.fullmatch(
+                            r"appointment_[0-7][0-9a-hjkmnp-tv-z]{25}", result["appointment_ref"]
+                        )
+                        if fresh_admission
+                        else selection is not None
+                        and result["appointment_ref"] == selection.appointment_ref
+                    )
                     and isinstance(result["operation_ref"], str)
                     and re.fullmatch(
-                        r"scribe_admission_[0-7][0-9a-hjkmnp-tv-z]{25}", result["operation_ref"]
+                        r"scribe_admission_[0-7][0-9a-hjkmnp-tv-z]{25}",
+                        result["operation_ref"],
                     )
                     and result["status"] == "admitted"
                     and result["configured_capture"] == payload["configured_capture"]
                 )
                 _uuid(result["session_id"])
                 _uuid(result["consent_record_id"])
+                if fresh_admission and await self.fresh() != before:
+                    # The admission identifiers are validated; requested metadata
+                    # is parsed next under a fresh current-account snapshot. The
+                    # unchanged post-response snapshot still follows full parsing.
+                    raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
                 if admission_native_preparation:
                     prepared = _validated_native_preparation(
                         result["native_recording_preparation"], payload["workspace_id"]
@@ -303,7 +437,7 @@ class ProviderNativeCoreTransport:
                 raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
             if not admission and not native_read and await self.fresh() != before:
                 raise ProviderCoreUnavailable("core_provider_access_unavailable", 403)
-            return result
+            return result, private, capabilities
         except ProviderCoreUnavailable:
             raise
         except Exception:
@@ -370,7 +504,8 @@ class ProviderNativeCoreTransport:
                 before = await self.fresh()
                 issued_at = handoff.now() if handoff is not None else 0.0
                 request.update(
-                    expected_actor_ref=before.actor_ref, expected_tenant_ref=before.tenant_ref
+                    expected_actor_ref=before.actor_ref,
+                    expected_tenant_ref=before.tenant_ref,
                 )
                 with provider_phase_timing("workload_token"):
                     workload = await self.workload()
@@ -387,7 +522,11 @@ class ProviderNativeCoreTransport:
                     if revision is None:
                         raise ProviderCoreUnavailable()
                     retained = handoff.take(
-                        self.origin, before, revision, workspace, cast(str, request["binding_ref"])
+                        self.origin,
+                        before,
+                        revision,
+                        workspace,
+                        cast(str, request["binding_ref"]),
                     )
                     if (
                         retained is not None
@@ -450,7 +589,9 @@ class ProviderNativeCoreTransport:
                             raw.extend(chunk)
                     value = _object(
                         json.loads(
-                            raw, object_pairs_hook=_unique, parse_constant=lambda _: _require(False)
+                            raw,
+                            object_pairs_hook=_unique,
+                            parse_constant=lambda _: _require(False),
                         )
                     )
                     _require(
@@ -477,7 +618,8 @@ class ProviderNativeCoreTransport:
                     _require(
                         isinstance(binding, str)
                         and re.fullmatch(
-                            r"scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}", binding
+                            r"scribe_capture_binding_[0-7][0-9a-hjkmnp-tv-z]{25}",
+                            binding,
                         )
                     )
                     if action != "mount":
@@ -619,6 +761,25 @@ class ProviderNativeCoreTransport:
                                 )
                                 == ["1"]
                             ),
+                        ),
+                    )
+                    handoff.advertise_compound(
+                        self.origin,
+                        before,
+                        revision,
+                        workspace,
+                        cast(str, binding),
+                        supported=(
+                            response.headers.get_list("x-cosmaneura-compound-admission-version")
+                            == ["1"]
+                            and response.headers.get_list(
+                                "x-cosmaneura-admission-native-preparation-version"
+                            )
+                            == ["1"]
+                            and response.headers.get_list(
+                                "x-cosmaneura-admission-preparation-metadata-version"
+                            )
+                            == ["1"]
                         ),
                     )
                 return before, result

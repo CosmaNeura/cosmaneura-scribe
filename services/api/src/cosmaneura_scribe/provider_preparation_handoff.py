@@ -10,11 +10,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import SecretStr
 
-from .provider_core_transport import CoreProviderMount
+from .provider_core_transport import CoreProviderMount, ProviderCoreUnavailable
 from .provider_encounter_transport import ProviderEncounterAccount
 
 
@@ -60,6 +60,12 @@ class PreparationHandoff:
         self._clock = clock
         self._pending: OrderedDict[tuple[object, ...], PreparedContext] = OrderedDict()
         self._expiry_handle: asyncio.TimerHandle | None = None
+        # Protocol metadata only: no token, consent or authorization snapshot.
+        # It can outlive context TTL under the exact current mounted scope.
+        self._compound: OrderedDict[tuple[object, ...], UUID | None] = OrderedDict()
+        # Counts belong to the scope, including older remount generations.
+        # Only confirmed owning-transport cleanup releases an active call.
+        self._compound_active: dict[tuple[object, ...], int] = {}
 
     def _scope(
         self,
@@ -85,6 +91,111 @@ class PreparationHandoff:
             workspace,
             binding,
         )
+
+    def advertise_compound(
+        self,
+        origin: str,
+        account: ProviderEncounterAccount,
+        revision: UUID,
+        workspace: str,
+        binding: str,
+        *,
+        supported: bool,
+    ) -> None:
+        """Only a completely validated current mount response calls this seam."""
+        if type(supported) is not bool:
+            raise ValueError("invalid_compound_advertisement")
+        scope = self._scope(origin, account, revision, workspace, binding)
+        if supported:
+            scopes = self._compound.keys() | self._compound_active.keys()
+            if scope not in scopes and len(scopes) >= 64:
+                idle = next(
+                    (
+                        key
+                        for key, generation in self._compound.items()
+                        if generation is not None and key not in self._compound_active
+                    ),
+                    None,
+                )
+                if idle is None:
+                    raise ProviderCoreUnavailable("core_provider_mount_required", 409)
+                del self._compound[idle]
+            self._compound.pop(scope, None)
+            self._compound[scope] = uuid4()
+        else:
+            self._compound.pop(scope, None)
+
+    def compound_capability(
+        self,
+        origin: str,
+        account: ProviderEncounterAccount,
+        revision: UUID,
+        workspace: str,
+        binding: str,
+    ) -> UUID | None:
+        # Caller must supply its just-authenticated account, not a saved claim.
+        scope = self._scope(origin, account, revision, workspace, binding)
+        if scope in self._compound and self._compound[scope] is None:
+            raise ProviderCoreUnavailable("core_provider_mount_required", 409)
+        return self._compound.get(scope)
+
+    def acquire_compound(
+        self,
+        origin: str,
+        account: ProviderEncounterAccount,
+        revision: UUID,
+        workspace: str,
+        binding: str,
+    ) -> UUID | None:
+        """Atomically count only a call that will dispatch this capability."""
+        generation = self.compound_capability(origin, account, revision, workspace, binding)
+        if generation is not None:
+            scope = self._scope(origin, account, revision, workspace, binding)
+            self._compound_active[scope] = self._compound_active.get(scope, 0) + 1
+            self._compound.move_to_end(scope)
+        return generation
+
+    def release_compound(
+        self,
+        origin: str,
+        account: ProviderEncounterAccount,
+        revision: UUID,
+        workspace: str,
+        binding: str,
+    ) -> None:
+        """Release an exact settled call even if a remount replaced metadata."""
+        scope = self._scope(origin, account, revision, workspace, binding)
+        active = self._compound_active.get(scope)
+        if active is None:
+            return
+        if active == 1:
+            del self._compound_active[scope]
+        else:
+            self._compound_active[scope] = active - 1
+        if self._compound.get(scope) is not None:
+            self._compound.move_to_end(scope)
+
+    def invalidate_compound(
+        self,
+        origin: str,
+        account: ProviderEncounterAccount,
+        revision: UUID,
+        workspace: str,
+        binding: str,
+        generation: UUID,
+    ) -> None:
+        scope = self._scope(origin, account, revision, workspace, binding)
+        if self._compound.get(scope) == generation:
+            self._compound[scope] = None
+
+    def close(self) -> None:
+        """Discard process-local state when its owning receiver is disposed."""
+        if self._expiry_handle is not None:
+            self._expiry_handle.cancel()
+            self._expiry_handle = None
+        self._pending.clear()
+        self._compound.clear()
+        self._compound_active.clear()
 
     def _expire(self) -> None:
         now = self._clock()
