@@ -1,3 +1,4 @@
+import { setupSignInPreparation } from "./signin-preparation";
 import "../capture-app";
 import { Capacitor } from "@capacitor/core";
 import type { CaptureApp } from "../capture-app";
@@ -60,6 +61,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let prepareSelectedTemplate = false;
   let consentRenewalOffered = false;
   let consentAction: HTMLButtonElement | null = null;
+  let preparationSignIn: ReturnType<typeof setupSignInPreparation> | null = null;
   let preparationControls: ReturnType<typeof bindPreparationControls> | null = null;
   type RecordingAction = Readonly<{ microphone: MicrophoneInput; signal: AbortSignal; desktopAudio?: "microphone" | "meeting"; desktopRecordAction?: "microphone" | "meeting"; meetingWindowId?: string }>;
   let pendingRecordingAction: AbortController | null = null;
@@ -148,6 +150,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    preparationSignIn?.close(); preparationSignIn = null;
     const controls = preparationControls;
     // A canceled consent flight may still be closing metadata or finishing its
     // encrypted journal write. Join both before releasing this encounter.
@@ -468,13 +471,19 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(context);
     const prepareOnConsent = consentPreparationEnabled(host.consentPreparation);
     show(recordingPreparationMarkup({ isIOS, language: preferredLanguage, modality: preferredModality, audio: preferredDesktopAudio, consentPreparation: prepareOnConsent }));
+    const n = generation;
+    const warm = setupSignInPreparation(context.signInPreparation,
+      () => authorized(n) && journal.progress === null && document.visibilityState === "visible");
+    preparationSignIn = warm;
     const controls = bindPreparationControls(content, { isIOS, signal: client!.signal,
+      onSetupReady: () => warm.ready(), onSetupInvalidated: () => warm.invalidate(),
       ...(host.audioPreflight ? { open: host.audioPreflight } : {}), remember: value => { savedPreferences?.save(value); },
       ...(prepareOnConsent ? { onConsent: () => {
         if (consentPreparationEnabled(host.consentPreparation)) void run(() => initialConsentPreparation(false), "prepare");
       } } : {}) });
     preparationControls = controls;
-    disposeContent = () => { void controls.close().catch(() => { notice.textContent = "Microphone check could not close. Reopen this visit before recording."; }); };
+    if (controls.ready()) warm.ready();
+    disposeContent = () => { warm.close(); if (preparationSignIn === warm) preparationSignIn = null; void controls.close().catch(() => { notice.textContent = "Microphone check could not close. Reopen this visit before recording."; }); };
     consentAction = content.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]');
   };
   const initialPreparationStatus = (): void => {
@@ -752,6 +761,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(isMicrophoneInput(microphone));
     const preflight = preparationControls?.snapshot();
     pendingRecordingAction = new AbortController();
+    preparationSignIn?.handoff(pendingRecordingAction.signal);
     const sourceChoice: ConsentedSourceChoice = Object.freeze({ microphone, signal: pendingRecordingAction.signal,
       ...(preflight?.selectedInputId ? { inputId: preflight.selectedInputId } : {}),
       ...(!isIOS && (desktopAudio === "microphone" || desktopAudio === "meeting") ? { desktopAudio,
@@ -1495,10 +1505,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     return content.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${name}"]`)?.value ?? "";
   }
   const consentChanged = (event: Event): void => {
+    if (event.target === content.querySelector('[name="consent"]')
+      && !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked) preparationSignIn?.invalidate();
     if (consentPreparationPending && event.target === content.querySelector('[name="consent"]')
       && !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked) cancelRecordingAction();
   };
   const foregroundChanged = (): void => {
+    if (document.visibilityState !== "visible") preparationSignIn?.invalidate();
+    else if (preparationControls?.ready()) preparationSignIn?.ready();
     if (document.visibilityState !== "visible" && pendingRecordingAction) cancelRecordingAction();
   };
   let disposing: Promise<void> | null = null;

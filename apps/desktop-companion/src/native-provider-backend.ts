@@ -1,3 +1,4 @@
+import { scopedSignInPreparation } from "../../capture/src/provider/signin-preparation";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
 import { parseEncounterDisplay } from "../../capture/src/provider/encounter-display";
 import { openingReviewFromCore } from "../../capture/src/provider/opening-review";
@@ -164,6 +165,16 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       };
       return {
         release, retireSource, encounter, scope, signal: mountedSignal, recoveryScope: uuid(value.recoveryScope),
+        ...(state.recordingSignInPreparationVersion === 1 ? { signInPreparation: scopedSignInPreparation({
+          signal: mountedSignal, current: () => current(mountedSignal),
+          prepare: async (preparationId, operationSignal) => {
+            const reply = exact(await native.request("prepareProviderSignIn", { preparationId, revision,
+              workspaceId: scope.workspaceId, bindingRef: scope.bindingRef }, operationSignal), ["revision"]);
+            current(mountedSignal); current(operationSignal);
+            if (reply.revision !== revision) throw unavailable();
+          },
+          abandon: preparationId => native.request("abandonProviderSignIn", { preparationId }).then(() => undefined),
+        }) } : {}),
         ...(object(value.encounter).admission_metadata_v1 === true ? { admissionMetadataSupported: true as const } : {}),
         ...(supportsNoteOpening ? { noteOpeningSupported: true as const } : {}),
         ...(openingNonce ? { openingReview: openingReviewFromCore(scope, openingNonce, value.openingReview) } : {}),

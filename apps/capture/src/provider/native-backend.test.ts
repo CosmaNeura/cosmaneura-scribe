@@ -53,6 +53,8 @@ function fixture() {
   };
   const plugin = {
     getProviderState: vi.fn(async () => state),
+    prepareProviderSignIn: vi.fn<NonNullable<ProviderNativePlugin["prepareProviderSignIn"]>>(async value => ({ revision: value.revision })),
+    abandonProviderSignIn: vi.fn(async () => undefined),
     getProviderActiveRecording: vi.fn<NonNullable<ProviderNativePlugin["getProviderActiveRecording"]>>(async () => ({
       version: 1, revision: state.revision, recording: { workspaceId: workspace, sessionId: session },
     })),
@@ -495,4 +497,25 @@ it("cancels an in-flight native context and cannot adopt its late acknowledgemen
     expect(f.plugin.cancelProviderRequest).toHaveBeenCalledWith({ requestId: request.requestId });
     expect(() => mount.nativeRecording!.open(session, crypto.randomUUID())).toThrow();
   } finally { await backend.dispose(); }
+});
+
+
+it("exposes scoped iOS auth preparation only for the native version, with no JS credential or source action", async () => {
+  const f = fixture(); f.setState({ ...f.state, recordingSignInPreparationVersion: 1 }, false);
+  const backend = await f.connect(); await backend.listEncounters(backend.signal);
+  const mount = await backend.openEncounter(appointment, backend.signal), action = new AbortController();
+  await mount.signInPreparation!.prepare(action.signal);
+  const payload = f.plugin.prepareProviderSignIn.mock.calls[0]![0];
+  expect(payload).toEqual({ preparationId: expect.any(String), revision: f.state.revision, workspaceId: workspace, bindingRef: binding });
+  expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual(["catalog", "mount"]);
+  expect(f.plugin.getToken).not.toHaveBeenCalled(); expect(f.plugin.prepareProviderSource).not.toHaveBeenCalled();
+  expect(f.plugin.openProviderRecording).not.toHaveBeenCalled(); action.abort();
+  await vi.waitFor(() => expect(f.plugin.abandonProviderSignIn).toHaveBeenCalledWith({ preparationId: payload.preparationId }));
+  await backend.dispose();
+});
+
+it("retains the legacy iOS path without advertising the native auth hook", async () => {
+  const f = fixture(), backend = await f.connect(); await backend.listEncounters(backend.signal);
+  const mount = await backend.openEncounter(appointment, backend.signal); expect(mount.signInPreparation).toBeUndefined();
+  expect(f.plugin.prepareProviderSignIn).not.toHaveBeenCalled(); await backend.dispose();
 });

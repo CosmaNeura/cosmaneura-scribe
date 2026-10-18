@@ -30,6 +30,7 @@ private func encoded(_ value: [String: Any]) throws -> Data {
     var loaded = true
     var identity: NativeAuthIdentity? = try! .init(coreUserID: "user_synthetic", sessionID: "sess_synthetic")
     var tokens = 0, revoked = false
+    var holdToken = false, tokenWait: CheckedContinuation<Void, Never>?
     var lifetime = 120
     var onToken: (() -> Void)?
     func signIn() async throws { throw NativeAuthError.signInFailed }
@@ -37,6 +38,7 @@ private func encoded(_ value: [String: Any]) throws -> Data {
     func freshToken() async throws -> String? {
         tokens += 1
         onToken?()
+        if holdToken { await withCheckedContinuation { tokenWait = $0 } }
         if revoked { throw NativeAuthError.tokenUnavailable }
         let now = Int(Date().timeIntervalSince1970)
         func base64(_ data: Data) -> String {
@@ -60,6 +62,7 @@ private func encoded(_ value: [String: Any]) throws -> Data {
     var calls: [ProviderNativeRequest] = []
     var tokensSeen: [String] = []
     var admissionFault = "none", checkedAge = 0.0
+    var nativeCapability = false
     var holdAction: ProviderNativeAction?, wait: CheckedContinuation<Void, Never>?
     var loseWindowReply = false, windowStatus = 200
     var completeWindow = false, windowFault = "none", sourceFault = "none", sourceStatus = 200
@@ -78,7 +81,8 @@ private func encoded(_ value: [String: Any]) throws -> Data {
             return ProviderNativeReply(status: 200, body: try encoded([
                 "revision": request.revision, "workspaceId": workspace, "bindingRef": binding,
                 "recoveryScope": recovery, "appointmentRef": appointment,
-                "encounter": ["appointmentRef": appointment, "admission_metadata_v1": true],
+                "encounter": ["appointmentRef": appointment, "admission_metadata_v1": true,
+                    "admission_native_preparation_v1": nativeCapability, "native_recording_preparation_v1": nativeCapability],
             ]))
         }
         if request.action == .admission {
@@ -113,6 +117,12 @@ private func encoded(_ value: [String: Any]) throws -> Data {
                 "appointment_ref": appointment, "operation_ref": "scribe_admission_01j00000000000000000000000",
                 "consent_record_id": consent, "session_id": session, "status": "admitted",
                 "configured_capture": body["configured_capture"]!, "preparation_metadata": metadata]
+            if body["native_recording_preparation"] as? Bool == true {
+                answer.removeValue(forKey: "preparation_metadata")
+                answer["native_recording_preparation"] = ["schema_version": "1.0", "encryption_key": metadata["encryption_key"]!,
+                    "context": ["schema_version": "1.0", "workspace_id": workspace, "tenant_id": recovery,
+                        "session_id": session, "status": "created"]]
+            }
             if admissionFault == "appointment" { answer["appointment_ref"] = "appointment_01j00000000000000000000001" }
             if admissionFault == "nonce" || admissionFault == "legacy-nonce" { answer["request_nonce"] = UUID().uuidString.lowercased() }
             if admissionFault.hasPrefix("legacy") || admissionFault == "missing-status" { answer.removeValue(forKey: "status") }
@@ -184,16 +194,16 @@ private func encoded(_ value: [String: Any]) throws -> Data {
     let auth: NativeWorkspaceAuth, wire: Wire, connection: NativeProviderConnection
     var admissionKey = "admission:" + UUID().uuidString.lowercased()
     var admissionNonce = UUID().uuidString.lowercased(), receipt = Data()
-    init(enabled: Bool = true, warm: Bool = false) throws {
-        wire = Wire(clock)
+    init(enabled: Bool = true, warm: Bool = false, native: Bool = false, setup: Bool = false) throws {
+        wire = Wire(clock); wire.nativeCapability = native
         let policy = try NativeTokenPolicy(issuer: "https://resolved-emu-53.clerk.accounts.dev", audience: nil,
             authorizedParty: NativeWorkspaceOrigin.desktopApp.rawValue, identityProfile: .coreStagingPersonal)
         let driver = self.driver
         auth = NativeWorkspaceAuth(enabled: true, organizationID: nil, tokenPolicy: policy,
             driver: { driver }, accessBlock: { Block() })
         let clock = self.clock
-        connection = NativeProviderConnection(auth: auth, wire: wire, desktopInitialWindowEnabled: enabled,
-            desktopVisitSignInEnabled: warm,
+        connection = NativeProviderConnection(auth: auth, wire: wire, nativeAdmissionPreparationEnabled: native, desktopInitialWindowEnabled: enabled,
+            desktopVisitSignInEnabled: warm, setupVisitSignInEnabled: native || setup,
             desktopWallNow: { clock.wallReads += 1; return clock.wall }, contextNow: { clock.instant }, timingNow: {
                 if let delay = clock.eligibilityDelay {
                     clock.timingReads += 1
@@ -215,11 +225,12 @@ private func encoded(_ value: [String: Any]) throws -> Data {
         _ = try await connection.send(request(action: "mount", key: "mount:" + UUID().uuidString.lowercased(),
             body: ["workspace_id": wire.workspace]))
     }
-    func admit() async throws {
+    func admit(desktop: Bool = true) async throws {
+        var body: [String: Any] = ["workspace_id": wire.workspace, "binding_ref": wire.binding, "request_nonce": admissionNonce,
+            "attestation": ["all_parties_consented": true], "configured_capture": ["schema_version": "1.0", "language_mode": "en-US"]]
+        if desktop { body["preparation_metadata"] = true }
         let response = try await connection.send(request(action: "capture-admissions", key: admissionKey,
-            body: ["workspace_id": wire.workspace, "binding_ref": wire.binding, "request_nonce": admissionNonce,
-                "attestation": ["all_parties_consented": true], "configured_capture": ["schema_version": "1.0", "language_mode": "en-US"],
-                "preparation_metadata": true]))
+            body: body))
         receipt = response.body
     }
     func prepare() async throws { try await mount(); try await admit(); try require(driver.tokens == 2) }
@@ -573,6 +584,91 @@ private func encoded(_ value: [String: Any]) throws -> Data {
             } else { try await rejected { _ = try await task.value } }
             f.connection.close(); visitChecks += 1
         }
+        var setupChecks = 0
+        do {
+            let f = try Fixture(warm: true, setup: true); try await f.mount();
+            for _ in 0..<10 { await Task.yield() }; try require(f.driver.tokens == 1)
+            // The newly capable host suppresses the redundant post-mount mint.
+            _ = try await f.connection.send(f.window()); try require(f.driver.tokens == 2)
+            let owner = UUID().uuidString.lowercased(); f.driver.holdToken = true
+            try f.connection.prepareVisitSignIn(revision: f.auth.state().revision, workspaceID: f.wire.workspace,
+                bindingRef: f.wire.binding, preparationID: owner)
+            try await until { f.driver.tokenWait != nil }
+            for _ in 0..<10 { try f.connection.prepareVisitSignIn(revision: f.auth.state().revision,
+                workspaceID: f.wire.workspace, bindingRef: f.wire.binding, preparationID: owner) }
+            try require(f.driver.tokens == 3 && f.wire.calls.count == 2) // No admission/source/audio at setup.
+            f.driver.holdToken = false; f.driver.tokenWait?.resume(); f.driver.tokenWait = nil
+            try await until { f.clock.wallReads >= 3 }; try await f.admit(); try require(f.driver.tokens == 3)
+            f.connection.close(); setupChecks += 1
+        }
+        for shape in ["native-five", "desktop-six", "extra", "injected"] {
+            let f = try Fixture(enabled: false, native: true); try await f.mount()
+            let owner = UUID().uuidString.lowercased()
+            try f.connection.prepareVisitSignIn(revision: f.auth.state().revision, workspaceID: f.wire.workspace,
+                bindingRef: f.wire.binding, preparationID: owner)
+            try await until { f.clock.wallReads >= 1 }
+            if shape == "native-five" {
+                try await f.admit(desktop: false); try require(f.driver.tokens == 2)
+                let body = try JSONSerialization.jsonObject(with: f.wire.calls.last!.body) as! [String: Any]
+                try require(body["native_recording_preparation"] as? Bool == true && body["preparation_metadata"] == nil)
+            } else if shape == "desktop-six" { try await f.admit(); try require(f.driver.tokens == 3) }
+            else {
+                var body: [String: Any] = ["workspace_id": f.wire.workspace, "binding_ref": f.wire.binding,
+                    "request_nonce": f.admissionNonce, "attestation": ["all_parties_consented": true], "configured_capture": ["schema_version": "1.0", "language_mode": "en-US"]]
+                body[shape == "extra" ? "permission" : "native_recording_preparation"] = true
+                let request = try f.request(action: "capture-admissions", key: f.admissionKey, body: body)
+                if shape == "injected" { try await rejected { _ = try await f.connection.send(request) }; try require(f.wire.calls.count == 1) }
+                else { _ = try await f.connection.send(request); try require(f.driver.tokens == 3) }
+            }
+            f.connection.close(); setupChecks += 1
+        }
+        for cancel in ["before-start", "pending", "ready", "foreign-owner", "new-mount", "account", "wrong-revision", "wrong-binding"] {
+            let f = try Fixture(enabled: false, native: true); try await f.mount()
+            let owner = UUID().uuidString.lowercased(), revision = f.auth.state().revision
+            if cancel == "before-start" {
+                try f.connection.abandonVisitSignIn(preparationID: owner)
+                try await rejected { try f.connection.prepareVisitSignIn(revision: revision, workspaceID: f.wire.workspace,
+                    bindingRef: f.wire.binding, preparationID: owner) }
+                try require(f.driver.tokens == 1)
+            } else if cancel == "wrong-revision" || cancel == "wrong-binding" {
+                try await rejected { try f.connection.prepareVisitSignIn(revision: cancel == "wrong-revision" ? UUID().uuidString : revision,
+                    workspaceID: f.wire.workspace, bindingRef: cancel == "wrong-binding" ? "foreign" : f.wire.binding, preparationID: owner) }
+                try require(f.driver.tokens == 1)
+            } else {
+                f.driver.holdToken = cancel == "pending" || cancel == "account"
+                try f.connection.prepareVisitSignIn(revision: revision, workspaceID: f.wire.workspace, bindingRef: f.wire.binding, preparationID: owner)
+                try await until { f.driver.holdToken ? f.driver.tokenWait != nil : f.clock.wallReads >= 1 }
+                if cancel == "foreign-owner" { try f.connection.abandonVisitSignIn(preparationID: UUID().uuidString.lowercased()) }
+                else if cancel == "new-mount" { try await f.mount() }
+                else if cancel == "account" { f.driver.identity = try .init(coreUserID: "user_foreign", sessionID: "sess_foreign"); _ = f.auth.state() }
+                else { try f.connection.abandonVisitSignIn(preparationID: owner) }
+                f.driver.holdToken = false; f.driver.tokenWait?.resume(); f.driver.tokenWait = nil
+                if cancel == "account" { try await rejected { try f.connection.prepareVisitSignIn(revision: revision,
+                    workspaceID: f.wire.workspace, bindingRef: f.wire.binding, preparationID: owner) } }
+                else {
+                    try await f.admit(desktop: false)
+                    try require(f.driver.tokens == (cancel == "foreign-owner" ? 2 : cancel == "new-mount" ? 4 : 3))
+                }
+            }
+            f.connection.close(); setupChecks += 1
+        }
+        do {
+            let f = try Fixture(enabled: false, native: true); try await f.mount()
+            let owner = UUID().uuidString.lowercased()
+            try f.connection.prepareVisitSignIn(revision: f.auth.state().revision, workspaceID: f.wire.workspace, bindingRef: f.wire.binding, preparationID: owner)
+            try await until { f.clock.wallReads >= 1 }; f.clock.advance(1)
+            try f.connection.prepareVisitSignIn(revision: f.auth.state().revision, workspaceID: f.wire.workspace, bindingRef: f.wire.binding, preparationID: owner)
+            try await until { f.driver.tokens == 3 && f.clock.wallReads >= 2 }
+            try await f.admit(desktop: false); try require(f.driver.tokens == 3)
+            f.connection.close(); setupChecks += 1
+        }
+        do {
+            let f = try Fixture(); try await f.mount()
+            try await rejected { try f.connection.prepareVisitSignIn(revision: f.auth.state().revision,
+                workspaceID: f.wire.workspace, bindingRef: f.wire.binding, preparationID: UUID().uuidString.lowercased()) }
+            try require(f.driver.tokens == 1); f.connection.close(); setupChecks += 1
+        }
+        print("Current setup sign-in: \(setupChecks) checks; no preparation admission or audio.")
         print("Desktop initial WINDOW: \(checks) checks; bounded SOURCE: \(sourceChecks); visit sign-in: \(visitChecks) checks passed. No accounts, network, Keychain or audio.")
     }
 }

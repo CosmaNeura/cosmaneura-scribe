@@ -1,3 +1,4 @@
+import { scopedSignInPreparation } from "./signin-preparation";
 import { parsePendingCreatorEdit } from "../../../review-ui/src/creator-edit";
 import { parsePrivateNote, parsePatientIdentity } from "./visit-features";
 import { parseEncounterDisplay } from "./encounter-display";
@@ -198,10 +199,11 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
         openEncounter: async (appointmentRef, operationSignal) => {
           const result = await send("open", { appointmentRef }, null, operationSignal);
           const hasOpening = typeof result === "object" && result !== null && "openingReview" in result;
+          const hasSignInPreparation = typeof result === "object" && result !== null && "signInPreparationSupported" in result;
           const hasNoteOpening = typeof result === "object" && result !== null && "noteOpeningSupported" in result;
           const value = exact(result, ["encounterId", "encounter", "scope", ...(hasOpening ? ["openingReview"] : []),
-            ...(hasNoteOpening ? ["noteOpeningSupported"] : [])]);
-          if (hasNoteOpening && value.noteOpeningSupported !== true) throw unavailable();
+            ...(hasNoteOpening ? ["noteOpeningSupported"] : []), ...(hasSignInPreparation ? ["signInPreparationSupported"] : [])]);
+          if (hasNoteOpening && value.noteOpeningSupported !== true || hasSignInPreparation && value.signInPreparationSupported !== true) throw unavailable();
           current(operationSignal);
           const encounterId = uuid(value.encounterId), displayed = encounter(value.encounter), scope = captureScope(value.scope);
           if (displayed.appointmentRef !== appointmentRef || scope.appointmentRef !== appointmentRef) throw unavailable();
@@ -213,7 +215,12 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
           if (closedIds.has(encounterId) || linked.aborted) { local.abort(); throw unavailable(); }
           const call = (method: DesktopProviderMethod, payload: Readonly<Record<string, unknown>>, extra = linked): Promise<unknown> =>
             send(method, payload, encounterId, AbortSignal.any([linked, extra]));
-          return { encounter: displayed, scope, signal: linked,
+          return {
+            ...(hasSignInPreparation ? { signInPreparation: scopedSignInPreparation({
+              signal: linked, current: () => current(linked),
+              prepare: async (_id, signal) => { await call("signin_preparation", { action: "prepare" }, signal); },
+              abandon: () => request("signin_preparation", { action: "abandon" }, id, encounterId).then(() => undefined),
+            }) } : {}), encounter: displayed, scope, signal: linked,
             ...(hasNoteOpening ? { noteOpeningSupported: true as const } : {}),
             ...(hasOpening ? { openingReview: parseOpeningReview(value.openingReview, scope) } : {}),
             request: async (path, body, key, extra) => {

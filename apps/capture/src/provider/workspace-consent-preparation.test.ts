@@ -46,7 +46,7 @@ afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose
 const sid = "00000000-0000-4000-8000-000000000001", suffix = "01j" + "0".repeat(23);
 const ref = "appointment_" + suffix;
 function fixture(options: { preparing?: boolean; admission?: Promise<void>; acquisition?: Promise<void>; release?: boolean; saved?: JournalSnapshot; metadataClose?: Promise<void>; journalSave?: Promise<void>;
-  ios?: boolean; admissionFailure?: boolean; selection?: Promise<void> } = {}) {
+  ios?: boolean; admissionFailure?: boolean; selection?: Promise<void>; signIn?: boolean; discover?: boolean } = {}) {
   vi.stubGlobal("Element", Surface); vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(options.ios === true);
@@ -83,12 +83,15 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
       await options.admission;
       return Response.json({ ...envelope, appointment_ref: ref, operation_ref: "scribe_admission_" + suffix, consent_record_id: sid, session_id: sid });
     }
+    if (options.discover && (body.operation as { kind?: string })?.kind === "provider_encounter")
+      return Response.json({ ...envelope, operation: "provider_encounter", receipt: { schema_version: "1.0", status: "not_prepared", review: null } });
     return Response.json({ ...envelope, operation: "creator_review", receipt: { schema_version: "1.0", session_id: sid, status: "created", source: null, working: null, review_queue: null } });
   });
   const journal = { load: vi.fn(async () => stored), save: vi.fn(async (_previous: JournalSnapshot, progress: ProviderProgress) => {
     await options.journalSave;
     stored = { revision: String(Number(stored.revision ?? 0) + 1), progress: structuredClone(progress) }; return stored;
   }) };
+  const signIn = { prepare: vi.fn<(signal: AbortSignal) => Promise<void>>(async () => undefined), abandon: vi.fn(async () => undefined) };
   const scope = { appointmentRef: ref, bindingRef: "scribe_capture_binding_" + suffix, workspaceId: sid };
   const recorder = vi.fn(async () => { await options.acquisition; return { controller, sourceKind: "microphone" as const, captureMode: options.ios ? "native_microphone" as const : "desktop_meeting" as const,
     deactivate, resumePendingWork: vi.fn(), releaseUploadedCapture: vi.fn() }; });
@@ -96,7 +99,8 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
     ...(options.release === false ? {} : { consentPreparation: { enabled: true, owner: "John Clemente", cohort: "internal", expires: "2026-11-01" } }),
     listEncounters: vi.fn(async () => [{ appointmentRef: ref, title: "Invented visit", detail: "Synthetic fixture" }]), createEncounter: vi.fn(),
     openEncounter: vi.fn(async () => ({ encounter: { appointmentRef: ref, title: "Invented visit", detail: "Synthetic fixture" }, scope, request, signal: abort.signal, journal,
-      openingReview: { scope, receivedAt: Date.now(), view: null }, reviewJournal: () => ({ load: async () => null, save: vi.fn(), clear: vi.fn() }), recorder, openInCore: vi.fn() })) };
+      ...(options.signIn ? { signInPreparation: signIn } : {}),
+      ...(options.discover ? {} : { openingReview: { scope, receivedAt: Date.now(), view: null } }), reviewJournal: () => ({ load: async () => null, save: vi.fn(), clear: vi.fn() }), recorder, openInCore: vi.fn() })) };
   const dispose = mountProviderWorkspace(root as unknown as HTMLElement, host); disposers.push(dispose);
   const content = root.querySelector("[data-workspace-content]")! as CommandSurface;
   function click(action: string) {
@@ -111,7 +115,7 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
     if (checked && content.innerHTML.includes("data-recording-preparation-status")) metadata.options?.onConsent?.();
   };
   const opened = async (waitForIdle = true) => { await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false)); click("open"); if (waitForIdle) await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false)); };
-  return { root, content, request, journal, recorder, start, deactivate, controller, app, abort, dispose, click, consent, opened, doc,
+  return { root, content, request, journal, recorder, start, deactivate, controller, app, abort, dispose, click, consent, opened, doc, signIn,
     stored: () => stored, binding: () => binding, ready: () => publish(options.ios ? { state: "ready" } : { state: "ready", desktop: { ...snapshot.desktop!, phase: "ready" } }) };
 }
 it("checkbox alone prepares exactly once and never invokes any recording continuation", async () => {
@@ -293,4 +297,38 @@ it("foreground loss after confirmed Record does not terminate recording or its o
   const f = fixture(); await f.opened(); f.consent(true); f.click("prepare"); await vi.waitFor(() => expect(f.start).toHaveBeenCalledOnce());
   f.doc.visibilityState = "hidden"; f.doc.dispatchEvent(new Event("visibilitychange"));
   expect(f.controller.stopRecording).not.toHaveBeenCalled(); expect(f.deactivate).not.toHaveBeenCalled();
+});
+
+
+it.each([false, true])("starts optional native sign-in only after empty discovery and current setup, platform iOS=%s", async ios => {
+  const f = fixture({ ios, signIn: true, discover: true }); await f.opened();
+  await vi.waitFor(() => expect(f.signIn.prepare).toHaveBeenCalledOnce());
+  expect(f.request.mock.calls.map(([, body]) => (body.operation as { kind?: string })?.kind)).toEqual(["provider_encounter"]);
+  expect(f.journal.save).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+  expect((f.content.querySelector('[name="consent"]') as CommandSurface).checked).toBe(false);
+  const first = f.signIn.prepare.mock.calls[0]![0];
+  f.doc.visibilityState = "hidden"; f.doc.dispatchEvent(new Event("visibilitychange"));
+  await vi.waitFor(() => expect(f.signIn.abandon).toHaveBeenCalled()); expect(first.aborted).toBe(true);
+  f.doc.visibilityState = "visible"; f.doc.dispatchEvent(new Event("visibilitychange"));
+  await vi.waitFor(() => expect(f.signIn.prepare).toHaveBeenCalledTimes(2));
+  await f.dispose(); expect(f.recorder).not.toHaveBeenCalled();
+});
+
+it("joins fresh-consent auth preparation without waiting before the existing close+persist barrier", async () => {
+  const closed = gate<void>(), saved = gate<void>(), auth = gate<void>();
+  const f = fixture({ signIn: true, metadataClose: closed.promise, journalSave: saved.promise });
+  f.signIn.prepare.mockImplementation(async () => auth.promise); await f.opened(); f.consent(true);
+  await vi.waitFor(() => expect(metadata.close).toHaveBeenCalled()); expect(f.journal.save).toHaveBeenCalledOnce();
+  expect(f.request).not.toHaveBeenCalled(); expect(f.recorder).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
+  closed.resolve(); saved.resolve(); await vi.waitFor(() => expect(f.app.bindProvider).toHaveBeenCalledOnce());
+  // A delayed optional acknowledgement did not insert an extra admission wait.
+  expect(f.start).not.toHaveBeenCalled(); auth.resolve();
+});
+
+it("does not warm restored consent/recovery or a prepared recording", async () => {
+  const saved: JournalSnapshot = { revision: "1", progress: { admission: { key: "synthetic-retained-key", languageMode: "en-US",
+    attestation: { modality: "in_person", participant_regions: [], method: "verbal_attestation", all_parties_consented: true, granted_at: new Date().toISOString() } },
+    sessionId: null, uploaded: false, pendingSave: null } };
+  const f = fixture({ signIn: true, saved }); await f.opened();
+  expect(f.signIn.prepare).not.toHaveBeenCalled(); expect(f.request).not.toHaveBeenCalled(); expect(f.start).not.toHaveBeenCalled();
 });

@@ -74,7 +74,7 @@ export class NativeProviderClient implements NativeProviderSession {
   }
 
   request(method: "getState" | "signIn" | "signOut" | "providerRequest" | "providerInitialWindow" | "providerInitialWindowAbandon" | "sourcePrepare" | "sourcePrepareForStart"
-    | "sourceAuthorize" | "sourceRelease" | "sourceStopped" | "sourcePreparationRelease", payload: Record<string, unknown>, signal?: AbortSignal,
+    | "sourceAuthorize" | "sourceRelease" | "sourceStopped" | "sourcePreparationRelease" | "prepareProviderSignIn" | "abandonProviderSignIn", payload: Record<string, unknown>, signal?: AbortSignal,
     timeout = 35_000): Promise<unknown> {
     requireMain();
     if (this.signal.aborted || signal?.aborted || this.pending.size >= 8) return Promise.reject(unavailable());

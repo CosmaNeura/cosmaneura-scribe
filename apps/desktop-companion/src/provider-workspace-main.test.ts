@@ -1,3 +1,4 @@
+import type { ProviderSignInPreparation } from "../../capture/src/provider/signin-preparation";
 import { describe, expect, it, vi } from "vitest";
 import { DesktopProviderWorkspaceMain, type DesktopProviderMainHost } from "./provider-workspace-main.js";
 import type { DesktopProviderRecorder } from "./provider-recorder.js";
@@ -18,7 +19,7 @@ const decision = { key: "invented-review-operation", request: { schema_version: 
   expected_source_transcript_version: 1, expected_translation_version: 1 } };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 async function fixture(openingReview?: { scope: typeof scope; receivedAt: number; view: null }, noteOpeningSupported = false, fresh = false,
-  audioPreflight?: (signal: AbortSignal) => Promise<ProviderAudioPreflight>) {
+  audioPreflight?: (signal: AbortSignal) => Promise<ProviderAudioPreflight>, signInPreparation?: ProviderSignInPreparation) {
   let state: ProviderSessionState = { phase: "ready", revision: crypto.randomUUID() };
   const authListeners = new Set<(value: ProviderSessionState) => void>(), events: DesktopProviderEvent[] = [];
   let saved: JournalSnapshot = fresh ? { revision: null, progress: null } : { revision: "1", progress: structuredClone(consent) };
@@ -62,7 +63,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
         openEncounter: async (_ref: string, encounterSignal: AbortSignal) => {
           contextSignals.push(encounterSignal);
           return { scope, signal: encounterSignal, encounter: { appointmentRef: scope.appointmentRef, title: "Invented desktop visit", detail: "Invented consent" },
-            request: backend, openInCore: navigation, ...(openingReview ? { openingReview } : {}),
+            request: backend, openInCore: navigation, ...(signInPreparation ? { signInPreparation } : {}), ...(openingReview ? { openingReview } : {}),
             ...(noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
             journal: { load: async () => structuredClone(saved), save: async (previous: JournalSnapshot, progress: ProviderProgress) => {
               if (previous.revision !== saved.revision) throw new Error("invented CAS conflict");
@@ -473,4 +474,21 @@ it("routes encounter setup through the current desktop owner and rejects caller 
     expect((await f.invoke("encounter_setup", { action: "submit", draft: null }, saved)).ok).toBe(false);
     expect(f.setup.submit).toHaveBeenCalledTimes(1);
   } finally { await f.main.dispose(); }
+});
+
+
+it("keeps setup auth behind the exact main-owned encounter and refuses foreign/closed scopes without recorder work", async () => {
+  const warm = { prepare: vi.fn<(signal: AbortSignal) => Promise<void>>(async () => undefined), abandon: vi.fn(async () => undefined) };
+  const f = await fixture(undefined, false, true, undefined, warm);
+  expect((await f.invoke("signin_preparation", { action: "prepare" })).ok).toBe(false);
+  await f.connect(); await f.open();
+  expect((await f.invoke("signin_preparation", { action: "prepare" }, { ...f.ids, encounterId: crypto.randomUUID() })).ok).toBe(false);
+  expect((await f.invoke("signin_preparation", { action: "prepare", token: "forbidden" })).ok).toBe(false);
+  expect(warm.prepare).not.toHaveBeenCalled();
+  expect((await f.invoke("signin_preparation", { action: "prepare" })).ok).toBe(true);
+  expect(warm.prepare).toHaveBeenCalledOnce(); expect(f.acquireRecorder).not.toHaveBeenCalled(); expect(f.backend).not.toHaveBeenCalled();
+  expect((await f.invoke("signin_preparation", { action: "abandon" })).ok).toBe(true); expect(warm.abandon).toHaveBeenCalledOnce();
+  f.changed("signedOut");
+  expect((await f.invoke("signin_preparation", { action: "prepare" })).ok).toBe(false);
+  expect(warm.prepare).toHaveBeenCalledOnce(); await f.main.dispose();
 });

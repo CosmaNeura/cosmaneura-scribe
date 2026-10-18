@@ -8,13 +8,15 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
   remember(value: ProviderPreferences): void;
   /** Fresh checkbox action only; advisory readiness changes never replay consent. */
   onConsent?: () => void;
+  onSetupReady?: () => void;
+  onSetupInvalidated?: () => void;
 }): { snapshot(): AudioPreflightSnapshot | null; ready(): boolean; close(): Promise<void> } {
   const lifetime = new AbortController(), signal = lifetime.signal;
   const externalAbort = (): void => lifetime.abort();
   options.signal.addEventListener("abort", externalAbort, { once: true }); if (options.signal.aborted) lifetime.abort();
   let port: ProviderAudioPreflight | null = null, snapshot: AudioPreflightSnapshot | null = null;
   let failed = false;
-  let consentChecked = false;
+  let consentChecked = false, setupReady = false;
   let selecting = false, windowPickerOpen = false, closed = false, unsubscribe: (() => void) | undefined, closing: Promise<void> | null = null;
   const select = (selector: string): HTMLSelectElement => root.querySelector<HTMLSelectElement>(selector)!;
   const value = (name: string): string => root.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value ?? "";
@@ -27,6 +29,11 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
   };
   const paint = (): void => {
     if (closed || signal.aborted) return;
+    const available = ready();
+    if (available !== setupReady) {
+      setupReady = available;
+      if (available) options.onSetupReady?.(); else options.onSetupInvalidated?.();
+    }
     const video = !options.isIOS && value("desktop-audio") === "meeting";
     const start = root.querySelector<HTMLButtonElement>('[data-workspace-action="prepare"]')!;
     start.disabled = !root.querySelector<HTMLInputElement>('[name="consent"]')?.checked || !ready();
@@ -139,7 +146,7 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
         if (!closed && !windowPickerOpen) root.querySelector<HTMLButtonElement>("[data-preflight-call-change]")?.focus();
       });
     }
-    else { remember(); paint(); }
+    else { options.onSetupInvalidated?.(); remember(); paint(); if (ready()) options.onSetupReady?.(); }
   };
   const clicked = (event: MouseEvent): void => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-change-audio], [data-audio-done], [data-preparation-audio], [data-preflight-refresh], [data-preflight-access], [data-preflight-access-optional], [data-preflight-call-change], [data-preflight-call-done]") : null;

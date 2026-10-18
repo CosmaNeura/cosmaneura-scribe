@@ -256,6 +256,10 @@ export function createDesktopProviderConnection(backend: DesktopProviderBackend,
         };
         return {
           scope: selected.scope, encounter: selected.encounter, signal: mountSignal, request,
+          ...(selected.signInPreparation ? { signInPreparation: {
+            prepare: (signal: AbortSignal) => guarded(() => selected.signInPreparation!.prepare(AbortSignal.any([mountSignal, signal]))),
+            abandon: () => selected.signInPreparation!.abandon(),
+          } } : {}),
           ...(selected.noteOpeningSupported ? { noteOpeningSupported: true as const } : {}),
           ...(selected.openingReview ? { openingReview: selected.openingReview } : {}),
           playPassage: (sessionId, segmentId, operation) => guarded(async () => {

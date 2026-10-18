@@ -41,7 +41,7 @@ import Foundation
         }
         connection = NativeProviderConnection(auth: auth,
             wire: try ProviderNativeTransport(settings: receiver, workspaceOrigin: .desktopApp),
-            desktopInitialWindowEnabled: true, desktopVisitSignInEnabled: true)
+            desktopInitialWindowEnabled: true, desktopVisitSignInEnabled: true, setupVisitSignInEnabled: true)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 160),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Sign in to Scribe"; window.center(); window.orderOut(nil)
@@ -87,6 +87,19 @@ import Foundation
             }
             if method == "signOut" { return self.state(try await auth.signOut()) }
             return self.state(auth.state())
+        case "prepareProviderSignIn":
+            guard Set(payload.keys) == ["preparationId", "revision", "workspaceId", "bindingRef"],
+                  let preparation = payload["preparationId"] as? String, let revision = payload["revision"] as? String,
+                  let workspace = payload["workspaceId"] as? String, let binding = payload["bindingRef"] as? String
+            else { throw ProviderNativeError.invalidRequest }
+            try connection.prepareVisitSignIn(revision: revision, workspaceID: workspace,
+                bindingRef: binding, preparationID: preparation)
+            return ["revision": revision]
+        case "abandonProviderSignIn":
+            guard Set(payload.keys) == ["preparationId"], let preparation = payload["preparationId"] as? String
+            else { throw ProviderNativeError.invalidRequest }
+            try connection.abandonVisitSignIn(preparationID: preparation)
+            return NSNull()
         case "providerRequest":
             guard Set(payload.keys) == ["revision", "action", "key", "body"],
                   let revision = payload["revision"] as? String,
@@ -200,6 +213,7 @@ import Foundation
     }
     private func state(_ value: NativeAuthState) -> [String: Any] {
         var payload: [String: Any] = ["phase": value.phase.rawValue, "revision": value.revision]
+        if value.phase == .ready { payload["recordingSignInPreparationVersion"] = 1 }
         if let name = auth.providerDisplayName(expectedRevision: value.revision) {
             payload["providerDisplayName"] = name
         }
