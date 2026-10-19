@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 
 
-def build(output: Path, native_auth: Path) -> None:
+def build(output: Path, native_auth: Path, *, mac_app_store: bool = False) -> None:
     repo = Path(__file__).resolve().parents[1]
     output = output.resolve()
     output.mkdir(mode=0o700)
@@ -65,6 +65,9 @@ def build(output: Path, native_auth: Path) -> None:
             repo / "scripts/standalone-provider" / name,
             package / "Sources/ScribeDesktopProvider" / name,
         )
+    if mac_app_store:
+        store_source = repo / "apps/desktop-companion/native/ScribeDesktopAudio/Sources/ScribeDesktopAudio/NativeDesktopStoreContainer.swift"
+        copy(store_source, package / "Sources/ScribeDesktopProvider/NativeDesktopStoreContainer.swift")
     copy(
         auth / "Bridge/W13PrivateTransport.swift",
         package / "Sources/ScribeDesktopProvider/W13PrivateTransport.swift",
@@ -100,6 +103,8 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
         "-debug-info-format",
         "none",
     ]
+    if mac_app_store:
+        command += ["-Xswiftc", "-DSCRIBE_MAC_APP_STORE"]
     environment = {
         **os.environ,
         "CLANG_MODULE_CACHE_PATH": str(output / "modules"),
@@ -114,6 +119,7 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
                 "command": command,
                 "source_sha256": inputs,
                 "native_auth_source": str(auth),
+                **({"distribution": "mac-app-store-dormant", "approved_application_group": None} if mac_app_store else {}),
                 "signed": False,
                 "launched": False,
             },
@@ -128,5 +134,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--native-auth-source", type=Path, required=True)
+    parser.add_argument("--mac-app-store", action="store_true")
     options = parser.parse_args()
-    build(options.output, options.native_auth_source)
+    build(options.output, options.native_auth_source, mac_app_store=options.mac_app_store)
