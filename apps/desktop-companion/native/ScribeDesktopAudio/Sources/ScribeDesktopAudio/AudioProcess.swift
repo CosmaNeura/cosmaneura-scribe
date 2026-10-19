@@ -242,8 +242,11 @@ private actor AudioProcessHost {
     }
     private func fail(_ reason: DesktopAudioFailure) {
         guard !failureSent, !disconnected, !stopped else { return }
+        // A source-start cancellation/stop error can return before the sink's
+        // queued callback reaches this actor. Preserve its latched first reason.
+        let firstReason = sink?.firstFailure ?? reason
         failureSent = true; requestDiscard()
-        output.metadata(reason.processFailureMetadata)
+        output.metadata(firstReason.processFailureMetadata)
     }
 
     func checkParent() {
@@ -273,13 +276,18 @@ extension DesktopAudioFailure {
         let code: String
         switch self {
         case .permissionRequired: code = "permission_required"
-        case .inputChanged, .selectionChanged: code = "device_changed"
+        case .inputChanged, .inputChangedContext, .selectionChanged: code = "device_changed"
         case .meetingDisconnected: code = "meeting_disconnected"
         case .clockDiscontinuity: code = "clock_discontinuity"
         case .bufferOverflow: code = "overflow"
         default: code = "failed"
         }
-        return ["type": "failure", "code": code, "reason": diagnosticReason]
+        var metadata: [String: Any] = ["type": "failure", "code": code, "reason": diagnosticReason]
+        if case .inputChangedContext(let trigger, let mismatch) = self {
+            metadata["input_trigger"] = trigger.rawValue
+            metadata["input_mismatch"] = Int(mismatch)
+        }
+        return metadata
     }
 }
 

@@ -170,7 +170,10 @@ public actor MacMeetingAudio {
             // still starting. Recheck ownership after its suspension so a
             // cancelled/stopped start cannot restart the microphone.
             try session.engine.start()
-            guard microphoneMatches(session, starting: false) else { throw DesktopAudioFailure.inputChanged }
+            let mismatch = microphoneMismatch(session, starting: false)
+            guard mismatch == 0 else {
+                throw DesktopAudioFailure.inputChangedContext(trigger: .postStart, mismatch: mismatch)
+            }
             phase = .recording
         } catch {
             do { try await stop() }
@@ -229,13 +232,18 @@ public actor MacMeetingAudio {
         // Startup notifications with unchanged hardware/format are expected.
         // A missing/replaced device always fails; an established recording also
         // fails if HAL stopped the engine, even when its format stayed the same.
-        if !microphoneMatches(session, starting: phase == .starting) { session.delivery.fail(.inputChanged) }
+        let starting = phase == .starting
+        let mismatch = microphoneMismatch(session, starting: starting)
+        if mismatch != 0 {
+            session.delivery.fail(.inputChangedContext(
+                trigger: starting ? .configurationStarting : .configurationRecording, mismatch: mismatch))
+        }
     }
 
-    private func microphoneMatches(_ session: CaptureSession, starting: Bool) -> Bool {
-        guard let configuration = session.microphoneConfiguration,
-              let uid = try? MacMicrophoneInputs.selectedUID(engine: session.engine) else { return false }
-        return configuration.permits(observedUID: uid,
+    private func microphoneMismatch(_ session: CaptureSession, starting: Bool) -> UInt8 {
+        guard let configuration = session.microphoneConfiguration else { return 1 }
+        guard let uid = try? MacMicrophoneInputs.selectedUID(engine: session.engine) else { return 2 }
+        return configuration.mismatch(observedUID: uid,
             observedFormat: Self.captureFormat(session.engine.inputNode.outputFormat(forBus: 0)),
             engineRunning: session.engine.isRunning, starting: starting)
     }
@@ -292,8 +300,14 @@ private final class CaptureSession: @unchecked Sendable {
         self.workspaceCenter = workspaceCenter
         engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
             object: engine, queue: nil) { _ in configurationChanged() }
-        workspaceObservers = [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification].map { name in
-            workspaceCenter.addObserver(forName: name, object: nil, queue: nil) { [delivery] _ in delivery.fail(.inputChanged) }
+        let interruptions: [(Notification.Name, DesktopInputChangeTrigger)] = [
+            (NSWorkspace.willSleepNotification, .workspaceSleep),
+            (NSWorkspace.sessionDidResignActiveNotification, .workspaceSessionResigned)
+        ]
+        workspaceObservers = interruptions.map { name, trigger in
+            workspaceCenter.addObserver(forName: name, object: nil, queue: nil) { [delivery] _ in
+                delivery.fail(.inputChangedContext(trigger: trigger, mismatch: 0))
+            }
         }
     }
 

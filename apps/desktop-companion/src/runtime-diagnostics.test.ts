@@ -42,6 +42,24 @@ describe("local runtime diagnostics", () => {
       expect((await stat(path)).size).toBeLessThanOrEqual(65_536);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+  it("records bounded input trigger and zero-valued workspace mismatch after routine exhaustion", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-input-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (let i = 0; i < 129; i++) record("connect_begin");
+      for (const value of [undefined, 0, 6, 1.5, NaN, Infinity]) record("audio_input_change_trigger", undefined, value);
+      for (const value of [undefined, -1, 256, 1.5, NaN, Infinity]) record("audio_input_change_mismatch", undefined, value);
+      record("audio_input_change_trigger", undefined, 5);
+      record("audio_input_change_mismatch", undefined, 0);
+      record("audio_input_change_mismatch", undefined, 255);
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(131));
+      const rows = (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
+      expect(rows.slice(128).map(row => [row.event, row.reason_code])).toEqual([
+        ["audio_input_change_trigger", 5], ["audio_input_change_mismatch", 0], ["audio_input_change_mismatch", 255],
+      ]);
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it("records window discovery outcomes as fixed events without window metadata", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-window-")));
     try {

@@ -20,6 +20,7 @@ final class ProcessPCMSink: DesktopPCMSink, @unchecked Sendable {
     private var readySent = false
     private var activated = false
     private var discarding = false
+    private var failure: DesktopAudioFailure?
     private var packets: [Packet] = []
     private var inFlight: Packet?
     private var expectedFrame = 0
@@ -89,9 +90,14 @@ final class ProcessPCMSink: DesktopPCMSink, @unchecked Sendable {
         packet.send(to: output)
     }
     func failed(_ reason: DesktopAudioFailure) {
-        let first = lock.withLock { clearPending() }
+        let first = lock.withLock {
+            guard !discarding else { return false }
+            failure = reason
+            return clearPending()
+        }
         if first { onFailure(reason) }
     }
+    var firstFailure: DesktopAudioFailure? { lock.withLock { failure } }
     func discard() { lock.withLock { _ = clearPending() } }
     private func clearPending() -> Bool {
         guard !discarding else { return false }

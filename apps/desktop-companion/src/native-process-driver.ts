@@ -274,12 +274,19 @@ class ProcessSession implements DesktopPCMDriverSession {
         this.startValue = parseDesktopPCMStart(value.start); clearTimeout(this.startupTimer);
         this.diagnose("audio_ready");
         this.readiness.resolve(this.startValue); return;
-      case "failure":
-        if (!exactKeys(value, value.reason === undefined ? ["type", "code"] : ["type", "code", "reason"])
+      case "failure": {
+        const contextual = value.input_trigger !== undefined || value.input_mismatch !== undefined;
+        if (!exactKeys(value, contextual ? ["type", "code", "reason", "input_trigger", "input_mismatch"]
+          : value.reason === undefined ? ["type", "code"] : ["type", "code", "reason"])
           || !CODES.includes(value.code as DesktopPCMFailure)
           || value.reason !== undefined && (!integer(value.reason, 1, NATIVE_REASON_CODES.length)
-            || NATIVE_REASON_CODES[value.reason - 1] !== value.code)) throw failure();
-        this.fail(value.code as DesktopPCMFailure, FAILURE_ORIGIN.nativeReported, value.reason); return;
+            || NATIVE_REASON_CODES[value.reason - 1] !== value.code)
+          || contextual && (value.reason !== 5 || value.code !== "device_changed"
+            || !integer(value.input_trigger, 1, 5) || !integer(value.input_mismatch, 0, 255)
+            || (value.input_trigger <= 3 ? value.input_mismatch === 0 : value.input_mismatch !== 0))) throw failure();
+        this.fail(value.code as DesktopPCMFailure, FAILURE_ORIGIN.nativeReported, value.reason,
+          contextual ? { trigger: value.input_trigger as number, mismatch: value.input_mismatch as number } : undefined); return;
+      }
       case "stopped":
       case "stopFailed": {
         if (!exactKeys(value, value.type === "stopped" ? ["type", "request", "completion"] : ["type", "request"])
@@ -314,13 +321,18 @@ class ProcessSession implements DesktopPCMDriverSession {
     try { this.child.stdin.write(nativeCommand(value)); }
     catch { this.fail("failed", FAILURE_ORIGIN.sendException); }
   }
-  private fail(code: DesktopPCMFailure, origin: FailureOrigin, nativeReason?: number): void {
+  private fail(code: DesktopPCMFailure, origin: FailureOrigin, nativeReason?: number,
+    input?: { readonly trigger: number; readonly mismatch: number }): void {
     if (this.failed) return;
     this.failed = true; this.readiness.reject(failure());
     // Begin cleanup before notifying the existing capture controller.
     void this.stop({ mode: "discard" }).catch(() => undefined);
     this.diagnose("audio_main_failure_reason", origin);
     if (nativeReason !== undefined) this.diagnose("audio_native_failure_reason", nativeReason);
+    if (input) {
+      this.diagnose("audio_input_change_trigger", input.trigger);
+      this.diagnose("audio_input_change_mismatch", input.mismatch);
+    }
     this.diagnose(code === "meeting_disconnected" ? "audio_device_changed" : `audio_${code}`);
     try { this.sink.onFailure(code); } catch { /* Cleanup remains owned here. */ }
   }
