@@ -276,6 +276,51 @@ process.stdin.on("end", () => process.exit(0));
       });
     }
   });
+  it("retains validated input-change context and confirms the owned helper stop", async () => {
+    for (const [trigger, mismatch] of [[1, 4], [2, 2], [3, 128], [4, 0], [5, 0]]) {
+      await fixture({ type: "failure", code: "device_changed", reason: 5, input_trigger: trigger, input_mismatch: mismatch }, async (native, events) => {
+        const failures: DesktopPCMFailure[] = [];
+        const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+          onPcmPacket: async () => undefined, onFailure: code => { failures.push(code); },
+        });
+        try {
+          await expect(session.ready).rejects.toThrow();
+          expect(await session.stop({ mode: "discard" })).toBeNull();
+          expect(failures).toEqual(["device_changed"]);
+          expect(events.filter(row => row.event.startsWith("audio_input_change_"))).toEqual([
+            { event: "audio_input_change_trigger", duration: undefined, reason: trigger },
+            { event: "audio_input_change_mismatch", duration: undefined, reason: mismatch },
+          ]);
+          expect(events.filter(row => row.event === "audio_stop_confirmed")).toHaveLength(1);
+        } finally { await session.stop({ mode: "discard" }); }
+      });
+    }
+  });
+  it("rejects incomplete, inconsistent and out-of-range input context without recording it", async () => {
+    const valid = { type: "failure", code: "device_changed", reason: 5, input_trigger: 3, input_mismatch: 128 };
+    for (const metadata of [
+      { ...valid, reason: undefined }, { ...valid, code: "failed", reason: 8 },
+      { ...valid, input_trigger: undefined }, { ...valid, input_mismatch: undefined },
+      { ...valid, input_trigger: 0 }, { ...valid, input_trigger: 6 }, { ...valid, input_trigger: 1.5 },
+      { ...valid, input_mismatch: -1 }, { ...valid, input_mismatch: 256 }, { ...valid, input_mismatch: 1.5 },
+      { ...valid, input_mismatch: 0 }, { ...valid, input_trigger: 4 },
+      { ...valid, input_mismatch: "private content" }, { ...valid, detail: "private content" },
+    ]) {
+      await fixture(metadata, async (native, events) => {
+        const failures: DesktopPCMFailure[] = [];
+        const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+          onPcmPacket: async () => undefined, onFailure: code => { failures.push(code); },
+        });
+        try {
+          await expect(session.ready).rejects.toThrow();
+          expect(await session.stop({ mode: "discard" })).toBeNull();
+          expect(failures).toEqual(["failed"]);
+          expect(events.some(row => row.event.startsWith("audio_input_change_"))).toBe(false);
+          expect(JSON.stringify(events)).not.toContain("private content");
+        } finally { await session.stop({ mode: "discard" }); }
+      });
+    }
+  });
   it("times a slow sink rejection, clears its PCM, and preserves failure and observed stop", async () => {
     await fixture(undefined, async (native, events) => {
       const failures: DesktopPCMFailure[] = [], references: Uint8Array[] = [];
@@ -318,12 +363,13 @@ process.stdin.on("end", () => process.exit(0));
 
 describe.skipIf(!fixturePath)("actual Swift process with explicit invented source", () => {
   async function driver(pid = 1, authorize?: () => Promise<void>, hash?: string,
-    fence: () => NativeProcessFence = nativePipeFixtureFence, expiresAt?: number): Promise<NativeProcessPCMDriver> {
+    fence: () => NativeProcessFence = nativePipeFixtureFence, expiresAt?: number,
+    diagnostics?: RuntimeDiagnostic): Promise<NativeProcessPCMDriver> {
     expect(consent.allPartiesAgreed).toBe(true);
     if (!fixturePath) throw new Error("compiled fixture required");
     return new NativeProcessPCMDriver({ enabled: true, helperPath: fixturePath,
       helperSha256: hash ?? createHash("sha256").update(await readFile(fixturePath)).digest("hex"),
-      getProcessFence: fence,
+      getProcessFence: fence, ...(diagnostics ? { diagnostics } : {}),
       isSessionActive: () => true, authorizeSelectedWindow: async () => {
         await authorize?.();
         return { application: "com.google.Chrome", processID: pid, windowID: 1, captureAuthorizedUntil: expiresAt ?? Date.now() + 60_000 };
@@ -338,6 +384,30 @@ describe.skipIf(!fixturePath)("actual Swift process with explicit invented sourc
       expect(availability).not.toHaveBeenCalled(); expect(coverage).toEqual([]);
       expect(chunks).not.toHaveBeenCalled();
     } finally { await source.stop(); }
+  });
+  it("preserves each first native input-change context despite subsequent failure and startup cancellation", async () => {
+    for (let pid = 10; pid <= 14; pid++) {
+      const events: Array<{ event: string; reason: number | undefined }> = [], failures: DesktopPCMFailure[] = [];
+      const native = await driver(pid, undefined, undefined, nativePipeFixtureFence, undefined,
+        (event, _duration, reason) => { events.push({ event, reason }); });
+      const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+        onPcmPacket: async () => { throw new Error("must not activate"); }, onFailure: code => { failures.push(code); },
+      });
+      try {
+        await expect(session.ready).rejects.toThrow();
+        expect(await session.stop({ mode: "discard" })).toBeNull();
+        expect(failures).toEqual(["device_changed"]);
+        expect(events.filter(row => row.event === "audio_native_failure_reason")).toEqual([
+          { event: "audio_native_failure_reason", reason: 5 },
+        ]);
+        expect(events.filter(row => row.event.startsWith("audio_input_change_"))).toEqual([
+          { event: "audio_input_change_trigger", reason: pid - 9 },
+          { event: "audio_input_change_mismatch", reason: [4, 2, 128, 0, 0][pid - 10] },
+        ]);
+        expect(events.filter(row => row.event === "audio_stop_confirmed")).toHaveLength(1);
+        expect(events.some(row => row.event === "audio_ready")).toBe(false);
+      } finally { await session.stop({ mode: "discard" }); }
+    }
   });
   it("carries a renewable window through every adapter and preserves partial WAV boundaries", async () => {
     const expiresAt = Date.now() + 60_000, waves: Uint8Array[] = [], sequences: number[] = [], coverage: DesktopPCMCoverage[] = [];

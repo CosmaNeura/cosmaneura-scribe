@@ -1,7 +1,8 @@
 import Foundation
 
-public enum DesktopAudioFailure: String, Error, Sendable {
+public enum DesktopAudioFailure: Error, Sendable, Equatable {
     case unavailable, permissionRequired, selectionChanged, cancelled, inputChanged
+    case inputChangedContext(trigger: DesktopInputChangeTrigger, mismatch: UInt8)
     case invalidAudio, bufferOverflow, sinkRejected, stopUnconfirmed, windowExpired
     case clockDiscontinuity, meetingDisconnected
 
@@ -13,7 +14,7 @@ public enum DesktopAudioFailure: String, Error, Sendable {
         case .permissionRequired: 2
         case .selectionChanged: 3
         case .cancelled: 4
-        case .inputChanged: 5
+        case .inputChanged, .inputChangedContext: 5
         case .invalidAudio: 6
         case .bufferOverflow: 7
         case .sinkRejected: 8
@@ -23,6 +24,13 @@ public enum DesktopAudioFailure: String, Error, Sendable {
         case .meetingDisconnected: 12
         }
     }
+}
+
+/// Fixed trigger numbers only; neither identities nor OS error text cross the
+/// pipe. Associated context follows the same first-failure latch as its reason.
+public enum DesktopInputChangeTrigger: Int, Sendable {
+    case postStart = 1, configurationStarting = 2, configurationRecording = 3
+    case workspaceSleep = 4, workspaceSessionResigned = 5
 }
 
 public enum DesktopAudioChannel: Sendable, Hashable { case microphone, systemAudio }

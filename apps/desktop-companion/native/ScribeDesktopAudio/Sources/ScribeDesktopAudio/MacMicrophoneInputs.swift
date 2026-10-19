@@ -71,9 +71,47 @@ public enum MacMicrophoneInputs {
     }
 
     static func selectedUID(engine: AVAudioEngine) throws -> String {
-        let id = try currentDevice(engine)
-        guard let device = try list().first(where: { $0.deviceID == id }) else { throw DesktopAudioFailure.selectionChanged }
-        return device.uid
+        try selectedUID(deviceID: currentDevice(engine), isAlive: deviceIsAlive,
+            hasInputStreams: deviceHasInputStreams,
+            readUID: { try string($0, kAudioDevicePropertyDeviceUID) })
+    }
+
+    /// Validate only the device owned by this engine. A catalogue or name read
+    /// on an unrelated device must not interrupt an authorized recording.
+    /// These synchronous reads are injectable for tests that never open audio.
+    static func selectedUID(deviceID: AudioDeviceID,
+                            isAlive: (AudioDeviceID) throws -> Bool,
+                            hasInputStreams: (AudioDeviceID) throws -> Bool,
+                            readUID: (AudioDeviceID) throws -> String) throws -> String {
+        guard deviceID != 0, try isAlive(deviceID), try hasInputStreams(deviceID) else {
+            throw DesktopAudioFailure.selectionChanged
+        }
+        let uid = try readUID(deviceID)
+        guard !uid.isEmpty, uid.utf8.count <= 511,
+              !uid.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
+            throw DesktopAudioFailure.selectionChanged
+        }
+        return uid
+    }
+
+    private static func deviceIsAlive(_ id: AudioDeviceID) throws -> Bool {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var alive: UInt32 = 0, size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &alive) == noErr,
+              size == UInt32(MemoryLayout<UInt32>.size) else { throw DesktopAudioFailure.selectionChanged }
+        return alive == 1
+    }
+
+    private static func deviceHasInputStreams(_ id: AudioDeviceID) throws -> Bool {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr,
+              size <= 4096, size % UInt32(MemoryLayout<AudioStreamID>.size) == 0 else {
+            throw DesktopAudioFailure.selectionChanged
+        }
+        return size > 0
     }
 
     private static func currentDevice(_ engine: AVAudioEngine) throws -> AudioDeviceID {

@@ -30,6 +30,49 @@ import Testing
     #expect(offset == data.count)
 }
 
+@Test func contextualInputFailureCrossesActualSinkLatchesAndPipeExactlyOnce() async throws {
+    for (trigger, mismatch) in [(DesktopInputChangeTrigger.postStart, UInt8(4)),
+        (.configurationStarting, 2), (.configurationRecording, 128), (.workspaceSleep, 0), (.workspaceSessionResigned, 0)] {
+        let pipe = Pipe(), output = ProcessOutput(pipe.fileHandleForWriting)
+        let sink = ProcessPCMSink(output: output) { output.metadata($0.processFailureMetadata) }
+        let mixer = try AlignedMeetingPCM(maximumOutputFrames: 1600, sink: sink)
+        let gate = AudioDelivery(sink: MeteredDesktopAudioSink(downstream: mixer, meter: sink), onFailure: { _ in })
+        let reason = DesktopAudioFailure.inputChangedContext(trigger: trigger, mismatch: mismatch)
+        gate.fail(reason)
+        gate.fail(.sinkRejected); mixer.failed(.inputChanged); sink.failed(.bufferOverflow)
+        gate.freeze(); sink.discard(); await gate.drain(); await output.drain()
+        #expect(sink.firstFailure == reason)
+        try pipe.fileHandleForWriting.close()
+        let data = try #require(try pipe.fileHandleForReading.readToEnd())
+        try pipe.fileHandleForReading.close()
+        let length = data.prefix(4).reduce(0) { $0 * 256 + Int($1) }
+        #expect(data.count == length + 4 && data[4] == 1)
+        let message = try #require(try JSONSerialization.jsonObject(with: data.dropFirst(5)) as? [String: Any])
+        #expect(Set(message.keys) == ["type", "code", "reason", "input_trigger", "input_mismatch"])
+        #expect(message["type"] as? String == "failure" && message["code"] as? String == "device_changed")
+        #expect(message["reason"] as? Int == 5)
+        #expect(message["input_trigger"] as? Int == trigger.rawValue)
+        #expect(message["input_mismatch"] as? Int == Int(mismatch))
+    }
+}
+
+@Test func genericFirstSinkFailureCannotAcquireLaterInputContext() async throws {
+    let pipe = Pipe(), output = ProcessOutput(pipe.fileHandleForWriting)
+    let sink = ProcessPCMSink(output: output) { output.metadata($0.processFailureMetadata) }
+    sink.failed(.sinkRejected)
+    sink.failed(.inputChangedContext(trigger: .configurationRecording, mismatch: 128))
+    sink.discard(); await output.drain()
+    #expect(sink.firstFailure == .sinkRejected)
+    try pipe.fileHandleForWriting.close()
+    let data = try #require(try pipe.fileHandleForReading.readToEnd())
+    try pipe.fileHandleForReading.close()
+    let length = data.prefix(4).reduce(0) { $0 * 256 + Int($1) }
+    #expect(data.count == length + 4 && data[4] == 1)
+    let message = try #require(try JSONSerialization.jsonObject(with: data.dropFirst(5)) as? [String: Any])
+    #expect(Set(message.keys) == ["type", "code", "reason"])
+    #expect(message["code"] as? String == "failed" && message["reason"] as? Int == 8)
+}
+
 @Test func microphoneCheckCommandsCannotCarryCaptureAuthorityOrUnboundedDeviceIdentities() throws {
     func command(_ value: [String: Any]) throws -> Data {
         var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: value)); return data

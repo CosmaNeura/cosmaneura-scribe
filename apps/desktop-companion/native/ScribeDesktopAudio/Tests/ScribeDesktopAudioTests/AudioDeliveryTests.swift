@@ -79,6 +79,21 @@ private final class WindowValidity: @unchecked Sendable {
     #expect(sink.errors == [.sinkRejected]); #expect(sink.times == [1]); #expect(a.isClear && b.isClear)
 }
 
+@Test func inputChangeContextRemainsTheFirstDeliveryFailureDuringCleanup() async throws {
+    let consent = ConsentedFixture(), sink = Sink(), callback = Sink()
+    let queue = DispatchQueue(label: "synthetic.context-cleanup")
+    queue.suspend()
+    let gate = AudioDelivery(sink: sink, queue: queue, onFailure: { callback.failed($0) })
+    let queued = try consent.frame(1), late = try consent.frame(2)
+    gate.offer(queued)
+    let reason = DesktopAudioFailure.inputChangedContext(trigger: .configurationRecording, mismatch: 128)
+    gate.fail(reason); gate.fail(.sinkRejected); gate.freeze()
+    gate.fail(.inputChangedContext(trigger: .workspaceSleep, mismatch: 0))
+    gate.offer(late); queue.resume(); await gate.drain()
+    #expect(sink.errors == [reason] && callback.errors == [reason])
+    #expect(sink.times.isEmpty && queued.isClear && late.isClear)
+}
+
 @Test func freezeAndDrainClearQueuedAndSubsequentFrames() async throws {
     let consent = ConsentedFixture(), sink = Sink(), queue = DispatchQueue(label: "synthetic.freeze")
     queue.suspend()

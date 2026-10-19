@@ -49,4 +49,29 @@ final class MicrophoneConfigurationTests: XCTestCase {
         XCTAssertFalse(configured.permits(observedUID: "invented-selected-input", observedFormat: format,
             engineRunning: false, starting: false))
     }
+
+    func testMismatchBitsDistinguishEachExistingGateAndCombineChanges() {
+        let configured = MicrophoneConfiguration(selectedUID: "invented-selected-input", format: format)
+        XCTAssertEqual(configured.mismatch(observedUID: nil, observedFormat: format,
+            engineRunning: true, starting: false), 2)
+        XCTAssertEqual(configured.mismatch(observedUID: "invented-other-input", observedFormat: format,
+            engineRunning: true, starting: false), 4)
+        let changed: [(MicrophoneCaptureFormat, UInt8)] = [
+            (.init(sampleRate: 44_100, channelCount: 1, float32: true, interleaved: false), 8),
+            (.init(sampleRate: 48_000, channelCount: 2, float32: true, interleaved: false), 16),
+            (.init(sampleRate: 48_000, channelCount: 1, float32: false, interleaved: false), 32),
+            (.init(sampleRate: 48_000, channelCount: 1, float32: true, interleaved: true), 64)
+        ]
+        for (observed, bit) in changed {
+            XCTAssertEqual(configured.mismatch(observedUID: "invented-selected-input", observedFormat: observed,
+                engineRunning: true, starting: false), bit)
+        }
+        XCTAssertEqual(configured.mismatch(observedUID: "invented-selected-input", observedFormat: format,
+            engineRunning: false, starting: false), 128)
+        XCTAssertEqual(configured.mismatch(observedUID: "invented-selected-input", observedFormat: format,
+            engineRunning: false, starting: true), 0)
+        XCTAssertEqual(configured.mismatch(observedUID: "invented-other-input",
+            observedFormat: .init(sampleRate: 44_100, channelCount: 2, float32: false, interleaved: true),
+            engineRunning: false, starting: false), 252)
+    }
 }

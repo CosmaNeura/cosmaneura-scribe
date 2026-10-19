@@ -11,7 +11,12 @@ const TIMING_EVENTS = ["audio_availability_helper_check", "audio_availability_pr
   "provider_recording_window", "provider_other_operation", "provider_source_prepare", "provider_source_authorize",
   "provider_workspace_list", "provider_workspace_open", "provider_journal_read", "provider_visit_preferences"] as const;
 export type RuntimeTimingEvent = typeof TIMING_EVENTS[number];
-const FAILURE_REASON_EVENTS = ["audio_native_failure_reason", "audio_main_failure_reason"] as const;
+const FAILURE_REASON_LIMITS = {
+  audio_native_failure_reason: [1, 12], audio_main_failure_reason: [1, 15],
+  audio_input_change_trigger: [1, 5], audio_input_change_mismatch: [0, 255],
+} as const;
+type FailureReasonEvent = keyof typeof FAILURE_REASON_LIMITS;
+const FAILURE_REASON_EVENTS = Object.keys(FAILURE_REASON_LIMITS) as FailureReasonEvent[];
 const TERMINAL_EVENTS = ["audio_stop_confirmed", "audio_permission_required", "audio_device_changed", "audio_session_locked",
   "audio_clock_discontinuity", "audio_overflow", "audio_failed", ...FAILURE_REASON_EVENTS,
   "audio_packet_invalid", "audio_chunk_commit_failed"] as const;
@@ -34,9 +39,10 @@ export function runtimeDiagnostics(directory: string): RuntimeDiagnostic {
     const timing = TIMING_EVENTS.includes(event as RuntimeTimingEvent);
     if (timing ? typeof durationMilliseconds !== "number" || !Number.isFinite(durationMilliseconds)
       || durationMilliseconds < 0 || durationMilliseconds > 3_600_000 : durationMilliseconds !== undefined) return;
-    const failureReason = FAILURE_REASON_EVENTS.includes(event as typeof FAILURE_REASON_EVENTS[number]);
-    if (failureReason ? !Number.isSafeInteger(reasonCode) || reasonCode! < 1
-      || reasonCode! > (event === "audio_native_failure_reason" ? 12 : 15) : reasonCode !== undefined) return;
+    const failureReason = FAILURE_REASON_EVENTS.includes(event as FailureReasonEvent);
+    const reasonLimits = failureReason ? FAILURE_REASON_LIMITS[event as FailureReasonEvent] : undefined;
+    if (reasonLimits ? !Number.isSafeInteger(reasonCode) || reasonCode! < reasonLimits[0]
+      || reasonCode! > reasonLimits[1] : reasonCode !== undefined) return;
     // Preserve a bounded terminal allowance after routine startup/upload events
     // fill their budget, so prolonged recording can still explain its stop.
     if (TERMINAL_EVENTS.includes(event as typeof TERMINAL_EVENTS[number]) ? remainingTerminal-- <= 0 : remaining-- <= 0) return;

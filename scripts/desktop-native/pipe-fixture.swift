@@ -39,6 +39,17 @@ private actor InventedSource: DesktopProcessSource {
         // The real producer checks current macOS permission before source setup.
         // This denial substitutes only that OS result, never opens an OS source.
         if selection.processID == 9 { throw DesktopAudioFailure.permissionRequired }
+        // Exercise contextual failure through the actual mixer/sink/host latches
+        // without invoking an OS source or allowing later cleanup to replace it.
+        if (10...14).contains(selection.processID) {
+            let trigger = DesktopInputChangeTrigger(rawValue: Int(selection.processID) - 9)!
+            let mismatches: [UInt8] = [4, 2, 128, 0, 0]
+            let reason = DesktopAudioFailure.inputChangedContext(trigger: trigger,
+                mismatch: mismatches[Int(selection.processID) - 10])
+            sink.failed(reason)
+            sink.failed(.sinkRejected)
+            throw DesktopAudioFailure.cancelled
+        }
         // Model a native child dying before readiness, without generating a
         // real OS crash report or ever constructing a physical audio source.
         if selection.processID == 7 { _exit(70) }
