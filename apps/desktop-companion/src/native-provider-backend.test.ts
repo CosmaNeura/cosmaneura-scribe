@@ -1,6 +1,72 @@
 import { expect, it, vi } from "vitest";
 import { connectDesktopNativeBackend } from "./native-provider-backend.js";
 import type { NativeProviderClient } from "./native-provider-client.js";
+import type { CreationRecords } from "../../capture/src/provider/encounter-setup.js";
+
+function catalogFixture() {
+  const abort = new AbortController(), revision = crypto.randomUUID(), scope = crypto.randomUUID();
+  const appointmentRef = "appointment_01j00000000000000000000000";
+  const catalog: Record<string, unknown> = { revision, recoveryScope: scope, encounter_creation_v1: true,
+    account: { email: "provider@synthetic.invalid" }, environment: "Staging",
+    encounters: [{ workspaceId: crypto.randomUUID(), appointmentRef, title: "Synthetic visit", detail: "" }] };
+  const key = "provider-hidden-visits-v1:" + scope;
+  const records: CreationRecords = { get: vi.fn(async () => ({ key, revision: "1",
+    data: btoa(JSON.stringify({ version: 1, recoveryScope: scope, refs: [appointmentRef] })) })),
+    create: vi.fn(), compareAndSwap: vi.fn() };
+  const request = vi.fn(async (_method: string, payload: Record<string, unknown>) => ({ status: 200,
+    body: JSON.stringify(payload.action === "catalog" ? catalog : { revision, recoveryScope: scope,
+      account: catalog.account, patients: [], more_results: false }) }));
+  const native = { signal: abort.signal, request, isReady: () => !abort.signal.aborted,
+    getState: async () => ({ phase: "ready", revision }), addListener: async () => ({ remove: async () => undefined }) } as unknown as NativeProviderClient;
+  const open = () => connectDesktopNativeBackend(native, { signal: abort.signal, openCore: async () => undefined,
+    uploadTarget: { putCompleteEnvelope: async () => undefined }, creationRecords: async () => ({ records, close: async () => undefined }) });
+  return { abort, catalog, scope, records, request, appointmentRef, open };
+}
+
+it("keeps hidden visits filtered after current catalog without an additional provider request", async () => {
+  const f = catalogFixture(), backend = await f.open();
+  try {
+    await backend.listEncounters(backend.signal);
+    expect(await backend.encounterSetup!.hidden!(backend.signal)).toEqual([f.appointmentRef]);
+    await backend.listEncounters(backend.signal);
+    expect(await backend.encounterSetup!.hidden!(backend.signal)).toEqual([f.appointmentRef]);
+    expect(f.request.mock.calls.map(([, value]) => value.action)).toEqual(["catalog", "catalog"]);
+  } finally { await backend.dispose(); }
+});
+
+it("uses the original empty-patient fallback only when an older catalog omits its scope", async () => {
+  const f = catalogFixture(), backend = await f.open(); delete f.catalog.recoveryScope;
+  try {
+    await backend.listEncounters(backend.signal);
+    expect(await backend.encounterSetup!.hidden!(backend.signal)).toEqual([f.appointmentRef]);
+    expect(f.request.mock.calls.map(([, value]) => value.action)).toEqual(["catalog", "encounters"]);
+    expect(JSON.parse(f.request.mock.calls[1]![1].body as string)).toMatchObject({ action: "patients", query: "" });
+  } finally { await backend.dispose(); }
+});
+
+it.each(["scope", "account", "revision", "cancel"])("refuses a changed catalog %s before publishing new account or hidden custody", async change => {
+  const f = catalogFixture(), backend = await f.open();
+  try {
+    await backend.listEncounters(backend.signal);
+    if (change === "scope") f.catalog.recoveryScope = crypto.randomUUID();
+    if (change === "account") f.catalog.account = { email: "foreign@synthetic.invalid" };
+    if (change === "revision") f.catalog.revision = crypto.randomUUID();
+    if (change === "cancel") f.abort.abort();
+    await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
+    expect(backend.account?.email).toBe("provider@synthetic.invalid");
+    expect(f.records.get).not.toHaveBeenCalled();
+    expect(f.request.mock.calls.every(([, value]) => value.action === "catalog")).toBe(true);
+  } finally { await backend.dispose(); }
+});
+
+it.each([null, "", "not-a-uuid", 7])("rejects malformed present catalog scope (%s) without patient fallback", async scope => {
+  const f = catalogFixture(), backend = await f.open(); f.catalog.recoveryScope = scope;
+  try {
+    await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
+    expect(backend.account).toBeUndefined(); expect(f.records.get).not.toHaveBeenCalled();
+    expect(f.request.mock.calls.map(([, value]) => value.action)).toEqual(["catalog"]);
+  } finally { await backend.dispose(); }
+});
 
 function preparedReply(grant: Record<string, unknown>) {
   return { grant, processFence: { epoch: crypto.randomUUID(), coordinatorDevice: "1",

@@ -43,6 +43,57 @@ function fixture(capacitorProxy = false, hiding = false) {
   return { ...disk, scope, request, created, abort, openStore, newOwner, assimilated, signal: abort.signal };
 }
 describe("shared mobile/desktop encounter creation", () => {
+  it("opens the original hidden-visit namespace from catalog scope without a patient search", async () => {
+    const f = fixture(false, true), owner = f.newOwner();
+    const key = "provider-hidden-visits-v1:" + f.scope;
+    f.data.set(key, { key, revision: "1", data: btoa(JSON.stringify({ version: 1, recoveryScope: f.scope, refs: [appointmentRef] })) });
+    owner.initializeCatalog({ recoveryScope: f.scope, account: { email: "provider@synthetic.invalid" } }, f.signal);
+    expect(await owner.hidden!(f.signal)).toEqual([appointmentRef]);
+    expect(f.openStore).toHaveBeenCalledWith(f.scope, f.signal);
+    expect(f.request).not.toHaveBeenCalled();
+    expect(f.store.get).toHaveBeenCalledWith({ key });
+    await owner.dispose();
+  });
+  it("retains the one-search fallback for a catalog without a scope", async () => {
+    const f = fixture(false, true), owner = f.newOwner();
+    owner.initializeCatalog({ account: { email: "provider@synthetic.invalid" } }, f.signal);
+    expect(await owner.hidden!(f.signal)).toEqual([]);
+    expect(await owner.hidden!(f.signal)).toEqual([]);
+    expect(f.request).toHaveBeenCalledTimes(1);
+    expect(f.request.mock.calls[0]![0]).toMatchObject({ action: "patients", query: "" });
+    await owner.dispose();
+  });
+  it.each([null, "", "not-a-uuid", 7])("refuses a malformed present catalog scope (%s) without a fallback", async recoveryScope => {
+    const f = fixture(false, true), owner = f.newOwner();
+    expect(() => owner.initializeCatalog({ recoveryScope, account: { email: "provider@synthetic.invalid" } }, f.signal)).toThrow();
+    expect(f.request).not.toHaveBeenCalled(); expect(f.openStore).not.toHaveBeenCalled();
+    await owner.dispose();
+  });
+  it.each(["recoveryScope", "account"])("refuses a later catalog %s change without replacing custody", async field => {
+    const f = fixture(false, true), owner = f.newOwner();
+    const first = { recoveryScope: f.scope, account: { email: "provider@synthetic.invalid" } };
+    owner.initializeCatalog(first, f.signal);
+    expect(() => owner.initializeCatalog({ ...first, [field]: field === "account" ? { email: "foreign@synthetic.invalid" } : crypto.randomUUID() }, f.signal)).toThrow();
+    expect(await owner.hidden!(f.signal)).toEqual([]);
+    expect(f.openStore).toHaveBeenCalledWith(f.scope, f.signal);
+    expect(f.request).not.toHaveBeenCalled();
+    await owner.dispose();
+  });
+  it("refuses a fallback patient response from a different catalog account before storage", async () => {
+    const f = fixture(false, true), owner = f.newOwner();
+    owner.initializeCatalog({ account: { email: "foreign@synthetic.invalid" } }, f.signal);
+    await expect(owner.hidden!(f.signal)).rejects.toThrow();
+    expect(f.openStore).not.toHaveBeenCalled();
+    await owner.dispose();
+  });
+  it("does not initialize a catalog scope after cancellation or owner revocation", async () => {
+    const f = fixture(false, true), owner = f.newOwner(), attempt = new AbortController();
+    const value = { recoveryScope: f.scope, account: { email: "provider@synthetic.invalid" } };
+    attempt.abort(); expect(() => owner.initializeCatalog(value, attempt.signal)).toThrow();
+    f.abort.abort(); expect(() => owner.initializeCatalog(value, f.signal)).toThrow();
+    expect(f.request).not.toHaveBeenCalled(); expect(f.openStore).not.toHaveBeenCalled();
+    await owner.dispose();
+  });
   it.each([[false, "1980-01-02"], [true, "1980-01-02"], [false, null], [true, null]] as const)("retains an uncertain request across restart with Capacitor proxy=%s and DOB=%s", async (capacitorProxy, dateOfBirth) => {
     const draft: EncounterDraft = { ...initial, patient: { kind: "new", name: "Synthetic Patient", dateOfBirth } };
     const f = fixture(capacitorProxy), first = f.newOwner();

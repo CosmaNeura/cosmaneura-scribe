@@ -194,11 +194,17 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
       if (next.has(entry.appointmentRef)) throw unavailable();
       next.set(entry.appointmentRef, { workspaceId: row.workspaceId, encounter: entry });
     }
+    const supportsCreation = value.encounter_creation_v1 === true;
+    const nextAccount = supportsCreation ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }) : undefined;
+    if (supportsCreation) {
+      if ("recoveryScope" in value && !isUuid(value.recoveryScope)) throw unavailable();
+      encounterSetup.initializeCatalog(value, signal);
+    }
     current(signal); encounters.clear();
     openingReviewSupported = value.opening_review_v1 === true;
     noteOpeningSupported = value.note_opening_v1 === true;
-    creationSupported = value.encounter_creation_v1 === true;
-    account = creationSupported ? parseProviderAccount({ email: objectAccount(value.account).email, environment: value.environment }) : undefined;
+    creationSupported = supportsCreation;
+    account = nextAccount;
     for (const [key, row] of next) encounters.set(key, row);
     return [...next.values()].map(row => row.encounter);
   };

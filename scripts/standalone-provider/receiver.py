@@ -303,6 +303,7 @@ class ProviderReceiver:
                         lambda bind: self.catalog(authorization, bind=bind)
                     )
                     account = None
+                    recovery_scope = None
                     if self.encounter_creation_enabled:
                         result = await self.encounters(
                             authorization,
@@ -310,6 +311,7 @@ class ProviderReceiver:
                             str(uuid4()),
                         )
                         account = result["account"]
+                        recovery_scope = str(_uuid(result.get("recoveryScope")))
                         current_rows = result.get("encounters")
                         _require(isinstance(current_rows, list) and len(current_rows) <= 1000)
                         by_appointment = {r["appointmentRef"]: r for r in rows}
@@ -334,6 +336,7 @@ class ProviderReceiver:
                                 {
                                     "encounter_creation_v1": True,
                                     "account": account,
+                                    "recoveryScope": recovery_scope,
                                     "environment": "Staging",
                                 }
                                 if self.encounter_creation_enabled

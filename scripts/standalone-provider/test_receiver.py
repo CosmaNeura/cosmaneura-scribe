@@ -1309,6 +1309,7 @@ async def test_core_owned_encounters_join_legacy_catalog_without_registry_writes
         assert catalog.status_code == 200 and len(catalog.json()["encounters"]) == 4
         assert catalog.json()["account"]["email"] == "provider@synthetic.invalid"
         assert catalog.json()["environment"] == "Staging"
+        assert catalog.json()["recoveryScope"] == str(h.wire.selection.recovery_scope)
         for entry in entries.values():
             selected, display = await h.receiver.selected_current(
                 h.headers["Authorization"], UUID(h.revision), UUID(entry["workspace_id"])

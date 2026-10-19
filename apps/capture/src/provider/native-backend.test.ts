@@ -79,6 +79,34 @@ function fixture() {
 }
 
 describe("native provider connection", () => {
+  it.each(["scope", "account"])("refuses a later mobile catalog %s change within the same native owner", async change => {
+    const f = fixture(); let changed = false;
+    f.plugin.providerRequest.mockImplementation(async request => {
+      const value = JSON.parse(f.reply(request).body) as Record<string, unknown>;
+      return f.reply(request, { ...value, encounter_creation_v1: true, environment: "Staging",
+        recoveryScope: changed && change === "scope" ? crypto.randomUUID() : recovery,
+        account: { email: changed && change === "account" ? "foreign@synthetic.invalid" : "provider@synthetic.invalid" } });
+    });
+    const backend = await f.connect();
+    try {
+      await backend.listEncounters(backend.signal); changed = true;
+      await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
+      expect(backend.account?.email).toBe("provider@synthetic.invalid");
+      expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual(["catalog", "catalog"]);
+    } finally { await backend.dispose(); }
+  });
+  it.each([null, "", "not-a-uuid", 7])("rejects malformed present mobile catalog scope (%s)", async recoveryScope => {
+    const f = fixture();
+    f.plugin.providerRequest.mockImplementation(async request => f.reply(request, {
+      ...JSON.parse(f.reply(request).body), encounter_creation_v1: true, environment: "Staging", recoveryScope,
+      account: { email: "provider@synthetic.invalid" } }));
+    const backend = await f.connect();
+    try {
+      await expect(backend.listEncounters(backend.signal)).rejects.toThrow();
+      expect(backend.account).toBeUndefined();
+      expect(f.plugin.providerRequest.mock.calls.map(([request]) => request.action)).toEqual(["catalog"]);
+    } finally { await backend.dispose(); }
+  });
   it("maps a cold recording return against a fresh catalog without auto-start or admission", async () => {
     const f = fixture(), freshAppointment = "appointment_01j00000000000000000000001";
     f.setState({ ...f.state, nativeRecordingVersion: 2 }, false);
