@@ -175,7 +175,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
     }, code => {
       this.callReconnectRequested = code === "meeting_disconnected" && options.autoReconnectMeeting === true
         && this.audioMode === "meeting" && this.lastSelectedWindow !== null;
-    });
+    }, options.native.diagnostics);
     const bff = options.createBff(this.signal);
     this.createFlow = () => new CaptureFlowController({ bff, flowStore: options.flowStore, createSessionKey: options.createSessionKey,
       initialReservationCount: 30,

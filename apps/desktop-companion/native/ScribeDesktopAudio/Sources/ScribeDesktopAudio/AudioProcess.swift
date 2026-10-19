@@ -243,16 +243,7 @@ private actor AudioProcessHost {
     private func fail(_ reason: DesktopAudioFailure) {
         guard !failureSent, !disconnected, !stopped else { return }
         failureSent = true; requestDiscard()
-        let code: String
-        switch reason {
-        case .permissionRequired: code = "permission_required"
-        case .inputChanged, .selectionChanged: code = "device_changed"
-        case .meetingDisconnected: code = "meeting_disconnected"
-        case .clockDiscontinuity: code = "clock_discontinuity"
-        case .bufferOverflow: code = "overflow"
-        default: code = "failed"
-        }
-        output.metadata(["type": "failure", "code": code])
+        output.metadata(reason.processFailureMetadata)
     }
 
     func checkParent() {
@@ -272,6 +263,23 @@ private actor AudioProcessHost {
             do { try await Task.sleep(for: .seconds(15)) } catch { return }
             done.finish(1) // Dedicated executable exits even if OS stop is stuck.
         }
+    }
+}
+
+extension DesktopAudioFailure {
+    /// Existing public failure behavior plus a fixed numeric diagnostic reason.
+    /// The parent also accepts the earlier metadata without this optional field.
+    var processFailureMetadata: [String: Any] {
+        let code: String
+        switch self {
+        case .permissionRequired: code = "permission_required"
+        case .inputChanged, .selectionChanged: code = "device_changed"
+        case .meetingDisconnected: code = "meeting_disconnected"
+        case .clockDiscontinuity: code = "clock_discontinuity"
+        case .bufferOverflow: code = "overflow"
+        default: code = "failed"
+        }
+        return ["type": "failure", "code": code, "reason": diagnosticReason]
     }
 }
 

@@ -8,6 +8,7 @@ import type { NativePcmBridge, NativePcmConfiguration, NativePcmPacket, NativePc
   NativePcmSink, NativePcmStopResult } from "../../capture/src/native/native-pcm-bridge";
 import type { DesktopPCMCoverage, DesktopPCMDriver, DesktopPCMDriverSession,
   DesktopPCMFailure, DesktopPCMPacket, DesktopPCMStart, DesktopPCMCompletion, DesktopInputSignal } from "./native-pcm-driver.js";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 /** Main-process source for the existing CaptureFlowController. The same WAV,
  * encryption, reservations and durable upload protocol handle the mixed audio.
@@ -17,9 +18,9 @@ import type { DesktopPCMCoverage, DesktopPCMDriver, DesktopPCMDriverSession,
 export class DesktopPcmCaptureSource extends NativePcmCaptureSource {
   public constructor(driver: DesktopPCMDriver, persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
     inputSignal?: (value: DesktopInputSignal | null) => void, capturedFrames?: (frames: number) => void,
-    inputFailure?: (code: DesktopPCMFailure) => void) {
+    inputFailure?: (code: DesktopPCMFailure) => void, diagnostics?: RuntimeDiagnostic) {
     requireMainProcess();
-    super(new DesktopChunkBridge(driver, persistCoverage, inputSignal, capturedFrames, inputFailure), "mixed");
+    super(new DesktopChunkBridge(driver, persistCoverage, inputSignal, capturedFrames, inputFailure, diagnostics), "mixed");
   }
 }
 
@@ -31,7 +32,7 @@ class DesktopChunkBridge implements NativePcmBridge {
     private readonly persistCoverage: (coverage: DesktopPCMCoverage) => Promise<void>,
     private readonly inputSignal?: (value: DesktopInputSignal | null) => void,
     private readonly capturedFrames?: (frames: number) => void,
-    private readonly inputFailure?: (code: DesktopPCMFailure) => void) {
+    private readonly inputFailure?: (code: DesktopPCMFailure) => void, private readonly diagnostics?: RuntimeDiagnostic) {
     if (driver.checksAvailabilityOnStart === true) this.checksAvailabilityOnStart = true;
   }
 
@@ -63,11 +64,20 @@ class DesktopChunkBridge implements NativePcmBridge {
     };
     const send = async (samples: Int16Array<ArrayBuffer>): Promise<void> => {
       let bytes: Uint8Array<ArrayBuffer> | undefined;
+      const began = performance.now();
       try {
         if (discard || closed) return;
         bytes = pcm16ToLittleEndianBytes(samples);
         await sink.onPcmPacket({ sequenceNumber: sequence++, pcmBytes: bytes });
-      } finally { samples.fill(0); bytes?.fill(0); }
+      } catch (error) {
+        diagnose("audio_chunk_commit_failed"); throw error;
+      } finally {
+        samples.fill(0); bytes?.fill(0);
+        diagnose("audio_chunk_commit", Math.max(0, performance.now() - began));
+      }
+    };
+    const diagnose: RuntimeDiagnostic = (event, duration) => {
+      try { this.diagnostics?.(event, duration); } catch { /* Observation cannot change retention or cleanup. */ }
     };
     const receive = (packet: DesktopPCMPacket): Promise<void> => {
       if (closed || discard) { clearPacket(packet); return Promise.reject(failure()); }
@@ -78,18 +88,21 @@ class DesktopChunkBridge implements NativePcmBridge {
       const work = (async () => {
         let samples: Int16Array<ArrayBuffer> | undefined;
         let chunks: readonly Int16Array<ArrayBuffer>[] = [];
+        let validated = false;
         try {
           const bytes = requirePacket(packet, receivedFrames, maximumFrames);
           samples = new Int16Array(bytes.byteLength / 2);
           const view = new DataView(bytes.buffer);
           for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true);
           chunks = chunker.push(samples);
+          validated = true;
           receivedFrames += samples.length;
           // Count the accepted mixed stream once, before ten-second WAV commits.
           // This is elapsed capture feedback, never persistence or upload proof.
           try { this.capturedFrames?.(receivedFrames); } catch { /* Observer isolation. */ }
           for (const chunk of chunks) await send(chunk);
         } catch {
+          if (!validated) diagnose("audio_packet_invalid");
           terminal("failed"); throw failure();
         } finally {
           samples?.fill(0); chunks.forEach(chunk => chunk.fill(0)); clearPacket(packet);

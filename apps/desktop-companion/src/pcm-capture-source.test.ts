@@ -15,6 +15,8 @@ import { EncryptedIndexedDbFlowStore } from "../../capture/src/flow/encrypted-st
 import { EncryptedIndexedDbQueueStorage } from "../../capture/src/storage/encrypted-indexeddb";
 import { CaptureQueue } from "../../capture/src/queue/capture-queue";
 import { createMockBffServer } from "../../capture/src/mock-bff/server";
+import { QueueInvariantError } from "../../capture/src/queue/errors";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 const CRYPTO = webcrypto as unknown as Crypto;
 const CONSENT = Object.freeze({ id: "desktop-pcm-invented-consent", allPartiesAgreed: true });
@@ -83,6 +85,34 @@ function fixture(persist?: (coverage: DesktopPCMCoverage) => Promise<void>, nati
 }
 
 describe("trusted desktop PCM capture", () => {
+  it.each([
+    [new QueueInvariantError("chunk_not_reserved"), "audio_chunk_commit_failed"],
+    [new Error("synthetic private exception text"), "audio_chunk_commit_failed"],
+  ] as const)("records fixed commit-failure categories and clears rejected audio", async (failure, event) => {
+    const driver = new Driver(), events: Array<[string, number | undefined]> = [];
+    const diagnostics: RuntimeDiagnostic = (name, duration) => { events.push([name, duration]); };
+    const source = new DesktopPcmCaptureSource(driver, async () => undefined, undefined, undefined, undefined, diagnostics);
+    await source.start({ capabilities, onChunk: async () => { throw failure; } });
+    await expect(driver.emit(Array(320).fill(123))).rejects.toThrow();
+    await source.stop();
+    expect(events.map(([name]) => name)).toEqual([event, "audio_chunk_commit"]);
+    expect(events[1]![1]).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(events)).not.toContain("synthetic private exception text");
+    expect(driver.active).toBe(false);
+  });
+
+  it("isolates diagnostic failure from successful commit and native drain", async () => {
+    const driver = new Driver(), chunks = vi.fn(async () => undefined);
+    const source = new DesktopPcmCaptureSource(driver, async () => undefined, undefined, undefined, undefined,
+      () => { throw new Error("synthetic observer failure"); });
+    await source.start({ capabilities, onChunk: chunks });
+    const bytes = await driver.emit(Array(320).fill(123));
+    expect(bytes.every(byte => byte === 0)).toBe(true);
+    await source.stop();
+    expect(chunks).toHaveBeenCalledOnce();
+    expect(driver.modes).toEqual(["drain"]);
+  });
+
   it("keeps separate permission denial before start for drivers without a native guard", async () => {
     const f = fixture(), availability = vi.spyOn(f.driver, "getAvailability").mockResolvedValue(false);
     await expect(f.source.start({ capabilities, onChunk: async () => undefined })).rejects.toThrow();
