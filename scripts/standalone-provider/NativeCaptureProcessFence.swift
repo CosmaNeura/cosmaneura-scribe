@@ -241,6 +241,9 @@ private func nativeFenceDirectory(_ path: String) throws -> Int32 {
 /// No command-line/renderer/environment path is accepted. Only the two new
 /// private directories can be created; existing parent permissions are retained.
 func nativeDesktopFenceDirectory() throws -> String {
+#if SCRIBE_MAC_APP_STORE
+    return try NativeDesktopStoreContainer.fenceDirectory()
+#else
     guard let record = getpwuid(getuid()), let home = record.pointee.pw_dir else { throw NativeFenceError.unavailable }
     let path = String(cString: home) + "/Library/Application Support/com.cosmaneura.scribe.beta.desktop/SourceFence"
     var fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
@@ -262,5 +265,6 @@ func nativeDesktopFenceDirectory() throws -> String {
         else { throw NativeFenceError.unavailable }
     }
     return path
+#endif
 }
 #endif

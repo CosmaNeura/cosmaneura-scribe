@@ -8,6 +8,9 @@ import ScribeDesktopAudio
 @MainActor
 struct ScribeDesktopAudioHelper {
     static func main() {
+#if SCRIBE_MAC_APP_STORE
+        guard (try? NativeDesktopStoreContainer.requireContainer()) != nil else { _exit(78) }
+#endif
         signal(SIGPIPE, SIG_IGN)
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard arguments == ["--availability-v1"] || arguments == ["--request-permissions-v1"]

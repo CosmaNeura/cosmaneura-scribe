@@ -14,6 +14,9 @@ import Foundation
     private var recovery: NativeSourceRecovery?
 
     init() throws {
+#if SCRIBE_MAC_APP_STORE
+        _ = try NativeDesktopStoreContainer.requireContainer()
+#endif
         guard Bundle.main.bundleIdentifier == "com.cosmaneura.scribe.beta.desktop.auth",
               let settings = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
               let receiver = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
