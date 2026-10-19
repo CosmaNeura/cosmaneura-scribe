@@ -69,15 +69,21 @@ final class ProviderMainWindowLease {
         return visible(current, parent)
     }
 
-    static func system() -> ProviderMainWindowLease {
-        let parent = getppid(), helper = getpid()
+    static func system() -> ProviderMainWindowLease { system(parent: getppid(), valid: { true }) }
+#if SCRIBE_MAC_APP_STORE_XPC
+    static func system(host: NativeStoreHostIdentity) -> ProviderMainWindowLease {
+        system(parent: host.process, valid: { host.isValid })
+    }
+#endif
+    private static func system(parent: Int32, valid: @escaping () -> Bool) -> ProviderMainWindowLease {
+        let helper = getpid()
         return ProviderMainWindowLease(parent: parent, owner: { id in
-            guard let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]],
+            guard valid(), let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]],
                   let row = rows.first(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id })
             else { return nil }
             return (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
         }, visible: { id, expectedParent in
-            guard let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+            guard valid(), let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                        kCGNullWindowID) as? [[String: Any]] else { return false }
             var windows: [ProviderWindowMetadata] = []
             for row in rows {

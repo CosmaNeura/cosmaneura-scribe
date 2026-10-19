@@ -86,7 +86,8 @@ enum ProcessCommand: Sendable {
 
 final class ProcessInput: @unchecked Sendable {
     private let input: FileHandle
-    init(_ input: FileHandle) { self.input = input }
+    private let lifetime: NativeProcessLifetime?
+    init(_ input: FileHandle, lifetime: NativeProcessLifetime? = nil) { self.input = input; self.lifetime = lifetime }
     func next() throws -> ProcessCommand? {
         guard let header = try readExactly(4) else { return nil }
         let length = header.reduce(0) { $0 * 256 + Int($1) }
@@ -96,7 +97,7 @@ final class ProcessInput: @unchecked Sendable {
     private func readExactly(_ length: Int) throws -> Data? {
         var result = Data()
         while result.count < length {
-            guard let part = try input.read(upToCount: length - result.count), !part.isEmpty else {
+            guard let part = try lifetime.map({ try $0.read(input, upToCount: length - result.count) }) ?? input.read(upToCount: length - result.count), !part.isEmpty else {
                 if result.isEmpty { return nil }
                 throw DesktopAudioFailure.invalidAudio
             }
@@ -111,22 +112,24 @@ final class ProcessOutput: @unchecked Sendable {
     private let queue = DispatchQueue(label: "scribe.desktop.private-pipe")
     private let lock = NSLock()
     private var valid = true
+    private var failed = false
     init(_ output: FileHandle) { self.output = output }
     func metadata(_ value: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: value, options: .sortedKeys), data.count < 2048 else {
-            lock.withLock { valid = false }; return
+            lock.withLock { valid = false; failed = true }; return
         }
         enqueue(kind: 1, body: data)
     }
     func pcm(firstFrame: Int, bytes: Data) {
         guard (0...1_382_400_000).contains(firstFrame), (2...8192).contains(bytes.count), bytes.count % 2 == 0 else {
-            lock.withLock { valid = false }; return
+            lock.withLock { valid = false; failed = true }; return
         }
         var body = Self.bigEndian(firstFrame); body.append(bytes)
         enqueue(kind: 2, body: body)
         body.resetBytes(in: 0..<body.count)
     }
     var isValid: Bool { lock.withLock { valid } }
+    var didFail: Bool { lock.withLock { failed } }
     func invalidate() { lock.withLock { valid = false } }
     func drain() async { await withCheckedContinuation { continuation in queue.async { continuation.resume() } } }
     private func enqueue(kind: UInt8, body: Data) {
@@ -136,7 +139,7 @@ final class ProcessOutput: @unchecked Sendable {
             defer { owned.clear() }
             guard lock.withLock({ valid }) else { return }
             do { try owned.write(to: output) }
-            catch { lock.withLock { valid = false } }
+            catch { lock.withLock { valid = false; failed = true } }
         }
         frame.resetBytes(in: 0..<frame.count)
     }

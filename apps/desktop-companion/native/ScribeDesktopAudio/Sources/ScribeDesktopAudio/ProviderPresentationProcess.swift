@@ -28,9 +28,22 @@ public extension ProviderPresentationSurface {
 public final class MacProviderPresentationSurface: ProviderPresentationSurface {
     public var onEvent: (@MainActor (ProviderPresentationEvent) -> Void)?
     private let picker = MacProviderWindowPicker(enabled: true)
-    private lazy var indicator = MacProviderRecordingIndicator(enabled: true,
-        requestStop: { [weak self] in self?.onEvent?(.stopRequested($0)) },
-        visibilityLost: { [weak self] in self?.onEvent?(.visibilityLost($0)) })
+    private lazy var indicator: MacProviderRecordingIndicator = {
+#if SCRIBE_MAC_APP_STORE_XPC
+        if let storeHost {
+            return MacProviderRecordingIndicator(enabled: true, host: storeHost,
+                requestStop: { [weak self] in self?.onEvent?(.stopRequested($0)) },
+                visibilityLost: { [weak self] in self?.onEvent?(.visibilityLost($0)) })
+        }
+#endif
+        return MacProviderRecordingIndicator(enabled: true,
+            requestStop: { [weak self] in self?.onEvent?(.stopRequested($0)) },
+            visibilityLost: { [weak self] in self?.onEvent?(.visibilityLost($0)) })
+    }()
+#if SCRIBE_MAC_APP_STORE_XPC
+    private var storeHost: NativeStoreHostIdentity?
+    public init(storeHost: NativeStoreHostIdentity) { self.storeHost = storeHost }
+#endif
     public init() {}
     public func choose() async throws -> MeetingAudioSelection { try await picker.choose() }
     public func meetingWindows() async throws -> [ProviderMeetingWindow] { try await providerMeetingWindows() }
@@ -47,10 +60,11 @@ public enum ProviderPresentationProcess {
     @MainActor
     public static func run(surface: any ProviderPresentationSurface,
                            input: FileHandle = .standardInput, output: FileHandle = .standardOutput,
-                           protocolVersion: Int = 1) async -> Int32 {
+                           protocolVersion: Int = 1, lifetime: NativeProcessLifetime? = nil) async -> Int32 {
         guard (1...3).contains(protocolVersion) else { return 64 }
-        let host = PresentationHost(surface: surface, output: ProcessOutput(output), protocolVersion: protocolVersion)
-        let reader = PresentationInput(input, protocolVersion: protocolVersion)
+        let host = PresentationHost(surface: surface, output: ProcessOutput(output), protocolVersion: protocolVersion, strictTransport: lifetime != nil)
+        let reader = PresentationInput(input, protocolVersion: protocolVersion, lifetime: lifetime)
+        lifetime?.onCancel { Task { @MainActor in host.disconnect() } }
         let reading = Task.detached {
             do {
                 while let command = try reader.next() { await host.accept(command) }
@@ -64,7 +78,9 @@ public enum ProviderPresentationProcess {
             }
         }
         let result = await host.wait()
+        lifetime?.finishReading()
         reading.cancel(); heartbeat.cancel()
+        if lifetime != nil { await reading.value }
         return result
     }
 }
@@ -125,7 +141,8 @@ enum PresentationCommand: Sendable {
 private final class PresentationInput: @unchecked Sendable {
     private let input: FileHandle
     private let protocolVersion: Int
-    init(_ input: FileHandle, protocolVersion: Int) { self.input = input; self.protocolVersion = protocolVersion }
+    private let lifetime: NativeProcessLifetime?
+    init(_ input: FileHandle, protocolVersion: Int, lifetime: NativeProcessLifetime? = nil) { self.input = input; self.protocolVersion = protocolVersion; self.lifetime = lifetime }
     func next() throws -> PresentationCommand? {
         guard let header = try read(4) else { return nil }
         let count = header.reduce(0) { $0 * 256 + Int($1) }
@@ -135,7 +152,7 @@ private final class PresentationInput: @unchecked Sendable {
     private func read(_ count: Int) throws -> Data? {
         var data = Data()
         while data.count < count {
-            guard let part = try input.read(upToCount: count - data.count), !part.isEmpty else {
+            guard let part = try lifetime.map({ try $0.read(input, upToCount: count - data.count) }) ?? input.read(upToCount: count - data.count), !part.isEmpty else {
                 if data.isEmpty { return nil }
                 throw invalid()
             }
@@ -149,6 +166,7 @@ private final class PresentationInput: @unchecked Sendable {
 private final class PresentationHost {
     private let surface: any ProviderPresentationSurface
     private let output: ProcessOutput
+    private let strictTransport: Bool
     private var state: ProviderRecordingPresentation = .inactive
     private var choice: (request: Int, task: Task<Void, Never>)?
     private var lastRequest = 0
@@ -158,8 +176,8 @@ private final class PresentationHost {
     private var result: Int32?
     private var waiter: CheckedContinuation<Int32, Never>?
 
-    init(surface: any ProviderPresentationSurface, output: ProcessOutput, protocolVersion: Int) {
-        self.surface = surface; self.output = output
+    init(surface: any ProviderPresentationSurface, output: ProcessOutput, protocolVersion: Int, strictTransport: Bool = false) {
+        self.surface = surface; self.output = output; self.strictTransport = strictTransport
         surface.onEvent = { [weak self] event in self?.event(event) }
         output.metadata(["type": "ready", "version": protocolVersion])
     }
@@ -302,7 +320,8 @@ private final class PresentationHost {
         finishing = true
         Task { @MainActor in
             await output.drain()
-            result = code; waiter?.resume(returning: code); waiter = nil
+            let completed = strictTransport && !output.isValid ? Int32(70) : code
+            result = completed; waiter?.resume(returning: completed); waiter = nil
         }
     }
 }

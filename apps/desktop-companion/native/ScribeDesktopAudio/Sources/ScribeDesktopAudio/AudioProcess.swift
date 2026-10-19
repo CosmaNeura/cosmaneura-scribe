@@ -16,33 +16,65 @@ extension MacMeetingAudio: DesktopProcessSource {}
 
 /// Dedicated child-process entry only. The executable must exit when run returns:
 /// an uncooperative native stop is bounded by process termination on parent loss.
-/// Do not embed this runner in the desktop app's own process.
+/// Do not embed this runner in the desktop app's own process. The separately
+/// sandboxed XPC audio service may reuse only code 0 after stop + reader drain;
+/// every nonzero or unbounded stop terminates that dedicated role process.
 public enum DesktopAudioProcess {
     public static func run(source: any DesktopProcessSource, allowsRenewal: Bool = false, input: FileHandle = .standardInput,
-                           output: FileHandle = .standardOutput) async -> Int32 {
+                           output: FileHandle = .standardOutput, lifetime: NativeProcessLifetime? = nil) async -> Int32 {
         let done = ProcessCompletion(), writer = ProcessOutput(output)
         let host = AudioProcessHost(source: source, allowsRenewal: allowsRenewal, output: writer, done: done)
-        let reader = ProcessInput(input)
-        Task.detached {
+        let reader = ProcessInput(input, lifetime: lifetime), inputStatus = ProcessInputStatus()
+        lifetime?.onCancel { Task { await host.disconnect() } }
+        let reading = Task.detached {
             do {
                 while let command = try reader.next() { await host.accept(command) }
                 await host.disconnect()
-            } catch { await host.disconnect() }
+            } catch {
+                if !(error is CancellationError && lifetime?.isCancelled == true) { inputStatus.fail() }
+                await host.disconnect()
+            }
         }
-        Task {
+        let heartbeat = Task {
             while !done.isComplete {
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 await host.checkParent()
             }
         }
-        return await done.wait()
+        var result = await done.wait()
+        if let lifetime {
+            lifetime.finishReading()
+            await reading.value
+            heartbeat.cancel()
+            await writer.drain()
+            if inputStatus.failed || writer.didFail { result = 70 }
+#if SCRIBE_MAC_APP_STORE_XPC
+            // Code 0 requires acknowledged native stop plus the subsequent
+            // discard stop returning successfully. Release only after both
+            // descriptor readers and queued output have ceased. Failure keeps
+            // the fence until the XPC role process terminates.
+            if result == 0 { AudioProcessFence.shared.releaseAfterConfirmedStop() }
+#endif
+        }
+        return result
     }
 
     public static func writeAvailability(_ available: Bool, output: FileHandle = .standardOutput) async {
+        _ = await writeAvailabilityResult(available, output: output)
+    }
+    public static func writeAvailabilityResult(_ available: Bool, output: FileHandle) async -> Bool {
         let writer = ProcessOutput(output)
         writer.metadata(["type": "availability", "available": available])
         await writer.drain()
+        return writer.isValid
     }
+}
+
+private final class ProcessInputStatus: @unchecked Sendable {
+    private let lock = NSLock()
+    private var invalid = false
+    func fail() { lock.withLock { invalid = true } }
+    var failed: Bool { lock.withLock { invalid } }
 }
 
 private final class ProcessCompletion: @unchecked Sendable {
@@ -292,12 +324,16 @@ extension DesktopAudioFailure {
 }
 
 // Retain the lock until executable exit, including an uncooperative OS stop.
-// Releasing a host/task object is not physical-cessation evidence.
+// The XPC-only exception below is invoked after confirmed stop + complete pipe
+// drain. Releasing an arbitrary host/task object remains insufficient evidence.
 private enum AudioProcessFence {
     static let shared = Storage()
     final class Storage: @unchecked Sendable {
         private let lock = NSLock()
         private var lease: NativeCaptureProcessLease?
+#if SCRIBE_MAC_APP_STORE_XPC
+        func releaseAfterConfirmedStop() { lock.withLock { lease = nil } }
+#endif
         func acquire(_ ticket: NativeFenceTicket) throws {
             try lock.withLock {
                 guard lease == nil else { throw NativeFenceError.unavailable }

@@ -7,7 +7,13 @@ import Security
 /// value can enable the store path or select a container. Remains unavailable
 /// until an independently reviewed Apple App Group/profile identity is pinned.
 public enum NativeDesktopStoreContainer {
+#if SCRIBE_MAC_APP_STORE_XPC
+    // Team-ID-prefixed macOS group requires no registration and grants no
+    // shared Keychain access. Only the exact native auth role retains credentials.
+    public static let approvedApplicationGroup: String? = "JVV65668U6.com.cosmaneura.scribe.beta.desktop"
+#else
     public static let approvedApplicationGroup: String? = nil
+#endif
     static let team = "JVV65668U6"
     static let parent = "com.cosmaneura.scribe.beta.desktop"
     static let auth = parent + ".auth"

@@ -2,6 +2,10 @@
 import AppKit
 import CosmasNativeAuth
 import Foundation
+#if SCRIBE_MAC_APP_STORE_XPC
+import Darwin
+import ScribeStorePipe
+#endif
 
 /// Bundled native identity and provider HTTP owner. Inherited pipes are its only
 /// command surface; endpoints/settings are fixed bundle inputs, never arguments.
@@ -12,9 +16,17 @@ import Foundation
     private var active: Set<String> = []
     private var sources = DesktopSourceRegistry()
     private var recovery: NativeSourceRecovery?
+#if SCRIBE_MAC_APP_STORE_XPC
+    private let storeOutput: FileHandle
+    private let storeClosed: (() -> Void)?
+    private var storeFinished = false
+#endif
 
-    init() throws {
-#if SCRIBE_MAC_APP_STORE
+    init(output: FileHandle = .standardOutput, onClose: (() -> Void)? = nil) throws {
+#if SCRIBE_MAC_APP_STORE_XPC
+        storeOutput = output; storeClosed = onClose
+#endif
+#if SCRIBE_MAC_APP_STORE || SCRIBE_MAC_APP_STORE_XPC
         _ = try NativeDesktopStoreContainer.requireContainer()
 #endif
         guard Bundle.main.bundleIdentifier == "com.cosmaneura.scribe.beta.desktop.auth",
@@ -34,9 +46,18 @@ import Foundation
             let policy = try NativeTokenPolicy(issuer: origin, audience: nil,
                 authorizedParty: NativeWorkspaceOrigin.desktopApp.rawValue,
                 identityProfile: .coreStagingPersonal)
+#if SCRIBE_MAC_APP_STORE_XPC
+            auth = try DesktopStoreClerkAdmission.construct(appIdentifier: config.bundleIdentifier,
+                readMarker: { UserDefaults.standard.object(forKey: $0) }) {
+                NativeWorkspaceAuth(enabled: true, organizationID: nil, tokenPolicy: policy,
+                    driver: { try ClerkKitWorkspaceDriver(configuration: config) },
+                    accessBlock: { try KeychainAccessBlock(bundleIdentifier: config.bundleIdentifier) })
+            }
+#else
             auth = NativeWorkspaceAuth(enabled: true, organizationID: nil, tokenPolicy: policy,
                 driver: { try ClerkKitWorkspaceDriver(configuration: config) },
                 accessBlock: { try KeychainAccessBlock(bundleIdentifier: config.bundleIdentifier) })
+#endif
         } else {
             auth = NativeWorkspaceAuth(enabled: false, organizationID: nil,
                 driver: { throw NativeAuthError.unavailable },
@@ -52,11 +73,14 @@ import Foundation
             guard let self else { return }
             self.connection.authChanged(state)
             self.sources.retireForAuthenticationChange()
-            Self.write(["event": "authStateChanged", "state": self.state(state)])
+            self.write(["event": "authStateChanged", "state": self.state(state)])
         }
     }
 
     func receive(_ data: Data) async {
+#if SCRIBE_MAC_APP_STORE_XPC
+        guard !storeFinished, !Task.isCancelled else { return }
+#endif
         var id: String?
         do {
             guard data.count <= 16 * 1024 * 1024,
@@ -72,9 +96,9 @@ import Foundation
             id = requestID; active.insert(requestID)
             defer { active.remove(requestID) }
             let result = try await run(method, payload: payload, id: requestID)
-            Self.write(["id": requestID, "ok": true, "result": result])
+            write(["id": requestID, "ok": true, "result": result])
         } catch {
-            if let id { Self.write(["id": id, "ok": false, "result": NSNull()]) }
+            if let id { write(["id": id, "ok": false, "result": NSNull()]) }
             else { close() }
         }
     }
@@ -205,8 +229,16 @@ import Foundation
     }
 
     func close() {
+#if SCRIBE_MAC_APP_STORE_XPC
+        guard !storeFinished else { return }
+        storeFinished = true
+#endif
         connection.close()
+#if SCRIBE_MAC_APP_STORE_XPC
+        sources.close(); window.orderOut(nil); storeClosed?()
+#else
         sources.close(); NSApplication.shared.terminate(nil)
+#endif
     }
 
     private static func uuid(_ value: Any?) throws -> UUID {
@@ -222,6 +254,19 @@ import Foundation
         }
         return payload
     }
+    private func write(_ value: [String: Any]) {
+#if SCRIBE_MAC_APP_STORE_XPC
+        guard !storeFinished else { return }
+        do {
+            var data = try JSONSerialization.data(withJSONObject: value)
+            guard data.count <= 2 * (32 * 1024 * 1024 + 16_384) + 8192 else { throw ProviderNativeError.response }
+            data.append(10); try storeOutput.write(contentsOf: data)
+        } catch { close() }
+#else
+        Self.write(value)
+#endif
+    }
+#if !SCRIBE_MAC_APP_STORE_XPC
     private static func write(_ value: [String: Any]) {
         do {
             var data = try JSONSerialization.data(withJSONObject: value)
@@ -230,8 +275,121 @@ import Foundation
             data.append(10); try FileHandle.standardOutput.write(contentsOf: data)
         } catch { NSApplication.shared.terminate(nil) }
     }
+#endif
 }
 
+#if SCRIBE_MAC_APP_STORE_XPC
+/// The C service retains its originals. This snapshot owns only explicit dup
+/// descriptors and a retained completion block across the asynchronous hop.
+private final class DesktopProviderStoreRequest: @unchecked Sendable {
+    let sourceInput: Int32
+    let input: DesktopProviderStoreInput
+    let output: FileHandle
+    let completed: scribe_store_completion
+
+    init(_ request: UnsafePointer<scribe_store_open>, completed: @escaping scribe_store_completion) throws {
+        guard let mode = request.pointee.mode, String(cString: mode) == "--provider-v1",
+              request.pointee.host > 1 else { throw ProviderNativeError.unavailable }
+        sourceInput = request.pointee.input
+        input = try DesktopProviderStoreInput(duplicating: request.pointee.input)
+        let descriptor = Darwin.dup(request.pointee.output)
+        guard descriptor >= 0 else { throw ProviderNativeError.unavailable }
+        guard fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0 else {
+            Darwin.close(descriptor); throw ProviderNativeError.unavailable
+        }
+        output = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        self.completed = completed
+    }
+}
+
+@MainActor private final class DesktopProviderStoreSession {
+    private var request: DesktopProviderStoreRequest?
+    private var owner: DesktopProviderOwner?
+    private var operations: [UUID: Task<Void, Never>] = [:]
+    private var stopped = false
+    private var stoppedInputs: Set<Int32> = []
+    private var readerDone = false
+    private var result: Int32 = 0
+
+    func start(_ request: DesktopProviderStoreRequest) {
+        guard !stopped, !stoppedInputs.contains(request.sourceInput), self.request == nil else { request.completed(70); return }
+        self.request = request
+        do {
+            owner = try DesktopProviderOwner(output: request.output, onClose: { [weak self] in self?.stop() })
+        } catch { readerDone = true; stop(code: 78); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let code = request.input.readFrames { frame in
+                // Bound delivery to one pending main-actor frame; the native
+                // owner retains its existing eight-operation admission limit.
+                let delivered = DispatchSemaphore(value: 0)
+                Task { @MainActor in self.receive(frame); delivered.signal() }
+                delivered.wait()
+            }
+            Task { @MainActor in self.readerFinished(code: code) }
+        }
+    }
+
+    private func receive(_ frame: Data) {
+        guard !stopped, let owner else { return }
+        guard operations.count < 8 else { stop(); return }
+        let id = UUID()
+        operations[id] = Task { @MainActor in
+            await owner.receive(frame)
+            self.operations.removeValue(forKey: id)
+            self.finishIfDrained()
+        }
+    }
+
+    func stop(input: Int32) {
+        guard let request else { stoppedInputs.insert(input); return }
+        guard request.sourceInput == input else { return }
+        stop()
+    }
+
+    func stop(code: Int32 = 70) {
+        guard !stopped else { return }
+        stopped = true; result = code
+        request?.input.stop()
+        owner?.close()
+        for operation in operations.values { operation.cancel() }
+        finishIfDrained()
+    }
+
+    private func readerFinished(code: Int32) { readerDone = true; stop(code: code); finishIfDrained() }
+    private func finishIfDrained() {
+        guard stopped, readerDone, operations.isEmpty, let request else { return }
+        self.request = nil; owner = nil
+        do { try request.output.close() } catch { result = 70 }
+        request.completed(result)
+    }
+}
+
+@main private struct DesktopProviderMain {
+    @MainActor static func main() {
+        do {
+            _ = try NativeDesktopStoreContainer.requireContainer()
+            guard let service = Bundle.main.object(forInfoDictionaryKey: "XPCService") as? [String: Any],
+                  service["JoinExistingSession"] as? Bool == true,
+                  service["RunLoopType"] as? String == "NSRunLoop" else { return }
+            NSApplication.shared.setActivationPolicy(.accessory)
+            let session = DesktopProviderStoreSession()
+            _ = scribe_store_service_run(SCRIBE_AUTH, { request, completed in
+                guard let request, let completed else { return }
+                do {
+                    let retained = try DesktopProviderStoreRequest(request, completed: completed)
+                    Task { @MainActor in session.start(retained) }
+                } catch { completed(78) }
+            }, { open in
+                guard let open else { return }
+                let input = open.pointee.input
+                Task { @MainActor in session.stop(input: input) }
+            })
+            // xpc_main drives the documented NSRunLoop service mode; do not run
+            // a competing NSApplication loop or terminate the service from UI.
+        } catch { /* Missing membership cannot create an auth owner. */ }
+    }
+}
+#else
 @main private struct DesktopProviderMain {
     @MainActor static func main() {
         guard CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--provider-v1" else { return }
@@ -248,4 +406,5 @@ import Foundation
         } catch { /* Invalid/disabled bundle inputs cannot create a fallback identity. */ }
     }
 }
+#endif
 #endif

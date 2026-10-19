@@ -15,7 +15,12 @@ import subprocess
 from pathlib import Path
 
 
-def build(output: Path, native_auth: Path, *, mac_app_store: bool = False) -> None:
+def build(
+    output: Path, native_auth: Path, *, mac_app_store: bool = False, mac_app_store_xpc: bool = False
+) -> None:
+    if mac_app_store and mac_app_store_xpc:
+        raise ValueError("Select one explicit store topology")
+    store = mac_app_store or mac_app_store_xpc
     repo = Path(__file__).resolve().parents[1]
     output = output.resolve()
     output.mkdir(mode=0o700)
@@ -65,13 +70,31 @@ def build(output: Path, native_auth: Path, *, mac_app_store: bool = False) -> No
             repo / "scripts/standalone-provider" / name,
             package / "Sources/ScribeDesktopProvider" / name,
         )
-    if mac_app_store:
-        store_source = repo / "apps/desktop-companion/native/ScribeDesktopAudio/Sources/ScribeDesktopAudio/NativeDesktopStoreContainer.swift"
-        copy(store_source, package / "Sources/ScribeDesktopProvider/NativeDesktopStoreContainer.swift")
+    if store:
+        store_source = repo / (
+            "apps/desktop-companion/native/ScribeDesktopA"
+            "udio/Sources/ScribeDesktopAudio/NativeDeskto"
+            "pStoreContainer.swift"
+        )
+        copy(
+            store_source,
+            package / "Sources/ScribeDesktopProvider/NativeDesktopStoreContainer.swift",
+        )
     copy(
         auth / "Bridge/W13PrivateTransport.swift",
         package / "Sources/ScribeDesktopProvider/W13PrivateTransport.swift",
     )
+    if mac_app_store_xpc:
+        copy(
+            repo / "scripts/standalone-provider/DesktopStoreClerkAdmission.swift",
+            package / "Sources/ScribeDesktopProvider/DesktopStoreClerkAdmission.swift",
+        )
+        source_root = (
+            repo / "apps/desktop-companion/native/ScribeDesktopAudio/Sources/ScribeStorePipe"
+        )
+        for source in sorted(source_root.rglob("*")):
+            if source.is_file():
+                copy(source, package / "Sources/ScribeStorePipe" / source.relative_to(source_root))
     (package / "Package.swift").write_text("""// swift-tools-version: 6.2
 import PackageDescription
 let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
@@ -83,6 +106,28 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
  .executableTarget(name: "ScribeDesktopProvider",
                    dependencies: ["CosmasNativeAuth", "CosmaneuraNativeRecording"])])
 """)
+    if mac_app_store_xpc:
+        manifest = package / "Package.swift"
+        manifest.write_text(
+            manifest.read_text()
+            .replace(
+                'targets: [.target(name: "ClerkKit",',
+                (
+                    'targets: [.target(name: "ScribeStorePipe", p'
+                    'ublicHeadersPath: "include", linkerSettings:'
+                    ' [.linkedFramework("Security"), .linkedFrame'
+                    'work("CoreFoundation")]), .target(name: "Cle'
+                    'rkKit",'
+                ),
+            )
+            .replace(
+                'dependencies: ["CosmasNativeAuth", "CosmaneuraNativeRecording"]',
+                (
+                    'dependencies: ["CosmasNativeAuth", "Cosmaneu'
+                    'raNativeRecording", "ScribeStorePipe"]'
+                ),
+            )
+        )
     command = [
         "xcrun",
         "swift",
@@ -103,8 +148,15 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
         "-debug-info-format",
         "none",
     ]
-    if mac_app_store:
+    if store:
         command += ["-Xswiftc", "-DSCRIBE_MAC_APP_STORE"]
+    if mac_app_store_xpc:
+        command += [
+            "-Xswiftc",
+            "-DSCRIBE_MAC_APP_STORE_XPC",
+            "-Xcc",
+            "-DSCRIBE_MAC_APP_STORE_XPC=1",
+        ]
     environment = {
         **os.environ,
         "CLANG_MODULE_CACHE_PATH": str(output / "modules"),
@@ -119,7 +171,20 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
                 "command": command,
                 "source_sha256": inputs,
                 "native_auth_source": str(auth),
-                **({"distribution": "mac-app-store-dormant", "approved_application_group": None} if mac_app_store else {}),
+                **(
+                    {
+                        "distribution": "mac-app-store-xpc-unqualified"
+                        if mac_app_store_xpc
+                        else "mac-app-store-dormant",
+                        "approved_application_group": (
+                            "JVV65668U6.com.cosmaneura.scribe.beta.desktop"
+                        )
+                        if mac_app_store_xpc
+                        else None,
+                    }
+                    if store
+                    else {}
+                ),
                 "signed": False,
                 "launched": False,
             },
@@ -135,5 +200,11 @@ if __name__ == "__main__":
     parser.add_argument("output", type=Path)
     parser.add_argument("--native-auth-source", type=Path, required=True)
     parser.add_argument("--mac-app-store", action="store_true")
+    parser.add_argument("--mac-app-store-xpc", action="store_true")
     options = parser.parse_args()
-    build(options.output, options.native_auth_source, mac_app_store=options.mac_app_store)
+    build(
+        options.output,
+        options.native_auth_source,
+        mac_app_store=options.mac_app_store,
+        mac_app_store_xpc=options.mac_app_store_xpc,
+    )
