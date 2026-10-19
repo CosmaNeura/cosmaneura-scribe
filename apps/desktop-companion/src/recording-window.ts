@@ -17,11 +17,11 @@ export interface RecordingWindowPort {
   setAlwaysOnTop(value: boolean, level?: "status"): void;
   setVisibleOnAllWorkspaces(value: boolean, options?: { visibleOnFullScreen: boolean }): void;
   getMediaSourceId(): string;
-  showInactive(): void;
 }
 
 /** Main-only window presentation. It never reads a renderer visibility claim,
- * dispatches recording, or grants authority. Native code verifies the OS ID. */
+ * dispatches recording, or grants authority. Native code verifies the OS ID and
+ * coverage; the normal-order main window cannot replace its status panel. */
 export class MainRecordingWindow implements DesktopRecordingWindow {
   private compact = false;
   private usable = true;
@@ -47,17 +47,10 @@ export class MainRecordingWindow implements DesktopRecordingWindow {
     if (!window || window.isDestroyed() || compact === this.compact) return;
     // Repeated snapshots/timer ticks must not raise the window, switch Spaces,
     // or repeat Electron's process-type transformation.
-    if (compact) {
-      // Keep the provider's chosen size and position throughout preparation and
-      // recording. A stable window keeps Start, Cancel, Pause and Finish visible.
-      // Status level stays above Dock overlays and below OS popup menus.
-      window.setAlwaysOnTop(true, "status");
-      window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      window.showInactive();
-    } else {
-      window.setAlwaysOnTop(false);
-      window.setVisibleOnAllWorkspaces(false);
-    }
+    // Keep the provider's size, position and Space. Zoom or the EMR may remain
+    // frontmost while the independent native status panel/menu provide Stop.
+    window.setAlwaysOnTop(false);
+    window.setVisibleOnAllWorkspaces(false);
     this.compact = compact;
     if (this.active && this.usable) this.responsiveness.isResponsive();
   }
