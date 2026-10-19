@@ -21,6 +21,8 @@ export interface NativeProviderState {
   readonly recordingSignInPreparationVersion?: 1;
 }
 export interface ProviderNativePlugin {
+  /** Numeric renderer duration only; never start intent, authorization or content. */
+  recordProviderReadyTiming?(request: { revision: string; durationMs: number }): Promise<void>;
   /** Optional current-mount auth work only; no consent, session or source grant. */
   prepareProviderSignIn?(request: { preparationId: string; revision: string; workspaceId: string; bindingRef: string }): Promise<{ revision: string }>;
   abandonProviderSignIn?(request: { preparationId: string }): Promise<void>;

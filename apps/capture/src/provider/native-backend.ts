@@ -236,6 +236,11 @@ export async function connectNativeProviderIOSBackend(options: NativeProviderOpt
     get encounterSetup() { return creationSupported ? encounterSetup : undefined; },
     get account() { return account; },
     signal: abort.signal, dispose,
+    recordReadyDiagnostic: durationMs => {
+      if (!revision || abort.signal.aborted || options.signal.aborted || !plugin.recordProviderReadyTiming) return;
+      try { void plugin.recordProviderReadyTiming({ revision, durationMs }).catch(() => undefined); }
+      catch { /* Optional diagnostics cannot affect native recording. */ }
+    },
     listEncounters, activeRecording,
     createEncounter: async signal => {
       current(signal); await refresh(); current(signal);

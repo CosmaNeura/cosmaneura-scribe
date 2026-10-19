@@ -14,6 +14,7 @@ import type { DesktopProviderRecorder } from "./provider-recorder.js";
 import type { ProviderAudioPreflight } from "../../capture/src/provider/audio-preflight";
 import type { PatientSelection } from "../../capture/src/provider/visit-features";
 import { NO_DIAGNOSTICS, type RuntimeDiagnostic, type RuntimeTimingEvent } from "./runtime-diagnostics.js";
+import { nativeRecordingConfirmed, validRecordReadyDuration } from "../../capture/src/provider/record-ready-timing";
 
 export interface DesktopProviderMainHost {
   readonly session: NativeProviderSession;
@@ -37,6 +38,7 @@ interface Encounter {
   readonly work: Set<Promise<unknown>>;
   readonly value: AuthorizedProviderEncounter<DesktopProviderRecorder>;
   recorder?: { dispose(): Promise<void> };
+  recordReadyDiagnostic?: (durationMs: number) => void;
   recorderOpening?: boolean;
   preparationAttempt?: { readonly key: string; readonly began: number };
   preflight?: ProviderAudioPreflight;
@@ -199,6 +201,11 @@ export class DesktopProviderWorkspaceMain {
       this.requireEncounter(connection, encounter, signal);
       let result: unknown;
       switch (request.method) {
+        case "record_ready_timing": {
+          exact(payload, ["durationMs"]);
+          if (!validRecordReadyDuration(payload.durationMs) || !encounter.recordReadyDiagnostic) throw unavailable();
+          encounter.recordReadyDiagnostic(payload.durationMs); result = null; break;
+        }
         case "signin_preparation": {
           exact(payload, ["action"]);
           const handle = encounter.value.signInPreparation;
@@ -318,6 +325,12 @@ export class DesktopProviderWorkspaceMain {
             // stop remains unconfirmed. Close waits for this handoff to settle.
             encounter.recorder = { dispose: () => recorder.deactivate() };
             encounter.recorder = this.attachRecorder(recorder);
+            let timingReported = false;
+            encounter.recordReadyDiagnostic = durationMs => {
+              if (timingReported || !nativeRecordingConfirmed(recorder.snapshot)) return;
+              timingReported = true;
+              try { this.diagnostics("provider_record_to_native_ready", durationMs); } catch { /* Observation only. */ }
+            };
             const attempt = encounter.preparationAttempt; delete encounter.preparationAttempt;
             const consentStarted = attempt?.key === saved.progress?.admission?.key ? attempt?.began : undefined;
             this.observeRecorderPreparation(connection, encounter, recorder, preparationStarted, signal, consentStarted);

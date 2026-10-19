@@ -23,6 +23,7 @@ import { encounterSetupMarkup } from "./encounter-setup-view";
 import type { EncounterDraft, EncounterSetupState } from "./encounter-setup";
 import { readNoteOpening, type NoteOpening } from "./note-opening";
 import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./workflow-timing";
+import { beginRecordReadyTiming, type RecordReadyTiming } from "./record-ready-timing";
 import { encounterTimestamp } from "./workspace-display";
 import { noteEditorPosition, restoreNoteEditorPosition, setNoteEditorPending, type NoteEditorPosition } from "./note-editor-state";
 import { settledRecorderVisitStatus } from "./recent-visit-state";
@@ -63,11 +64,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let consentAction: HTMLButtonElement | null = null;
   let preparationSignIn: ReturnType<typeof setupSignInPreparation> | null = null;
   let preparationControls: ReturnType<typeof bindPreparationControls> | null = null;
-  type RecordingAction = Readonly<{ microphone: MicrophoneInput; signal: AbortSignal; desktopAudio?: "microphone" | "meeting"; desktopRecordAction?: "microphone" | "meeting"; meetingWindowId?: string }>;
+  type RecordingAction = Readonly<{ microphone: MicrophoneInput; signal: AbortSignal; desktopAudio?: "microphone" | "meeting"; desktopRecordAction?: "microphone" | "meeting"; meetingWindowId?: string; readyTiming?: RecordReadyTiming }>;
   let pendingRecordingAction: AbortController | null = null;
   let consentPreparationPending = false;
   let consentRecordAction: HTMLButtonElement | null = null;
   let queuedConsentRecord: AbortSignal | null = null;
+  let queuedRecordReadyTiming: RecordReadyTiming | undefined;
   let leaveAfterRecordingPreparation = false;
   let openingRef: string | null = null;
   let cancelOpening: (() => void) | null = null;
@@ -150,6 +152,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
 
   const clearEncounter = async (): Promise<void> => {
     generation += 1;
+    queuedRecordReadyTiming?.cancel(); queuedRecordReadyTiming = undefined;
     preparationSignIn?.close(); preparationSignIn = null;
     const controls = preparationControls;
     // A canceled consent flight may still be closing metadata or finishing its
@@ -501,6 +504,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const cancelRecordingAction = (): boolean => {
     if (!pendingRecordingAction) return false;
     pendingRecordingAction.abort(); // A leave/cancel click takes effect before the busy guard.
+    queuedRecordReadyTiming?.cancel(); queuedRecordReadyTiming = undefined;
     queuedConsentRecord = null;
     if (consentRecordAction) consentRecordAction.disabled = true;
     const status = content.querySelector<HTMLElement>("[data-recording-preparation-status]");
@@ -512,6 +516,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     return true;
   };
   const showPreparationCanceled = (): void => {
+    queuedRecordReadyTiming?.cancel(); queuedRecordReadyTiming = undefined;
     pendingRecordingAction = null; consentPreparationPending = false; queuedConsentRecord = null; consentRecordAction = null;
     show('<h1>Recording preparation canceled</h1><p>Recording has not started. Prepared work is retained. Confirm consent again before recording.</p><button data-workspace-action="admit">Review prepared recording</button>');
   };
@@ -661,13 +666,16 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         return;
       }
       if (queuedConsentRecord === sourceChoice.signal && !sourceChoice.signal.aborted) {
-        recordingAction = { ...sourceChoice, ...(sourceChoice.desktopAudio ? { desktopRecordAction: sourceChoice.desktopAudio } : {}) };
+        recordingAction = { ...sourceChoice, ...(queuedRecordReadyTiming ? { readyTiming: queuedRecordReadyTiming } : {}),
+          ...(sourceChoice.desktopAudio ? { desktopRecordAction: sourceChoice.desktopAudio } : {}) };
       } else pendingRecordingAction = null;
+      queuedRecordReadyTiming = undefined;
       queuedConsentRecord = null; consentRecordAction = null; consentPreparationPending = false;
     }
     show("");
     const app = document.createElement("cosmaneura-capture") as CaptureApp;
     app.bindProvider({ sessionId: id, controller, encounterLabel: activeContext.encounter.identity?.name ?? activeContext.encounter.patientName ?? activeContext.encounter.title,
+      ...(host.recordReadyDiagnostic ? { recordReadyDiagnostic: host.recordReadyDiagnostic } : {}),
       visitLabel: { in_person: "In person", virtual: "Video visit", phone: "Phone call" }[recordingProgress.admission.attestation.modality],
       sourceKind: native?.sourceKind ?? local!.source.kind,
       privateNotes: privateNotes(),
@@ -714,7 +722,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         void app.startFromProviderAction(recordingAction.microphone,
           native?.controller.selectDesktopAudio ? recordingAction.desktopAudio : undefined,
           native?.captureMode === "desktop_meeting" && native.controller.selectDesktopAudio && native.controller.snapshot.desktop
-            ? recordingAction.desktopRecordAction : undefined, recordingAction.signal, recordingAction.meetingWindowId)
+            ? recordingAction.desktopRecordAction : undefined, recordingAction.signal, recordingAction.meetingWindowId, recordingAction.readyTiming)
           .catch(() => { if (authorized(n) && app.isConnected) notice.textContent = "Recording could not start. Check the audio source and recording access, then retry."; })
           .finally(() => { if (pendingRecordingAction?.signal === recordingAction.signal) pendingRecordingAction = null; });
       }
@@ -742,7 +750,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       showPreparationCanceled();
     } else if (authorized(n)) await recordOrReview(startRequested, undefined, undefined, undefined, sourceChoice, mode === "renew");
   };
-  const initialConsentPreparation = async (recordRequested: boolean): Promise<void> => {
+  const initialConsentPreparation = async (recordRequested: boolean, readyTiming?: RecordReadyTiming): Promise<void> => {
     // The fresh checkbox or explicit legacy Start owns this attestation.
     // Recovery never recreates source configuration or recording intent.
     const button = consentAction, n = generation;
@@ -766,7 +774,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       ...(preflight?.selectedInputId ? { inputId: preflight.selectedInputId } : {}),
       ...(!isIOS && (desktopAudio === "microphone" || desktopAudio === "meeting") ? { desktopAudio,
           ...(preflight?.meetingWindows?.selectedId ? { meetingWindowId: preflight.meetingWindows.selectedId } : {}) } : {}) });
-    const startRequested: RecordingAction | undefined = recordRequested ? { ...sourceChoice,
+    const startRequested: RecordingAction | undefined = recordRequested ? { ...sourceChoice, ...(readyTiming ? { readyTiming } : {}),
       ...(sourceChoice.desktopAudio ? { desktopRecordAction: sourceChoice.desktopAudio } : {}) } : undefined;
     consentPreparationPending = !recordRequested;
     consentRecordAction = recordRequested ? null : button;
@@ -1330,6 +1338,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (button !== consentRecordAction || button.disabled || !authorized(generation) || document.visibilityState !== "visible"
         || !pendingRecordingAction || pendingRecordingAction.signal.aborted
         || !content.querySelector<HTMLInputElement>('[name="consent"]')?.checked) return;
+      queuedRecordReadyTiming = beginRecordReadyTiming(host.recordReadyDiagnostic);
       queuedConsentRecord = pendingRecordingAction.signal;
       button.disabled = true; button.textContent = "Starting when ready…"; initialPreparationStatus();
       return;
@@ -1349,6 +1358,10 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (!button.disabled) void checkPreparedNote();
       return;
     }
+    // This explicit initial Record handler precedes admission and recorder creation.
+    // Consent-only preparation never starts a recording timing observation.
+    const recordReadyTiming = button.dataset.workspaceAction === "prepare" && !consentPreparationEnabled(host.consentPreparation)
+      ? beginRecordReadyTiming(host.recordReadyDiagnostic) : undefined;
     void run(async () => {
       switch (button.dataset.workspaceAction) {
         case "encounters": await guardNavigation("encounters"); break;
@@ -1408,7 +1421,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           if (ref && listedDraftRefs.has(ref)) await open(ref, "open-draft");
           break;
         }
-        case "prepare": await initialConsentPreparation(!consentPreparationEnabled(host.consentPreparation)); break;
+        case "prepare": await initialConsentPreparation(!consentPreparationEnabled(host.consentPreparation), recordReadyTiming); break;
         case "admit": await admit("recover"); break;
         case "renew-consent": {
           requireValue(consentRenewalOffered && progress().sessionId === null);

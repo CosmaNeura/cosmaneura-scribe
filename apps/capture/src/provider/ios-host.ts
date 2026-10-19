@@ -38,7 +38,7 @@ export interface PreparedProviderIOSCapture {
   readonly captureAuthorizedUntil: string;
   readonly firstSequenceNumber?: number;
 }
-export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account" | "providerDisplayName" | "activeRecording"> {
+export interface ProviderIOSBackend extends Pick<ProviderWorkspaceHost, "signal" | "listEncounters" | "createEncounter" | "encounterSetup" | "account" | "providerDisplayName" | "activeRecording" | "recordReadyDiagnostic"> {
   readonly openEncounter: (appointmentRef: string, signal: AbortSignal) => Promise<AuthorizedProviderIOSMount>;
 }
 
@@ -49,6 +49,7 @@ export function createProviderIOSHost(backend: ProviderIOSBackend, consentPrepar
   requireNative();
   return {
     ...(consentPreparation ? { consentPreparation } : {}),
+    ...(backend.recordReadyDiagnostic ? { recordReadyDiagnostic: backend.recordReadyDiagnostic } : {}),
     get providerDisplayName() { return backend.signal.aborted ? undefined : backend.providerDisplayName; },
     get encounterSetup() { return backend.encounterSetup; },
     get account() { return backend.account; },

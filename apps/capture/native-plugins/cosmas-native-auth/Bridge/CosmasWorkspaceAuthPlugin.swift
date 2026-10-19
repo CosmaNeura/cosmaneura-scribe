@@ -1,6 +1,7 @@
 @preconcurrency import Capacitor
 import CosmasNativeAuth
 import Foundation
+import CoreFoundation
 #if os(iOS)
 import AVFAudio
 #endif
@@ -21,6 +22,7 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
         CAPPluginMethod(name: "getProviderActiveRecording", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "takeRecordingOpenRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "providerRequest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "recordProviderReadyTiming", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancelProviderRequest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "prepareProviderSignIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "abandonProviderSignIn", returnType: CAPPluginReturnPromise),
@@ -341,6 +343,26 @@ public final class CosmasWorkspaceAuthPlugin: CAPPlugin, @preconcurrency CAPBrid
                 }, inputMuted: { AVAudioApplication.shared.isInputMuted })
                 call.resolve(result)
             } catch { Self.rejectProvider(call) }
+            #else
+            Self.rejectProvider(call)
+            #endif
+        }
+    }
+
+    @objc nonisolated public func recordProviderReadyTiming(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            #if os(iOS)
+            guard let value = call.options as? [String: Any], Set(value.keys) == ["revision", "durationMs"],
+                  let revision = value["revision"] as? String,
+                  UUID(uuidString: revision)?.uuidString.lowercased() == revision,
+                  let number = value["durationMs"] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, (0...3_600_000).contains(number.doubleValue),
+                  self.nativeRecordingAvailable, let auth = self.auth,
+                  auth.state().phase == .ready, auth.state().revision == revision
+            else { Self.rejectProvider(call); return }
+            Self.recordingBridge.recordReadyTiming(revision: revision, milliseconds: number.doubleValue)
+            call.resolve()
             #else
             Self.rejectProvider(call)
             #endif

@@ -7,6 +7,7 @@ import { CaptureQueue, type ChunkReservation } from "../queue";
 import type { CaptureBff } from "../bff/contracts";
 import { connectNativeProviderRecorder, parseNativeRecordingState } from "./native-recorder";
 import { recordingFixture, syntheticSession as sessionId } from "./native-recorder.fixture";
+import { beginRecordReadyTiming, startWithRecordReadyTiming } from "./record-ready-timing";
 
 beforeEach(() => {
   vi.stubGlobal("crypto", webcrypto);
@@ -49,6 +50,37 @@ async function retainedUpload(h: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("native provider controller", () => {
+  it("finishes the original frontend span only after its positive native recording reply", async () => {
+    const h = await fixture(), held = deferred<unknown>(), command = h.port.command;
+    let now = 100, requestId = "";
+    const report = vi.fn(), timing = beginRecordReadyTiming(report, { now: () => now });
+    now = 3100; const view = await h.open(); // Admission/acquisition work stayed inside the span.
+    h.port.command = request => request.kind === "start" ? (requestId = request.requestId, held.promise) : command(request);
+    try {
+      const starting = startWithRecordReadyTiming(view.controller, timing, () => !h.abort.signal.aborted);
+      await vi.waitFor(() => expect(requestId).not.toBe("")); expect(report).not.toHaveBeenCalled();
+      now = 5600; h.f.set({ phase: "recording" }); held.resolve(h.response(requestId)); await starting;
+      expect(report.mock.calls).toEqual([[5500]]);
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+  it("does not time a cancel-resolved Start even when its original native reply arrives late", async () => {
+    const h = await fixture(), held = deferred<unknown>(), command = h.port.command;
+    let late: unknown, requestId = "";
+    h.port.command = request => {
+      if (request.kind !== "start") return command(request);
+      requestId = request.requestId; h.f.set({ phase: "recording" }); late = h.response(requestId);
+      return held.promise;
+    };
+    const view = await h.open(), report = vi.fn();
+    try {
+      const starting = startWithRecordReadyTiming(view.controller, beginRecordReadyTiming(report), () => true);
+      await vi.waitFor(() => expect(requestId).not.toBe(""));
+      await view.controller.pauseRecording!(); await starting;
+      expect(view.controller.snapshot.native?.phase).toBe("paused"); expect(report).not.toHaveBeenCalled();
+      held.resolve(late); await Promise.resolve(); await Promise.resolve();
+      expect(report).not.toHaveBeenCalled(); expect(view.controller.snapshot.native?.phase).toBe("paused");
+    } finally { held.resolve(late); await view.deactivate(); h.storage.close(); }
+  });
   it("uses the advertised device UID without replacing the session or saved capture position", async () => {
     const h = await fixture(), command = h.port.command;
     const devices = [

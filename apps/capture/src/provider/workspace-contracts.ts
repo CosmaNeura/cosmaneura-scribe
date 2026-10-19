@@ -14,6 +14,7 @@ import type { ProviderAudioPreflight } from "./audio-preflight";
 import type { PatientIdentity } from "./visit-features";
 import type { ProviderSignInPreparation } from "./signin-preparation";
 import type { ConsentPreparationRelease } from "./consent-preparation";
+import type { RecordReadyDiagnostic } from "./record-ready-timing";
 
 /** Core supplies display values through its existing authorized encounter list. */
 export interface ProviderEncounter {
@@ -53,6 +54,8 @@ export interface AuthorizedProviderEncounter<R = ProviderRecorderResources | Pre
   readonly openInCore: (noteRef: string | null) => Promise<void>;
 }
 export interface ProviderWorkspaceHost<R = ProviderRecorderResources | PreparedProviderRecorder> {
+  /** Local content-free first Record-to-confirmed-native-Ready observation only. */
+  readonly recordReadyDiagnostic?: RecordReadyDiagnostic;
   /** Trusted, reversible beta control; omitted controls retain explicit-start preparation. */
   readonly consentPreparation?: ConsentPreparationRelease;
   /** Actual native owner mapped only against a fresh authorized encounter catalog. */
