@@ -21,7 +21,6 @@
 .provider-header>div>strong { display:none; }
 .provider-header nav { display:flex; gap:12px; }
 .provider-header nav button { background:transparent; border:0; text-decoration:underline; text-underline-offset:3px; padding:8px 0; }
-.provider-header nav button[data-workspace-action=refresh-visit] { display:none; }
 [data-provider-encounter] { margin:0; font-size:2rem; font-weight:700; line-height:1.2; color:var(--scribe-heading); }
 .provider-patient-detail { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:15px; color:var(--scribe-muted); }
 .provider-patient-detail button { background:transparent; border:0; padding:4px 0; font-size:15px; text-decoration:underline; }

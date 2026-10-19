@@ -62,3 +62,38 @@ test("refresh keeps unsaved note edits until an explicit decision and saves once
   expect(await page.evaluate(() => window.navigationMediaCalls)).toBe(0);
   server.assertHealthy();
 });
+
+for (const completed of [false, true]) {
+  test(`refresh from ${completed ? "saved for review" : "a generated draft"} keeps saved-passage playback in transcript review`, async ({ context, page, baseURL }) => {
+    const server = await installNoteServer(context, { loseSaveResponse: false, origin: baseURL, draftPending: true });
+    await page.goto("/e2e/fixtures/provider-note.html?saved-audio");
+    await page.locator(`[data-workspace-action="open"][data-appointment="${server.scope.appointmentRef}"]`).click();
+    await page.getByRole("button", { name: "Review draft note", exact: true }).click();
+    await page.getByRole("button", { name: "Write visit note", exact: true }).click();
+    await expect.poll(() => server.calls.filter(call => call === "prepare").length).toBe(1);
+    server.releaseDraft();
+    const plan = page.getByRole("textbox", { name: "Plan", exact: true });
+    await expect(plan).toBeVisible();
+    if (completed) {
+      await page.getByRole("button", { name: "Save and review", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Saved for review", exact: true })).toBeVisible();
+      expect(await page.evaluate(() => window.noteLab.dashboardOpens)).toBe(1);
+    }
+    const refresh = page.getByRole("button", { name: "Refresh current visit", exact: true });
+    await expect(refresh).toBeVisible(); await expect(refresh).toBeEnabled(); await refresh.click();
+    await expect(plan).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Review draft note", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Listen to passage", exact: true }).click();
+    const audio = page.getByLabel("Recorded passage, up to 30 seconds", { exact: true });
+    await expect(audio).toBeVisible();
+    await expect.poll(() => audio.evaluate(element => element.currentTime)).toBeGreaterThan(0);
+    await expect.poll(() => audio.evaluate(element => element.ended)).toBe(true);
+    expect(await audio.evaluate(element => ({ duration: element.duration, error: element.error, source: element.getAttribute("src")?.startsWith("blob:") })))
+      .toEqual({ duration: 4, error: null, source: true });
+    await expect(plan).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Review draft note", exact: true })).toBeVisible();
+    expect(server.calls.filter(call => ["prepare", "save", "resolve", "save_status"].includes(call))).toEqual(["prepare"]);
+    expect(await page.evaluate(() => [window.noteLab.passageReads, window.navigationMediaCalls])).toEqual([1, 0]);
+    server.assertHealthy();
+  });
+}
