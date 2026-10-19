@@ -39,7 +39,7 @@ async function fixture(openingReview?: { scope: typeof scope; receivedAt: number
   const subscribeRecorder = vi.fn((listener: (snapshot: ProviderRecorderSnapshot) => void) => {
     recorderListeners.add(listener); listener(recorderSnapshot); return () => recorderListeners.delete(listener);
   });
-  const dispose = vi.fn(async () => undefined), nativeRecord = { deactivate: stop,
+  const dispose = vi.fn(async () => undefined), nativeRecord = { deactivate: stop, get snapshot() { return recorderSnapshot; },
     subscribe: subscribeRecorder } as unknown as DesktopProviderRecorder;
   const backend = vi.fn(async () => { if (coreGate) await coreGate; return Response.json({ allowed: "invented-result" }); });
   const navigation = vi.fn(async () => undefined), create = vi.fn(async () => undefined);
@@ -102,6 +102,24 @@ const core = (kind: string) => ({ path: "/service/v1/agent/scribe/capture-operat
   body: { binding_ref: scope.bindingRef, workspace_id: workspaceId, request_nonce: crypto.randomUUID(), operation: { kind } } });
 
 describe("trusted desktop provider workspace", () => {
+  it("accepts only one bounded Ready duration for the current confirmed native recorder", async () => {
+    const f = await fixture(); await f.connect(); await f.open();
+    try {
+      expect((await f.invoke("record_ready_timing", { durationMs: 5000 })).ok).toBe(false);
+      expect((await f.invoke("recorder", { sessionId })).ok).toBe(true); f.diagnostics.mockClear();
+      await f.invoke("record_ready_timing", { durationMs: 5000 });
+      expect(f.diagnostics).not.toHaveBeenCalled(); // Preparing is not native Ready.
+      f.publishRecorder("recording", "recording", "capture_recording");
+      for (const durationMs of ["private-value", true, NaN, Infinity, -1, 3_600_001])
+        expect((await f.invoke("record_ready_timing", { durationMs })).ok).toBe(false);
+      expect((await f.invoke("record_ready_timing", { durationMs: 5000, text: "private-value" })).ok).toBe(false);
+      expect((await f.invoke("record_ready_timing", { durationMs: 5500.125 })).ok).toBe(true);
+      await f.invoke("record_ready_timing", { durationMs: 8000 });
+      expect(f.diagnostics.mock.calls).toEqual([["provider_record_to_native_ready", 5500.125]]);
+      f.changed("signedOut");
+      expect((await f.invoke("record_ready_timing", { durationMs: 5000 })).ok).toBe(false);
+    } finally { await f.main.dispose(); }
+  });
   it("opens advisory audio only for the authorized encounter and rejects hardware identities without admitting a recorder", async () => {
     const input=crypto.randomUUID(), window=crypto.randomUUID();
     const snapshot: AudioPreflightSnapshot = {status:"ready",inputDevices:[{id:input,label:"USB microphone",kind:"external",current:true}],

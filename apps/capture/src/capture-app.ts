@@ -14,6 +14,7 @@ import {
 } from "./capture";
 import { createCaptureSource } from "./capture-source-factory";
 import { beginWorkflowTiming, type WorkflowTimingOutcome } from "./provider/workflow-timing";
+import { beginRecordReadyTiming, startWithRecordReadyTiming, type RecordReadyTiming } from "./provider/record-ready-timing";
 import {
   CaptureFlowController,
   EncryptedIndexedDbFlowStore,
@@ -89,19 +90,20 @@ export class CaptureApp extends LitElement {
   }
 
   /** One explicit Record action may start only this empty prepared visit. */
-  public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting", desktopRecordAction?: "microphone" | "meeting", actionSignal?: AbortSignal, meetingWindowId?: string): Promise<void> {
+  public async startFromProviderAction(input: MicrophoneInput, desktopAudio?: "microphone" | "meeting", desktopRecordAction?: "microphone" | "meeting", actionSignal?: AbortSignal, meetingWindowId?: string, readyTiming?: RecordReadyTiming): Promise<void> {
     if (desktopRecordAction !== undefined) {
       if (this.#desktopRecordActionConsumed) return;
       this.#desktopRecordActionConsumed = true; // Never replay this action after any await or failure.
     }
     if (actionSignal) { this.#pendingProviderActionSignal = actionSignal; this.requestUpdate(); }
-    try { await this.#continueProviderAction(input, desktopAudio, desktopRecordAction !== undefined, actionSignal, meetingWindowId); }
+    try { await this.#continueProviderAction(input, desktopAudio, desktopRecordAction !== undefined, actionSignal, meetingWindowId, readyTiming); }
     finally {
+      readyTiming?.cancel();
       if (this.#pendingProviderActionSignal === actionSignal) { this.#pendingProviderActionSignal = undefined; this.requestUpdate(); }
     }
   }
 
-  async #continueProviderAction(input: MicrophoneInput, desktopAudio: "microphone" | "meeting" | undefined, recordDesktop: boolean, actionSignal?: AbortSignal, meetingWindowId?: string): Promise<void> {
+  async #continueProviderAction(input: MicrophoneInput, desktopAudio: "microphone" | "meeting" | undefined, recordDesktop: boolean, actionSignal?: AbortSignal, meetingWindowId?: string, readyTiming?: RecordReadyTiming): Promise<void> {
     const binding = this.#provider;
     if (!binding || !isMicrophoneInput(input) || actionSignal?.aborted) return;
     if (recordDesktop && (!desktopAudio || binding.captureMode !== "desktop_meeting"
@@ -153,12 +155,12 @@ export class CaptureApp extends LitElement {
           && snapshot.desktop.coverage === "not_started" && snapshot.recordedChunks === 0
           && snapshot.elapsedSeconds === 0;
       };
-      if (emptyPreparedVisit()) await this.#recordWithGuard(emptyPreparedVisit);
+      if (emptyPreparedVisit()) await this.#recordWithGuard(emptyPreparedVisit, readyTiming, actionSignal);
       return;
     }
     if (recordDesktop) return;
     this.#microphoneInput = input;
-    await this.#recordWithGuard(actionSignal ? current : undefined);
+    await this.#recordWithGuard(actionSignal ? current : undefined, readyTiming, actionSignal);
   }
 
   protected override createRenderRoot(): HTMLElement {
@@ -763,15 +765,19 @@ export class CaptureApp extends LitElement {
     });
   };
 
-  readonly #record = (): Promise<void> => this.#recordWithGuard();
+  readonly #record = (): Promise<void> => this.#recordWithGuard(undefined,
+    beginRecordReadyTiming(this.#provider?.recordReadyDiagnostic));
 
-  #recordWithGuard(current?: () => boolean): Promise<void> {
+  #recordWithGuard(current?: () => boolean, readyTiming?: RecordReadyTiming, actionSignal?: AbortSignal): Promise<void> {
+    const binding = this.#provider;
     this.#cancelledStart = false; this.#chooserUnavailable = false;
     return this.#run(async () => {
       await this.#selectMicrophone();
       if (this.#providerClosed || current && !current()) return;
-      await this.#requireController().startRecording();
-    }, "record");
+      await startWithRecordReadyTiming(this.#requireController(), readyTiming, () => !!binding
+        && this.isConnected && this.#provider === binding && !this.#providerClosed
+        && !binding.signal.aborted && !actionSignal?.aborted);
+    }, "record").finally(() => readyTiming?.cancel());
   }
 
   readonly #stop = (): void => {

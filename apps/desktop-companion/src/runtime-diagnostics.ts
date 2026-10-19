@@ -7,7 +7,7 @@ const TIMING_EVENTS = ["audio_availability_helper_check", "audio_availability_pr
   "provider_upload_authorization", "provider_chunk_registration", "provider_chunk_receipt", "provider_lease_renewal", "provider_chunk_reservation",
   "provider_admission", "provider_review", "provider_capabilities", "provider_encryption_key",
   "provider_preparation_metadata",
-  "provider_recorder_attach", "provider_recorder_prepare", "provider_consent_to_ready",
+  "provider_recorder_attach", "provider_recorder_prepare", "provider_consent_to_ready", "provider_record_to_native_ready",
   "provider_recording_window", "provider_other_operation", "provider_source_prepare", "provider_source_authorize",
   "provider_workspace_list", "provider_workspace_open", "provider_journal_read", "provider_visit_preferences"] as const;
 export type RuntimeTimingEvent = typeof TIMING_EVENTS[number];

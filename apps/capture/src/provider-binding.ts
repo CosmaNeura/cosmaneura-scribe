@@ -6,6 +6,7 @@ import type { SpeakerNameSuggestions } from "../../review-ui/src/creator-edit-vi
 import type { CreatorReviewJournal } from "../../review-ui/src/creator-review-journal";
 import type { PrivateNoteSession } from "./provider/private-note-session";
 import type { AudioInputDevice } from "./provider/audio-preflight";
+import type { RecordReadyDiagnostic } from "./provider/record-ready-timing";
 
 /** Plain recorder state/commands shared by native hosts and the provider view.
  * Desktop implementations keep the flow, keys, audio and storage in main. */
@@ -69,6 +70,7 @@ export interface PreparedProviderRecorder {
  * Its native recording indicator must survive view teardown until stop confirms.
  */
 export interface ProviderCaptureBinding {
+  readonly recordReadyDiagnostic?: RecordReadyDiagnostic;
   readonly sessionId: string;
   readonly controller: ProviderRecorderController;
   readonly sourceKind: "synthetic" | "microphone";

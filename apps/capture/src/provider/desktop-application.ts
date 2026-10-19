@@ -179,6 +179,10 @@ export function createDesktopProviderApplicationHost(port: DesktopProviderPort, 
           return openDesktopAudioPreflight(extra, (payload, operation) => send("preflight", payload, selectedId, operation));
         },
         recorderRechecksReview: true,
+        recordReadyDiagnostic: durationMs => {
+          if (!currentEncounter) return;
+          void send("record_ready_timing", { durationMs }, currentEncounter.id).catch(() => undefined);
+        },
         get providerDisplayName() {
           return !abort.signal.aborted && !signal.aborted && state?.phase === "ready"
             && state.revision === expected.revision ? state.providerDisplayName : undefined;

@@ -1,6 +1,7 @@
 import CosmaneuraIOSAVFoundationDriver
 import CosmaneuraNativeRecording
 import CosmasNativeAuth
+import CosmaneuraIOSPCMCore
 import Foundation
 
 struct NativeProviderRecordingSelection {
@@ -76,6 +77,16 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
   private var generation = UUID()
   private var lastClosed: UUID?
   private var version = 0
+  private var readyTimingRecorded: UUID?
+
+  func recordReadyTiming(revision: String, milliseconds: Double) {
+    guard milliseconds.isFinite, milliseconds >= 0, milliseconds <= 3_600_000,
+      let selected = entry, selected.selection.revision == revision,
+      selected.host.phase == .recording, !selected.host.requiresReopen,
+      selected.host.failure == nil, readyTimingRecorded != selected.id else { return }
+    readyTimingRecorded = selected.id
+    PCMStartupDiagnostics.shared.recordReadyTiming(milliseconds: milliseconds)
+  }
 
   // Read-only navigation metadata for the current authenticated native owner.
   // The renderer must map the workspace against a fresh authorized catalog.

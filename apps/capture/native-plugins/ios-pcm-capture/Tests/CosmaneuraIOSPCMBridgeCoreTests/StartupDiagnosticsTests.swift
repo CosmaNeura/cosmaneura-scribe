@@ -3,6 +3,30 @@ import Foundation
 import Testing
 
 struct StartupDiagnosticsTests {
+  @Test func readyTimingAllowsOnlyBoundedNumericFieldsAndDoesNotChangeLifecycleRows() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("startup.json"), journal = PCMStartupDiagnostics()
+    journal.configure(destination: file)
+    journal.record(.recordToNativeReady) // A timing event without duration is invalid.
+    for duration in [-1, Double.infinity, Double.nan, 3_600_001] {
+      journal.recordReadyTiming(milliseconds: duration, buildNumber: 78)
+    }
+    journal.record(.startRequested)
+    journal.recordReadyTiming(milliseconds: 5500.1234, buildNumber: 78)
+    journal.recordReadyTiming(milliseconds: 0, buildNumber: -1)
+    await journal.flush()
+    let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+    #expect(rows.count == 3)
+    #expect(Set(rows[0].keys) == ["utc", "event"])
+    #expect(Set(rows[1].keys) == ["utc", "event", "duration_ms", "build_number"])
+    #expect(rows[1]["event"] as? String == "recordToNativeReady")
+    #expect(rows[1]["duration_ms"] as? Double == 5500.123)
+    #expect(rows[1]["build_number"] as? Int == 78)
+    #expect(Set(rows[2].keys) == ["utc", "event", "duration_ms"])
+    #expect(rows[2]["duration_ms"] as? Double == 0)
+  }
   @Test func recordsOnlyBoundedPrivateLifecycleMetadata() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)

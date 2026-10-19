@@ -7,6 +7,7 @@ import type { ProviderCaptureBinding, ProviderRecorderSnapshot } from "../provid
 import type { JournalSnapshot, ProviderProgress } from "./workspace-journal";
 import type { bindPreparationControls } from "./preparation-controls";
 import { CaptureDeviceCustodyError } from "../capture/device-custody";
+import { startWithRecordReadyTiming, type RecordReadyTiming } from "./record-ready-timing";
 
 // Run the actual workspace/admission/ownership flow. The tiny command surface
 // and recorder contain no audio implementation; fictional parties consent.
@@ -46,7 +47,7 @@ afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose
 const sid = "00000000-0000-4000-8000-000000000001", suffix = "01j" + "0".repeat(23);
 const ref = "appointment_" + suffix;
 function fixture(options: { preparing?: boolean; admission?: Promise<void>; acquisition?: Promise<void>; release?: boolean; saved?: JournalSnapshot; metadataClose?: Promise<void>; journalSave?: Promise<void>;
-  ios?: boolean; admissionFailure?: boolean; selection?: Promise<void>; signIn?: boolean; discover?: boolean } = {}) {
+  ios?: boolean; admissionFailure?: boolean; selection?: Promise<void>; signIn?: boolean; discover?: boolean; timing?: boolean } = {}) {
   vi.stubGlobal("Element", Surface); vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(options.ios === true);
@@ -70,7 +71,11 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
   let binding: ProviderCaptureBinding | null = null;
   if (options.ios) delete (snapshot as { desktop?: ProviderRecorderSnapshot["desktop"] }).desktop;
   const app = Object.assign(new CommandSurface(), { bindProvider: vi.fn((b: ProviderCaptureBinding) => { binding = b; }), updateComplete: Promise.resolve(),
-    startFromProviderAction: vi.fn(async (_input, _mode, intent, signal: AbortSignal) => { expect(signal.aborted).toBe(false); if (!options.ios) expect(intent).toBeDefined(); await start(); }) });
+    startFromProviderAction: vi.fn(async (_input, _mode, intent, signal: AbortSignal, _windowId?: string, timing?: RecordReadyTiming) => {
+      expect(signal.aborted).toBe(false); if (!options.ios) expect(intent).toBeDefined();
+      if (options.timing) await startWithRecordReadyTiming(controller, timing, () => !signal.aborted);
+      else await start();
+    }) });
   const doc = Object.assign(new EventTarget(), { visibilityState: "visible", createElement: () => app });
   vi.stubGlobal("document", doc);
   const root = new CommandSurface(), abort = new AbortController();
@@ -95,7 +100,8 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
   const scope = { appointmentRef: ref, bindingRef: "scribe_capture_binding_" + suffix, workspaceId: sid };
   const recorder = vi.fn(async () => { await options.acquisition; return { controller, sourceKind: "microphone" as const, captureMode: options.ios ? "native_microphone" as const : "desktop_meeting" as const,
     deactivate, resumePendingWork: vi.fn(), releaseUploadedCapture: vi.fn() }; });
-  const host: ProviderWorkspaceHost = { signal: abort.signal, recorderRechecksReview: true,
+  const recordReadyDiagnostic = vi.fn();
+  const host: ProviderWorkspaceHost = { signal: abort.signal, recorderRechecksReview: true, recordReadyDiagnostic,
     ...(options.release === false ? {} : { consentPreparation: { enabled: true, owner: "John Clemente", cohort: "internal", expires: "2026-11-01" } }),
     listEncounters: vi.fn(async () => [{ appointmentRef: ref, title: "Invented visit", detail: "Synthetic fixture" }]), createEncounter: vi.fn(),
     openEncounter: vi.fn(async () => ({ encounter: { appointmentRef: ref, title: "Invented visit", detail: "Synthetic fixture" }, scope, request, signal: abort.signal, journal,
@@ -115,9 +121,38 @@ function fixture(options: { preparing?: boolean; admission?: Promise<void>; acqu
     if (checked && content.innerHTML.includes("data-recording-preparation-status")) metadata.options?.onConsent?.();
   };
   const opened = async (waitForIdle = true) => { await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false)); click("open"); if (waitForIdle) await vi.waitFor(() => expect(root.attributes.has("aria-busy")).toBe(false)); };
-  return { root, content, request, journal, recorder, start, deactivate, controller, app, abort, dispose, click, consent, opened, doc, signIn,
+  return { root, content, request, journal, recorder, start, deactivate, controller, app, abort, dispose, click, consent, opened, doc, signIn, recordReadyDiagnostic,
+    recording: () => publish({ state: "recording", desktop: { ...snapshot.desktop!, phase: "recording" } }),
     stored: () => stored, binding: () => binding, ready: () => publish(options.ios ? { state: "ready" } : { state: "ready", desktop: { ...snapshot.desktop!, phase: "ready" } }) };
 }
+it("retains the first queued Record time through admission and ignores repeated clicks", async () => {
+  let now = 100;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  const admission = gate<void>(), f = fixture({ admission: admission.promise, timing: true }); await f.opened();
+  now = 1000; f.consent(true); await vi.waitFor(() => expect(f.request).toHaveBeenCalledOnce());
+  now = 1200; f.click("prepare"); now = 1700; f.click("prepare");
+  expect(f.recordReadyDiagnostic).not.toHaveBeenCalled();
+  f.start.mockImplementation(async () => { now = 6000; f.recording(); }); now = 4500; admission.resolve();
+  await vi.waitFor(() => expect(f.recordReadyDiagnostic).toHaveBeenCalledOnce());
+  expect(f.recordReadyDiagnostic.mock.calls).toEqual([[4800]]); expect(f.start).toHaveBeenCalledOnce();
+});
+it("starts initial Record measurement before admission when consent-only preparation is disabled", async () => {
+  let now = 100;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  const admission = gate<void>(), f = fixture({ release: false, admission: admission.promise, timing: true }); await f.opened();
+  f.consent(true); expect(f.request).not.toHaveBeenCalled();
+  now = 200; f.click("prepare"); await vi.waitFor(() => expect(f.request).toHaveBeenCalledOnce());
+  f.start.mockImplementation(async () => { now = 6200; f.recording(); }); now = 4200; admission.resolve();
+  await vi.waitFor(() => expect(f.recordReadyDiagnostic).toHaveBeenCalledOnce());
+  expect(f.recordReadyDiagnostic.mock.calls).toEqual([[6000]]);
+});
+it("never exports a queued Record cancelled before delayed admission finishes", async () => {
+  const admission = gate<void>(), f = fixture({ admission: admission.promise, timing: true }); await f.opened();
+  f.consent(true); await vi.waitFor(() => expect(f.request).toHaveBeenCalledOnce());
+  f.click("prepare"); f.click("cancel-recording-action"); admission.resolve();
+  await vi.waitFor(() => expect(f.root.attributes.has("aria-busy")).toBe(false));
+  expect(f.start).not.toHaveBeenCalled(); expect(f.recordReadyDiagnostic).not.toHaveBeenCalled();
+});
 it("checkbox alone prepares exactly once and never invokes any recording continuation", async () => {
   const f = fixture(); await f.opened(); expect(f.journal.save).not.toHaveBeenCalled();
   f.consent(true); await vi.waitFor(() => expect(f.app.bindProvider).toHaveBeenCalledOnce());
