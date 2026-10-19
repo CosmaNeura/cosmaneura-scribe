@@ -4,29 +4,33 @@ import Foundation
 /// Catalogue-only preparation. No engine, tap or audio samples are acquired.
 /// Live input levels belong to the consent-authorized recording process.
 public enum MicrophoneCheckProcess {
-    @MainActor public static func run(input: FileHandle = .standardInput, output: FileHandle = .standardOutput) async -> Int32 {
-        await run(input: input, output: output, catalogue: MicrophoneCatalogue())
+    @MainActor public static func run(input: FileHandle = .standardInput, output: FileHandle = .standardOutput, lifetime: NativeProcessLifetime? = nil) async -> Int32 {
+        await run(input: input, output: output, catalogue: MicrophoneCatalogue(), lifetime: lifetime)
     }
 
-    @MainActor static func run(input: FileHandle, output: FileHandle, catalogue: MicrophoneCatalogue) async -> Int32 {
-        let check = MicrophoneCheckOwner(output: ProcessOutput(output), catalogue: catalogue)
-        let reader = ProcessInput(input)
-        Task.detached {
+    @MainActor static func run(input: FileHandle, output: FileHandle, catalogue: MicrophoneCatalogue, lifetime: NativeProcessLifetime? = nil) async -> Int32 {
+        let check = MicrophoneCheckOwner(output: ProcessOutput(output), catalogue: catalogue, strictTransport: lifetime != nil)
+        let reader = ProcessInput(input, lifetime: lifetime)
+        lifetime?.onCancel { Task { @MainActor in await check.close(code: 70) } }
+        let reading = Task.detached {
             do {
                 while let command = try reader.next() {
                     if !(await check.accept(command)) { break }
                 }
-            } catch { }
+            } catch { await check.close(code: lifetime == nil ? 0 : 70) }
             await check.close()
         }
-        Task { @MainActor in
+        let heartbeat = Task { @MainActor in
             while !check.closed {
                 try? await Task.sleep(for: .seconds(5))
-                if ContinuousClock.now - check.lastInput > .seconds(15) { await check.close() }
+                if ContinuousClock.now - check.lastInput > .seconds(15) { await check.close(code: lifetime == nil ? 0 : 70) }
             }
         }
-        await check.prepare()
-        return await check.wait()
+        if lifetime?.isCancelled == true { await check.close(code: 70) }
+        else { await check.prepare() }
+        let result = await check.wait()
+        if let lifetime { lifetime.finishReading(); await reading.value; heartbeat.cancel() }
+        return result
     }
 }
 
@@ -42,7 +46,12 @@ struct MicrophoneCatalogue: Sendable {
     var closed = false
     var lastInput = ContinuousClock.now
     private var waiter: CheckedContinuation<Int32, Never>?
-    init(output: ProcessOutput, catalogue: MicrophoneCatalogue) { self.output = output; self.catalogue = catalogue }
+    private let strictTransport: Bool
+    private var result: Int32 = 0
+    private var finished = false
+    init(output: ProcessOutput, catalogue: MicrophoneCatalogue, strictTransport: Bool = false) {
+        self.output = output; self.catalogue = catalogue; self.strictTransport = strictTransport
+    }
 
     func prepare() async {
         guard !closed else { return }
@@ -78,17 +87,19 @@ struct MicrophoneCatalogue: Sendable {
         case .stop(let request, _):
             output.metadata(["type": "checkStopped", "request": request])
             await close(); return false
-        default: await close(); return false
+        default: await close(code: strictTransport ? 70 : 0); return false
         }
     }
-    func close() async {
+    func close(code: Int32 = 0) async {
         guard !closed else { return }
         closed = true
         await output.drain()
-        waiter?.resume(returning: 0); waiter = nil
+        result = strictTransport && !output.isValid ? 70 : code
+        finished = true
+        waiter?.resume(returning: result); waiter = nil
     }
     func wait() async -> Int32 {
-        if closed { return 0 }
+        if closed && (!strictTransport || finished) { return result }
         return await withCheckedContinuation { waiter = $0 }
     }
 }

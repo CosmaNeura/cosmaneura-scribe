@@ -249,7 +249,7 @@ public final class MacProviderRecordingIndicator: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var status: NSStatusItem?
     private var controls: ProviderRecordingControls?
-    private let mainWindow = ProviderMainWindowLease.system()
+    private let mainWindow: ProviderMainWindowLease
     private var handoff = ProviderWindowHandoff()
     private var stopMenuItem: NSMenuItem?
     private var screenObserver: NSObjectProtocol?
@@ -258,8 +258,18 @@ public final class MacProviderRecordingIndicator: NSObject, NSWindowDelegate {
     public init(enabled: Bool = false, requestStop: @escaping @MainActor (UUID) -> Void,
                 visibilityLost: @escaping @MainActor (UUID) -> Void) {
         self.enabled = enabled; self.requestStop = requestStop; self.visibilityLost = visibilityLost
+        self.mainWindow = .system()
         super.init()
     }
+
+#if SCRIBE_MAC_APP_STORE_XPC
+    init(enabled: Bool, host: NativeStoreHostIdentity, requestStop: @escaping @MainActor (UUID) -> Void,
+         visibilityLost: @escaping @MainActor (UUID) -> Void) {
+        self.enabled = enabled; self.requestStop = requestStop; self.visibilityLost = visibilityLost
+        self.mainWindow = .system(host: host)
+        super.init()
+    }
+#endif
 
     public func publish(_ next: ProviderRecordingPresentation) throws {
         guard enabled else { throw ProviderPresentationFailure.disabled }

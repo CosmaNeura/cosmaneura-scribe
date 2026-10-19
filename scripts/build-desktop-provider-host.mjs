@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const [providerInput, outputInput, distributionInput] = process.argv.slice(2);
-const store = distributionInput === "--mac-app-store";
-if (![4, 5].includes(process.argv.length) || (distributionInput !== undefined && !store) || !providerInput || !outputInput) throw new Error("Usage: build-desktop-provider-host.mjs provider-build-directory new-output-directory [--mac-app-store]");
+const storeXpc = distributionInput === "--mac-app-store-xpc";
+const store = distributionInput === "--mac-app-store" || storeXpc;
+if (![4, 5].includes(process.argv.length) || (distributionInput !== undefined && !store) || !providerInput || !outputInput) throw new Error("Usage: build-desktop-provider-host.mjs provider-build-directory new-output-directory [--mac-app-store | --mac-app-store-xpc]");
 const repo = dirname(dirname(fileURLToPath(import.meta.url))), input = await realpath(providerInput), output = resolve(outputInput);
 await mkdir(output); // Refuse an existing package; never overwrite a prior app.
 const renderer = join(output, "renderer"), standalone = join(repo, "apps/desktop-companion/standalone");
@@ -22,7 +23,7 @@ for (const name of ["provider.html", "desktop-start.js", "provider-capture.js", 
 const icon = await readFile(join(standalone, "Scribe.icns"));
 await writeFile(join(output, "Scribe.icns"), icon);
 await writeFile(join(renderer, "renderer-manifest.json"), JSON.stringify({ schema: 1, files }, null, 2) + "\n");
-const main = await build({ absWorkingDir: repo, entryPoints: [join(standalone, store ? "main-mas.mjs" : "main.mjs")], bundle: true, platform: "node", target: "node24",
+const main = await build({ absWorkingDir: repo, entryPoints: [join(standalone, storeXpc ? "main-mas-xpc.mjs" : store ? "main-mas.mjs" : "main.mjs")], bundle: true, platform: "node", target: "node24",
   format: "cjs", outfile: join(output, "main.cjs"), external: ["electron", "./provider-host.mjs"], metafile: true, logLevel: "silent" });
 const preload = await build({ absWorkingDir: repo, entryPoints: [join(standalone, "preload.mjs")], bundle: true, platform: "node", target: "node24",
   format: "cjs", outfile: join(output, "preload.cjs"), external: ["electron"], metafile: true, logLevel: "silent" });
@@ -40,7 +41,7 @@ for (const name of ["main.cjs", "preload.cjs", "provider-host.mjs", "package.jso
   artifacts[name] = hash(await readFile(join(output, name)));
 }
 await writeFile(join(output, "host-build.json"), JSON.stringify({ schema: 1, proposed_electron_version: "44.4.3", source_sha256: sourceSha256,
-  ...(store ? { distribution: "mac-app-store-dormant", electron_platform: "mas", approved_application_group: null } : {}),
+  ...(store ? { distribution: storeXpc ? "mac-app-store-xpc-unqualified" : "mac-app-store-dormant", electron_platform: "mas", approved_application_group: storeXpc ? "JVV65668U6.com.cosmaneura.scribe.beta.desktop" : null } : {}),
   artifacts_sha256: artifacts, preload_external_imports: ["electron"], installed: false, signed: false, launch_ready: false,
   missing: ["reviewed package profile and native helper bundles", "staging qualification", "signed app packaging"] }, null, 2) + "\n");
 process.stdout.write(JSON.stringify({ output, artifacts: Object.keys(artifacts).length, provider_factory_bundled: true, runtime_installed: false, launched: false }) + "\n");
