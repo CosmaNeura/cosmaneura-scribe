@@ -99,14 +99,14 @@ export function createEncounterSetup(options: {
   created(encounter: ProviderEncounter & { workspaceId: string }): void;
   current(signal?: AbortSignal): void;
   canHide?(appointmentRef: string): boolean;
-}): ProviderEncounterSetup & { dispose(): Promise<void> } {
+}): ProviderEncounterSetup & { initializeCatalog(value: Record<string, unknown>, signal: AbortSignal): void; dispose(): Promise<void> } {
   let recovery: string | null = null, account: string | null = null;
   let storage: Promise<Awaited<ReturnType<typeof options.records>>> | null = null;
   let busy = false;
   const accept = (value: Record<string, unknown>): void => {
     if (!isUuid(value.recoveryScope) || !record(value.account)) throw fail();
     const email = text(value.account.email, 320);
-    if (recovery !== null && (value.recoveryScope !== recovery || email !== account)) throw fail();
+    if ((recovery !== null && value.recoveryScope !== recovery) || (account !== null && email !== account)) throw fail();
     recovery = value.recoveryScope; account = email;
   };
   const journal = async (signal: AbortSignal): Promise<{ records: CreationRecords }> => {
@@ -171,6 +171,16 @@ export function createEncounterSetup(options: {
     return { revision: saved.revision, refs: value.refs as string[] };
   };
   return {
+    // Only the backend's current authenticated catalog reply initializes this
+    // owner. Older receivers omit the scope and retain the patient-search path.
+    initializeCatalog: (value, signal) => {
+      options.current(signal);
+      if (!record(value.account)) throw fail();
+      const email = text(value.account.email, 320);
+      if (account !== null && email !== account) throw fail();
+      if ("recoveryScope" in value) accept(value);
+      else account = email;
+    },
     ...createVisitFeatures(async (body, key, signal) => {
       options.current(signal); const value = await options.request(body, key, signal);
       options.current(signal); accept(value); return value;
