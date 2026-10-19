@@ -42,6 +42,14 @@ const DEADLINE_MS = 15_000;
 const MAX_FRAMES = 1_382_400_000;
 const CODES: readonly DesktopPCMFailure[] = ["permission_required", "device_changed", "meeting_disconnected", "session_locked",
   "clock_discontinuity", "overflow", "failed"];
+// Stable local origin numbers. Metadata only; never accepts exception text.
+const FAILURE_ORIGIN = { startupTimeout: 1, preparation: 2, transportDecode: 3, stdinError: 4,
+  processError: 5, exitProtocol: 6, exitWithoutStop: 7, captureDeadline: 8, sessionInactive: 9,
+  heartbeatException: 10, activationInactive: 11, extension: 12, sinkRejected: 13, sendException: 14,
+  nativeReported: 15 } as const;
+type FailureOrigin = typeof FAILURE_ORIGIN[keyof typeof FAILURE_ORIGIN];
+const NATIVE_REASON_CODES: readonly DesktopPCMFailure[] = ["failed", "permission_required", "device_changed", "failed",
+  "device_changed", "failed", "overflow", "failed", "failed", "failed", "clock_discontinuity", "meeting_disconnected"];
 
 /** Main process only. The packaged helper path/hash are release inputs, never an
  * IPC argument. This source preparation does not establish signing acceptance. */
@@ -111,9 +119,9 @@ class ProcessSession implements DesktopPCMDriverSession {
     this.diagnose("audio_start_pending");
     this.startupTimer = setTimeout(() => {
       if (!this.failed && !this.cancelled) this.diagnose("audio_start_timeout");
-      this.fail("failed");
+      this.fail("failed", FAILURE_ORIGIN.startupTimeout);
     }, DEADLINE_MS);
-    void this.prepare().catch(() => { this.fail("failed"); });
+    void this.prepare().catch(() => { this.fail("failed", FAILURE_ORIGIN.preparation); });
   }
   private async prepare(): Promise<void> {
     const selection = Object.freeze({ ...await this.options.authorizeSelectedWindow() });
@@ -144,12 +152,12 @@ class ProcessSession implements DesktopPCMDriverSession {
       try { this.decoder.push(bytes, (kind, payload) => { this.receive(kind, payload); }); }
       catch { this.breakTransport(); }
     });
-    child.stdin.on("error", () => { this.breakTransport(); });
-    child.on("error", () => { this.fail("failed"); });
+    child.stdin.on("error", () => { this.breakTransport(FAILURE_ORIGIN.stdinError); });
+    child.on("error", () => { this.fail("failed", FAILURE_ORIGIN.processError); });
     child.once("close", () => {
       this.exitObserved = true; clearInterval(this.heartbeat); clearTimeout(this.startupTimer); clearTimeout(this.captureTimer);
-      try { this.decoder.finish(); } catch { this.fail("failed"); }
-      if (!this.confirmed) this.fail("failed");
+      try { this.decoder.finish(); } catch { this.fail("failed", FAILURE_ORIGIN.exitProtocol); }
+      if (!this.confirmed) this.fail("failed", FAILURE_ORIGIN.exitWithoutStop);
       this.readiness.reject(failure()); this.pendingExtension?.response.reject(failure());
       // An owned child's observed exit proves cessation for discard, even if
       // its last reply was lost. It cannot prove a drained audio completion.
@@ -164,18 +172,18 @@ class ProcessSession implements DesktopPCMDriverSession {
         windowID: selection.windowID, authorization: this.authorization, processFence, ...microphone });
     } else this.send({ type: "start", application: selection.application, processID: selection.processID,
       windowID: selection.windowID, maximumDurationSeconds: duration, maximumOutputFrames: this.maximumFrames, processFence, ...microphone });
-    this.captureTimer = setTimeout(() => { this.fail("failed"); }, Math.max(0, selection.captureAuthorizedUntil - Date.now()));
+    this.captureTimer = setTimeout(() => { this.fail("failed", FAILURE_ORIGIN.captureDeadline); }, Math.max(0, selection.captureAuthorizedUntil - Date.now()));
     this.heartbeat = setInterval(() => {
       if (this.closingInput) return;
       try {
-        if (!this.options.isSessionActive()) this.fail("session_locked");
+        if (!this.options.isSessionActive()) this.fail("session_locked", FAILURE_ORIGIN.sessionInactive);
         else this.send({ type: "heartbeat" });
-      } catch { this.fail("failed"); }
+      } catch { this.fail("failed", FAILURE_ORIGIN.heartbeatException); }
     }, 5_000);
   }
   activate(): void {
     if (!this.startValue || this.active || this.cancelled || this.closingInput || this.exitObserved) throw failure();
-    if (!this.options.isSessionActive()) { this.fail("session_locked"); throw failure(); }
+    if (!this.options.isSessionActive()) { this.fail("session_locked", FAILURE_ORIGIN.activationInactive); throw failure(); }
     this.active = true; this.send({ type: "activate" });
   }
   async extend(value: DesktopCaptureAuthorization): Promise<void> {
@@ -190,7 +198,7 @@ class ProcessSession implements DesktopPCMDriverSession {
     this.maximumFrames = next.maximumOutputFrames;
     this.send({ type: "extend", request, authorization: next });
     try { await deadline(response.promise); }
-    catch (error) { if (!this.renewalsClosed) this.fail("failed"); throw error; }
+    catch (error) { if (!this.renewalsClosed) this.fail("failed", FAILURE_ORIGIN.extension); throw error; }
   }
   stop(options: { readonly mode: "drain" | "discard" }): Promise<DesktopPCMCompletion | null> {
     this.renewalsClosed = true; this.pendingExtension?.response.reject(failure());
@@ -227,9 +235,10 @@ class ProcessSession implements DesktopPCMDriverSession {
       this.receivedFrames += frames; this.receiving = true;
       this.packetWork = Promise.resolve().then(async () => {
         try {
-          if (!this.cancelled) await this.sink.onPcmPacket({ firstFrame, pcmBytes: bytes });
+          if (!this.cancelled) await timed(this.options, "audio_packet_sink",
+            () => this.sink.onPcmPacket({ firstFrame, pcmBytes: bytes }), 100);
           if (!this.cancelled) this.send({ type: "ack", firstFrame });
-        } catch { this.fail("failed"); }
+        } catch { this.fail("failed", FAILURE_ORIGIN.sinkRejected); }
         finally { bytes.fill(0); this.receiving = false; }
       });
       return;
@@ -256,7 +265,7 @@ class ProcessSession implements DesktopPCMDriverSession {
         if (this.renewalsClosed || this.failed || this.cancelled || this.exitObserved) { pending.response.reject(failure()); return; }
         this.authorization = pending.authorization;
         clearTimeout(this.captureTimer);
-        this.captureTimer = setTimeout(() => { this.fail("failed"); }, Math.max(0, this.authorization.expiresAtMilliseconds - Date.now()));
+        this.captureTimer = setTimeout(() => { this.fail("failed", FAILURE_ORIGIN.captureDeadline); }, Math.max(0, this.authorization.expiresAtMilliseconds - Date.now()));
         pending.response.resolve(); return;
       }
       case "ready":
@@ -266,8 +275,11 @@ class ProcessSession implements DesktopPCMDriverSession {
         this.diagnose("audio_ready");
         this.readiness.resolve(this.startValue); return;
       case "failure":
-        if (!exactKeys(value, ["type", "code"]) || !CODES.includes(value.code as DesktopPCMFailure)) throw failure();
-        this.fail(value.code as DesktopPCMFailure); return;
+        if (!exactKeys(value, value.reason === undefined ? ["type", "code"] : ["type", "code", "reason"])
+          || !CODES.includes(value.code as DesktopPCMFailure)
+          || value.reason !== undefined && (!integer(value.reason, 1, NATIVE_REASON_CODES.length)
+            || NATIVE_REASON_CODES[value.reason - 1] !== value.code)) throw failure();
+        this.fail(value.code as DesktopPCMFailure, FAILURE_ORIGIN.nativeReported, value.reason); return;
       case "stopped":
       case "stopFailed": {
         if (!exactKeys(value, value.type === "stopped" ? ["type", "request", "completion"] : ["type", "request"])
@@ -300,21 +312,26 @@ class ProcessSession implements DesktopPCMDriverSession {
   private send(value: Readonly<Record<string, unknown>>): void {
     if (!this.child || this.closingInput || this.exitObserved) return;
     try { this.child.stdin.write(nativeCommand(value)); }
-    catch { this.fail("failed"); }
+    catch { this.fail("failed", FAILURE_ORIGIN.sendException); }
   }
-  private fail(code: DesktopPCMFailure): void {
+  private fail(code: DesktopPCMFailure, origin: FailureOrigin, nativeReason?: number): void {
     if (this.failed) return;
     this.failed = true; this.readiness.reject(failure());
     // Begin cleanup before notifying the existing capture controller.
     void this.stop({ mode: "discard" }).catch(() => undefined);
+    this.diagnose("audio_main_failure_reason", origin);
+    if (nativeReason !== undefined) this.diagnose("audio_native_failure_reason", nativeReason);
     this.diagnose(code === "meeting_disconnected" ? "audio_device_changed" : `audio_${code}`);
     try { this.sink.onFailure(code); } catch { /* Cleanup remains owned here. */ }
   }
-  private diagnose(event: Parameters<RuntimeDiagnostic>[0]): void {
-    try { this.options.diagnostics?.(event); } catch { /* Observation cannot affect source ownership. */ }
+  private diagnose(event: Parameters<RuntimeDiagnostic>[0], reason?: number): void {
+    try {
+      if (reason === undefined) this.options.diagnostics?.(event);
+      else this.options.diagnostics?.(event, undefined, reason);
+    } catch { /* Observation cannot affect source ownership. */ }
   }
-  private breakTransport(): void {
-    this.fail("failed"); this.decoder.clear();
+  private breakTransport(origin: FailureOrigin = FAILURE_ORIGIN.transportDecode): void {
+    this.fail("failed", origin); this.decoder.clear();
     // A corrupted pipe cannot carry a trustworthy stop receipt. EOF makes the
     // dedicated helper stop or exit at its bounded parent-loss deadline.
     this.closingInput = true; clearInterval(this.heartbeat); clearTimeout(this.startupTimer); clearTimeout(this.captureTimer);
@@ -325,12 +342,13 @@ class ProcessSession implements DesktopPCMDriverSession {
 }
 
 /** Observe an existing await, including failure, without changing its result. */
-async function timed<T>(options: Pick<NativeProcessDriverOptions, "diagnostics">, event: RuntimeTimingEvent, operation: () => Promise<T>): Promise<T> {
+async function timed<T>(options: Pick<NativeProcessDriverOptions, "diagnostics">, event: RuntimeTimingEvent,
+  operation: () => Promise<T>, minimumMilliseconds = 0): Promise<T> {
   const started = process.hrtime.bigint();
   try { return await operation(); }
   finally {
     const duration = Number(process.hrtime.bigint() - started) / 1_000_000;
-    if (Number.isFinite(duration) && duration >= 0 && duration <= 3_600_000) {
+    if (Number.isFinite(duration) && duration >= minimumMilliseconds && duration <= 3_600_000) {
       try { options.diagnostics?.(event, Math.round(duration * 1000) / 1000); }
       catch { /* Diagnostics cannot affect availability, capture or cleanup. */ }
     }

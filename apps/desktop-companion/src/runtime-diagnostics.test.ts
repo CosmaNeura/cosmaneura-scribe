@@ -5,6 +5,43 @@ import { describe, expect, it, vi } from "vitest";
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 describe("local runtime diagnostics", () => {
+  it("accepts fixed numeric failure reasons only on their corresponding events", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-failure-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (const value of [undefined, 0, 1.5, 13, NaN, Infinity, "private text" as unknown as number]) {
+        record("audio_native_failure_reason", undefined, value);
+      }
+      record("audio_main_failure_reason", undefined, 16);
+      record("audio_native_failure_reason", 1, 8);
+      record("audio_failed", undefined, 8);
+      record("audio_packet_sink", 120, 8);
+      record("audio_native_failure_reason", undefined, 8);
+      record("audio_main_failure_reason", undefined, 13);
+      record("audio_packet_sink", 123.4567);
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(3));
+      expect((await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>)).toEqual([
+        { utc: expect.any(String), pid: process.pid, event: "audio_native_failure_reason", reason_code: 8 },
+        { utc: expect.any(String), pid: process.pid, event: "audio_main_failure_reason", reason_code: 13 },
+        { utc: expect.any(String), pid: process.pid, event: "audio_packet_sink", duration_ms: 123.457 },
+      ]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("retains a separate bounded terminal allowance after routine events exhaust their budget", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-terminal-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (let i = 0; i < 129; i++) record("connect_begin");
+      record("audio_main_failure_reason", undefined, 13);
+      record("audio_failed"); record("audio_stop_confirmed");
+      for (let i = 0; i < 30; i++) record("audio_chunk_commit_failed");
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(160));
+      const rows = (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
+      expect(rows.slice(128, 131).map(row => row.event)).toEqual(["audio_main_failure_reason", "audio_failed", "audio_stop_confirmed"]);
+      expect(rows.filter(row => row.event === "audio_chunk_commit_failed")).toHaveLength(29);
+      expect((await stat(path)).size).toBeLessThanOrEqual(65_536);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it("records window discovery outcomes as fixed events without window metadata", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-window-")));
     try {

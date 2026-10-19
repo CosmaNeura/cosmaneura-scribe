@@ -4,6 +4,25 @@ public enum DesktopAudioFailure: String, Error, Sendable {
     case unavailable, permissionRequired, selectionChanged, cancelled, inputChanged
     case invalidAudio, bufferOverflow, sinkRejected, stopUnconfirmed, windowExpired
     case clockDiscontinuity, meetingDisconnected
+
+    /// Stable, content-free private-pipe diagnostics. Keep these numbers fixed
+    /// across releases; never send an OS error message or device identity.
+    var diagnosticReason: Int {
+        switch self {
+        case .unavailable: 1
+        case .permissionRequired: 2
+        case .selectionChanged: 3
+        case .cancelled: 4
+        case .inputChanged: 5
+        case .invalidAudio: 6
+        case .bufferOverflow: 7
+        case .sinkRejected: 8
+        case .stopUnconfirmed: 9
+        case .windowExpired: 10
+        case .clockDiscontinuity: 11
+        case .meetingDisconnected: 12
+        }
+    }
 }
 
 public enum DesktopAudioChannel: Sendable, Hashable { case microphone, systemAudio }

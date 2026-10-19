@@ -65,11 +65,11 @@ describe("private native pipe framing", () => {
       const rejected = expect(session.ready).rejects.toThrow();
       await vi.advanceTimersByTimeAsync(15_000); await rejected;
       expect(failures).toEqual(["failed"]);
-      expect(events).toEqual(["audio_start_pending", "audio_start_timeout", "audio_failed"]);
+      expect(events).toEqual(["audio_start_pending", "audio_start_timeout", "audio_main_failure_reason", "audio_failed"]);
       expect(await session.stop({ mode: "discard" })).toBeNull();
       authorized.resolve(); await vi.advanceTimersByTimeAsync(1);
       expect(failures).toEqual(["failed"]);
-      expect(events).toEqual(["audio_start_pending", "audio_start_timeout", "audio_failed"]);
+      expect(events).toEqual(["audio_start_pending", "audio_start_timeout", "audio_main_failure_reason", "audio_failed"]);
     } finally { authorized.resolve(); vi.useRealTimers(); }
   });
 });
@@ -181,9 +181,137 @@ setTimeout(() => process.stdout.write(Buffer.concat([header, payload]), () => pr
       });
       await expect(session.ready).rejects.toThrow();
       expect(await session.stop({ mode: "discard" })).toBeNull();
-      expect(events).toEqual(["audio_start_pending", "audio_capture_helper_check", "audio_failed"]);
+      expect(events).toEqual(["audio_start_pending", "audio_capture_helper_check", "audio_main_failure_reason", "audio_failed"]);
       expect(timings).toHaveLength(1); expect(Number.isFinite(timings[0])).toBe(true);
       expect(failures).toEqual(["failed"]);
+    });
+  });
+});
+
+describe("fixed recording failure diagnostics", () => {
+  // Explicit invented consent precedes generated PCM. This fixture has no OS
+  // audio API; it exercises the actual private-pipe driver and joined cleanup.
+  async function fixture(reportedFailure: Record<string, unknown> | undefined,
+    run: (driver: NativeProcessPCMDriver, events: Array<{ event: string; duration: number | undefined; reason: number | undefined }>) => Promise<void>): Promise<void> {
+    expect(consent.allPartiesAgreed).toBe(true);
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-recording-diagnostics-")));
+    const helperPath = join(directory, "fixture");
+    const script = `#!${process.execPath}
+if (!["--capture-v2", "--capture-v3"].includes(process.argv[2])) process.exit(77);
+const reportedFailure = ${JSON.stringify(reportedFailure ?? null)};
+const metadata = value => {
+  const body = Buffer.from(JSON.stringify(value)), head = Buffer.alloc(5);
+  head.writeUInt32BE(body.length + 1); head[4] = 1; process.stdout.write(Buffer.concat([head, body]));
+};
+let pending = Buffer.alloc(0);
+process.stdin.on("data", part => {
+  pending = Buffer.concat([pending, part]);
+  while (pending.length >= 4 && pending.length >= pending.readUInt32BE(0) + 4) {
+    const length = pending.readUInt32BE(0), value = JSON.parse(pending.subarray(5, length + 4));
+    pending = pending.subarray(length + 4);
+    if (value.type === "start" || value.type === "startRenewable") {
+      metadata(reportedFailure ?? { type: "ready", start: { hostTimeNanoseconds: "1000000000",
+        microphonePrerollNanoseconds: "0", systemPrerollNanoseconds: "0" } });
+    } else if (value.type === "activate") {
+      const head = Buffer.alloc(9); head.writeUInt32BE(9); head[4] = 2; head.writeUInt32BE(0, 5);
+      process.stdout.write(Buffer.concat([head, Buffer.from([0, 16, 0, 240])]));
+    } else if (value.type === "stop") metadata({ type: "stopped", request: value.request, completion: null });
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+    try {
+      await writeFile(helperPath, script, { mode: 0o700 });
+      const events: Array<{ event: string; duration: number | undefined; reason: number | undefined }> = [];
+      await run(new NativeProcessPCMDriver({ enabled: true, helperPath,
+        helperSha256: createHash("sha256").update(script).digest("hex"),
+        getProcessFence: () => ({ epoch: randomUUID(), coordinatorDevice: "1", coordinatorInode: "2",
+          captureDevice: "1", captureInode: "3" }),
+        isSessionActive: () => true, authorizeSelectedWindow: async () => ({ application: "microphone",
+          processID: 0, windowID: 0, captureAuthorizedUntil: Date.now() + 60_000 }),
+        diagnostics: (event, duration, reason) => { events.push({ event, duration, reason }); },
+      }), events);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  }
+  it("accepts legacy native failures and records exact bounded new reasons without changing cleanup", async () => {
+    for (const metadata of [{ type: "failure", code: "failed" }, { type: "failure", code: "failed", reason: 8 },
+      { type: "failure", code: "permission_required", reason: 2 }]) {
+      await fixture(metadata, async (native, events) => {
+        const failures: DesktopPCMFailure[] = [], packets = vi.fn(async () => undefined);
+        const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+          onPcmPacket: packets, onFailure: code => { failures.push(code); },
+        });
+        try {
+          await expect(session.ready).rejects.toThrow("desktop_native_process_failed");
+          expect(await session.stop({ mode: "discard" })).toBeNull();
+          expect(failures).toEqual([metadata.code]); expect(packets).not.toHaveBeenCalled();
+          expect(events.filter(row => row.event === "audio_main_failure_reason")).toEqual([
+            { event: "audio_main_failure_reason", duration: undefined, reason: 15 },
+          ]);
+          expect(events.filter(row => row.event === "audio_native_failure_reason")).toEqual(metadata.reason === undefined ? [] : [
+            { event: "audio_native_failure_reason", duration: undefined, reason: metadata.reason },
+          ]);
+          expect(events.filter(row => row.event === "audio_stop_confirmed")).toHaveLength(1);
+        } finally { await session.stop({ mode: "discard" }); }
+      });
+    }
+  });
+  it("treats malformed or mismatched diagnostic reasons as transport failure without logging their contents", async () => {
+    for (const metadata of [{ type: "failure", code: "failed", reason: 7 }, { type: "failure", code: "failed", reason: true },
+      { type: "failure", code: "failed", reason: 13 }, { type: "failure", code: "failed", reason: 8, detail: "private content" }]) {
+      await fixture(metadata, async (native, events) => {
+        const failures: DesktopPCMFailure[] = [];
+        const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+          onPcmPacket: async () => undefined, onFailure: code => { failures.push(code); },
+        });
+        try {
+          await expect(session.ready).rejects.toThrow();
+          expect(await session.stop({ mode: "discard" })).toBeNull(); expect(failures).toEqual(["failed"]);
+          expect(events.filter(row => row.event === "audio_main_failure_reason")).toEqual([
+            { event: "audio_main_failure_reason", duration: undefined, reason: 3 },
+          ]);
+          expect(events.some(row => row.event === "audio_native_failure_reason")).toBe(false);
+          expect(JSON.stringify(events)).not.toContain("private content");
+        } finally { await session.stop({ mode: "discard" }); }
+      });
+    }
+  });
+  it("times a slow sink rejection, clears its PCM, and preserves failure and observed stop", async () => {
+    await fixture(undefined, async (native, events) => {
+      const failures: DesktopPCMFailure[] = [], references: Uint8Array[] = [];
+      const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+        onPcmPacket: async packet => {
+          references.push(packet.pcmBytes); await new Promise(resolve => setTimeout(resolve, 120));
+          throw new Error("private callback detail");
+        }, onFailure: code => { failures.push(code); },
+      });
+      try {
+        await session.ready; session.activate();
+        await vi.waitFor(() => expect(failures).toEqual(["failed"]));
+        expect(await session.stop({ mode: "discard" })).toBeNull();
+        expect(references).toHaveLength(1); expect(references[0]!.every(value => value === 0)).toBe(true);
+        const timings = events.filter(row => row.event === "audio_packet_sink");
+        expect(timings).toHaveLength(1); expect(timings[0]!.duration).toBeGreaterThanOrEqual(100);
+        expect(events.filter(row => row.event === "audio_main_failure_reason")).toEqual([
+          { event: "audio_main_failure_reason", duration: undefined, reason: 13 },
+        ]);
+        expect(events.filter(row => row.event === "audio_stop_confirmed")).toHaveLength(1);
+        expect(JSON.stringify(events)).not.toContain("private callback detail");
+      } finally { await session.stop({ mode: "discard" }); }
+    });
+  });
+  it("does not spend the timing budget on fast packet callbacks", async () => {
+    await fixture(undefined, async (native, events) => {
+      const references: Uint8Array[] = [], failures: DesktopPCMFailure[] = [];
+      const session = native.start({ sampleRateHz: 16_000, maximumOutputFrames: 16_000 }, {
+        onPcmPacket: async packet => { references.push(packet.pcmBytes); }, onFailure: code => { failures.push(code); },
+      });
+      try {
+        await session.ready; session.activate();
+        await vi.waitFor(() => { expect(references).toHaveLength(1); expect(references[0]!.every(value => value === 0)).toBe(true); });
+        expect(await session.stop({ mode: "discard" })).toBeNull(); expect(failures).toEqual([]);
+        expect(events.some(row => row.event === "audio_packet_sink")).toBe(false);
+      } finally { await session.stop({ mode: "discard" }); }
     });
   });
 });

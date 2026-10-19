@@ -75,6 +75,11 @@ export async function connectDesktopNativeBackend(native: NativeProviderClient, 
       : action === "capture-admissions" ? "provider_admission" : operation === "creator_review" ? "provider_review"
       : operation === "capabilities" ? "provider_capabilities" : operation === "encryption_key" ? "provider_encryption_key"
       : operation === "prepare_recording_window" ? "provider_recording_window"
+      : operation === "authorize_upload" ? "provider_upload_authorization"
+      : operation === "register_chunk" ? "provider_chunk_registration"
+      : operation === "chunk_receipt" ? "provider_chunk_receipt"
+      : operation === "renew_lease" ? "provider_lease_renewal"
+      : operation === "reserve_chunks" ? "provider_chunk_reservation"
       : operation === "preparation_metadata" ? "provider_preparation_metadata" : "provider_other_operation";
     const cancel = (): void => { void abandonWindow().catch(() => undefined); };
     if (action === "capture-admissions") signal.addEventListener("abort", cancel, { once: true });

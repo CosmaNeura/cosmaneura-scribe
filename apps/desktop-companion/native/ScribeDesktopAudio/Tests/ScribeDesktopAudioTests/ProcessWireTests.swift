@@ -2,6 +2,34 @@ import Foundation
 import Testing
 @testable import ScribeDesktopAudio
 
+@Test func failureMetadataKeepsStableNumericReasonsAndExistingFailureCodes() async throws {
+    let cases: [(DesktopAudioFailure, Int, String)] = [
+        (.unavailable, 1, "failed"), (.permissionRequired, 2, "permission_required"),
+        (.selectionChanged, 3, "device_changed"), (.cancelled, 4, "failed"),
+        (.inputChanged, 5, "device_changed"), (.invalidAudio, 6, "failed"),
+        (.bufferOverflow, 7, "overflow"), (.sinkRejected, 8, "failed"),
+        (.stopUnconfirmed, 9, "failed"), (.windowExpired, 10, "failed"),
+        (.clockDiscontinuity, 11, "clock_discontinuity"), (.meetingDisconnected, 12, "meeting_disconnected")
+    ]
+    let pipe = Pipe(), output = ProcessOutput(pipe.fileHandleForWriting)
+    defer { try? pipe.fileHandleForReading.close() }
+    for (reason, _, _) in cases { output.metadata(reason.processFailureMetadata) }
+    await output.drain(); try pipe.fileHandleForWriting.close()
+    let data = try #require(try pipe.fileHandleForReading.readToEnd())
+    var offset = 0
+    for (_, number, code) in cases {
+        let length = data[offset..<offset + 4].reduce(0) { $0 * 256 + Int($1) }
+        #expect(data[offset + 4] == 1)
+        let message = try #require(try JSONSerialization.jsonObject(with: data[offset + 5..<offset + 4 + length]) as? [String: Any])
+        #expect(Set(message.keys) == ["type", "code", "reason"])
+        #expect(message["type"] as? String == "failure")
+        #expect(message["code"] as? String == code)
+        #expect(message["reason"] as? Int == number)
+        offset += length + 4
+    }
+    #expect(offset == data.count)
+}
+
 @Test func microphoneCheckCommandsCannotCarryCaptureAuthorityOrUnboundedDeviceIdentities() throws {
     func command(_ value: [String: Any]) throws -> Data {
         var data = Data([1]); data.append(try JSONSerialization.data(withJSONObject: value)); return data
