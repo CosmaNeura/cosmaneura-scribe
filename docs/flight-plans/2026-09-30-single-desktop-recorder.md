@@ -61,3 +61,23 @@ patients exist; otherwise forward-fix from the retained merged source. Never
 reset or uninstall, discard a queue, invent a DOB, remove a pending request or
 silently treat an uncertain stop as complete. No production or schema change
 is part of this PR.
+
+## 2026-10-19 main-window ordering correction
+
+Risk: Tier 1 for this ordering correction; native visibility and cessation gates
+are unchanged. Owner: John Clemente. Initial cohort: owner's staged Mac beta;
+release-control review by 2026-10-20 before broader distribution.
+
+The provider needs Zoom or the EMR frontmost during recording. The main Scribe
+window now retains its chosen size, position and Space at normal window order.
+Capture transitions and timer ticks do not show, focus or raise it. Entering and
+leaving the capture view explicitly disable always-on-top and all-Spaces policy.
+
+The existing signed native nonactivating status panel and menu Stop remain the
+recording indicator and cessation controls. Main supplies only its OS identity;
+the unchanged native status-layer and occlusion checks reject normal main-window
+coverage, so the persistent native fallback remains visible. Consent, source
+ownership, capture and awaited cleanup are unchanged. Focused window regressions
+verify policy calls, unchanged geometry, identity withdrawal and no activation.
+Recovery retains signed build 93 and does not reset application data or
+permissions.
