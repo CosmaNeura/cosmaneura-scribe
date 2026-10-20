@@ -61,11 +61,14 @@ export interface DesktopProviderFactory {
 
 /** Executable shell composition. Call once from the packaged Electron main entry,
  * with the reviewed native/backend factory bundled beside it. */
-export async function startElectronProvider<S extends Session>(runtime: DesktopElectronRuntime<S>, factory: DesktopProviderFactory): Promise<{
+export async function startElectronProvider<S extends Session>(runtime: DesktopElectronRuntime<S>, factory: DesktopProviderFactory,
+  applicationName: "Cosmaneura Scribe Beta" | "Cosmaneura Scribe Store" = "Cosmaneura Scribe Beta"): Promise<{
   close(): Promise<void>;
 } | null> {
   if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
-    || "type" in process && process.type === "renderer" || !runtime.app.isPackaged || runtime.app.getName() !== "Cosmaneura Scribe Beta") throw unavailable();
+    || "type" in process && process.type === "renderer" || !runtime.app.isPackaged
+    || !["Cosmaneura Scribe Beta", "Cosmaneura Scribe Store"].includes(applicationName)
+    || runtime.app.getName() !== applicationName) throw unavailable();
   if (!requireElectronSingleInstance(runtime.app)) return null;
   runtime.protocol.registerSchemesAsPrivileged([PACKAGED_APP_SCHEME]);
   let startupStopped = false;

@@ -1,8 +1,8 @@
 """Prepare reviewed XPC MAS source and unsigned claims, never apps/signing/runtime.
 
-The macOS Team-ID group is fence-only and does not require App Group registration.
-Native auth alone retains its existing Keychain group. Store provisioning,
-installer identity, legacy custody and real sandbox qualification remain required.
+The macOS Team-ID group is fence-only. Native auth alone receives its distinct
+Store Keychain group. Profiles must authorize the new auth App ID and compiled
+groups; Apple runtime/container and capture qualification remain required.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ from pathlib import Path
 
 TEAM = "JVV65668U6"
 PARENT = "com.cosmaneura.scribe.beta.desktop"
-GROUP = TEAM + "." + PARENT
+GROUP = TEAM + "." + PARENT + ".store"
+AUTH = PARENT + ".store.auth"
 RUNTIME_SHA256 = "7e37fa13b746341f88dc37c188a1a56c515b06dd54eaf48a86ec16a3a0b678c6"
 
 
@@ -30,11 +31,11 @@ def xpc_claims() -> dict[str, dict[str, object]]:
 
     parent = role(PARENT)
     parent["com.apple.security.network.client"] = True
-    auth = role(PARENT + ".auth")
+    auth = role(AUTH)
     auth.update(
         {
             "com.apple.security.network.client": True,
-            "keychain-access-groups": [TEAM + "." + PARENT + ".auth"],
+            "keychain-access-groups": [TEAM + "." + AUTH],
         }
     )
     audio = role(PARENT + ".audio")
@@ -51,6 +52,29 @@ def xpc_claims() -> dict[str, dict[str, object]]:
     }
 
 
+def validate_auth_profile_authorization(entitlements: dict[str, object]) -> None:
+    """Check verified CMS profile authorization, not its executable grants.
+
+    The caller separately verifies CMS trust, expiration and profile type. The
+    signed executable still receives only the exact claims from xpc_claims().
+    """
+    def permits(key: str, exact: str) -> bool:
+        values = entitlements.get(key)
+        return isinstance(values, list) and any(
+            isinstance(value, str)
+            and (value == exact or value == TEAM + ".*")
+            for value in values
+        )
+
+    if (
+        entitlements.get("com.apple.application-identifier") != TEAM + "." + AUTH
+        or entitlements.get("com.apple.developer.team-identifier") != TEAM
+        or not permits("com.apple.security.application-groups", GROUP)
+        or not permits("keychain-access-groups", TEAM + "." + AUTH)
+    ):
+        raise ValueError("Store auth profile does not authorize the isolated identity")
+
+
 def service_info(role: str) -> dict[str, object]:
     executable = {
         "auth": "ScribeDesktopProvider",
@@ -58,7 +82,7 @@ def service_info(role: str) -> dict[str, object]:
         "presentation": "ScribePresentationStoreService",
     }[role]
     return {
-        "CFBundleIdentifier": PARENT + "." + role,
+        "CFBundleIdentifier": AUTH if role == "auth" else PARENT + "." + role,
         "CFBundlePackageType": "XPC!",
         "CFBundleExecutable": executable,
         "LSMinimumSystemVersion": "14.2",
@@ -109,11 +133,10 @@ def prepare(output: Path, clerk_source: Path) -> None:
         "source_preparation_receipt": "mas-inputs.DRAFT.json",
         "missing": [
             "independent review of this exact XPC source",
-            "actual MAS signing/profile and installer identities plus separate Mac store record",
+            "actual new auth App ID/profiles and MAS signing/installer identities",
             "real signed sandbox/peer identity/Keychain/user session/TCC qualification",
             (
-                "legacy95 fence and journal custody admission"
-                "; missing/cold marker is not absence proof"
+                "separate Store fence/journal and local app data coexistence qualification"
             ),
             (
                 "actual capture stop/drain, concurrent catalo"

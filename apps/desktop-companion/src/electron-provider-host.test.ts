@@ -47,7 +47,7 @@ async function fixture() {
     destroy() { this.destroyed = true; events.push("destroy"); this.webContents.emit("destroyed"); }
   }
   const runtime = {
-    app: Object.assign(app, { isPackaged: true, getName: () => "Cosmaneura Scribe Beta", getAppPath: () => directory,
+    app: Object.assign(app, { isPackaged: true, getName: (): string => "Cosmaneura Scribe Beta", getAppPath: () => directory,
       getPath: () => join(directory, "user-data"), requestSingleInstanceLock: vi.fn(() => true),
       whenReady: () => ready, quit: vi.fn(() => { events.push("quit"); }) }),
     screen: { getDisplayMatching: () => ({ workArea: { x: 0, y: 24, width: 1440, height: 860 } }) },
@@ -91,6 +91,18 @@ describe("packaged desktop provider host", () => {
       f.runtime.app.isPackaged = true; f.runtime.app.requestSingleInstanceLock.mockReturnValue(false);
       expect(await startElectronProvider(f.runtime, f.factory)).toBeNull();
       expect(f.factory.open).not.toHaveBeenCalled(); expect(f.window).toBeNull(); expect(f.runtime.app.quit).toHaveBeenCalledOnce();
+    } finally { await f.cleanup(); }
+  });
+  it("opens the Store name only when its compiled entry selects that name", async () => {
+    const f = await fixture();
+    try {
+      f.runtime.app.getName = () => "Cosmaneura Scribe Store";
+      await expect(startElectronProvider(f.runtime, f.factory)).rejects.toThrow("unavailable");
+      expect(f.factory.open).not.toHaveBeenCalled();
+      const application = await startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store");
+      expect(application).not.toBeNull();
+      await application!.close();
+      expect(f.dispose).toHaveBeenCalledOnce();
     } finally { await f.cleanup(); }
   });
   it("installs restricted content and IPC before showing the provider and awaits native disposal before quit", async () => {

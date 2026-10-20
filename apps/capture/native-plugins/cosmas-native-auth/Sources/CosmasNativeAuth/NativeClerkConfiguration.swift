@@ -10,7 +10,7 @@ public enum NativeWorkspaceOrigin: String, Sendable {
     case desktopApp = "app://cosmas"
 
     public func accepts(bundleIdentifier: String) -> Bool {
-        if self == .desktopApp && bundleIdentifier == "com.cosmaneura.scribe.beta.desktop.auth" {
+        if self == .desktopApp && bundleIdentifier == NativeClerkConfiguration.desktopBundleIdentifier {
             return true
         }
         if self == .appleWebView && bundleIdentifier == "com.cosmaneura.scribe.beta" {
@@ -25,6 +25,13 @@ public enum NativeWorkspaceOrigin: String, Sendable {
 
 public struct NativeClerkConfiguration: Sendable, Equatable {
     public static let nativeOrigin = "capacitor://localhost"
+#if SCRIBE_MAC_APP_STORE_XPC
+    // A separate signed auth application also separates Clerk's bundle-derived
+    // identity/recovery services and the default DP biometric Keychain group.
+    public static let desktopBundleIdentifier = "com.cosmaneura.scribe.beta.desktop.store.auth"
+#else
+    public static let desktopBundleIdentifier = "com.cosmaneura.scribe.beta.desktop.auth"
+#endif
     public let publishableKey: String
     public let frontendOrigin: String
     public let organizationID: String?
@@ -33,6 +40,14 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
     public let workspaceOrigin: NativeWorkspaceOrigin
 
     public var callbackURL: String { bundleIdentifier + "://callback" }
+
+    public var keychainAccessGroup: String? {
+#if SCRIBE_MAC_APP_STORE_XPC
+        return bundleIdentifier == Self.desktopBundleIdentifier ? "JVV65668U6." + bundleIdentifier : nil
+#else
+        return nil
+#endif
+    }
 
     public init(publishableKey: String, frontendOrigin: String, organizationID: String?,
                 bundleIdentifier: String, workspaceOrigin: NativeWorkspaceOrigin = .appleWebView,
@@ -45,7 +60,7 @@ public struct NativeClerkConfiguration: Sendable, Equatable {
         case .coreStagingPersonal:
             guard organizationID == nil,
                   (workspaceOrigin == .appleWebView && bundleIdentifier == "com.cosmaneura.scribe.beta"
-                   || workspaceOrigin == .desktopApp && bundleIdentifier == "com.cosmaneura.scribe.beta.desktop.auth"),
+                   || workspaceOrigin == .desktopApp && bundleIdentifier == Self.desktopBundleIdentifier),
                   frontendOrigin == "https://resolved-emu-53.clerk.accounts.dev"
             else { throw NativeAuthError.unavailable }
         }

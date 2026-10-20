@@ -22,9 +22,14 @@ final class NativeDesktopStoreContainerTests: XCTestCase {
     }
 
     func testUnapprovedCompiledDistributionDoesNotResolveOrCreateAContainer() {
+#if SCRIBE_MAC_APP_STORE_XPC
+        XCTAssertEqual(NativeDesktopStoreContainer.approvedApplicationGroup,
+                       "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store")
+#else
         XCTAssertNil(NativeDesktopStoreContainer.approvedApplicationGroup)
         XCTAssertThrowsError(try NativeDesktopStoreContainer.requireContainer())
         XCTAssertThrowsError(try NativeDesktopStoreContainer.fenceDirectory())
+#endif
     }
 
     func testEachNativeRoleMustHaveExactOwnIdentityAndGroup() throws {
@@ -47,12 +52,15 @@ final class NativeDesktopStoreContainerTests: XCTestCase {
         }
     }
 
-    func testOnlyAuthOwnerReceivesTheExactExistingCredentialGroup() {
+    func testOnlyAuthOwnerReceivesTheExactStoreCredentialGroup() {
         let auth = NativeDesktopStoreContainer.auth
         for access: Any? in [nil, [], [NativeDesktopStoreContainer.team + "." + auth, "group.extra"]] {
             var value = claims(auth); value["keychain-access-groups"] = access
             XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: auth, approvedGroup: group))
         }
+        var old = claims(auth)
+        old["keychain-access-groups"] = [NativeDesktopStoreContainer.team + ".com.cosmaneura.scribe.beta.desktop.auth"]
+        XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(old, bundle: auth, approvedGroup: group))
         for bundle in NativeDesktopStoreContainer.helpers where bundle != auth {
             var value = claims(bundle); value["keychain-access-groups"] = [NativeDesktopStoreContainer.team + "." + auth]
             XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))

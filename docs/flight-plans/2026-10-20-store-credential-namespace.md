@@ -1,0 +1,62 @@
+# Store auth namespace and coexistence
+
+Tier 2: auth/session and storage boundary. This change is confined to the explicit
+`--mac-app-store-xpc` build. It retains the existing ASC parent
+`com.cosmaneura.scribe.beta.desktop` and audio/presentation service IDs, but uses
+`com.cosmaneura.scribe.beta.desktop.store.auth` for native authentication. The
+direct build retains its original auth ID and default Clerk access-group policy.
+
+The Store auth executable receives exactly
+`JVV65668U6.com.cosmaneura.scribe.beta.desktop.store.auth` as its only Keychain
+access group. Clerk's configured service, previous bundle service, installation
+marker, stable installation identity and clear-recovery journal all derive from
+the new auth bundle. Its primary storage receives the new group explicitly.
+Clerk's fixed biometric tags use Data Protection Keychain queries without an
+explicit group; the executable's one permitted group confines those queries to
+the new namespace. The locked vendor SDK is unchanged. Scribe's local access
+block and source journal also use the new exact group and Data Protection
+Keychain. No old credential group is granted to any Store process.
+
+All four Store roles use the separate fence-only application group
+`JVV65668U6.com.cosmaneura.scribe.beta.desktop.store`. It grants no shared Keychain
+access. Electron uses `Cosmaneura Scribe Store` beneath its OS-provided appData
+directory. The Store path neither opens the direct app's userData nor imports its
+source journal/fence. Old records and credentials remain accessible in the direct
+app. Store authentication uses the normal sign-in flow; there is no silent session
+adoption or data migration.
+
+The Store product name is also distinct. Its entry explicitly selects that name
+at the packaged-host gate; the direct entry still accepts only the Beta name.
+Existing userData links or broad permissions fail without repair, before opening
+the provider. Signed qualification must verify the Store parent safeStorage
+service attribution as well as the new native auth namespace.
+
+Before Clerk construction, the auth service verifies its exact signed role
+claims and resolves the OS Store container. It loads only its own source journal,
+acquires coordinator/capture locks, and persists the stable anchor. Capture stays
+locked until the existing authenticated stop-only recovery confirms and removes
+each pending Store owner. Missing, unreadable, changed or legacy anchors fail
+closed; they are never reset to allow sign-in. Account/consent, encrypted recording,
+Stop/drain, native indicator and parent-window gates are unchanged.
+
+The new auth App ID needs Development and Mac App Store profiles. The existing
+auth profile is exact to the old ID and cannot sign it. A new registered
+`group.com.cosmaneura.scribe.beta.desktop.store.profile.authorization`, assigned
+only to the new auth App ID, can authorize profile generation; it is not a
+compiled entitlement. Verified CMS profile claims must admit the new exact App ID,
+Keychain group and Team-ID fence group. The source checker validates those three
+authorization relations; the release operator separately verifies CMS trust,
+expiration, profile type, certificate and actual signed claims. Parent/audio/
+presentation IDs can reuse compatible profiles because those IDs are unchanged.
+
+Source compilation and fake-storage/filesystem tests do not qualify OS Keychain,
+sandbox/container attribution, XPC peer checks, hosted sign-in, simultaneous
+installed-app coexistence, or capture/save/review. Those actual signed checks must
+pass before promotion. Public clinical/production acceptance remains separate.
+Rollback before Store promotion preserves the installed direct app. If Store
+qualification fails, preserve its new records for review and return to the direct
+app; do not erase either namespace, reset TCC or migrate credentials as recovery.
+
+An independent non-implementer review after the last substantive push is required
+before merge. Record exact source/build hashes, test counts and remaining runtime
+qualification in the PR and release receipt.

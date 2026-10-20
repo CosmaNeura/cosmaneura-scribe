@@ -13,6 +13,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--scenario", choices=("source", "desktop-initial-window"), default="source")
+    parser.add_argument("--mac-app-store-xpc", action="store_true",
+                        help="Compile Store identity and run fake-storage/owned-filesystem checks only")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -62,6 +64,8 @@ def main() -> None:
         "-module-cache-path",
         str(output / "cache"),
     ]
+    if args.mac_app_store_xpc:
+        flags += ["-D", "SCRIBE_MAC_APP_STORE_XPC"]
     commands = [
         flags
         + [

@@ -10,7 +10,7 @@
 const char *scribe_store_approved_group(void) {
 #if SCRIBE_MAC_APP_STORE_XPC
     /* macOS Team-ID group: fence files only, never a Keychain access group. */
-    return "JVV65668U6.com.cosmaneura.scribe.beta.desktop";
+    return "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store";
 #else
     return NULL;
 #endif
@@ -18,7 +18,7 @@ const char *scribe_store_approved_group(void) {
 static bool type_is(xpc_object_t value, xpc_type_t type) { return value && xpc_get_type(value) == type; }
 const char *scribe_store_service(enum scribe_store_role role) {
     switch (role) {
-        case SCRIBE_AUTH: return "com.cosmaneura.scribe.beta.desktop.auth";
+        case SCRIBE_AUTH: return "com.cosmaneura.scribe.beta.desktop.store.auth";
         case SCRIBE_AUDIO: return "com.cosmaneura.scribe.beta.desktop.audio";
         case SCRIBE_PRESENTATION: return "com.cosmaneura.scribe.beta.desktop.presentation";
         default: return NULL;

@@ -10,11 +10,19 @@ import Security
               NativeWorkspaceOrigin.desktopApp.accepts(bundleIdentifier: bundleIdentifier) else {
             throw NativeAuthError.storageUnavailable
         }
-        query = [
+        var value: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: bundleIdentifier + ".workspace-auth",
             kSecAttrAccount: "local-access-block-v1",
         ]
+#if os(macOS) && SCRIBE_MAC_APP_STORE_XPC
+        guard bundleIdentifier == NativeClerkConfiguration.desktopBundleIdentifier else {
+            throw NativeAuthError.storageUnavailable
+        }
+        value[kSecAttrAccessGroup] = "JVV65668U6." + bundleIdentifier
+        value[kSecUseDataProtectionKeychain] = true
+#endif
+        query = value
     }
 
     public func isBlocked() throws -> Bool {

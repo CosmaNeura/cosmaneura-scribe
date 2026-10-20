@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import CosmasNativeAuth
 
 // Actual desktop source/registry/journal with only synthetic SDK, wire and storage.
@@ -171,9 +172,78 @@ private actor SourceWire: ProviderNativeWire {
   }
   @MainActor static func main() async throws {
     var checks = 0
+    let host = "resolved-emu-53.clerk.accounts.dev"
+    let key = "pk_test_" + Data((host + "$").utf8).base64EncodedString()
+    func configuration(_ bundle: String) throws -> NativeClerkConfiguration {
+      try NativeClerkConfiguration(publishableKey: key, frontendOrigin: "https://" + host,
+        organizationID: nil, bundleIdentifier: bundle, workspaceOrigin: .desktopApp,
+        identityProfile: .coreStagingPersonal)
+    }
+    let selected = NativeClerkConfiguration.desktopBundleIdentifier
+    let config = try configuration(selected)
+    try require(config.callbackURL == selected + "://callback")
+#if SCRIBE_MAC_APP_STORE_XPC
+    try require(selected == "com.cosmaneura.scribe.beta.desktop.store.auth")
+    try require(config.keychainAccessGroup == "JVV65668U6." + selected)
+    try await rejects { _ = try configuration("com.cosmaneura.scribe.beta.desktop.auth") }
+#else
+    try require(selected == "com.cosmaneura.scribe.beta.desktop.auth" && config.keychainAccessGroup == nil)
+    try await rejects { _ = try configuration("com.cosmaneura.scribe.beta.desktop.store.auth") }
+#endif
+    var copies = 0
+    let fakeCalls = KeychainNativeSourceJournal.Calls(copy: { raw, _ in
+      let query = raw as NSDictionary
+      try! require(query[kSecAttrService] as? String == selected + ".source-owner")
+      try! require(query[kSecAttrAccessGroup] as? String == "JVV65668U6." + selected)
+      try! require(query[kSecUseDataProtectionKeychain] as? Bool == true)
+      copies += 1; return errSecItemNotFound
+    }, add: { _, _ in fatalError("Fake journal mutation is prohibited") },
+       update: { _, _ in fatalError("Fake journal mutation is prohibited") })
+    let keychain = try KeychainNativeSourceJournal(platform: .desktop, bundleIdentifier: selected, calls: fakeCalls)
+    try require(try keychain.read() == nil && copies == 1)
+    try await rejects { _ = try KeychainNativeSourceJournal(platform: .desktop, bundleIdentifier: selected + ".extra", calls: fakeCalls) }
+    checks += 2
     // Real filesystem locks, generated private files and in-memory journals.
     // Change only the saved mount number to reproduce the reboot failure.
     #if os(macOS)
+#if SCRIBE_MAC_APP_STORE_XPC
+    let storeDirectory = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+      .appendingPathComponent("scribe-store-fence-check-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: storeDirectory) }
+    do {
+      let f = try Fixture(), memory = JournalMemory()
+      let journal = try NativeSourceProofJournal(platform: .desktop, backing: memory)
+      let recovery = NativeSourceRecovery(journal: journal, desktopDirectory: storeDirectory.path)
+      try recovery.prepareStoreBeforeAuthentication()
+      try require(journal.anchor?.volumeID != nil && journal.pending.isEmpty)
+      try await rejects { try recovery.requireReady() }
+      try await rejects { try recovery.prepareStoreBeforeAuthentication() }
+      try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: storeDirectory.path, expectedAnchor: journal.anchor) }
+      try await rejects { _ = try NativeCaptureProcessLease(privateDirectory: storeDirectory.path,
+        expectedAnchor: journal.anchor!, expectedEpoch: UUID().uuidString.lowercased()) }
+      try require(await f.wire.requests.isEmpty)
+      try await recovery.recover(connection: f.connection)
+      try recovery.requireReady()
+      let ticket = try NativeFenceTicket(recovery.processFence)
+      let lease = try NativeCaptureProcessLease(privateDirectory: storeDirectory.path,
+        expectedAnchor: ticket.anchor, expectedEpoch: ticket.epoch)
+      withExtendedLifetime(lease) {}
+      try require(await f.wire.requests.isEmpty)
+      checks += 1
+    }
+    do {
+      let memory = JournalMemory(), journal = try NativeSourceProofJournal(platform: .desktop, backing: memory)
+      try journal.initializeAnchor(NativeFenceAnchor(coordinator: .init(device: 1, inode: 2),
+        capture: .init(device: 1, inode: 3)))
+      let before = memory.data
+      let recovery = NativeSourceRecovery(journal: journal, desktopDirectory: storeDirectory.path)
+      try await rejects { try recovery.prepareStoreBeforeAuthentication() }
+      try require(memory.data == before)
+      checks += 1
+    }
+#endif
     let directory = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent("scribe-fence-check-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
       attributes: [.posixPermissions: 0o700])

@@ -32,7 +32,7 @@ const factory = await build({ absWorkingDir: repo, entryPoints: [join(standalone
   external: ["electron"], metafile: true, logLevel: "silent" });
 const imports = Object.values(preload.metafile.outputs).flatMap(value => value.imports);
 if (imports.length !== 1 || imports[0].path !== "electron" || !imports[0].external) throw new Error("Preload has an unexpected runtime dependency");
-await writeFile(join(output, "package.json"), JSON.stringify({ name: "cosmaneura-scribe-beta", productName: "Cosmaneura Scribe Beta",
+await writeFile(join(output, "package.json"), JSON.stringify({ name: storeXpc ? "cosmaneura-scribe-store" : "cosmaneura-scribe-beta", productName: storeXpc ? "Cosmaneura Scribe Store" : "Cosmaneura Scribe Beta",
   version: "0.1.0", private: true, main: "main.cjs", type: "commonjs" }, null, 2) + "\n");
 const sourceFiles = [...new Set([...Object.keys(main.metafile.inputs), ...Object.keys(preload.metafile.inputs), ...Object.keys(factory.metafile.inputs)])].sort();
 const sourceSha256 = Object.fromEntries(await Promise.all(sourceFiles.map(async name => [name, hash(await readFile(join(repo, name)))])));
@@ -41,7 +41,7 @@ for (const name of ["main.cjs", "preload.cjs", "provider-host.mjs", "package.jso
   artifacts[name] = hash(await readFile(join(output, name)));
 }
 await writeFile(join(output, "host-build.json"), JSON.stringify({ schema: 1, proposed_electron_version: "44.4.3", source_sha256: sourceSha256,
-  ...(store ? { distribution: storeXpc ? "mac-app-store-xpc-unqualified" : "mac-app-store-dormant", electron_platform: "mas", approved_application_group: storeXpc ? "JVV65668U6.com.cosmaneura.scribe.beta.desktop" : null } : {}),
+  ...(store ? { distribution: storeXpc ? "mac-app-store-xpc-unqualified" : "mac-app-store-dormant", electron_platform: "mas", approved_application_group: storeXpc ? "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store" : null } : {}),
   artifacts_sha256: artifacts, preload_external_imports: ["electron"], installed: false, signed: false, launch_ready: false,
   missing: ["reviewed package profile and native helper bundles", "staging qualification", "signed app packaging"] }, null, 2) + "\n");
 process.stdout.write(JSON.stringify({ output, artifacts: Object.keys(artifacts).length, provider_factory_bundled: true, runtime_installed: false, launched: false }) + "\n");

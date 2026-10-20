@@ -16,7 +16,8 @@ import Foundation
         clerk = Clerk.configure(publishableKey: configuration.publishableKey, options: .init(
             logLevel: .error,
             telemetryEnabled: false,
-            keychainConfig: .init(service: configuration.bundleIdentifier + ".clerk"),
+            keychainConfig: .init(service: configuration.bundleIdentifier + ".clerk",
+                                  accessGroup: configuration.keychainAccessGroup),
             redirectConfig: .init(redirectUrl: configuration.callbackURL,
                                   callbackUrlScheme: configuration.bundleIdentifier),
             watchConnectivityEnabled: false,
