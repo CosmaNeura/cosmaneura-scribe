@@ -8,6 +8,7 @@ import { startElectronProvider, type DesktopElectronRuntime, type DesktopProvide
 import { loadPackagedProvider, PROVIDER_ASSETS, PROVIDER_ENTRY } from "./packaged-provider.js";
 import { recordRejectedStoreAcquisition, StoreBootstrapDiagnostics } from "./store-bootstrap-diagnostics.js";
 import { readFileSync } from "node:fs";
+import type * as MacAppStoreXpcModule from "./mac-app-store-xpc.js";
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 async function fixture() {
@@ -71,7 +72,86 @@ async function fixture() {
     waitReady: (value: Promise<void>) => { ready = value; }, cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
 
+async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, options: { mas?: boolean; failRegistration?: boolean } = {}) {
+  vi.resetModules();
+  let ready = false;
+  f.runtime.app.getName = () => "Cosmaneura Scribe Store";
+  const prepare = vi.fn(async () => {
+    f.events.push("path_prepare");
+    await Promise.resolve(); ready = true; f.events.push("ready_during_path_prepare");
+    const directory = join(f.directory, "user-data"); await mkdir(directory, { mode: 0o700 }); return directory;
+  });
+  f.runtime.protocol.registerSchemesAsPrivileged.mockImplementation(() => {
+    f.events.push("scheme_registration");
+    if (ready || options.failRegistration) throw new Error("Invented forbidden native scheme registration");
+  });
+  const showErrorBox = vi.fn(), setPath = vi.fn();
+  const electron = { ...f.runtime, app: Object.assign(f.runtime.app, { setPath }),
+    dialog: { ...f.runtime.dialog, showErrorBox } };
+  const processPort = Object.create(process);
+  Object.defineProperties(processPort, { mas: { value: options.mas ?? true },
+    versions: { value: { ...process.versions, electron: "44.4.3", node: "24.10.0" } },
+    stderr: { value: Object.assign(Object.create(process.stderr), { write: vi.fn(() => true) }) } });
+  vi.stubGlobal("process", processPort);
+  vi.doMock("electron", () => electron);
+  vi.doMock("./mac-app-store-xpc.js", async () => ({
+    ...await vi.importActual<typeof MacAppStoreXpcModule>("./mac-app-store-xpc.js"),
+    prepareMacAppStoreUserData: prepare,
+  }));
+  vi.doMock("../standalone/provider-host.mjs", () => ({ openProvider: f.factory.open }));
+  const entry = "../standalone/main-mas-xpc.mjs";
+  await import(entry);
+  return { prepare, showErrorBox, setPath, advanceReady: () => { ready = true; }, restore: () => {
+    vi.doUnmock("electron"); vi.doUnmock("./mac-app-store-xpc.js"); vi.doUnmock("../standalone/provider-host.mjs");
+    vi.unstubAllGlobals(); vi.resetModules();
+  } };
+}
+
 describe("packaged desktop provider host", () => {
+  it("runs the composed Store entry with one registration before readiness advances during path preparation", async () => {
+    const f = await fixture(), entry = await composedStoreEntry(f);
+    try {
+      await vi.waitFor(() => { expect(f.window).not.toBeNull(); expect(f.events).toContain("show"); });
+      expect(f.runtime.protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
+      expect(entry.prepare).toHaveBeenCalledOnce(); expect(entry.setPath).toHaveBeenCalledOnce();
+      expect(f.events.indexOf("scheme_registration")).toBeLessThan(f.events.indexOf("path_prepare"));
+      expect(f.events.indexOf("ready_during_path_prepare")).toBeLessThan(f.events.indexOf("window"));
+      expect(f.factory.open).toHaveBeenCalledOnce(); expect(entry.showErrorBox).not.toHaveBeenCalled();
+      f.runtime.app.emit("before-quit", { preventDefault: vi.fn() });
+      await vi.waitFor(() => { expect(f.dispose).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+    } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("does not register, prepare paths or acquire a provider when the composed entry fails its actual MAS guard", async () => {
+    const f = await fixture(), entry = await composedStoreEntry(f, { mas: false });
+    try {
+      await vi.waitFor(() => { expect(entry.showErrorBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      expect(f.runtime.protocol.registerSchemesAsPrivileged).not.toHaveBeenCalled();
+      expect(entry.prepare).not.toHaveBeenCalled(); expect(entry.setPath).not.toHaveBeenCalled();
+      expect(f.factory.open).not.toHaveBeenCalled(); expect(f.window).toBeNull();
+    } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("latches a composed entry's failed native registration and refuses an after-ready retry", async () => {
+    const f = await fixture(), entry = await composedStoreEntry(f, { failRegistration: true });
+    try {
+      await vi.waitFor(() => { expect(entry.showErrorBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      expect(entry.prepare).not.toHaveBeenCalled(); expect(f.factory.open).not.toHaveBeenCalled();
+      entry.advanceReady();
+      const { registerPackagedAppScheme } = await import("./electron-provider-host.js");
+      expect(() => registerPackagedAppScheme(f.runtime.protocol)).toThrow("unavailable");
+      expect(f.runtime.protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
+    } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("keeps host acquisition and disposal intact when the optional bootstrap stage observer throws", async () => {
+    const f = await fixture(), stages: number[] = [];
+    try {
+      const application = await startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Beta", stage => {
+        stages.push(stage); throw new Error("Invented rejected diagnostic observer");
+      });
+      expect(stages).toEqual([9, 10, 11, 12, 13, 14, 15, 16, 17]);
+      expect(f.factory.open).toHaveBeenCalledOnce(); expect(f.window).not.toBeNull();
+      await application!.close(); expect(f.dispose).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce();
+    } finally { await f.cleanup(); }
+  });
   it("persists Store acquisition failure after native cleanup and before host quit", async () => {
     const f = await fixture();
     try {

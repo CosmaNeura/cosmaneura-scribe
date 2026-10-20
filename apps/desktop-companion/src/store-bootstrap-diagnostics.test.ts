@@ -13,6 +13,19 @@ it("reports a pre-directory failure without a data path or arbitrary error", asy
   expect(lines).toEqual(["SCRIBE_STORE_BOOTSTRAP:2\n"]);
 });
 
+it("retains a closed shell substage and ignores out-of-range or fractional observations", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "scribe-store-bootstrap-")));
+  try {
+    const lines: string[] = [], diagnostics = new StoreBootstrapDiagnostics(line => { lines.push(line); });
+    diagnostics.bindValidatedDirectory(root); diagnostics.enter(17);
+    diagnostics.enter(18 as never); diagnostics.enter(1.5 as never); diagnostics.enter(NaN as never);
+    await diagnostics.failed();
+    expect(lines).toEqual(["SCRIBE_STORE_BOOTSTRAP:17\n"]);
+    expect(JSON.parse(await readFile(join(root, "store-bootstrap-diagnostics-v1.jsonl"), "utf8")))
+      .toEqual({ event: "store_bootstrap_failed", pid: process.pid, reason_code: 17 });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 it("persists only the closed stage, bridge category and actual exit before returning", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "scribe-store-bootstrap-")));
   try {

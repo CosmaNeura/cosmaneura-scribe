@@ -59,30 +59,56 @@ export interface DesktopProviderFactory {
   open(options: { readonly userDataDirectory: string; readonly diagnostics?: RuntimeDiagnostic; readonly recordingWindow?: DesktopRecordingWindow }): Promise<DesktopProviderOwner>;
 }
 
+const schemeRegistrations = new WeakMap<DesktopElectronRuntime["protocol"], "registered" | "failed">();
+/** The Store entry must call this synchronously before asynchronous path checks.
+ * A successful registration is reused by the shell. A failed attempt is never
+ * retried after readiness or treated as successful. */
+export function registerPackagedAppScheme(protocol: DesktopElectronRuntime["protocol"]): void {
+  const previous = schemeRegistrations.get(protocol);
+  if (previous === "registered") return;
+  if (previous === "failed") throw unavailable();
+  schemeRegistrations.set(protocol, "failed");
+  protocol.registerSchemesAsPrivileged([PACKAGED_APP_SCHEME]);
+  schemeRegistrations.set(protocol, "registered");
+}
+export type ElectronBootstrapStage = 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17;
+
 /** Executable shell composition. Call once from the packaged Electron main entry,
  * with the reviewed native/backend factory bundled beside it. */
 export async function startElectronProvider<S extends Session>(runtime: DesktopElectronRuntime<S>, factory: DesktopProviderFactory,
-  applicationName: "Cosmaneura Scribe Beta" | "Cosmaneura Scribe Store" = "Cosmaneura Scribe Beta"): Promise<{
+  applicationName: "Cosmaneura Scribe Beta" | "Cosmaneura Scribe Store" = "Cosmaneura Scribe Beta",
+  observeBootstrapStage?: (stage: ElectronBootstrapStage) => void): Promise<{
   close(): Promise<void>;
 } | null> {
+  const bootstrapStage = (stage: ElectronBootstrapStage): void => {
+    try { observeBootstrapStage?.(stage); } catch { /* Observation cannot change startup or cleanup. */ }
+  };
+  bootstrapStage(9);
   if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
     || "type" in process && process.type === "renderer" || !runtime.app.isPackaged
     || !["Cosmaneura Scribe Beta", "Cosmaneura Scribe Store"].includes(applicationName)
     || runtime.app.getName() !== applicationName) throw unavailable();
+  bootstrapStage(10);
   if (!requireElectronSingleInstance(runtime.app)) return null;
-  runtime.protocol.registerSchemesAsPrivileged([PACKAGED_APP_SCHEME]);
+  bootstrapStage(11);
+  registerPackagedAppScheme(runtime.protocol);
+  bootstrapStage(12);
   let startupStopped = false;
   const stopStartup = (): void => { startupStopped = true; };
   runtime.app.on("before-quit", stopStartup);
   const root = runtime.app.getAppPath(); let assets: PackagedProvider;
   try {
+    bootstrapStage(13);
     await runtime.app.whenReady(); if (startupStopped) throw unavailable();
+    bootstrapStage(14);
     assets = await loadPackagedProvider(join(root, "renderer")); if (startupStopped) throw unavailable();
   } catch {
     runtime.app.removeListener("before-quit", stopStartup); throw unavailable();
   }
+  bootstrapStage(15);
   const session = runtime.session.fromPartition(`scribe-provider-${crypto.randomUUID()}`, { cache: false });
   const diagnostics = runtimeDiagnostics(runtime.app.getPath("userData")); diagnostics("host_open");
+  bootstrapStage(16);
   session.protocol.handle("app", request => assets.respond(request));
   session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !assets.allows(details.url) }));
   let owner: DesktopProviderOwner | null = null, boundary: DesktopProviderWorkspaceIpc | null = null, appWindow: Window | null = null;
@@ -128,6 +154,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
       if (retry) requestClose();
     });
   }
+  bootstrapStage(17);
   runtime.app.on("before-quit", beforeQuit); runtime.app.on("second-instance", focus);
   runtime.app.removeListener("before-quit", stopStartup);
   try {

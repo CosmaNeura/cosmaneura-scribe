@@ -3,7 +3,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 /** Fixed bootstrap stages only. No error, path, identity or payload is logged. */
-export type StoreBootstrapStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type StoreBootstrapStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17;
 export class StoreBootstrapDiagnostics {
   private stage: StoreBootstrapStage = 1;
   private directory: string | undefined;
@@ -12,7 +12,9 @@ export class StoreBootstrapDiagnostics {
   private bridgeSignal: number | undefined;
   private failure: Promise<void> | undefined;
   constructor(private readonly writeFixed: (line: string) => void = line => { process.stderr.write(line); }) {}
-  enter(stage: StoreBootstrapStage): void { this.stage = stage; }
+  enter(stage: StoreBootstrapStage): void {
+    if (Number.isSafeInteger(stage) && stage >= 1 && stage <= 17) this.stage = stage;
+  }
   /** Called only after the existing Store child custody checks have passed. */
   bindValidatedDirectory(directory: string): void { this.directory = directory; }
   observeBridge(event: string, code: number | undefined): void {

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, session } from "electron";
-import { startElectronProvider } from "../src/electron-provider-host.js";
+import { registerPackagedAppScheme, startElectronProvider } from "../src/electron-provider-host.js";
 import { prepareMacAppStoreUserData, requireMacAppStoreXpcRuntime } from "../src/mac-app-store-xpc.js";
 import { recordRejectedStoreAcquisition, StoreBootstrapDiagnostics } from "../src/store-bootstrap-diagnostics.js";
 
@@ -10,6 +10,9 @@ const bootstrap = new StoreBootstrapDiagnostics();
 // credential is selected by this entry.
 async function start() {
   requireMacAppStoreXpcRuntime({ mas: process.mas, electron: process.versions.electron, node: process.versions.node });
+  // Electron requires this once, before readiness can advance during path I/O.
+  bootstrap.enter(11);
+  registerPackagedAppScheme(protocol);
   // The Store parent uses its isolated Mach/group identity and retains its own
   // durable records/preferences. Never open the direct app's userData.
   bootstrap.enter(2);
@@ -32,7 +35,7 @@ async function start() {
       bootstrap.enter(8);
       return owner;
     }),
-  }, "Cosmaneura Scribe Store");
+  }, "Cosmaneura Scribe Store", stage => bootstrap.enter(stage));
 }
 void start().catch(async () => {
   await bootstrap.failed();
