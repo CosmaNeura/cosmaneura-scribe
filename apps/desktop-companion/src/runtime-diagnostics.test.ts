@@ -5,6 +5,19 @@ import { describe, expect, it, vi } from "vitest";
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 describe("local runtime diagnostics", () => {
+  it("retains only closed Store bridge error categories through fourteen", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-store-bridge-")));
+    try {
+      const record = runtimeDiagnostics(directory), path = join(directory, "runtime-diagnostics-v1.jsonl");
+      for (const value of [0, 15, 1.5, NaN, Infinity, "private fixture" as unknown as number]) {
+        record("store_bridge_failed", undefined, value);
+      }
+      record("store_bridge_failed", undefined, 13); record("store_bridge_failed", undefined, 14);
+      await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(2));
+      expect((await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>))
+        .toEqual([13, 14].map(reason => ({ utc: expect.any(String), pid: process.pid, event: "store_bridge_failed", reason_code: reason })));
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it("accepts fixed numeric failure reasons only on their corresponding events", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "scribe-runtime-failure-")));
     try {

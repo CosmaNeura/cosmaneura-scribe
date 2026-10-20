@@ -12,7 +12,7 @@ const TIMING_EVENTS = ["audio_availability_helper_check", "audio_availability_pr
   "provider_workspace_list", "provider_workspace_open", "provider_journal_read", "provider_visit_preferences"] as const;
 export type RuntimeTimingEvent = typeof TIMING_EVENTS[number];
 const FAILURE_REASON_LIMITS = {
-  store_bridge_failed: [1, 12],
+  store_bridge_failed: [1, 14],
   store_bridge_exit: [0, 255], store_bridge_signal: [1, 3],
   audio_native_failure_reason: [1, 12], audio_main_failure_reason: [1, 15],
   audio_input_change_trigger: [1, 5], audio_input_change_mismatch: [0, 255],

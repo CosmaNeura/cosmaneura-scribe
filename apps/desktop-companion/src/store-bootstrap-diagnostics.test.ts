@@ -33,7 +33,7 @@ it("persists only the closed stage, bridge category and actual exit before retur
     diagnostics.bindValidatedDirectory(root); diagnostics.enter(7);
     diagnostics.observeBridge("store_bridge_failed", 10);
     diagnostics.observeBridge("store_bridge_failed", 11);
-    diagnostics.observeBridge("store_bridge_failed", 13);
+    diagnostics.observeBridge("store_bridge_failed", 15);
     diagnostics.observeBridge("store_bridge_exit", 0);
     diagnostics.observeBridge("store_bridge_signal", 1.5);
     await diagnostics.failed();
@@ -99,8 +99,18 @@ it("does not block fail-close on a private FIFO at the journal filename", async 
 it("accepts only fragmented exact bridge categories and discards arbitrary stderr", () => {
   const reasons: number[] = [], decoder = new StoreBridgeDiagnosticDecoder(reason => { reasons.push(reason); });
   decoder.push(Buffer.from("invented private fixture\nSCRIBE_STORE_BRI"));
-  decoder.push(Buffer.from("DGE:10\nSCRIBE_STORE_BRIDGE:13\nSCRIBE_STORE_BRIDGE:01\nSCRIBE_STORE_BRIDGE:11\n"));
+  decoder.push(Buffer.from("DGE:10\nSCRIBE_STORE_BRIDGE:15\nSCRIBE_STORE_BRIDGE:01\nSCRIBE_STORE_BRIDGE:11\n"));
   expect(reasons).toEqual([10, 11]);
+});
+
+it("accepts interrupted and termination categories while retaining only the first valid failure", async () => {
+  for (const first of [13, 14]) {
+    const lines: string[] = [], diagnostics = new StoreBootstrapDiagnostics(line => { lines.push(line); });
+    const decoder = new StoreBridgeDiagnosticDecoder(reason => { diagnostics.observeBridge("store_bridge_failed", reason); });
+    decoder.push(Buffer.from(`SCRIBE_STORE_BRIDGE:15\nSCRIBE_STORE_BRIDGE:${first}\nSCRIBE_STORE_BRIDGE:${first === 13 ? 14 : 13}\n`));
+    await diagnostics.failed();
+    expect(lines).toEqual(["SCRIBE_STORE_BOOTSTRAP:1\n", `SCRIBE_STORE_BRIDGE:${first}\n`]);
+  }
 });
 
 it("bounds bridge bytes and events and never decodes non-ASCII as a fixed line", () => {
