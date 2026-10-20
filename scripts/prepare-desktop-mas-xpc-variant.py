@@ -8,9 +8,11 @@ groups; Apple runtime/container and capture qualification remain required.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import plistlib
+import shutil
 from pathlib import Path
 
 TEAM = "JVV65668U6"
@@ -18,7 +20,37 @@ HELPER_BASE = "com.cosmaneura.scribe.beta.desktop"
 PARENT = HELPER_BASE + ".store"
 GROUP = TEAM + "." + PARENT
 AUTH = HELPER_BASE + ".store.auth"
+BRIDGE_BUNDLE_PATH = "Contents/MacOS/ScribeStorePipeBridge"
 RUNTIME_SHA256 = "7e37fa13b746341f88dc37c188a1a56c515b06dd54eaf48a86ec16a3a0b678c6"
+
+
+def place_store_bridge(application: Path, source: Path) -> dict[str, str]:
+    """Copy only the unsigned bridge into its fixed code location, exclusively.
+
+    Release callers bind source bytes and validate the complete app separately.
+    This placement does not sign, launch, or establish XPC namespace access.
+    """
+    macos = application / "Contents/MacOS"
+    if (
+        not application.is_absolute()
+        or application.resolve() != application
+        or not application.name.endswith(".app")
+        or not macos.is_dir()
+        or macos.is_symlink()
+        or macos.resolve() != macos
+        or not source.is_absolute()
+        or source.resolve() != source
+        or not source.is_file()
+        or source.is_symlink()
+        or (application / "Contents/Resources/app/native/ScribeStorePipeBridge").exists()
+        or (application / "Contents/Resources/app/native/ScribeStorePipeBridge").is_symlink()
+    ):
+        raise ValueError("Store bridge placement requires a canonical unsigned app")
+    target = application / BRIDGE_BUNDLE_PATH
+    with source.open("rb") as incoming, target.open("xb") as outgoing:
+        shutil.copyfileobj(incoming, outgoing)
+    target.chmod(0o755)
+    return {"path": BRIDGE_BUNDLE_PATH, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()}
 
 
 def xpc_claims() -> dict[str, dict[str, object]]:
@@ -136,7 +168,7 @@ def prepare(output: Path, clerk_source: Path) -> None:
         "runtime_archive_sha256": RUNTIME_SHA256,
         "parent_bundle_identifier": PARENT,
         "inherited_bridge_identifier": PARENT,
-        "profile_helper_path": "native/ScribeStorePipeBridge",
+        "profile_helper_path": BRIDGE_BUNDLE_PATH,
         "private_services": [service_info(role) for role in ["auth", "audio", "presentation"]],
         "source_preparation_receipt": "mas-inputs.DRAFT.json",
         "missing": [
