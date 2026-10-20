@@ -15,6 +15,32 @@ static dispatch_queue_t queue;
 static unsigned active;
 static bool capture_active, exclusive_admitted;
 
+static bool store_boolean_is_true(CFTypeRef value) {
+    return value && CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)value);
+}
+static bool code_boolean_is_true(SecStaticCodeRef code, CFStringRef key) {
+    CFDictionaryRef information = NULL;
+    bool valid = code && SecCodeCopySigningInformation(code, kSecCSSigningInformation, &information) == errSecSuccess
+        && information && CFGetTypeID(information) == CFDictionaryGetTypeID();
+    CFTypeRef claims = valid ? CFDictionaryGetValue(information, kSecCodeInfoEntitlementsDict) : NULL;
+    valid = claims && CFGetTypeID(claims) == CFDictionaryGetTypeID()
+        && store_boolean_is_true(CFDictionaryGetValue((CFDictionaryRef)claims, key));
+    if (information) CFRelease(information);
+    return valid;
+}
+/* The XPC dictionary carries the kernel-authenticated sender, not a request PID.
+ * Check both signed Boolean types before decoding or retaining any descriptors. */
+static bool peer_booleans_are_true(xpc_object_t message) {
+    SecCodeRef code = NULL; SecStaticCodeRef static_code = NULL;
+    bool valid = SecCodeCreateWithXPCMessage(message, 0, &code) == errSecSuccess
+        && SecCodeCheckValidity(code, 0, NULL) == errSecSuccess
+        && SecCodeCopyStaticCode(code, 0, &static_code) == errSecSuccess
+        && code_boolean_is_true(static_code, CFSTR("com.apple.security.app-sandbox"))
+        && code_boolean_is_true(static_code, CFSTR("com.apple.security.inherit"));
+    if (static_code) CFRelease(static_code); if (code) CFRelease(code);
+    return valid;
+}
+
 /* The host field is not authority. Bind it to the authenticated inherited
  * bridge's current kernel parent and revalidate the parent's signed identity. */
 static bool verified_host(xpc_connection_t peer, pid_t host) {
@@ -26,26 +52,28 @@ static bool verified_host(xpc_connection_t peer, pid_t host) {
     if (!pid) return false;
     const void *keys[] = {kSecGuestAttributePid}, *values[] = {pid};
     CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    SecCodeRef code = NULL; SecRequirementRef requirement = NULL;
+    SecCodeRef code = NULL; SecStaticCodeRef static_code = NULL; SecRequirementRef requirement = NULL;
     char text[768];
-    int n = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", scribe_store_approved_group());
+    int n = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", scribe_store_approved_group());
     CFStringRef expression = n > 0 && (size_t)n < sizeof(text) ? CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8) : NULL;
     bool valid = attributes && expression && SecRequirementCreateWithString(expression, 0, &requirement) == errSecSuccess
         && SecCodeCopyGuestWithAttributes(NULL, attributes, 0, &code) == errSecSuccess
-        && SecCodeCheckValidity(code, 0, requirement) == errSecSuccess;
+        && SecCodeCheckValidity(code, 0, requirement) == errSecSuccess
+        && SecCodeCopyStaticCode(code, 0, &static_code) == errSecSuccess
+        && code_boolean_is_true(static_code, CFSTR("com.apple.security.app-sandbox"));
     /* Recheck the kernel parent after signature work; reject exit/reparent races. */
     struct proc_bsdinfo after = {0};
     valid = valid && proc_pidinfo(bridge, PROC_PIDTBSDINFO, 0, &after, sizeof(after)) == sizeof(after)
         && after.pbi_ppid == process.pbi_ppid && after.pbi_start_tvsec == process.pbi_start_tvsec
         && after.pbi_start_tvusec == process.pbi_start_tvusec;
-    if (code) CFRelease(code); if (requirement) CFRelease(requirement); if (expression) CFRelease(expression);
+    if (static_code) CFRelease(static_code); if (code) CFRelease(code); if (requirement) CFRelease(requirement); if (expression) CFRelease(expression);
     if (attributes) CFRelease(attributes); CFRelease(pid); return valid;
 }
 static bool is_capture(const char *mode) { return !strcmp(mode, "--capture-v2") || !strcmp(mode, "--capture-v3"); }
 
 static void accept_peer(xpc_connection_t peer) {
     xpc_connection_set_target_queue(peer, queue);
-    const char *requirement = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.inherit\"] = true";
+    const char *requirement = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists and entitlement[\"com.apple.security.inherit\"] exists";
     if (xpc_connection_set_peer_code_signing_requirement(peer, requirement)) { xpc_connection_cancel(peer); return; }
     __block bool accepted = false, closing = false, finished = false, capture = false;
     __block struct scribe_store_open open = {.input = -1, .output = -1};
@@ -64,6 +92,7 @@ static void accept_peer(xpc_connection_t peer) {
         }
         if (accepted || (service_role != SCRIBE_AUDIO && exclusive_admitted) || active >= 8
             || xpc_connection_get_euid(peer) != getuid()
+            || !peer_booleans_are_true(event)
             || !scribe_store_decode_open(event, service_role, &open)) { xpc_connection_cancel(peer); return; }
         capture = is_capture(open.mode);
         if (!verified_host(peer, open.host) || (capture && capture_active)) {

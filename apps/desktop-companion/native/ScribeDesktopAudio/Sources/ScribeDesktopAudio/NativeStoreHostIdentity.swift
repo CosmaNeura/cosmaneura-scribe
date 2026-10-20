@@ -8,20 +8,33 @@ import Security
     let process: Int32
     private let code: SecCode
     private let requirement: SecRequirement
+    static func booleanIsTrue(_ value: Any?) -> Bool {
+        guard let value, CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() else { return false }
+        return value as? Bool == true
+    }
+    private static func signedSandboxIsTrue(_ code: SecCode) -> Bool {
+        var staticCode: SecStaticCode?, information: CFDictionary?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+              let signed = information as? [String: Any],
+              let claims = signed[kSecCodeInfoEntitlementsDict as String] as? [String: Any] else { return false }
+        return booleanIsTrue(claims["com.apple.security.app-sandbox"])
+    }
     public init(authenticatedProcess process: Int32) throws {
         guard process > 1, let group = NativeDesktopStoreContainer.approvedApplicationGroup else {
             throw ProviderPresentationFailure.unavailable
         }
         var code: SecCode?, requirement: SecRequirement?
-        let text = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"\(group)\""
+        let text = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists and entitlement[\"com.apple.security.application-groups\"] = \"\(group)\""
         guard SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess,
               let requirement,
               SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid as String: process] as CFDictionary, [], &code) == errSecSuccess,
-              let code, SecCodeCheckValidity(code, [], requirement) == errSecSuccess else {
+              let code, SecCodeCheckValidity(code, [], requirement) == errSecSuccess,
+              Self.signedSandboxIsTrue(code) else {
             throw ProviderPresentationFailure.unavailable
         }
         self.process = process; self.code = code; self.requirement = requirement
     }
-    var isValid: Bool { SecCodeCheckValidity(code, [], requirement) == errSecSuccess }
+    var isValid: Bool { SecCodeCheckValidity(code, [], requirement) == errSecSuccess && Self.signedSandboxIsTrue(code) }
 }
 #endif

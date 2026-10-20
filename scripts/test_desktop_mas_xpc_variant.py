@@ -26,33 +26,93 @@ AUTH_BUILD = module("native_auth_build", "build-desktop-native-provider.py")
 
 class XpcVariantTests(unittest.TestCase):
     def test_bridge_failure_diagnostics_have_only_closed_numeric_source_tokens(self):
-        source = (ROOT.parent / "apps/desktop-companion/native/ScribeDesktopStoreBridge/StorePipeBridge.c").read_text()
-        self.assertEqual(re.findall(r'"SCRIBE_STORE_BRIDGE:([^"\n]*)"', source),
-                         [str(code) + r"\n" for code in range(1, 13)])
-        diagnostic = source[source.index("static void bridge_diagnostic"):
-                            source.index("static unsigned bridge_xpc_error_diagnostic")]
+        source = (
+            ROOT.parent / "apps/desktop-companion/native/ScribeDesktopStoreBridge/StorePipeBridge.c"
+        ).read_text()
+        self.assertEqual(
+            re.findall(r'"SCRIBE_STORE_BRIDGE:([^"\n]*)"', source),
+            [str(code) + r"\n" for code in range(1, 13)],
+        )
+        diagnostic = source[
+            source.index("static void bridge_diagnostic") : source.index(
+                "static unsigned bridge_xpc_error_diagnostic"
+            )
+        ]
         self.assertIn("code > 0 && code < sizeof(markers) / sizeof(markers[0])", diagnostic)
-        self.assertEqual(diagnostic.count("write(STDERR_FILENO, markers[code], strlen(markers[code]))"), 1)
+        self.assertEqual(
+            diagnostic.count("write(STDERR_FILENO, markers[code], strlen(markers[code]))"), 1
+        )
         self.assertNotIn("STDOUT_FILENO", diagnostic)
         self.assertNotIn("fprintf", diagnostic)
         self.assertNotIn("xpc_copy_description", source)
-        classification = source[source.index("static unsigned bridge_xpc_error_diagnostic"):
-                                source.index("/* The inherited shim")]
+        classification = source[
+            source.index("static unsigned bridge_xpc_error_diagnostic") : source.index(
+                "/* The inherited shim"
+            )
+        ]
         self.assertIn("if (error == XPC_ERROR_CONNECTION_INVALID) return 10;", classification)
-        self.assertIn("if (error == XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT) return 11;", classification)
+        self.assertIn(
+            "if (error == XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT) return 11;", classification
+        )
         self.assertIn("return 9;", classification)
         self.assertIn("bridge_diagnostic(bridge_xpc_error_diagnostic(event)); _exit(70);", source)
         self.assertIn("bridge_diagnostic(bridge_xpc_error_diagnostic(reply)); _exit(70);", source)
         self.assertIn("_exit(code >= 0 && code <= 255 ? (int)code : 70);", source)
 
-    def test_bridge_diagnostics_preserve_exact_parent_authority_and_stop_source(self):
-        source = (ROOT.parent / "apps/desktop-companion/native/ScribeDesktopStoreBridge/StorePipeBridge.c").read_text()
-        parent = source[source.index("static bool parent_is_store_host"):source.index("\nint main")]
-        cleanup = source[source.index("    xpc_release(message);"):]
-        self.assertEqual(hashlib.sha256(parent.encode()).hexdigest(),
-                         "1ddd3fb2218766e20607571f11782b9c09e7d2c8ea8a1afe7b19ebae2f77f57f")
-        self.assertEqual(hashlib.sha256(cleanup.encode()).hexdigest(),
-                         "5732f25fd801cc318489d567ce90f594596f7480534e0e807cafcc193306692b")
+    def test_bridge_diagnostics_preserve_exact_stop_source(self):
+        source = (
+            ROOT.parent / "apps/desktop-companion/native/ScribeDesktopStoreBridge/StorePipeBridge.c"
+        ).read_text()
+        cleanup = source[source.index("    xpc_release(message);") :]
+        self.assertEqual(
+            hashlib.sha256(cleanup.encode()).hexdigest(),
+            "5732f25fd801cc318489d567ce90f594596f7480534e0e807cafcc193306692b",
+        )
+
+    def test_typed_signed_peer_precedes_decode_or_reply_acceptance(self):
+        base = ROOT.parent / "apps/desktop-companion/native"
+        bridge = (base / "ScribeDesktopStoreBridge/StorePipeBridge.c").read_text()
+        service = (
+            base / "ScribeDesktopAudio/Sources/ScribeStorePipe/StorePipeService.c"
+        ).read_text()
+        self.assertLess(
+            bridge.index("!reply_sandbox_is_true(reply)"),
+            bridge.index("xpc_dictionary_get_count(reply)"),
+        )
+        self.assertLess(
+            service.index("!peer_booleans_are_true(event)"),
+            service.index("!scribe_store_decode_open(event"),
+        )
+        for source, name in (
+            (bridge, "reply_sandbox_is_true"),
+            (service, "peer_booleans_are_true"),
+        ):
+            body = source[source.index("static bool " + name) :]
+            body = body[: body.index("\n}")]
+            self.assertLess(
+                body.index("SecCodeCheckValidity(code, 0, NULL)"),
+                body.index("SecCodeCopyStaticCode"),
+            )
+        for source in (bridge, service):
+            self.assertIn("CFGetTypeID(value) == CFBooleanGetTypeID()", source)
+            self.assertIn("CFBooleanGetValue((CFBooleanRef)value)", source)
+            self.assertIn("kSecCodeInfoEntitlementsDict", source)
+            self.assertIn("SecCodeCreateWithXPCMessage", source)
+
+    def test_native_boolean_requirements_keep_exact_store_identity_and_group(self):
+        base = ROOT.parent / "apps/desktop-companion/native"
+        paths = (
+            base / "ScribeDesktopStoreBridge/StorePipeBridge.c",
+            base / "ScribeDesktopAudio/Sources/ScribeStorePipe/StorePipeService.c",
+            base / "ScribeDesktopAudio/Sources/ScribeDesktopAudio/NativeStoreHostIdentity.swift",
+        )
+        for path in paths:
+            source = path.read_text()
+            self.assertIn("com.cosmaneura.scribe.beta.desktop.store", source)
+            self.assertIn("JVV65668U6", source)
+            self.assertIn('entitlement[\\"com.apple.security.application-groups\\"] =', source)
+            self.assertNotIn('entitlement[\\"com.apple.security.app-sandbox\\"] = true', source)
+            self.assertNotIn('entitlement[\\"com.apple.security.inherit\\"] = true', source)
 
     def test_auth_build_retains_recovery_without_old_credential_admission(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -75,10 +135,14 @@ class XpcVariantTests(unittest.TestCase):
                     "package/Sources/ScribeDesktopProvider/DesktopStoreClerkAdmission.swift"
                 )
                 self.assertFalse(packaged.exists())
-                recovery = output / "package/Sources/ScribeDesktopProvider/NativeSourceRecovery.swift"
+                recovery = (
+                    output / "package/Sources/ScribeDesktopProvider/NativeSourceRecovery.swift"
+                )
                 source = ROOT / "standalone-provider/NativeSourceRecovery.swift"
-                self.assertEqual(hashlib.sha256(recovery.read_bytes()).hexdigest(),
-                                 hashlib.sha256(source.read_bytes()).hexdigest())
+                self.assertEqual(
+                    hashlib.sha256(recovery.read_bytes()).hexdigest(),
+                    hashlib.sha256(source.read_bytes()).hexdigest(),
+                )
                 flags = compiler.call_args.args[0]
                 self.assertEqual("-DSCRIBE_MAC_APP_STORE_XPC" in flags, xpc)
 
@@ -90,9 +154,13 @@ class XpcVariantTests(unittest.TestCase):
             self.assertFalse(any("temporary-exception" in key or ".files." in key for key in value))
             if role != "native-auth":
                 self.assertNotIn("keychain-access-groups", value)
-        self.assertEqual(claims["native-auth"]["keychain-access-groups"], [XPC.TEAM + "." + XPC.AUTH])
-        self.assertNotEqual(claims["native-auth"]["keychain-access-groups"],
-                            DIRECT.draft_claims()["native-auth"]["keychain-access-groups"])
+        self.assertEqual(
+            claims["native-auth"]["keychain-access-groups"], [XPC.TEAM + "." + XPC.AUTH]
+        )
+        self.assertNotEqual(
+            claims["native-auth"]["keychain-access-groups"],
+            DIRECT.draft_claims()["native-auth"]["keychain-access-groups"],
+        )
         self.assertEqual(XPC.GROUP, XPC.TEAM + "." + XPC.PARENT)
         self.assertNotEqual(XPC.GROUP, XPC.TEAM + "." + DIRECT.PARENT)
         self.assertNotIn("com.apple.security.device.audio-input", claims["native-auth"])
@@ -149,16 +217,22 @@ class XpcVariantTests(unittest.TestCase):
             ("presentation", "com.cosmaneura.scribe.beta.desktop.presentation"),
         ):
             self.assertEqual(XPC.service_info(role)["CFBundleIdentifier"], bundle)
-            self.assertEqual(claims["native-" + role]["com.apple.application-identifier"],
-                             XPC.TEAM + "." + bundle)
-            self.assertEqual(claims["native-" + role]["com.apple.security.application-groups"], [XPC.GROUP])
+            self.assertEqual(
+                claims["native-" + role]["com.apple.application-identifier"],
+                XPC.TEAM + "." + bundle,
+            )
+            self.assertEqual(
+                claims["native-" + role]["com.apple.security.application-groups"], [XPC.GROUP]
+            )
 
     def test_profile_authorization_requires_new_auth_and_permits_only_selected_group(self):
         exact = XPC.xpc_claims()["native-auth"]
         XPC.validate_auth_profile_authorization(exact)
         wildcard = dict(exact)
         wildcard["com.apple.security.application-groups"] = [
-            "group.com.cosmaneura.scribe.beta.desktop.store.profile.authorization", XPC.TEAM + ".*"]
+            "group.com.cosmaneura.scribe.beta.desktop.store.profile.authorization",
+            XPC.TEAM + ".*",
+        ]
         wildcard["keychain-access-groups"] = [XPC.TEAM + ".*"]
         XPC.validate_auth_profile_authorization(wildcard)
         for key, value in (
@@ -166,9 +240,13 @@ class XpcVariantTests(unittest.TestCase):
             ("com.apple.developer.team-identifier", "OTHERTEAM"),
             ("keychain-access-groups", ["*"]),
             ("com.apple.security.application-groups", [XPC.TEAM + "." + DIRECT.PARENT]),
-            ("com.apple.security.application-groups", ["group.com.cosmaneura.scribe.beta.desktop.store.profile.authorization"]),
+            (
+                "com.apple.security.application-groups",
+                ["group.com.cosmaneura.scribe.beta.desktop.store.profile.authorization"],
+            ),
         ):
-            rejected = dict(wildcard); rejected[key] = value
+            rejected = dict(wildcard)
+            rejected[key] = value
             with self.assertRaises(ValueError):
                 XPC.validate_auth_profile_authorization(rejected)
 

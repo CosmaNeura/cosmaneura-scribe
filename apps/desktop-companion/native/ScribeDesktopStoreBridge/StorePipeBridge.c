@@ -24,19 +24,50 @@ static unsigned bridge_xpc_error_diagnostic(xpc_object_t error) {
     return 9;
 }
 
+/* Requirement-language exists rejects false but accepts other present types.
+ * Preserve the intended signed Boolean contract rather than coercing values. */
+static bool store_boolean_is_true(CFTypeRef value) {
+    return value && CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)value);
+}
+static bool code_boolean_is_true(SecStaticCodeRef code, CFStringRef key) {
+    CFDictionaryRef information = NULL;
+    bool valid = code && SecCodeCopySigningInformation(code, kSecCSSigningInformation, &information) == errSecSuccess
+        && information && CFGetTypeID(information) == CFDictionaryGetTypeID();
+    CFTypeRef claims = valid ? CFDictionaryGetValue(information, kSecCodeInfoEntitlementsDict) : NULL;
+    valid = claims && CFGetTypeID(claims) == CFDictionaryGetTypeID()
+        && store_boolean_is_true(CFDictionaryGetValue((CFDictionaryRef)claims, key));
+    if (information) CFRelease(information);
+    return valid;
+}
+/* XPC supplies the authenticated sender code for this reply. No response field
+ * or request PID can provide the signed sandbox Boolean. */
+static bool reply_sandbox_is_true(xpc_object_t reply) {
+    SecCodeRef code = NULL; SecStaticCodeRef static_code = NULL;
+    bool valid = SecCodeCreateWithXPCMessage(reply, 0, &code) == errSecSuccess
+        && SecCodeCheckValidity(code, 0, NULL) == errSecSuccess
+        && SecCodeCopyStaticCode(code, 0, &static_code) == errSecSuccess
+        && code_boolean_is_true(static_code, CFSTR("com.apple.security.app-sandbox"));
+    if (static_code) CFRelease(static_code); if (code) CFRelease(code);
+    return valid;
+}
+
 /* The inherited shim has no native Keychain claim. It authenticates its actual
  * Electron parent before forwarding fixed stdio descriptors to a private XPC service. */
 static bool parent_is_store_host(pid_t parent, const char *group) {
     CFNumberRef pid = CFNumberCreate(NULL, kCFNumberIntType, &parent);
     const void *keys[] = {kSecGuestAttributePid}; const void *values[] = {pid};
     CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    SecCodeRef code = NULL; SecRequirementRef requirement = NULL;
+    SecCodeRef code = NULL; SecStaticCodeRef static_code = NULL;
+    SecRequirementRef requirement = NULL;
     char text[768];
-    int length = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", group);
+    int length = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", group);
     CFStringRef expression = length > 0 && (size_t)length < sizeof(text) ? CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8) : NULL;
     bool valid = expression && SecRequirementCreateWithString(expression, 0, &requirement) == errSecSuccess
         && SecCodeCopyGuestWithAttributes(NULL, attributes, 0, &code) == errSecSuccess
-        && SecCodeCheckValidity(code, 0, requirement) == errSecSuccess;
+        && SecCodeCheckValidity(code, 0, requirement) == errSecSuccess
+        && SecCodeCopyStaticCode(code, 0, &static_code) == errSecSuccess
+        && code_boolean_is_true(static_code, CFSTR("com.apple.security.app-sandbox"));
+    if (static_code) CFRelease(static_code);
     if (code) CFRelease(code); if (requirement) CFRelease(requirement); if (expression) CFRelease(expression);
     CFRelease(attributes); CFRelease(pid); return valid;
 }
@@ -52,7 +83,7 @@ int main(int argc, const char *argv[]) {
     xpc_object_t message = scribe_store_open_message(argv[1], STDIN_FILENO, STDOUT_FILENO, parent);
     if (!message) { bridge_diagnostic(5); return 78; }
     char requirement[512];
-    int length = snprintf(requirement, sizeof(requirement), "anchor apple generic and identifier \"%s\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true", service);
+    int length = snprintf(requirement, sizeof(requirement), "anchor apple generic and identifier \"%s\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists", service);
     if (length <= 0 || (size_t)length >= sizeof(requirement)) { bridge_diagnostic(6); return 78; }
     xpc_connection_t connection = xpc_connection_create(service, dispatch_get_main_queue());
     if (!connection) { bridge_diagnostic(7); return 78; }
@@ -63,7 +94,7 @@ int main(int argc, const char *argv[]) {
     xpc_connection_activate(connection);
     xpc_connection_send_message_with_reply(connection, message, dispatch_get_main_queue(), ^(xpc_object_t reply) {
         if (xpc_get_type(reply) == XPC_TYPE_ERROR) { bridge_diagnostic(bridge_xpc_error_diagnostic(reply)); _exit(70); }
-        if (xpc_get_type(reply) != XPC_TYPE_DICTIONARY || xpc_dictionary_get_count(reply) != 1
+        if (xpc_get_type(reply) != XPC_TYPE_DICTIONARY || !reply_sandbox_is_true(reply) || xpc_dictionary_get_count(reply) != 1
             || !xpc_dictionary_get_value(reply, "code")
             || xpc_get_type(xpc_dictionary_get_value(reply, "code")) != XPC_TYPE_INT64) { bridge_diagnostic(12); _exit(70); }
         int64_t code = xpc_dictionary_get_int64(reply, "code");
