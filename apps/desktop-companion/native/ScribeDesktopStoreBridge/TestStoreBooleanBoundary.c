@@ -23,8 +23,11 @@
 
 static CFTypeRef sandbox_value, inherit_value;
 static OSStatus guest_result, message_result, static_result, info_result, validity_result;
-static bool malformed_claims;
-static unsigned static_calls, information_calls;
+static bool malformed_claims, missing_claims, malformed_information, missing_information;
+static unsigned message_calls, validity_calls, static_calls, information_calls;
+#if !SCRIBE_TEST_BRIDGE
+static unsigned last_failure, last_failure_class;
+#endif
 
 static OSStatus fixture_guest(SecCodeRef host, CFDictionaryRef attributes, SecCSFlags flags, SecCodeRef *code) {
     assert(host == NULL && flags == 0);
@@ -37,6 +40,7 @@ static OSStatus fixture_guest(SecCodeRef host, CFDictionaryRef attributes, SecCS
 }
 static OSStatus fixture_message(xpc_object_t message, SecCSFlags flags, SecCodeRef *code) {
     assert(message && xpc_get_type(message) == XPC_TYPE_DICTIONARY && flags == 0);
+    message_calls++;
     /* Payload values deliberately do not select the signed entitlement result. */
     *code = message_result == errSecSuccess ? (SecCodeRef)CFRetain(CFSTR("synthetic-code")) : NULL;
     return message_result;
@@ -49,6 +53,7 @@ static OSStatus fixture_static(SecCodeRef code, SecCSFlags flags, SecStaticCodeR
 }
 static OSStatus fixture_validity(SecCodeRef code, SecCSFlags flags, SecRequirementRef requirement) {
     assert(code && flags == 0);
+    validity_calls++;
     /* Parent requirements are actually compiled; an authenticated XPC sender
      * first validates dynamically with the documented optional NULL requirement. */
     (void)requirement;
@@ -59,13 +64,18 @@ static OSStatus fixture_information(SecStaticCodeRef code, SecCSFlags flags, CFD
     information_calls++;
     *information = NULL;
     if (info_result != errSecSuccess) return info_result;
+    if (missing_information) return errSecSuccess;
+    if (malformed_information) {
+        *information = (CFDictionaryRef)CFRetain(CFSTR("not-information"));
+        return errSecSuccess;
+    }
     CFMutableDictionaryRef claims = CFDictionaryCreateMutable(NULL, 0,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     if (sandbox_value) CFDictionarySetValue(claims, CFSTR("com.apple.security.app-sandbox"), sandbox_value);
     if (inherit_value) CFDictionarySetValue(claims, CFSTR("com.apple.security.inherit"), inherit_value);
     const void *keys[] = {kSecCodeInfoEntitlementsDict};
     const void *values[] = {malformed_claims ? (CFTypeRef)CFSTR("not-a-dictionary") : (CFTypeRef)claims};
-    *information = CFDictionaryCreate(NULL, keys, values, 1,
+    *information = CFDictionaryCreate(NULL, keys, values, missing_claims ? 0 : 1,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFRelease(claims);
     return errSecSuccess;
@@ -110,7 +120,7 @@ static bool sender_guard(xpc_object_t message) {
 #if SCRIBE_TEST_BRIDGE
     return reply_sandbox_is_true(message);
 #else
-    return peer_booleans_are_true(message);
+    return peer_booleans_are_true(message, &last_failure, &last_failure_class);
 #endif
 }
 
@@ -137,8 +147,16 @@ int main(void) {
         assert(parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store") == expected); checks++;
 #else
         assert(verified_host((xpc_connection_t)message, 4242) == expected); checks++;
+        if (!expected) {
+            assert(last_failure == (index == 1 ? 21 : index == 2 ? 19 : 20)); checks++;
+        } else {
+            assert(last_failure == 0); checks++;
+        }
+        assert(last_failure_class == 0); checks++;
         sandbox_value = kCFBooleanTrue; inherit_value = candidates[index];
         assert(sender_guard(message) == expected); checks++;
+        assert(last_failure == (expected ? 0 : index == 1 ? 24 : index == 2 ? 22 : 23)); checks++;
+        assert(last_failure_class == 0); checks++;
 #endif
     }
     sandbox_value = inherit_value = kCFBooleanTrue;
@@ -164,6 +182,55 @@ int main(void) {
     static_result = errSecSuccess; info_result = errSecParam;
     assert(!parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store")); checks++;
 #else
+    /* Classify the first failing seam without changing admission or running
+     * any later Security call. Request payload bits remain non-authoritative. */
+    sandbox_value = inherit_value = kCFBooleanTrue;
+    malformed_information = true;
+    assert(!sender_guard(message) && last_failure == 17 && last_failure_class == 0); checks++;
+    malformed_information = false; missing_information = true;
+    assert(!sender_guard(message) && last_failure == 17 && last_failure_class == 0); checks++;
+    missing_information = false; missing_claims = true;
+    assert(!sender_guard(message) && last_failure == 18 && last_failure_class == 0); checks++;
+    missing_claims = false; malformed_claims = true;
+    assert(!sender_guard(message) && last_failure == 18 && last_failure_class == 0); checks++;
+    malformed_claims = false; info_result = errSecParam;
+    assert(!sender_guard(message) && last_failure == 16 && last_failure_class == 27); checks++;
+    info_result = errSecSuccess; static_result = errSecParam;
+    information_before = information_calls;
+    assert(!sender_guard(message) && last_failure == 15 && last_failure_class == 27); checks++;
+    assert(information_calls == information_before); checks++;
+    static_result = errSecSuccess; validity_result = errSecParam;
+    static_before = static_calls; information_before = information_calls;
+    assert(!sender_guard(message) && last_failure == 14 && last_failure_class == 27); checks++;
+    assert(static_calls == static_before && information_calls == information_before); checks++;
+    validity_result = errSecSuccess; message_result = errSecParam;
+    unsigned validity_before = validity_calls;
+    static_before = static_calls; information_before = information_calls;
+    assert(!sender_guard(message) && last_failure == 13 && last_failure_class == 27); checks++;
+    assert(validity_calls == validity_before && static_calls == static_before
+        && information_calls == information_before); checks++;
+    message_result = errSecSuccess;
+    information_before = information_calls;
+    unsigned message_before = message_calls;
+    assert(sender_guard(message) && last_failure == 0 && last_failure_class == 0); checks++;
+    assert(message_calls == message_before + 1 && information_calls == information_before + 2); checks++;
+    sandbox_value = inherit_value = kCFBooleanFalse;
+    information_before = information_calls;
+    assert(!sender_guard(message) && last_failure == 21 && last_failure_class == 0); checks++;
+    assert(information_calls == information_before + 1); checks++;
+    sandbox_value = inherit_value = kCFBooleanTrue;
+    const OSStatus status_classes[] = {errSecCSSignatureNotVerifiable, errSecCSUnsigned,
+        errSecCSInvalidObjectRef, errSecCSStaticCodeChanged, errSecCSReqFailed,
+        errSecCSBadResource, errSecCSNoSuchCode, (OSStatus)12345};
+    for (size_t index = 0; index < sizeof(status_classes) / sizeof(status_classes[0]); index++) {
+        message_result = status_classes[index]; validity_before = validity_calls;
+        static_before = static_calls; information_before = information_calls;
+        assert(!sender_guard(message) && last_failure == 13 && last_failure_class == 25 + index); checks++;
+        assert(validity_calls == validity_before && static_calls == static_before
+            && information_calls == information_before); checks++;
+    }
+    message_result = errSecSuccess;
+    assert(sender_guard(message) && last_failure == 0 && last_failure_class == 0); checks++;
     guest_result = errSecParam;
     assert(!verified_host((xpc_connection_t)message, 4242)); checks++;
     guest_result = errSecSuccess; validity_result = errSecParam;

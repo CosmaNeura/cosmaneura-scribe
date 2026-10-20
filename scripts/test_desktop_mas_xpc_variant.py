@@ -85,7 +85,7 @@ class XpcVariantTests(unittest.TestCase):
             bridge.index("xpc_dictionary_get_count(reply)"),
         )
         self.assertLess(
-            service.index("!peer_booleans_are_true(event)"),
+            service.index("!peer_booleans_are_true(event, &peer_failure, &failure_class)"),
             service.index("!scribe_store_decode_open(event"),
         )
         for source, name in (
