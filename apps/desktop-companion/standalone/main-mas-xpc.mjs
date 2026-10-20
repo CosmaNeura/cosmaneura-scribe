@@ -7,8 +7,8 @@ import { prepareMacAppStoreUserData, requireMacAppStoreXpcRuntime } from "../src
 // credential is selected by this entry.
 async function start() {
   requireMacAppStoreXpcRuntime({ mas: process.mas, electron: process.versions.electron, node: process.versions.node });
-  // Retain the existing ASC parent identity while giving the Store distribution
-  // its own durable records/preferences. Never open the direct app's userData.
+  // The Store parent uses its isolated Mach/group identity and retains its own
+  // durable records/preferences. Never open the direct app's userData.
   const storeUserData = await prepareMacAppStoreUserData(app.getPath("appData"));
   app.setPath("userData", storeUserData);
   await startElectronProvider({ app, BrowserWindow, dialog, ipcMain, protocol, screen, session }, {

@@ -14,9 +14,10 @@ import plistlib
 from pathlib import Path
 
 TEAM = "JVV65668U6"
-PARENT = "com.cosmaneura.scribe.beta.desktop"
-GROUP = TEAM + "." + PARENT + ".store"
-AUTH = PARENT + ".store.auth"
+HELPER_BASE = "com.cosmaneura.scribe.beta.desktop"
+PARENT = HELPER_BASE + ".store"
+GROUP = TEAM + "." + PARENT
+AUTH = HELPER_BASE + ".store.auth"
 RUNTIME_SHA256 = "7e37fa13b746341f88dc37c188a1a56c515b06dd54eaf48a86ec16a3a0b678c6"
 
 
@@ -38,7 +39,7 @@ def xpc_claims() -> dict[str, dict[str, object]]:
             "keychain-access-groups": [TEAM + "." + AUTH],
         }
     )
-    audio = role(PARENT + ".audio")
+    audio = role(HELPER_BASE + ".audio")
     audio["com.apple.security.device.audio-input"] = True
     return {
         "parent": parent,
@@ -48,7 +49,7 @@ def xpc_claims() -> dict[str, dict[str, object]]:
         },
         "native-auth": auth,
         "native-audio": audio,
-        "native-presentation": role(PARENT + ".presentation"),
+        "native-presentation": role(HELPER_BASE + ".presentation"),
     }
 
 
@@ -82,7 +83,7 @@ def service_info(role: str) -> dict[str, object]:
         "presentation": "ScribePresentationStoreService",
     }[role]
     return {
-        "CFBundleIdentifier": AUTH if role == "auth" else PARENT + "." + role,
+        "CFBundleIdentifier": AUTH if role == "auth" else HELPER_BASE + "." + role,
         "CFBundlePackageType": "XPC!",
         "CFBundleExecutable": executable,
         "LSMinimumSystemVersion": "14.2",
@@ -111,6 +112,12 @@ def prepare(output: Path, clerk_source: Path) -> None:
     spec.loader.exec_module(original)
     # Source copies only. The older dormant target is unchanged and remains nil.
     original.prepare(output, clerk_source)
+    # Electron's MAS Mach namespace is Team ID + parent bundle ID. Select the
+    # isolated Store group without granting the direct app's legacy group.
+    info_path = output / "store-info.DRAFT.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    info["CFBundleIdentifier"] = PARENT
+    info_path.write_bytes(plistlib.dumps(info))
     for name, claims in xpc_claims().items():
         target = output / ("xpc-" + name + ".entitlements.DRAFT.plist")
         target.write_bytes(plistlib.dumps(claims))
@@ -127,6 +134,7 @@ def prepare(output: Path, clerk_source: Path) -> None:
         "native_swift_flags": ["-DSCRIBE_MAC_APP_STORE", "-DSCRIBE_MAC_APP_STORE_XPC"],
         "native_clang_flags": ["-DSCRIBE_MAC_APP_STORE_XPC=1"],
         "runtime_archive_sha256": RUNTIME_SHA256,
+        "parent_bundle_identifier": PARENT,
         "inherited_bridge_identifier": PARENT,
         "profile_helper_path": "native/ScribeStorePipeBridge",
         "private_services": [service_info(role) for role in ["auth", "audio", "presentation"]],

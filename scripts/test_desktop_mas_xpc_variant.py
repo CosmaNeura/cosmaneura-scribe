@@ -63,7 +63,8 @@ class XpcVariantTests(unittest.TestCase):
         self.assertEqual(claims["native-auth"]["keychain-access-groups"], [XPC.TEAM + "." + XPC.AUTH])
         self.assertNotEqual(claims["native-auth"]["keychain-access-groups"],
                             DIRECT.draft_claims()["native-auth"]["keychain-access-groups"])
-        self.assertNotEqual(XPC.GROUP, XPC.TEAM + "." + XPC.PARENT)
+        self.assertEqual(XPC.GROUP, XPC.TEAM + "." + XPC.PARENT)
+        self.assertNotEqual(XPC.GROUP, XPC.TEAM + "." + DIRECT.PARENT)
         self.assertNotIn("com.apple.security.device.audio-input", claims["native-auth"])
 
     def test_spawned_bridge_has_only_inherited_sandbox(self):
@@ -76,7 +77,7 @@ class XpcVariantTests(unittest.TestCase):
     def test_independent_services_join_user_session_and_use_cocoa_runloop(self):
         for role in ["auth", "audio", "presentation"]:
             info = XPC.service_info(role)
-            expected = XPC.AUTH if role == "auth" else XPC.PARENT + "." + role
+            expected = XPC.AUTH if role == "auth" else XPC.HELPER_BASE + "." + role
             self.assertEqual(info["CFBundleIdentifier"], expected)
             self.assertEqual(info["CFBundlePackageType"], "XPC!")
             self.assertEqual(
@@ -106,6 +107,22 @@ class XpcVariantTests(unittest.TestCase):
             DIRECT.draft_claims()["parent"]["com.apple.security.application-groups"], [XPC.GROUP]
         )
 
+    def test_store_parent_namespace_does_not_rename_native_helpers(self):
+        self.assertEqual(XPC.PARENT, "com.cosmaneura.scribe.beta.desktop.store")
+        self.assertEqual(DIRECT.PARENT, "com.cosmaneura.scribe.beta.desktop")
+        self.assertEqual(XPC.AUTH, "com.cosmaneura.scribe.beta.desktop.store.auth")
+        claims = XPC.xpc_claims()
+        self.assertEqual(claims["parent"]["com.apple.application-identifier"], XPC.GROUP)
+        for role, bundle in (
+            ("auth", XPC.AUTH),
+            ("audio", "com.cosmaneura.scribe.beta.desktop.audio"),
+            ("presentation", "com.cosmaneura.scribe.beta.desktop.presentation"),
+        ):
+            self.assertEqual(XPC.service_info(role)["CFBundleIdentifier"], bundle)
+            self.assertEqual(claims["native-" + role]["com.apple.application-identifier"],
+                             XPC.TEAM + "." + bundle)
+            self.assertEqual(claims["native-" + role]["com.apple.security.application-groups"], [XPC.GROUP])
+
     def test_profile_authorization_requires_new_auth_and_permits_only_selected_group(self):
         exact = XPC.xpc_claims()["native-auth"]
         XPC.validate_auth_profile_authorization(exact)
@@ -115,10 +132,10 @@ class XpcVariantTests(unittest.TestCase):
         wildcard["keychain-access-groups"] = [XPC.TEAM + ".*"]
         XPC.validate_auth_profile_authorization(wildcard)
         for key, value in (
-            ("com.apple.application-identifier", XPC.TEAM + "." + XPC.PARENT + ".auth"),
+            ("com.apple.application-identifier", XPC.TEAM + "." + DIRECT.PARENT + ".auth"),
             ("com.apple.developer.team-identifier", "OTHERTEAM"),
             ("keychain-access-groups", ["*"]),
-            ("com.apple.security.application-groups", [XPC.TEAM + "." + XPC.PARENT]),
+            ("com.apple.security.application-groups", [XPC.TEAM + "." + DIRECT.PARENT]),
             ("com.apple.security.application-groups", ["group.com.cosmaneura.scribe.beta.desktop.store.profile.authorization"]),
         ):
             rejected = dict(wildcard); rejected[key] = value

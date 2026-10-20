@@ -28,7 +28,7 @@ static bool verified_host(xpc_connection_t peer, pid_t host) {
     CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     SecCodeRef code = NULL; SecRequirementRef requirement = NULL;
     char text[768];
-    int n = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", scribe_store_approved_group());
+    int n = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", scribe_store_approved_group());
     CFStringRef expression = n > 0 && (size_t)n < sizeof(text) ? CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8) : NULL;
     bool valid = attributes && expression && SecRequirementCreateWithString(expression, 0, &requirement) == errSecSuccess
         && SecCodeCopyGuestWithAttributes(NULL, attributes, 0, &code) == errSecSuccess
@@ -45,7 +45,7 @@ static bool is_capture(const char *mode) { return !strcmp(mode, "--capture-v2") 
 
 static void accept_peer(xpc_connection_t peer) {
     xpc_connection_set_target_queue(peer, queue);
-    const char *requirement = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.inherit\"] = true";
+    const char *requirement = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.inherit\"] = true";
     if (xpc_connection_set_peer_code_signing_requirement(peer, requirement)) { xpc_connection_cancel(peer); return; }
     __block bool accepted = false, closing = false, finished = false, capture = false;
     __block struct scribe_store_open open = {.input = -1, .output = -1};

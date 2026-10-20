@@ -15,7 +15,7 @@ static bool parent_is_store_host(pid_t parent, const char *group) {
     CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     SecCodeRef code = NULL; SecRequirementRef requirement = NULL;
     char text[768];
-    int length = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", group);
+    int length = snprintf(text, sizeof(text), "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"%s\"", group);
     CFStringRef expression = length > 0 && (size_t)length < sizeof(text) ? CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8) : NULL;
     bool valid = expression && SecRequirementCreateWithString(expression, 0, &requirement) == errSecSuccess
         && SecCodeCopyGuestWithAttributes(NULL, attributes, 0, &code) == errSecSuccess
