@@ -1,13 +1,15 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { NativeProviderSession, ProviderSessionState } from "../../capture/src/provider/native-plugin";
 import { exact, object, sessionState } from "../../capture/src/provider/desktop-host-protocol";
 import { verifyNativeHelper } from "./native-process-driver.js";
 import { NativeProviderFrameDecoder } from "./native-provider-frames.js";
+import { StoreBridgeDiagnosticDecoder } from "./store-bootstrap-diagnostics.js";
+import { NO_DIAGNOSTICS, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 const MAX_REQUEST_FRAME = 16 * 1024 * 1024;
-type Child = ChildProcessByStdio<Writable, Readable, null>;
+type Child = ChildProcessByStdio<Writable, Readable, Readable | null>;
 interface Pending {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -31,11 +33,24 @@ export class NativeProviderClient implements NativeProviderSession {
   private checking = false;
   private observations = 0;
 
-  private constructor(path: string) {
+  private constructor(path: string, diagnostics: RuntimeDiagnostic) {
+    const storeBridge = "mas" in process && process.mas === true && basename(path) === "ScribeStorePipeBridge";
+    const diagnostic = (event: "store_bridge_failed" | "store_bridge_exit" | "store_bridge_signal", code: number): void => {
+      try { diagnostics(event, undefined, code); } catch { /* Observers never interrupt native ownership or cleanup. */ }
+    };
     this.child = spawn(path, ["--provider-v1"], {
-      stdio: ["pipe", "pipe", "ignore"], env: {}, cwd: dirname(path), windowsHide: true,
-    });
-    this.exit = new Promise(resolve => this.child.once("close", () => {
+      stdio: ["pipe", "pipe", storeBridge ? "pipe" : "ignore"], env: {}, cwd: dirname(path), windowsHide: true,
+    }) as Child;
+    if (storeBridge) {
+      const decoder = new StoreBridgeDiagnosticDecoder(reason => diagnostic("store_bridge_failed", reason));
+      this.child.stderr?.on("data", (bytes: Buffer) => decoder.push(bytes));
+      this.child.stderr?.on("error", () => undefined);
+    }
+    this.exit = new Promise(resolve => this.child.once("close", (code, signal) => {
+      if (storeBridge) {
+        if (Number.isSafeInteger(code) && code! >= 0 && code! <= 255) diagnostic("store_bridge_exit", code!);
+        if (signal) diagnostic("store_bridge_signal", signal === "SIGTERM" ? 1 : signal === "SIGKILL" ? 2 : 3);
+      }
       this.exited = true; this.fail(); resolve();
     }));
     this.child.on("error", () => this.fail());
@@ -50,9 +65,9 @@ export class NativeProviderClient implements NativeProviderSession {
     });
   }
 
-  static async open(options: { helperPath: string; helperSha256: string }): Promise<NativeProviderClient> {
+  static async open(options: { helperPath: string; helperSha256: string; diagnostics?: RuntimeDiagnostic }): Promise<NativeProviderClient> {
     requireMain(); await verifyNativeHelper(options);
-    const owner = new NativeProviderClient(options.helperPath);
+    const owner = new NativeProviderClient(options.helperPath, options.diagnostics ?? NO_DIAGNOSTICS);
     try {
       await owner.getState();
       owner.poll = setInterval(() => {

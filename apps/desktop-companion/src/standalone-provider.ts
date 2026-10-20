@@ -52,7 +52,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
   const [authOptions, audioOptions, presentationOptions] = await Promise.all([
     helper(profile.auth), helper(profile.audio), helper(profile.presentation),
   ]);
-  const native = await NativeProviderClient.open(authOptions), abort = new AbortController();
+  const native = await NativeProviderClient.open({ ...authOptions, diagnostics }), abort = new AbortController();
   const connections = new Set<ReturnType<typeof createDesktopProviderConnection>>();
   const opening = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;

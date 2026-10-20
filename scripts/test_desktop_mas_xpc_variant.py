@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,35 @@ AUTH_BUILD = module("native_auth_build", "build-desktop-native-provider.py")
 
 
 class XpcVariantTests(unittest.TestCase):
+    def test_bridge_failure_diagnostics_have_only_closed_numeric_source_tokens(self):
+        source = (ROOT.parent / "apps/desktop-companion/native/ScribeDesktopStoreBridge/StorePipeBridge.c").read_text()
+        self.assertEqual(re.findall(r'"SCRIBE_STORE_BRIDGE:([^"\n]*)"', source),
+                         [str(code) + r"\n" for code in range(1, 13)])
+        diagnostic = source[source.index("static void bridge_diagnostic"):
+                            source.index("static unsigned bridge_xpc_error_diagnostic")]
+        self.assertIn("code > 0 && code < sizeof(markers) / sizeof(markers[0])", diagnostic)
+        self.assertEqual(diagnostic.count("write(STDERR_FILENO, markers[code], strlen(markers[code]))"), 1)
+        self.assertNotIn("STDOUT_FILENO", diagnostic)
+        self.assertNotIn("fprintf", diagnostic)
+        self.assertNotIn("xpc_copy_description", source)
+        classification = source[source.index("static unsigned bridge_xpc_error_diagnostic"):
+                                source.index("/* The inherited shim")]
+        self.assertIn("if (error == XPC_ERROR_CONNECTION_INVALID) return 10;", classification)
+        self.assertIn("if (error == XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT) return 11;", classification)
+        self.assertIn("return 9;", classification)
+        self.assertIn("bridge_diagnostic(bridge_xpc_error_diagnostic(event)); _exit(70);", source)
+        self.assertIn("bridge_diagnostic(bridge_xpc_error_diagnostic(reply)); _exit(70);", source)
+        self.assertIn("_exit(code >= 0 && code <= 255 ? (int)code : 70);", source)
+
+    def test_bridge_diagnostics_preserve_exact_parent_authority_and_stop_source(self):
+        source = (ROOT.parent / "apps/desktop-companion/native/ScribeDesktopStoreBridge/StorePipeBridge.c").read_text()
+        parent = source[source.index("static bool parent_is_store_host"):source.index("\nint main")]
+        cleanup = source[source.index("    xpc_release(message);"):]
+        self.assertEqual(hashlib.sha256(parent.encode()).hexdigest(),
+                         "1ddd3fb2218766e20607571f11782b9c09e7d2c8ea8a1afe7b19ebae2f77f57f")
+        self.assertEqual(hashlib.sha256(cleanup.encode()).hexdigest(),
+                         "5732f25fd801cc318489d567ce90f594596f7480534e0e807cafcc193306692b")
+
     def test_auth_build_retains_recovery_without_old_credential_admission(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
