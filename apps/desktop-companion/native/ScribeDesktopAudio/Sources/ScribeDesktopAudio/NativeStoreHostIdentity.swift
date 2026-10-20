@@ -13,7 +13,7 @@ import Security
             throw ProviderPresentationFailure.unavailable
         }
         var code: SecCode?, requirement: SecRequirement?
-        let text = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"\(group)\""
+        let text = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] = true and entitlement[\"com.apple.security.application-groups\"] = \"\(group)\""
         guard SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess,
               let requirement,
               SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid as String: process] as CFDictionary, [], &code) == errSecSuccess,

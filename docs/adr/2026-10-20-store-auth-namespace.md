@@ -1,9 +1,19 @@
 # Separate Store auth namespace
 
-Decision: retain the existing ASC parent and give its Store auth XPC helper a
+Decision: retain the existing ASC record, use the Store-only parent bundle ID
+`com.cosmaneura.scribe.beta.desktop.store`, and give its Store auth XPC helper a
 distinct signed bundle ID and one exact credential group. Use a separate Store
 fence group, product name and local userData child. The direct app keeps its
 existing credentials and recordings; no implicit session or data migration occurs.
+
+The first Development-signed Store candidate stopped before JavaScript startup:
+Electron's `bootstrap_check_in` requested the old parent Mach namespace and was
+denied. Electron 44.4.3 derives that namespace from the actual Team ID and parent
+bundle ID. The Store-only parent now matches the existing single Store group;
+no legacy shared-container group or Mach exception is granted. Apple permits the
+same App Store record's bundle ID to change before its first build upload.
+The direct parent, native auth/audio/presentation IDs and new Store data paths
+remain unchanged. Actual signed startup qualification is still required.
 
 The current Clerk SDK exposes a configurable primary service/group, but also
 uses bundle-derived recovery/installation services and fixed biometric tags.
