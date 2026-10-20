@@ -1,7 +1,7 @@
 import type { DesktopRecordingWindow } from "./recording-window.js";
 import { lstat, readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
-import { exact, object } from "../../capture/src/provider/desktop-host-protocol";
+import { join } from "node:path";
+import { exact } from "../../capture/src/provider/desktop-host-protocol";
 import { HttpCiphertextUploadTarget } from "../../capture/src/bff/upload-target";
 import type { DesktopProviderOwner } from "./electron-provider-host.js";
 import { NativeProviderClient } from "./native-provider-client.js";
@@ -15,6 +15,7 @@ import { desktopJournalRecords } from "./durable-provider-records.js";
 import { NativeMicrophoneInputService } from "./native-microphone-inputs.js";
 import { DesktopAudioPreflight } from "./desktop-audio-preflight.js";
 import { microphonePreferenceScope, openMicrophonePreferences } from "./microphone-preferences.js";
+import { resolveStandaloneNativeHelpers } from "./standalone-native-helpers.js";
 
 interface PackagedRuntime {
   readonly packageDirectory: string;
@@ -40,18 +41,9 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
     || profile.coreOrigin !== "https://staging-app.cosmaneura.com"
     || !Array.isArray(profile.uploadOrigins) || (profile.enabled ? profile.uploadOrigins.length !== 1 : profile.uploadOrigins.length > 1)
     || profile.uploadOrigins.some(value => typeof value !== "string" || !/^https:\/\/[a-z0-9]{3,24}\.blob\.core\.windows\.net$/u.test(value))) throw unavailable();
-  const helper = async (input: unknown): Promise<{ helperPath: string; helperSha256: string }> => {
-    const value = exact(object(input), ["path", "sha256"]);
-    if (typeof value.path !== "string" || isAbsolute(value.path) || value.path.includes("\\")
-      || value.path.split("/").some(part => !part || part === "." || part === "..")
-      || typeof value.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(value.sha256)) throw unavailable();
-    const path = join(root, value.path);
-    if (await realpath(path) !== path || relative(root, path).startsWith("..")) throw unavailable();
-    return { helperPath: path, helperSha256: value.sha256 };
-  };
-  const [authOptions, audioOptions, presentationOptions] = await Promise.all([
-    helper(profile.auth), helper(profile.audio), helper(profile.presentation),
-  ]);
+  const [authOptions, audioOptions, presentationOptions] = await resolveStandaloneNativeHelpers(root, {
+    auth: profile.auth, audio: profile.audio, presentation: profile.presentation,
+  });
   const native = await NativeProviderClient.open({ ...authOptions, diagnostics }), abort = new AbortController();
   const connections = new Set<ReturnType<typeof createDesktopProviderConnection>>();
   const opening = new Set<Promise<unknown>>();
