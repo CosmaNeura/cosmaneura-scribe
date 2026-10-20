@@ -7,6 +7,7 @@ import type { DesktopProviderMainHost } from "./provider-workspace-main.js";
 import { loadPackagedProvider, PROVIDER_ENTRY, type PackagedProvider } from "./packaged-provider.js";
 import { runtimeDiagnostics, type RuntimeDiagnostic } from "./runtime-diagnostics.js";
 import { installApplicationClose, type ApplicationCloseMainPort } from "./application-close-ipc.js";
+import { MacAppStoreSingletonTemp } from "./mac-app-store-xpc.js";
 
 interface Event { preventDefault(): void }
 type Renderer = ConstructorParameters<typeof DesktopProviderWorkspaceIpc>[1] & ElectronWebContentsSecurityPort & {
@@ -77,7 +78,8 @@ export type ElectronBootstrapStage = 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17;
  * with the reviewed native/backend factory bundled beside it. */
 export async function startElectronProvider<S extends Session>(runtime: DesktopElectronRuntime<S>, factory: DesktopProviderFactory,
   applicationName: "Cosmaneura Scribe Beta" | "Cosmaneura Scribe Store" = "Cosmaneura Scribe Beta",
-  observeBootstrapStage?: (stage: ElectronBootstrapStage) => void): Promise<{
+  observeBootstrapStage?: (stage: ElectronBootstrapStage) => void,
+  storeSingletonTemp?: MacAppStoreSingletonTemp): Promise<{
   close(): Promise<void>;
 } | null> {
   const bootstrapStage = (stage: ElectronBootstrapStage): void => {
@@ -87,9 +89,12 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
   if (typeof process === "undefined" || !process.versions.node || typeof window !== "undefined"
     || "type" in process && process.type === "renderer" || !runtime.app.isPackaged
     || !["Cosmaneura Scribe Beta", "Cosmaneura Scribe Store"].includes(applicationName)
-    || runtime.app.getName() !== applicationName) throw unavailable();
+    || runtime.app.getName() !== applicationName
+    || (applicationName === "Cosmaneura Scribe Store"
+      ? !MacAppStoreSingletonTemp.isPrepared(storeSingletonTemp) : storeSingletonTemp !== undefined)) throw unavailable();
   bootstrapStage(10);
-  if (!requireElectronSingleInstance(runtime.app)) return null;
+  if (!(storeSingletonTemp ? MacAppStoreSingletonTemp.acquire(storeSingletonTemp, runtime.app)
+    : requireElectronSingleInstance(runtime.app))) return null;
   bootstrapStage(11);
   registerPackagedAppScheme(runtime.protocol);
   bootstrapStage(12);
@@ -162,7 +167,7 @@ export async function startElectronProvider<S extends Session>(runtime: DesktopE
     await opening;
     if (closing || ended) throw unavailable();
     const secure = createSecureBrowserWindowOptions(join(root, "preload.cjs"));
-    appWindow = new runtime.BrowserWindow({ ...secure, title: "Cosmaneura Scribe Beta", width: 780, height: 760, minWidth: 520, minHeight: 520,
+    appWindow = new runtime.BrowserWindow({ ...secure, title: applicationName, width: 780, height: 760, minWidth: 520, minHeight: 520,
       webPreferences: { ...secure.webPreferences, session } });
     installElectronRendererSecurity(appWindow.webContents, PROVIDER_ENTRY);
     removeApplicationClose = installApplicationClose(runtime.ipcMain, appWindow.webContents, requestClose);
