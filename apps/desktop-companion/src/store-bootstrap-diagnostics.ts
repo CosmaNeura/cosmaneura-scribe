@@ -10,6 +10,7 @@ export class StoreBootstrapDiagnostics {
   private bridgeReason: number | undefined;
   private bridgeExit: number | undefined;
   private bridgeSignal: number | undefined;
+  private failure: Promise<void> | undefined;
   constructor(private readonly writeFixed: (line: string) => void = line => { process.stderr.write(line); }) {}
   enter(stage: StoreBootstrapStage): void { this.stage = stage; }
   /** Called only after the existing Store child custody checks have passed. */
@@ -20,7 +21,8 @@ export class StoreBootstrapDiagnostics {
     if (event === "store_bridge_exit" && code! >= 0 && code! <= 255) this.bridgeExit ??= code;
     if (event === "store_bridge_signal" && code! >= 1 && code! <= 3) this.bridgeSignal ??= code;
   }
-  async failed(): Promise<void> {
+  failed(): Promise<void> { return this.failure ??= this.writeFailure(); }
+  private async writeFailure(): Promise<void> {
     try {
       this.writeFixed(`SCRIBE_STORE_BOOTSTRAP:${this.stage}\n`);
       if (this.bridgeReason !== undefined) this.writeFixed(`SCRIBE_STORE_BRIDGE:${this.bridgeReason}\n`);
@@ -47,6 +49,14 @@ export class StoreBootstrapDiagnostics {
       } finally { await file.close(); }
     } catch { /* Keep the fixed stderr marker when the private journal cannot be opened. */ }
   }
+}
+
+/** A rejected native acquisition has already honored its cleanup contract.
+ * Persist its fixed diagnostics before exposing rejection to host quit cleanup. */
+export async function recordRejectedStoreAcquisition<T>(diagnostics: StoreBootstrapDiagnostics,
+  acquire: () => Promise<T>): Promise<T> {
+  try { return await acquire(); }
+  catch (error) { await diagnostics.failed(); throw error; }
 }
 
 /** The bridge owns this one closed line grammar; arbitrary stderr is discarded. */

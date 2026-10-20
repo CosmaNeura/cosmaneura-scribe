@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, session } from "electron";
 import { startElectronProvider } from "../src/electron-provider-host.js";
 import { prepareMacAppStoreUserData, requireMacAppStoreXpcRuntime } from "../src/mac-app-store-xpc.js";
-import { StoreBootstrapDiagnostics } from "../src/store-bootstrap-diagnostics.js";
+import { recordRejectedStoreAcquisition, StoreBootstrapDiagnostics } from "../src/store-bootstrap-diagnostics.js";
 
 const bootstrap = new StoreBootstrapDiagnostics();
 
@@ -21,7 +21,7 @@ async function start() {
   app.setPath("userData", storeUserData);
   bootstrap.enter(5);
   await startElectronProvider({ app, BrowserWindow, dialog, ipcMain, protocol, screen, session }, {
-    open: async options => {
+    open: async options => recordRejectedStoreAcquisition(bootstrap, async () => {
       bootstrap.enter(6);
       const { openProvider } = await import("./provider-host.mjs");
       bootstrap.enter(7);
@@ -31,7 +31,7 @@ async function start() {
       } });
       bootstrap.enter(8);
       return owner;
-    },
+    }),
   }, "Cosmaneura Scribe Store");
 }
 void start().catch(async () => {

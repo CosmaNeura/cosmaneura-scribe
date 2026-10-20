@@ -13,6 +13,10 @@ without changing runtime approval, path custody, source ownership or credentials
 
 The bootstrap catch emits a fixed numeric stage, then awaits a bounded append to
 `store-bootstrap-diagnostics-v1.jsonl` before the unchanged error dialog and quit.
+A rejected Store factory acquisition reports after its native cleanup and before
+the rejection reaches the host's existing quit path. The outer catch shares the
+same report promise, so it cannot append a duplicate failure. A composed host
+regression verifies that the journal exists when the host calls quit.
 The journal is enabled only after the existing private Store child checks pass;
 earlier failures produce only the fixed stderr marker. There is no fallback data
 path, chmod, repair or migration. Files must be private, owned, regular and singly

@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { startElectronProvider, type DesktopElectronRuntime, type DesktopProviderOwner } from "./electron-provider-host.js";
 import { loadPackagedProvider, PROVIDER_ASSETS, PROVIDER_ENTRY } from "./packaged-provider.js";
+import { recordRejectedStoreAcquisition, StoreBootstrapDiagnostics } from "./store-bootstrap-diagnostics.js";
+import { readFileSync } from "node:fs";
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 async function fixture() {
@@ -70,6 +72,27 @@ async function fixture() {
 }
 
 describe("packaged desktop provider host", () => {
+  it("persists Store acquisition failure after native cleanup and before host quit", async () => {
+    const f = await fixture();
+    try {
+      f.runtime.app.getName = () => "Cosmaneura Scribe Store";
+      const diagnostics = new StoreBootstrapDiagnostics(() => { f.events.push("fixed_diagnostic"); });
+      diagnostics.bindValidatedDirectory(f.directory); diagnostics.enter(7);
+      f.factory.open.mockImplementation(() => recordRejectedStoreAcquisition(diagnostics, async () => {
+        f.events.push("acquisition_cleanup"); throw new Error("invented rejected acquisition");
+      }));
+      f.runtime.app.quit.mockImplementation(() => {
+        expect(JSON.parse(readFileSync(join(f.directory, "store-bootstrap-diagnostics-v1.jsonl"), "utf8")))
+          .toMatchObject({ event: "store_bootstrap_failed", reason_code: 7 });
+        f.events.push("quit");
+      });
+      await expect(startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store")).rejects.toThrow("unavailable");
+      await vi.waitFor(() => { expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      await diagnostics.failed();
+      expect(f.events).toEqual(["acquisition_cleanup", "fixed_diagnostic", "quit"]);
+      expect(f.dispose).not.toHaveBeenCalled();
+    } finally { await f.cleanup(); }
+  });
   it("serves only verified renderer assets without request-derived file access", async () => {
     const f = await fixture();
     try {

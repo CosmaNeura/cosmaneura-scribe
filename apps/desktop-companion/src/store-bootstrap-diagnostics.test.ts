@@ -40,7 +40,9 @@ it("refuses a linked or broad directory without changing the retained fixture", 
     const diagnostics = new StoreBootstrapDiagnostics(() => undefined);
     diagnostics.bindValidatedDirectory(alias); await diagnostics.failed();
     expect(await readFile(file, "utf8")).toBe("invented retained fixture");
-    await chmod(retained, 0o755); diagnostics.bindValidatedDirectory(retained); await diagnostics.failed();
+    await chmod(retained, 0o755);
+    const broad = new StoreBootstrapDiagnostics(() => undefined);
+    broad.bindValidatedDirectory(retained); await broad.failed();
     expect(await readFile(file, "utf8")).toBe("invented retained fixture");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -59,6 +61,14 @@ it("rejects a multiply linked journal without appending or repairing it", async 
 it("does not interrupt fail-close when the diagnostic stream fails", async () => {
   const diagnostics = new StoreBootstrapDiagnostics(() => { throw new Error("invented private fixture"); });
   await expect(diagnostics.failed()).resolves.toBeUndefined();
+});
+
+it("shares one failure write between the acquisition wrapper and outer catch", async () => {
+  const lines: string[] = [], diagnostics = new StoreBootstrapDiagnostics(line => { lines.push(line); });
+  const first = diagnostics.failed(), second = diagnostics.failed();
+  expect(second).toBe(first);
+  await Promise.all([first, second]);
+  expect(lines).toEqual(["SCRIBE_STORE_BOOTSTRAP:1\n"]);
 });
 
 it("does not block fail-close on a private FIFO at the journal filename", async () => {
