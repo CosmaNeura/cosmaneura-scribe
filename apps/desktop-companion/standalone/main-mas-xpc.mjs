@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, session } from "electron";
 import { registerPackagedAppScheme, startElectronProvider } from "../src/electron-provider-host.js";
-import { prepareMacAppStoreUserData, requireMacAppStoreXpcRuntime } from "../src/mac-app-store-xpc.js";
+import { MacAppStoreSingletonTemp, prepareMacAppStoreUserData, requireMacAppStoreXpcRuntime } from "../src/mac-app-store-xpc.js";
 import { recordRejectedStoreAcquisition, StoreBootstrapDiagnostics } from "../src/store-bootstrap-diagnostics.js";
 
 const bootstrap = new StoreBootstrapDiagnostics();
@@ -10,6 +10,8 @@ const bootstrap = new StoreBootstrapDiagnostics();
 // credential is selected by this entry.
 async function start() {
   requireMacAppStoreXpcRuntime({ mas: process.mas, electron: process.versions.electron, node: process.versions.node });
+  bootstrap.enter(18);
+  MacAppStoreSingletonTemp.requireNoInheritedOverride();
   // Electron requires this once, before readiness can advance during path I/O.
   bootstrap.enter(11);
   registerPackagedAppScheme(protocol);
@@ -20,6 +22,8 @@ async function start() {
   bootstrap.enter(3);
   const storeUserData = await prepareMacAppStoreUserData(appData);
   bootstrap.bindValidatedDirectory(storeUserData);
+  bootstrap.enter(18);
+  const singletonTemp = await MacAppStoreSingletonTemp.prepare(app.getPath("temp"));
   bootstrap.enter(4);
   app.setPath("userData", storeUserData);
   bootstrap.enter(5);
@@ -35,7 +39,7 @@ async function start() {
       bootstrap.enter(8);
       return owner;
     }),
-  }, "Cosmaneura Scribe Store", stage => bootstrap.enter(stage));
+  }, "Cosmaneura Scribe Store", stage => bootstrap.enter(stage), singletonTemp);
 }
 void start().catch(async () => {
   await bootstrap.failed();

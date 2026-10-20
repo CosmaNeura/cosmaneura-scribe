@@ -9,6 +9,7 @@ import { loadPackagedProvider, PROVIDER_ASSETS, PROVIDER_ENTRY } from "./package
 import { recordRejectedStoreAcquisition, StoreBootstrapDiagnostics } from "./store-bootstrap-diagnostics.js";
 import { readFileSync } from "node:fs";
 import type * as MacAppStoreXpcModule from "./mac-app-store-xpc.js";
+import { MacAppStoreSingletonTemp } from "./mac-app-store-xpc.js";
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
 async function fixture() {
@@ -51,7 +52,7 @@ async function fixture() {
   }
   const runtime = {
     app: Object.assign(app, { isPackaged: true, getName: (): string => "Cosmaneura Scribe Beta", getAppPath: () => directory,
-      getPath: () => join(directory, "user-data"), requestSingleInstanceLock: vi.fn(() => true),
+      getPath: vi.fn((name?: string) => name === "temp" ? directory : join(directory, "user-data")), requestSingleInstanceLock: vi.fn(() => true),
       whenReady: () => ready, quit: vi.fn(() => { events.push("quit"); }) }),
     screen: { getDisplayMatching: () => ({ workArea: { x: 0, y: 24, width: 1440, height: 860 } }) },
     protocol: { registerSchemesAsPrivileged: vi.fn() }, session: { fromPartition: vi.fn(() => session) }, BrowserWindow: MockWindow,
@@ -72,7 +73,7 @@ async function fixture() {
     waitReady: (value: Promise<void>) => { ready = value; }, cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
 
-async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, options: { mas?: boolean; failRegistration?: boolean } = {}) {
+async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, options: { mas?: boolean; failRegistration?: boolean; lock?: boolean; inheritedOverride?: boolean } = {}) {
   vi.resetModules();
   let ready = false;
   f.runtime.app.getName = () => "Cosmaneura Scribe Store";
@@ -91,17 +92,26 @@ async function composedStoreEntry(f: Awaited<ReturnType<typeof fixture>>, option
   const processPort = Object.create(process);
   Object.defineProperties(processPort, { mas: { value: options.mas ?? true },
     versions: { value: { ...process.versions, electron: "44.4.3", node: "24.10.0" } },
+    env: { value: { ...process.env, ...(options.inheritedOverride ? { MAC_CHROMIUM_TMPDIR: "/invented/inherited-temp" } : {}) } },
     stderr: { value: Object.assign(Object.create(process.stderr), { write: vi.fn(() => true) }) } });
   vi.stubGlobal("process", processPort);
+  f.factory.open.mockImplementation(async () => { expect(process.env.MAC_CHROMIUM_TMPDIR).toBeUndefined(); return f.owner; });
   vi.doMock("electron", () => electron);
-  vi.doMock("./mac-app-store-xpc.js", async () => ({
-    ...await vi.importActual<typeof MacAppStoreXpcModule>("./mac-app-store-xpc.js"),
-    prepareMacAppStoreUserData: prepare,
-  }));
+  const actual = await vi.importActual<typeof MacAppStoreXpcModule>("./mac-app-store-xpc.js");
+  const realPrepareTemp = actual.MacAppStoreSingletonTemp.prepare.bind(actual.MacAppStoreSingletonTemp);
+  const prepareTemp = vi.spyOn(actual.MacAppStoreSingletonTemp, "prepare").mockImplementation(async path => {
+    f.events.push("temp_prepare"); return realPrepareTemp(path);
+  });
+  f.runtime.app.requestSingleInstanceLock.mockImplementation(() => {
+    f.events.push("lock"); expect(process.env.MAC_CHROMIUM_TMPDIR?.startsWith(f.directory + "/s")).toBe(true);
+    return options.lock ?? true;
+  });
+  vi.doMock("./mac-app-store-xpc.js", () => ({ ...actual, prepareMacAppStoreUserData: prepare }));
   vi.doMock("../standalone/provider-host.mjs", () => ({ openProvider: f.factory.open }));
   const entry = "../standalone/main-mas-xpc.mjs";
   await import(entry);
-  return { prepare, showErrorBox, setPath, advanceReady: () => { ready = true; }, restore: () => {
+  return { prepare, prepareTemp, showErrorBox, setPath, advanceReady: () => { ready = true; }, restore: () => {
+    prepareTemp.mockRestore();
     vi.doUnmock("electron"); vi.doUnmock("./mac-app-store-xpc.js"); vi.doUnmock("../standalone/provider-host.mjs");
     vi.unstubAllGlobals(); vi.resetModules();
   } };
@@ -113,7 +123,10 @@ describe("packaged desktop provider host", () => {
     try {
       await vi.waitFor(() => { expect(f.window).not.toBeNull(); expect(f.events).toContain("show"); });
       expect(f.runtime.protocol.registerSchemesAsPrivileged).toHaveBeenCalledOnce();
-      expect(entry.prepare).toHaveBeenCalledOnce(); expect(entry.setPath).toHaveBeenCalledOnce();
+      expect(entry.prepare).toHaveBeenCalledOnce(); expect(entry.prepareTemp).toHaveBeenCalledOnce(); expect(entry.setPath).toHaveBeenCalledOnce();
+      expect(f.events.indexOf("temp_prepare")).toBeLessThan(f.events.indexOf("lock"));
+      expect(entry.setPath).toHaveBeenCalledWith("userData", join(f.directory, "user-data"));
+      expect(process.env.MAC_CHROMIUM_TMPDIR).toBeUndefined();
       expect(f.events.indexOf("scheme_registration")).toBeLessThan(f.events.indexOf("path_prepare"));
       expect(f.events.indexOf("ready_during_path_prepare")).toBeLessThan(f.events.indexOf("window"));
       expect(f.factory.open).toHaveBeenCalledOnce(); expect(entry.showErrorBox).not.toHaveBeenCalled();
@@ -129,6 +142,39 @@ describe("packaged desktop provider host", () => {
       expect(entry.prepare).not.toHaveBeenCalled(); expect(entry.setPath).not.toHaveBeenCalled();
       expect(f.factory.open).not.toHaveBeenCalled(); expect(f.window).toBeNull();
     } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("quits a second Store host on the unchanged false lock result without opening a factory or changing userData", async () => {
+    const f = await fixture(), entry = await composedStoreEntry(f, { lock: false });
+    try {
+      await vi.waitFor(() => { expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      expect(f.runtime.app.requestSingleInstanceLock).toHaveBeenCalledOnce(); expect(f.factory.open).not.toHaveBeenCalled();
+      expect(f.window).toBeNull(); expect(entry.showErrorBox).not.toHaveBeenCalled();
+      expect(entry.setPath).toHaveBeenCalledWith("userData", join(f.directory, "user-data"));
+      expect(process.env.MAC_CHROMIUM_TMPDIR).toBeUndefined();
+    } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("rejects an inherited override in the composed entry before OS path getters or factory acquisition", async () => {
+    const f = await fixture(), entry = await composedStoreEntry(f, { inheritedOverride: true });
+    try {
+      await vi.waitFor(() => { expect(entry.showErrorBox).toHaveBeenCalledOnce(); expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
+      expect(f.runtime.app.getPath).not.toHaveBeenCalled(); expect(entry.prepare).not.toHaveBeenCalled();
+      expect(entry.prepareTemp).not.toHaveBeenCalled(); expect(entry.setPath).not.toHaveBeenCalled();
+      expect(f.runtime.app.requestSingleInstanceLock).not.toHaveBeenCalled(); expect(f.factory.open).not.toHaveBeenCalled();
+      expect(process.env.MAC_CHROMIUM_TMPDIR).toBe("/invented/inherited-temp");
+    } finally { entry.restore(); await f.cleanup(); }
+  });
+  it("requires a prepared Store capability and refuses it on the Beta entry", async () => {
+    const f = await fixture();
+    try {
+      f.runtime.app.getName = () => "Cosmaneura Scribe Store";
+      await expect(startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store")).rejects.toThrow("unavailable");
+      const forged = Reflect.construct(MacAppStoreSingletonTemp, ["/invented/caller-temp"]);
+      await expect(startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store", undefined, forged)).rejects.toThrow("unavailable");
+      const prepared = await MacAppStoreSingletonTemp.prepare(f.directory); f.runtime.app.getName = () => "Cosmaneura Scribe Beta";
+      await expect(startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Beta", undefined, prepared)).rejects.toThrow("unavailable");
+      expect(f.runtime.app.requestSingleInstanceLock).not.toHaveBeenCalled(); expect(f.factory.open).not.toHaveBeenCalled();
+      expect(process.env.MAC_CHROMIUM_TMPDIR).toBeUndefined();
+    } finally { await f.cleanup(); }
   });
   it("latches a composed entry's failed native registration and refuses an after-ready retry", async () => {
     const f = await fixture(), entry = await composedStoreEntry(f, { failRegistration: true });
@@ -166,7 +212,8 @@ describe("packaged desktop provider host", () => {
           .toMatchObject({ event: "store_bootstrap_failed", reason_code: 7 });
         f.events.push("quit");
       });
-      await expect(startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store")).rejects.toThrow("unavailable");
+      await expect(startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store", undefined,
+        await MacAppStoreSingletonTemp.prepare(f.directory))).rejects.toThrow("unavailable");
       await vi.waitFor(() => { expect(f.runtime.app.quit).toHaveBeenCalledOnce(); });
       await diagnostics.failed();
       expect(f.events).toEqual(["acquisition_cleanup", "fixed_diagnostic", "quit"]);
@@ -202,7 +249,8 @@ describe("packaged desktop provider host", () => {
       f.runtime.app.getName = () => "Cosmaneura Scribe Store";
       await expect(startElectronProvider(f.runtime, f.factory)).rejects.toThrow("unavailable");
       expect(f.factory.open).not.toHaveBeenCalled();
-      const application = await startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store");
+      const application = await startElectronProvider(f.runtime, f.factory, "Cosmaneura Scribe Store", undefined,
+        await MacAppStoreSingletonTemp.prepare(f.directory));
       expect(application).not.toBeNull();
       await application!.close();
       expect(f.dispose).toHaveBeenCalledOnce();
