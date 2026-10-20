@@ -9,14 +9,14 @@ import Security
 public enum NativeDesktopStoreContainer {
 #if SCRIBE_MAC_APP_STORE_XPC
     // Team-ID-prefixed macOS group requires no registration and grants no
-    // shared Keychain access. Only the exact native auth role retains credentials.
-    public static let approvedApplicationGroup: String? = "JVV65668U6.com.cosmaneura.scribe.beta.desktop"
+    // shared Keychain access. Only the Store auth role receives its separate credential group.
+    public static let approvedApplicationGroup: String? = "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store"
 #else
     public static let approvedApplicationGroup: String? = nil
 #endif
     static let team = "JVV65668U6"
     static let parent = "com.cosmaneura.scribe.beta.desktop"
-    static let auth = parent + ".auth"
+    static let auth = parent + ".store.auth"
     static let helpers = [auth, parent + ".audio", parent + ".presentation"]
 
     public static func requireContainer() throws -> String {
@@ -67,7 +67,7 @@ public enum NativeDesktopStoreContainer {
             guard let value = claims[key], CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID(),
                   value as? Bool == true else { throw StoreContainerError.unavailable }
         }
-        // Only the native identity owner receives access to existing credentials.
+        // Only the Store identity owner receives its exact isolated credential group.
         if bundle == auth {
             guard claims["keychain-access-groups"] as? [String] == [team + "." + auth] else {
                 throw StoreContainerError.unavailable

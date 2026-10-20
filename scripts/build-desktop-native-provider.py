@@ -85,10 +85,6 @@ def build(
         package / "Sources/ScribeDesktopProvider/W13PrivateTransport.swift",
     )
     if mac_app_store_xpc:
-        copy(
-            repo / "scripts/standalone-provider/DesktopStoreClerkAdmission.swift",
-            package / "Sources/ScribeDesktopProvider/DesktopStoreClerkAdmission.swift",
-        )
         source_root = (
             repo / "apps/desktop-companion/native/ScribeDesktopAudio/Sources/ScribeStorePipe"
         )
@@ -177,7 +173,7 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
                         if mac_app_store_xpc
                         else "mac-app-store-dormant",
                         "approved_application_group": (
-                            "JVV65668U6.com.cosmaneura.scribe.beta.desktop"
+                            "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store"
                         )
                         if mac_app_store_xpc
                         else None,

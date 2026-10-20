@@ -9,7 +9,7 @@ enum NativeSourceJournalError: Error { case unavailable }
 enum NativeSourceJournalPlatform: String, Codable, Sendable {
     case desktop, ios
     var bundleID: String {
-        self == .desktop ? "com.cosmaneura.scribe.beta.desktop.auth" : "com.cosmaneura.scribe.beta"
+        self == .desktop ? NativeClerkConfiguration.desktopBundleIdentifier : "com.cosmaneura.scribe.beta"
     }
     var source: NativeSourcePreparation.Source { self == .desktop ? .desktop : .ios }
 }

@@ -14,7 +14,7 @@ import os
 import subprocess
 from pathlib import Path
 
-GROUP = "JVV65668U6.com.cosmaneura.scribe.beta.desktop"
+GROUP = "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store"
 
 
 def build(output: Path, native_auth: Path) -> None:

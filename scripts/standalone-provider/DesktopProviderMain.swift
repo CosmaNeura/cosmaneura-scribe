@@ -29,7 +29,7 @@ import ScribeStorePipe
 #if SCRIBE_MAC_APP_STORE || SCRIBE_MAC_APP_STORE_XPC
         _ = try NativeDesktopStoreContainer.requireContainer()
 #endif
-        guard Bundle.main.bundleIdentifier == "com.cosmaneura.scribe.beta.desktop.auth",
+        guard Bundle.main.bundleIdentifier == NativeClerkConfiguration.desktopBundleIdentifier,
               let settings = Bundle.main.object(forInfoDictionaryKey: "CosmasNativeAuth") as? [String: Any],
               let receiver = Bundle.main.object(forInfoDictionaryKey: "ScribeProviderReceiver") as? [String: Any]
         else { throw ProviderNativeError.unavailable }
@@ -41,23 +41,26 @@ import ScribeStorePipe
                 throw ProviderNativeError.unavailable
             }
             let config = try NativeClerkConfiguration(publishableKey: key, frontendOrigin: origin,
-                organizationID: nil, bundleIdentifier: "com.cosmaneura.scribe.beta.desktop.auth",
+                organizationID: nil, bundleIdentifier: NativeClerkConfiguration.desktopBundleIdentifier,
                 workspaceOrigin: .desktopApp, identityProfile: .coreStagingPersonal)
             let policy = try NativeTokenPolicy(issuer: origin, audience: nil,
                 authorizedParty: NativeWorkspaceOrigin.desktopApp.rawValue,
                 identityProfile: .coreStagingPersonal)
 #if SCRIBE_MAC_APP_STORE_XPC
-            auth = try DesktopStoreClerkAdmission.construct(appIdentifier: config.bundleIdentifier,
-                readMarker: { UserDefaults.standard.object(forKey: $0) }) {
-                NativeWorkspaceAuth(enabled: true, organizationID: nil, tokenPolicy: policy,
-                    driver: { try ClerkKitWorkspaceDriver(configuration: config) },
-                    accessBlock: { try KeychainAccessBlock(bundleIdentifier: config.bundleIdentifier) })
-            }
-#else
+            // Signed Store membership was checked before this point. Its auth
+            // identity, credential group and source container are distinct from
+            // the direct app; no old marker or owner folder is consulted.
+            let journal = try NativeSourceProofJournal(platform: .desktop,
+                backing: KeychainNativeSourceJournal(platform: .desktop,
+                    bundleIdentifier: config.bundleIdentifier))
+            let storeRecovery = NativeSourceRecovery(journal: journal,
+                desktopDirectory: try nativeDesktopFenceDirectory())
+            try storeRecovery.prepareStoreBeforeAuthentication()
+            recovery = storeRecovery
+#endif
             auth = NativeWorkspaceAuth(enabled: true, organizationID: nil, tokenPolicy: policy,
                 driver: { try ClerkKitWorkspaceDriver(configuration: config) },
                 accessBlock: { try KeychainAccessBlock(bundleIdentifier: config.bundleIdentifier) })
-#endif
         } else {
             auth = NativeWorkspaceAuth(enabled: false, organizationID: nil,
                 driver: { throw NativeAuthError.unavailable },

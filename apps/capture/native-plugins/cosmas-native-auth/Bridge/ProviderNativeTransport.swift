@@ -28,7 +28,7 @@ final class ProviderNativeTransport: NSObject, ProviderNativeWire, URLSessionDel
   ) throws {
     guard
       workspaceOrigin == .appleWebView
-        || Bundle.main.bundleIdentifier == "com.cosmaneura.scribe.beta.desktop.auth"
+        || Bundle.main.bundleIdentifier == NativeClerkConfiguration.desktopBundleIdentifier
     else {
       throw ProviderNativeError.unavailable
     }

@@ -94,6 +94,26 @@ extension NativeSourceProofRecord {
     init(journal: NativeSourceProofJournal, desktopDirectory: String? = nil) {
         self.journal = journal; self.desktopDirectory = desktopDirectory
     }
+#if os(macOS) && SCRIBE_MAC_APP_STORE_XPC
+    /// Own the Store coordinator before Clerk can touch its credentials. Keep
+    /// capture locked until the normal authenticated stop-only recovery barrier.
+    /// This new namespace accepts no transplanted legacy owner or fence anchor.
+    func prepareStoreBeforeAuthentication() throws {
+        guard !ready, !recovering, coordinator == nil, let desktopDirectory else {
+            throw ProviderNativeError.unavailable
+        }
+        try journal.requireUsable()
+        let expected = journal.anchor
+        guard expected == nil || expected?.volumeID != nil else {
+            throw NativeSourceJournalError.unavailable
+        }
+        let acquired = try NativeCaptureProcessCoordinator(privateDirectory: desktopDirectory,
+            expectedAnchor: expected, allowLegacyRemount: false)
+        try journal.reloadWhileExclusive(expectedAnchor: expected)
+        try journal.initializeAnchor(acquired.anchor)
+        coordinator = acquired
+    }
+#endif
     func recover(connection: NativeProviderConnection) async throws {
         #if !os(macOS)
         // A desktop path never substitutes for the mobile process's idle gate.
