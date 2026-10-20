@@ -21,7 +21,7 @@ static bool capture_active, exclusive_admitted;
  * value, identity, descriptor, PID, path or error description is emitted. */
 static void service_diagnostic(unsigned stage) {
     static atomic_uint emitted;
-    if (stage < 1 || stage > 12) return;
+    if (stage < 1 || stage > 32) return;
     unsigned count = atomic_load_explicit(&emitted, memory_order_relaxed);
     do {
         if (count >= 32) return;
@@ -41,6 +41,26 @@ static void service_diagnostic(unsigned stage) {
         case 10: os_log_error(logger, "SCRIBE_STORE_SERVICE:10"); break;
         case 11: os_log_error(logger, "SCRIBE_STORE_SERVICE:11"); break;
         case 12: os_log_error(logger, "SCRIBE_STORE_SERVICE:12"); break;
+        case 13: os_log_error(logger, "SCRIBE_STORE_SERVICE:13"); break;
+        case 14: os_log_error(logger, "SCRIBE_STORE_SERVICE:14"); break;
+        case 15: os_log_error(logger, "SCRIBE_STORE_SERVICE:15"); break;
+        case 16: os_log_error(logger, "SCRIBE_STORE_SERVICE:16"); break;
+        case 17: os_log_error(logger, "SCRIBE_STORE_SERVICE:17"); break;
+        case 18: os_log_error(logger, "SCRIBE_STORE_SERVICE:18"); break;
+        case 19: os_log_error(logger, "SCRIBE_STORE_SERVICE:19"); break;
+        case 20: os_log_error(logger, "SCRIBE_STORE_SERVICE:20"); break;
+        case 21: os_log_error(logger, "SCRIBE_STORE_SERVICE:21"); break;
+        case 22: os_log_error(logger, "SCRIBE_STORE_SERVICE:22"); break;
+        case 23: os_log_error(logger, "SCRIBE_STORE_SERVICE:23"); break;
+        case 24: os_log_error(logger, "SCRIBE_STORE_SERVICE:24"); break;
+        case 25: os_log_error(logger, "SCRIBE_STORE_SERVICE:25"); break;
+        case 26: os_log_error(logger, "SCRIBE_STORE_SERVICE:26"); break;
+        case 27: os_log_error(logger, "SCRIBE_STORE_SERVICE:27"); break;
+        case 28: os_log_error(logger, "SCRIBE_STORE_SERVICE:28"); break;
+        case 29: os_log_error(logger, "SCRIBE_STORE_SERVICE:29"); break;
+        case 30: os_log_error(logger, "SCRIBE_STORE_SERVICE:30"); break;
+        case 31: os_log_error(logger, "SCRIBE_STORE_SERVICE:31"); break;
+        case 32: os_log_error(logger, "SCRIBE_STORE_SERVICE:32"); break;
     }
     os_release(logger);
 }
@@ -58,15 +78,92 @@ static bool code_boolean_is_true(SecStaticCodeRef code, CFStringRef key) {
     if (information) CFRelease(information);
     return valid;
 }
+/* These details classify only our fixed signed-claim checks. No entitlement
+ * value, OSStatus or message field is returned or logged. */
+static unsigned peer_failure_class(OSStatus status) {
+    switch (status) {
+        case errSecCSSignatureNotVerifiable:
+        case errSecAuthFailed:
+        case errSecInteractionNotAllowed: return 25;
+        case errSecCSUnsigned:
+        case errSecCSUnsignedNestedCode: return 26;
+        case errSecParam:
+        case errSecCSInvalidObjectRef:
+        case errSecCSInvalidAttributeValues:
+        case errSecCSUnsupportedGuestAttributes:
+        case errSecCSBadObjectFormat:
+        case errSecCSBadBundleFormat: return 27;
+        case errSecCSSignatureFailed:
+        case errSecCSSignatureUnsupported:
+        case errSecCSSignatureInvalid:
+        case errSecCSGuestInvalid:
+        case errSecCSStaticCodeChanged:
+        case errSecCSSignatureUntrusted:
+        case errSecNotTrusted:
+        case errSecCertificateExpired:
+        case errSecCertificateNotValidYet: return 28;
+        case errSecCSReqFailed:
+        case errSecCSHostReject: return 29;
+        case errSecCSResourcesNotSealed:
+        case errSecCSResourcesNotFound:
+        case errSecCSResourcesInvalid:
+        case errSecCSBadResource:
+        case errSecCSResourceRulesInvalid:
+        case errSecCSResourceDirectoryFailed:
+        case errSecCSBadDictionaryFormat:
+        case errSecCSBadNestedCode: return 30;
+        case errSecCSNoSuchCode:
+        case errSecCSStaticCodeNotFound:
+        case errSecCSNotAHost: return 31;
+        default: return 32;
+    }
+}
+static bool peer_boolean_is_true(SecStaticCodeRef code, bool inherited, unsigned *failure, unsigned *failure_class) {
+    CFDictionaryRef information = NULL;
+    OSStatus status = code ? SecCodeCopySigningInformation(code, kSecCSSigningInformation, &information) : errSecSuccess;
+    bool valid = code && status == errSecSuccess;
+    if (!valid) {
+        *failure = 16;
+        if (status != errSecSuccess) *failure_class = peer_failure_class(status);
+    } else if (!information || CFGetTypeID(information) != CFDictionaryGetTypeID()) {
+        valid = false; *failure = 17;
+    } else {
+        CFTypeRef claims = CFDictionaryGetValue(information, kSecCodeInfoEntitlementsDict);
+        if (!claims || CFGetTypeID(claims) != CFDictionaryGetTypeID()) {
+            valid = false; *failure = 18;
+        } else {
+            CFStringRef key = inherited ? CFSTR("com.apple.security.inherit") : CFSTR("com.apple.security.app-sandbox");
+            CFTypeRef value = CFDictionaryGetValue((CFDictionaryRef)claims, key);
+            if (!value) {
+                valid = false; *failure = inherited ? 22 : 19;
+            } else if (CFGetTypeID(value) != CFBooleanGetTypeID()) {
+                valid = false; *failure = inherited ? 23 : 20;
+            } else if (!CFBooleanGetValue((CFBooleanRef)value)) {
+                valid = false; *failure = inherited ? 24 : 21;
+            }
+        }
+    }
+    if (information) CFRelease(information);
+    return valid;
+}
 /* The XPC dictionary carries the kernel-authenticated sender, not a request PID.
- * Check both signed Boolean types before decoding or retaining any descriptors. */
-static bool peer_booleans_are_true(xpc_object_t message) {
+ * Check both signed Boolean types before decoding or retaining any descriptors.
+ * The caller emits its existing stage4 before this first failed fixed detail. */
+static bool peer_booleans_are_true(xpc_object_t message, unsigned *failure, unsigned *failure_class) {
     SecCodeRef code = NULL; SecStaticCodeRef static_code = NULL;
-    bool valid = SecCodeCreateWithXPCMessage(message, 0, &code) == errSecSuccess
-        && SecCodeCheckValidity(code, 0, NULL) == errSecSuccess
-        && SecCodeCopyStaticCode(code, 0, &static_code) == errSecSuccess
-        && code_boolean_is_true(static_code, CFSTR("com.apple.security.app-sandbox"))
-        && code_boolean_is_true(static_code, CFSTR("com.apple.security.inherit"));
+    *failure = 0; *failure_class = 0;
+    bool valid = false;
+    OSStatus status = SecCodeCreateWithXPCMessage(message, 0, &code);
+    if (status != errSecSuccess) {
+        *failure = 13; *failure_class = peer_failure_class(status);
+    } else if ((status = SecCodeCheckValidity(code, 0, NULL)) != errSecSuccess) {
+        *failure = 14; *failure_class = peer_failure_class(status);
+    } else if ((status = SecCodeCopyStaticCode(code, 0, &static_code)) != errSecSuccess) {
+        *failure = 15; *failure_class = peer_failure_class(status);
+    } else {
+        valid = peer_boolean_is_true(static_code, false, failure, failure_class)
+            && peer_boolean_is_true(static_code, true, failure, failure_class);
+    }
     if (static_code) CFRelease(static_code); if (code) CFRelease(code);
     return valid;
 }
@@ -125,7 +222,11 @@ static void accept_peer(xpc_connection_t peer) {
             service_diagnostic(2); xpc_connection_cancel(peer); return;
         }
         if (xpc_connection_get_euid(peer) != getuid()) { service_diagnostic(3); xpc_connection_cancel(peer); return; }
-        if (!peer_booleans_are_true(event)) { service_diagnostic(4); xpc_connection_cancel(peer); return; }
+        unsigned peer_failure = 0, failure_class = 0;
+        if (!peer_booleans_are_true(event, &peer_failure, &failure_class)) {
+            service_diagnostic(4); service_diagnostic(peer_failure); service_diagnostic(failure_class);
+            xpc_connection_cancel(peer); return;
+        }
         if (!scribe_store_decode_open(event, service_role, &open)) { service_diagnostic(5); xpc_connection_cancel(peer); return; }
         capture = is_capture(open.mode);
         if (!verified_host(peer, open.host)) {
