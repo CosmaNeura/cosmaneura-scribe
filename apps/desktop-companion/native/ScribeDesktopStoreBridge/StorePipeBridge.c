@@ -14,13 +14,16 @@ static void bridge_diagnostic(unsigned code) {
         "SCRIBE_STORE_BRIDGE:1\n", "SCRIBE_STORE_BRIDGE:2\n", "SCRIBE_STORE_BRIDGE:3\n",
         "SCRIBE_STORE_BRIDGE:4\n", "SCRIBE_STORE_BRIDGE:5\n", "SCRIBE_STORE_BRIDGE:6\n",
         "SCRIBE_STORE_BRIDGE:7\n", "SCRIBE_STORE_BRIDGE:8\n", "SCRIBE_STORE_BRIDGE:9\n",
-        "SCRIBE_STORE_BRIDGE:10\n", "SCRIBE_STORE_BRIDGE:11\n", "SCRIBE_STORE_BRIDGE:12\n"};
+        "SCRIBE_STORE_BRIDGE:10\n", "SCRIBE_STORE_BRIDGE:11\n", "SCRIBE_STORE_BRIDGE:12\n",
+        "SCRIBE_STORE_BRIDGE:13\n", "SCRIBE_STORE_BRIDGE:14\n"};
     if (code > 0 && code < sizeof(markers) / sizeof(markers[0]))
         (void)write(STDERR_FILENO, markers[code], strlen(markers[code]));
 }
 static unsigned bridge_xpc_error_diagnostic(xpc_object_t error) {
     if (error == XPC_ERROR_CONNECTION_INVALID) return 10;
     if (error == XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT) return 11;
+    if (error == XPC_ERROR_CONNECTION_INTERRUPTED) return 13;
+    if (error == XPC_ERROR_TERMINATION_IMMINENT) return 14;
     return 9;
 }
 

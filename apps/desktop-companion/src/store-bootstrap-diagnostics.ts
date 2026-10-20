@@ -19,7 +19,7 @@ export class StoreBootstrapDiagnostics {
   bindValidatedDirectory(directory: string): void { this.directory = directory; }
   observeBridge(event: string, code: number | undefined): void {
     if (!Number.isSafeInteger(code)) return;
-    if (event === "store_bridge_failed" && code! >= 1 && code! <= 12) this.bridgeReason ??= code;
+    if (event === "store_bridge_failed" && code! >= 1 && code! <= 14) this.bridgeReason ??= code;
     if (event === "store_bridge_exit" && code! >= 0 && code! <= 255) this.bridgeExit ??= code;
     if (event === "store_bridge_signal" && code! >= 1 && code! <= 3) this.bridgeSignal ??= code;
   }
@@ -76,7 +76,7 @@ export class StoreBridgeDiagnosticDecoder {
     let end: number;
     while ((end = this.pending.indexOf("\n")) >= 0) {
       const line = this.pending.slice(0, end); this.pending = this.pending.slice(end + 1);
-      const match = /^SCRIBE_STORE_BRIDGE:([1-9]|1[0-2])$/u.exec(line);
+      const match = /^SCRIBE_STORE_BRIDGE:([1-9]|1[0-4])$/u.exec(line);
       if (match && this.remaining-- > 0) this.accept(Number(match[1]));
     }
   }

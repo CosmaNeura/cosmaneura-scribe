@@ -4,6 +4,8 @@
 #include <Security/Security.h>
 #include <dispatch/dispatch.h>
 #include <libproc.h>
+#include <os/log.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -14,6 +16,34 @@ static scribe_store_stop stop_worker;
 static dispatch_queue_t queue;
 static unsigned active;
 static bool capture_active, exclusive_admitted;
+
+/* First-refusal vocabulary, with a process-wide bound. No request-derived
+ * value, identity, descriptor, PID, path or error description is emitted. */
+static void service_diagnostic(unsigned stage) {
+    static atomic_uint emitted;
+    if (stage < 1 || stage > 12) return;
+    unsigned count = atomic_load_explicit(&emitted, memory_order_relaxed);
+    do {
+        if (count >= 32) return;
+    } while (!atomic_compare_exchange_weak_explicit(&emitted, &count, count + 1,
+        memory_order_relaxed, memory_order_relaxed));
+    os_log_t logger = os_log_create("com.cosmaneura.scribe.store.bootstrap", "listener");
+    switch (stage) {
+        case 1: os_log_error(logger, "SCRIBE_STORE_SERVICE:1"); break;
+        case 2: os_log_error(logger, "SCRIBE_STORE_SERVICE:2"); break;
+        case 3: os_log_error(logger, "SCRIBE_STORE_SERVICE:3"); break;
+        case 4: os_log_error(logger, "SCRIBE_STORE_SERVICE:4"); break;
+        case 5: os_log_error(logger, "SCRIBE_STORE_SERVICE:5"); break;
+        case 6: os_log_error(logger, "SCRIBE_STORE_SERVICE:6"); break;
+        case 7: os_log_error(logger, "SCRIBE_STORE_SERVICE:7"); break;
+        case 8: os_log_error(logger, "SCRIBE_STORE_SERVICE:8"); break;
+        case 9: os_log_error(logger, "SCRIBE_STORE_SERVICE:9"); break;
+        case 10: os_log_error(logger, "SCRIBE_STORE_SERVICE:10"); break;
+        case 11: os_log_error(logger, "SCRIBE_STORE_SERVICE:11"); break;
+        case 12: os_log_error(logger, "SCRIBE_STORE_SERVICE:12"); break;
+    }
+    os_release(logger);
+}
 
 static bool store_boolean_is_true(CFTypeRef value) {
     return value && CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)value);
@@ -74,11 +104,12 @@ static bool is_capture(const char *mode) { return !strcmp(mode, "--capture-v2") 
 static void accept_peer(xpc_connection_t peer) {
     xpc_connection_set_target_queue(peer, queue);
     const char *requirement = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists and entitlement[\"com.apple.security.inherit\"] exists";
-    if (xpc_connection_set_peer_code_signing_requirement(peer, requirement)) { xpc_connection_cancel(peer); return; }
+    if (xpc_connection_set_peer_code_signing_requirement(peer, requirement)) { service_diagnostic(1); xpc_connection_cancel(peer); return; }
     __block bool accepted = false, closing = false, finished = false, capture = false;
     __block struct scribe_store_open open = {.input = -1, .output = -1};
     xpc_connection_set_event_handler(peer, ^(xpc_object_t event) {
         if (xpc_get_type(event) == XPC_TYPE_ERROR) {
+            if (!accepted) service_diagnostic(10);
             if (accepted && !closing && !finished) {
                 closing = true;
                 stop_worker(&open);
@@ -90,21 +121,29 @@ static void accept_peer(xpc_connection_t peer) {
             }
             return;
         }
-        if (accepted || (service_role != SCRIBE_AUDIO && exclusive_admitted) || active >= 8
-            || xpc_connection_get_euid(peer) != getuid()
-            || !peer_booleans_are_true(event)
-            || !scribe_store_decode_open(event, service_role, &open)) { xpc_connection_cancel(peer); return; }
+        if (accepted || (service_role != SCRIBE_AUDIO && exclusive_admitted) || active >= 8) {
+            service_diagnostic(2); xpc_connection_cancel(peer); return;
+        }
+        if (xpc_connection_get_euid(peer) != getuid()) { service_diagnostic(3); xpc_connection_cancel(peer); return; }
+        if (!peer_booleans_are_true(event)) { service_diagnostic(4); xpc_connection_cancel(peer); return; }
+        if (!scribe_store_decode_open(event, service_role, &open)) { service_diagnostic(5); xpc_connection_cancel(peer); return; }
         capture = is_capture(open.mode);
-        if (!verified_host(peer, open.host) || (capture && capture_active)) {
+        if (!verified_host(peer, open.host)) {
+            service_diagnostic(6);
+            scribe_store_close_open(&open); xpc_connection_cancel(peer); return;
+        }
+        if (capture && capture_active) {
+            service_diagnostic(7);
             scribe_store_close_open(&open); xpc_connection_cancel(peer); return;
         }
         xpc_object_t reply = xpc_dictionary_create_reply(event);
-        if (!reply) { scribe_store_close_open(&open); xpc_connection_cancel(peer); return; }
+        if (!reply) { service_diagnostic(8); scribe_store_close_open(&open); xpc_connection_cancel(peer); return; }
         active++; if (capture) capture_active = true;
         if (service_role != SCRIBE_AUDIO) exclusive_admitted = true;
         accepted = true; xpc_retain(peer);
         /* The retained reply holds the documented XPC transaction while native
          * workers drain. No endpoint, path or credential crosses this boundary. */
+        service_diagnostic(9);
         start_worker(&open, ^(int code) {
             dispatch_async(queue, ^{
                 if (finished) return;
@@ -129,7 +168,8 @@ static void accept_peer(xpc_connection_t peer) {
 }
 
 int scribe_store_service_run(enum scribe_store_role role, scribe_store_start start, scribe_store_stop stop) {
-    if (!scribe_store_approved_group() || !scribe_store_service(role) || !start || !stop) return 78;
+    service_diagnostic(11);
+    if (!scribe_store_approved_group() || !scribe_store_service(role) || !start || !stop) { service_diagnostic(12); return 78; }
     service_role = role; start_worker = Block_copy(start); stop_worker = Block_copy(stop);
     queue = dispatch_queue_create("scribe.store.private-pipe", DISPATCH_QUEUE_SERIAL);
     xpc_main(accept_peer);

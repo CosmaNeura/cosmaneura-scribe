@@ -4,6 +4,7 @@ import CosmasNativeAuth
 import Foundation
 #if SCRIBE_MAC_APP_STORE_XPC
 import Darwin
+import OSLog
 import ScribeStorePipe
 #endif
 
@@ -282,6 +283,23 @@ import ScribeStorePipe
 }
 
 #if SCRIBE_MAC_APP_STORE_XPC
+/// Literal-only process stages; never request, credential, path or error data.
+private func storeAuthDiagnostic(_ stage: Int) {
+    let logger = Logger(subsystem: "com.cosmaneura.scribe.store.bootstrap", category: "auth-entry")
+    switch stage {
+    case 1: logger.error("SCRIBE_STORE_AUTH_ENTRY:1")
+    case 2: logger.error("SCRIBE_STORE_AUTH_ENTRY:2")
+    case 3: logger.error("SCRIBE_STORE_AUTH_ENTRY:3")
+    case 4: logger.error("SCRIBE_STORE_AUTH_ENTRY:4")
+    case 5: logger.error("SCRIBE_STORE_AUTH_ENTRY:5")
+    case 6: logger.error("SCRIBE_STORE_AUTH_ENTRY:6")
+    case 7: logger.error("SCRIBE_STORE_AUTH_ENTRY:7")
+    case 8: logger.error("SCRIBE_STORE_AUTH_ENTRY:8")
+    case 9: logger.error("SCRIBE_STORE_AUTH_ENTRY:9")
+    default: break
+    }
+}
+
 /// The C service retains its originals. This snapshot owns only explicit dup
 /// descriptors and a retained completion block across the asynchronous hop.
 private final class DesktopProviderStoreRequest: @unchecked Sendable {
@@ -317,9 +335,11 @@ private final class DesktopProviderStoreRequest: @unchecked Sendable {
     func start(_ request: DesktopProviderStoreRequest) {
         guard !stopped, !stoppedInputs.contains(request.sourceInput), self.request == nil else { request.completed(70); return }
         self.request = request
+        storeAuthDiagnostic(6)
         do {
             owner = try DesktopProviderOwner(output: request.output, onClose: { [weak self] in self?.stop() })
-        } catch { readerDone = true; stop(code: 78); return }
+            storeAuthDiagnostic(7)
+        } catch { storeAuthDiagnostic(8); readerDone = true; stop(code: 78); return }
         DispatchQueue.global(qos: .userInitiated).async {
             let code = request.input.readFrames { frame in
                 // Bound delivery to one pending main-actor frame; the native
@@ -369,19 +389,24 @@ private final class DesktopProviderStoreRequest: @unchecked Sendable {
 
 @main private struct DesktopProviderMain {
     @MainActor static func main() {
+        storeAuthDiagnostic(1)
         do {
             _ = try NativeDesktopStoreContainer.requireContainer()
+            storeAuthDiagnostic(2)
             guard let service = Bundle.main.object(forInfoDictionaryKey: "XPCService") as? [String: Any],
                   service["JoinExistingSession"] as? Bool == true,
-                  service["RunLoopType"] as? String == "NSRunLoop" else { return }
+                  service["RunLoopType"] as? String == "NSRunLoop" else {
+                storeAuthDiagnostic(3); return
+            }
             NSApplication.shared.setActivationPolicy(.accessory)
             let session = DesktopProviderStoreSession()
+            storeAuthDiagnostic(4)
             _ = scribe_store_service_run(SCRIBE_AUTH, { request, completed in
                 guard let request, let completed else { return }
                 do {
                     let retained = try DesktopProviderStoreRequest(request, completed: completed)
                     Task { @MainActor in session.start(retained) }
-                } catch { completed(78) }
+                } catch { storeAuthDiagnostic(9); completed(78) }
             }, { open in
                 guard let open else { return }
                 let input = open.pointee.input
@@ -389,7 +414,10 @@ private final class DesktopProviderStoreRequest: @unchecked Sendable {
             })
             // xpc_main drives the documented NSRunLoop service mode; do not run
             // a competing NSApplication loop or terminate the service from UI.
-        } catch { /* Missing membership cannot create an auth owner. */ }
+        } catch {
+            storeAuthDiagnostic(5)
+            /* Missing membership cannot create an auth owner. */
+        }
     }
 }
 #else

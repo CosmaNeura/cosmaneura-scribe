@@ -31,7 +31,7 @@ class XpcVariantTests(unittest.TestCase):
         ).read_text()
         self.assertEqual(
             re.findall(r'"SCRIBE_STORE_BRIDGE:([^"\n]*)"', source),
-            [str(code) + r"\n" for code in range(1, 13)],
+            [str(code) + r"\n" for code in range(1, 15)],
         )
         diagnostic = source[
             source.index("static void bridge_diagnostic") : source.index(
@@ -54,10 +54,15 @@ class XpcVariantTests(unittest.TestCase):
         self.assertIn(
             "if (error == XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT) return 11;", classification
         )
+        self.assertIn("if (error == XPC_ERROR_CONNECTION_INTERRUPTED) return 13;", classification)
+        self.assertIn("if (error == XPC_ERROR_TERMINATION_IMMINENT) return 14;", classification)
         self.assertIn("return 9;", classification)
         self.assertIn("bridge_diagnostic(bridge_xpc_error_diagnostic(event)); _exit(70);", source)
         self.assertIn("bridge_diagnostic(bridge_xpc_error_diagnostic(reply)); _exit(70);", source)
         self.assertIn("_exit(code >= 0 && code <= 255 ? (int)code : 70);", source)
+
+
+
 
     def test_bridge_diagnostics_preserve_exact_stop_source(self):
         source = (

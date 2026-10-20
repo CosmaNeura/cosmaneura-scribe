@@ -2,6 +2,9 @@
 import Darwin
 import Foundation
 import Security
+#if SCRIBE_MAC_APP_STORE_XPC
+import OSLog
+#endif
 
 /// Compiled distribution choice. No bundle setting, pipe, argv or environment
 /// value can enable the store path or select a container. Remains unavailable
@@ -19,30 +22,57 @@ public enum NativeDesktopStoreContainer {
     static let auth = parent + ".store.auth"
     static let helpers = [auth, parent + ".audio", parent + ".presentation"]
 
+    /// Fixed failure vocabulary only. No OS error, path, identity or claims.
+    private static func unavailable(_ stage: Int) -> StoreContainerError {
+#if SCRIBE_MAC_APP_STORE_XPC
+        let logger = Logger(subsystem: "com.cosmaneura.scribe.store.bootstrap", category: "container")
+        switch stage {
+        case 1: logger.error("SCRIBE_STORE_CONTAINER:1")
+        case 2: logger.error("SCRIBE_STORE_CONTAINER:2")
+        case 3: logger.error("SCRIBE_STORE_CONTAINER:3")
+        case 4: logger.error("SCRIBE_STORE_CONTAINER:4")
+        case 5: logger.error("SCRIBE_STORE_CONTAINER:5")
+        case 6: logger.error("SCRIBE_STORE_CONTAINER:6")
+        case 7: logger.error("SCRIBE_STORE_CONTAINER:7")
+        case 8: logger.error("SCRIBE_STORE_CONTAINER:8")
+        case 9: logger.error("SCRIBE_STORE_CONTAINER:9")
+        case 10: logger.error("SCRIBE_STORE_CONTAINER:10")
+        case 11: logger.error("SCRIBE_STORE_CONTAINER:11")
+        case 12: logger.error("SCRIBE_STORE_CONTAINER:12")
+        default: break
+        }
+#endif
+        return .unavailable
+    }
+
     public static func requireContainer() throws -> String {
-        guard let group = approvedApplicationGroup else { throw StoreContainerError.unavailable }
+        guard let group = approvedApplicationGroup else { throw unavailable(1) }
         var code: SecCode?
-        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
-              SecCodeCheckValidity(code, [], nil) == errSecSuccess else { throw StoreContainerError.unavailable }
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { throw unavailable(2) }
+        guard SecCodeCheckValidity(code, [], nil) == errSecSuccess else { throw unavailable(3) }
         var staticCode: SecStaticCode?
-        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { throw StoreContainerError.unavailable }
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { throw unavailable(4) }
         var information: CFDictionary?
-        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
-              let signed = information as? [String: Any],
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess else {
+            throw unavailable(5)
+        }
+        guard let signed = information as? [String: Any],
               let claims = signed[kSecCodeInfoEntitlementsDict as String] as? [String: Any],
               let identifier = signed[kSecCodeInfoIdentifier as String] as? String,
               let bundle = Bundle.main.bundleIdentifier,
-              identifier == bundle else { throw StoreContainerError.unavailable }
-        try validateMembership(claims, bundle: bundle, approvedGroup: group)
-        guard let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group),
-              url.isFileURL, url.path.hasPrefix("/"), url.standardizedFileURL.path == url.path,
-              url.resolvingSymlinksInPath().path == url.path else { throw StoreContainerError.unavailable }
+              identifier == bundle else { throw unavailable(6) }
+        do { try validateMembership(claims, bundle: bundle, approvedGroup: group) }
+        catch { _ = unavailable(7); throw error }
+        guard let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else { throw unavailable(8) }
+        guard url.isFileURL, url.path.hasPrefix("/"), url.standardizedFileURL.path == url.path,
+              url.resolvingSymlinksInPath().path == url.path else { throw unavailable(9) }
         let descriptor = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else { throw StoreContainerError.unavailable }
+        guard descriptor >= 0 else { throw unavailable(10) }
         defer { Darwin.close(descriptor) }
         var info = stat()
-        guard fstat(descriptor, &info) == 0, info.st_uid == getuid(), info.st_mode & 0o022 == 0 else {
-            throw StoreContainerError.unavailable
+        guard fstat(descriptor, &info) == 0 else { throw unavailable(11) }
+        guard info.st_uid == getuid(), info.st_mode & 0o022 == 0 else {
+            throw unavailable(12)
         }
         return url.path
     }
