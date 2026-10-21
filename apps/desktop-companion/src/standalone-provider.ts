@@ -109,6 +109,7 @@ export async function openStandaloneProvider(runtime: PackagedRuntime): Promise<
             ...(runtime.recordingWindow ? { primaryWindowId: () => runtime.recordingWindow!.primaryWindowId() } : {}) });
           diagnostics("presentation_ready");
           const inputs = new NativeMicrophoneInputService({ ...audioOptions,
+            diagnostics,
             loadSelectedUID: async () => { const store=await preference();currentPreferenceScope();return store.load(); },
             saveSelectedUID: async uid => { const store=await preference();currentPreferenceScope();await store.save(uid);currentPreferenceScope(); },
             isSessionActive: () => !linked.aborted && !backend.signal.aborted && native.isReady() });
