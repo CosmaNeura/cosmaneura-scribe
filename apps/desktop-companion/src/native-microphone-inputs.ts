@@ -4,11 +4,14 @@ import type { Readable, Writable } from "node:stream";
 import type { AudioInputDevice, AudioPreflightSnapshot } from "../../capture/src/provider/audio-preflight";
 import { requestNativeRecordingAccess, verifyNativeHelper } from "./native-process-driver.js";
 import { exactKeys, nativeCommand, nativeMetadata, NativeProcessDecoder } from "./native-process-wire.js";
+import type { RuntimeDiagnostic } from "./runtime-diagnostics.js";
 
 interface Input { readonly id: string; readonly uid: string; readonly label: string; readonly kind: AudioInputDevice["kind"] }
 interface Options {
   readonly helperPath: string; readonly helperSha256: string;
   readonly isSessionActive: () => boolean;
+  /** Fixed numeric lifecycle metadata; never a device UID or permission grant. */
+  readonly diagnostics?: RuntimeDiagnostic;
   readonly selectedUID?: string | null;
   readonly loadSelectedUID?: () => Promise<string | null>;
   readonly saveSelectedUID?: (uid: string) => Promise<void>;

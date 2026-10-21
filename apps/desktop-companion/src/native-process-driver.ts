@@ -11,6 +11,7 @@ import type { DesktopPCMDriver, DesktopPCMDriverSession, DesktopPCMFailure,
 import { parseDesktopPCMStart, parseDesktopPCMCompletion } from "./pcm-capture-source.js";
 import { NativeProcessDecoder, nativeCommand, nativeMetadata, exactKeys } from "./native-process-wire.js";
 import type { RuntimeDiagnostic, RuntimeTimingEvent } from "./runtime-diagnostics.js";
+import { StoreBridgeDiagnosticDecoder } from "./store-bootstrap-diagnostics.js";
 
 export interface AuthorizedDesktopSelection {
   readonly application: "com.google.Chrome" | "us.zoom.xos" | "microphone";
@@ -63,7 +64,7 @@ export class NativeProcessPCMDriver implements DesktopPCMDriver {
       if (!this.options.enabled || !this.options.isSessionActive()) return false;
       await timed(this.options, "audio_availability_helper_check", () => verifyNativeHelper(this.options));
       if (!this.options.isSessionActive()) return false;
-      return await timed(this.options, "audio_availability_probe", () => probe(this.options.helperPath, undefined, this.options.audioMode?.() === "microphone"))
+      return await timed(this.options, "audio_availability_probe", () => probe(this.options.helperPath, undefined, this.options.audioMode?.() === "microphone", this.options.diagnostics))
         && this.options.isSessionActive();
     } catch { return false; }
   }
@@ -403,16 +404,19 @@ export async function requestNativeRecordingAccess(options: Pick<NativeProcessDr
     if (!options.enabled || signal.aborted || !options.isSessionActive()) return false;
     await timed(options, "audio_permission_helper_check", () => verifyNativeHelper(options));
     if (signal.aborted || !options.isSessionActive()) return false;
-    return await timed(options, "audio_permission_probe", () => probe(options.helperPath, signal, microphoneOnly))
+    return await timed(options, "audio_permission_probe", () => probe(options.helperPath, signal, microphoneOnly, options.diagnostics))
       && !signal.aborted && options.isSessionActive();
   } catch { return false; }
 }
-async function probe(path: string, permissionSignal?: AbortSignal, microphoneOnly = false): Promise<boolean> {
+async function probe(path: string, permissionSignal?: AbortSignal, microphoneOnly = false,
+  diagnostics?: RuntimeDiagnostic): Promise<boolean> {
   if (permissionSignal?.aborted) return false;
   return await new Promise<boolean>(resolve => {
     const storePipeBridge = "mas" in process && process.mas === true && basename(path) === "ScribeStorePipeBridge";
-    const child = launch(path, microphoneOnly ? permissionSignal ? "--microphone-permissions-v1" : "--microphone-availability-v1"
-      : permissionSignal ? "--request-permissions-v1" : "--availability-v1");
+    const child = spawn(path, [microphoneOnly ? permissionSignal ? "--microphone-permissions-v1" : "--microphone-availability-v1"
+      : permissionSignal ? "--request-permissions-v1" : "--availability-v1"], {
+      stdio: ["pipe", "pipe", storePipeBridge ? "pipe" : "ignore"], env: {}, cwd: dirname(path), windowsHide: true,
+    }) as ChildProcessByStdio<Writable, Readable, Readable | null>;
     const decoder = new NativeProcessDecoder();
     let available: boolean | undefined;
     // Neither probe mode records. OS setup may wait for an explicit user choice;
@@ -420,6 +424,16 @@ async function probe(path: string, permissionSignal?: AbortSignal, microphoneOnl
     const cancel = (): void => { available = false; child.kill("SIGKILL"); };
     const timer = setTimeout(cancel, permissionSignal ? 120_000 : DEADLINE_MS);
     permissionSignal?.addEventListener("abort", cancel, { once: true });
+    const bridgeDiagnostic = (event: "store_bridge_failed" | "store_bridge_exit" | "store_bridge_signal", code: number): void => {
+      try { diagnostics?.(event, undefined, code); } catch { /* Observation cannot change finite-probe ownership. */ }
+    };
+    if (storePipeBridge) {
+      // Reuse the existing1024-byte/16-event closed ASCII decoder. Raw stderr
+      // is never retained, surfaced or passed to the diagnostic observer.
+      const bridge = new StoreBridgeDiagnosticDecoder(reason => bridgeDiagnostic("store_bridge_failed", reason));
+      child.stderr?.on("data", (bytes: Buffer) => bridge.push(bytes));
+      child.stderr?.on("error", () => undefined);
+    }
     child.stdout.on("data", (bytes: Buffer) => {
       try {
         decoder.push(bytes, (kind, payload) => {
@@ -432,11 +446,17 @@ async function probe(path: string, permissionSignal?: AbortSignal, microphoneOnl
     });
     child.stdin.on("error", () => undefined);
     child.on("error", () => { available = false; });
-    child.once("close", code => {
+    child.once("close", (code, signal) => {
       clearTimeout(timer);
       permissionSignal?.removeEventListener("abort", cancel);
       try { decoder.finish(); } catch { available = false; }
-      resolve(code === 0 && available === true && !permissionSignal?.aborted);
+      const result = code === 0 && available === true && !permissionSignal?.aborted;
+      if (storePipeBridge && !result) {
+        // Successful advisory probes do not consume the reserved terminal budget.
+        if (Number.isSafeInteger(code) && code! >= 0 && code! <= 255) bridgeDiagnostic("store_bridge_exit", code!);
+        if (signal) bridgeDiagnostic("store_bridge_signal", signal === "SIGTERM" ? 1 : signal === "SIGKILL" ? 2 : 3);
+      }
+      resolve(result);
     });
     // Store admission requires a connected stdin socket. The finite native
     // worker exits after its reply; child exit or cancellation closes the pipe.
