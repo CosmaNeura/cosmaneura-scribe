@@ -82,7 +82,8 @@ public enum NativeDesktopStoreContainer {
         let identityKeys: Set<String> = ["com.apple.security.app-sandbox", "com.apple.security.application-groups",
             "com.apple.developer.team-identifier", "com.apple.application-identifier"]
         let roleKeys: Set<String> = bundle == auth ? ["keychain-access-groups", "com.apple.security.network.client"]
-            : bundle == parent + ".audio" ? ["com.apple.security.device.audio-input"] : []
+            : bundle == parent + ".audio" ? ["com.apple.security.device.audio-input",
+                "com.apple.security.device.microphone"] : []
         guard !approvedGroup.isEmpty, !approvedGroup.contains("/"),
               helpers.contains(bundle),
               Set(claims.keys) == identityKeys.union(roleKeys),

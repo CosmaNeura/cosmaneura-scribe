@@ -74,6 +74,7 @@ def xpc_claims() -> dict[str, dict[str, object]]:
     )
     audio = role(HELPER_BASE + ".audio")
     audio["com.apple.security.device.audio-input"] = True
+    audio["com.apple.security.device.microphone"] = True
     return {
         "parent": parent,
         "inherited-child": {

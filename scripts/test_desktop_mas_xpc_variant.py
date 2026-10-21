@@ -205,7 +205,24 @@ class XpcVariantTests(unittest.TestCase):
         )
         self.assertEqual(XPC.GROUP, XPC.TEAM + "." + XPC.PARENT)
         self.assertNotEqual(XPC.GROUP, XPC.TEAM + "." + DIRECT.PARENT)
-        self.assertNotIn("com.apple.security.device.audio-input", claims["native-auth"])
+        audio_permissions = {
+            "com.apple.security.device.audio-input": True,
+            "com.apple.security.device.microphone": True,
+        }
+        self.assertEqual(
+            claims["native-audio"],
+            {
+                "com.apple.security.app-sandbox": True,
+                "com.apple.security.application-groups": [XPC.GROUP],
+                "com.apple.application-identifier": XPC.TEAM + "." + XPC.HELPER_BASE + ".audio",
+                "com.apple.developer.team-identifier": XPC.TEAM,
+                **audio_permissions,
+            },
+        )
+        for role, value in claims.items():
+            if role != "native-audio":
+                for permission in audio_permissions:
+                    self.assertNotIn(permission, value)
 
     def test_spawned_bridge_has_only_inherited_sandbox(self):
         self.assertEqual(
