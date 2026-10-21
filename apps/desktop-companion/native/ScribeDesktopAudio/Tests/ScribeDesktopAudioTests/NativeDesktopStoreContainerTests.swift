@@ -17,6 +17,7 @@ final class NativeDesktopStoreContainerTests: XCTestCase {
             value["com.apple.security.network.client"] = true
         } else if bundle == NativeDesktopStoreContainer.parent + ".audio" {
             value["com.apple.security.device.audio-input"] = true
+            value["com.apple.security.device.microphone"] = true
         }
         return value
     }
@@ -81,6 +82,27 @@ final class NativeDesktopStoreContainerTests: XCTestCase {
         for network: Any in [false, NSNumber(value: 1)] {
             var value = claims(bundle); value["com.apple.security.network.client"] = network
             XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+        }
+    }
+
+    func testAudioRequiresBothStrictBooleanPermissions() throws {
+        let bundle = NativeDesktopStoreContainer.parent + ".audio"
+        try NativeDesktopStoreContainer.validateMembership(claims(bundle), bundle: bundle, approvedGroup: group)
+        for key in ["com.apple.security.device.audio-input", "com.apple.security.device.microphone"] {
+            for invalid: Any? in [nil, false, NSNumber(value: 1), "true"] {
+                var value = claims(bundle); value[key] = invalid
+                XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+            }
+        }
+    }
+
+    func testAudioPermissionsCannotBeGrantedToOtherNativeRoles() {
+        let audio = NativeDesktopStoreContainer.parent + ".audio"
+        for bundle in NativeDesktopStoreContainer.helpers where bundle != audio {
+            for key in ["com.apple.security.device.audio-input", "com.apple.security.device.microphone"] {
+                var value = claims(bundle); value[key] = true
+                XCTAssertThrowsError(try NativeDesktopStoreContainer.validateMembership(value, bundle: bundle, approvedGroup: group))
+            }
         }
     }
 }
