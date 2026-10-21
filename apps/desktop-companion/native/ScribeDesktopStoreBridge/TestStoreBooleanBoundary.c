@@ -2,11 +2,15 @@
  * Actual production guards consume real CoreFoundation values. Only public
  * SecCode identity/validity/signing-info boundaries supply synthetic objects;
  * the Service variant supplies a fixed4243-to4242 public process-info result.
- * The real requirement parser is retained. No production main, XPC connection,
- * kernel PID lookup, app, service, trust or credential path is exercised. */
+ * The real requirement parser and real XPC policy dictionaries are retained.
+ * Only the LWCR setter and availability are injected for the shared constructor.
+ * The constrained evaluator below tests documented query semantics on synthetic
+ * signed facts; it does not prove kernel enforcement, trust or runtime admission.
+ * No production main, XPC activation, real PID, app or credential is exercised. */
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #include <assert.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,13 +25,10 @@
 #error assertions_must_remain_enabled
 #endif
 
-static CFTypeRef sandbox_value, inherit_value;
-static OSStatus guest_result, message_result, static_result, info_result, validity_result;
+static CFTypeRef sandbox_value;
+static OSStatus guest_result, static_result, info_result, validity_result;
 static bool malformed_claims, missing_claims, malformed_information, missing_information;
-static unsigned message_calls, validity_calls, static_calls, information_calls;
-#if !SCRIBE_TEST_BRIDGE
-static unsigned last_failure, last_failure_class;
-#endif
+static unsigned validity_calls, static_calls, information_calls;
 
 static OSStatus fixture_guest(SecCodeRef host, CFDictionaryRef attributes, SecCSFlags flags, SecCodeRef *code) {
     assert(host == NULL && flags == 0);
@@ -38,13 +39,6 @@ static OSStatus fixture_guest(SecCodeRef host, CFDictionaryRef attributes, SecCS
     *code = guest_result == errSecSuccess ? (SecCodeRef)CFRetain(CFSTR("synthetic-code")) : NULL;
     return guest_result;
 }
-static OSStatus fixture_message(xpc_object_t message, SecCSFlags flags, SecCodeRef *code) {
-    assert(message && xpc_get_type(message) == XPC_TYPE_DICTIONARY && flags == 0);
-    message_calls++;
-    /* Payload values deliberately do not select the signed entitlement result. */
-    *code = message_result == errSecSuccess ? (SecCodeRef)CFRetain(CFSTR("synthetic-code")) : NULL;
-    return message_result;
-}
 static OSStatus fixture_static(SecCodeRef code, SecCSFlags flags, SecStaticCodeRef *result) {
     assert(code && flags == 0);
     static_calls++;
@@ -54,9 +48,7 @@ static OSStatus fixture_static(SecCodeRef code, SecCSFlags flags, SecStaticCodeR
 static OSStatus fixture_validity(SecCodeRef code, SecCSFlags flags, SecRequirementRef requirement) {
     assert(code && flags == 0);
     validity_calls++;
-    /* Parent requirements are actually compiled; an authenticated XPC sender
-     * first validates dynamically with the documented optional NULL requirement. */
-    (void)requirement;
+    assert(requirement); /* Real compiled parent requirement; no inbound lookup. */
     return validity_result;
 }
 static OSStatus fixture_information(SecStaticCodeRef code, SecCSFlags flags, CFDictionaryRef *information) {
@@ -72,7 +64,6 @@ static OSStatus fixture_information(SecStaticCodeRef code, SecCSFlags flags, CFD
     CFMutableDictionaryRef claims = CFDictionaryCreateMutable(NULL, 0,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     if (sandbox_value) CFDictionarySetValue(claims, CFSTR("com.apple.security.app-sandbox"), sandbox_value);
-    if (inherit_value) CFDictionarySetValue(claims, CFSTR("com.apple.security.inherit"), inherit_value);
     const void *keys[] = {kSecCodeInfoEntitlementsDict};
     const void *values[] = {malformed_claims ? (CFTypeRef)CFSTR("not-a-dictionary") : (CFTypeRef)claims};
     *information = CFDictionaryCreate(NULL, keys, values, missing_claims ? 0 : 1,
@@ -95,7 +86,6 @@ static int fixture_process_info(int pid, int flavor, uint64_t argument, void *bu
 #endif
 
 #define SecCodeCopyGuestWithAttributes fixture_guest
-#define SecCodeCreateWithXPCMessage fixture_message
 #define SecCodeCopyStaticCode fixture_static
 #define SecCodeCheckValidity fixture_validity
 #define SecCodeCopySigningInformation fixture_information
@@ -111,142 +101,189 @@ static int fixture_process_info(int pid, int flavor, uint64_t argument, void *bu
 #undef xpc_connection_get_pid
 #endif
 #undef SecCodeCopyGuestWithAttributes
-#undef SecCodeCreateWithXPCMessage
 #undef SecCodeCopyStaticCode
 #undef SecCodeCheckValidity
 #undef SecCodeCopySigningInformation
 
-static bool sender_guard(xpc_object_t message) {
+static bool fixture_available = true;
+static int setter_result;
+static unsigned setter_calls;
+static xpc_object_t captured_policy;
+static xpc_connection_t expected_connection;
+static int fixture_lwcr_setter(xpc_connection_t connection, xpc_object_t requirement) {
+    assert(connection == expected_connection && requirement
+        && xpc_get_type(requirement) == XPC_TYPE_DICTIONARY);
+    setter_calls++;
+    if (captured_policy) xpc_release(captured_policy);
+    captured_policy = xpc_retain(requirement);
+    return setter_result;
+}
+#define __builtin_available(...) fixture_available
+#define xpc_connection_set_peer_lightweight_code_requirement fixture_lwcr_setter
+#include "../ScribeDesktopAudio/Sources/ScribeStorePipe/StorePeerRequirement.c"
+#undef xpc_connection_set_peer_lightweight_code_requirement
+#undef __builtin_available
+
+static bool parent_guard(xpc_connection_t synthetic_peer) {
 #if SCRIBE_TEST_BRIDGE
-    return reply_sandbox_is_true(message);
+    (void)synthetic_peer;
+    return parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store");
 #else
-    return peer_booleans_are_true(message, &last_failure, &last_failure_class);
+    return verified_host(synthetic_peer, 4242);
 #endif
 }
 
+/* Validate the actual constructor output before interpreting exactly the
+ * documented select-key (1) and strict Boolean (5) operations. */
+static void check_policy(const char *identifier, bool inherited) {
+    assert(captured_policy && xpc_dictionary_get_count(captured_policy) == 4);
+    assert(!strcmp(xpc_dictionary_get_string(captured_policy, "team-identifier"), "JVV65668U6"));
+    assert(!strcmp(xpc_dictionary_get_string(captured_policy, "signing-identifier"), identifier));
+    xpc_object_t validation = xpc_dictionary_get_value(captured_policy, "validation-category");
+    assert(validation && xpc_get_type(validation) == XPC_TYPE_DICTIONARY
+        && xpc_dictionary_get_count(validation) == 1);
+    xpc_object_t categories = xpc_dictionary_get_value(validation, "$in");
+    assert(categories && xpc_get_type(categories) == XPC_TYPE_ARRAY && xpc_array_get_count(categories) == 3);
+    for (size_t index = 0; index < 3; index++) {
+        xpc_object_t value = xpc_array_get_value(categories, index);
+        assert(xpc_get_type(value) == XPC_TYPE_INT64 && xpc_int64_get_value(value) == (int64_t)index + 2);
+    }
+    xpc_object_t conjunction = xpc_dictionary_get_value(captured_policy, "$and-array");
+    assert(conjunction && xpc_get_type(conjunction) == XPC_TYPE_ARRAY
+        && xpc_array_get_count(conjunction) == (inherited ? 2u : 1u));
+    for (size_t index = 0; index < xpc_array_get_count(conjunction); index++) {
+        xpc_object_t tuple = xpc_array_get_value(conjunction, index);
+        assert(xpc_get_type(tuple) == XPC_TYPE_ARRAY && xpc_array_get_count(tuple) == 2);
+        assert(!strcmp(xpc_array_get_string(tuple, 0), "$and"));
+        xpc_object_t fact = xpc_array_get_value(tuple, 1);
+        assert(xpc_get_type(fact) == XPC_TYPE_DICTIONARY && xpc_dictionary_get_count(fact) == 1);
+        xpc_object_t query = xpc_dictionary_get_value(fact, "entitlements");
+        assert(query && xpc_get_type(query) == XPC_TYPE_DICTIONARY && xpc_dictionary_get_count(query) == 1);
+        xpc_object_t operations = xpc_dictionary_get_value(query, "$query");
+        assert(operations && xpc_get_type(operations) == XPC_TYPE_ARRAY && xpc_array_get_count(operations) == 2);
+        xpc_object_t select = xpc_array_get_value(operations, 0), match = xpc_array_get_value(operations, 1);
+        assert(xpc_get_type(select) == XPC_TYPE_ARRAY && xpc_array_get_count(select) == 2);
+        assert(xpc_get_type(match) == XPC_TYPE_ARRAY && xpc_array_get_count(match) == 2);
+        assert(xpc_get_type(xpc_array_get_value(select, 0)) == XPC_TYPE_INT64 && xpc_array_get_int64(select, 0) == 1);
+        assert(!strcmp(xpc_array_get_string(select, 1), index == 0
+            ? "com.apple.security.app-sandbox" : "com.apple.security.inherit"));
+        assert(xpc_get_type(xpc_array_get_value(match, 0)) == XPC_TYPE_INT64 && xpc_array_get_int64(match, 0) == 5);
+        assert(xpc_get_type(xpc_array_get_value(match, 1)) == XPC_TYPE_BOOL && xpc_array_get_bool(match, 1));
+    }
+}
+static bool policy_accepts(const char *team, const char *identifier, int64_t category, xpc_object_t signed_claims) {
+    if (!team || !identifier || !signed_claims || xpc_get_type(signed_claims) != XPC_TYPE_DICTIONARY
+        || strcmp(team, xpc_dictionary_get_string(captured_policy, "team-identifier"))
+        || strcmp(identifier, xpc_dictionary_get_string(captured_policy, "signing-identifier"))) return false;
+    xpc_object_t categories = xpc_dictionary_get_value(
+        xpc_dictionary_get_value(captured_policy, "validation-category"), "$in");
+    bool category_allowed = false;
+    for (size_t index = 0; index < xpc_array_get_count(categories); index++)
+        category_allowed |= xpc_array_get_int64(categories, index) == category;
+    if (!category_allowed) return false;
+    xpc_object_t conjunction = xpc_dictionary_get_value(captured_policy, "$and-array");
+    for (size_t index = 0; index < xpc_array_get_count(conjunction); index++) {
+        xpc_object_t fact = xpc_array_get_value(xpc_array_get_value(conjunction, index), 1);
+        xpc_object_t operations = xpc_dictionary_get_value(xpc_dictionary_get_value(fact, "entitlements"), "$query");
+        const char *key = xpc_array_get_string(xpc_array_get_value(operations, 0), 1);
+        xpc_object_t value = xpc_dictionary_get_value(signed_claims, key);
+        if (!value || xpc_get_type(value) != XPC_TYPE_BOOL
+            || xpc_bool_get_value(value) != xpc_array_get_bool(xpc_array_get_value(operations, 1), 1)) return false;
+    }
+    return true;
+}
+
 int main(void) {
+    unsigned checks = 0;
+    xpc_object_t synthetic_peer = xpc_dictionary_create_empty();
+    expected_connection = (xpc_connection_t)synthetic_peer; /* Never activated. */
     int zero = 0, one = 1;
     CFNumberRef number_zero = CFNumberCreate(NULL, kCFNumberIntType, &zero);
     CFNumberRef number_one = CFNumberCreate(NULL, kCFNumberIntType, &one);
     CFArrayRef array = CFArrayCreate(NULL, NULL, 0, &kCFTypeArrayCallBacks);
     CFDictionaryRef dictionary = CFDictionaryCreate(NULL, NULL, NULL, 0,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFTypeRef candidates[] = {kCFBooleanTrue, kCFBooleanFalse, NULL, CFSTR("true"),
-        number_one, number_zero, array, dictionary};
-    unsigned checks = 0;
-    xpc_object_t message = xpc_dictionary_create(NULL, NULL, 0);
-    /* Forged response/request fields cannot substitute for signed claims. */
-    xpc_dictionary_set_bool(message, "com.apple.security.app-sandbox", true);
-    xpc_dictionary_set_bool(message, "com.apple.security.inherit", true);
+    CFTypeRef candidates[] = {kCFBooleanTrue, kCFBooleanFalse, NULL, CFSTR("true"), number_one, number_zero, array, dictionary};
     for (size_t index = 0; index < sizeof(candidates) / sizeof(candidates[0]); index++) {
-        bool expected = index == 0;
-        sandbox_value = candidates[index]; inherit_value = kCFBooleanTrue;
-        assert(store_boolean_is_true(sandbox_value) == expected); checks++;
-        assert(sender_guard(message) == expected); checks++;
-#if SCRIBE_TEST_BRIDGE
-        assert(parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store") == expected); checks++;
-#else
-        assert(verified_host((xpc_connection_t)message, 4242) == expected); checks++;
-        if (!expected) {
-            assert(last_failure == (index == 1 ? 21 : index == 2 ? 19 : 20)); checks++;
-        } else {
-            assert(last_failure == 0); checks++;
-        }
-        assert(last_failure_class == 0); checks++;
-        sandbox_value = kCFBooleanTrue; inherit_value = candidates[index];
-        assert(sender_guard(message) == expected); checks++;
-        assert(last_failure == (expected ? 0 : index == 1 ? 24 : index == 2 ? 22 : 23)); checks++;
-        assert(last_failure_class == 0); checks++;
-#endif
+        sandbox_value = candidates[index];
+        assert(store_boolean_is_true(sandbox_value) == (index == 0)); checks++;
+        assert(parent_guard(expected_connection) == (index == 0)); checks++;
     }
-    sandbox_value = inherit_value = kCFBooleanTrue;
-    xpc_dictionary_set_bool(message, "com.apple.security.app-sandbox", false);
-    xpc_dictionary_set_bool(message, "com.apple.security.inherit", false);
-    assert(sender_guard(message)); checks++; /* Signed true, payload false. */
-    malformed_claims = true; assert(!sender_guard(message)); checks++; malformed_claims = false;
-    info_result = errSecParam; assert(!sender_guard(message)); checks++; info_result = errSecSuccess;
-    static_result = errSecParam; assert(!sender_guard(message)); checks++; static_result = errSecSuccess;
-    message_result = errSecParam; assert(!sender_guard(message)); checks++; message_result = errSecSuccess;
-    validity_result = errSecParam;
-    unsigned static_before = static_calls, information_before = information_calls;
-    assert(!sender_guard(message)); checks++;
-    assert(static_calls == static_before && information_calls == information_before); checks++;
-    validity_result = errSecSuccess;
-#if SCRIBE_TEST_BRIDGE
-    guest_result = errSecParam;
-    assert(!parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store")); checks++;
+    sandbox_value = kCFBooleanTrue; guest_result = errSecParam;
+    unsigned validity_before = validity_calls, static_before = static_calls, information_before = information_calls;
+    assert(!parent_guard(expected_connection)); checks++;
+    assert(validity_calls == validity_before && static_calls == static_before && information_calls == information_before); checks++;
     guest_result = errSecSuccess; validity_result = errSecParam;
-    assert(!parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store")); checks++;
+    assert(!parent_guard(expected_connection)); checks++;
+    assert(static_calls == static_before && information_calls == information_before); checks++;
     validity_result = errSecSuccess; static_result = errSecParam;
-    assert(!parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store")); checks++;
-    static_result = errSecSuccess; info_result = errSecParam;
-    assert(!parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store")); checks++;
-#else
-    /* Classify the first failing seam without changing admission or running
-     * any later Security call. Request payload bits remain non-authoritative. */
-    sandbox_value = inherit_value = kCFBooleanTrue;
-    malformed_information = true;
-    assert(!sender_guard(message) && last_failure == 17 && last_failure_class == 0); checks++;
-    malformed_information = false; missing_information = true;
-    assert(!sender_guard(message) && last_failure == 17 && last_failure_class == 0); checks++;
-    missing_information = false; missing_claims = true;
-    assert(!sender_guard(message) && last_failure == 18 && last_failure_class == 0); checks++;
-    missing_claims = false; malformed_claims = true;
-    assert(!sender_guard(message) && last_failure == 18 && last_failure_class == 0); checks++;
-    malformed_claims = false; info_result = errSecParam;
-    assert(!sender_guard(message) && last_failure == 16 && last_failure_class == 27); checks++;
-    info_result = errSecSuccess; static_result = errSecParam;
-    information_before = information_calls;
-    assert(!sender_guard(message) && last_failure == 15 && last_failure_class == 27); checks++;
+    assert(!parent_guard(expected_connection)); checks++;
     assert(information_calls == information_before); checks++;
-    static_result = errSecSuccess; validity_result = errSecParam;
-    static_before = static_calls; information_before = information_calls;
-    assert(!sender_guard(message) && last_failure == 14 && last_failure_class == 27); checks++;
-    assert(static_calls == static_before && information_calls == information_before); checks++;
-    validity_result = errSecSuccess; message_result = errSecParam;
-    unsigned validity_before = validity_calls;
-    static_before = static_calls; information_before = information_calls;
-    assert(!sender_guard(message) && last_failure == 13 && last_failure_class == 27); checks++;
-    assert(validity_calls == validity_before && static_calls == static_before
-        && information_calls == information_before); checks++;
-    message_result = errSecSuccess;
-    information_before = information_calls;
-    unsigned message_before = message_calls;
-    assert(sender_guard(message) && last_failure == 0 && last_failure_class == 0); checks++;
-    assert(message_calls == message_before + 1 && information_calls == information_before + 2); checks++;
-    sandbox_value = inherit_value = kCFBooleanFalse;
-    information_before = information_calls;
-    assert(!sender_guard(message) && last_failure == 21 && last_failure_class == 0); checks++;
-    assert(information_calls == information_before + 1); checks++;
-    sandbox_value = inherit_value = kCFBooleanTrue;
-    const OSStatus status_classes[] = {errSecCSSignatureNotVerifiable, errSecCSUnsigned,
-        errSecCSInvalidObjectRef, errSecCSStaticCodeChanged, errSecCSReqFailed,
-        errSecCSBadResource, errSecCSNoSuchCode, (OSStatus)12345};
-    for (size_t index = 0; index < sizeof(status_classes) / sizeof(status_classes[0]); index++) {
-        message_result = status_classes[index]; validity_before = validity_calls;
-        static_before = static_calls; information_before = information_calls;
-        assert(!sender_guard(message) && last_failure == 13 && last_failure_class == 25 + index); checks++;
-        assert(validity_calls == validity_before && static_calls == static_before
-            && information_calls == information_before); checks++;
-    }
-    message_result = errSecSuccess;
-    assert(sender_guard(message) && last_failure == 0 && last_failure_class == 0); checks++;
-    guest_result = errSecParam;
-    assert(!verified_host((xpc_connection_t)message, 4242)); checks++;
-    guest_result = errSecSuccess; validity_result = errSecParam;
-    static_before = static_calls; information_before = information_calls;
-    assert(!verified_host((xpc_connection_t)message, 4242)); checks++;
-    assert(static_calls == static_before && information_calls == information_before); checks++;
-    validity_result = errSecSuccess; static_result = errSecParam;
-    assert(!verified_host((xpc_connection_t)message, 4242)); checks++;
     static_result = errSecSuccess; info_result = errSecParam;
-    assert(!verified_host((xpc_connection_t)message, 4242)); checks++;
-    info_result = errSecSuccess; malformed_claims = true;
-    assert(!verified_host((xpc_connection_t)message, 4242)); checks++;
-#endif
-    xpc_release(message); CFRelease(dictionary); CFRelease(array);
-    CFRelease(number_one); CFRelease(number_zero);
-    printf("store_boolean_production_boundary_%s_checks_%u_passed\n",
-        SCRIBE_TEST_BRIDGE ? "bridge" : "service", checks);
+    assert(!parent_guard(expected_connection)); checks++; info_result = errSecSuccess;
+    malformed_information = true; assert(!parent_guard(expected_connection)); checks++; malformed_information = false;
+    missing_information = true; assert(!parent_guard(expected_connection)); checks++; missing_information = false;
+    malformed_claims = true; assert(!parent_guard(expected_connection)); checks++; malformed_claims = false;
+    missing_claims = true; assert(!parent_guard(expected_connection)); checks++; missing_claims = false;
+    assert(parent_guard(expected_connection)); checks++;
+
+    xpc_object_t signed_claims = xpc_dictionary_create_empty();
+    xpc_object_t values[] = {xpc_bool_create(true), xpc_bool_create(false), NULL, xpc_string_create("true"),
+        xpc_int64_create(1), xpc_int64_create(0), xpc_array_create_empty(), xpc_dictionary_create_empty()};
+    const char *identifiers[] = {"com.cosmaneura.scribe.beta.desktop.store", "com.cosmaneura.scribe.beta.desktop.store.auth",
+        "com.cosmaneura.scribe.beta.desktop.audio", "com.cosmaneura.scribe.beta.desktop.presentation"};
+    validity_before = validity_calls; static_before = static_calls; information_before = information_calls;
+    for (size_t policy_index = 0; policy_index < 4; policy_index++) {
+        unsigned before = setter_calls;
+        bool accepted = policy_index == 0 ? scribe_store_require_bridge_peer(expected_connection)
+            : scribe_store_require_service_peer(expected_connection, (enum scribe_store_role)policy_index);
+        assert(accepted && setter_calls == before + 1); checks++;
+        check_policy(identifiers[policy_index], policy_index == 0); checks++;
+        xpc_dictionary_set_bool(signed_claims, "com.apple.security.app-sandbox", true);
+        xpc_dictionary_set_bool(signed_claims, "com.apple.security.inherit", true);
+        for (int64_t category = 2; category <= 4; category++) {
+            assert(policy_accepts("JVV65668U6", identifiers[policy_index], category, signed_claims)); checks++;
+        }
+        assert(!policy_accepts("OTHERTEAM", identifiers[policy_index], 3, signed_claims)); checks++;
+        assert(!policy_accepts("JVV65668U6", "com.cosmaneura.scribe.beta.desktop", 3, signed_claims)); checks++;
+        assert(!policy_accepts(NULL, identifiers[policy_index], 3, signed_claims)); checks++;
+        assert(!policy_accepts("JVV65668U6", NULL, 3, signed_claims)); checks++;
+        const int64_t disallowed[] = {-1, 0, 1, 5, 6, 7, 8, 9, 10, INT64_MAX};
+        for (size_t index = 0; index < sizeof(disallowed) / sizeof(disallowed[0]); index++) {
+            assert(!policy_accepts("JVV65668U6", identifiers[policy_index], disallowed[index], signed_claims)); checks++;
+        }
+        for (size_t index = 0; index < sizeof(values) / sizeof(values[0]); index++) {
+            xpc_dictionary_set_value(signed_claims, "com.apple.security.app-sandbox", values[index]);
+            assert(policy_accepts("JVV65668U6", identifiers[policy_index], 3, signed_claims) == (index == 0)); checks++;
+            if (policy_index == 0) {
+                xpc_dictionary_set_bool(signed_claims, "com.apple.security.app-sandbox", true);
+                xpc_dictionary_set_value(signed_claims, "com.apple.security.inherit", values[index]);
+                assert(policy_accepts("JVV65668U6", identifiers[policy_index], 3, signed_claims) == (index == 0)); checks++;
+                xpc_dictionary_set_bool(signed_claims, "com.apple.security.inherit", true);
+            }
+        }
+        assert(!policy_accepts("JVV65668U6", identifiers[policy_index], 3, NULL)); checks++;
+        assert(!policy_accepts("JVV65668U6", identifiers[policy_index], 3, values[3])); checks++;
+    }
+    assert(validity_calls == validity_before && static_calls == static_before && information_calls == information_before); checks++;
+    unsigned before = setter_calls;
+    assert(!scribe_store_require_bridge_peer(NULL)); checks++;
+    assert(!scribe_store_require_service_peer(NULL, SCRIBE_AUTH)); checks++;
+    assert(!scribe_store_require_service_peer(expected_connection, (enum scribe_store_role)0)); checks++;
+    assert(!scribe_store_require_service_peer(expected_connection, (enum scribe_store_role)99)); checks++;
+    assert(setter_calls == before); checks++;
+    fixture_available = false;
+    assert(!scribe_store_require_bridge_peer(expected_connection)); checks++;
+    assert(!scribe_store_require_service_peer(expected_connection, SCRIBE_AUTH)); checks++;
+    assert(setter_calls == before); checks++;
+    fixture_available = true; setter_result = EINVAL;
+    assert(!scribe_store_require_bridge_peer(expected_connection) && setter_calls == before + 1); checks++;
+    assert(!scribe_store_require_service_peer(expected_connection, SCRIBE_AUTH) && setter_calls == before + 2); checks++;
+    setter_result = 0;
+    assert(scribe_store_require_bridge_peer(expected_connection) && setter_calls == before + 3); checks++;
+    for (size_t index = 0; index < sizeof(values) / sizeof(values[0]); index++) if (values[index]) xpc_release(values[index]);
+    xpc_release(signed_claims); xpc_release(captured_policy); xpc_release(synthetic_peer);
+    CFRelease(dictionary); CFRelease(array); CFRelease(number_one); CFRelease(number_zero);
+    printf("store_lwcr_production_boundary_%s_checks_%u_passed\n", SCRIBE_TEST_BRIDGE ? "bridge" : "service", checks);
     return 0;
 }

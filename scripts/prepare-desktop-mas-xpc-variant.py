@@ -118,7 +118,7 @@ def service_info(role: str) -> dict[str, object]:
         "CFBundleIdentifier": AUTH if role == "auth" else HELPER_BASE + "." + role,
         "CFBundlePackageType": "XPC!",
         "CFBundleExecutable": executable,
-        "LSMinimumSystemVersion": "14.2",
+        "LSMinimumSystemVersion": "14.4",
         "XPCService": {
             "ServiceType": "Application",
             "RunLoopType": "NSRunLoop",
@@ -149,6 +149,7 @@ def prepare(output: Path, clerk_source: Path) -> None:
     info_path = output / "store-info.DRAFT.plist"
     info = plistlib.loads(info_path.read_bytes())
     info["CFBundleIdentifier"] = PARENT
+    info["LSMinimumSystemVersion"] = "14.4"
     info_path.write_bytes(plistlib.dumps(info))
     for name, claims in xpc_claims().items():
         target = output / ("xpc-" + name + ".entitlements.DRAFT.plist")

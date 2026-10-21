@@ -1,4 +1,5 @@
 #include "StorePipeProtocol.h"
+#include "StorePeerRequirement.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #include <dispatch/dispatch.h>
@@ -42,18 +43,6 @@ static bool code_boolean_is_true(SecStaticCodeRef code, CFStringRef key) {
     if (information) CFRelease(information);
     return valid;
 }
-/* XPC supplies the authenticated sender code for this reply. No response field
- * or request PID can provide the signed sandbox Boolean. */
-static bool reply_sandbox_is_true(xpc_object_t reply) {
-    SecCodeRef code = NULL; SecStaticCodeRef static_code = NULL;
-    bool valid = SecCodeCreateWithXPCMessage(reply, 0, &code) == errSecSuccess
-        && SecCodeCheckValidity(code, 0, NULL) == errSecSuccess
-        && SecCodeCopyStaticCode(code, 0, &static_code) == errSecSuccess
-        && code_boolean_is_true(static_code, CFSTR("com.apple.security.app-sandbox"));
-    if (static_code) CFRelease(static_code); if (code) CFRelease(code);
-    return valid;
-}
-
 /* The inherited shim has no native Keychain claim. It authenticates its actual
  * Electron parent before forwarding fixed stdio descriptors to a private XPC service. */
 static bool parent_is_store_host(pid_t parent, const char *group) {
@@ -85,19 +74,16 @@ int main(int argc, const char *argv[]) {
     if (!parent_is_store_host(parent, group)) { bridge_diagnostic(4); return 78; }
     xpc_object_t message = scribe_store_open_message(argv[1], STDIN_FILENO, STDOUT_FILENO, parent);
     if (!message) { bridge_diagnostic(5); return 78; }
-    char requirement[512];
-    int length = snprintf(requirement, sizeof(requirement), "anchor apple generic and identifier \"%s\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists", service);
-    if (length <= 0 || (size_t)length >= sizeof(requirement)) { bridge_diagnostic(6); return 78; }
     xpc_connection_t connection = xpc_connection_create(service, dispatch_get_main_queue());
     if (!connection) { bridge_diagnostic(7); return 78; }
-    if (xpc_connection_set_peer_code_signing_requirement(connection, requirement)) { bridge_diagnostic(8); return 78; }
+    if (!scribe_store_require_service_peer(connection, role)) { bridge_diagnostic(8); return 78; }
     xpc_connection_set_event_handler(connection, ^(xpc_object_t event) {
         if (xpc_get_type(event) == XPC_TYPE_ERROR) { bridge_diagnostic(bridge_xpc_error_diagnostic(event)); _exit(70); }
     });
     xpc_connection_activate(connection);
     xpc_connection_send_message_with_reply(connection, message, dispatch_get_main_queue(), ^(xpc_object_t reply) {
         if (xpc_get_type(reply) == XPC_TYPE_ERROR) { bridge_diagnostic(bridge_xpc_error_diagnostic(reply)); _exit(70); }
-        if (xpc_get_type(reply) != XPC_TYPE_DICTIONARY || !reply_sandbox_is_true(reply) || xpc_dictionary_get_count(reply) != 1
+        if (xpc_get_type(reply) != XPC_TYPE_DICTIONARY || xpc_dictionary_get_count(reply) != 1
             || !xpc_dictionary_get_value(reply, "code")
             || xpc_get_type(xpc_dictionary_get_value(reply, "code")) != XPC_TYPE_INT64) { bridge_diagnostic(12); _exit(70); }
         int64_t code = xpc_dictionary_get_int64(reply, "code");

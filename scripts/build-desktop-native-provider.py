@@ -106,6 +106,7 @@ let package = Package(name: "ScribeDesktopProvider", defaultLocalization: "en",
         manifest = package / "Package.swift"
         manifest.write_text(
             manifest.read_text()
+            .replace("platforms: [.macOS(.v14)]", 'platforms: [.macOS("14.4")]')
             .replace(
                 'targets: [.target(name: "ClerkKit",',
                 (

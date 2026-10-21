@@ -74,35 +74,29 @@ class XpcVariantTests(unittest.TestCase):
             "5732f25fd801cc318489d567ce90f594596f7480534e0e807cafcc193306692b",
         )
 
-    def test_typed_signed_peer_precedes_decode_or_reply_acceptance(self):
+    def test_connection_requirement_precedes_activation_and_decode(self):
         base = ROOT.parent / "apps/desktop-companion/native"
         bridge = (base / "ScribeDesktopStoreBridge/StorePipeBridge.c").read_text()
         service = (
             base / "ScribeDesktopAudio/Sources/ScribeStorePipe/StorePipeService.c"
         ).read_text()
         self.assertLess(
-            bridge.index("!reply_sandbox_is_true(reply)"),
-            bridge.index("xpc_dictionary_get_count(reply)"),
+            bridge.index("!scribe_store_require_service_peer(connection, role)"),
+            bridge.index("xpc_connection_activate(connection)"),
         )
         self.assertLess(
-            service.index("!peer_booleans_are_true(event, &peer_failure, &failure_class)"),
+            service.index("!scribe_store_require_bridge_peer(peer)"),
             service.index("!scribe_store_decode_open(event"),
         )
-        for source, name in (
-            (bridge, "reply_sandbox_is_true"),
-            (service, "peer_booleans_are_true"),
-        ):
-            body = source[source.index("static bool " + name) :]
-            body = body[: body.index("\n}")]
-            self.assertLess(
-                body.index("SecCodeCheckValidity(code, 0, NULL)"),
-                body.index("SecCodeCopyStaticCode"),
-            )
+        self.assertLess(
+            service.index("!scribe_store_require_bridge_peer(peer)"),
+            service.index("xpc_connection_activate(peer)"),
+        )
         for source in (bridge, service):
             self.assertIn("CFGetTypeID(value) == CFBooleanGetTypeID()", source)
             self.assertIn("CFBooleanGetValue((CFBooleanRef)value)", source)
             self.assertIn("kSecCodeInfoEntitlementsDict", source)
-            self.assertIn("SecCodeCreateWithXPCMessage", source)
+            self.assertNotIn("SecCodeCreateWithXPCMessage", source)
 
     def test_native_boolean_requirements_keep_exact_store_identity_and_group(self):
         base = ROOT.parent / "apps/desktop-companion/native"
@@ -150,6 +144,25 @@ class XpcVariantTests(unittest.TestCase):
                 )
                 flags = compiler.call_args.args[0]
                 self.assertEqual("-DSCRIBE_MAC_APP_STORE_XPC" in flags, xpc)
+                manifest = (output / "package/Package.swift").read_text()
+                self.assertIn(
+                    'platforms: [.macOS("14.4")]' if xpc else "platforms: [.macOS(.v14)]",
+                    manifest,
+                )
+                shared_peer = output / "package/Sources/ScribeStorePipe/StorePeerRequirement.c"
+                if xpc:
+                    self.assertEqual(
+                        shared_peer.read_bytes(),
+                        (
+                            ROOT.parent
+                            / (
+                                "apps/desktop-companion/native/ScribeDesktopAudio/"
+                                "Sources/ScribeStorePipe/StorePeerRequirement.c"
+                            )
+                        ).read_bytes(),
+                    )
+                else:
+                    self.assertFalse(shared_peer.exists())
 
     def test_fence_group_cannot_grant_shared_keychain_or_file_exceptions(self):
         claims = XPC.xpc_claims()
@@ -183,6 +196,7 @@ class XpcVariantTests(unittest.TestCase):
             expected = XPC.AUTH if role == "auth" else XPC.HELPER_BASE + "." + role
             self.assertEqual(info["CFBundleIdentifier"], expected)
             self.assertEqual(info["CFBundlePackageType"], "XPC!")
+            self.assertEqual(info["LSMinimumSystemVersion"], "14.4")
             self.assertEqual(
                 info["XPCService"],
                 {
