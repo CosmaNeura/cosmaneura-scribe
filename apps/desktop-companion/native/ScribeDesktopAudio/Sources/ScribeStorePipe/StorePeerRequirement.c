@@ -50,7 +50,7 @@ static bool require_peer(xpc_connection_t connection, const char *identifier, bo
 }
 
 bool scribe_store_require_bridge_peer(xpc_connection_t connection) {
-    return require_peer(connection, "com.cosmaneura.scribe.beta.desktop.store", true);
+    return require_peer(connection, "com.cosmaneura.scribe.beta.desktop.store.bridge", true);
 }
 bool scribe_store_require_service_peer(xpc_connection_t connection, enum scribe_store_role role) {
     return require_peer(connection, scribe_store_service(role), false);

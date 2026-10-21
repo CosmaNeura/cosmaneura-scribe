@@ -18,6 +18,7 @@ from pathlib import Path
 TEAM = "JVV65668U6"
 HELPER_BASE = "com.cosmaneura.scribe.beta.desktop"
 PARENT = HELPER_BASE + ".store"
+BRIDGE = PARENT + ".bridge"
 GROUP = TEAM + "." + PARENT
 AUTH = HELPER_BASE + ".store.auth"
 BRIDGE_BUNDLE_PATH = "Contents/MacOS/ScribeStorePipeBridge"
@@ -168,7 +169,7 @@ def prepare(output: Path, clerk_source: Path) -> None:
         "native_clang_flags": ["-DSCRIBE_MAC_APP_STORE_XPC=1"],
         "runtime_archive_sha256": RUNTIME_SHA256,
         "parent_bundle_identifier": PARENT,
-        "inherited_bridge_identifier": PARENT,
+        "inherited_bridge_identifier": BRIDGE,
         "profile_helper_path": BRIDGE_BUNDLE_PATH,
         "private_services": [service_info(role) for role in ["auth", "audio", "presentation"]],
         "source_preparation_receipt": "mas-inputs.DRAFT.json",

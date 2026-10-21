@@ -86,5 +86,6 @@ void scribe_store_close_open(struct scribe_store_open *open) {
     if (open->input >= 0) close(open->input);
     if (open->output >= 0) close(open->output);
     free((void *)open->mode);
+    if (open->lease) scribe_store_host_release(open->lease);
     *open = (struct scribe_store_open){.input = -1, .output = -1};
 }

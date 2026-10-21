@@ -303,6 +303,7 @@ private func storeAuthDiagnostic(_ stage: Int) {
 /// The C service retains its originals. This snapshot owns only explicit dup
 /// descriptors and a retained completion block across the asynchronous hop.
 private final class DesktopProviderStoreRequest: @unchecked Sendable {
+    private let hostLease: OpaquePointer
     let sourceInput: Int32
     let input: DesktopProviderStoreInput
     let output: FileHandle
@@ -311,6 +312,15 @@ private final class DesktopProviderStoreRequest: @unchecked Sendable {
     init(_ request: UnsafePointer<scribe_store_open>, completed: @escaping scribe_store_completion) throws {
         guard let mode = request.pointee.mode, String(cString: mode) == "--provider-v1",
               request.pointee.host > 1 else { throw ProviderNativeError.unavailable }
+        guard let lease = scribe_store_host_retain(request.pointee.lease) else {
+            throw ProviderNativeError.unavailable
+        }
+        var transferred = false
+        defer { if !transferred { scribe_store_host_release(lease) } }
+        guard scribe_store_host_is_current(lease),
+              scribe_store_host_parent_pid(lease) == request.pointee.host else {
+            throw ProviderNativeError.unavailable
+        }
         sourceInput = request.pointee.input
         input = try DesktopProviderStoreInput(duplicating: request.pointee.input)
         let descriptor = Darwin.dup(request.pointee.output)
@@ -319,8 +329,11 @@ private final class DesktopProviderStoreRequest: @unchecked Sendable {
             Darwin.close(descriptor); throw ProviderNativeError.unavailable
         }
         output = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        self.completed = completed
+        self.completed = completed; hostLease = lease; transferred = true
     }
+
+    var hostIsCurrent: Bool { scribe_store_host_is_current(hostLease) }
+    deinit { scribe_store_host_release(hostLease) }
 }
 
 @MainActor private final class DesktopProviderStoreSession {
@@ -333,7 +346,8 @@ private final class DesktopProviderStoreRequest: @unchecked Sendable {
     private var result: Int32 = 0
 
     func start(_ request: DesktopProviderStoreRequest) {
-        guard !stopped, !stoppedInputs.contains(request.sourceInput), self.request == nil else { request.completed(70); return }
+        guard !stopped, !stoppedInputs.contains(request.sourceInput), self.request == nil,
+              request.hostIsCurrent else { request.completed(70); return }
         self.request = request
         storeAuthDiagnostic(6)
         do {

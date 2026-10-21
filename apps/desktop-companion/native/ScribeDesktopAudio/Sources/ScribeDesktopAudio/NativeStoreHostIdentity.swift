@@ -1,40 +1,66 @@
 #if SCRIBE_MAC_APP_STORE_XPC
 import Foundation
-import Security
+@preconcurrency import ScribeStorePipe
 
-/// Native-only identity retained after the XPC listener binds the bridge's
-/// kernel parent. A presentation field or window ID cannot construct authority.
+/// Internal injection is limited to wrapper tests. Production callers can only
+/// retain a listener-created handle through the fixed native operations.
+struct NativeStoreHostLeaseOperations: @unchecked Sendable {
+    let retain: (OpaquePointer?) -> OpaquePointer?
+    let release: (OpaquePointer) -> Void
+    let parentPID: (OpaquePointer) -> Int32
+    let isCurrent: (OpaquePointer) -> Bool
+
+    static let native = Self(
+        retain: { scribe_store_host_retain($0) },
+        release: { scribe_store_host_release($0) },
+        parentPID: { scribe_store_host_parent_pid($0) },
+        isCurrent: { scribe_store_host_is_current($0) }
+    )
+}
+
+/// Retained before an asynchronous hop. The native registry rejects foreign or
+/// released handles; a PID or presentation message cannot create this lease.
+public final class NativeStoreHostLease: @unchecked Sendable {
+    public let parentProcess: Int32
+    private let native: OpaquePointer
+    private let operations: NativeStoreHostLeaseOperations
+
+    public convenience init(nativeLease: OpaquePointer?) throws {
+        try self.init(nativeLease: nativeLease, operations: .native)
+    }
+
+    init(nativeLease: OpaquePointer?, operations: NativeStoreHostLeaseOperations) throws {
+        guard let retained = operations.retain(nativeLease) else {
+            throw ProviderPresentationFailure.unavailable
+        }
+        let process = operations.parentPID(retained)
+        guard process > 1, operations.isCurrent(retained) else {
+            operations.release(retained)
+            throw ProviderPresentationFailure.unavailable
+        }
+        self.native = retained; self.operations = operations; self.parentProcess = process
+    }
+
+    public var isCurrent: Bool {
+        operations.isCurrent(native) && operations.parentPID(native) == parentProcess
+    }
+
+    deinit { operations.release(native) }
+}
+
+/// Window-owner PID is metadata from the authenticated broker lease. Every
+/// validity check asks the native broker; Swift does not recreate PID authority.
 @MainActor public final class NativeStoreHostIdentity {
     let process: Int32
-    private let code: SecCode
-    private let requirement: SecRequirement
-    static func booleanIsTrue(_ value: Any?) -> Bool {
-        guard let value, CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() else { return false }
-        return value as? Bool == true
-    }
-    private static func signedSandboxIsTrue(_ code: SecCode) -> Bool {
-        var staticCode: SecStaticCode?, information: CFDictionary?
-        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
-              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
-              let signed = information as? [String: Any],
-              let claims = signed[kSecCodeInfoEntitlementsDict as String] as? [String: Any] else { return false }
-        return booleanIsTrue(claims["com.apple.security.app-sandbox"])
-    }
-    public init(authenticatedProcess process: Int32) throws {
-        guard process > 1, let group = NativeDesktopStoreContainer.approvedApplicationGroup else {
+    private let lease: NativeStoreHostLease
+
+    public init(lease: NativeStoreHostLease) throws {
+        guard lease.isCurrent else {
             throw ProviderPresentationFailure.unavailable
         }
-        var code: SecCode?, requirement: SecRequirement?
-        let text = "anchor apple generic and identifier \"com.cosmaneura.scribe.beta.desktop.store\" and certificate leaf[subject.OU] = \"JVV65668U6\" and entitlement[\"com.apple.security.app-sandbox\"] exists and entitlement[\"com.apple.security.application-groups\"] = \"\(group)\""
-        guard SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess,
-              let requirement,
-              SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid as String: process] as CFDictionary, [], &code) == errSecSuccess,
-              let code, SecCodeCheckValidity(code, [], requirement) == errSecSuccess,
-              Self.signedSandboxIsTrue(code) else {
-            throw ProviderPresentationFailure.unavailable
-        }
-        self.process = process; self.code = code; self.requirement = requirement
+        self.process = lease.parentProcess; self.lease = lease
     }
-    var isValid: Bool { SecCodeCheckValidity(code, [], requirement) == errSecSuccess && Self.signedSandboxIsTrue(code) }
+
+    var isValid: Bool { lease.isCurrent }
 }
 #endif

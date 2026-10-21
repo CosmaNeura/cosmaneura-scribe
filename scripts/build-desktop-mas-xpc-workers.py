@@ -109,6 +109,8 @@ def build(output: Path, native_auth: Path) -> None:
         str(module / "include"),
         str(module / "StorePipeProtocol.c"),
         str(module / "StorePeerRequirement.c"),
+        str(module / "StoreHostLease.c"),
+        str(repo / "apps/desktop-companion/native/ScribeDesktopStoreBridge/StoreParentBroker.c"),
         str(repo / "apps/desktop-companion/native/ScribeDesktopStoreBridge/StorePipeBridge.c"),
         "-framework",
         "CoreFoundation",
