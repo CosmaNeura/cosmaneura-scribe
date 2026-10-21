@@ -47,7 +47,7 @@ class XpcVariantTests(unittest.TestCase):
         self.assertNotIn("xpc_copy_description", source)
         classification = source[
             source.index("static unsigned bridge_xpc_error_diagnostic") : source.index(
-                "/* The inherited shim"
+                "int main("
             )
         ]
         self.assertIn("if (error == XPC_ERROR_CONNECTION_INVALID) return 10;", classification)
@@ -85,6 +85,14 @@ class XpcVariantTests(unittest.TestCase):
             bridge.index("xpc_connection_activate(connection)"),
         )
         self.assertLess(
+            bridge.index("scribe_store_parent_prepare(parent, group, argv[1])"),
+            bridge.index("xpc_connection_activate(connection)"),
+        )
+        self.assertLess(
+            bridge.index("scribe_store_parent_watch(broker, broker_queue"),
+            bridge.index("xpc_connection_activate(connection)"),
+        )
+        self.assertLess(
             service.index("!scribe_store_require_bridge_peer(peer)"),
             service.index("!scribe_store_decode_open(event"),
         )
@@ -93,17 +101,16 @@ class XpcVariantTests(unittest.TestCase):
             service.index("xpc_connection_activate(peer)"),
         )
         for source in (bridge, service):
-            self.assertIn("CFGetTypeID(value) == CFBooleanGetTypeID()", source)
-            self.assertIn("CFBooleanGetValue((CFBooleanRef)value)", source)
-            self.assertIn("kSecCodeInfoEntitlementsDict", source)
             self.assertNotIn("SecCodeCreateWithXPCMessage", source)
+        self.assertNotIn("SecCodeCopyGuestWithAttributes", service)
+        self.assertLess(
+            service.index("open.lease = admitted_lease"), service.index("start_worker(&open")
+        )
 
     def test_native_boolean_requirements_keep_exact_store_identity_and_group(self):
         base = ROOT.parent / "apps/desktop-companion/native"
         paths = (
-            base / "ScribeDesktopStoreBridge/StorePipeBridge.c",
-            base / "ScribeDesktopAudio/Sources/ScribeStorePipe/StorePipeService.c",
-            base / "ScribeDesktopAudio/Sources/ScribeDesktopAudio/NativeStoreHostIdentity.swift",
+            base / "ScribeDesktopStoreBridge/StoreParentBroker.c",
         )
         for path in paths:
             source = path.read_text()
@@ -112,6 +119,9 @@ class XpcVariantTests(unittest.TestCase):
             self.assertIn('entitlement[\\"com.apple.security.application-groups\\"] =', source)
             self.assertNotIn('entitlement[\\"com.apple.security.app-sandbox\\"] = true', source)
             self.assertNotIn('entitlement[\\"com.apple.security.inherit\\"] = true', source)
+            self.assertIn("CFGetTypeID(value) == CFBooleanGetTypeID()", source)
+            self.assertIn("CFBooleanGetValue((CFBooleanRef)value)", source)
+            self.assertIn("kSecCodeInfoEntitlementsDict", source)
 
     def test_auth_build_retains_recovery_without_old_credential_admission(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -161,6 +171,20 @@ class XpcVariantTests(unittest.TestCase):
                             )
                         ).read_bytes(),
                     )
+                    for relative in (
+                        "StoreHostLease.c",
+                        "StoreHostLeaseInternal.h",
+                        "include/StoreHostLease.h",
+                    ):
+                        self.assertEqual(
+                            (output / "package/Sources/ScribeStorePipe" / relative).read_bytes(),
+                            (
+                                ROOT.parent
+                                / "apps/desktop-companion/native/ScribeDesktopAudio"
+                                / "Sources/ScribeStorePipe"
+                                / relative
+                            ).read_bytes(),
+                        )
                 else:
                     self.assertFalse(shared_peer.exists())
 
@@ -228,6 +252,7 @@ class XpcVariantTests(unittest.TestCase):
         self.assertEqual(XPC.PARENT, "com.cosmaneura.scribe.beta.desktop.store")
         self.assertEqual(DIRECT.PARENT, "com.cosmaneura.scribe.beta.desktop")
         self.assertEqual(XPC.AUTH, "com.cosmaneura.scribe.beta.desktop.store.auth")
+        self.assertEqual(XPC.BRIDGE, "com.cosmaneura.scribe.beta.desktop.store.bridge")
         claims = XPC.xpc_claims()
         self.assertEqual(claims["parent"]["com.apple.application-identifier"], XPC.GROUP)
         for role, bundle in (

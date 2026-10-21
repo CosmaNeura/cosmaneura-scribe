@@ -1,12 +1,5 @@
-/* Compile this fixture once with SCRIBE_TEST_BRIDGE=1 and once with =0.
- * Actual production guards consume real CoreFoundation values. Only public
- * SecCode identity/validity/signing-info boundaries supply synthetic objects;
- * the Service variant supplies a fixed4243-to4242 public process-info result.
- * The real requirement parser and real XPC policy dictionaries are retained.
- * Only the LWCR setter and availability are injected for the shared constructor.
- * The constrained evaluator below tests documented query semantics on synthetic
- * signed facts; it does not prove kernel enforcement, trust or runtime admission.
- * No production main, XPC activation, real PID, app or credential is exercised. */
+/* Actual LWCR constructor and typed synthetic signed facts. No connection is
+ * activated; this fixture proves dictionary/query semantics, not kernel trust. */
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #include <assert.h>
@@ -24,86 +17,6 @@
 #ifdef NDEBUG
 #error assertions_must_remain_enabled
 #endif
-
-static CFTypeRef sandbox_value;
-static OSStatus guest_result, static_result, info_result, validity_result;
-static bool malformed_claims, missing_claims, malformed_information, missing_information;
-static unsigned validity_calls, static_calls, information_calls;
-
-static OSStatus fixture_guest(SecCodeRef host, CFDictionaryRef attributes, SecCSFlags flags, SecCodeRef *code) {
-    assert(host == NULL && flags == 0);
-    CFTypeRef selector = CFDictionaryGetValue(attributes, kSecGuestAttributePid);
-    int pid = 0;
-    assert(selector && CFGetTypeID(selector) == CFNumberGetTypeID());
-    assert(CFNumberGetValue((CFNumberRef)selector, kCFNumberIntType, &pid) && pid == 4242);
-    *code = guest_result == errSecSuccess ? (SecCodeRef)CFRetain(CFSTR("synthetic-code")) : NULL;
-    return guest_result;
-}
-static OSStatus fixture_static(SecCodeRef code, SecCSFlags flags, SecStaticCodeRef *result) {
-    assert(code && flags == 0);
-    static_calls++;
-    *result = static_result == errSecSuccess ? (SecStaticCodeRef)CFRetain(CFSTR("synthetic-static")) : NULL;
-    return static_result;
-}
-static OSStatus fixture_validity(SecCodeRef code, SecCSFlags flags, SecRequirementRef requirement) {
-    assert(code && flags == 0);
-    validity_calls++;
-    assert(requirement); /* Real compiled parent requirement; no inbound lookup. */
-    return validity_result;
-}
-static OSStatus fixture_information(SecStaticCodeRef code, SecCSFlags flags, CFDictionaryRef *information) {
-    assert(code && flags == kSecCSSigningInformation);
-    information_calls++;
-    *information = NULL;
-    if (info_result != errSecSuccess) return info_result;
-    if (missing_information) return errSecSuccess;
-    if (malformed_information) {
-        *information = (CFDictionaryRef)CFRetain(CFSTR("not-information"));
-        return errSecSuccess;
-    }
-    CFMutableDictionaryRef claims = CFDictionaryCreateMutable(NULL, 0,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    if (sandbox_value) CFDictionarySetValue(claims, CFSTR("com.apple.security.app-sandbox"), sandbox_value);
-    const void *keys[] = {kSecCodeInfoEntitlementsDict};
-    const void *values[] = {malformed_claims ? (CFTypeRef)CFSTR("not-a-dictionary") : (CFTypeRef)claims};
-    *information = CFDictionaryCreate(NULL, keys, values, missing_claims ? 0 : 1,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFRelease(claims);
-    return errSecSuccess;
-}
-#if !SCRIBE_TEST_BRIDGE
-static pid_t fixture_peer_pid(xpc_connection_t peer) {
-    assert(peer); return 4243;
-}
-static int fixture_process_info(int pid, int flavor, uint64_t argument, void *buffer, int size) {
-    assert(pid == 4243 && flavor == PROC_PIDTBSDINFO && argument == 0
-        && size == (int)sizeof(struct proc_bsdinfo));
-    struct proc_bsdinfo process = {0};
-    process.pbi_ppid = 4242; process.pbi_uid = getuid();
-    process.pbi_start_tvsec = 1000; process.pbi_start_tvusec = 123;
-    memcpy(buffer, &process, sizeof(process)); return (int)sizeof(process);
-}
-#endif
-
-#define SecCodeCopyGuestWithAttributes fixture_guest
-#define SecCodeCopyStaticCode fixture_static
-#define SecCodeCheckValidity fixture_validity
-#define SecCodeCopySigningInformation fixture_information
-#if SCRIBE_TEST_BRIDGE
-#define main unused_production_bridge_main
-#include "StorePipeBridge.c"
-#undef main
-#else
-#define xpc_connection_get_pid fixture_peer_pid
-#define proc_pidinfo fixture_process_info
-#include "../ScribeDesktopAudio/Sources/ScribeStorePipe/StorePipeService.c"
-#undef proc_pidinfo
-#undef xpc_connection_get_pid
-#endif
-#undef SecCodeCopyGuestWithAttributes
-#undef SecCodeCopyStaticCode
-#undef SecCodeCheckValidity
-#undef SecCodeCopySigningInformation
 
 static bool fixture_available = true;
 static int setter_result;
@@ -123,15 +36,6 @@ static int fixture_lwcr_setter(xpc_connection_t connection, xpc_object_t require
 #include "../ScribeDesktopAudio/Sources/ScribeStorePipe/StorePeerRequirement.c"
 #undef xpc_connection_set_peer_lightweight_code_requirement
 #undef __builtin_available
-
-static bool parent_guard(xpc_connection_t synthetic_peer) {
-#if SCRIBE_TEST_BRIDGE
-    (void)synthetic_peer;
-    return parent_is_store_host(4242, "JVV65668U6.com.cosmaneura.scribe.beta.desktop.store");
-#else
-    return verified_host(synthetic_peer, 4242);
-#endif
-}
 
 /* Validate the actual constructor output before interpreting exactly the
  * documented select-key (1) and strict Boolean (5) operations. */
@@ -197,42 +101,11 @@ int main(void) {
     unsigned checks = 0;
     xpc_object_t synthetic_peer = xpc_dictionary_create_empty();
     expected_connection = (xpc_connection_t)synthetic_peer; /* Never activated. */
-    int zero = 0, one = 1;
-    CFNumberRef number_zero = CFNumberCreate(NULL, kCFNumberIntType, &zero);
-    CFNumberRef number_one = CFNumberCreate(NULL, kCFNumberIntType, &one);
-    CFArrayRef array = CFArrayCreate(NULL, NULL, 0, &kCFTypeArrayCallBacks);
-    CFDictionaryRef dictionary = CFDictionaryCreate(NULL, NULL, NULL, 0,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    CFTypeRef candidates[] = {kCFBooleanTrue, kCFBooleanFalse, NULL, CFSTR("true"), number_one, number_zero, array, dictionary};
-    for (size_t index = 0; index < sizeof(candidates) / sizeof(candidates[0]); index++) {
-        sandbox_value = candidates[index];
-        assert(store_boolean_is_true(sandbox_value) == (index == 0)); checks++;
-        assert(parent_guard(expected_connection) == (index == 0)); checks++;
-    }
-    sandbox_value = kCFBooleanTrue; guest_result = errSecParam;
-    unsigned validity_before = validity_calls, static_before = static_calls, information_before = information_calls;
-    assert(!parent_guard(expected_connection)); checks++;
-    assert(validity_calls == validity_before && static_calls == static_before && information_calls == information_before); checks++;
-    guest_result = errSecSuccess; validity_result = errSecParam;
-    assert(!parent_guard(expected_connection)); checks++;
-    assert(static_calls == static_before && information_calls == information_before); checks++;
-    validity_result = errSecSuccess; static_result = errSecParam;
-    assert(!parent_guard(expected_connection)); checks++;
-    assert(information_calls == information_before); checks++;
-    static_result = errSecSuccess; info_result = errSecParam;
-    assert(!parent_guard(expected_connection)); checks++; info_result = errSecSuccess;
-    malformed_information = true; assert(!parent_guard(expected_connection)); checks++; malformed_information = false;
-    missing_information = true; assert(!parent_guard(expected_connection)); checks++; missing_information = false;
-    malformed_claims = true; assert(!parent_guard(expected_connection)); checks++; malformed_claims = false;
-    missing_claims = true; assert(!parent_guard(expected_connection)); checks++; missing_claims = false;
-    assert(parent_guard(expected_connection)); checks++;
-
     xpc_object_t signed_claims = xpc_dictionary_create_empty();
     xpc_object_t values[] = {xpc_bool_create(true), xpc_bool_create(false), NULL, xpc_string_create("true"),
         xpc_int64_create(1), xpc_int64_create(0), xpc_array_create_empty(), xpc_dictionary_create_empty()};
-    const char *identifiers[] = {"com.cosmaneura.scribe.beta.desktop.store", "com.cosmaneura.scribe.beta.desktop.store.auth",
+    const char *identifiers[] = {"com.cosmaneura.scribe.beta.desktop.store.bridge", "com.cosmaneura.scribe.beta.desktop.store.auth",
         "com.cosmaneura.scribe.beta.desktop.audio", "com.cosmaneura.scribe.beta.desktop.presentation"};
-    validity_before = validity_calls; static_before = static_calls; information_before = information_calls;
     for (size_t policy_index = 0; policy_index < 4; policy_index++) {
         unsigned before = setter_calls;
         bool accepted = policy_index == 0 ? scribe_store_require_bridge_peer(expected_connection)
@@ -265,7 +138,6 @@ int main(void) {
         assert(!policy_accepts("JVV65668U6", identifiers[policy_index], 3, NULL)); checks++;
         assert(!policy_accepts("JVV65668U6", identifiers[policy_index], 3, values[3])); checks++;
     }
-    assert(validity_calls == validity_before && static_calls == static_before && information_calls == information_before); checks++;
     unsigned before = setter_calls;
     assert(!scribe_store_require_bridge_peer(NULL)); checks++;
     assert(!scribe_store_require_service_peer(NULL, SCRIBE_AUTH)); checks++;
@@ -283,7 +155,6 @@ int main(void) {
     assert(scribe_store_require_bridge_peer(expected_connection) && setter_calls == before + 3); checks++;
     for (size_t index = 0; index < sizeof(values) / sizeof(values[0]); index++) if (values[index]) xpc_release(values[index]);
     xpc_release(signed_claims); xpc_release(captured_policy); xpc_release(synthetic_peer);
-    CFRelease(dictionary); CFRelease(array); CFRelease(number_one); CFRelease(number_zero);
     printf("store_lwcr_production_boundary_%s_checks_%u_passed\n", SCRIBE_TEST_BRIDGE ? "bridge" : "service", checks);
     return 0;
 }

@@ -10,7 +10,7 @@ let package = Package(
                .executable(name: "ScribeDesktopAudioStoreService", targets: ["ScribeDesktopAudioStoreService"]),
                .executable(name: "ScribePresentationStoreService", targets: ["ScribePresentationStoreService"])],
     targets: [
-        .target(name: "ScribeDesktopAudio"),
+        .target(name: "ScribeDesktopAudio", dependencies: ["ScribeStorePipe"]),
         .target(name: "ScribeStorePipe", publicHeadersPath: "include", linkerSettings: [.linkedFramework("Security"), .linkedFramework("CoreFoundation")]),
         .target(name: "ScribeStoreWorkers", dependencies: ["ScribeDesktopAudio", "ScribeStorePipe"]),
         .executableTarget(name: "ScribeDesktopAudioStoreService", dependencies: ["ScribeStoreWorkers", "ScribeStorePipe"]),

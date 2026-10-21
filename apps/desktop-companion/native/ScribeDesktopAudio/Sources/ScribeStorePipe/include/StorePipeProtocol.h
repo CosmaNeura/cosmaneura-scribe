@@ -5,8 +5,10 @@
 #include <sys/types.h>
 #include <xpc/xpc.h>
 
+#include "StoreHostLease.h"
+
 enum scribe_store_role { SCRIBE_AUTH = 1, SCRIBE_AUDIO = 2, SCRIBE_PRESENTATION = 3 };
-struct scribe_store_open { const char *mode; int input; int output; pid_t host; };
+struct scribe_store_open { const char *mode; int input; int output; pid_t host; struct scribe_store_host_lease *lease; };
 const char *scribe_store_service(enum scribe_store_role role);
 enum scribe_store_role scribe_store_mode_role(const char *mode);
 bool scribe_store_pair(int input, int output);

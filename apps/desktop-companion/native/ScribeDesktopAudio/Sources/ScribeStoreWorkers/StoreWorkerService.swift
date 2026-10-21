@@ -8,13 +8,17 @@ import ScribeDesktopAudio
 @preconcurrency import ScribeStorePipe
 
 private final class StoreWorkerRequest: @unchecked Sendable {
-    let mode: String, host: Int32, descriptor: Int32
+    let mode: String, descriptor: Int32
+    let hostLease: NativeStoreHostLease
     let input: FileHandle, output: FileHandle
     let completed: scribe_store_completion
     let lifetime = NativeProcessLifetime()
-    init(_ open: UnsafePointer<scribe_store_open>, completed: @escaping scribe_store_completion) {
+    init(_ open: UnsafePointer<scribe_store_open>, completed: @escaping scribe_store_completion) throws {
+        let lease = try NativeStoreHostLease(nativeLease: open.pointee.lease)
+        guard lease.parentProcess == open.pointee.host else { throw ProviderPresentationFailure.unavailable }
+        hostLease = lease
         mode = String(cString: open.pointee.mode)
-        host = open.pointee.host; descriptor = open.pointee.input
+        descriptor = open.pointee.input
         input = FileHandle(fileDescriptor: open.pointee.input, closeOnDealloc: false)
         output = FileHandle(fileDescriptor: open.pointee.output, closeOnDealloc: false)
         self.completed = completed
@@ -56,10 +60,10 @@ private final class StoreWorkerRegistry: @unchecked Sendable {
         }
     }
     private func perform(_ request: StoreWorkerRequest, lifetime: NativeProcessLifetime) async -> Int32 {
-        guard !lifetime.isCancelled else { return 70 }
+        guard !lifetime.isCancelled, request.hostLease.isCurrent else { return 70 }
         if role == SCRIBE_PRESENTATION {
             guard ["--presentation-v1", "--presentation-v2", "--presentation-v3"].contains(request.mode),
-                  let host = try? NativeStoreHostIdentity(authenticatedProcess: request.host) else { return 78 }
+                  let host = try? NativeStoreHostIdentity(lease: request.hostLease) else { return 78 }
             let version = request.mode == "--presentation-v3" ? 3 : request.mode == "--presentation-v2" ? 2 : 1
             return await ProviderPresentationProcess.run(surface: MacProviderPresentationSurface(storeHost: host),
                 input: request.input, output: request.output, protocolVersion: version, lifetime: lifetime)
@@ -108,9 +112,11 @@ private final class StoreWorkerRegistry: @unchecked Sendable {
         let sessions = StoreWorkerSessions(role: role, registry: registry)
         let result = scribe_store_service_run(role, { open, completed in
             guard let open, let completed else { return }
-            let request = StoreWorkerRequest(open, completed: completed)
-            guard registry.register(request) else { completed(70); return }
-            Task { @MainActor in sessions.start(request) }
+            do {
+                let request = try StoreWorkerRequest(open, completed: completed)
+                guard registry.register(request) else { completed(70); return }
+                Task { @MainActor in sessions.start(request) }
+            } catch { completed(78) }
         }, { open in
             guard let open else { return }
             let descriptor = open.pointee.input
