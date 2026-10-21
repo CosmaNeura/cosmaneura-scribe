@@ -11,6 +11,7 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
   onSetupReady?: () => void;
   onSetupInvalidated?: () => void;
 }): { snapshot(): AudioPreflightSnapshot | null; ready(): boolean; close(): Promise<void> } {
+  const desktopName = root.ownerDocument.title === "Cosmaneura Scribe Store" ? "Cosmaneura Scribe Store" : "Scribe Desktop";
   const lifetime = new AbortController(), signal = lifetime.signal;
   const externalAbort = (): void => lifetime.abort();
   options.signal.addEventListener("abort", externalAbort, { once: true }); if (options.signal.aborted) lifetime.abort();
@@ -71,12 +72,12 @@ export function bindPreparationControls(root: HTMLElement, options: { isIOS: boo
     const repair = root.querySelector<HTMLDetailsElement>("[data-preflight-repair]")!;
     const steps = screenNeeded ? [
       "Open System Settings → Privacy & Security → Screen Recording.",
-      "Allow Scribe Desktop. If it is already on, turn it off and on.",
+      `Allow ${desktopName}. If it is already on, turn it off and on.`,
       "Reopen Scribe if macOS asks, then choose Check recording access.",
     ] : snapshot?.status === "permission_required" ? options.isIOS ? [
       "Open Settings on this iPhone.", "Allow Microphone access for Scribe.", "Return to Scribe, then choose Check recording access.",
     ] : [
-      "Open System Settings → Privacy & Security → Microphone.", "Allow Scribe Desktop.", "Return to Scribe, then choose Check recording access.",
+      "Open System Settings → Privacy & Security → Microphone.", `Allow ${desktopName}.`, "Return to Scribe, then choose Check recording access.",
     ] : [];
     repair.hidden = !steps.length;
     root.querySelector<HTMLOListElement>("[data-preflight-repair-steps]")!.replaceChildren(...steps.map(text => {
