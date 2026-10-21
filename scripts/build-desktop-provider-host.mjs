@@ -18,7 +18,13 @@ const hash = value => createHash("sha256").update(value).digest("hex"), files = 
 for (const name of ["provider.html", "desktop-start.js", "provider-capture.js", "provider-capture.css"]) {
   const source = join(name.startsWith("provider-capture") ? input : standalone, name), info = await lstat(source);
   if (!info.isFile() || info.isSymbolicLink() || info.size > 4 * 1024 * 1024) throw new Error("Invalid renderer build input");
-  const bytes = await readFile(source); await writeFile(join(renderer, name), bytes); files[name] = hash(bytes);
+  let bytes = await readFile(source);
+  if (storeXpc && name === "provider.html") {
+    const title = Buffer.from("<title>Cosmaneura Scribe Beta</title>"), offset = bytes.indexOf(title);
+    if (offset < 0 || bytes.indexOf(title, offset + title.length) !== -1) throw new Error("Invalid Store renderer title input");
+    bytes = Buffer.concat([bytes.subarray(0, offset), Buffer.from("<title>Cosmaneura Scribe Store</title>"), bytes.subarray(offset + title.length)]);
+  }
+  await writeFile(join(renderer, name), bytes); files[name] = hash(bytes);
 }
 const icon = await readFile(join(standalone, "Scribe.icns"));
 await writeFile(join(output, "Scribe.icns"), icon);

@@ -207,6 +207,68 @@ private actor SourceWire: ProviderNativeWire {
     // Change only the saved mount number to reproduce the reboot failure.
     #if os(macOS)
 #if SCRIBE_MAC_APP_STORE_XPC
+    do {
+      // Search-only ancestors do not grant directory listing. The final private
+      // directory stays readable so the actual coordinator can fsync its files
+      // and directory, then admit the capture lease after confirmed recovery.
+      let searchRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+        .appendingPathComponent("scribe-search-fence-check-" + UUID().uuidString)
+      let ancestor = searchRoot.appendingPathComponent("search-only", isDirectory: true)
+      let privateDirectory = ancestor.appendingPathComponent("private", isDirectory: true)
+      try FileManager.default.createDirectory(at: searchRoot, withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700])
+      defer {
+        // Restore our own fixture before recursive cleanup, including on failure.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: ancestor.path)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: privateDirectory.path)
+        try? FileManager.default.removeItem(at: searchRoot)
+      }
+      try FileManager.default.createDirectory(at: ancestor, withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700])
+      try FileManager.default.createDirectory(at: privateDirectory, withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700])
+      let linkedAncestor = searchRoot.appendingPathComponent("linked", isDirectory: true)
+      try FileManager.default.createSymbolicLink(at: linkedAncestor, withDestinationURL: ancestor)
+      try FileManager.default.setAttributes([.posixPermissions: 0o100], ofItemAtPath: ancestor.path)
+      let permissions = try FileManager.default.attributesOfItem(atPath: ancestor.path)[.posixPermissions]
+      try require((permissions as? NSNumber)?.intValue == 0o100)
+      var searchAnchor: NativeFenceAnchor?
+      do {
+        let coordinator = try NativeCaptureProcessCoordinator(
+          privateDirectory: privateDirectory.path, expectedAnchor: nil)
+        searchAnchor = coordinator.anchor
+        let ticket = try NativeFenceTicket(coordinator.wireValue)
+        try coordinator.allowCaptureAfterConfirmedRecovery()
+        let lease = try NativeCaptureProcessLease(privateDirectory: privateDirectory.path,
+          expectedAnchor: ticket.anchor, expectedEpoch: ticket.epoch)
+        try require(ticket.anchor.coordinator == coordinator.anchor.coordinator
+          && ticket.anchor.capture == coordinator.anchor.capture
+          && ticket.epoch == coordinator.epoch && coordinator.anchor.volumeID != nil)
+        withExtendedLifetime((coordinator, lease)) {}
+      }
+      // No coordinator or lease remains to explain these refusals by contention.
+      try await rejects {
+        _ = try NativeCaptureProcessCoordinator(
+          privateDirectory: linkedAncestor.path + "/private", expectedAnchor: searchAnchor!)
+      }
+      for invalidPath in [ancestor.path + "/./private", ancestor.path + "/../search-only/private"] {
+        try await rejects {
+          _ = try NativeCaptureProcessCoordinator(
+            privateDirectory: invalidPath, expectedAnchor: searchAnchor!)
+        }
+      }
+      try FileManager.default.setAttributes([.posixPermissions: 0o750], ofItemAtPath: privateDirectory.path)
+      try await rejects {
+        _ = try NativeCaptureProcessCoordinator(
+          privateDirectory: privateDirectory.path, expectedAnchor: searchAnchor!)
+      }
+      try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: privateDirectory.path)
+      let reusable = try NativeCaptureProcessCoordinator(
+        privateDirectory: privateDirectory.path, expectedAnchor: searchAnchor!)
+      try require(reusable.anchor == searchAnchor!)
+      withExtendedLifetime(reusable) {}
+      checks += 1
+    }
     let storeDirectory = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
       .appendingPathComponent("scribe-store-fence-check-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: false,
@@ -388,6 +450,10 @@ private actor SourceWire: ProviderNativeWire {
     try await rejects { _ = try NativeCaptureProcessCoordinator(privateDirectory: directory.path, expectedAnchor: mounted) }
     checks += 1
     #endif
+    if Array(CommandLine.arguments.dropFirst()) == ["--fence-only"] {
+      print("desktop_source_fence_only_checks_\(checks)_passed")
+      return
+    }
     for first in [0, 1024] {
       let f = try Fixture(first: first)
       let grant = try await f.prepare()

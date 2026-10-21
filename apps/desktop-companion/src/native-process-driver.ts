@@ -4,7 +4,7 @@ import type { ChildProcessByStdio } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { DesktopPCMDriver, DesktopPCMDriverSession, DesktopPCMFailure,
   DesktopPCMStart, DesktopPCMCompletion, DesktopCaptureAuthorization } from "./native-pcm-driver.js";
@@ -410,6 +410,7 @@ export async function requestNativeRecordingAccess(options: Pick<NativeProcessDr
 async function probe(path: string, permissionSignal?: AbortSignal, microphoneOnly = false): Promise<boolean> {
   if (permissionSignal?.aborted) return false;
   return await new Promise<boolean>(resolve => {
+    const storePipeBridge = "mas" in process && process.mas === true && basename(path) === "ScribeStorePipeBridge";
     const child = launch(path, microphoneOnly ? permissionSignal ? "--microphone-permissions-v1" : "--microphone-availability-v1"
       : permissionSignal ? "--request-permissions-v1" : "--availability-v1");
     const decoder = new NativeProcessDecoder();
@@ -437,7 +438,9 @@ async function probe(path: string, permissionSignal?: AbortSignal, microphoneOnl
       try { decoder.finish(); } catch { available = false; }
       resolve(code === 0 && available === true && !permissionSignal?.aborted);
     });
-    child.stdin.end();
+    // Store admission requires a connected stdin socket. The finite native
+    // worker exits after its reply; child exit or cancellation closes the pipe.
+    if (!storePipeBridge) child.stdin.end();
   });
 }
 function integer(value: unknown, min: number, max: number): value is number {

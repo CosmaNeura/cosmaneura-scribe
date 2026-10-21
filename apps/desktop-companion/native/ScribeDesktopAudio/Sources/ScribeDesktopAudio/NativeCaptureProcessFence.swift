@@ -178,12 +178,27 @@ struct NativeFenceTicket: Sendable {
 /// final directory's private ownership/mode is checked by NativeFenceFile.
 private func nativeFenceDirectory(_ path: String) throws -> Int32 {
     guard path.hasPrefix("/") else { throw NativeFenceError.unavailable }
+#if SCRIBE_MAC_APP_STORE_XPC
+    // Ancestors are searched, never listed. Preserve read access on the final
+    // private directory, including the empty-component root case.
+    var remainingComponents = path.split(separator: "/").count
+    let rootFlags = remainingComponents == 0 ? O_RDONLY | O_DIRECTORY | O_CLOEXEC : O_SEARCH | O_CLOEXEC
+    var fd = open("/", rootFlags)
+#else
     var fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+#endif
     guard fd >= 0 else { throw NativeFenceError.unavailable }
     do {
         for part in path.split(separator: "/") {
             guard part != ".", part != ".." else { throw NativeFenceError.unavailable }
+#if SCRIBE_MAC_APP_STORE_XPC
+            remainingComponents -= 1
+            let flags = remainingComponents == 0 ? O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+                : O_SEARCH | O_NOFOLLOW | O_CLOEXEC
+            let next = openat(fd, String(part), flags)
+#else
             let next = openat(fd, String(part), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+#endif
             guard next >= 0 else { throw NativeFenceError.unavailable }
             Darwin.close(fd); fd = next
         }
