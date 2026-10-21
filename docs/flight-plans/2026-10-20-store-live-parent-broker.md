@@ -8,7 +8,7 @@ The supported repair moves only the service/Swift cross-parent Security lookup
 to the new exact-ID inherited Bridge broker. Keep the original service kernel
 Bridge/parent/UID/start-generation checks and all typed LWCR peer admission,
 FD decoding, consent/custody, descriptor ownership and worker-drain barriers.
-See the [decision](../adr/2026-10-20-store-live-parent-broker.md).
+See the [decision](../adr/0081-store-live-parent-broker.md).
 
 Source qualification must cover exact kqueue receipts, error/event revocation,
 retained parent code and strict CFBoolean refusals, request/reply missing keys,
