@@ -375,3 +375,25 @@ it("the full history gives a dashboard continuation without dropping any entries
   expect(f.content.querySelector('[data-workspace-action="prepare-updated-note"]')).toBeNull();
   expect((await f.journal.load()).progress).toEqual(progress); expect(w.preparations).toEqual([]);
 });
+
+it.each(["fresh review", "CAS"])("keeps a genuinely viewed v1 draft closed after correction and failed %s", async failure => {
+  const w = wire(); w.advance(ready(1)); w.setDraft();
+  const f = mount({ snapshot: retained(), request: w.request, view: ready(1) });
+  await f.click("open"); await lastOptions().continueToNote!(ready(1));
+  expect(f.content.innerHTML).toContain("Clinical review is still required.");
+  expect(f.content.innerHTML).toContain("No plan discussed.");
+  await f.click("review"); w.advance(ready()); await lastOptions().continueToNote!(ready());
+  expect(f.content.innerHTML).toContain("Transcript updated");
+  expect(f.content.innerHTML).not.toContain("No plan discussed.");
+  if (failure === "CAS") f.journal.save.mockRejectedValueOnce(new Error("Synthetic CAS conflict"));
+  else f.request.mockRejectedValueOnce(new Error("Synthetic fresh review unavailable"));
+  await f.click("prepare-updated-note");
+  expect(f.content.innerHTML).toContain("Transcript updated");
+  expect(f.content.innerHTML).not.toContain("Clinical review is still required.");
+  expect(f.content.innerHTML).not.toContain("No plan discussed.");
+  expect(f.content.innerHTML).not.toContain("data-note-field");
+  await f.click("save");
+  expect(f.request.mock.calls.some(([, body]) => body.action === "save")).toBe(false);
+  expect(w.preparations).toEqual([]);
+  expect((await f.journal.load()).progress).toEqual(retained().progress);
+});

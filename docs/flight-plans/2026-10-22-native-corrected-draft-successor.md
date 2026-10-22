@@ -10,6 +10,8 @@ change Scribe/Core staging, installed applications or configuration.
 - Preserve every submitted original/successor schema, source and client key.
 - Append one explicit higher-version, same-session/same-working-ID successor
   only after durable CAS confirmation. Retain note/transcript history.
+- Remove the previously displayed draft when its transcript version advances.
+  Failed preflight/CAS leaves the updated-source screen, never the old editor.
 - Match the selected key, source and schema after asynchronous receipt parsing;
   reject late replies, wrong sessions, changed lineage and superseded sources.
 - Opening and automatic recovery remain GET-only. Only an explicit successor

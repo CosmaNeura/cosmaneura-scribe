@@ -905,6 +905,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       currentSchema = retainedPreparation.schema;
       if (!sameSource(retainedPreparation.source, source)) {
         requireValue(newerNoteSource(retainedPreparation.source, source));
+        draft = null; noteTranscript = null;
         showUpdatedPreparation(); return;
       }
       await readNote(false); return;
@@ -1022,8 +1023,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     } catch (error) {
       if (!preparationSource || !preparationAttempted) {
         if (prepare && authorized(n)) {
-          if (draft) renderNote();
-          else if (successor) showUpdatedPreparation();
+          if (successor) showUpdatedPreparation();
+          else if (draft) renderNote();
           else if (retryUpdated) awaitPreparedNote(n, activeClient, id, schema, displayedSource);
         }
         throw error;
