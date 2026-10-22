@@ -12,9 +12,9 @@ import { HttpCreatorReviewApi, type CreatorReviewView } from "../../../review-ui
 import { mountCreatorReview, renderNoteTranscript, bindTranscriptTools } from "../../../review-ui/src/creator-review-panel";
 import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
   type LanguageMode } from "./core-client";
-import { noteTemplates, parseDraft, pendingSave, resolveNote, checkNoteSave, reviewedSource, sameSource, saveNote,
-  type CoreDraft, type CoreNoteTemplate, type ReviewedSource } from "./core-notes";
-import { assertProgress, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
+import { canonical, noteTemplates, parseDraft, pendingSave, resolveNote, checkNoteSave, reviewedSource, sameSource, saveNote,
+  type CoreDraft, type CoreNoteTemplate, type PendingNoteSave, type ReviewedSource } from "./core-notes";
+import { activeNotePreparation, appendNotePreparationSuccessor, assertProgress, MAX_NOTE_PREPARATION_SUCCESSORS, newerNoteSource, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
 import type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 export type { ProviderWorkspaceHost, AuthorizedProviderEncounter, ProviderRecorderResources, ProviderEncounter } from "./workspace-contracts";
 import "./workspace.css";
@@ -88,6 +88,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let savedAt: Date | null = null;
   let noteSaveUnconfirmed = false;
   let refreshNoteSources: (() => void) | null = null;
+  let manualUpdatedRetryKey: string | null = null;
   let setupQuery = "";
   let pendingDateOfBirth: { date: string; key: string } | null = null;
   let stopSaveCheck: (() => void) | null = null;
@@ -176,7 +177,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     consentAction = null;
     openingRef = null;
     cancelOpening = null;
-    context = null; client = null; journal = { revision: null, progress: null };
+    context = null; client = null; journal = { revision: null, progress: null }; manualUpdatedRetryKey = null;
     // A host acquisition can finish after revocation. Await its ownership handoff
     // so disposal cannot report success before those late handles are closed.
     if (acquiringRecorder) await acquiringRecorder.catch(() => undefined);
@@ -574,7 +575,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     }, {
       ...(initialAction ? { initialAction } : {}),
       journal: context.reviewJournal(session()), continueToNote: (view, afterFinish) => openNotes(view, undefined, afterFinish),
-      continueAfterFinish: progress().notePreparation?.state === "requested",
+      continueAfterFinish: activeNotePreparation(progress())?.state === "requested",
       speakerNameSuggestions: { patient: activeContext.encounter.patientName, clinician: host.providerDisplayName },
       ...(activeContext.playPassage ? { playPassage: activeContext.playPassage } : {}),
       ...(context.editJournal ? { editJournal: context.editJournal(session()) } : {}),
@@ -898,13 +899,24 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     source = reviewedSource(view);
     if (!progress().uploaded) await persist(value => ({ ...value, uploaded: true }));
     if (!authorized(n)) return;
-    const retainedPreparation = progress().notePreparation;
+    const buffered = progress().queuedNoteEdits;
+    if (buffered && !sameSource(buffered.source, source)) {
+      requireValue(newerNoteSource(buffered.source, source));
+      currentSchema = buffered.schema; draft = null; noteTranscript = null;
+      showUpdatedPreparation(); return;
+    }
+    const retainedPreparation = activeNotePreparation(progress());
     if (retainedPreparation?.state === "submitted") {
-      requireValue(retainedPreparation.schema && retainedPreparation.source && sameSource(retainedPreparation.source, source));
+      requireValue(retainedPreparation.schema && retainedPreparation.source);
       currentSchema = retainedPreparation.schema;
+      if (!sameSource(retainedPreparation.source, source)) {
+        requireValue(newerNoteSource(retainedPreparation.source, source));
+        draft = null; noteTranscript = null;
+        showUpdatedPreparation(); return;
+      }
       await readNote(false); return;
     }
-    prepareAfterFinish = prepareAfterFinish || progress().notePreparation?.state === "requested";
+    prepareAfterFinish = prepareAfterFinish || activeNotePreparation(progress())?.state === "requested";
     prepareSelectedTemplate = prepareAfterFinish;
     templates = opening?.templates ?? await noteTemplates(currentClient, session());
     if (!authorized(n)) return;
@@ -915,7 +927,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         draft = opening.draft; noteTranscript = view; renderNote();
       } else await readNote(false);
       if (authorized(n) && draft?.status === "not_prepared") {
-        const intent = progress().notePreparation;
+        const intent = activeNotePreparation(progress());
         if (intent?.state === "submitted" && intent.schema === currentSchema) {
           requireValue(intent.source && sameSource(intent.source, source));
           awaitPreparedNote(n, currentClient, session(), currentSchema, source);
@@ -932,14 +944,28 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       <button data-workspace-action="read">Open note</button>
       <button data-workspace-action="core">Open the dashboard</button>`);
   }
-  const readNote = async (prepare: boolean): Promise<void> => {
+  const showUpdatedPreparation = (): void => {
+    const retained = activeNotePreparation(progress());
+    const previous = retained?.source && source && newerNoteSource(retained.source, source) ? retained.source : progress().queuedNoteEdits?.source;
+    requireValue(previous && source && newerNoteSource(previous, source));
+    const blocked = progress().pendingSave !== null || !!progress().queuedNoteEdits;
+    const full = (progress().notePreparationSuccessors?.length ?? 0) >= MAX_NOTE_PREPARATION_SUCCESSORS;
+    show(`<h1>Transcript updated</h1><p>Your earlier draft or unsaved edits used transcript version ${previous.working_version}. The current reviewed transcript is version ${source.working_version}. Previous drafts and saved notes are retained.</p>
+      <p>${blocked ? "Earlier note edits are unresolved. Resolve them before preparing an updated draft; they will not be applied to this transcript." : full ? "No further updated drafts can be prepared here for this visit. Open the dashboard to review saved notes and continue there." : "Prepare a separate draft from this reviewed transcript. Clinical review will still be required."}</p>
+      ${!blocked && !full ? '<button class="provider-primary" data-workspace-action="prepare-updated-note">Prepare updated draft</button>' : ""}
+      ${progress().pendingSave ? '<p>The earlier save cannot be applied to the corrected transcript. Check its original status and compare saved work in the dashboard; this screen cannot clear an unconfirmed save.</p><button data-workspace-action="resolve">Check previous save status</button>' : ""}
+      ${progress().queuedNoteEdits && !progress().pendingSave ? '<button data-workspace-action="review-retained-edits">Review retained unsaved edits</button>' : ""}
+      <button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open the dashboard</button>`);
+  };
+  const readNote = async (prepare: boolean, successor = false, retryUpdated = false): Promise<void> => {
     requireValue(client && source && currentSchema);
-    if (prepare && progress().notePreparation?.state === "submitted") {
-      const retained = progress().notePreparation!;
+    if (prepare && !successor && !retryUpdated && activeNotePreparation(progress())?.state === "submitted") {
+      const retained = activeNotePreparation(progress())!;
       requireValue(retained.schema && retained.source && sameSource(retained.source, source));
       currentSchema = retained.schema; await readNote(false); return;
     }
-    const n = generation, activeClient = client, id = session(), schema = currentSchema;
+    const n = generation, activeClient = client, id = session(), schema = currentSchema, displayedSource = source;
+    let expectedKey = activeNotePreparation(progress())?.key;
     const review = new HttpCreatorReviewApi(id, activeClient.reviewRequest(id));
     let preparationSource: ReviewedSource | null = null, preparationAttempted = false;
     try {
@@ -947,16 +973,43 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (prepare) {
         step = "note preparation";
         show('<h1>Preparing your draft note…</h1><p role="status">Checking your transcript. Your recording and transcript are retained.</p>');
-        view = await review.read();
+        if (retryUpdated) {
+          requireValue(expectedKey && manualUpdatedRetryKey === expectedKey && progress().notePreparationSuccessors?.at(-1)?.key === expectedKey
+            && progress().pendingSave === null && !progress().queuedNoteEdits);
+          manualUpdatedRetryKey = null;
+          [view, value] = await Promise.all([review.read(), activeClient.note(id, "read", schema)]);
+          if (!authorized(n)) return;
+          const checked = reviewedSource(view), retained = activeNotePreparation(progress());
+          requireValue(retained?.key === expectedKey && retained.source && sameSource(retained.source, checked)
+            && sameSource(displayedSource, checked));
+          const existing = await parseDraft(value, id, schema, checked);
+          if (!authorized(n)) return;
+          requireValue(activeNotePreparation(progress())?.key === expectedKey);
+          if (existing.status === "draft") { source = checked; draft = existing; noteTranscript = view; renderNote(); return; }
+        } else view = await review.read();
         if (!authorized(n)) return;
         // Generation still waits for a fresh, ready transcript before any write.
         preparationSource = reviewedSource(view);
-        const intent = progress().notePreparation ?? { state: "requested" as const, key: crypto.randomUUID(), schema: null, source: null };
-        await persist(value => ({ ...value, notePreparation: { state: "submitted", key: intent.key, schema, source: preparationSource } }));
+        if (retryUpdated) {
+          requireValue(activeNotePreparation(progress())?.key === expectedKey && progress().pendingSave === null && !progress().queuedNoteEdits);
+        } else if (successor) {
+          requireValue(sameSource(displayedSource, preparationSource));
+          const checkedSource = preparationSource, key = crypto.randomUUID();
+          await persist(value => appendNotePreparationSuccessor(value, checkedSource, key));
+          expectedKey = key;
+        } else {
+          const intent = activeNotePreparation(progress()) ?? { state: "requested" as const, key: crypto.randomUUID(), schema: null, source: null };
+          await persist(value => ({ ...value, notePreparation: { state: "submitted", key: intent.key, schema, source: preparationSource } }));
+          expectedKey = intent.key;
+        }
         if (!authorized(n)) return;
         show('<h1>Preparing your draft note…</h1><p>The draft will appear here when it is ready. Your recording and transcript are retained.</p>');
         preparationAttempted = true;
-        value = await activeClient.note(id, "prepare", schema, undefined, progress().notePreparation!.key);
+        requireValue(activeNotePreparation(progress())?.key === expectedKey);
+        value = await activeClient.note(id, "prepare", schema, undefined, expectedKey);
+        // Core prepares its own current source: reject a concurrently advanced
+        // source rather than presenting its result as this retained intent.
+        if (successor || retryUpdated) view = await review.read();
       } else {
         // Both reads independently authorize in Core. Wait for both and match
         // their lineage before displaying either; never reuse a cached response.
@@ -964,29 +1017,35 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       }
       if (!authorized(n)) return;
       const fresh = reviewedSource(view);
-      const retained = progress().notePreparation;
+      requireValue(activeNotePreparation(progress())?.key === expectedKey);
+      const retained = activeNotePreparation(progress());
       if (retained?.state === "submitted") requireValue(retained.schema === schema && retained.source && sameSource(retained.source, fresh));
       const result = await parseDraft(value, id, schema, fresh);
       if (!authorized(n)) return;
+      requireValue(activeNotePreparation(progress())?.key === expectedKey);
       source = fresh; draft = result; noteTranscript = view;
       if (prepare && result.status === "not_prepared") awaitPreparedNote(n, activeClient, id, schema, fresh);
-      else if (result.status === "not_prepared" && progress().notePreparation?.state === "submitted" && progress().notePreparation?.schema === schema) awaitPreparedNote(n, activeClient, id, schema, fresh);
+      else if (result.status === "not_prepared" && activeNotePreparation(progress())?.state === "submitted" && activeNotePreparation(progress())?.schema === schema) awaitPreparedNote(n, activeClient, id, schema, fresh);
       else renderNote();
     } catch (error) {
       if (!preparationSource || !preparationAttempted) {
-        if (prepare && authorized(n)) renderNote();
+        if (prepare && authorized(n)) {
+          if (successor) showUpdatedPreparation();
+          else if (draft) renderNote();
+          else if (retryUpdated) awaitPreparedNote(n, activeClient, id, schema, displayedSource);
+        }
         throw error;
       }
-      if (authorized(n)) awaitPreparedNote(n, activeClient, id, schema, preparationSource);
+      if (authorized(n) && activeNotePreparation(progress())?.key === expectedKey) awaitPreparedNote(n, activeClient, id, schema, preparationSource);
     }
   };
   const awaitPreparedNote = (n: number, activeClient: CoreCaptureClient, id: string, schema: string,
     expectedSource: ReviewedSource): void => {
     requireValue(context && authorized(n));
-    const activeContext = context;
-    // A lost prepare response can follow a committed draft. Recover by reads
-    // only; replaying prepare could otherwise start another model operation.
-    show('<h1>Recording saved</h1><p class="provider-writing-note">Writing your visit note…</p><p data-note-readiness role="status">Your draft will appear here automatically when it is ready.</p><p class="provider-note-wait-time" data-note-wait-time aria-live="off">Checking automatically · 0s</p><button class="provider-primary" data-workspace-action="encounters">Back to today’s patients</button><details class="provider-note-options"><summary>Details</summary><button data-workspace-action="check-note">Check for note</button><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open the dashboard</button></details>');
+    const activeContext = context, expectedKey = activeNotePreparation(progress())?.key;
+    // Automatic recovery is read-only. A newer-source successor may offer a
+    // separate explicit same-key retry after paired current not-prepared reads.
+    show(`<h1>Recording saved</h1><p class="provider-writing-note">Writing your visit note…</p><p data-note-readiness role="status">Your draft will appear here automatically when it is ready.</p><p class="provider-note-wait-time" data-note-wait-time aria-live="off">Checking automatically · 0s</p><button class="provider-primary" data-workspace-action="encounters">Back to today’s patients</button><details class="provider-note-options"><summary>Details</summary><button data-workspace-action="check-note">Check for note</button><button data-workspace-action="review">Review transcript</button><button data-workspace-action="core">Open the dashboard</button>${progress().notePreparationSuccessors?.at(-1)?.key === expectedKey ? '<button hidden disabled data-workspace-action="retry-updated-note">Retry updated draft</button>' : ""}</details>`);
     let closed = false, checking = false, expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reading: AbortController | null = null;
@@ -996,7 +1055,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const options = content.querySelector<HTMLDetailsElement>(".provider-note-options")!;
     const button = content.querySelector<HTMLButtonElement>('[data-workspace-action="check-note"]')!;
     const active = (): boolean => !closed && authorized(n) && context === activeContext
-      && client === activeClient && currentSchema === schema;
+      && client === activeClient && currentSchema === schema && activeNotePreparation(progress())?.key === expectedKey;
     const updateWaitTime = (): void => {
       if (!active()) return;
       waitTime.textContent = expired ? "Automatic checking paused."
@@ -1014,7 +1073,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     const check = async (automatic = false): Promise<void> => {
       if (!active() || checking || document.visibilityState !== "visible") return;
       if (automatic && (expired || performance.now() >= expiresAt)) { expired = true; message(); return; }
-      clearTimeout(timer); checking = true; button.disabled = true;
+      clearTimeout(timer); checking = true; button.disabled = true; manualUpdatedRetryKey = null;
+      const retryButton = content.querySelector<HTMLButtonElement>('[data-workspace-action="retry-updated-note"]');
+      if (retryButton) retryButton.disabled = true;
       const checkStartedAt = performance.now();
       const controller = new AbortController(); reading = controller;
       forwardAbort(activeClient.signal, controller);
@@ -1023,12 +1084,17 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       status.textContent = "Checking for your prepared note…";
       // Promise.all may reject while its other GET is still in flight. Abort
       // the observation promptly, but retain the slot until BOTH reads settle.
-      let requestsSettled = false, observationSettled = false;
+      let requestsSettled = false, observationSettled = false, retryReady = false;
       const release = (): void => {
         if (!requestsSettled || !observationSettled || reading !== controller) return;
         reading = null; checking = false;
         if (active()) {
           button.disabled = false;
+          if (retryReady) {
+            manualUpdatedRetryKey = expectedKey ?? null;
+            const retry = content.querySelector<HTMLButtonElement>('[data-workspace-action="retry-updated-note"]');
+            if (retry) retry.disabled = false;
+          }
           if (!expired && document.visibilityState === "visible") {
             timer = setTimeout(() => { void check(true); }, Math.max(0, 3000 - (performance.now() - checkStartedAt)));
           }
@@ -1050,6 +1116,11 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           return;
         }
         message();
+        if (progress().notePreparationSuccessors?.at(-1)?.key === expectedKey && progress().pendingSave === null && !progress().queuedNoteEdits) {
+          retryReady = true;
+          status.textContent = "No updated draft is confirmed. An earlier preparation may still finish. You can check again or explicitly retry the same updated request.";
+          if (retryButton) { retryButton.hidden = false; retryButton.disabled = true; }
+        }
       } catch {
         if (active() && document.visibilityState === "visible" && controller.signal.reason !== "note-check-hidden") {
           status.textContent = "The note check could not be confirmed. Check your connection, then choose Check for note or review the transcript. Your saved work is retained.";
@@ -1201,6 +1272,51 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     } else show('<h1>Confirm your previous save</h1><p>Your exact edits are retained. Checking the saved request automatically…</p><button data-workspace-action="resolve">Check save status</button>');
     startSaveStatusCheck();
   };
+  /** A terminal save is past outcome, not permission to display its old draft. */
+  const reconcileOlderTerminalSave = async (outcome: "saved" | "closed", pending: PendingNoteSave,
+    view: CreatorReviewView, value: unknown, id: string, pendingActive: () => boolean): Promise<boolean> => {
+    const fresh = reviewedSource(view);
+    if (sameSource(fresh, pending.source)) return false;
+    requireValue(newerNoteSource(pending.source, fresh));
+    const n = generation, activeContext = context, activeClient = client, intentKey = activeNotePreparation(progress())?.key;
+    const active = (): boolean => authorized(n) && context === activeContext && client === activeClient
+      && activeNotePreparation(progress())?.key === intentKey;
+    // Current receipt is independently validated; no historical fields are copied into it.
+    await parseDraft(value, id, pending.schema, fresh);
+    if (!active() || !pendingActive()) return true;
+    await persist(current => {
+      requireValue(active() && pendingActive() && canonical(current.pendingSave) === canonical(pending));
+      let buffered = current.queuedNoteEdits;
+      if (buffered) requireValue(buffered.schema === pending.schema && sameSource(buffered.source, pending.source)
+        && canonical(buffered.fieldOrder) === canonical(pending.fieldOrder)
+        && buffered.edit.expected_note_ref === pending.edit.expected_note_ref
+        && buffered.edit.expected_note_sha256 === pending.edit.expected_note_sha256
+        && buffered.edit.expected_source_sha256 === pending.edit.expected_source_sha256);
+      const areas = [...content.querySelectorAll<HTMLTextAreaElement>("textarea[data-note-field]")];
+      if (areas.length) {
+        requireValue(draft?.schema_ref === pending.schema && draft.note_ref === pending.edit.expected_note_ref
+          && draft.note_sha256 === pending.edit.expected_note_sha256 && draft.source_sha256 === pending.edit.expected_source_sha256
+          && sameSource(draft.reviewed_source, pending.source) && canonical(draft.field_order) === canonical(pending.fieldOrder)
+          && areas.length === pending.fieldOrder.length
+          && pending.fieldOrder.every((_, i) => areas.includes(content.querySelector<HTMLTextAreaElement>(`[name="note-${i}"]`)!)));
+        // The readonly editor may contain later typing that beat the staging timer.
+        // Submitted values are still dirty until acknowledgement, so compare with the request.
+        const fields = noteFields();
+        buffered = pending.fieldOrder.every(key => fields[key] === pending.edit.fields[key]) ? null : pendingSave(draft, fields);
+      }
+      return { ...current, pendingSave: null, queuedNoteEdits: buffered ?? (outcome === "closed" ? pending : null) };
+    });
+    if (!active() || progress().pendingSave !== null) return true;
+    draft = null; noteTranscript = null; source = fresh; currentSchema = pending.schema;
+    savedAt = null; noteSaveUnconfirmed = false;
+    const retained = activeNotePreparation(progress());
+    if (progress().queuedNoteEdits || retained?.source && newerNoteSource(retained.source, fresh)) showUpdatedPreparation();
+    else showReview(view);
+    notice.textContent = outcome === "saved"
+      ? "Your earlier save is confirmed. Saved notes are retained. The corrected transcript needs its own current draft and clinical review."
+      : "The earlier save did not complete. Your unsaved edits are retained separately; review or discard them before preparing a corrected draft.";
+    return true;
+  };
   const startSaveStatusCheck = (): void => {
     if (stopSaveCheck || !client || !context || !journal.progress?.pendingSave) return;
     const activeClient = client, activeContext = context, n = generation, pending = journal.progress.pendingSave, id = session();
@@ -1208,7 +1324,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reading: AbortController | null = null;
     const expiresAt = Date.now() + 30_000;
-    const active = (): boolean => !stopped && authorized(n) && client === activeClient && context === activeContext && journal.progress?.pendingSave?.edit.client_key === pending.edit.client_key;
+    const active = (): boolean => !stopped && authorized(n) && client === activeClient && context === activeContext && canonical(journal.progress?.pendingSave) === canonical(pending);
     const stop = (): void => { stopped = true; clearTimeout(timer); reading?.abort(); document.removeEventListener("visibilitychange", visible); };
     const check = async (): Promise<void> => {
       if (!active() || checking || document.visibilityState !== "visible" || Date.now() >= expiresAt) return;
@@ -1218,11 +1334,13 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       try {
         const result = await interruptibleRead(checkNoteSave(readClient, id, pending), reading.signal);
         if (!active() || reading.signal.aborted) return;
-        if (result === "saved") {
+        if (result === "saved" || result === "closed") {
           const [view, value] = await interruptibleRead(Promise.all([
             new HttpCreatorReviewApi(id, readClient.reviewRequest(id)).read(), readClient.note(id, "read", pending.schema),
           ]), reading.signal);
           if (!active() || reading.signal.aborted) return;
+          if (await reconcileOlderTerminalSave(result, pending, view, value, id, () => active() && !!reading && !reading.signal.aborted)) { stop(); stopSaveCheck = null; return; }
+          if (result === "closed") { stop(); return; }
           const fresh = reviewedSource(view); requireValue(sameSource(fresh, pending.source));
           const saved = await parseDraft(value, id, pending.schema, fresh);
           requireValue(saved.status === "draft" && saved.note_ref !== pending.edit.expected_note_ref
@@ -1230,9 +1348,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
             && JSON.stringify(saved.field_order) === JSON.stringify(pending.fieldOrder)
             && pending.fieldOrder.every(key => saved.fields?.[key] === pending.edit.fields[key]));
           if (!active() || reading.signal.aborted) return;
+          await persist(value => {
+            requireValue(active() && reading && !reading.signal.aborted && canonical(value.pendingSave) === canonical(pending));
+            return { ...value, pendingSave: null, queuedNoteEdits: value.queuedNoteEdits ? pendingSave(saved, value.queuedNoteEdits.edit.fields) : null };
+          });
+          if (!authorized(n) || client !== activeClient || context !== activeContext || progress().pendingSave !== null) return;
           draft = saved;
-          await persist(value => ({ ...value, pendingSave: null, queuedNoteEdits: value.queuedNoteEdits ? pendingSave(saved, value.queuedNoteEdits.edit.fields) : null }));
-          if (!authorized(n) || client !== activeClient) return;
           savedAt = new Date(); noteSaveUnconfirmed = false;
           stop(); stopSaveCheck = null; source = fresh; noteTranscript = view; currentSchema = pending.schema;
           notice.textContent = content.querySelector("textarea[data-note-field]") ? ""
@@ -1245,7 +1366,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
             content.querySelector(".provider-save-recovery")?.remove(); setNoteEditorPending(content, false); updateSaveState();
             restoreEditorAfterSave(); if (hasUnsavedEdits()) noteAutosave?.changed();
           } else renderNote();
-        } else if (result === "closed") stop();
+        }
       } catch { /* Uncertain reads retain the exact journal and never replay a save. */ }
       finally {
         clearTimeout(timeout); reading?.abort(); reading = null; checking = false;
@@ -1358,6 +1479,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (!button.disabled) void checkPreparedNote();
       return;
     }
+    if (["prepare-updated-note", "retry-updated-note", "review-retained-edits", "keep-retained-edits", "discard-retained-edits"].includes(button.dataset.workspaceAction ?? "")
+      && (button.disabled || button.hidden || button !== content.querySelector(`[data-workspace-action="${button.dataset.workspaceAction}"]`))) return;
     // This explicit initial Record handler precedes admission and recorder creation.
     // Consent-only preparation never starts a recording timing observation.
     const recordReadyTiming = button.dataset.workspaceAction === "prepare" && !consentPreparationEnabled(host.consentPreparation)
@@ -1435,6 +1558,27 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         }
         case "read": currentSchema = input("schema"); requireValue(templates.some(t => t.schema_ref === currentSchema)); await readNote(false); if (prepareSelectedTemplate && draft?.status === "not_prepared") { prepareSelectedTemplate = false; await readNote(true); } break;
         case "generate": await readNote(true); break;
+        case "prepare-updated-note": await readNote(true, true); break;
+        case "retry-updated-note": await readNote(true, false, true); break;
+        case "review-retained-edits": {
+          const pending = progress().queuedNoteEdits;
+          requireValue(pending && !progress().pendingSave);
+          show(`<h1>Retained unsaved note edits</h1><p>These edits belong to transcript version ${pending.source.working_version}. They have not been applied to the corrected transcript. Keep these edits or discard them; previous drafts and saved notes are retained.</p>
+            ${pending.fieldOrder.map(field => `<label>${escape(field)}<textarea readonly>${escape(pending.edit.fields[field] ?? "")}</textarea></label>`).join("")}
+            <button data-workspace-action="keep-retained-edits">Keep edits</button><button data-workspace-action="discard-retained-edits">Discard these unsaved edits</button>`);
+          break;
+        }
+        case "keep-retained-edits": showUpdatedPreparation(); break;
+        case "discard-retained-edits": {
+          requireValue(progress().queuedNoteEdits && !progress().pendingSave);
+          await persist(value => ({ ...value, queuedNoteEdits: null }));
+          if (context && source) {
+            const retained = activeNotePreparation(progress());
+            if (retained?.source && newerNoteSource(retained.source, source)) showUpdatedPreparation();
+            else { requireValue(client); await openNotes(await new HttpCreatorReviewApi(session(), client.reviewRequest(session())).read()); }
+          }
+          break;
+        }
         case "check-note": await readNote(false); break;
         case "review": await guardNavigation("review"); break;
         case "note-view": case "transcript-view": {
@@ -1473,16 +1617,19 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           requireValue(client && progress().pendingSave);
           stopSaveCheck?.(); stopSaveCheck = null;
           editorPosition = noteEditorPosition(content, lastEditorField);
-          const n = generation, pending = progress().pendingSave!, activeClient = client, id = session();
+          const n = generation, pending = progress().pendingSave!, activeClient = client, activeContext = context, id = session();
+          const active = (): boolean => authorized(n) && client === activeClient && context === activeContext
+            && canonical(journal.progress?.pendingSave) === canonical(pending);
           const result = await resolveNote(activeClient, id, pending);
-          if (!authorized(n)) return;
+          if (!active()) return;
           const [view, value] = await Promise.all([
             new HttpCreatorReviewApi(id, activeClient.reviewRequest(id)).read(), activeClient.note(id, "read", pending.schema),
           ]);
-          if (!authorized(n)) return;
+          if (!active()) return;
+          if (await reconcileOlderTerminalSave(result, pending, view, value, id, active)) break;
           const fresh = reviewedSource(view); requireValue(sameSource(fresh, pending.source));
           const confirmed = await parseDraft(value, id, pending.schema, fresh);
-          if (!authorized(n)) return;
+          if (!active()) return;
           const unchanged = confirmed.note_ref === pending.edit.expected_note_ref
             && confirmed.note_sha256 === pending.edit.expected_note_sha256
             && confirmed.source_sha256 === pending.edit.expected_source_sha256;
@@ -1495,9 +1642,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
             showSaveRecovery(); return;
           }
           const retainedFields = journal.progress?.queuedNoteEdits?.edit.fields ?? pending.edit.fields;
+          await persist(value => {
+            requireValue(active() && canonical(value.pendingSave) === canonical(pending));
+            return { ...value, pendingSave: null, queuedNoteEdits: pendingSave(confirmed, retainedFields) };
+          });
+          if (!authorized(n) || client !== activeClient || context !== activeContext || progress().pendingSave !== null) return;
           draft = confirmed;
-          await persist(value => ({ ...value, pendingSave: null, queuedNoteEdits: pendingSave(confirmed, retainedFields) }));
-          if (!authorized(n)) return;
           source = fresh; currentSchema = pending.schema; noteTranscript = view;
           noteSaveUnconfirmed = false; if (result === "saved") savedAt = new Date();
           if (!content.querySelector("textarea[data-note-field]")) renderNote();
