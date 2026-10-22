@@ -9,6 +9,10 @@ import { reference } from "./core-client";
 
 interface NotePreparationIntent { readonly state: "requested" | "submitted"; readonly key: string;
   readonly schema: string | null; readonly source: ReviewedSource | null }
+interface SubmittedNotePreparation extends NotePreparationIntent {
+  readonly state: "submitted"; readonly schema: string; readonly source: ReviewedSource;
+}
+export const MAX_NOTE_PREPARATION_SUCCESSORS = 16;
 
 interface RecordingProviderProgress {
   readonly admission: AdmissionIntent;
@@ -20,6 +24,8 @@ interface RecordingProviderProgress {
   readonly privateNoteState?: PrivateNoteLocal;
   readonly pendingPatientMatch?: PendingPatientMatch | null;
   readonly notePreparation?: NotePreparationIntent | null;
+  /** Append-only request metadata; the original submitted preparation is retained. */
+  readonly notePreparationSuccessors?: readonly SubmittedNotePreparation[];
 }
 interface RecoveredProviderProgress {
   /** Read/review recovery never invents an attestation or takes recording custody. */
@@ -31,6 +37,7 @@ interface RecoveredProviderProgress {
   readonly privateNoteState?: PrivateNoteLocal;
   readonly pendingPatientMatch?: PendingPatientMatch | null;
   readonly notePreparation?: NotePreparationIntent | null;
+  readonly notePreparationSuccessors?: readonly SubmittedNotePreparation[];
 }
 export type ProviderProgress = RecordingProviderProgress | RecoveredProviderProgress;
 export interface JournalSnapshot { readonly revision: string | null; readonly progress: ProviderProgress | null }
@@ -40,6 +47,31 @@ export interface ProviderWorkspaceJournal {
   save(previous: JournalSnapshot, progress: ProviderProgress): Promise<JournalSnapshot>;
 }
 export const PROVIDER_JOURNAL_PREFIX = "provider-workspace-v1:";
+
+export function activeNotePreparation(progress: ProviderProgress): NotePreparationIntent | null {
+  return progress.notePreparationSuccessors?.at(-1) ?? progress.notePreparation ?? null;
+}
+
+/** A correction advances only the working version, never the session's source lineage. */
+export function newerNoteSource(previous: ReviewedSource, current: ReviewedSource): boolean {
+  return previous.kind === current.kind && previous.source_version === current.source_version
+    && previous.working_transcript_id === current.working_transcript_id
+    && current.working_version > previous.working_version
+    && canonical(previous.capture_continuity ?? null) === canonical(current.capture_continuity ?? null);
+}
+
+export function appendNotePreparationSuccessor(progress: ProviderProgress, source: ReviewedSource, key: string): ProviderProgress {
+  assertProgress(progress);
+  const previous = activeNotePreparation(progress);
+  const history = progress.notePreparationSuccessors ?? [];
+  requireValue(progress.pendingSave === null && !progress.queuedNoteEdits && previous?.state === "submitted"
+    && previous.schema && previous.source && newerNoteSource(previous.source, source)
+    && isUuid(key) && key !== previous.key && history.length < MAX_NOTE_PREPARATION_SUCCESSORS);
+  const next = { ...progress, notePreparationSuccessors: [...history,
+    { state: "submitted" as const, key, schema: previous.schema, source }] };
+  assertProgress(next);
+  return next;
+}
 
 /** Uses the retained device-only encrypted store; never falls back to plaintext. */
 export class NativeProviderWorkspaceJournal implements ProviderWorkspaceJournal {
@@ -81,8 +113,14 @@ export class NativeProviderWorkspaceJournal implements ProviderWorkspaceJournal 
           || canonical(prior.pendingSave) === canonical(progress.pendingSave))
         && (!prior.pendingPatientMatch || !progress.pendingPatientMatch || canonical(prior.pendingPatientMatch) === canonical(progress.pendingPatientMatch))
         && (!prior.privateNoteState?.pending || !progress.privateNoteState?.pending || canonical(prior.privateNoteState.pending) === canonical(progress.privateNoteState.pending))
-        && (!prior.notePreparation || !progress.notePreparation || prior.notePreparation.key === progress.notePreparation.key
-          && (prior.notePreparation.state !== "submitted" || canonical(prior.notePreparation) === canonical(progress.notePreparation))));
+        && (prior.notePreparation?.state === "submitted"
+          ? canonical(prior.notePreparation) === canonical(progress.notePreparation)
+          : !prior.notePreparation || !progress.notePreparation || prior.notePreparation.key === progress.notePreparation.key));
+      const before = prior.notePreparationSuccessors ?? [], after = progress.notePreparationSuccessors ?? [];
+      requireValue(after.length >= before.length && after.length <= before.length + 1
+        && before.every((intent, index) => canonical(intent) === canonical(after[index]))
+        && (after.length === before.length || prior.pendingSave === null && !prior.queuedNoteEdits
+          && progress.pendingSave === null && !progress.queuedNoteEdits));
     }
     const bytes = new TextEncoder().encode(JSON.stringify({ version: progress.admission === null ? 2 : 1, recoveryScope: this.recoveryScope,
       scope: this.scope, progress }));
@@ -102,7 +140,8 @@ export function assertProgress(value: unknown): asserts value is ProviderProgres
   const privateNote = typeof value === "object" && value !== null && Object.hasOwn(value, "privateNoteState");
   const matching = typeof value === "object" && value !== null && Object.hasOwn(value, "pendingPatientMatch");
   const preparing = typeof value === "object" && value !== null && Object.hasOwn(value, "notePreparation");
-  requireValue(closed(value, "admission,sessionId,uploaded,pendingSave" + (buffered ? ",queuedNoteEdits" : "") + (privateNote ? ",privateNoteState" : "") + (matching ? ",pendingPatientMatch" : "") + (preparing ? ",notePreparation" : ""))
+  const successors = typeof value === "object" && value !== null && Object.hasOwn(value, "notePreparationSuccessors");
+  requireValue(closed(value, "admission,sessionId,uploaded,pendingSave" + (buffered ? ",queuedNoteEdits" : "") + (privateNote ? ",privateNoteState" : "") + (matching ? ",pendingPatientMatch" : "") + (preparing ? ",notePreparation" : "") + (successors ? ",notePreparationSuccessors" : ""))
     && (value.sessionId === null || isUuid(value.sessionId)) && typeof value.uploaded === "boolean"
     && (!value.uploaded || value.sessionId !== null)
     && (value.pendingSave === null || value.uploaded && validPendingSave(value.pendingSave)));
@@ -112,6 +151,20 @@ export function assertProgress(value: unknown): asserts value is ProviderProgres
     requireValue(closed(intent, "state,key,schema,source") && isUuid(intent.key)
       && (intent.state === "requested" && intent.schema === null && intent.source === null
         || intent.state === "submitted" && value.uploaded && reference(intent.schema, "doctor_note_schema") && validSource(intent.source)));
+  }
+  if (successors) {
+    const history = value.notePreparationSuccessors;
+    const first = value.notePreparation;
+    requireValue(Array.isArray(history) && history.length <= MAX_NOTE_PREPARATION_SUCCESSORS
+      && closed(first, "state,key,schema,source") && first.state === "submitted" && validSource(first.source));
+    let previous = first.source;
+    const keys = new Set([first.key]);
+    for (const intent of history) {
+      requireValue(closed(intent, "state,key,schema,source") && intent.state === "submitted"
+        && isUuid(intent.key) && !keys.has(intent.key) && intent.schema === first.schema
+        && validSource(intent.source) && newerNoteSource(previous, intent.source));
+      keys.add(intent.key); previous = intent.source;
+    }
   }
   if (matching && value.pendingPatientMatch !== null) {
     const match = value.pendingPatientMatch;
