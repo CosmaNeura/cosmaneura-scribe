@@ -7,7 +7,7 @@ import type * as CreatorPanel from "../../../review-ui/src/creator-review-panel"
 import { mountProviderWorkspace, type AuthorizedProviderEncounter, type ProviderWorkspaceHost, type ProviderEncounter } from "./workspace";
 import { appendNotePreparationSuccessor, assertProgress, MAX_NOTE_PREPARATION_SUCCESSORS, NativeProviderWorkspaceJournal, type JournalSnapshot, type ProviderProgress } from "./workspace-journal";
 import type { AuthorizedCoreRequest } from "./core-client";
-import { pendingSave, parseDraft, reviewedSource, sha256 } from "./core-notes";
+import { canonical, pendingSave, parseDraft, reviewedSource, sha256 } from "./core-notes";
 
 // Only unused recording registration, transcript tools/navigation and review mount are replaced.
 // The provider's real event handlers, scope checks, journal recovery and Core wire parser run.
@@ -60,6 +60,8 @@ afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose
 function mount(options: { catalog?: ProviderEncounter[]; snapshot?: JournalSnapshot; view?: CreatorReviewView | null;
   receivedAt?: number; request?: AuthorizedCoreRequest; denied?: boolean } = {}) {
   vi.stubGlobal("Element", Surface);
+  vi.stubGlobal("HTMLTextAreaElement", class extends Surface {});
+  vi.stubGlobal("window", { scrollX: 0, scrollY: 0, scrollTo: vi.fn(), matchMedia: () => ({ matches: false }) });
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
   vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
   const root = new Surface(), abort = new AbortController();
@@ -396,4 +398,263 @@ it.each(["fresh review", "CAS"])("keeps a genuinely viewed v1 draft closed after
   expect(f.request.mock.calls.some(([, body]) => body.action === "save")).toBe(false);
   expect(w.preparations).toEqual([]);
   expect((await f.journal.load()).progress).toEqual(retained().progress);
+});
+
+async function terminalSaveFixture(outcome: "saved" | "closed", mode: "automatic" | "manual", queued = false) {
+  const priorDraft = await parseDraft(await noteValue(true, ready(1)), id(2), schema, reviewedSource(ready(1)));
+  const pending = pendingSave(priorDraft, { Plan: "Synthetic submitted old-source edits." });
+  const buffer = queued ? pendingSave(priorDraft, { Plan: "Synthetic later unsaved old-source edits." }) : undefined;
+  const progress: ProviderProgress = { ...retained().progress!, pendingSave: pending, ...(buffer ? { queuedNoteEdits: buffer } : {}) };
+  let review = ready(), note = await noteValue(false, review), patch: Record<string, unknown> = {};
+  const calls: string[] = [];
+  const request: AuthorizedCoreRequest = async (_path, body, key) => {
+    const response = (receipt: unknown) => Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+      ...(body.operation ? { operation: "creator_review" } : { action: body.action }), receipt });
+    calls.push(body.operation ? "review" : String(body.action));
+    if (body.operation) return response(review);
+    if (body.action === "read") return response(note);
+    if (body.action === "templates") return response({ session_id: id(2), templates: [{ schema_ref: schema, note_type: "Synthetic SOAP", field_names: ["Plan"] }] });
+    if (body.action === "save_status" || body.action === "resolve") {
+      expect(key).toBe(pending.edit.client_key); expect(body.edit).toEqual(pending.edit);
+      const status = mode === "manual" && body.action === "save_status" ? "pending" : outcome;
+      return response({ session_id: id(2), schema_ref: schema, client_key: pending.edit.client_key,
+        request_sha256: await sha256(canonical({ edit: pending.edit, schema, session: id(2), workspace: scope.workspaceId })),
+        status, result_note_ref: status === "saved" ? "visit_note_" + suffix.slice(0, -1) + "1" : null,
+        result_sha256: status === "saved" ? await sha256(JSON.stringify(pending.fieldOrder.map(field => [field, pending.edit.fields[field]]))) : null,
+        ...patch });
+    }
+    throw new Error("No save, prepare or recording is allowed during terminal reconciliation.");
+  };
+  return { request, progress, pending, buffer, calls,
+    change: (next: { review?: CreatorReviewView; note?: Awaited<ReturnType<typeof noteValue>>; patch?: Record<string, unknown> }) => {
+      if (next.review) review = next.review; if (next.note) note = next.note; if (next.patch) patch = next.patch;
+    } };
+}
+
+it.each([
+  ["automatic", "saved"], ["automatic", "closed"], ["manual", "saved"], ["manual", "closed"],
+] as const)("reconciles an exact older %s %s outcome without displaying or rebasing its old draft", async (mode, outcome) => {
+  const t = await terminalSaveFixture(outcome, mode), f = mount({ snapshot: { revision: "1", progress: t.progress }, request: t.request });
+  await f.click("open"); if (mode === "manual") await f.click("resolve");
+  await vi.waitFor(async () => expect((await f.journal.load()).progress?.pendingSave, JSON.stringify({ calls: t.calls, notice: f.notice.textContent })).toBeNull());
+  const next = (await f.journal.load()).progress!;
+  expect(next.notePreparation).toEqual(original()); expect(next.notePreparationSuccessors).toBeUndefined();
+  expect(next.queuedNoteEdits ?? null).toEqual(outcome === "closed" ? t.pending : null);
+  expect(f.content.innerHTML).toContain("Transcript updated");
+  expect(f.content.innerHTML).not.toContain("Clinical review is still required.");
+  expect(f.content.innerHTML).not.toContain("Synthetic submitted old-source edits.");
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
+  if (outcome === "closed") expect(f.content.querySelector('[data-workspace-action="prepare-updated-note"]')).toBeNull();
+});
+
+
+it.each(["saved", "closed"] as const)("preserves later old-source unsaved fields exactly after terminal %s", async outcome => {
+  const t = await terminalSaveFixture(outcome, "automatic", true), f = mount({ snapshot: { revision: "1", progress: t.progress }, request: t.request });
+  await f.click("open"); await vi.waitFor(async () => expect((await f.journal.load()).progress?.pendingSave).toBeNull());
+  expect((await f.journal.load()).progress?.queuedNoteEdits).toEqual(t.buffer);
+  expect(f.content.querySelector('[data-workspace-action="prepare-updated-note"]')).toBeNull();
+  await f.click("review-retained-edits"); expect(f.content.innerHTML).toContain("Synthetic later unsaved old-source edits.");
+  await f.click("keep-retained-edits"); expect((await f.journal.load()).progress?.queuedNoteEdits).toEqual(t.buffer);
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
+});
+
+it.each(["saved", "closed"] as const)("legacy no-preparation journals retain/discard old edits after %s without replay", async outcome => {
+  const t = await terminalSaveFixture(outcome, "automatic", true);
+  const prior = { ...t.progress, notePreparation: null };
+  const f = mount({ snapshot: { revision: "1", progress: prior }, request: t.request });
+  await f.click("open"); await vi.waitFor(async () => expect((await f.journal.load()).progress?.pendingSave).toBeNull());
+  expect((await f.journal.load()).progress?.notePreparation).toBeNull();
+  await f.click("review-retained-edits"); await f.click("discard-retained-edits");
+  expect((await f.journal.load()).progress).toEqual({ ...prior, pendingSave: null, queuedNoteEdits: null });
+  expect(f.content.innerHTML).toContain("Write visit note");
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
+});
+
+it.each(["saved", "closed"] as const)("terminal %s with a mismatched old edit buffer never clears it", async outcome => {
+  const t = await terminalSaveFixture(outcome, "automatic", true);
+  const foreign = { ...t.buffer!, edit: { ...t.buffer!.edit, expected_source_sha256: "b".repeat(64) } };
+  const prior = { ...t.progress, queuedNoteEdits: foreign };
+  const f = mount({ snapshot: { revision: "1", progress: prior }, request: t.request });
+  await f.click("open"); await vi.waitFor(() => expect(t.calls).toContain("read"));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect((await f.journal.load()).progress).toEqual(prior); expect(f.journal.save).not.toHaveBeenCalled();
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
+});
+
+it.each(["foreign working", "new raw source", "unready", "pair drift"])("rejects terminal saved recovery for %s current evidence", async kind => {
+  const t = await terminalSaveFixture("saved", "automatic");
+  if (kind === "foreign working") t.change({ review: ready(4, id(9)), note: await noteValue(false, ready(4, id(9))) });
+  else if (kind === "new raw source") {
+    const changed = { ...ready(), source: { ...ready().source!, source_transcript_version: 2 } };
+    t.change({ review: changed, note: { ...await noteValue(false), reviewed_source: { ...reviewedSource(ready()), source_version: 2 } } });
+  } else if (kind === "unready") t.change({ review: { ...ready(), working: { ...ready().working!, note_ready: false } } });
+  else t.change({ note: await noteValue(false, ready(5)) });
+  const f = mount({ snapshot: { revision: "1", progress: t.progress }, request: t.request });
+  await f.click("open"); await vi.waitFor(() => expect(t.calls).toContain("read"));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect((await f.journal.load()).progress).toEqual(t.progress); expect(f.journal.save).not.toHaveBeenCalled();
+});
+
+it.each(["wrong session", "wrong key", "wrong request", "wrong result", "pending", "malformed closed"])("retains uncertainty for %s terminal metadata", async kind => {
+  const t = await terminalSaveFixture("saved", "automatic");
+  const patch = kind === "wrong session" ? { session_id: id(9) } : kind === "wrong key" ? { client_key: id(9) }
+    : kind === "wrong request" ? { request_sha256: "b".repeat(64) } : kind === "wrong result" ? { result_sha256: "b".repeat(64) }
+      : kind === "pending" ? { status: "pending", result_note_ref: null, result_sha256: null } : { status: "closed" };
+  t.change({ patch });
+  const f = mount({ snapshot: { revision: "1", progress: t.progress }, request: t.request });
+  await f.click("open"); await new Promise(resolve => setTimeout(resolve, 30));
+  expect((await f.journal.load()).progress).toEqual(t.progress); expect(f.journal.save).not.toHaveBeenCalled();
+  expect(t.calls).not.toContain("read");
+});
+
+it("a terminal older receipt cannot clear a later retained request after an independent CAS writer", async () => {
+  const t = await terminalSaveFixture("saved", "automatic"), gate = deferred<Response>();
+  let heldBody: Readonly<Record<string, unknown>> = {};
+  const request: AuthorizedCoreRequest = async (path, body, key, signal) => {
+    if (body.action === "read") { heldBody = body; return gate.promise; }
+    return t.request(path, body, key, signal);
+  };
+  const f = mount({ snapshot: { revision: "1", progress: t.progress }, request });
+  await f.click("open"); await vi.waitFor(() => expect(Object.keys(heldBody).length).toBeGreaterThan(0));
+  const previous = await f.journal.load();
+  const cleared = await f.journal.save(previous, { ...previous.progress!, pendingSave: null });
+  const newer = { ...t.pending, edit: { ...t.pending.edit, fields: { Plan: "Different retained request under the same key." } } };
+  await f.journal.save(cleared, { ...cleared.progress!, pendingSave: newer });
+  gate.resolve(Response.json({ ...heldBody, contract_version: "1", checked_at: new Date().toISOString(), action: "read", receipt: await noteValue(false) }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect((await f.journal.load()).progress?.pendingSave).toEqual(newer);
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
+});
+
+it.each(["saved", "closed"] as const)("lost reconciliation CAS reply reopens exact terminal %s state without replay", async outcome => {
+  const t = await terminalSaveFixture(outcome, "automatic"), f = mount({ snapshot: { revision: "1", progress: t.progress }, request: t.request });
+  const save = f.journal.save.getMockImplementation()!;
+  f.journal.save.mockImplementationOnce(async (previous, next) => { await save(previous, next); throw new Error("Synthetic lost reconciliation reply"); });
+  await f.click("open"); await vi.waitFor(async () => expect((await f.journal.load()).progress?.pendingSave).toBeNull());
+  const committed = await f.journal.load(); await f.dispose();
+  const reopened = mount({ snapshot: committed, request: t.request });
+  await reopened.click("open"); await lastOptions().continueToNote!(ready());
+  expect((await reopened.journal.load()).progress).toEqual(committed.progress);
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
+});
+
+it.each(["saved", "closed"] as const)("preserves the existing same-source manual %s behavior", async outcome => {
+  const t = await terminalSaveFixture(outcome, "manual");
+  const text = outcome === "saved" ? t.pending.edit.fields.Plan! : "No plan discussed.";
+  const note = await noteValue(true, ready(1), text);
+  if (outcome === "saved") note.note_ref = "visit_note_" + suffix.slice(0, -1) + "1";
+  t.change({ review: ready(1), note });
+  const f = mount({ snapshot: { revision: "1", progress: t.progress }, request: t.request, view: ready(1) });
+  await f.click("open"); await f.click("resolve");
+  expect((await f.journal.load()).progress?.pendingSave).toBeNull();
+  expect(f.content.innerHTML).toContain("Clinical review is still required.");
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
+});
+
+// Controlled textarea/timers exercise real handlers; this is not browser DOM acceptance.
+it.each([
+  ["saved", "latest"], ["closed", "latest"], ["saved", "submitted"], ["closed", "submitted"],
+  ["saved", "reverted"], ["closed", "reverted"], ["saved", "mismatched buffer"], ["closed", "mismatched buffer"],
+  ["saved", "restored submitted"], ["closed", "restored submitted"],
+] as const)("terminal %s fences old-source editor fields: %s", async (outcome, variation) => {
+  let current = ready(1), edit: Record<string, unknown> | null = null;
+  const saveResponse = deferred<Response>();
+  const request: AuthorizedCoreRequest = async (_path, body) => {
+    const response = (receipt: unknown) => Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+      ...(body.operation ? { operation: "creator_review" } : { action: body.action }), receipt });
+    if (body.operation) return response(current);
+    if (body.action === "read") return response(await noteValue(current.working!.working_transcript_version === 1, current));
+    if (body.action === "save") { edit = body.edit as Record<string, unknown>; return saveResponse.promise; }
+    if (body.action === "save_status") {
+      expect(edit).not.toBeNull();
+      return response({ session_id: id(2), schema_ref: schema, client_key: edit!.client_key,
+        request_sha256: await sha256(canonical({ edit, schema, session: id(2), workspace: scope.workspaceId })),
+        status: outcome, result_note_ref: outcome === "saved" ? "visit_note_" + suffix.slice(0, -1) + "1" : null,
+        result_sha256: outcome === "saved" ? await sha256(JSON.stringify([["Plan", (edit!.fields as Record<string,string>).Plan]])) : null });
+    }
+    throw new Error("No unexpected action permitted");
+  };
+  const f=mount({snapshot:retained(),request,view:ready(1)});
+  Object.assign(document, { createElement: () => new Surface() });
+  await f.click("open"); await lastOptions().continueToNote!(ready(1));
+  expect(f.content.innerHTML).toContain("Clinical review is still required.");
+  const field = new HTMLTextAreaElement() as unknown as Surface & {value:string;defaultValue:string;readOnly:boolean;hasAttribute(name:string):boolean};
+  field.value="Synthetic first submitted edit.";field.defaultValue="No plan discussed.";field.readOnly=false;
+  field.hasAttribute=(name:string)=>name==="data-note-field";
+  const originalQueryAll=f.content.querySelectorAll.bind(f.content);
+  f.content.querySelectorAll=((selector:string)=>selector==="textarea[data-note-field]" && f.content.innerHTML.includes("data-note-field")?[field]:originalQueryAll(selector));
+  f.content.nodes.set('[name="note-0"]',field);
+  f.content.nodes.set('textarea[data-note-field]',field);
+  if (variation === "mismatched buffer") {
+    const save = f.journal.save.getMockImplementation()!;
+    f.journal.save.mockImplementationOnce(async (previous, next) => {
+      const pending = next.pendingSave!;
+      return save(previous, { ...next, queuedNoteEdits: { ...pending, edit: { ...pending.edit, expected_source_sha256: "b".repeat(64) } } });
+    });
+  }
+  vi.useFakeTimers();
+  const flight=f.click("save");
+  await vi.waitFor(()=>expect(edit).not.toBeNull());
+  const type = (value: string) => {
+    field.value = value;
+    const event = new Event("input"); Object.defineProperty(event, "target", { value: field }); f.content.dispatchEvent(event);
+  };
+  if (variation !== "submitted") type("Synthetic latest unstaged edit.");
+  if (variation === "reverted" || variation === "restored submitted") {
+    await vi.advanceTimersByTimeAsync(150);
+    expect((await f.journal.load()).progress?.queuedNoteEdits?.edit.fields.Plan).toBe("Synthetic latest unstaged edit.");
+    type(variation === "reverted" ? "No plan discussed." : "Synthetic first submitted edit.");
+  }
+  current=ready(4);saveResponse.resolve(Response.json({}, {status:503}));
+  await flight;
+  if (variation === "mismatched buffer") {
+    await vi.advanceTimersByTimeAsync(50);
+    expect((await f.journal.load()).progress?.pendingSave).not.toBeNull();
+    expect((await f.journal.load()).progress?.queuedNoteEdits?.edit.expected_source_sha256).toBe("b".repeat(64));
+    expect(f.content.innerHTML).not.toContain("Transcript updated");
+  } else {
+    await vi.waitFor(async()=>expect((await f.journal.load()).progress?.pendingSave).toBeNull());
+    expect(f.content.innerHTML).toContain("Transcript updated");
+    const expected = variation === "latest" ? "Synthetic latest unstaged edit." : variation === "reverted" ? "No plan discussed."
+      : outcome === "closed" ? "Synthetic first submitted edit." : undefined;
+    expect((await f.journal.load()).progress?.queuedNoteEdits?.edit.fields.Plan).toBe(expected);
+  }
+});
+
+
+it.each(["saved", "closed"] as const)("preserves the existing same-source automatic %s behavior", async outcome => {
+  const t = await terminalSaveFixture(outcome, "automatic");
+  const text = outcome === "saved" ? t.pending.edit.fields.Plan! : "No plan discussed.";
+  const note = await noteValue(true, ready(1), text);
+  if (outcome === "saved") note.note_ref = "visit_note_" + suffix.slice(0, -1) + "1";
+  t.change({ review: ready(1), note });
+  const f = mount({ snapshot: { revision: "1", progress: t.progress }, request: t.request, view: ready(1) });
+  await f.click("open");
+  if (outcome === "saved") {
+    await vi.waitFor(async () => expect((await f.journal.load()).progress?.pendingSave).toBeNull());
+    expect(f.content.innerHTML).toContain("Clinical review is still required.");
+  } else {
+    await vi.waitFor(() => expect(t.calls).toContain("read"));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect((await f.journal.load()).progress).toEqual(t.progress);
+    expect(f.content.innerHTML).toContain("Confirm your previous save");
+  }
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
+});
+
+
+it("access loss during the current pair cannot clear an older terminal request", async () => {
+  const t = await terminalSaveFixture("saved", "automatic"), gate = deferred<Response>();
+  let held: Readonly<Record<string, unknown>> = {};
+  const request: AuthorizedCoreRequest = async (path, body, key, signal) => {
+    if (body.action === "read") { held = body; return gate.promise; }
+    return t.request(path, body, key, signal);
+  };
+  const f = mount({ snapshot: { revision: "1", progress: t.progress }, request });
+  await f.click("open"); await vi.waitFor(() => expect(Object.keys(held).length).toBeGreaterThan(0));
+  f.abort.abort();
+  gate.resolve(Response.json({ ...held, contract_version: "1", checked_at: new Date().toISOString(), action: "read", receipt: await noteValue(false) }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect((await f.journal.load()).progress).toEqual(t.progress); expect(f.journal.save).not.toHaveBeenCalled();
+  expect(t.calls).not.toContain("save"); expect(t.calls).not.toContain("prepare");
 });

@@ -25,10 +25,24 @@ cannot be presented under an older selected intent.
 
 Unconfirmed saves and retained unsaved edits block an updated preparation. Keep
 preserves the old edit buffer; explicit discard clears only that local buffer.
-It never removes a saved note or applies old edits to a replacement. Original
-source-bound save-status/resolve behavior is retained. If a pending old save
-cannot be reconciled after source advance, the exact save stays retained for
-comparison in the dashboard; this client does not clear or rebase it.
+It never removes a saved note or applies old edits to a replacement. Same-source
+save-status/resolve behavior is retained. Core's exact `saved`/`closed` receipt
+records a past outcome, independently of current-draft acceptance. After a
+correction, automatic status checks or explicit resolution may reconcile that
+receipt only with fresh authorized review/note reads for the same lineage and a
+strictly higher ready working version. The full pending request identity is
+checked before and inside journal CAS. A saved outcome preserves later unsaved
+old-source fields; a closed outcome retains the original unsaved fields if no
+later buffer exists. An authorized old editor is sampled before replacement,
+including typing that has not reached its staging timer and reverted values.
+Mismatched retained buffers are never replaced. Historical fields remain
+separate: the old draft/view is cleared, then the corrected-source workflow or
+read-only preserved-edit review opens. Legacy journals without a preparation
+intent can explicitly discard only their old local buffer and continue through
+the ordinary template workflow. No correction or terminal receipt grants
+current clinical-review authority. Pending, ambiguous, foreign, mismatched or
+unauthorized outcomes keep the exact pending request and may still block a new
+preparation; no save is automatically replayed.
 
 Legacy journals with no successor field still load. Build 97's closed reader
 rejects the new optional field, so recovery after a successor append requires a
