@@ -422,7 +422,7 @@ try {
         const resume = root.querySelector('[data-testid="resume-recording"]');
         assert.equal(resume.disabled, false); resume.click(); await until(() => resumed === 1);
       } else {
-        assert.ok(root.textContent.includes("Return to Your encounters and reopen this encounter"));
+        assert.ok(root.textContent.includes("Return to Your encounters and reopen this visit"));
         assert.equal(root.querySelector('[data-testid="resume-recording"]'), null);
       }
       root.querySelector('[data-workspace-action="encounters"]').click();
@@ -432,6 +432,40 @@ try {
       await until(() => root.querySelector('[data-testid="record-button"]'));
       assert.equal(opened, 2);
     } finally { uploadGate.resolve(); retryGate.resolve(); await dispose(); }
+  });
+  await check(async () => {
+    const f = fixture("unavailable"), dispose = mountProviderApplication(root, f.host);
+    try {
+      await until(() => root.querySelector('[data-session-action="check"]')?.disabled === false);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        click("check"); await until(() => root.getAttribute("aria-busy") === "false");
+        assert.ok(root.textContent.includes("Session unavailable"));
+      }
+      assert.equal(f.connects, 0); assert.equal(f.signIns, 0); assert.equal(f.signOuts, 0);
+      assert.equal(root.querySelector('[data-session-action="open"]'), null);
+      click("sign-out"); await until(() => root.querySelector('[data-session-action="sign-in"]')?.disabled === false);
+      assert.equal(f.signOuts, 1); assert.equal(f.connects, 0);
+      click("sign-in"); await until(visible);
+      assert.equal(f.signIns, 1); assert.equal(f.connects, 1);
+    } finally { await dispose(); }
+  });
+  await check(async () => {
+    const f = fixture(), dispose = mountProviderApplication(root, f.host);
+    try {
+      await until(visible); f.failClose = true; f.change("unavailable");
+      await until(() => root.textContent.includes("Workspace close needs attention"));
+      assert.equal(visible(), false); assert.equal(f.connects, 1);
+      assert.equal(root.querySelector('[data-session-action="sign-out"]'), null);
+      assert.equal(root.querySelector('[data-session-action="sign-in"]'), null);
+      assert.equal(root.querySelector('[data-session-action="open"]'), null);
+      f.failClose = false; click("stop");
+      await until(() => root.querySelector('[data-session-action="sign-out"]')?.disabled === false);
+      click("sign-out");
+      await until(() => root.querySelector('[data-session-action="sign-in"]')?.disabled === false);
+      assert.equal(f.signOuts, 1); assert.equal(f.connects, 1); assert.ok(f.closes >= 2);
+      click("sign-in"); await until(visible);
+      assert.equal(f.signIns, 1); assert.equal(f.connects, 2);
+    } finally { f.failClose = false; await dispose(); }
   });
   await check(async () => {
     const f = fixture("signedOut"), dispose = mountProviderApplication(root, f.host);

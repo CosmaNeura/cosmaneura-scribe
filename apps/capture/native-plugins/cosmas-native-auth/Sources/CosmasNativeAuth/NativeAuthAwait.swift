@@ -1,17 +1,21 @@
 import Foundation
 
+enum NativeAuthAbandonment: Sendable {
+    case cancelled, timedOut
+}
+
 /// A cancelled SDK task may ignore cancellation. Release its caller promptly,
-/// fence access first, and discard any late result without waiting for that task.
+/// notify its owner first, and discard any late result without waiting for that task.
 /// The owner separately retains in-flight mutation guards until the SDK returns.
 @MainActor final class NativeAuthAwait<Value: Sendable> {
     private var continuation: CheckedContinuation<Value, any Error>?
     private var worker: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
-    private var abandoned = false
+    private var abandonment: NativeAuthAbandonment?
     private var completed = false
-    private var onAbandon: (@MainActor () -> Void)?
+    private var onAbandon: (@MainActor (NativeAuthAbandonment) -> Void)?
 
-    func run(timeout: Duration, onAbandon: @escaping @MainActor () -> Void,
+    func run(timeout: Duration, onAbandon: @escaping @MainActor (NativeAuthAbandonment) -> Void,
              operation: @escaping @MainActor () async throws -> Value) async throws -> Value {
         self.onAbandon = onAbandon
         return try await withTaskCancellationHandler {
@@ -22,20 +26,24 @@ import Foundation
                     catch { self.finish(.failure(error)) }
                 }
                 watchdog = Task { @MainActor in
-                    do { try await Task.sleep(for: timeout); self.abandon() }
+                    do { try await Task.sleep(for: timeout); self.abandon(.timedOut) }
                     catch { /* A completed operation cancels its watchdog. */ }
                 }
-                if abandoned || Task.isCancelled { abandon() }
+                if let abandonment { abandon(abandonment) }
+                else if Task.isCancelled { abandon(.cancelled) }
             }
         } onCancel: {
-            Task { @MainActor in self.abandon() }
+            Task { @MainActor in self.abandon(.cancelled) }
         }
     }
 
-    private func abandon() {
-        abandoned = true
+    private func abandon(_ reason: NativeAuthAbandonment) {
+        // Preserve the first reason when cancellation races the watchdog or
+        // reaches the owner before its continuation has been installed.
+        let reason = abandonment ?? reason
+        abandonment = reason
         guard !completed, continuation != nil else { return }
-        onAbandon?()
+        onAbandon?(reason)
         worker?.cancel()
         finish(.failure(CancellationError()))
     }

@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "base_commit": "d53be753925d6f55a1dc2199317c7add7d16ff38",
+  "validation_kind": "Local synthetic checks; GitHub Actions remains disabled",
+  "source_sha256": {
+    "apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/NativeAuthAwait.swift": "e9610056ae90d26ab68dbb4f5bd1d275edc4bd206fafc67741434bd55bdcb239",
+    "apps/capture/native-plugins/cosmas-native-auth/Sources/CosmasNativeAuth/NativeWorkspaceAuth.swift": "f5e495d4280e582d687b5df756ff265133f1eddea2afcff5ad911e5e618ef053",
+    "scripts/w13-native-session/NativeSessionPolicyTests.swift": "4d0e2aa1b04026dda766f2d81ef30909a0492912f7d057fc56128308ce0f883a",
+    "apps/capture/src/provider/application.ts": "c5003dc67264b5cbb0007dc9d5751032edb9be24e8849c74da09348ea6ef0102",
+    "scripts/check-provider-application.mjs": "db9c5bd3862433ac97fcc4a628223d95855a80550457f0e6fcbd1d413c11eb83"
+  },
+  "baseline": {
+    "native_phase_sequence": [
+      "ready",
+      "unavailable",
+      "ready",
+      "unavailable",
+      "ready"
+    ],
+    "successful_tokens": 0,
+    "native_regressions_failed_before_fix": true,
+    "personal_profile_regression_failed_before_fix": true,
+    "provider_ui_regression": "Missing action sign-out"
+  },
+  "checks": {
+    "native_swift_tests": 17,
+    "native_swift_failures": 0,
+    "built_provider_dom_checks": 25,
+    "provider_integration_tests": 74,
+    "provider_integration_files": 2,
+    "capture_typecheck_exit": 0,
+    "affected_typescript_and_harness_lint_exit": 0,
+    "whitespace_exit": 0
+  },
+  "native_test_scope": "Original auth sources copied byte-for-byte to an isolated Swift package; fake drivers and synthetic identities; no live Clerk, Keychain, device or network",
+  "dom_test_scope": "Actual locally built provider bundle in jsdom; offline native/session/Core fixtures; no recording or clinical mutations",
+  "limits": [
+    "Underlying reported token failure remains unconfirmed",
+    "No new signed iPhone binary or external beta rollout yet",
+    "Native checks run on macOS and do not substitute for installed iPhone verification"
+  ],
+  "unchanged_boundaries": [
+    "Native token validation",
+    "Core provider and tenant authorization",
+    "Recorder cessation guards",
+    "Current Core deployment and Session Prep migrations"
+  ]
+}

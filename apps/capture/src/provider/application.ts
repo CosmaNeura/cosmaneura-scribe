@@ -67,7 +67,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       signingIn: ["Complete sign-in", "Finish signing in using the secure sign-in window."],
       ready: [scope?.unmount && !scope.abort.signal.aborted ? "" : "Your workspace", ""],
       signOutPending: ["Sign-out needs attention", "Your workspace is closed. Retry sign-out to finish."],
-      unavailable: ["Session unavailable", "Your workspace is closed. Check the session to continue."],
+      unavailable: ["Session unavailable", "Your workspace is closed. Check your session or sign out to sign in again."],
     };
     [title.textContent, message.textContent] = shown[phase];
     if (notice) message.textContent = notice;
@@ -92,7 +92,8 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
       recovery.innerHTML = button("sign-out", "Retry sign out");
     } else if (phase === "signedOut") recovery.innerHTML = button("sign-in", "Sign in");
     else if (phase === "signOutPending") recovery.innerHTML = button("sign-out", "Retry sign out");
-    else if (phase === "unavailable" || phase === "disabled") recovery.innerHTML = button("check", "Check session");
+    else if (phase === "unavailable") recovery.innerHTML = button("check", "Check session") + button("sign-out", "Sign out");
+    else if (phase === "disabled") recovery.innerHTML = button("check", "Check session");
     else if (phase === "ready" && (!scope || scope.abort.signal.aborted)) {
       recovery.innerHTML = button("open", "Open workspace");
     }

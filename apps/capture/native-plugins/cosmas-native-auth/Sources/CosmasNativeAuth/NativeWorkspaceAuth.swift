@@ -99,6 +99,10 @@ public enum NativeProviderDisplayName {
     private var phase: NativeAuthState.Phase = .disabled
     private var revision = UUID().uuidString.lowercased()
     private var identity: NativeAuthIdentity?
+    // A loaded SDK session alone cannot undo a failed fresh token request.
+    // Retain its fence across metadata polls until logout completes or the SDK
+    // genuinely presents another session identity; no token is retained here.
+    private var failedTokenIdentity: NativeAuthIdentity?
     private var transition: UUID?
     private var pendingSignIns: Set<UUID> = []
     private var pendingSignOuts: Set<UUID> = []
@@ -150,7 +154,12 @@ public enum NativeProviderDisplayName {
             } else if !driver.loaded {
                 change(initializedAt.duration(to: .now) >= networkTimeout ? .unavailable : .loading)
             } else if let current = driver.identity, current.organizationID == organizationID {
-                change(.ready, identity: current)
+                if current == failedTokenIdentity {
+                    change(.unavailable)
+                } else {
+                    failedTokenIdentity = nil
+                    change(.ready, identity: current)
+                }
             } else {
                 change(.signedOut)
             }
@@ -208,7 +217,7 @@ public enum NativeProviderDisplayName {
             try block(true)
             launched = true
             try await NativeAuthAwait<Void>().run(timeout: signInTimeout,
-                onAbandon: { self.abandonMutation(operation) }) {
+                onAbandon: { _ in self.abandonMutation(operation) }) {
                 // Keep the guard until the actual SDK call ends, even if its
                 // caller has already timed out. Late sign-in cannot undo logout.
                 defer { self.pendingSignIns.remove(operation) }
@@ -221,8 +230,10 @@ public enum NativeProviderDisplayName {
             // Only this caller can open access; an abandoned SDK task cannot.
             try Task.checkCancellation()
             guard transition == operation, let current = driver.identity,
-                  current.organizationID == organizationID else { throw NativeAuthError.sessionChanged }
+                  current.organizationID == organizationID,
+                  current != failedTokenIdentity else { throw NativeAuthError.sessionChanged }
             try block(false)
+            failedTokenIdentity = nil
             change(.ready, identity: current)
             return snapshot()
         } catch {
@@ -259,7 +270,11 @@ public enum NativeProviderDisplayName {
         do {
             let token = try await NativeAuthAwait<String?>().run(
                 timeout: speculative ? min(networkTimeout, .seconds(5)) : networkTimeout,
-                onAbandon: { if !speculative, self.revision == expectedRevision { self.change(.unavailable) } }) {
+                onAbandon: { reason in
+                    if !speculative, reason == .timedOut {
+                        self.failToken(identity: expected, expectedRevision: expectedRevision)
+                    }
+                }) {
                 defer { self.pendingTokens.remove(operation) }
                 try Task.checkCancellation()
                 return try await driver.freshToken()
@@ -273,9 +288,21 @@ public enum NativeProviderDisplayName {
             try tokenPolicy.validate(token, identity: expected, nativeSessionWithoutOrigin: nativeSessionWithoutOrigin)
             return token
         } catch {
-            if !speculative, revision == expectedRevision { change(.unavailable) }
+            // An intentional request cancellation abandons only that request.
+            // Timeout already fences through onAbandon, including a race with
+            // later caller cancellation; actual mint/validation errors fence here.
+            if !speculative, !Task.isCancelled {
+                failToken(identity: expected, expectedRevision: expectedRevision)
+            }
             throw NativeAuthError.tokenUnavailable
         }
+    }
+
+    private func failToken(identity: NativeAuthIdentity, expectedRevision: String) {
+        // A late request must not fence a newer account, session or logout.
+        guard revision == expectedRevision else { return }
+        failedTokenIdentity = identity
+        change(.unavailable)
     }
 
     public func signOut() async throws -> NativeAuthState {
@@ -292,7 +319,7 @@ public enum NativeProviderDisplayName {
             try block(true)
             launched = true
             try await NativeAuthAwait<Void>().run(timeout: networkTimeout,
-                onAbandon: { self.abandonMutation(operation) }) {
+                onAbandon: { _ in self.abandonMutation(operation) }) {
                 defer { self.pendingSignOuts.remove(operation) }
                 try Task.checkCancellation()
                 try await driver.signOut()
@@ -302,6 +329,7 @@ public enum NativeProviderDisplayName {
                 throw NativeAuthError.signOutPending
             }
             try block(false)
+            failedTokenIdentity = nil
             change(.signedOut)
             return snapshot()
         } catch {
