@@ -21,5 +21,11 @@
 
 .provider-account-menu { position:relative; font-size:16px; }
 .provider-account-menu summary { min-height:44px; display:flex; align-items:center; cursor:pointer; list-style:none; border:1px solid var(--scribe-border); border-radius:10px; padding:0 14px; }
-.provider-account-menu[open] { padding:12px; border:1px solid var(--scribe-border); border-radius:12px; background:white; box-shadow:var(--scribe-shadow); }
 .provider-account-menu a { display:block; min-height:44px; padding:12px 0; }
+
+/* Keep the Account control in the header while its panel opens below it. */
+.provider-account-menu summary::-webkit-details-marker { display:none; }
+.provider-account-panel { position:absolute; top:calc(100% + 8px); right:0; z-index:10; box-sizing:border-box; width:220px; max-width:calc(100vw - 32px); padding:12px; border:1px solid var(--scribe-border); border-radius:12px; color:var(--scribe-ink); background:white; box-shadow:var(--scribe-shadow); }
+.provider-account-panel p { margin:0 0 8px; overflow-wrap:anywhere; }
+.provider-session-header .provider-account-panel button[data-session-action] { display:block; width:100%; min-height:44px; padding:8px 12px; color:var(--scribe-link); font:inherit; text-align:left; text-decoration:none; background:var(--scribe-mint); border:1px solid var(--scribe-border); border-radius:8px; }
+.provider-account-panel a { color:var(--scribe-link); }
