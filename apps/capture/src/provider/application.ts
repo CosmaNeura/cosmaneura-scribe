@@ -71,7 +71,7 @@ export function mountProviderApplication(root: HTMLElement, host: ProviderApplic
     };
     [title.textContent, message.textContent] = shown[phase];
     if (notice) message.textContent = notice;
-    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><p data-provider-name></p>${button("sign-out", "Sign out")}<a href="mailto:dev@cosmaneura.com">Get help</a></details>`
+    actions.innerHTML = phase === "ready" ? `<details class="provider-account-menu"><summary>Account</summary><div class="provider-account-panel"><p data-provider-name></p>${button("sign-out", "Sign out")}<a href="mailto:dev@cosmaneura.com">Get help</a></div></details>`
       : phase === "signingIn" ? button("sign-out", "Sign out") : "";
     const providerName = actions.querySelector<HTMLElement>("[data-provider-name]"); if (providerName) providerName.textContent = state?.providerDisplayName ?? "Your account";
     recovery.innerHTML = "";
