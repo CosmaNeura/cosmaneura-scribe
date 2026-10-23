@@ -15,6 +15,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "electron": "44.4.3"
+    "electron": "44.5.0"
   }
 }
