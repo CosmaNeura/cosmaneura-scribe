@@ -728,10 +728,7 @@ class ProviderReceiver:
                     "admission_metadata_v1": True,
                     "native_recording_preparation_v1": True,
                     "admission_native_preparation_v1": True,
-                    "appointmentRef": row["appointmentRef"],
-                    "title": row["title"],
-                    "detail": row["detail"],
-                    "patientName": row["patientName"],
+                    **self.core_display(row),
                 },
             }
             if "opening_review" in value:
@@ -766,6 +763,57 @@ class ProviderReceiver:
             **({"status": value["status"]} if "status" in value else {}),
             **({"identity": value["identity"]} if "identity" in value else {}),
         }
+
+    @staticmethod
+    def core_display(row):
+        """Keep only supported display evidence from an authorized Core row.
+
+        Patient matching changes the canonical identity, not the original
+        patient reference. Neither field is used to grant encounter access.
+        Optional fields stay absent for older Core responses.
+        """
+        display = {name: row[name] for name in ("appointmentRef", "title", "detail", "patientName")}
+
+        def patient_ref(value):
+            return isinstance(value, str) and re.fullmatch(
+                r"patient_[0-7][0-9a-hjkmnp-tv-z]{25}", value
+            ) is not None
+
+        def birth_date(value):
+            return value is None or isinstance(value, str) and re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value
+            ) is not None
+
+        if "patientRef" in row:
+            _require(patient_ref(row["patientRef"]))
+            display["patientRef"] = row["patientRef"]
+        if "dateOfBirth" in row:
+            _require(birth_date(row["dateOfBirth"]))
+            display["dateOfBirth"] = row["dateOfBirth"]
+        if "status" in row:
+            _require(
+                row["status"] in ("draft_ready", "processing", "paused", "ready", "recording_saved")
+            )
+            display["status"] = row["status"]
+        if "identity" in row:
+            identity = row["identity"]
+            _require(isinstance(identity, dict))
+            _require(
+                identity.get("state") in ("provisional", "matched", "confirmed")
+                and type(identity.get("version")) is int
+                and 0 <= identity["version"] <= 9_007_199_254_740_991
+                and patient_ref(identity.get("canonical_patient_ref"))
+                and isinstance(identity.get("name"), str)
+                and 0 < len(identity["name"]) <= 200
+                and "\x00" not in identity["name"]
+                and "date_of_birth" in identity
+                and birth_date(identity["date_of_birth"])
+            )
+            display["identity"] = {
+                name: identity[name]
+                for name in ("state", "version", "canonical_patient_ref", "name", "date_of_birth")
+            }
+        return display
 
     async def selected_current(self, authorization, revision, workspace_id):
         with provider_diagnostic_timing("selection_check"):
@@ -812,12 +860,7 @@ class ProviderReceiver:
             actor_ref=account.actor_ref,
             tenant_ref=account.tenant_ref,
         )
-        return AuthorizedCoreProvider(selection, account.user_token), {
-            "appointmentRef": row["appointmentRef"],
-            "title": row["title"],
-            "patientName": row["patientName"],
-            "detail": row["detail"],
-        }
+        return AuthorizedCoreProvider(selection, account.user_token), self.core_display(row)
 
     def identity(
         self, session: Session, authorization: str
