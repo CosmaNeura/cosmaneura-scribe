@@ -133,6 +133,111 @@ let checks = 0;
 async function check(run) { root.replaceChildren(); await run(); checks++; }
 try {
   await check(async () => {
+    // The actual application and workspace share one simulated native owner and
+    // device journal across sign-out/in; no real auth, encryption or Core runs.
+    const f = fixture(), connect = f.host.connect, pending = deferred();
+    const suffix = "01j" + "0".repeat(23), sessionId = "10000000-0000-4000-8000-000000000001";
+    const recoveryScope = "30000000-0000-4000-8000-000000000003";
+    const scope = { workspaceId: "20000000-0000-4000-8000-000000000002",
+      bindingRef: "scribe_capture_binding_" + suffix, appointmentRef: "appointment_" + suffix };
+    const schema = "doctor_note_schema_" + suffix, workingId = "40000000-0000-4000-8000-000000000004";
+    const source = version => ({ kind: "reviewed_english", source_version: 1,
+      working_transcript_id: workingId, working_version: version });
+    const original = { state: "submitted", key: "50000000-0000-4000-8000-000000000005", schema, source: source(1) };
+    const review = { schema_version: "1.0", session_id: sessionId, status: "transcript_ready",
+      source: { source_transcript_version: 1, segments: [{ source_segment_id: recoveryScope, source_segment_version: 1,
+        source_locale: "en-US", speaker_role: "unknown", content: "Invented corrected conversation.", start_ms: 0, end_ms: 1000 }] },
+      working: { source_transcript_version: 1, working_transcript_id: workingId, working_transcript_version: 4,
+        note_ready: true, blockers: [], segments: [{ source_segment_id: recoveryScope, source_segment_version: 1,
+          resolution: "english_source", content: "Invented corrected conversation." }] },
+      review_queue: { schema_version: "1.0", session_id: sessionId, source_transcript_version: 1,
+        working_transcript_id: workingId, working_transcript_version: 4, status: "complete", items: [] } };
+    let revision = 1, journalWrites = 0, opens = 0, heldBody;
+    let progress = { admission: null, sessionId, uploaded: true, pendingSave: null, notePreparation: original };
+    const journalKey = `provider-workspace-v1:${recoveryScope}:${scope.workspaceId}`;
+    const plugin = {
+      async get({ key }) {
+        assert.equal(key, journalKey);
+        return { key, revision: String(revision), data: window.btoa(JSON.stringify({ version: 2, recoveryScope, scope, progress })) };
+      },
+      async create() { throw new Error("The retained journal must not be replaced"); },
+      async compareAndSwap({ key, expectedRevision, data }) {
+        assert.equal(key, journalKey); assert.equal(expectedRevision, String(revision));
+        const retained = JSON.parse(window.atob(data));
+        assert.equal(retained.recoveryScope, recoveryScope); assert.deepEqual(retained.scope, scope);
+        progress = retained.progress; revision++; journalWrites++;
+        return { revision: String(revision) };
+      },
+    };
+    const journal = new module.namespace.NativeProviderWorkspaceJournal(plugin, recoveryScope, scope);
+    const calls = [], prepares = [];
+    const receipt = async (draft = false) => {
+      const text = "Invented late preparation reply.", order = ["Plan"];
+      const digest = draft ? [...new Uint8Array(await webcrypto.subtle.digest("SHA-256",
+        new TextEncoder().encode(JSON.stringify([["Plan", text]]))))].map(byte => byte.toString(16).padStart(2, "0")).join("") : null;
+      return { session_id: sessionId, scribe_source_id: workingId, source_sha256: "a".repeat(64), schema_ref: schema,
+        transcript_ref: draft ? "ai_visit_transcript_" + suffix : null, note_ref: draft ? "visit_note_" + suffix : null,
+        status: draft ? "draft" : "not_prepared", note_type: "Synthetic SOAP", fields: draft ? { Plan: text } : null,
+        field_order: draft ? order : null, note_sha256: digest, created_at: draft ? new Date().toISOString() : null,
+        review_required: true, reviewed_source: source(4) };
+    };
+    const response = (body, value) => Response.json({ ...body, contract_version: "1", checked_at: new Date().toISOString(),
+      ...(body.operation ? { operation: "creator_review" } : { action: body.action }), receipt: value });
+    const forbidden = () => { throw new Error("No recording, upload, save or transcript mutation in session recovery"); };
+    f.host.connect = async signal => {
+      const connected = await connect(signal), workspace = connected.workspace;
+      workspace.listEncounters = async () => [{ appointmentRef: scope.appointmentRef, title: "Invented app visit",
+        detail: "Same-owner corrected-draft fixture", status: "draft_ready" }];
+      workspace.openEncounter = async appointmentRef => {
+        assert.equal(appointmentRef, scope.appointmentRef); opens++;
+        return { encounter: (await workspace.listEncounters())[0], scope, signal, journal,
+          request: async (_path, body, key) => {
+            calls.push(body.operation?.kind ?? body.action);
+            if (body.operation) { assert.equal(body.operation.kind, "creator_review"); return response(body, review); }
+            assert.ok(["read", "prepare"].includes(body.action));
+            if (body.action === "prepare") { prepares.push(key); heldBody = body; return pending.promise; }
+            return response(body, await receipt());
+          },
+          reviewJournal: () => ({ load: async () => null, save: forbidden, clear: forbidden }),
+          recorder: forbidden, openInCore: forbidden };
+      };
+      return connected;
+    };
+    const dispose = mountProviderApplication(root, f.host);
+    try {
+      await until(visible); root.querySelector('[data-workspace-action="open-draft"]').click();
+      await until(() => root.querySelector('[data-workspace-action="prepare-updated-note"]'));
+      assert.equal(prepares.length, 0); assert.equal(journalWrites, 0);
+      root.querySelector('[data-workspace-action="prepare-updated-note"]').click();
+      await until(() => prepares.length === 1);
+      const committed = await journal.load(), successorKey = prepares[0];
+      assert.notEqual(successorKey, original.key);
+      // Normalize JSON-only journal values from the bundle's VM realm before
+      // comparing them with host-realm fixtures; prototype identity is irrelevant.
+      assert.deepEqual(JSON.parse(JSON.stringify(committed.progress.notePreparation)), original);
+      assert.deepEqual(JSON.parse(JSON.stringify(committed.progress.notePreparationSuccessors)),
+        [{ state: "submitted", key: successorKey, schema, source: source(4) }]);
+      assert.equal(journalWrites, 1);
+      f.change("unavailable");
+      await until(() => root.querySelector('[data-session-action="sign-out"]')?.disabled === false && f.closes === 1);
+      assert.equal(f.scopes[0].aborted, true); assert.equal(root.querySelector('[data-workspace-content]'), null);
+      for (let attempt = 0; attempt < 2; attempt++) { click("check"); await until(() => root.getAttribute("aria-busy") === "false"); }
+      assert.equal(f.connects, 1); assert.equal(prepares.length, 1);
+      click("sign-out"); await until(() => root.querySelector('[data-session-action="sign-in"]')?.disabled === false);
+      click("sign-in"); await until(visible);
+      assert.equal(f.signOuts, 1); assert.equal(f.signIns, 1); assert.equal(f.connects, 2);
+      root.querySelector('[data-workspace-action="open-draft"]').click();
+      await until(() => root.querySelector('[data-workspace-action="retry-updated-note"]')?.disabled === false);
+      assert.equal(opens, 2); assert.equal(prepares.length, 1); assert.equal(journalWrites, 1);
+      assert.deepEqual(await journal.load(), committed);
+      pending.resolve(response(heldBody, await receipt(true))); await turn(); await turn();
+      assert.equal(root.textContent.includes("Invented late preparation reply."), false);
+      assert.equal(root.querySelector("textarea[data-note-field]"), null);
+      assert.equal(prepares.length, 1); assert.equal(calls.includes("save"), false);
+      assert.deepEqual(await journal.load(), committed);
+    } finally { pending.resolve(Response.json({}, { status: 503 })); await dispose(); }
+  });
+  await check(async () => {
     const f = fixture(), connect = f.host.connect;
     const sessionId = "10000000-0000-4000-8000-000000000001";
     const scope = { workspaceId: "20000000-0000-4000-8000-000000000002",

@@ -95,7 +95,7 @@ export async function saveNote(client: CoreCaptureClient, session: string, pendi
 export async function resolveNote(client: CoreCaptureClient, session: string, pending: PendingNoteSave): Promise<"saved" | "closed"> {
   const value = await client.note(session, "resolve", pending.schema, pending.edit, pending.edit.client_key);
   requireValue(closed(value, "session_id,schema_ref,client_key,request_sha256,status,result_note_ref,result_sha256")
-    && value.schema_ref === pending.schema && value.client_key === pending.edit.client_key
+    && value.session_id === session && value.schema_ref === pending.schema && value.client_key === pending.edit.client_key
     && value.request_sha256 === await sha256(canonical({ edit: pending.edit, schema: pending.schema,
       session, workspace: client.scope.workspaceId })));
   if (value.status === "saved") {
