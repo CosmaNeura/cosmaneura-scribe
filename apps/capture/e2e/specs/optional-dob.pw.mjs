@@ -15,12 +15,15 @@ const openFreshFixtureVisit = async page => {
   await expect(page.locator(".provider-preparation")).toBeVisible();
 };
 
-test("desktop consent and Start stay together and recording retains the patient at 780px", async ({ page }, testInfo) => {
+for (const knownDOB of [false, true]) test(`desktop consent and Start stay together and recording retains the patient at 780px, known DOB=${knownDOB}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 780, height: 760 });
   // Keep the existing dated internal preparation release active in this fixture.
   await page.clock.setFixedTime(new Date("2026-10-24T15:00:00Z"));
-  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&layout");
+  await page.goto(`/e2e/fixtures/optional-dob.html?platform=desktop&recents&layout${knownDOB ? "&known-dob" : ""}`);
   await page.locator('[data-workspace-action="open"]').click();
+  const dob = page.getByText("DOB: 1980-01-02", { exact: true });
+  if (knownDOB) await expect(dob).toBeInViewport({ ratio: 1 });
+  else await expect(dob).toHaveCount(0);
   await page.getByRole("button", { name: "On a video call", exact: false }).click();
   const consent = page.getByRole("checkbox", { name: "The patient said yes", exact: true });
   const start = page.getByRole("button", { name: "Start recording", exact: true });
@@ -39,11 +42,19 @@ test("desktop consent and Start stay together and recording retains the patient 
   await expect(identity).toBeVisible();
   await expect(start).toBeEnabled();
   await expect(start).toBeInViewport({ ratio: 1 });
+  const changeAudio = controls.getByRole("button", { name: "MacBook Pro Microphone · Change audio", exact: true });
+  await expect(changeAudio).toBeInViewport({ ratio: 1 });
+  if (knownDOB) await expect(dob).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("desktop-prepared-visible.png") });
   expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([1, 0]);
   await start.click();
   await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
   await expect(identity).toBeVisible();
   await expect(identity).toBeInViewport({ ratio: 1 });
+  if (knownDOB) await expect(dob).toBeInViewport({ ratio: 1 });
+  await expect(changeAudio).toBeInViewport({ ratio: 1 });
+  await expect(controls.getByRole("button", { name: "Pause", exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(controls.getByRole("button", { name: "Finish visit", exact: true })).toBeInViewport({ ratio: 1 });
   await page.screenshot({ path: testInfo.outputPath("desktop-recording-identity.png") });
 });
 

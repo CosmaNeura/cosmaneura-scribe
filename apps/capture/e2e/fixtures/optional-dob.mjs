@@ -29,6 +29,7 @@ const encounter = { appointmentRef: scope.appointmentRef, title: "Synthetic walk
   patientRef: "patient_01j00000000000000000000000", dateOfBirth: null };
 if (layout) {
   encounter.detail = `Visit · ${new Date().toISOString()}`;
+  if (new URL(window.location.href).searchParams.has("known-dob")) encounter.dateOfBirth = "1980-01-02";
   // Reserve the actual desktop header's space while keeping this fixture's
   // workspace ports synthetic; no account application is mounted.
   await import("../../src/provider/application.css");
@@ -67,14 +68,18 @@ const setup = createEncounterSetup({
   },
 });
 let saved = { revision: null, progress: null };
+const microphoneId = "60000000-0000-4000-8000-000000000006";
+const inputDevices = [{ id: microphoneId, label: "MacBook Pro Microphone", kind: "built_in", current: true },
+  { id: "70000000-0000-4000-8000-000000000007", label: "Synthetic USB Microphone", kind: "external", current: false }];
 let snapshot = { sessionId, state: "ready", statusCode: "capture_ready", recordedChunks: 0, queuedChunks: 0,
   elapsedSeconds: 0, remainingBudgetSeconds: 10_800, remainingAuthoritySeconds: 900,
   transcriptionStatus: null, transcript: null,
+  ...(layout ? { inputDevices, selectedInputId: microphoneId } : {}),
   ...(platform === "ios" && recents ? { native: { phase: "ready", busy: false } } : {}),
   ...(platform === "desktop" ? { desktop: { phase: "ready", audioMode: "microphone", coverage: "not_started", trimmedStartMs: 0, trimmedEndMs: null } } : {}) };
 const listeners = new Set();
 const meetingId = "30000000-0000-4000-8000-000000000003";
-let preflight = { status: "ready", inputDevices: [], selectedInputId: null, microphone: null,
+let preflight = { status: "ready", inputDevices: layout ? inputDevices : [], selectedInputId: layout ? microphoneId : null, microphone: null,
   desktopAudio: "microphone", meetingWindows: { state: "ready", selectedId: meetingId,
     windows: [{ id: meetingId, title: "Zoom — Synthetic visit" }] } };
 const preflightListeners = new Set();
@@ -89,7 +94,11 @@ mountProviderWorkspace(document.querySelector("#provider"), {
     audioPreflight: async () => ({
       getSnapshot: () => preflight,
       subscribe: listener => { preflightListeners.add(listener); listener(preflight); return () => preflightListeners.delete(listener); },
-      selectMicrophone: forbidden,
+      selectMicrophone: async selectedInputId => {
+        if (!inputDevices.some(input => input.id === selectedInputId)) forbidden();
+        preflight = { ...preflight, selectedInputId, inputDevices: inputDevices.map(input => ({ ...input, current: input.id === selectedInputId })) };
+        publishPreflight();
+      },
       selectDesktopAudio: async desktopAudio => { preflight = { ...preflight, desktopAudio }; publishPreflight(); },
       selectMeetingWindow: async selectedId => { preflight = { ...preflight, meetingWindows: { ...preflight.meetingWindows, selectedId } }; publishPreflight(); },
       refreshMeetingWindows: async () => {},
@@ -141,6 +150,18 @@ mountProviderWorkspace(document.querySelector("#provider"), {
       ...(platform === "ios" && recents ? { captureMode: "native_microphone" } : {}),
       controller: { get snapshot() { return snapshot; },
         subscribe(listener) { listeners.add(listener); listener(snapshot); return () => listeners.delete(listener); },
+        ...(layout ? {
+          async selectAudioInput(selectedInputId) {
+            if (!inputDevices.some(input => input.id === selectedInputId)) forbidden();
+            fixture.emit({ selectedInputId, inputDevices: inputDevices.map(input => ({ ...input, current: input.id === selectedInputId })) });
+          },
+          async pauseRecording() {
+            fixture.emit({ state: "paused", statusCode: "capture_paused", desktop: { ...snapshot.desktop, phase: "interrupted", coverage: "complete" } });
+          },
+          async resumeRecording() {
+            fixture.emit({ state: "recording", statusCode: "capture_recording", desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned" } });
+          },
+        } : {}),
         ...(platform === "desktop" ? {
           async selectDesktopAudio(audioMode) {
             fixture.emit({ desktop: { ...snapshot.desktop, audioMode,
@@ -154,8 +175,10 @@ mountProviderWorkspace(document.querySelector("#provider"), {
           fixture.starts++;
           if (new URL(window.location.href).searchParams.has("fail-start") && fixture.starts === 1) throw new Error("Synthetic Start failure");
           snapshot = { ...snapshot, state: "recording", statusCode: "capture_recording",
+            ...(layout ? { elapsedSeconds: 1, recordedChunks: 1 } : {}),
             ...(snapshot.native ? { native: { phase: "recording", busy: false } } : {}),
-            ...(snapshot.desktop ? { desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned" } } : {}) };
+            ...(snapshot.desktop ? { desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned",
+              ...(layout ? { inputSignal: { microphone: { level: 0.125, ageMs: 0 }, meetingAudio: { level: 0.25, ageMs: 0 } } } : {}) } } : {}) };
           for (const listener of listeners) listener(snapshot);
         }, stopRecording: forbidden, refreshTranscriptionStatus: forbidden,
       }, deactivate: async () => { fixture.closes++; }, resumePendingWork: forbidden, releaseUploadedCapture: forbidden,

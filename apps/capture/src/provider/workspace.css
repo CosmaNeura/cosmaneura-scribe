@@ -110,8 +110,9 @@
 .provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration strong { font-size:48px; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact .record-actions button { min-height:44px; font-size:16px; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact main>h1,.provider-workspace cosmaneura-capture .provider-desktop-compact main>p,.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-patient { display:none; }
-.provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) .provider-header>div { display:none; }
-.provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) .provider-header { justify-content:flex-end; margin-bottom:12px; }
+.provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) [data-provider-encounter] { display:none; }
+.provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) .provider-patient-detail { margin:0; }
+.provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) .provider-header { margin-bottom:12px; }
 .provider-workspace cosmaneura-capture .provider-desktop-capture:not(.provider-desktop-compact) .recorder { padding:20px 24px; gap:16px; }
 .provider-workspace cosmaneura-capture .provider-desktop-capture:not(.provider-desktop-compact) .recording-patient strong { display:block; font-size:1.25rem; overflow-wrap:anywhere; }
 .provider-note-heading { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
