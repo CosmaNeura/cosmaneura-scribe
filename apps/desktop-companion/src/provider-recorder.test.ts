@@ -1786,6 +1786,112 @@ describe("start readiness overlap", () => {
 });
 
 
+describe("expired unused meeting setup", () => {
+  async function prepared(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<DesktopProviderRecorderOptions>) {
+    const scheduled: { delay: number; fire: () => void }[] = [];
+    const original = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+      if (typeof callback === "function" && typeof delay === "number") scheduled.push({ delay, fire: () => callback(...args) });
+      return original(callback, delay, ...args);
+    });
+    let recorder: DesktopProviderRecorder;
+    try { recorder = await f.open(overrides); } finally { timer.mockRestore(); }
+    const before = (await f.options.flowStore.getActiveCaptureState())!;
+    return { recorder, before, expire: async () => {
+      const remaining = Date.parse(before.captureAuthorizedUntil!) - Date.now();
+      const expiry = scheduled.find(item => item.delay >= remaining && item.delay <= remaining + 1_000);
+      expect(expiry).toBeDefined();
+      vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.parse(before.captureAuthorizedUntil!) + 1);
+      expiry!.fire();
+      await vi.waitFor(() => expect(recorder.snapshot).toMatchObject({ state: "paused", statusCode: "capture_setup_expired",
+        recordedChunks: 0, desktop: { coverage: "not_started" } }));
+      // The restored queue retains Date.now; return that same clock to the
+      // present before renewal rather than replacing its fake Date instance.
+      vi.setSystemTime(vi.getRealSystemTime());
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+    } };
+  }
+  it.each(["recommended", "manual"] as const)("starts the first %s call after setup expires with fresh ownership", async choice => {
+    const f = await fixture(true); interruptedDriver(f);
+    const selected = { application: "us.zoom.xos" as const, processID: 41, windowID: 42,
+      title: choice === "recommended" ? "Zoom Meeting" : "Invented manual call" };
+    const list = vi.fn(async () => [selected]), mount = vi.fn(f.options.authorizeMount);
+    const bff = f.options.createBff(f.abort.signal), renew = vi.spyOn(bff, "renewLease");
+    const setup = await prepared(f, { listMeetingWindows: list, authorizeMount: mount });
+    const link = wire(setup.recorder), view = await connectDesktopRecorderView(link.port, f.session.id, f.abort.signal);
+    try {
+      if (choice === "manual") await setup.recorder.selectMeetingWindow(setup.recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id);
+      await setup.expire();
+      await view.controller.resumeRecording!();
+      expect(view.controller.snapshot).toMatchObject({ state: "recording", recordedChunks: 0, desktop: { coverage: "aligned" } });
+      expect(renew).toHaveBeenCalledOnce(); expect(mount).toHaveBeenCalledOnce();
+      expect(f.authority).toHaveBeenCalledOnce(); expect(f.nativeStart).toHaveBeenCalledOnce();
+      expect(list).toHaveBeenCalledTimes(4); // Open, Resume validation, Start selection, pre-Start recheck.
+      expect(f.selectWindow).not.toHaveBeenCalled();
+      const active = (await f.options.flowStore.getActiveCaptureState())!;
+      expect(active.lease.generation).toBe(setup.before.lease.generation + 1);
+      expect(active.continuation?.firstSequenceNumber).toBe(0);
+    } finally { await link.boundary.dispose(); vi.useRealTimers(); await f.close(); }
+  });
+  it.each(["changed", "ambiguous", "denied", "revoked"] as const)("rejects %s call state before renewing expired unused setup", async failure => {
+    const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);
+    const selected = { application: "com.google.Chrome" as const, processID: 41, windowID: 42, title: "Meet - abc-defg-hij" };
+    let windows: NativeMeetingWindow[] = [selected], denied = false;
+    const list = vi.fn(async () => { if (denied) throw new Error("Invented discovery unavailable"); return windows; });
+    const setup = await prepared(f, { listMeetingWindows: list, authorizeMount: mount });
+    const bff = f.options.createBff(f.abort.signal), renew = vi.spyOn(bff, "renewLease");
+    try {
+      await setup.expire();
+      if (failure === "changed") windows = [{ ...selected, title: "Meet - klm-nopq-rst" }];
+      if (failure === "ambiguous") windows = [selected, { application: "us.zoom.xos", processID: 43, windowID: 44, title: "Zoom Meeting" }];
+      if (failure === "denied") denied = true;
+      if (failure === "revoked") f.abort.abort();
+      await expect(Promise.resolve().then(() => setup.recorder.resumeRecording())).rejects.toThrow();
+      expect(renew).not.toHaveBeenCalled(); expect(mount).not.toHaveBeenCalled();
+      expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      if (failure === "revoked") {
+        await vi.waitFor(() => expect(f.release).toHaveBeenCalledOnce());
+        const resources = await f.reopen();
+        expect((await resources.flowStore.getActiveCaptureState())!.lease).toEqual(setup.before.lease);
+      } else expect((await f.options.flowStore.getActiveCaptureState())!.lease).toEqual(setup.before.lease);
+      if (failure !== "revoked") expect(setup.recorder.snapshot.statusCode).toBe(failure === "changed" ? "capture_call_changed"
+        : failure === "denied" ? "capture_call_unavailable" : "capture_call_selection_required");
+    } finally { vi.useRealTimers(); await f.close(); }
+  });
+  it.each([false, true])("keeps the original call fence after real capture (saved chunks: %s)", async savedChunk => {
+    const f = await fixture(true), driver = interruptedDriver(f);
+    const selected = { application: "com.google.Chrome" as const, processID: 41, windowID: 42, title: "Meet - abc-defg-hij" };
+    let windows = [selected]; const recorder = await f.open({ listMeetingWindows: async () => windows });
+    const renew = vi.spyOn(f.options.createBff(f.abort.signal), "renewLease");
+    try {
+      await recorder.startRecording(); await driver.interrupt(savedChunk);
+      await vi.waitFor(() => expect(recorder.snapshot).toMatchObject({ state: "paused", desktop: { phase: "interrupted" } }));
+      const before = await f.options.flowStore.getActiveCaptureState(); renew.mockClear();
+      windows = [{ ...selected, title: "Meet - klm-nopq-rst" }];
+      await recorder.refreshMeetingWindows();
+      await recorder.selectMeetingWindow(recorder.snapshot.desktop!.meetingWindows!.windows[0]!.id);
+      await expect(recorder.resumeRecording()).rejects.toThrow();
+      expect(recorder.snapshot.statusCode).toBe("capture_call_changed");
+      expect(renew).not.toHaveBeenCalled(); expect(f.authority).toHaveBeenCalledOnce(); expect(f.nativeStart).toHaveBeenCalledOnce();
+      expect((await f.options.flowStore.getActiveCaptureState())!.lease).toEqual(before!.lease);
+    } finally { await f.close(); }
+  });
+  it("does not infer unused setup from a restored paused owner with zero chunks and no history", async () => {
+    const f = await fixture(true), selected = { application: "us.zoom.xos" as const, processID: 41, windowID: 42, title: "Zoom Meeting" };
+    const setup = await prepared(f, { listMeetingWindows: async () => [selected] });
+    try {
+      await setup.expire(); await setup.recorder.deactivate();
+      const resources = await f.reopen();
+      const restored = await f.open({ ...resources, listMeetingWindows: async () => [selected] });
+      const renew = vi.spyOn(f.options.createBff(f.abort.signal), "renewLease");
+      expect(restored.snapshot).toMatchObject({ state: "paused", recordedChunks: 0, desktop: { coverage: "not_started" } });
+      await expect(restored.resumeRecording()).rejects.toThrow();
+      expect(renew).not.toHaveBeenCalled(); expect(f.authority).not.toHaveBeenCalled(); expect(f.nativeStart).not.toHaveBeenCalled();
+      expect(restored.snapshot.statusCode).toBe("capture_call_selection_required");
+    } finally { vi.useRealTimers(); await f.close(); }
+  });
+});
+
 describe("deliberate desktop input selection", () => {
   it("recommends the unique visible call among thirty windows without mounting or starting capture", async () => {
     const f = await fixture(true), mount = vi.fn(f.options.authorizeMount);

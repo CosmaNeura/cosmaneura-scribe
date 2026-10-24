@@ -103,6 +103,7 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
   private readonly unsubscribe: (() => void)[] = [];
   private coverage: DesktopPCMCoverage | null = null;
   private continuityUnconfirmed = false;
+  private unusedSetupKnown = false;
   private capability: OneTimeCaptureCapability | null = null;
   private attempt: AbortController | null = null;
   private initializationProbe: { readonly attempt: AbortController;
@@ -279,6 +280,9 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         || current.status !== "created" && active === null && preparing === null
         || !mayRestoreReady && active?.phase === "ready") throw unavailable();
       this.coverage = await options.coverage.load(); this.requireOpen();
+      // An already-paused owner with missing history is not proof of unused
+      // setup. Only new/ready setup can make its first call choice on expiry.
+      this.unusedSetupKnown = (active === null || active.phase === "ready") && this.coverage === null;
       this.continuityUnconfirmed = active?.continuation !== undefined;
       const prepare = async (): Promise<void> => {
         if (!await this.flow.restore()) await this.flow.prepareConfigured(options.sessionId);
@@ -648,8 +652,14 @@ export class DesktopProviderRecorder implements ProviderRecorderController {
         await this.options.retireSource(); this.requireAttempt(attempt, generation);
         this.stopConfirmationPending = false;
         if (this.audioMode === "meeting" && this.options.listMeetingWindows) {
-          if (!this.lastSelectedWindow) throw this.callSelectionError("capture_call_selection_required");
-          await this.checkedInlineWindow(attempt, generation, this.lastSelectedWindow);
+          // Expired unused setup has no recorded call to resume. Its first
+          // choice still passes the ordinary fresh catalog checks. A prior or
+          // unknown capture must keep the original-call fence.
+          if (!this.lastSelectedWindow && (!this.unusedSetupKnown || this.continuityUnconfirmed
+            || this.coverage !== null || this.flow.snapshot.recordedChunks !== 0)) {
+            throw this.callSelectionError("capture_call_selection_required");
+          }
+          await this.checkedInlineWindow(attempt, generation, this.lastSelectedWindow ?? undefined);
         }
         // Prior native and server ownership is retired. This read-only OS probe
         // is independent of continuation metadata; settle both before proceeding
