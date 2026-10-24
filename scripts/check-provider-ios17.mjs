@@ -22,6 +22,9 @@ async function fixture(discovery = "new") {
   Object.defineProperty(window.AbortSignal, "any", { value: undefined, configurable: true });
   Object.defineProperty(window, "crypto", { value: webcrypto });
   Object.assign(window, { Headers, Response, TextEncoder, TextDecoder, structuredClone });
+  window.ResizeObserver = class { observe() {} disconnect() {} };
+  window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   window.fetch = () => { throw new Error("Unexpected network request"); };
   const module = new SourceTextModule(bundle, { context: dom.getInternalVMContext() });
   await module.link(() => { throw new Error("Unexpected external module"); });
@@ -83,7 +86,7 @@ async function fixture(discovery = "new") {
 const opening = await fixture();
 try {
   await opening.click("open", first);
-  assert.ok(opening.text().includes("Record this visit"),
+  assert.ok(opening.root.querySelector('[data-workspace-action="prepare"]'),
     "Opening an encounter must work when AbortSignal.any is unavailable");
   assert.equal(opening.journalReads(), 1);
   assert.equal(opening.openedSignals[0].aborted, false);
@@ -104,7 +107,7 @@ try {
   switching.revoked.get(first).abort();
   await switching.settle();
   assert.equal(newSignal.aborted, false);
-  assert.ok(switching.text().includes("Record this visit"));
+  assert.ok(switching.root.querySelector('[data-workspace-action="prepare"]'));
   switching.revoked.get(second).abort();
   await switching.settle();
   assert.equal(newSignal.aborted, true);
@@ -132,7 +135,7 @@ for (const state of ["uploaded", "unfinished", "failed"]) {
   try {
     await recovered.click("open", first);
     assert.equal(recovered.discoveryReads(), 1);
-    assert.equal(recovered.text().includes("Record this visit"), false);
+    assert.equal(recovered.root.querySelector('[data-workspace-action="prepare"]'), null);
     if (state === "uploaded") {
       assert.ok(recovered.root.querySelector('[data-review-action="refresh"]'));
       assert.ok(recovered.text().includes("Transcribing your recording"));
@@ -140,7 +143,7 @@ for (const state of ["uploaded", "unfinished", "failed"]) {
       assert.equal(recovered.saved().progress.uploaded, true);
     } else {
       assert.equal(recovered.saved(), null);
-      assert.ok(recovered.text().includes(state === "unfinished" ? "Recording access needed" : "Encounter could not open"));
+      assert.ok(recovered.text().includes(state === "unfinished" ? "Recording access needed" : "Visit could not open"));
     }
   } finally { await recovered.close(); }
 }

@@ -200,11 +200,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       if (disposed || host.signal.aborted) return;
       activity.hidden = !!content.querySelector("cosmaneura-capture");
       activity.textContent = `Working · ${Math.floor((performance.now() - started) / 1000)}s. ${step === "encounter connection"
-        ? "Checking access to this visit." : step === "saved encounter recovery" ? "Restoring saved work."
+        ? "Opening this visit." : step === "saved encounter recovery" ? "Restoring saved work."
+        : step === "encounter list" ? "Loading today’s patients."
         : step === "recording status check" ? "Checking recording status."
         : step === "device recording access" ? "Connecting this device to the recording."
         : step === "note preparation" ? "Preparing your draft note."
-        : step === "recording admission" ? "Confirming recording consent and storage." : "Waiting for confirmation."}`;
+        : step === "recording admission" ? "Preparing secure recording." : "Finishing your request."}`;
     }, 1000);
     let outcome: WorkflowTimingOutcome = "resolved";
     try { await action(); }
@@ -224,7 +225,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
             : step === "encounter setup" || step === "encounter creation"
               ? "Your encounter request could not be confirmed. Check your connection, then check its result. Pending work is retained securely on this device."
             : step === "encounter list"
-              ? "Your encounters could not be loaded. Check your connection, then retry."
+              ? "Today’s patients could not be loaded. Check your connection, then retry."
+            : openingRef
+              ? "This visit could not be opened. Your saved work is retained. Retry opening the visit."
               : `The ${step} could not be confirmed. Your saved work is retained. Return to Your encounters and reopen this encounter to recover.`;
         if (error instanceof CaptureDeviceCustodyError) {
           show('<h1>Recording access needed on this device</h1><p>If this recording was prepared on another device, continue on that device. Moving an unfinished recording between devices is not supported. If this is the original device, contact support before retrying. Do not remove Scribe or reset its data.</p><button data-workspace-action="encounters">Your encounters</button>');
@@ -233,9 +236,9 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         } else if (step === "encounter setup" || step === "encounter creation") {
           show('<h1>Check encounter creation</h1><button data-workspace-action="check-creation">Check and continue</button><button data-workspace-action="encounters">Your encounters</button>');
         } else if (openingRef) {
-          show(`<h1>Encounter could not open</h1><p>Check your connection, then retry. Recording has not started.</p><button data-workspace-action="open" data-appointment="${escape(openingRef)}">Retry opening encounter</button>`);
+          show(`<h1>Visit could not open</h1><p>Check your connection, then retry opening this visit.</p><button data-workspace-action="open" data-appointment="${escape(openingRef)}">Retry opening visit</button>`);
         } else if (step === "encounter list") {
-          show('<h1>Your encounters</h1><button data-workspace-action="encounters">Retry loading encounters</button>');
+          show('<h1>Today’s patients</h1><button data-workspace-action="encounters">Retry loading patients</button>');
         }
       }
     } finally {
@@ -255,7 +258,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     header.hidden = true; selectedDay = new Date();
     step = "encounter list";
     const n = generation;
-    show("<h1>Your encounters</h1><p>Loading your authorized encounters…</p>");
+    show("<h1>Today’s patients</h1><p>Loading today’s patients…</p>");
     const encounters = await host.listEncounters(host.signal);
     if (!current(n)) return;
     if (!savedPreferences) {
@@ -817,7 +820,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     await clearEncounter(); const n = generation;
     header.hidden = false;
     openingRef = ref; step = "encounter connection";
-    show('<h1>Opening encounter</h1><p>Checking access and restoring your saved work…</p><button data-workspace-action="cancel-opening">Cancel opening</button>');
+    show('<h1>Opening visit</h1><p>Checking access and restoring your saved work…</p><button data-workspace-action="cancel-opening">Cancel opening</button>');
     const opening = new AbortController();
     let cancelled = false;
     const cancel = (): void => { cancelled = true; opening.abort(); };
@@ -857,7 +860,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
         if (!authorized(n)) return;
         endOpening();
         if (recovered === null) {
-          if (initialAction) show('<h1>Draft not available</h1><p>Return to Your encounters to open this visit. Recording has not started.</p>');
+          if (initialAction) show('<h1>Draft not available</h1><p>This visit has no draft available yet. Return to today’s patients and reopen it to check again.</p>');
           else preparation();
         }
         else {

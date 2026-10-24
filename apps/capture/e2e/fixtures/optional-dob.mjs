@@ -2,6 +2,7 @@
 // No account, network, audio, or installed app is used.
 /* global document, window */
 const platform = new URL(window.location.href).searchParams.get("platform");
+const layout = new URL(window.location.href).searchParams.has("layout");
 if (platform === "ios") {
   window.CapacitorCustomPlatform = { name: "ios" };
   window.Capacitor = {
@@ -26,9 +27,19 @@ const sessionId = "10000000-0000-4000-8000-000000000001";
 const account = { email: "provider@synthetic.invalid", environment: "Staging" };
 const encounter = { appointmentRef: scope.appointmentRef, title: "Synthetic walk-in", detail: "Visit · 2026-09-30T12:00:00Z",
   patientRef: "patient_01j00000000000000000000000", dateOfBirth: null };
+if (layout) {
+  encounter.detail = `Visit · ${new Date().toISOString()}`;
+  // Reserve the actual desktop header's space while keeping this fixture's
+  // workspace ports synthetic; no account application is mounted.
+  await import("../../src/provider/application.css");
+  document.body.classList.add("provider-application");
+  document.body.style.margin = "0";
+  document.querySelector("#provider").insertAdjacentHTML("beforebegin", '<header class="provider-session-header"><div class="provider-brand"><span class="provider-brand-icon" aria-hidden="true"></span><strong>Scribe</strong></div><button class="scribe-desktop-close" disabled>Close Scribe</button></header>');
+}
 const plugin = await encryptedFixturePlugin(scope.workspaceId);
 const forbidden = () => { throw new Error("Outside the synthetic DOB fixture"); };
 const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, dobUpdates: [], openedRefs: [], closes: 0 };
+const listGate = new Promise(resolve => { fixture.releaseList = resolve; });
 const gatedAdmission = new URL(window.location.href).searchParams.has("gate-admission");
 const admissionGate = new Promise(resolve => { fixture.releaseAdmission = resolve; });
 const journalGate = new Promise(resolve => { fixture.releaseJournal = resolve; });
@@ -62,11 +73,29 @@ let snapshot = { sessionId, state: "ready", statusCode: "capture_ready", recorde
   ...(platform === "ios" && recents ? { native: { phase: "ready", busy: false } } : {}),
   ...(platform === "desktop" ? { desktop: { phase: "ready", audioMode: "microphone", coverage: "not_started", trimmedStartMs: 0, trimmedEndMs: null } } : {}) };
 const listeners = new Set();
+const meetingId = "30000000-0000-4000-8000-000000000003";
+let preflight = { status: "ready", inputDevices: [], selectedInputId: null, microphone: null,
+  desktopAudio: "microphone", meetingWindows: { state: "ready", selectedId: meetingId,
+    windows: [{ id: meetingId, title: "Zoom — Synthetic visit" }] } };
+const preflightListeners = new Set();
+const publishPreflight = () => { for (const listener of preflightListeners) listener(preflight); };
 fixture.emit = update => { snapshot = { ...snapshot, ...update }; for (const listener of listeners) listener(snapshot); };
 fixture.signOut = () => abort.abort();
 fixture.ready = () => fixture.emit({ state: "ready", statusCode: "capture_ready",
   desktop: { ...snapshot.desktop, phase: "ready" } });
 mountProviderWorkspace(document.querySelector("#provider"), {
+  ...(layout ? {
+    consentPreparation: { enabled: true, owner: "John Clemente", cohort: "internal", expires: "2026-11-01" },
+    audioPreflight: async () => ({
+      getSnapshot: () => preflight,
+      subscribe: listener => { preflightListeners.add(listener); listener(preflight); return () => preflightListeners.delete(listener); },
+      selectMicrophone: forbidden,
+      selectDesktopAudio: async desktopAudio => { preflight = { ...preflight, desktopAudio }; publishPreflight(); },
+      selectMeetingWindow: async selectedId => { preflight = { ...preflight, meetingWindows: { ...preflight.meetingWindows, selectedId } }; publishPreflight(); },
+      refreshMeetingWindows: async () => {},
+      close: async () => {},
+    }),
+  } : {}),
   signal: abort.signal, account, encounterSetup: { ...setup,
     async addDateOfBirth(selected, date, key, signal) {
       if (signal.aborted || selected.appointmentRef !== encounter.appointmentRef || selected.patientRef !== encounter.patientRef) throw new Error("DOB scope denied");
@@ -75,8 +104,15 @@ mountProviderWorkspace(document.querySelector("#provider"), {
       return { ...encounter, dateOfBirth: date };
     },
   },
-  listEncounters: async () => { fixture.listCalls++; return fixture.catalog; }, createEncounter: forbidden,
-  openEncounter: async ref => { fixture.openedRefs.push(ref); return ({ encounter, scope, signal: abort.signal, openInCore: forbidden,
+  listEncounters: async () => {
+    fixture.listCalls++;
+    if (layout && new URL(window.location.href).searchParams.has("wait-list")) await listGate;
+    return fixture.catalog;
+  }, createEncounter: forbidden,
+  openEncounter: async ref => {
+    fixture.openedRefs.push(ref);
+    if (layout && fixture.failOpen) throw new Error("Synthetic private connection detail");
+    return ({ encounter, scope, signal: abort.signal, openInCore: forbidden,
     journal: { load: async () => saved, save: async (_prior, progress) => {
       if (new URL(window.location.href).searchParams.has("gate-journal") && saved.progress === null) await journalGate;
       if (new URL(window.location.href).searchParams.has("fail-journal")) throw new Error("Synthetic journal failure");
