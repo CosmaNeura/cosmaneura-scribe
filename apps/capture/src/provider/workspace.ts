@@ -10,6 +10,7 @@ import { CaptureQueue } from "../queue/capture-queue";
 import { BffCaptureQueueTransport } from "../bff/queue-transport";
 import { HttpCreatorReviewApi, type CreatorReviewView } from "../../../review-ui/src/creator-review-api";
 import { mountCreatorReview, renderNoteTranscript, bindTranscriptTools } from "../../../review-ui/src/creator-review-panel";
+import { bindTranscriptPlayback } from "../../../review-ui/src/passage-playback";
 import { CoreCaptureBff, CoreCaptureClient, requireValue, reference,
   type LanguageMode } from "./core-client";
 import { canonical, noteTemplates, parseDraft, pendingSave, resolveNote, checkNoteSave, reviewedSource, sameSource, saveNote,
@@ -88,6 +89,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   let savedAt: Date | null = null;
   let noteSaveUnconfirmed = false;
   let refreshNoteSources: (() => void) | null = null;
+  let stopNotePlayback: (() => void) | null = null;
   let manualUpdatedRetryKey: string | null = null;
   let setupQuery = "";
   let pendingDateOfBirth: { date: string; key: string } | null = null;
@@ -1192,6 +1194,12 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (transcriptDetails && window.matchMedia("(min-width: 900px)").matches) transcriptDetails.open = true;
     const stopTranscriptTools = bindTranscriptTools(content);
     const n = generation, activeContext = context;
+    const playback = bindTranscriptPlayback(content, {
+      current: () => authorized(n) && context === activeContext && draft ? noteTranscript : null,
+      ...(activeContext?.playPassage ? { playPassage: activeContext.playPassage } : {}),
+      signal: client?.signal ?? host.signal,
+    });
+    playback.render(); stopNotePlayback = playback.stop;
     const sourceNavigation = bindNoteSourceNavigation(content, {
       current: () => authorized(n) && context === activeContext && draft && noteTranscript ? { draft, view: noteTranscript } : null,
       revealTranscript: remember => setNoteView(true, remember), returnToNote: () => setNoteView(false),
@@ -1205,6 +1213,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     updateSaveState();
     content.addEventListener("focusin", rememberEditorField);
     disposeContent = () => {
+      playback.dispose(); if (stopNotePlayback === playback.stop) stopNotePlayback = null;
       templateDetails?.removeEventListener("toggle", resizeDetails);
       sourceNavigation.dispose();
       if (refreshNoteSources === sourceNavigation.refresh) refreshNoteSources = null;
@@ -1216,6 +1225,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
   const setNoteView = (transcript: boolean, rememberPosition = true): void => {
     const note = content.querySelector<HTMLElement>(".provider-note");
     requireValue(note);
+    if (!transcript) stopNotePlayback?.();
     conversationPosition = noteConversationView(note, transcript, lastEditorField, conversationPosition, rememberPosition);
   };
   const rememberEditorField = (event: FocusEvent): void => {
@@ -1355,7 +1365,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           if (!authorized(n) || client !== activeClient || context !== activeContext || progress().pendingSave !== null) return;
           draft = saved;
           savedAt = new Date(); noteSaveUnconfirmed = false;
-          stop(); stopSaveCheck = null; source = fresh; noteTranscript = view; currentSchema = pending.schema;
+          stop(); stopSaveCheck = null; source = fresh;
+          stopNotePlayback?.(); noteTranscript = view; currentSchema = pending.schema;
           notice.textContent = content.querySelector("textarea[data-note-field]") ? ""
             : "Save confirmed. Your saved draft is shown; clinical review is still needed.";
           if (content.querySelector("textarea[data-note-field]")) {
@@ -1648,7 +1659,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
           });
           if (!authorized(n) || client !== activeClient || context !== activeContext || progress().pendingSave !== null) return;
           draft = confirmed;
-          source = fresh; currentSchema = pending.schema; noteTranscript = view;
+          source = fresh; currentSchema = pending.schema;
+          stopNotePlayback?.(); noteTranscript = view;
           noteSaveUnconfirmed = false; if (result === "saved") savedAt = new Date();
           if (!content.querySelector("textarea[data-note-field]")) renderNote();
           pending.fieldOrder.forEach((key, i) => {
