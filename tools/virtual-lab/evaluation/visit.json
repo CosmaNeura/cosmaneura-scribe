@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "case_id": "sleep-plan-001",
+  "synthetic_only": true,
+  "consent_record_id": "623e91c1-192b-41e3-9086-478d883bb8a8",
+  "all_parties_consented": true,
+  "turns": [
+    {"speaker_role": "clinician", "voice": "Samantha", "content": "This fictional visit begins with blue lantern. Tell me about your sleep."},
+    {"speaker_role": "patient", "voice": "Daniel", "content": "I have trouble sleeping. I do not have fever."},
+    {"speaker_role": "patient", "voice": "Daniel", "content": "I first said four nights. Correction: it was two nights, not four nights. Middle marker amber compass."},
+    {"speaker_role": "clinician", "voice": "Samantha", "content": "The plan is to keep a sleep diary for fourteen days. No new medication is planned."},
+    {"speaker_role": "patient", "voice": "Daniel", "content": "I understand I will keep a sleep diary."},
+    {"speaker_role": "clinician", "voice": "Samantha", "content": "Follow up in two weeks, not six weeks. Late marker green teapot."}
+  ],
+  "markers": ["blue lantern", "amber compass", "green teapot"],
+  "facts": [
+    {"id": "fever_negation", "speaker_role": "patient", "field": "Subjective", "required": "(?:do(?:es)? not have|no|den(?:y|ies|ied)|without) fever|afebrile", "contradiction": "(?:has|reports) (?:a )?fever|fever (?:is )?present"},
+    {"id": "corrected_duration", "speaker_role": "patient", "field": "Subjective", "required": "(?:two|2) nights", "contradiction": "(?:for|lasted|duration(?: is)?|over) (?:four|4) nights"},
+    {"id": "plan_diary", "speaker_role": "clinician", "field": "Plan", "required": "sleep diary", "contradiction": "(?:do not|stop|avoid) (?:keep(?:ing)? (?:a )?)?sleep diary"},
+    {"id": "plan_duration", "speaker_role": "clinician", "field": "Plan", "required": "(?:fourteen|14|two weeks|2 weeks) (?:days)?", "contradiction": "(?:diary|for) (?:six|6) (?:days|weeks)"},
+    {"id": "plan_no_medication", "speaker_role": "clinician", "field": "Plan", "required": "no new (?:medication|medications|medicine|meds)|no (?:medication|medications|medicine|meds) (?:was |is )?(?:started|planned|prescribed)", "contradiction": "(?:start|prescribe|begin|initiate) (?:a |new )?(?:medication|medicine|melatonin|zolpidem)"},
+    {"id": "plan_followup", "speaker_role": "clinician", "field": "Plan", "required": "(?:follow[ -]?up|return|review).{0,35}(?:two|2) weeks", "contradiction": "(?:follow[ -]?up|return|review).{0,35}(?:six|6) weeks"}
+  ],
+  "reference_note": {
+    "Subjective": "Trouble sleeping for two nights. Denies fever.",
+    "Assessment": "Sleep difficulty described in the fictional visit.",
+    "Plan": "Keep a sleep diary for fourteen days. No new medication is planned. Follow up in two weeks."
+  },
+  "rubric": "Compare the actual draft with the spoken reference, not just the ASR output. Preserve fever negation and the corrected two-night duration. Plan must preserve the sleep diary, fourteen-day duration, no new medication, and two-week follow-up. Reject reversed negations, uncorrected four-night duration, six-week follow-up, invented treatment, diagnoses, orders, or clinical findings. Markers are continuity probes, not clinical note requirements. Cite supporting reference turn numbers for each decision."
+}

@@ -1,0 +1,22 @@
+{
+  "scenarioId": "virtual-synthetic-continuity",
+  "target": {"role": "owned-macos-guest", "hostname": "REPLACE_OWNED_GUEST_HOSTNAME", "root": "/Users/lab/ScribeVirtualLab", "marker": "/Users/lab/ScribeVirtualLab/target.json"},
+  "app": {"path": "/Users/lab/ScribeVirtualLab/apps/Cosmaneura Scribe Store.app", "bundleId": "com.cosmaneura.scribe.beta.desktop.store", "build": "120", "nativeUiBundleId": "REPLACE_OBSERVED_NATIVE_UI_BUNDLE"},
+  "appiumUrl": "http://127.0.0.1:4729",
+  "capabilities": {"platformName": "mac", "appium:automationName": "mac2", "appium:skipAppKill": true, "appium:noReset": true},
+  "consentReceipt": "/Users/lab/ScribeVirtualLab/consent.json",
+  "audio": {"executable": "/Users/lab/ScribeVirtualLab/bin/audio", "uid": "REPLACE_BLACKHOLE_UID", "wav": "/Users/lab/ScribeVirtualLab/fixtures/visit.wav", "sha256": "REPLACE_FIXTURE_SHA256", "scribeRouteReceipt": "/Users/lab/ScribeVirtualLab/scribe-route.json"},
+  "flow": {
+    "syntheticOnly": false,
+    "recordingStateLocator": {"using": "accessibility id", "value": "Recording"},
+    "savedStateLocator": {"using": "accessibility id", "value": "REPLACE_SAVED_STATUS"},
+    "finishedStateLocator": {"using": "accessibility id", "value": "REPLACE_FINISHED_STATUS"},
+    "prepare": [{"action": "wait", "locator": {"using": "accessibility id", "value": "REPLACE_OBSERVED_SYNTHETIC_VISIT"}}],
+    "consent": [{"action": "click", "locator": {"using": "accessibility id", "value": "REPLACE_NORMAL_CONSENT_CONTROL"}}],
+    "record": [{"action": "click", "locator": {"using": "accessibility id", "value": "Start recording"}}, {"action": "wait", "locator": {"using": "accessibility id", "value": "Recording"}}],
+    "duringRecording": [{"action": "background", "bundleId": "com.apple.finder", "seconds": 5}],
+    "finish": [{"action": "click", "locator": {"using": "accessibility id", "value": "Finish"}}, {"action": "wait", "locator": {"using": "accessibility id", "value": "REPLACE_FINISHED_STATUS"}}],
+    "save": [{"action": "click", "locator": {"using": "accessibility id", "value": "Save and review"}}, {"action": "wait", "locator": {"using": "accessibility id", "value": "REPLACE_SAVED_STATUS"}}],
+    "reopen": [{"action": "relaunch"}, {"action": "click", "locator": {"using": "accessibility id", "value": "REPLACE_REOPEN_SYNTHETIC_VISIT"}}, {"action": "assertText", "locator": {"using": "accessibility id", "value": "REPLACE_SAVED_CONVERSATION"}, "contains": "green teapot"}]
+  }
+}

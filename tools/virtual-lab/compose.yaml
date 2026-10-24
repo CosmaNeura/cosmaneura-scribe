@@ -1,0 +1,34 @@
+name: ${SCRIBE_LAB_PROJECT:?Use lab.sh to select an owned project}
+networks:
+  default:
+    ipam:
+      config: [{subnet: "${SCRIBE_LAB_SUBNET:-10.253.241.0/24}"}]
+services:
+  postgres:
+    image: postgres:16.9
+    environment:
+      POSTGRES_DB: scribe_virtual_test
+      POSTGRES_USER: scribe_lab
+      POSTGRES_PASSWORD: synthetic-local-only
+    ports: ["127.0.0.1:55439:5432"]
+    tmpfs: ["/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scribe_lab -d scribe_virtual_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.13.0
+    ports:
+      - "127.0.0.1:8479:8474"
+      - "127.0.0.1:55440:15432"
+      - "127.0.0.1:18081:18081"
+  echo:
+    image: python:3.13.9-alpine
+    command: ["python", "-m", "http.server", "8000", "--directory", "/tmp"]
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: ["checks"]
+    volumes: ["./network:/checks:ro"]
+    entrypoint: ["k6"]
+    command: ["run", "/checks/latency.js"]
