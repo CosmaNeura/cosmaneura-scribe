@@ -1,0 +1,16 @@
+{
+  "name": "@cosmaneura/scribe-virtual-lab",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24 <25" },
+  "dependencies": {
+    "@clerk/testing": "2.2.50",
+    "@playwright/test": "1.62.1",
+    "appium": "3.8.0",
+    "appium-mac2-driver": "4.5.0",
+    "appium-xcuitest-driver": "12.20.0",
+    "promptfoo": "0.125.0",
+    "tsx": "4.23.12",
+    "npm": "11.5.2"
+  }
+}
