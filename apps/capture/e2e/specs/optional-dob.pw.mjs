@@ -15,6 +15,81 @@ const openFreshFixtureVisit = async page => {
   await expect(page.locator(".provider-preparation")).toBeVisible();
 };
 
+for (const knownDOB of [false, true]) test(`desktop consent and Start stay together and recording retains the patient at 780px, known DOB=${knownDOB}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 780, height: 760 });
+  // Keep the existing dated internal preparation release active in this fixture.
+  await page.clock.setFixedTime(new Date("2026-10-24T15:00:00Z"));
+  await page.goto(`/e2e/fixtures/optional-dob.html?platform=desktop&recents&layout${knownDOB ? "&known-dob" : ""}`);
+  await page.locator('[data-workspace-action="open"]').click();
+  const dob = page.getByText("DOB: 1980-01-02", { exact: true });
+  if (knownDOB) await expect(dob).toBeInViewport({ ratio: 1 });
+  else await expect(dob).toHaveCount(0);
+  await page.getByRole("button", { name: "On a video call", exact: false }).click();
+  const consent = page.getByRole("checkbox", { name: "The patient said yes", exact: true });
+  const start = page.getByRole("button", { name: "Start recording", exact: true });
+  await expect(consent).toBeEnabled();
+  await expect(consent).not.toBeChecked();
+  await expect(start).toBeDisabled();
+  await expect(consent).toBeInViewport({ ratio: 1 });
+  await expect(start).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("desktop-consent-visible.png") });
+  expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
+  // The completed preparation immediately replaces this checkbox's screen.
+  await consent.click();
+  const controls = page.getByRole("region", { name: "Recording controls", exact: true });
+  const identity = controls.getByLabel("Current visit").locator("strong");
+  await expect(identity).toHaveText("Synthetic walk-in");
+  await expect(identity).toBeVisible();
+  await expect(start).toBeEnabled();
+  await expect(start).toBeInViewport({ ratio: 1 });
+  const changeAudio = controls.getByRole("button", { name: "MacBook Pro Microphone · Change audio", exact: true });
+  await expect(changeAudio).toBeInViewport({ ratio: 1 });
+  if (knownDOB) await expect(dob).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("desktop-prepared-visible.png") });
+  expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([1, 0]);
+  await start.click();
+  await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
+  await expect(identity).toBeVisible();
+  await expect(identity).toBeInViewport({ ratio: 1 });
+  if (knownDOB) await expect(dob).toBeInViewport({ ratio: 1 });
+  await expect(changeAudio).toBeInViewport({ ratio: 1 });
+  await expect(controls.getByRole("button", { name: "Pause", exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(controls.getByRole("button", { name: "Finish visit", exact: true })).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("desktop-recording-identity.png") });
+});
+
+test("visit loading and retry explain the pending task without implying a recording was lost", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-10-24T15:00:00Z"));
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&layout&wait-list");
+  await expect(page.getByRole("heading", { name: "Today’s patients", exact: true })).toBeVisible();
+  await expect(page.locator("[data-workspace-progress]")).toContainText("Loading today’s patients.");
+  await expect(page.locator("#provider")).not.toContainText("Waiting for confirmation");
+  await page.evaluate(() => { window.dobLab.failOpen = true; window.dobLab.releaseList(); });
+  await page.locator('[data-workspace-action="open"]').click();
+  await expect(page.getByRole("heading", { name: "Visit could not open", exact: true })).toBeVisible();
+  await expect(page.locator("[data-workspace-notice]")).toContainText("Your saved work is retained. Retry opening the visit.");
+  await expect(page.locator("#provider")).not.toContainText("Recording has not started");
+  await expect(page.locator("#provider")).not.toContainText("Synthetic private connection detail");
+  await page.evaluate(() => { window.dobLab.failOpen = false; });
+  await page.getByRole("button", { name: "Retry opening visit", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "The patient said yes", exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => [window.dobLab.openedRefs.length, window.dobLab.admissions, window.dobLab.starts])).toEqual([2, 0, 0]);
+});
+
+test("narrow preparation keeps the consent action readable without horizontal scrolling", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.clock.setFixedTime(new Date("2026-10-24T15:00:00Z"));
+  await page.goto("/e2e/fixtures/optional-dob.html?platform=desktop&recents&layout");
+  await page.locator('[data-workspace-action="open"]').click();
+  const start = page.getByRole("button", { name: "Start recording", exact: true });
+  await start.scrollIntoViewIfNeeded();
+  await expect(start).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("checkbox", { name: "The patient said yes", exact: true })).toBeInViewport({ ratio: 1 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
+  await page.screenshot({ path: testInfo.outputPath("narrow-consent-visible.png") });
+});
+
 for (const platform of ["desktop", "ios"]) {
   for (const dateOfBirth of [null, "1980-01-02"]) {
     test(`${platform} creates and starts a consented visit with DOB ${dateOfBirth ?? "unknown"}`, async ({ page }, testInfo) => {

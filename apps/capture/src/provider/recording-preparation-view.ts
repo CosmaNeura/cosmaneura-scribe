@@ -10,7 +10,8 @@ export function consentScript(spanish: boolean, videoCall: boolean): string {
 
 export function recordingPreparationMarkup(options: { isIOS: boolean; language: LanguageMode;
   modality: "in_person" | "virtual" | "phone"; audio: "microphone" | "meeting"; consentPreparation?: boolean }): string {
-  return `<section class="provider-preparation"><h1>Start recording</h1>
+  return `<section class="provider-preparation${options.isIOS ? "" : " provider-preparation-desktop"}"><h1>Start recording</h1>
+    <div class="provider-preparation-options">
     <p class="provider-audio-summary"><span data-audio-summary></span><button type="button" data-change-audio>Change</button></p>
     ${options.isIOS ? '' : `<p class="provider-preparation-label">Where is the patient?</p><div class="provider-source-cards">
       <button type="button" data-preparation-audio="microphone" aria-pressed="${options.audio === "microphone"}"><strong>In the room</strong><small>Uses this Mac's microphone</small></button>
@@ -28,16 +29,18 @@ export function recordingPreparationMarkup(options: { isIOS: boolean; language: 
       <div class="provider-call-picker" id="provider-call-picker" data-preflight-call-picker hidden><label>Which call?<select data-preflight-window><option value="">Choose your Zoom or Chrome window</option></select></label><div class="provider-call-picker-actions"><button type="button" class="provider-text-link" data-preflight-refresh>Refresh calls</button><button type="button" class="provider-text-link" data-preflight-call-done>Done</button></div></div>
       <p data-preflight-window-help role="status"></p></div>`}
     <p class="provider-start-help" data-recording-guidance></p>
+    </div><div class="provider-start-action">
     <p class="provider-preparation-label">Ask the patient:</p><blockquote class="provider-consent-script" data-consent-script></blockquote>
     <label class="provider-consent"><input name="consent" type="checkbox">The patient said yes</label>
     <button data-workspace-action="prepare" aria-describedby="provider-start-consent" disabled>Start recording</button>
     <p class="provider-consent-explanation" id="provider-start-consent">${options.consentPreparation ? "Confirming consent prepares secure recording. Choose Start recording to turn on the microphone." : "Recording starts after you confirm consent."}</p>
+    <p data-recording-preparation-status role="status" hidden></p>
+    <button class="provider-text-link" data-workspace-action="cancel-recording-action" hidden>Cancel</button>
+    </div>
     <details class="provider-preparation-details" data-preflight-details><summary>Recording access and microphone details</summary>
       <p data-preflight-details-help>Microphone levels appear after consent and recording starts.</p>
       <button type="button" class="provider-text-link" data-preflight-access-optional hidden>Check recording access</button>
     </details>
-    <p data-recording-preparation-status role="status" hidden></p>
-    <button class="provider-text-link" data-workspace-action="cancel-recording-action" hidden>Cancel</button>
     <dialog class="provider-audio-dialog" data-audio-settings aria-labelledby="provider-audio-title"><h2 id="provider-audio-title">Language and microphone</h2>
       <div class="provider-recording-fields"><label>What language is the visit in?<select name="language"><option value="en-US"${options.language === "en-US" ? " selected" : ""}>English · note in English</option><option value="en-US+es-US"${options.language === "en-US+es-US" ? " selected" : ""}>Spanish and English · note in English</option></select></label>
       <label>Which microphone?<select data-preflight-input><option value="">Checking available microphones…</option></select></label><input name="microphone" value="built_in" type="hidden"></div>

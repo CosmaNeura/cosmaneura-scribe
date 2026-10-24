@@ -305,12 +305,12 @@ try {
         root.querySelector('[data-workspace-action="encounters"]').click();
       }
       await until(() => root.querySelector('[data-workspace-content] [data-workspace-action="encounters"]'));
-      assert.ok(root.textContent.includes("Your encounters could not be loaded"));
-      assert.equal(root.textContent.includes("Loading your authorized encounters"), false);
+      assert.ok(root.textContent.includes("Today’s patients could not be loaded"));
+      assert.equal(root.textContent.includes("Loading today’s patients"), false);
       assert.equal(root.textContent.includes("Private catalog failure"), false);
       assert.equal(visible(), false);
       const retry = root.querySelector('[data-workspace-content] [data-workspace-action="encounters"]');
-      assert.equal(retry.textContent, "Retry loading encounters");
+      assert.equal(retry.textContent, "Retry loading patients");
       failList = false; retry.click(); await until(visible);
       assert.equal(root.querySelector('[data-workspace-notice]').textContent, "");
       assert.equal(listCalls, failureAt === "initial" ? 2 : 3);
@@ -334,16 +334,18 @@ try {
       await turn();
       mountGate = deferred(); mountFailure = true;
       root.querySelector('[data-workspace-action="open"]').click();
-      await until(() => root.textContent.includes("Opening encounter"));
+      await until(() => root.textContent.includes("Opening visit"));
       const heading = root.querySelector('[data-workspace-content] h1');
       await new Promise(resolve => setTimeout(resolve, 5200));
       assert.equal(root.querySelector('[data-workspace-content] h1'), heading, "Polling must not remount an in-flight encounter");
       mountGate.resolve(); mountGate = null;
-      await until(() => root.textContent.includes("Encounter could not open"));
-      assert.ok(root.textContent.includes("encounter connection could not be confirmed"));
+      await until(() => root.textContent.includes("Visit could not open"));
+      assert.ok(root.textContent.includes("Your saved work is retained. Retry opening the visit."));
+      assert.equal(root.textContent.includes("Recording has not started"), false);
+      assert.equal(root.textContent.includes("Return to Your encounters"), false);
       mountFailure = false; journalFailure = true;
       root.querySelector('[data-workspace-action="open"]').click();
-      await until(() => root.textContent.includes("saved encounter recovery could not be confirmed"));
+      await until(() => root.textContent.includes("Visit could not open"));
       assert.equal(root.textContent.includes("Private storage detail"), false);
       journalFailure = false;
       root.querySelector('[data-workspace-action="open"]').click();
@@ -501,7 +503,7 @@ try {
           return;
         }
         uploadGate.resolve(); await turn();
-        await until(() => root.textContent.includes("Encounter could not open")
+        await until(() => root.textContent.includes("Visit could not open")
           || root.querySelector('[data-testid="retry-upload"]')?.disabled === false);
         assert.equal(root.querySelector("cosmaneura-capture"), capture,
           "A failed automatic upload must retain the opened encounter and its Retry upload control");

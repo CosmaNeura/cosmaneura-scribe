@@ -110,6 +110,11 @@
 .provider-workspace cosmaneura-capture .provider-desktop-compact .recording-duration strong { font-size:48px; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact .record-actions button { min-height:44px; font-size:16px; }
 .provider-workspace cosmaneura-capture .provider-desktop-compact main>h1,.provider-workspace cosmaneura-capture .provider-desktop-compact main>p,.provider-workspace cosmaneura-capture .provider-desktop-compact .recording-patient { display:none; }
+.provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) [data-provider-encounter] { display:none; }
+.provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) .provider-patient-detail { margin:0; }
+.provider-workspace:has(.provider-desktop-capture:not(.provider-desktop-compact)) .provider-header { margin-bottom:12px; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture:not(.provider-desktop-compact) .recorder { padding:20px 24px; gap:16px; }
+.provider-workspace cosmaneura-capture .provider-desktop-capture:not(.provider-desktop-compact) .recording-patient strong { display:block; font-size:1.25rem; overflow-wrap:anywhere; }
 .provider-note-heading { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
 .provider-note-heading h1 { font-size:2rem; }
 .provider-workspace:has(.provider-note) .provider-header>div { display:none; }
@@ -187,6 +192,8 @@
 .provider-call-picker-actions { display:flex; justify-content:space-between; gap:16px; }
 
 .provider-preparation { display:grid; gap:8px; padding:20px; }
+.provider-preparation-options,.provider-start-action { display:grid; align-content:start; gap:8px; min-width:0; }
+.provider-preparation-options>p,.provider-start-action>p { margin:0; }
 .provider-preparation>p,.provider-preparation .provider-audio-summary { margin:0; }
 .provider-preparation .provider-audio-summary { align-items:center; min-height:44px; }
 .provider-preparation .provider-audio-summary button { min-height:44px; }
@@ -203,4 +210,10 @@
 .provider-required-access p { margin:0; }
 .provider-preparation-steps ol { margin:0; padding-left:24px; }
 .provider-preparation-steps li+li { margin-top:8px; }
+@media(min-width:700px) {
+ .provider-preparation-desktop { grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px 24px; }
+ .provider-preparation-details { grid-column:1/-1; }
+ .provider-workspace:has(.provider-preparation-desktop) .provider-header { margin-bottom:12px; }
+ .provider-workspace:has(.provider-preparation-desktop) [data-provider-encounter] { font-size:1.5rem; }
+}
 @media(max-width:600px) { .provider-preparation { padding:16px; } }
