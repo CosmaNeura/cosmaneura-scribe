@@ -19,6 +19,41 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
   let recordingGeneration = 0, mutationPending = false;
   let notes = {}, noteRequests = {}, noteSession = null, noteGeneration = 0, currentNote = null, currentNoteRequest = null;
   let recordingOwner = null, closedLifecycle = null, captureMutationSequence = 0, currentScopeMatches = true;
+  let timingSamples = [], timingEvicted = 0, timingInvalid = 0, timingUnavailable = 0, timingDiscarded = 0;
+  const resetTiming = () => { timingSamples = []; timingEvicted = timingInvalid = timingUnavailable = timingDiscarded = 0; };
+  const clockStamp = () => {
+    try { const monotonicMs = performance.now(), timeOriginMs = performance.timeOrigin;
+      return Number.isFinite(monotonicMs) && monotonicMs >= 0 && Number.isFinite(timeOriginMs)
+        ? { monotonicMs, timeOriginMs } : null; } catch { return null; }
+  };
+  function timingProjection(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).sort().join() !== 'captureAttempt,clock,droppedEvents,monotonicNs,version'
+        || value.version !== 1 || value.clock !== 'dispatch-uptime-ns'
+        || typeof value.monotonicNs !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(value.monotonicNs)
+        || BigInt(value.monotonicNs) > 18446744073709551615n
+        || ![value.captureAttempt, value.droppedEvents].every(n => Number.isSafeInteger(n) && n >= 0 && n <= 2147483647)) return null;
+    return Object.freeze({ version: 1, clock: value.clock, monotonicNs: value.monotonicNs,
+      captureAttempt: value.captureAttempt, droppedEvents: value.droppedEvents });
+  }
+  const copyTiming = value => value ? { ...value, sample: { ...value.sample }, transport: { ...value.transport } } : null;
+  function observeTiming(state, admitted, method, kind, requestId, sent, received) {
+    if (state.nativeTiming === undefined) { timingUnavailable++; return null; }
+    const sample = timingProjection(state.nativeTiming);
+    if (!sample || !sent || !received || received.timeOriginMs !== sent.timeOriginMs || received.monotonicMs < sent.monotonicMs
+        || !['open', 'read', 'start', 'pause', 'seal', 'input'].includes(kind)) { timingInvalid++; return null; }
+    const value = Object.freeze({ source: 'normal-native-timing-response', ...binding, sessionId: admitted.sessionId,
+      recorderId: state.recorderId, authRevision: admitted.revision, nativeRevision: state.revision, requestId, method, kind, sample,
+      transport: Object.freeze({ clock: 'performance-now-ms', sentAtMonotonicMs: sent.monotonicMs,
+        receivedAtMonotonicMs: received.monotonicMs, browserTimeOriginMs: sent.timeOriginMs,
+        roundTripMs: received.monotonicMs - sent.monotonicMs, browserTimestampPrecision: 'UNKNOWN',
+        browserTimestampResolutionMs: null, totalUncertaintyMs: null, qualification: 'NOT_ESTABLISHED' }) });
+    if (timingSamples.length && state.revision <= timingSamples.at(-1).nativeRevision) timingDiscarded++;
+    else { timingSamples.push(value);
+      // Retain the first native anchor; evict only intermediate samples.
+      if (timingSamples.length > 128) { timingSamples.splice(1, 1); timingEvicted++; } }
+    return value;
+  }
   const invalidateLifecycle = (keepOwner = false) => {
     captureMutationSequence++; closedLifecycle = null;
     if (!keepOwner) recordingOwner = null;
@@ -44,9 +79,11 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
       inputAgeMs: value.inputAgeMs, convertedAgeMs: value.convertedAgeMs,
       zeroInputMs: value.zeroInputMs, route: value.route, inputMuted: value.inputMuted });
   }
-  const copyRecording = value => value ? { ...value, signal: value.signal ? { ...value.signal } : null } : null;
+  const copyRecording = value => value ? { ...value, signal: value.signal ? { ...value.signal } : null,
+    nativeTiming: value.nativeTiming ? { ...value.nativeTiming } : null, timingObservation: copyTiming(value.timingObservation) } : null;
   function wrapped(plugin, method, options, ...rest) {
     // The app receives the exact original promise and result.
+    const timingSent = plugin === 'CosmasWorkspaceAuth' && ['openProviderRecording', 'providerRecordingCommand'].includes(method) ? clockStamp() : null;
     let result;
     try { result = original.call(this, plugin, method, options, ...rest); }
     catch (error) {
@@ -58,6 +95,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
           || method === 'providerRecordingCommand' && options?.kind !== 'read'
           || method === 'providerRequest' && options?.action === 'capture-admissions')) {
         invalidateLifecycle(); recording = terminal = null; recordingGeneration++; mutationPending = false;
+        if (method === 'openProviderRecording' || options?.action === 'capture-admissions') resetTiming();
       }
       throw error;
     }
@@ -97,6 +135,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
       return result;
     }
     if (plugin === "CosmasWorkspaceAuth" && ["openProviderRecording", "providerRecordingCommand"].includes(method)) {
+      if (method === 'openProviderRecording') resetTiming();
       if (method === 'providerRecordingCommand' && options?.kind === 'close') {
         const selected = recordingOwner, priorClosed = closedLifecycle;
         invalidateLifecycle(true);
@@ -134,6 +173,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
       if (mutation) { recording = terminal = null; recordingGeneration += 1; mutationPending = true; }
       const commandGeneration = recordingGeneration;
       void Promise.resolve(result).then(reply => {
+        const timingReceived = clockStamp();
         try {
           if (armed !== generation || receipt !== admitted || commandGeneration !== recordingGeneration
             || (!mutation && mutationPending)) return;
@@ -157,6 +197,9 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
             || state.recordedPlaintextBytes > 402653184) { recording = null; return; }
           const frames = state.capturedAudioFrames;
           if (frames !== undefined && (!Number.isSafeInteger(frames) || frames < 0 || frames > 327680000)) { recording = null; return; }
+          if (recorderId && recorderId !== state.recorderId) resetTiming();
+          const timingObservation = observeTiming(state, admitted, method, method === 'openProviderRecording' ? 'open' : options.kind,
+            options.requestId, timingSent, timingReceived);
           recorderId = state.recorderId; nativeRevision = state.revision;
           recordingOwner = { sessionId: admitted.sessionId, recorderId, nativeRevision, authRevision: admitted.revision };
           recording = Object.freeze({ source: "normal-native-recording-response", runId: binding.runId,
@@ -165,7 +208,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
             phase: state.phase, busy: state.busy, recordedChunks: state.recordedChunks,
             recordedPlaintextBytes: state.recordedPlaintextBytes, input: state.input,
             ...(frames === undefined ? {} : { capturedAudioFrames: frames }),
-            signal: signalProjection(state.signal),
+            signal: signalProjection(state.signal), nativeTiming: timingObservation?.sample ?? null, timingObservation,
             observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin });
           // Historical physical-stop evidence remains readable while the model
           // is running. It is never used as a fresh Recording observation.
@@ -182,7 +225,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
     // A parser failure cannot prove that the real bridge did not admit another
     // session. Retire prior custody evidence on every attempted admission.
     generation += 1; recordingGeneration += 1; mutationPending = false;
-    invalidateLifecycle();
+    invalidateLifecycle(); resetTiming();
     receipt = null; recording = terminal = null; recorderId = null; mountRef = null; nativeRevision = 0;
     const sentAt = performance.now();
     let request;
@@ -219,12 +262,12 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
     describe() { return { ...binding, observerSHA256, pendingObservedReplies }; },
     clear({ reason = 'auth' } = {}) { generation += 1; recordingGeneration += 1; mutationPending = false;
       currentScopeMatches = false;
-      if (reason !== 'navigation') invalidateLifecycle();
+      if (reason !== 'navigation') { invalidateLifecycle(); resetTiming(); }
       notes = {}; noteRequests = {}; noteSession = null; noteGeneration++; currentNote = currentNoteRequest = null;
       receipt = null; recording = terminal = null; recorderId = null; mountRef = null; nativeRevision = 0; },
     rebindCurrent(scope) {
       currentScopeMatches = ['runId', 'workspaceId', 'appointmentRef'].every(key => scope?.[key] === binding[key]);
-      if (!currentScopeMatches || recordingOwner && scope.revision !== recordingOwner.authRevision) invalidateLifecycle();
+      if (!currentScopeMatches || recordingOwner && scope.revision !== recordingOwner.authRevision) { invalidateLifecycle(); resetTiming(); }
       return currentScopeMatches;
     },
     readClosed() { return closedLifecycle ? { ...closedLifecycle, currentCaptureMutationSequence: captureMutationSequence,
@@ -238,12 +281,16 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
       return copyRecording(recording);
     },
     readTerminal() { return copyRecording(terminal); },
+    readTiming() { return { source: 'passive-native-timing-history', ...binding, samples: timingSamples.map(copyTiming),
+      maximumSamples: 128, evictedSamples: timingEvicted, invalidSamples: timingInvalid, unavailableSamples: timingUnavailable,
+      discardedRevisionSamples: timingDiscarded, nativeJournalCompleteness: 'UNKNOWN',
+      nativeDropCounterMeaning: 'admission-budget-and-pending-queue-rejections-only' }; },
     readNote(action) { return notes[action] ? { ...notes[action] } : null; },
     readCurrentNote() { return currentNote ? { ...currentNote } : null; },
     uninstall() {
       if (cap.nativePromise !== wrapped || pendingObservedReplies !== 0) return { ownedResourcesSettled: false, observerRemoved: false };
       generation += 1; receipt = null; recording = terminal = null; recorderId = null; mountRef = null; nativeRevision = 0;
-      invalidateLifecycle(); currentScopeMatches = false;
+      invalidateLifecycle(); resetTiming(); currentScopeMatches = false;
       notes = {}; noteRequests = {}; noteSession = null; noteGeneration++; currentNote = currentNoteRequest = null;
       recordingGeneration += 1; mutationPending = false;
       if (cap.nativePromise === wrapped) cap.nativePromise = original;

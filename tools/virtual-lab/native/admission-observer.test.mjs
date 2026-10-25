@@ -395,3 +395,112 @@ test('every attempted admission invalidates closure even when its body cannot be
     h.observer.uninstall();
   }
 });
+
+const timingSample = (ns = '1000000000', captureAttempt = 1, droppedEvents = 0) => ({
+  version: 1, clock: 'dispatch-uptime-ns', monotonicNs: ns, captureAttempt, droppedEvents });
+async function timingFixture() {
+  let value = response, lastPromise, delayed;
+  globalThis.window = { Capacitor: { nativePromise: (_plugin, method, options) => {
+    if (delayed) { lastPromise = delayed; return delayed; }
+    lastPromise = Promise.resolve(['openProviderRecording', 'providerRecordingCommand'].includes(method)
+      ? { requestId: options.requestId, ok: true, recording: value } : value);
+    return lastPromise;
+  } } };
+  installAdmissionObserver(binding);
+  await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', request);
+  const state = { version: 1, revision: 1, recorderId: id(8), sessionId: id(7), phase: 'ready', busy: false,
+    recordedChunks: 0, recordedPlaintextBytes: 0, capturedAudioFrames: 0, input: 'built_in', nativeTiming: timingSample() };
+  value = state;
+  const open = { requestId: id(9), revision: id(4), sessionId: id(7), workspaceId: binding.workspaceId, bindingRef: 'synthetic-mount-reference' };
+  const command = { requestId: id(10), revision: id(4), recorderId: id(8), kind: 'read' };
+  return { observer: window.__scribeLabAdmissionObserver, set: next => { value = next; }, setPending: next => { delayed = next; }, state,
+    open: () => window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'openProviderRecording', open),
+    read: (patch = {}) => window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRecordingCommand', { ...command, ...patch }),
+    promise: () => lastPromise };
+}
+test('passive native timing retains exact integer samples and real normal transport brackets without claiming browser precision', async () => {
+  const originalPerformance = globalThis.performance; let now = 100;
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now, timeOrigin: 9000 } });
+  const f = await timingFixture();
+  try {
+    const pending = f.open(); assert.equal(pending, f.promise()); now = 105; await pending;
+    const value = f.observer.readRecording();
+    assert.deepEqual(value.nativeTiming, timingSample());
+    assert.equal(value.timingObservation.requestId, id(9)); assert.equal(value.timingObservation.kind, 'open');
+    assert.equal(value.timingObservation.transport.sentAtMonotonicMs, 100);
+    assert.equal(value.timingObservation.transport.receivedAtMonotonicMs, 105);
+    assert.equal(value.timingObservation.transport.roundTripMs, 5);
+    assert.equal(value.timingObservation.transport.browserTimestampPrecision, 'UNKNOWN');
+    assert.equal(value.timingObservation.transport.browserTimestampResolutionMs, null);
+    assert.equal(value.timingObservation.transport.totalUncertaintyMs, null);
+    value.nativeTiming.monotonicNs = '0'; value.timingObservation.sample.monotonicNs = '0'; value.timingObservation.transport.roundTripMs = 0;
+    const history = f.observer.readTiming(); history.samples[0].sample.monotonicNs = '0';
+    assert.equal(f.observer.readRecording().nativeTiming.monotonicNs, '1000000000');
+    assert.equal(f.observer.readTiming().samples[0].transport.roundTripMs, 5);
+    assert.equal(history.nativeJournalCompleteness, 'UNKNOWN');
+  } finally { f.observer.uninstall(); Object.defineProperty(globalThis, 'performance', { configurable: true, value: originalPerformance }); }
+});
+test('missing and malformed native timing retire the current timing sample and never retain extra fields', async () => {
+  const f = await timingFixture();
+  try {
+    await f.open();
+    const { nativeTiming: _omitted, ...legacy } = f.state;
+    f.set({ ...legacy, revision: 2 }); await f.read();
+    assert.equal(f.observer.readRecording().nativeTiming, null);
+    assert.equal(f.observer.readTiming().unavailableSamples, 1);
+    for (const patch of [{ monotonicNs: '01' }, { monotonicNs: '18446744073709551616' }, { clock: 'utc' },
+      { captureAttempt: -1 }, { droppedEvents: 2147483648 }, { private: 'must never persist' }]) {
+      f.set({ ...f.state, revision: 3, nativeTiming: { ...timingSample(), ...patch } }); await f.read();
+      assert.equal(f.observer.readRecording().nativeTiming, null);
+    }
+    assert.equal(f.observer.readTiming().invalidSamples, 6);
+    assert(!JSON.stringify(f.observer.readTiming()).includes('must never persist'));
+    assert.equal(f.observer.readTiming().samples.length, 1);
+  } finally { f.observer.uninstall(); }
+});
+test('timing history is bounded and counts its own evictions independently of the native drop counter', async () => {
+  const f = await timingFixture();
+  try {
+    await f.open();
+    await f.read(); assert.equal(f.observer.readTiming().discardedRevisionSamples, 1);
+    for (let revision = 2; revision <= 131; revision++) {
+      f.set({ ...f.state, revision, nativeTiming: timingSample(String(1000000000 + revision * 1000000)) });
+      await f.read({ requestId: id(100 + revision) });
+    }
+    const history = f.observer.readTiming(); assert.equal(history.samples.length, 128); assert.equal(history.evictedSamples, 3);
+    assert.equal(history.samples[0].nativeRevision, 1); assert.equal(history.samples.at(-1).nativeRevision, 131);
+    assert.equal(history.samples.at(-1).sample.droppedEvents, 0); assert.equal(history.nativeJournalCompleteness, 'UNKNOWN');
+    f.observer.clear({ reason: 'navigation' }); assert.equal(f.observer.readTiming().samples.length, 128);
+    f.observer.rebindCurrent({ ...binding, revision: id(4) });
+    f.observer.clear(); assert.equal(f.observer.readTiming().samples.length, 0);
+  } finally { f.observer.uninstall(); }
+});
+test('new admission, new recorder open and wrong current scope cannot preserve an older timing history', async () => {
+  const f = await timingFixture();
+  try {
+    await f.open(); assert.equal(f.observer.readTiming().samples.length, 1);
+    f.set({ ...f.state, recorderId: id(88), nativeTiming: timingSample('2000000000') }); await f.open();
+    assert.equal(f.observer.readTiming().samples.length, 1); assert.equal(f.observer.readTiming().samples[0].recorderId, id(88));
+    f.observer.rebindCurrent({ ...binding, appointmentRef: 'appointment_01m5q8r3kzeng9szb5frh6ppk4', revision: id(4) });
+    assert.equal(f.observer.readTiming().samples.length, 0);
+    f.observer.rebindCurrent({ ...binding, revision: id(4) }); await f.open();
+    await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', { ...request, body: 'malformed' });
+    assert.equal(f.observer.readTiming().samples.length, 0);
+  } finally { f.observer.uninstall(); }
+});
+
+test('late native timing replies cannot repopulate the timeline across a newer start mutation', async () => {
+  const f = await timingFixture(); let resolveRead, resolveStart;
+  try {
+    await f.open();
+    f.setPending(new Promise(resolve => { resolveRead = resolve; })); const oldRead = f.read({ requestId: id(21) });
+    f.setPending(new Promise(resolve => { resolveStart = resolve; })); const start = f.read({ requestId: id(22), kind: 'start' });
+    resolveRead({ requestId: id(21), ok: true, recording: { ...f.state, revision: 2, nativeTiming: timingSample('1100000000') } });
+    await oldRead; assert.equal(f.observer.readTiming().samples.length, 1);
+    assert.equal(f.observer.uninstall().ownedResourcesSettled, false);
+    resolveStart({ requestId: id(22), ok: true, recording: { ...f.state, phase: 'recording', revision: 3, nativeTiming: timingSample('1200000000') } });
+    await start; assert.equal(f.observer.readTiming().samples.length, 2);
+    assert.equal(f.observer.readTiming().samples[1].requestId, id(22));
+    assert.equal(f.observer.readTiming().samples[1].kind, 'start');
+  } finally { f.observer.uninstall(); }
+});
