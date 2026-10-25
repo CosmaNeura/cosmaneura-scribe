@@ -11,6 +11,8 @@ export interface EncounterDraft {
   patient: { kind: "existing"; patientRef: string } | { kind: "new"; name: string; dateOfBirth: string | null; provisional?: boolean };
   appointmentAt: string;
   title: string;
+  /** Local navigation intent only; never sent to Core as capture authority. */
+  openAfterCreation?: boolean;
 }
 export interface EncounterSetupState {
   account: string;
@@ -59,7 +61,9 @@ const birthDate = (value: unknown): string | null => {
 };
 
 export function parseEncounterDraft(value: unknown): EncounterDraft {
-  if (!record(value) || Object.keys(value).sort().join(",") !== "appointmentAt,creationKey,patient,title"
+  if (!record(value) || Object.keys(value).sort().join(",") !== (Object.hasOwn(value, "openAfterCreation")
+    ? "appointmentAt,creationKey,openAfterCreation,patient,title" : "appointmentAt,creationKey,patient,title")
+    || Object.hasOwn(value, "openAfterCreation") && typeof value.openAfterCreation !== "boolean"
     || !isUuid(value.creationKey) || !record(value.patient)) throw fail();
   const patient = value.patient;
   if (patient.kind === "existing") {
@@ -76,7 +80,8 @@ export function parseEncounterDraft(value: unknown): EncounterDraft {
   return { creationKey: value.creationKey, patient: patient.kind === "existing"
     ? { kind: "existing", patientRef: patient.patientRef as string }
     : { kind: "new", name: patient.name as string, dateOfBirth: birthDate(patient.dateOfBirth), ...(patient.provisional !== undefined ? { provisional: patient.provisional as boolean } : {}) },
-    appointmentAt: stamp, title: value.title as string };
+    appointmentAt: stamp, title: value.title as string,
+    ...(Object.hasOwn(value, "openAfterCreation") ? { openAfterCreation: value.openAfterCreation as boolean } : {}) };
 }
 
 export function parseCreatedEncounter(value: unknown): ProviderEncounter & { workspaceId: string } {

@@ -400,20 +400,30 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (checkPending && state.pending) await create(null);
     else showSetup();
   };
-  const create = async (patient: EncounterDraft["patient"] | null): Promise<void> => {
+  const create = async (patient: EncounterDraft["patient"] | null, openAfterCreation = true): Promise<void> => {
     requireValue(host.encounterSetup && setupState);
     step = "encounter creation";
     const n = generation;
-    const draft: EncounterDraft | null = patient === null ? null : {
+    const draft: EncounterDraft | null = patient === null ? setupState.pending : {
       creationKey: crypto.randomUUID(), patient, appointmentAt: new Date().toISOString(), title: "Visit",
+      ...(!openAfterCreation ? { openAfterCreation: false } : {}),
     };
-    show('<h1>Opening your visit…</h1><p>Saving the patient’s name. Recording starts after you confirm consent.</p>');
+    requireValue(draft);
+    // Recovery follows the durable original choice, never a new button or a
+    // default that could mount capture after an uncertain create-only request.
+    const shouldOpen = draft.openAfterCreation !== false;
+    show(shouldOpen ? '<h1>Opening your visit…</h1><p>Saving the patient’s name. Recording starts after you confirm consent.</p>'
+      : '<h1>Creating your visit…</h1><p>Saving the patient’s name.</p>');
     const created = await host.encounterSetup.submit(draft, host.signal);
     if (!current(n)) return;
     if (draft) requireValue(draft.patient.kind === "existing"
       ? created.patientRef === draft.patient.patientRef : created.patientName === draft.patient.name);
     setupState = null;
-    await open(created.appointmentRef);
+    if (shouldOpen) await open(created.appointmentRef);
+    else show(`<h1>Visit created</h1><p>${escape(created.patientName ?? created.title)}</p>
+      <p>To use a Zoom meeting bot, open Schedule in Cosmas, select your meeting, and enable its bot for this visit.</p>
+      <p>Creating this visit does not enable a bot or open Scribe recording setup.</p>
+      <div class="provider-create-actions"><button data-workspace-action="create">Open dashboard</button><button data-workspace-action="encounters">Today’s patients</button></div>`);
   };
   const showSetup = (query = ""): void => {
     requireValue(setupState); setupQuery = query;
@@ -423,7 +433,8 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
       event.preventDefault(); if (!form?.reportValidity()) return;
       const name = input("walk-in-name").trim();
       if (!name) { notice.textContent = "Enter the patient’s name."; return; }
-      void run(() => create({ kind: "new", name, dateOfBirth: null, provisional: true }), "create-visit");
+      const openAfterCreation = !(event.submitter instanceof Element && event.submitter.hasAttribute("data-create-only"));
+      void run(() => create({ kind: "new", name, dateOfBirth: null, provisional: true }, openAfterCreation), "create-visit");
     };
     form?.addEventListener("submit", submit);
     disposeContent = () => form?.removeEventListener("submit", submit);

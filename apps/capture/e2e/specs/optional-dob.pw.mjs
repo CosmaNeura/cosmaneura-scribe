@@ -130,6 +130,63 @@ test("cancel and whitespace never create or link a patient", async ({ page }) =>
   expect(await page.evaluate(() => [window.dobLab.creates.length, window.dobLab.admissions, window.dobLab.starts])).toEqual([0,0,0]);
 });
 
+for (const platform of ["desktop", "ios"]) {
+  test(`${platform} create-only does not mount capture or admit audio`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: platform === "ios" ? 390 : 780, height: 844 });
+    await page.goto(`/e2e/fixtures/optional-dob.html?platform=${platform}&existing`);
+    await page.getByRole("button", { name: "+ Walk-in or new patient", exact: true }).click();
+    await page.getByRole("button", { name: "Create visit only", exact: true }).click();
+    expect(await page.evaluate(() => window.dobLab.creates)).toHaveLength(0);
+    await page.getByLabel("Patient’s name", { exact: true }).fill("Synthetic walk-in");
+    await page.getByRole("button", { name: "Create visit only", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Visit created", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => [window.dobLab.creates.length, window.dobLab.openedRefs.length,
+      window.dobLab.admissions, window.dobLab.recorderCalls, window.dobLab.starts])).toEqual([1, 0, 0, 0, 0]);
+    expect(await page.evaluate(() => window.dobLab.creates[0])).not.toHaveProperty("openAfterCreation");
+    await expect(page.getByRole("button", { name: "Open dashboard", exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("create-only-complete.png"), fullPage: true });
+  });
+
+  test(`${platform} create-only recovery after reload keeps its original intent and never mounts`, async ({ page }) => {
+    await page.goto(`/e2e/fixtures/optional-dob.html?platform=${platform}&existing`);
+    await page.getByRole("button", { name: "+ Walk-in or new patient", exact: true }).click();
+    await page.getByLabel("Patient’s name", { exact: true }).fill("Synthetic walk-in");
+    await page.evaluate(() => { window.dobLab.failCreate = true; });
+    await page.getByRole("button", { name: "Create visit only", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Check encounter creation", exact: true })).toBeVisible();
+    const key = await page.evaluate(() => window.dobLab.creates[0].creation_key);
+    await page.reload();
+    await page.getByRole("button", { name: "+ Walk-in or new patient", exact: true }).click();
+    await page.getByRole("button", { name: "Check visit creation", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Visit created", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => window.dobLab.creates.map(body => body.creation_key))).toEqual([key]);
+    expect(await page.evaluate(() => [window.dobLab.openedRefs.length, window.dobLab.admissions,
+      window.dobLab.recorderCalls, window.dobLab.starts])).toEqual([0, 0, 0, 0]);
+  });
+
+  test(`${platform} stale pending screen cannot open a replacement create-only intent`, async ({ page }) => {
+    await page.goto(`/e2e/fixtures/optional-dob.html?platform=${platform}&existing`);
+    await page.getByRole("button", { name: "+ Walk-in or new patient", exact: true }).click();
+    await page.getByLabel("Patient’s name", { exact: true }).fill("Synthetic walk-in");
+    await page.evaluate(() => { window.dobLab.failCreate = true; });
+    await page.getByRole("button", { name: "Continue to recording setup", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Check encounter creation", exact: true })).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "+ Walk-in or new patient", exact: true }).click();
+    const retry = page.getByRole("button", { name: "Check and open visit", exact: true });
+    await expect(retry).toBeVisible();
+    const replacement = await page.evaluate(() => window.dobLab.replacePendingCreation());
+    await retry.click();
+    await expect(page.getByRole("heading", { name: "Check encounter creation", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => [window.dobLab.creates.length, window.dobLab.openedRefs.length])).toEqual([0, 0]);
+    await page.getByRole("button", { name: "Check and continue", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Visit created", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => window.dobLab.creates.map(body => body.creation_key))).toEqual([replacement]);
+    expect(await page.evaluate(() => [window.dobLab.openedRefs.length, window.dobLab.admissions,
+      window.dobLab.recorderCalls, window.dobLab.starts])).toEqual([0, 0, 0, 0]);
+  });
+}
+
 const confirmAndStart = async page => {
   await page.getByRole("checkbox", { name: "The patient said yes", exact: true }).check();
   await page.getByRole("button", { name: "Start recording", exact: true }).click();

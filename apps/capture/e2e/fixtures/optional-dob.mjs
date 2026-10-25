@@ -40,6 +40,15 @@ if (layout) {
 const plugin = await encryptedFixturePlugin(scope.workspaceId);
 const forbidden = () => { throw new Error("Outside the synthetic DOB fixture"); };
 const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, admissionRequests: [], dobUpdates: [], openedRefs: [], closes: 0 };
+// Model another window settling/replacing the encrypted creation intent after
+// this window has displayed its pending screen. No live account is involved.
+fixture.replacePendingCreation = async () => {
+  const key = "provider-encounter-creation-v1:" + scope.workspaceId;
+  const saved = await plugin.get({ key }), value = JSON.parse(atob(saved.data));
+  value.pending = { ...value.pending, creationKey: crypto.randomUUID(), openAfterCreation: false };
+  await plugin.compareAndSwap({ key, expectedRevision: saved.revision, data: btoa(JSON.stringify(value)) });
+  return value.pending.creationKey;
+};
 let admissionCommitted = false;
 const listGate = new Promise(resolve => { fixture.releaseList = resolve; });
 const gatedAdmission = new URL(window.location.href).searchParams.has("gate-admission");
@@ -61,6 +70,7 @@ const setup = createEncounterSetup({
       { patient_ref: "patient_01j00000000000000000000001", name: "Synthetic walk-in", date_of_birth: "1985-03-04" },
     ] : [], more_results: false };
     fixture.creates.push(body);
+    if (fixture.failCreate) throw new Error("Synthetic lost creation response");
     encounter.patientRef = body.patient.kind === "existing" ? body.patient.patient_ref : encounter.patientRef;
     return { ...base, creation_key: body.creation_key, encounter: { workspace_id: scope.workspaceId,
       appointment_ref: scope.appointmentRef, patient_ref: encounter.patientRef,

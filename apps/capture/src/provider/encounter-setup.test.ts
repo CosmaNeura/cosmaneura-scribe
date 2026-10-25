@@ -128,6 +128,21 @@ describe("shared mobile/desktop encounter creation", () => {
     expect(f.created).toHaveBeenCalledTimes(1);
     await owner.dispose();
   });
+  it("retains create-only navigation across an uncertain result without sending it as Core authority", async () => {
+    const draft: EncounterDraft = { ...initial, openAfterCreation: false };
+    const f = fixture(), first = f.newOwner(); await first.state(f.signal);
+    f.request.mockRejectedValueOnce(new Error("lost response after server commit"));
+    await expect(first.submit(draft, f.signal)).rejects.toThrow(); await first.dispose();
+    const second = f.newOwner();
+    const state = await second.state(f.signal);
+    expect(parseSetupState(state).pending).toEqual(draft);
+    await second.submit(null, f.signal);
+    const requests = f.request.mock.calls.filter(([body]) => body.action === "create");
+    expect(requests).toHaveLength(2);
+    expect(requests.map(([, key]) => key)).toEqual([draft.creationKey, draft.creationKey]);
+    expect(requests.every(([body]) => !Object.hasOwn(body, "openAfterCreation"))).toBe(true);
+    expect((await second.state(f.signal)).pending).toBeNull(); await second.dispose();
+  });
   it("serializes double clicks and refuses a different intent while the first result is unknown", async () => {
     const f = fixture(), owner = f.newOwner(); await owner.state(f.signal);
     let reject!: (error: Error) => void;
@@ -171,6 +186,7 @@ describe("shared mobile/desktop encounter creation", () => {
     { ...initial, patient: { kind: "new", name: " ", dateOfBirth: "1980-01-02" } },
     ...["", undefined, "01/02/1980", "unknown"].map(dateOfBirth => ({ ...initial, patient: { kind: "new", name: "Synthetic Patient", dateOfBirth } })),
     { ...initial, expected_actor_ref: "caller-selected" },
+    ...[null, "false", 0, undefined].map(openAfterCreation => ({ ...initial, openAfterCreation })),
     { ...initial, appointmentAt: "2026-09-29T12:00:00" },
   ])("rejects ambiguous or extra encounter intent", value => expect(() => parseEncounterDraft(value)).toThrow());
 });
