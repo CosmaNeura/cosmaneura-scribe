@@ -52,9 +52,10 @@ describe("creator review surface", () => {
   it("keeps the same detected speaker number across languages without inferring a patient or clinician", () => {
     const speakerA = "00000000-0000-4000-8000-000000000011";
     const speakerB = "00000000-0000-4000-8000-000000000012";
-    const ids = [segment, translation, working];
+    const speakerC = "00000000-0000-4000-8000-000000000013";
+    const ids = [segment, translation, working, "00000000-0000-4000-8000-000000000014"];
     const segments = ids.map((id, index) => ({ ...view.source.segments[0]!, source_segment_id: id,
-      speaker_id: index === 1 ? speakerB : speakerA, source_locale: index === 2 ? "en-US" : "es-US",
+      speaker_id: [speakerA, speakerB, speakerA, speakerC][index], source_locale: index === 2 ? "en-US" : "es-US",
       content: index === 2 ? "Invented English speech." : "Habla ficticia.", start_ms: index * 1000, end_ms: index * 1000 + 900 }));
     const parsed = parseCreatorReview({ ...view, status: "transcript_ready", source: { ...view.source, segments },
       working: { ...view.working, note_ready: true, blockers: [], segments: segments.map(item => ({
@@ -65,6 +66,8 @@ describe("creator review surface", () => {
     const html = renderCreatorReview({ phase: "ready", view: parsed, notice: "" });
     expect(html.match(/Speaker 1 · not identified/gu)).toHaveLength(2);
     expect(html.match(/Speaker 2 · not identified/gu)).toHaveLength(1);
+    expect(html.match(/Speaker 3 · not identified/gu)).toHaveLength(1);
+    expect([...html.matchAll(/Speaker (\d) · not identified/gu)].map(match => match[1])).toEqual(["1", "2", "1", "3"]);
     expect(html).not.toContain("<strong>Clinician</strong>");
     expect(html).not.toContain("<strong>Patient</strong>");
   });
