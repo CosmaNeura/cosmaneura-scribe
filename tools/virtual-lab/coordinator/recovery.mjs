@@ -6,6 +6,8 @@ import { ACTIONS, Journal, atomicJSON, sameRunIdentity, sha256, targetLeaseConsu
 import { bounded, loadObservations, validateScenario } from './engine.mjs';
 import { journalIdentity } from './tool-identity.mjs';
 import { acquireGuard, releaseGuard } from './guard.mjs';
+import { closedLifecycleProvesStopped } from './closed-lifecycle.mjs';
+import { RECOVERY_OPERATION_TIMEOUT_MS } from './session-attempt.mjs';
 
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 const appointment = value => typeof value === 'string' && /^appointment_[0-7][0-9a-hjkmnp-tv-z]{25}$/.test(value);
@@ -49,6 +51,15 @@ export function validateRecoveryInspection(value, scenario, observations, state)
       || !Array.isArray(value.unresolvedOwnedResources) || value.unresolvedOwnedResources.length) throw Error('recovery_resources_unconfirmed');
   if (value.recoveryStage !== stage) throw Error('recovery_stage_mismatch');
   if (stage === 'pre-record') checkObservers(value, scenario);
+  if (value.closedLifecycle) {
+    checkObservers(value, scenario);
+    if (stage !== 'capture' || !closedLifecycleProvesStopped(value, scenario, observations)) throw Error('recovery_closed_lifecycle_unconfirmed');
+    if (value.currentNote && (value.currentNote.source !== 'normal-core-note-response'
+        || !sameScope(value.currentNote, value.currentVisit)
+        || value.currentNote.session_id !== value.closedLifecycle.sessionId)) throw Error('recovery_note_session_changed');
+    return { recoveryStage: stage, captureStopped: true, canReleaseWithoutCapture: false,
+      sessionId: value.closedLifecycle.sessionId, nativePhase: 'closed', proofKind: 'correlated-native-close' };
+  }
   const visit = value.currentVisit, native = value.nativeObservation, expectedVisit = observations.create_visit?.visitScope;
   if (!(stage === 'pre-record' && visit === null && !expectedVisit)
       && (visit?.source !== 'normal-native-mount-response' || visit.runId !== scenario.admissionBinding?.runId
@@ -57,7 +68,7 @@ export function validateRecoveryInspection(value, scenario, observations, state)
     if (value.currentNote !== null) throw Error('recovery_note_session_changed');
     return { recoveryStage: stage, captureStopped: null, noRecordAttempt: true, canReleaseWithoutCapture: true };
   }
-  if (!sameScope(native, visit) || !uuid(native.sessionId) || !Number.isSafeInteger(native.nativeRevision) || native.nativeRevision < 0
+  if (!sameScope(native, visit) || !uuid(native.sessionId) || !uuid(native.recorderId) || !Number.isSafeInteger(native.nativeRevision) || native.nativeRevision < 0
       || !['normal-native-recording-response', 'normal-desktop-recording-response'].includes(native.source)
       || !Number.isFinite(epoch(native)) || Math.abs(Date.now() - epoch(native)) > 15000) throw Error('recovery_native_state_unavailable');
   const desktop = native.source === 'normal-desktop-recording-response';
@@ -65,7 +76,7 @@ export function validateRecoveryInspection(value, scenario, observations, state)
   const admitted = observations.consent?.admission;
   if (admitted && (!sameScope(native, admitted) || native.sessionId !== admitted.sessionId)) throw Error('recovery_session_changed');
   for (const prior of [observations.record?.nativeObservation, observations.finish?.nativeTerminal].filter(Boolean)) {
-    if (prior.source !== native.source || !sameScope(prior, native) || prior.sessionId !== native.sessionId
+    if (prior.source !== native.source || !sameScope(prior, native) || prior.sessionId !== native.sessionId || prior.recorderId !== native.recorderId
         || !Number.isSafeInteger(prior.nativeRevision) || prior.nativeRevision > native.nativeRevision) throw Error('recovery_native_revision_regressed');
   }
   if (value.currentNote && (!sameScope(value.currentNote, visit) || value.currentNote.source !== 'normal-core-note-response'
@@ -90,10 +101,10 @@ function processAlive(pid) {
  * passed to the adapter. Its fresh inspection may create only new control
  * handles and read actual native state; recoveryCleanup closes those handles.
  * No steps/perform/reconcile method is called here. */
-export async function recoverRun({ scenario, adapter, output, signal, mode = 'cleanup', resumeWithLease, timeoutMs = 30000 }) {
+export async function recoverRun({ scenario, adapter, output, signal, mode = 'cleanup', resumeWithLease, timeoutMs = RECOVERY_OPERATION_TIMEOUT_MS }) {
   if (!(signal instanceof AbortSignal) || !['cleanup', 'resume'].includes(mode)
       || mode === 'resume' && typeof resumeWithLease !== 'function'
-      || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000) throw Error('invalid_recovery_request');
+      || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > RECOVERY_OPERATION_TIMEOUT_MS) throw Error('invalid_recovery_request');
   signal.throwIfAborted(); validateScenario(scenario);
   const outputCanonical = await realpath(output), runPath = resolve(outputCanonical, 'run.json');
   const before = await privateFile(runPath);
@@ -152,7 +163,9 @@ export async function recoverRun({ scenario, adapter, output, signal, mode = 'cl
     if (preflight?.ready !== true || preflight.targetId !== scenario.targetId || preflight.executionKind !== scenario.executionKind) throw Error('recovery_preflight_failed');
     if (typeof adapter.recoveryInspect !== 'function') throw Error('recovery_inspector_required');
     inspection = await tracked(active => adapter.recoveryInspect({ scenario, state: journal.state, observations,
-      recoveryStage: recoveryStage(journal.state, observations), output: outputCanonical, signal: active }));
+      recoveryStage: recoveryStage(journal.state, observations), output: outputCanonical, signal: active,
+      recoveryAuthority: { leasePath, leaseSHA256: expectedLeaseSHA256,
+        guardOwnerPath: guard.ownerPath, guardOwnerSHA256: guard.ownerSHA256 } }));
     result.inspection = inspection;
     await atomicJSON(attemptPath, result);
     analysis = validateRecoveryInspection(inspection, scenario, observations, journal.state); inspectionAccepted = true;
