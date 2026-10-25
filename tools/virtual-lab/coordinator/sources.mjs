@@ -11,6 +11,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // not a capture/Zoom transport synchronization allowance or a clinical SLA.
 export const SOURCE_GRAPH_ONSET_TOLERANCE_MS = 100;
 export const BOT_MONITOR_INTERVAL_MS = 1000;
+export const BOT_SUPERVISION_WATCHDOG_MS = BOT_MONITOR_INTERVAL_MS + BOT_PROOF_MAX_AGE_MS;
 const MAX_CLOCK_ROUND_TRIP_MS = 50, ANALYSIS_FRAMES = 256, SIGNAL_RMS = 0.005;
 const check = signal => { if (signal.aborted) throw Error('source_aborted'); };
 const clone = value => structuredClone(value);
@@ -59,6 +60,7 @@ export class SourceGroup {
       onsetToleranceMs: SOURCE_GRAPH_ONSET_TOLERANCE_MS, phases: [] };
     if (this.proofKind === 'zoom-bot') this.evidence.botMonitoring = {
       intervalMs: BOT_MONITOR_INTERVAL_MS, requestTimeoutMs: BOT_PROOF_MAX_AGE_MS,
+      supervisionWatchdogMs: BOT_SUPERVISION_WATCHDOG_MS,
       scope: 'periodic_provider_observation_not_continuous_audio_proof', observations: [] };
   }
   requireBotSourceScope() {
@@ -255,11 +257,25 @@ export class SourceGroup {
       if (quietWindow && (!Array.isArray(quietWindow) || quietWindow.length !== 2 || !quietWindow.every(Number.isFinite)
           || quietWindow[0] <= 0 || quietWindow[1] <= quietWindow[0] || typeof pause !== 'function' || typeof resume !== 'function'
           || this.participants.some(p => quietWindow[1] >= p.fixture.frames / p.fixture.sampleRate))) throw Error('invalid_quiet_window');
+      let watchdog;
+      const armWatchdog = () => {
+        if (this.proofKind !== 'zoom-bot') return;
+        clearTimeout(watchdog);
+        const startedAtEpochMs = now();
+        watchdog = setTimeout(() => {
+          this.evidence.botMonitoring.failure ??= { startedAtEpochMs, failedAtEpochMs: now(), reason: 'supervision_watchdog' };
+          this.lifetime.abort();
+        }, BOT_SUPERVISION_WATCHDOG_MS);
+      };
+      // A hung browser status/scheduling call must not suspend supervision.
+      // Only a completed fresh proof extends this independent source watchdog.
+      armWatchdog();
+      try {
       let phase = await this.schedulePhase('initial', active), paused = false, states, lastBotRead = -Infinity;
       const deadline = performance.now() + Math.max(...this.participants.map(p => p.fixture.frames / p.fixture.sampleRate * 1000)) + 90000;
       while (performance.now() < deadline) {
         if (this.proofKind === 'zoom-bot' && performance.now() - lastBotRead >= BOT_MONITOR_INTERVAL_MS) {
-          await this.verifyBotRecording(active); lastBotRead = performance.now();
+          await this.verifyBotRecording(active); lastBotRead = performance.now(); armWatchdog();
         }
         states = await this.all(active, ({ participant }) => participant.status({ signal: active }));
         this.observePhase(phase, states);
@@ -288,6 +304,10 @@ export class SourceGroup {
           onsetSkewMs: p.onsetSkewMs, maximumAbsoluteOnsetErrorMs: p.maximumAbsoluteOnsetErrorMs, status: p.status,
           ...clone(p.sources[index]) })) }));
       return { executionKind: this.executionKind, sourceState: 'ended', measurements, ...clone(this.evidence) };
+      } catch (error) {
+        if (this.proofKind === 'zoom-bot') this.lifetime.abort();
+        throw error;
+      } finally { clearTimeout(watchdog); }
     });
     return this.playing;
   }

@@ -128,6 +128,31 @@ test('bot monitoring continues after its first good read and stops on a later lo
   assert.equal(result.sourceEvidence.botMonitoring.observations.length,1);assert.equal(p.schedules.length,1);
 });
 
+test('independent bot watchdog stops audio when browser status stalls between good proofs', async () => {
+  const f=fixture(),p=participant(f),stalled=deferred(),entered=deferred();let reads=0;
+  const originalStatus=p.status;
+  p.status=async()=>{if(p.schedules.length){entered.resolve();await stalled.promise;}return originalStatus();};
+  p.verifyRecording=async()=>{reads++;return {captureIdentity:'a'.repeat(64)};};
+  const g=botGroup(f,p);await g.connect({signal:signal()});
+  const rejected=assert.rejects(g.play({signal:signal()}),/closed|source_aborted/);
+  await entered.promise;await new Promise(resolve=>setTimeout(resolve,3150));
+  assert.equal(reads,1);assert.ok(p.calls.includes('close'));
+  assert.equal(g.evidence.botMonitoring.failure.reason,'supervision_watchdog');
+  let complete=false;const cleanup=g.cleanup().then(value=>{complete=true;return value;});
+  await tick();assert.equal(complete,false);stalled.resolve();await rejected;
+  assert.equal((await cleanup).ownedResourcesSettled,true);assert.equal(p.schedules.length,1);
+});
+
+test('bot watchdog also covers a scheduling acknowledgement that never returns', async () => {
+  const f=fixture(),p=participant(f),stalled=deferred(),entered=deferred();const schedule=p.schedule;
+  p.schedule=async options=>{const value=await schedule(options);entered.resolve();await stalled.promise;return value;};
+  const g=botGroup(f,p);await g.connect({signal:signal()});
+  const rejected=assert.rejects(g.play({signal:signal()}),/source_aborted/);
+  await entered.promise;await new Promise(resolve=>setTimeout(resolve,3150));
+  assert.ok(p.calls.includes('close'));assert.equal(g.evidence.botMonitoring.failure.reason,'supervision_watchdog');
+  stalled.resolve();await rejected;assert.equal((await g.cleanup()).ownedResourcesSettled,true);
+});
+
 test('cleanup waits for late participant creation and closes it before returning', async () => {
   const f = fixture(), p = participant(f), created = deferred(), entered = deferred();
   const g = group([f], async ({ signal: active }) => { assert.ok(active instanceof AbortSignal); entered.resolve(); return created.promise; });

@@ -114,6 +114,12 @@ result cannot revive playback. This periodic observation does not prove audio
 was continuously captured between reads; transport and browser-stop latency
 must be measured during the live run.
 
+An independent three-second watchdog (the one-second interval plus two-second
+read budget) starts before scheduling and resets only after a successful fresh
+proof. It closes owned source graphs even if an intervening browser status or
+scheduling acknowledgement hangs. Pending operations remain tracked until they
+settle; closing their source does not manufacture operation completion.
+
 The tooling does not provide a live provider collector, normal host UI locators,
 complete bot orchestration or full journey acceptance. Contract tests use
 synthetic DTOs; passing them is not live consent or recording evidence.

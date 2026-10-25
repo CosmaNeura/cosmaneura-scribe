@@ -111,6 +111,9 @@ Failure aborts the source group and initiates owned-browser closure. A late
 read remains tracked and cannot restart source audio. This is periodic
 observation with a measurable detection/closure gap, not continuous capture
 proof. Native source behavior and the native proof validator remain unchanged.
+An independent three-second watchdog also covers scheduling acknowledgements
+and browser status work between proofs; only a successful fresh proof resets
+it. Expiry closes owned sources while retaining any unsettled operation.
 Recovery retains uncertain read/browser ownership; source closure does not
 claim the remote bot stopped. The live collector, normal host actions and
 actual media/note verification remain necessary. Revert this tooling for new
