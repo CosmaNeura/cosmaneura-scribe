@@ -47,6 +47,10 @@ export class BotCaptureProofGate {
   }
   get expected() { return structuredClone(this.#expected); }
   get captureIdentity() { return this.#accepted?.identity ?? null; }
+  // A failed producer may have no DTO to validate. After admission, losing
+  // that observation still forbids source restart; a later exact stop remains
+  // independently verifiable. Do not retain arbitrary transport error bodies.
+  observationFailed() { if (this.#accepted) this.#recordingBlocked = true; }
 
   #scope(scope) {
     const expected = this.#expected;

@@ -168,3 +168,66 @@ test('mock bot participant never schedules fixture audio from a native receipt o
   }
   assert.equal(state.closed, 2);
 });
+
+// Metadata-only proof for the independent review's actual participant-path
+// regression. The Playwright/media adapter below is mocked; no audio is emitted.
+function botProof(expected, actionId) {
+  const {runId, collectorSHA256, startedAtEpochMs: start, ...scope} = expected;
+  const at = offset => new Date(start + offset).toISOString();
+  Object.assign(scope, {botIdSHA256: '1'.repeat(64), recordingIdSHA256: '2'.repeat(64)});
+  const correspondence = {readSequence: 1, scope, meetingStatus: 'started',
+    authorization: {occurrenceDigest: scope.occurrenceDigest, consumedAt: at(6000), expiresAt: at(300000)},
+    meetingRuntime: {botIdSHA256: scope.botIdSHA256, occurrenceDigest: scope.occurrenceDigest},
+    recordingMapping: {doctorRef: scope.doctorRef, appointmentRef: scope.appointmentRef, patientRefSHA256: scope.patientRefSHA256}};
+  return {schema: 1, kind: 'zoom-bot', source: 'normal-zoom-ui-and-scoped-recall-observation', executionKind: 'live',
+    runId, collectorSHA256, scope,
+    consent: {source: 'normal-zoom-host-consent-ui', action: 'approve_recording', actionId, artifactSHA256: '3'.repeat(64),
+      hostIdSHA256: scope.hostIdSHA256, meetingIdSHA256: scope.meetingIdSHA256, occurrenceDigest: scope.occurrenceDigest,
+      observedAtEpochMs: start + 12000},
+    core: {source: 'scoped-staging-zoom-recording-correspondence', before: correspondence, after: {...correspondence, readSequence: 3}},
+    provider: {source: 'scoped-recall-get-response', httpStatus: 200, readSequence: 2, botIdSHA256: scope.botIdSHA256,
+      meetingIdSHA256: scope.meetingIdSHA256, statusChanges: [
+        {code: 'joining_call', subCode: null, createdAt: at(5000)},
+        {code: 'recording_permission_allowed', subCode: null, createdAt: at(13000)},
+        {code: 'in_call_recording', subCode: null, createdAt: at(14000)},
+      ], recordings: [{idSHA256: scope.recordingIdSHA256, botIdSHA256: scope.botIdSHA256, statusCode: 'processing',
+        startedAt: at(14000), completedAt: null}]}, teardown: null};
+}
+
+test('mock participant latches a bot collector failure after admission; native retry behavior is unchanged', async t => {
+  const input = await fixture(t), validated = await (await openFixtureRegistry(input)).load({caseId: 'case-one'});
+  const {pathToFileURL} = await import('node:url'), {randomUUID} = await import('node:crypto');
+  const {createParticipant} = await import('./participant-session.mjs');
+  for (const kind of ['zoom-bot', 'native']) {
+    const modulePath = join(input.root, `playwright-collector-failure-${kind}.mjs`);
+    await writeFile(modulePath, `export const state={schedules:0,closed:0};
+      const media={fixtureSha256:${JSON.stringify(validated.sha256)},playing:false,audioRequests:1,tracks:[{state:'live',enabled:true}]};
+      const frame={isDetached:()=>false,evaluate:async(fn)=>{if(String(fn).includes('.schedule('))state.schedules++;return media;}};
+      const page={mainFrame:()=>frame,frames:()=>[frame],isClosed:()=>false};
+      export const chromium={launch:async()=>({close:async()=>{state.closed++;},newContext:async()=>({addInitScript:async()=>{},newPage:async()=>page,pages:()=>[page]})})};`);
+    const {state} = await import(pathToFileURL(modulePath).href);
+    const expected = {runId: randomUUID(), collectorSHA256: 'a'.repeat(64), startedAtEpochMs: Date.now() - 60000,
+      accountIdentitySHA256: 'b'.repeat(64), doctorRef: `doctor_${'0'.repeat(26)}`, patientRefSHA256: 'c'.repeat(64),
+      hostIdSHA256: 'd'.repeat(64), meetingRecordRef: `zmtg_${'0'.repeat(26)}`, meetingIdSHA256: 'e'.repeat(64),
+      appointmentRef: `appointment_${'0'.repeat(26)}`, occurrenceDigest: 'f'.repeat(64)};
+    const proof = botProof(expected, randomUUID()), failure = Error('synthetic_collector_timeout'); let calls = 0;
+    const participant = await createParticipant({fixture: validated, playwrightPath: modulePath, executionKind: 'loopback',
+      captureProof: kind === 'zoom-bot' ? {kind, expected} : {kind}, observeProduct: async request => {
+        if (++calls === 1 || calls === 3) throw failure;
+        return kind === 'zoom-bot' ? {...structuredClone(proof), requestNonce: request.requestNonce}
+          : {...observation, observedAtEpochMs: Date.now()};
+      }});
+    try {
+      const options = {fixtureSha256: validated.sha256, startAtEpochMs: Date.now() + 1000, restart: true};
+      await assert.rejects(participant.schedule(options), error => error === failure);
+      assert.equal(state.schedules, 0);
+      await participant.schedule(options); // A pre-admission failure does not manufacture an admitted capture.
+      assert.equal(state.schedules, 1); await participant.pause();
+      await assert.rejects(participant.resume(), error => error === failure);
+      if (kind === 'zoom-bot') await assert.rejects(participant.resume(), /bot_recording_restart_forbidden/);
+      else await participant.resume();
+      assert.equal(state.schedules, kind === 'zoom-bot' ? 1 : 2); assert.equal(calls, 4);
+    } finally { await participant.close(); }
+    assert.equal(state.closed, 1);
+  }
+});

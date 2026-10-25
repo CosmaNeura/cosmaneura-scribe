@@ -39,7 +39,7 @@ export function createCaptureProofGate(proof = {kind: 'native'}) {
   if (proof?.kind !== 'zoom-bot' || Object.keys(proof).length !== 2 || !Object.hasOwn(proof, 'expected')) throw Error('capture-proof-kind-invalid');
   const gate = new BotCaptureProofGate(proof.expected);
   return {kind: 'zoom-bot', validate: (value, state, options) => gate.validate(value, state === 'idle' ? 'stopped' : state, options),
-    identity: () => gate.captureIdentity};
+    identity: () => gate.captureIdentity, observationFailed: () => gate.observationFailed()};
 }
 
 /** An isolated owned participant. Rejoining a process starts silent. The caller
@@ -91,7 +91,9 @@ export async function createParticipant({fixture, playwrightPath, executionKind 
   }
   async function observe(state) {
     const request = proofGate.kind === 'zoom-bot' ? {requestNonce: randomUUID(), sentAtEpochMs: now()} : null;
-    const observation = await observeProduct(request ? {kind: 'zoom-bot', requestNonce: request.requestNonce} : undefined);
+    let observation;
+    try { observation = await observeProduct(request ? {kind: 'zoom-bot', requestNonce: request.requestNonce} : undefined); }
+    catch (error) { if (request) proofGate.observationFailed(); throw error; }
     if (request) request.receivedAtEpochMs = now();
     proofGate.validate(observation, state, {request, now: now()});
     const identity = proofGate.identity(observation);

@@ -137,7 +137,9 @@ prerequisite that must be verified/fixed. The proof never borrows a bot ID to
 work around a missing recording mapping.
 
 After admission, changed identity/history or an unsafe observation permanently
-blocks source restart in that gate. A later fresh stop can still be proved.
+blocks source restart in that gate. A producer/transport exception after
+admission has the same effect, even when no receipt reached the validator.
+The original exception is preserved; a later fresh stop can still be proved.
 `validate(observation,'stopped',{request,now})` additionally requires the same
 previous recording, terminal bot status, completed recording, ended Core
 meeting and exact completed release-intent rows. Missing Redis state is not

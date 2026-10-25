@@ -220,6 +220,18 @@ test('invalid post-admission state blocks source restart but still permits later
   assert.throws(() => check(gate, failed)); assert.throws(() => check(gate, later(value)), /bot_recording_restart_forbidden/);
   assert.equal(check(gate, stopped(value), 'stopped').provider.recordings[0].statusCode, 'done');
 });
+test('producer failure latches the explicit bot union after admission without erasing later stop evidence', () => {
+  const value = fixture(), gate = createCaptureProofGate({kind: 'zoom-bot', expected: value.expected});
+  gate.observationFailed();
+  assert.equal(check(gate, value), value.observation);
+  const identity = gate.identity();
+  gate.observationFailed(); gate.observationFailed();
+  assert.throws(() => check(gate, later(value)), /bot_recording_restart_forbidden/);
+  assert.equal(gate.identity(), identity);
+  assert.equal(check(gate, stopped(value), 'idle').provider.recordings[0].statusCode, 'done');
+  assert.equal(gate.identity(), identity);
+  assert.throws(() => check(gate, later(stopped(value))), /bot_recording_restart_forbidden/);
+});
 test('explicit participant proof union preserves native checks and rejects either proof in the other branch', () => {
   const native = {scope: 'product-ui', targetId: 'owned', sessionId: 'native-session', observedAtEpochMs: start + 60000,
     consent: {sessionId: 'native-session', state: 'granted'},

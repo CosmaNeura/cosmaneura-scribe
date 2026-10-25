@@ -91,7 +91,8 @@ remain pending; the potential Start Recording response-ID mismatch must be
 resolved independently before real playback can qualify.
 
 Recovery never turns absence into stop. Once recording was admitted, unsafe
-evidence blocks source restart; only the same recording's terminal/completion
+evidence or a collector exception blocks source restart after admission; only
+the same recording's terminal/completion
 and exact settled release evidence can establish stop. Closing a participant
 does not stop the remote bot. Normal host stop and normal account disconnection
 remain separately required before sequential A/B ownership. Revert this tooling
