@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import vm from "node:vm";
 import { installVisitScopeObserver } from "./visit-observer.mjs";
 
 test('retained visit observer cannot remove wrappers while a native request remains pending', async () => {
@@ -62,4 +63,70 @@ test("late mount cannot overwrite a later mount or survive sign out", async () =
   window.Capacitor.nativePromise("CosmasWorkspaceAuth", "signOut", {});
   assert.equal(window.__scribeLabVisitObserver.readCurrent(), null);
   window.__scribeLabVisitObserver.uninstall();
+});
+
+test('auth receipt projects a normal ready reply only and expires without fresh native work', async () => {
+  let now = 100, result = Promise.resolve({ phase: 'ready', revision: id(3), identity: {
+    userId: 'user_syntheticA', sessionId: 'sess_private', token: 'never-retained' }, providerDisplayName: 'never-retained' });
+  const original = () => result;
+  const context = vm.createContext({ window: { Capacitor: { nativePromise: original, fromNative: value => value } },
+    performance: { now: () => now, timeOrigin: 1000 } });
+  vm.runInContext(`(${installVisitScopeObserver.toString()})`, context)({ runId: id(1) });
+  const cap = context.window.Capacitor, observer = context.window.__scribeLabVisitObserver;
+  assert.equal(observer.readAuth(), null);
+  assert.equal(cap.nativePromise('CosmasWorkspaceAuth', 'getState', {}), result); await result;
+  await new Promise(resolve => setImmediate(resolve));
+  const receipt = observer.readAuth();
+  assert.deepEqual(Object.keys(receipt).sort(), ['source', 'runId', 'phase', 'revision', 'userId', 'observedAtMonotonicMs', 'browserTimeOriginMs'].sort());
+  assert.equal(receipt.source, 'normal-native-auth-response'); assert.equal(receipt.userId, 'user_syntheticA');
+  assert(!JSON.stringify(receipt).includes('never-retained')); assert(!JSON.stringify(receipt).includes('sess_private'));
+  now += 15001; assert.equal(observer.readAuth(), null);
+  // A mounted visit never upgrades the old auth identity into fresh proof.
+  result = Promise.resolve(mounted); await cap.nativePromise('CosmasWorkspaceAuth', 'providerRequest', mount);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(observer.readAuth(), null);
+  result = Promise.resolve({ phase: 'ready', revision: id(3) });
+  await cap.nativePromise('CosmasWorkspaceAuth', 'getProviderState', {});
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(observer.readAuth(), null);
+  assert.equal(observer.uninstall().ownedResourcesSettled, true);
+});
+
+test('pending sign out, late polls and auth changes cannot resurrect an old account', async () => {
+  let resolveOld, resolveSignOut;
+  const old = new Promise(resolve => { resolveOld = resolve; }), signOut = new Promise(resolve => { resolveSignOut = resolve; });
+  const ready = user => ({ phase: 'ready', revision: id(user === 'user_A' ? 3 : 33), identity: { userId: user } });
+  let result = Promise.resolve(ready('user_A'));
+  globalThis.window = { Capacitor: { nativePromise: () => result, fromNative: value => value } };
+  installVisitScopeObserver({ runId: id(1) });
+  const observer = window.__scribeLabVisitObserver, cap = window.Capacitor;
+  await cap.nativePromise('CosmasWorkspaceAuth', 'getState', {}); assert.equal(observer.readAuth().userId, 'user_A');
+  result = old; cap.nativePromise('CosmasWorkspaceAuth', 'getState', {});
+  result = signOut; assert.equal(cap.nativePromise('CosmasWorkspaceAuth', 'signOut', {}), signOut);
+  assert.equal(observer.readAuth(), null); assert.equal(observer.uninstall().ownedResourcesSettled, false);
+  resolveOld(ready('user_A')); await old; assert.equal(observer.readAuth(), null);
+  const event = { pluginId: 'CosmasWorkspaceAuth', methodName: 'addListener', success: true, data: ready('user_A') };
+  assert.equal(cap.fromNative(event), event); assert.equal(observer.readAuth(), null);
+  resolveSignOut({ phase: 'signedOut', revision: id(34), identity: null }); await signOut;
+  assert.equal(observer.readAuth(), null);
+  result = Promise.resolve(ready('user_B')); await cap.nativePromise('CosmasWorkspaceAuth', 'getProviderState', {});
+  assert.equal(observer.readAuth().userId, 'user_B');
+  cap.fromNative({ ...event, data: { phase: 'unavailable', revision: id(35) } }); assert.equal(observer.readAuth(), null);
+  assert.equal(observer.uninstall().ownedResourcesSettled, true);
+});
+
+test('newer auth polls and native events retire older auth replies and failed newest reads', async () => {
+  let resolveOld, result;
+  globalThis.window = { Capacitor: { nativePromise: () => result, fromNative: () => undefined } };
+  installVisitScopeObserver({ runId: id(1) });
+  const observer = window.__scribeLabVisitObserver, cap = window.Capacitor;
+  const ready = (userId, revision) => ({ phase: 'ready', revision, identity: { userId } });
+  result = new Promise(resolve => { resolveOld = resolve; }); const old = result;
+  cap.nativePromise('CosmasWorkspaceAuth', 'getState', {});
+  result = Promise.resolve(ready('user_B', id(33))); await cap.nativePromise('CosmasWorkspaceAuth', 'getState', {});
+  resolveOld(ready('user_A', id(3))); await old; assert.equal(observer.readAuth().userId, 'user_B');
+  result = Promise.reject(Error('normal auth unavailable'));
+  await assert.rejects(cap.nativePromise('CosmasWorkspaceAuth', 'getState', {})); assert.equal(observer.readAuth(), null);
+  cap.fromNative({ pluginId: 'CosmasWorkspaceAuth', methodName: 'getState', success: true, data: ready('user_A', id(3)) });
+  assert.equal(observer.readAuth(), null, 'uncorrelated promise envelope cannot manufacture identity');
+  observer.uninstall();
 });

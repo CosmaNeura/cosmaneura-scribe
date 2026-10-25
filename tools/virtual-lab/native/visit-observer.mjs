@@ -9,31 +9,55 @@ export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
   if (observerSHA256 !== null && !/^[a-f0-9]{64}$/.test(observerSHA256)) throw new Error("invalid observer identity");
   let pendingObservedReplies = 0;
   let current = null, created = null, revision = null, generation = 0, alive = true, authCheckedAt = 0;
+  let authObservation = null, authSequence = 0, authMutationsPending = 0;
+  const userId = value => typeof value === "string" && /^user_[A-Za-z0-9_]{1,250}$/u.test(value);
   const invalidate = (auth = false) => {
     generation += 1; current = null;
-    if (auth) { created = null; revision = null; authCheckedAt = 0; }
-    window.__scribeLabAdmissionObserver?.clear();
+    if (auth) { authSequence++; created = null; revision = null; authCheckedAt = 0; authObservation = null; }
+    window.__scribeLabAdmissionObserver?.clear({ reason: auth ? 'auth' : 'navigation' });
   };
   const auth = state => {
     if (!alive) return;
     if (!uuid(state?.revision) || state.phase !== "ready") { invalidate(true); return; }
     if (revision !== null && revision !== state.revision) invalidate(true);
+    if (authObservation && authObservation.userId !== state.identity?.userId) invalidate(true);
     revision = state.revision; authCheckedAt = performance.now();
+    authObservation = authMutationsPending === 0 && userId(state.identity?.userId)
+      ? Object.freeze({ source: "normal-native-auth-response", runId, phase: "ready", revision,
+        userId: state.identity.userId, observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin }) : null;
   };
   function fromNative(result, ...rest) {
     try {
       // Native envelopes identify the plugin/method even for already-registered listeners.
       if (result?.pluginId === "CosmasWorkspaceAuth"
-        && ["addListener", "getState", "getProviderState", "signIn", "signOut"].includes(result.methodName)
-        && (result.data?.phase !== undefined || result.methodName !== "addListener")) {
+        && result.methodName === "addListener" && result.data?.phase !== undefined) {
+        // Promise replies are observed below with request ordering. An auth event
+        // retires older pending polls before the original listener sees it.
+        authSequence++;
         if (result.success === true) auth(result.data); else invalidate(true);
       }
     } catch { /* The original native delivery is always preserved. */ }
     return originalFromNative.call(this, result, ...rest);
   }
   function wrapped(plugin, method, options, ...rest) {
-    if (alive && plugin === "CosmasWorkspaceAuth" && ["signIn", "signOut"].includes(method)) invalidate(true);
-    const result = original.call(this, plugin, method, options, ...rest);
+    const isAuth = alive && plugin === "CosmasWorkspaceAuth" && ["getState", "getProviderState", "signIn", "signOut"].includes(method);
+    const mutation = isAuth && ["signIn", "signOut"].includes(method);
+    if (mutation) { invalidate(true); authMutationsPending++; }
+    const authRequest = isAuth ? ++authSequence : null;
+    let result;
+    try { result = original.call(this, plugin, method, options, ...rest); }
+    catch (error) {
+      if (mutation) authMutationsPending--;
+      if (isAuth && authRequest === authSequence) invalidate(true);
+      throw error;
+    }
+    if (isAuth) void Promise.resolve(result).then(state => {
+      if (mutation) authMutationsPending--;
+      if (alive && authRequest === authSequence) auth(state);
+    }, () => {
+      if (mutation) authMutationsPending--;
+      if (alive && authRequest === authSequence) invalidate(true);
+    });
     if (plugin === 'CosmasWorkspaceAuth') {
       pendingObservedReplies++;
       void Promise.resolve(result).then(() => { pendingObservedReplies--; }, () => { pendingObservedReplies--; });
@@ -68,7 +92,8 @@ export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
         const scope = Object.freeze({ source: creating ? "normal-native-created-visit-response" : "normal-native-mount-response",
           runId, workspaceId, appointmentRef, revision, requestId: options.requestId,
           observedAtMonotonicMs: performance.now(), browserTimeOriginMs: performance.timeOrigin });
-        if (creating) created = scope; else current = scope;
+        if (creating) created = scope;
+        else { current = scope; window.__scribeLabAdmissionObserver?.rebindCurrent(scope); }
       } catch { /* Never change the product response. */ }
     }).catch(() => undefined);
     return result;
@@ -76,6 +101,10 @@ export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
   cap.nativePromise = wrapped; cap.fromNative = fromNative;
   window.__scribeLabVisitObserver = Object.freeze({
     describe() { return { runId, observerSHA256, pendingObservedReplies }; },
+    readAuth() {
+      return authObservation && authMutationsPending === 0 && performance.now() - authObservation.observedAtMonotonicMs >= 0
+        && performance.now() - authObservation.observedAtMonotonicMs <= 15000 ? { ...authObservation } : null;
+    },
     readCreated() { return created && { ...created }; },
     readCurrent() { return current && performance.now() - authCheckedAt <= 15000 ? { ...current } : null; },
     clear() { invalidate(true); },
