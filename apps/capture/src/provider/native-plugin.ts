@@ -6,6 +6,8 @@ export type ProviderAction = "catalog" | "encounters" | "mount" | "recorder" | "
 export type ProviderSessionPhase = "disabled" | "loading" | "signedOut" | "signingIn" | "ready" | "signOutPending" | "unavailable";
 export interface ProviderSessionState {
   readonly phase: ProviderSessionPhase; readonly revision: string;
+  /** Optional ready-account correlation metadata; never an authorization grant. */
+  readonly accountIdentitySHA256?: string;
   readonly providerDisplayName?: string;
   readonly recordingSignInPreparationVersion?: 1;
 }

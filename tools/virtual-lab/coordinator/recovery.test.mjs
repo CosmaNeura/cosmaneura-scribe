@@ -7,12 +7,12 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { ACTIONS, Journal, atomicJSON, sha256 } from './journal.mjs';
 import { runJourney } from './engine.mjs';
-import { recoverRun } from './recovery.mjs';
+import { recoverRun, recoveryStage, validateRecoveryInspection } from './recovery.mjs';
 import { journalIdentity } from './tool-identity.mjs';
 
 const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const ref = 'appointment_01m5q661ryetaa28yxe7vbqrex';
-async function fixture({ pendingFinish = false } = {}) {
+async function fixture({ pendingFinish = false, completedCount = pendingFinish ? 7 : 6 } = {}) {
   const output = await mkdtemp(resolve(tmpdir(), 'scribe-recovery-'));
   const scenario = { schema: 1, runId: 'recovery-test', mode: 'fixed', executionKind: 'mock', syntheticOnly: true,
     sourceSHA: 'a'.repeat(40), build: { bundleId: 'mock.app', number: '1', sha256: 'b'.repeat(64) }, fixture: { sha256: 'c'.repeat(64) },
@@ -22,12 +22,19 @@ async function fixture({ pendingFinish = false } = {}) {
     implementationSHA256: identity.implementationSHA256, outputCanonical: await realpath(output) };
   const visit = { source: 'normal-native-mount-response', runId: uuid(1), workspaceId: uuid(2), appointmentRef: ref };
   const admission = { ...visit, source: 'normal-native-admission-response', sessionId: uuid(3) };
+  const native = { ...admission, source: 'normal-native-recording-response', nativeRevision: 3, phase: 'recording', busy: false,
+    observedAtMonotonicMs: 1, browserTimeOriginMs: Date.now() - 1 };
   const journal = await Journal.load(resolve(output, 'run.json'), identity, false);
   const observe = action => ({ origin: 'product-ui', executionKind: 'mock', action, targetId: scenario.targetId,
     observedAtEpochMs: Date.now(), checks: [{ locator: 'mock-only', kind: 'text', actual: 'observed', expected: 'observed' }],
-    ...(action === 'create_visit' ? { visitScope: visit } : {}), ...(action === 'consent' ? { admission } : {}) });
-  for (const action of ACTIONS.slice(0, pendingFinish ? 7 : 5)) {
+    ...(action === 'create_visit' ? { visitScope: visit } : {}), ...(action === 'consent' ? { admission } : {}),
+    ...(['record', 'play_source'].includes(action) ? { nativeObservation: native, nativeState: 'recording', elapsedSeconds: 1,
+      consentReceiptSHA256: sha256(JSON.stringify(admission)) } : {}),
+    ...(action === 'play_source' ? { sourceState: 'ended', fixtureSHA256: scenario.fixture.sha256, completedSourceFrames: 16000 } : {}) });
+  const observations = {};
+  for (const action of ACTIONS.slice(0, completedCount)) {
     await journal.begin(action); const value = observe(action), file = action + '.test.observation.json';
+    observations[action] = value;
     await atomicJSON(resolve(output, file), value); await journal.finish(action, { observationFile: file, observationSHA256: sha256(JSON.stringify(value)) });
   }
   if (pendingFinish) await journal.begin('finish');
@@ -38,17 +45,102 @@ async function fixture({ pendingFinish = false } = {}) {
   await atomicJSON(leasePath, owner);
   const events = [];
   const inspection = () => ({ source: 'current-native-recovery-observation', executionKind: 'mock', runId: scenario.runId,
-    targetId: scenario.targetId, observedAtEpochMs: Date.now(), currentVisit: visit,
+    recoveryStage: 'capture', targetId: scenario.targetId, observedAtEpochMs: Date.now(), currentVisit: visit, currentNote: null,
     nativeObservation: { ...admission, source: 'normal-native-recording-response', nativeRevision: 4, phase: 'sealed', busy: false,
       observedAtMonotonicMs: 1, browserTimeOriginMs: Date.now() - 1 }, observerPendingReplies: 0, unresolvedOwnedResources: [] });
   const adapter = { lockIdentity: async () => scenario.targetId,
     doctor: async () => ({ ready: true, executionKind: 'mock', targetId: scenario.targetId }),
     recoveryInspect: async args => { events.push('inspect'); assert.equal(args.output, await realpath(output)); assert(!JSON.stringify(args).includes('2147483647')); return inspection(); },
     recoveryCleanup: async args => { events.push(['cleanup', args.preserveForRecovery]); return { ownedResourcesSettled: true, nativeAppTerminated: false }; } };
-  return { output, scenario, runIdentity, owner, leasePath, events, inspection, adapter, observe,
+  return { output, scenario, runIdentity, owner, leasePath, events, inspection, adapter, observe, journal, observations,
     dispose: async () => { await rm(leasePath, { force: true }); await rm(leasePath + '.acquiring', { recursive: true, force: true }); await rm(output, { recursive: true, force: true }); } };
 }
 const signal = () => new AbortController().signal;
+
+test('pre-Record journal permits observed absence and releases only known settled control resources', async () => {
+  for (const completedCount of [0, 1, 2, 3, 5]) {
+    const f = await fixture({ completedCount });
+    try {
+      f.adapter.recoveryInspect = async args => {
+        assert.equal(args.recoveryStage, 'pre-record');
+        return { ...f.inspection(), recoveryStage: 'pre-record', observers: { visit: null, admission: null, desktop: null },
+          ...(completedCount >= 3 ? { observers: { visit: { runId: uuid(1), observerSHA256: 'a'.repeat(64), pendingObservedReplies: 0 }, admission: null, desktop: null } } : {}),
+          currentVisit: completedCount >= 3 ? f.observations.create_visit.visitScope : null, nativeObservation: null };
+      };
+      const result = await recoverRun({ ...f, signal: signal() });
+      assert.equal(result.status, 'CLEANED'); assert.equal(result.capture.captureStopped, null);
+      assert.equal(result.capture.noRecordAttempt, true); assert.equal(result.targetLeaseRetained, false);
+      assert.deepEqual(f.events, [['cleanup', false]]);
+    } finally { await f.dispose(); }
+  }
+});
+
+test('pre-Record absent or retained observer metadata must be freshly explicit, bound and settled', async () => {
+  const f = await fixture({ completedCount: 0 });
+  try {
+    const base = () => ({ ...f.inspection(), recoveryStage: 'pre-record', currentVisit: null, nativeObservation: null,
+      observers: { visit: null, admission: null, desktop: null } });
+    const good = base(); good.observers.visit = { runId: uuid(1), observerSHA256: 'a'.repeat(64), pendingObservedReplies: 0 };
+    assert.equal(validateRecoveryInspection(good, f.scenario, f.observations, f.journal.state).canReleaseWithoutCapture, true);
+    for (const mutate of [value => { delete value.observers; }, value => { delete value.observers.admission; },
+      value => { value.observers.visit = undefined; },
+      value => { value.observers.visit = { ...good.observers.visit, runId: uuid(99) }; },
+      value => { value.observers.visit = { ...good.observers.visit, pendingObservedReplies: 1 }; },
+      value => { value.observers.visit = { ...good.observers.visit, observerSHA256: null }; },
+      value => { value.unresolvedOwnedResources = [{ kind: 'participant-browser' }]; }]) {
+      const value = base(); mutate(value);
+      assert.throws(() => validateRecoveryInspection(value, f.scenario, f.observations, f.journal.state), /unconfirmed/);
+    }
+  } finally { await f.dispose(); }
+});
+
+test('any Record attempt requires strict capture proof and an unexpectedly active pre-Record capture stays quarantined', async () => {
+  const f = await fixture({ completedCount: 5 });
+  try {
+    assert.equal(recoveryStage(f.journal.state, f.observations), 'pre-record');
+    const descriptor = { runId: uuid(1), observerSHA256: 'a'.repeat(64), pendingObservedReplies: 0 };
+    const value = { ...f.inspection(), recoveryStage: 'pre-record', observers: { visit: descriptor, admission: descriptor, desktop: null } };
+    value.nativeObservation.phase = 'recording';
+    f.adapter.recoveryInspect = async () => value;
+    const result = await recoverRun({ ...f, signal: signal() });
+    assert.equal(result.status, 'CLEANED_CAPTURE_PRESERVED'); assert.equal(result.targetLeaseRetained, true);
+    await f.journal.begin('record'); assert.equal(recoveryStage(f.journal.state, f.observations), 'capture');
+    assert.throws(() => validateRecoveryInspection(value, f.scenario, f.observations, f.journal.state), /stage_mismatch/);
+    value.recoveryStage = 'capture'; value.nativeObservation = null;
+    assert.throws(() => validateRecoveryInspection(value, f.scenario, f.observations, f.journal.state), /native_state_unavailable/);
+  } finally { await f.dispose(); }
+});
+
+test('recovery rejects a lower native revision or different source than recorded Record and Finish', async () => {
+  const f = await fixture();
+  try {
+    for (const prior of [{ nativeRevision: 5 }, { source: 'normal-desktop-recording-response' }]) {
+      const observations = { ...f.observations, record: { nativeObservation: { ...f.observations.record.nativeObservation, ...prior } } };
+      assert.throws(() => validateRecoveryInspection(f.inspection(), f.scenario, observations, f.journal.state), /native_revision_regressed/);
+    }
+    const observations = { ...f.observations, finish: { nativeTerminal: { ...f.inspection().nativeObservation, nativeRevision: 7 } } };
+    assert.throws(() => validateRecoveryInspection(f.inspection(), f.scenario, observations, f.journal.state), /native_revision_regressed/);
+    const latest = f.inspection(); latest.nativeObservation.nativeRevision = 7;
+    assert.equal(validateRecoveryInspection(latest, f.scenario, observations, f.journal.state).captureStopped, true);
+  } finally { await f.dispose(); }
+});
+
+test('pre-Record resume reconciles a pending visit creation without issuing another Create', async () => {
+  const f = await fixture({ completedCount: 2 }), performed = [], reconciled = [];
+  try {
+    await f.journal.begin('create_visit');
+    f.adapter.recoveryInspect = async () => ({ ...f.inspection(), recoveryStage: 'pre-record', nativeObservation: null,
+      observers: { visit: { runId: uuid(1), observerSHA256: 'a'.repeat(64), pendingObservedReplies: 0 }, admission: null, desktop: null } });
+    const adapter = { ...f.adapter, connect: async () => {}, restore: async () => {},
+      perform: async action => { performed.push(action); return f.observe(action); },
+      reconcile: async action => { reconciled.push(action); return f.observe(action); }, cleanup: async () => ({ ownedResourcesSettled: true }) };
+    const result = await recoverRun({ ...f, mode: 'resume', signal: signal(), resumeWithLease: preacquiredLease =>
+      runJourney({ scenario: f.scenario, adapter, output: f.output, labRoot: f.output, resume: true, preacquiredLease }) });
+    assert.equal(result.status, 'RESUMED', JSON.stringify(result)); assert.equal(result.resumeStatus, 'MOCK_JOURNEY_PASS');
+    assert.deepEqual(reconciled, ['create_visit']); assert(!performed.includes('create_visit'));
+    assert.equal(performed.filter(action => action === 'finish').length, 1);
+  } finally { await f.dispose(); }
+});
 
 test('explicit same-run cleanup inspects first and releases only a proved stopped capture', async () => {
   const f = await fixture();

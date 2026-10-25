@@ -2,7 +2,7 @@ import { mkdir, lstat, readFile, realpath, unlink } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { Journal, atomicJSON, sameRunIdentity, sha256, targetLeaseConsumed, targetLeaseHandle } from './journal.mjs';
+import { ACTIONS, Journal, atomicJSON, sameRunIdentity, sha256, targetLeaseConsumed, targetLeaseHandle } from './journal.mjs';
 import { bounded, loadObservations, validateScenario } from './engine.mjs';
 import { journalIdentity } from './tool-identity.mjs';
 import { acquireGuard, releaseGuard } from './guard.mjs';
@@ -13,15 +13,50 @@ const code = error => /^[a-z_]{1,100}$/.test(error?.message) ? error.message : '
 const sameScope = (a, b) => a && b && ['runId', 'workspaceId', 'appointmentRef'].every(key => a[key] === b[key]);
 const epoch = value => value?.browserTimeOriginMs + value?.observedAtMonotonicMs;
 
-export function validateRecoveryInspection(value, scenario, observations) {
+/** Only a validated, hash-bound journal may establish that this run never sent Record. */
+export function recoveryStage(state, observations) {
+  if (!Array.isArray(state?.events) || !Array.isArray(state?.completed)) throw Error('recovery_journal_state_required');
+  const captureActions = new Set(ACTIONS.slice(ACTIONS.indexOf('record')));
+  return state.events.some(event => ['action_started', 'action_observed'].includes(event.kind) && captureActions.has(event.action))
+    || captureActions.has(state.pending) || state.completed.some(action => captureActions.has(action))
+    || Object.keys(observations).some(action => captureActions.has(action)) ? 'capture' : 'pre-record';
+}
+
+function checkObservers(value, scenario) {
+  if (!value.observers || Object.keys(value.observers).sort().join(',') !== 'admission,desktop,visit') throw Error('recovery_observers_unconfirmed');
+  let pending = 0;
+  for (const [kind, descriptor] of Object.entries(value.observers)) {
+    // Explicit null is a fresh passive lookup result. Missing/undefined is unknown.
+    if (descriptor === null) continue;
+    if (!descriptor || descriptor.runId !== scenario.admissionBinding.runId || !/^[a-f0-9]{64}$/.test(descriptor.observerSHA256 ?? '')
+        || !Number.isSafeInteger(descriptor.pendingObservedReplies) || descriptor.pendingObservedReplies < 0
+        || kind === 'desktop' && (!Number.isSafeInteger(descriptor.pid) || descriptor.pid <= 0
+          || !Number.isSafeInteger(descriptor.webContentsId) || descriptor.webContentsId <= 0)) throw Error('recovery_observers_unconfirmed');
+    pending += descriptor.pendingObservedReplies;
+  }
+  if (value.observers.desktop && (value.observers.visit || value.observers.admission)
+      || pending !== value.observerPendingReplies || pending !== 0) throw Error('recovery_observers_unconfirmed');
+  if (value.currentVisit && !(value.observers.visit || value.observers.desktop)
+      || value.nativeObservation && !(value.observers.admission || value.observers.desktop)) throw Error('recovery_observers_unconfirmed');
+}
+
+export function validateRecoveryInspection(value, scenario, observations, state) {
+  const stage = recoveryStage(state, observations);
   if (value?.source !== 'current-native-recovery-observation' || value.executionKind !== scenario.executionKind
       || value.runId !== scenario.runId || value.targetId !== scenario.targetId
       || !Number.isFinite(value.observedAtEpochMs) || Math.abs(Date.now() - value.observedAtEpochMs) > 5000
       || !Number.isSafeInteger(value.observerPendingReplies) || value.observerPendingReplies !== 0
       || !Array.isArray(value.unresolvedOwnedResources) || value.unresolvedOwnedResources.length) throw Error('recovery_resources_unconfirmed');
+  if (value.recoveryStage !== stage) throw Error('recovery_stage_mismatch');
+  if (stage === 'pre-record') checkObservers(value, scenario);
   const visit = value.currentVisit, native = value.nativeObservation, expectedVisit = observations.create_visit?.visitScope;
-  if (visit?.source !== 'normal-native-mount-response' || visit.runId !== scenario.admissionBinding?.runId
-      || !uuid(visit.workspaceId) || !appointment(visit.appointmentRef) || expectedVisit && !sameScope(visit, expectedVisit)) throw Error('recovery_current_visit_mismatch');
+  if (!(stage === 'pre-record' && visit === null && !expectedVisit)
+      && (visit?.source !== 'normal-native-mount-response' || visit.runId !== scenario.admissionBinding?.runId
+      || !uuid(visit.workspaceId) || !appointment(visit.appointmentRef) || expectedVisit && !sameScope(visit, expectedVisit))) throw Error('recovery_current_visit_mismatch');
+  if (stage === 'pre-record' && native === null) {
+    if (value.currentNote !== null) throw Error('recovery_note_session_changed');
+    return { recoveryStage: stage, captureStopped: null, noRecordAttempt: true, canReleaseWithoutCapture: true };
+  }
   if (!sameScope(native, visit) || !uuid(native.sessionId) || !Number.isSafeInteger(native.nativeRevision) || native.nativeRevision < 0
       || !['normal-native-recording-response', 'normal-desktop-recording-response'].includes(native.source)
       || !Number.isFinite(epoch(native)) || Math.abs(Date.now() - epoch(native)) > 15000) throw Error('recovery_native_state_unavailable');
@@ -29,10 +64,16 @@ export function validateRecoveryInspection(value, scenario, observations) {
   if (desktop ? native.pendingMutation !== false : native.busy !== false) throw Error('recovery_native_mutation_pending');
   const admitted = observations.consent?.admission;
   if (admitted && (!sameScope(native, admitted) || native.sessionId !== admitted.sessionId)) throw Error('recovery_session_changed');
+  for (const prior of [observations.record?.nativeObservation, observations.finish?.nativeTerminal].filter(Boolean)) {
+    if (prior.source !== native.source || !sameScope(prior, native) || prior.sessionId !== native.sessionId
+        || !Number.isSafeInteger(prior.nativeRevision) || prior.nativeRevision > native.nativeRevision) throw Error('recovery_native_revision_regressed');
+  }
   if (value.currentNote && (!sameScope(value.currentNote, visit) || value.currentNote.source !== 'normal-core-note-response'
       || value.currentNote.session_id !== native.sessionId)) throw Error('recovery_note_session_changed');
-  return { captureStopped: desktop ? native.phase === 'stopped' && ['uploading', 'processing', 'complete'].includes(native.captureState)
-    : native.phase === 'sealed', sessionId: native.sessionId, nativePhase: native.phase };
+  return { recoveryStage: stage, captureStopped: desktop ? native.phase === 'stopped' && ['uploading', 'processing', 'complete'].includes(native.captureState)
+    : native.phase === 'sealed', canReleaseWithoutCapture: stage === 'pre-record'
+      && (desktop ? native.phase === 'ready' && native.captureState === 'ready' : native.phase === 'ready'),
+    sessionId: native.sessionId, nativePhase: native.phase };
 }
 
 async function privateFile(path, maximum = 32000000) {
@@ -110,10 +151,11 @@ export async function recoverRun({ scenario, adapter, output, signal, mode = 'cl
     result.preflight = preflight;
     if (preflight?.ready !== true || preflight.targetId !== scenario.targetId || preflight.executionKind !== scenario.executionKind) throw Error('recovery_preflight_failed');
     if (typeof adapter.recoveryInspect !== 'function') throw Error('recovery_inspector_required');
-    inspection = await tracked(active => adapter.recoveryInspect({ scenario, state: journal.state, observations, output: outputCanonical, signal: active }));
+    inspection = await tracked(active => adapter.recoveryInspect({ scenario, state: journal.state, observations,
+      recoveryStage: recoveryStage(journal.state, observations), output: outputCanonical, signal: active }));
     result.inspection = inspection;
     await atomicJSON(attemptPath, result);
-    analysis = validateRecoveryInspection(inspection, scenario, observations); inspectionAccepted = true;
+    analysis = validateRecoveryInspection(inspection, scenario, observations, journal.state); inspectionAccepted = true;
     result.capture = analysis;
   } catch (error) { result.failureCode = signal.aborted ? 'recovery_aborted' : code(error); }
   finally {
@@ -122,7 +164,7 @@ export async function recoverRun({ scenario, adapter, output, signal, mode = 'cl
       const hadPending = pending.size > 0;
       try {
         if (typeof adapter.recoveryCleanup !== 'function') throw Error('recovery_cleanup_required');
-        const preserveForRecovery = mode === 'resume' || !analysis?.captureStopped;
+        const preserveForRecovery = mode === 'resume' || !(analysis?.captureStopped || analysis?.canReleaseWithoutCapture);
         cleanup = await tracked(active => adapter.recoveryCleanup({ signal: active, preserveForRecovery }), true);
         await bounded(() => Promise.allSettled([...pending].map(item => item.promise)), timeoutMs);
         if (hadPending && pending.size === 0) cleanup = await tracked(active => adapter.recoveryCleanup({ signal: active, preserveForRecovery }), true);
@@ -141,7 +183,7 @@ export async function recoverRun({ scenario, adapter, output, signal, mode = 'cl
       await assertLeaseUnchanged();
       if (sha256(await privateFile(runPath)) !== result.runJournalSHA256) throw Error('recovery_journal_changed');
       if (mode === 'cleanup') {
-        if (analysis.captureStopped) { await unlink(leasePath); result.targetLeaseRetained = false; result.status = 'CLEANED'; }
+        if (analysis.captureStopped || analysis.canReleaseWithoutCapture) { await unlink(leasePath); result.targetLeaseRetained = false; result.status = 'CLEANED'; }
         else result.status = 'CLEANED_CAPTURE_PRESERVED';
       } else {
         const next = { pid: process.pid, host: hostname(), token: randomUUID(), runIdentity, uncertain: true,

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve, basename } from 'node:path';
 import { ACTIONS, atomicJSON, consumeTargetLease, Journal, lockTarget, sha256 } from './journal.mjs';
 import { implementationReceipt, journalIdentity } from './tool-identity.mjs';
+import { publishExclusiveJSON } from './guard.mjs';
 
 export const JOURNEY = ACTIONS;
 export const ENGINEERING_BUDGETS = Object.freeze({ coldLaunchMs: 10000, warmLaunchMs: 3000,
@@ -139,6 +140,14 @@ export async function runJourney({ scenario, adapter, output, labRoot = process.
   // output roots. The fingerprint comes from verified host/device/app identity.
   const locks = resolve(await realpath(tmpdir()), `scribe-virtual-lab-target-locks-${process.getuid?.() ?? 'user'}`);
   if (preacquiredLease && !resume) throw Error('recovery_requires_resume');
+  const runPath = resolve(output, 'run.json');
+  if (!resume) {
+    // A crash must never leave a target lease whose run has no durable journal.
+    // Exclusive publication cannot overwrite an existing or concurrent run.
+    const initial = await Journal.load(runPath, identity, false, { readOnly: true });
+    try { await publishExclusiveJSON(runPath, initial.state); }
+    catch (error) { if (error.code === 'EEXIST') throw Error('run_exists_use_resume'); throw error; }
+  }
   const release = await consumeTargetLease(preacquiredLease ?? await lockTarget(locks, targetFingerprint, { runIdentity }), targetFingerprint, runIdentity);
   let journal, outcome, failure, observations = {};
   const pending = new Set(), deadline = scenario.timeoutMs ?? 600000;
@@ -165,7 +174,7 @@ export async function runJourney({ scenario, adapter, output, labRoot = process.
     return { ...evidence, observationFile };
   }
   try {
-    journal = await Journal.load(resolve(output, 'run.json'), identity, resume);
+    journal = await Journal.load(runPath, identity, true);
     const implementation = await implementationReceipt();
     if (implementation.sha256 !== identity.implementationSHA256) throw Error('tool_implementation_changed');
     await atomicJSON(resolve(output, `implementation.${implementation.sha256}.json`), implementation);

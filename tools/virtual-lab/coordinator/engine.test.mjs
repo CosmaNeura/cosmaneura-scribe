@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, writeFile, readdir, unlink, symlink, realpath } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, readdir, unlink, symlink, realpath, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { ENGINEERING_BUDGETS, JOURNEY, nativeCleanupProvesStopped, runJourney, validateScenario } from './engine.mjs';
 import { lockTarget, sha256 } from './journal.mjs';
 
@@ -63,6 +64,41 @@ test('adaptive runs require frozen ground truth and distinct persona stores', ()
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 const leasePath = async s => join(await realpath(tmpdir()), `scribe-virtual-lab-target-locks-${process.getuid?.() ?? 'user'}`, `${sha256(s.targetId)}.lock`);
 const newOutput = () => mkdtemp(join(tmpdir(), 'scribe-coordinator-'));
+
+test('an actual first-run crash after lease publication already has its durable empty journal', async () => {
+  const output = await newOutput(), s = scenario(), lease = await leasePath(s);
+  const script = join(output, 'crash-after-lease.mjs'); let child, exited;
+  try {
+    await writeFile(script, `import fs from 'node:fs/promises';import {syncBuiltinESMExports} from 'node:module';
+      const [output,raw,lease]=process.argv.slice(2),scenario=JSON.parse(raw),original=fs.link;
+      fs.link=async(from,to)=>{const result=await original(from,to);if(to===lease){process.stdout.write('lease-published\\n');setInterval(()=>{},1000);return new Promise(()=>{});}return result;};
+      syncBuiltinESMExports();const {runJourney}=await import(${JSON.stringify(new URL('./engine.mjs', import.meta.url).href)});
+      await runJourney({scenario,output,labRoot:output,adapter:{lockIdentity:async()=>scenario.targetId,
+        doctor:async()=>{throw Error('native_work_must_not_start');}}});`);
+    child = spawn(process.execPath, [script, output, JSON.stringify(s), lease], { stdio: ['ignore', 'pipe', 'pipe'] });
+    exited = new Promise(resolve => child.once('exit', resolve));
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error('first_run_crash_test_timeout')), 10000);
+      child.stdout.once('data', bytes => { clearTimeout(timer); bytes.toString().includes('lease-published') ? resolve() : reject(Error('lease_marker_missing')); });
+      child.once('exit', () => { clearTimeout(timer); reject(Error('first_run_child_exited')); });
+    });
+    const owner = JSON.parse(await readFile(lease)), journal = JSON.parse(await readFile(join(output, 'run.json')));
+    assert.equal(owner.pid, child.pid); assert.equal(owner.uncertain, true);
+    assert.equal(journal.identity.runId, owner.runIdentity.runId);
+    assert.equal(journal.identity.scenarioSHA256, owner.runIdentity.scenarioSHA256);
+    assert.equal(journal.identity.implementationSHA256, owner.runIdentity.implementationSHA256);
+    assert.deepEqual(journal.events, []); assert.deepEqual(journal.completed, []); assert.equal(journal.pending, null);
+    child.kill('SIGTERM'); await exited;
+    assert.deepEqual(JSON.parse(await readFile(join(output, 'run.json'))), journal);
+  } finally {
+    if (child?.exitCode === null && child?.signalCode === null) child.kill('SIGTERM');
+    await exited;
+    await rm(lease, { force: true }); await rm(lease + '.acquiring', { recursive: true, force: true });
+    for (const name of await readdir(dirname(lease))) if (name.startsWith(basename(lease) + '.prepared.'))
+      await rm(join(dirname(lease), name), { force: true });
+    await rm(output, { recursive: true, force: true });
+  }
+});
 
 test('summary state cannot skip or replay actions under an unchanged event chain', async () => {
   const output=await newOutput(),s=scenario();await runJourney({scenario:s,adapter:adapter(s),output,labRoot:output,stopAfter:'create_visit'});

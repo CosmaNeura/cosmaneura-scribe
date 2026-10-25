@@ -32,6 +32,8 @@ complete, fsynced guard is published with atomic no-replace semantics; an
 existing empty or unrecognized guard is never overwritten. Complete lease and
 successor-claim files use atomic no-replace publication too. Darwin and Linux
 are supported; unavailable atomic rename facilities fail closed.
+The initial journal is durably published before the target lease, so a crash
+immediately after acquiring the target still leaves a recoverable run identity.
 
 An interrupted run requires explicit `recoverRun`. Its scenario, tool digest,
 canonical output and target fingerprint must match. A guard can be claimed only
@@ -49,6 +51,12 @@ has been attempted, release requires a fresh native stop proof for the exact
 admitted visit/session, no pending native mutations and a non-regressing native
 revision. A completed live journey also needs its matching recorded Finish.
 An uncertain capture retains the target lease and its observer evidence.
+Before any Record attempt, recovery may instead prove that no capture was
+started by this run. The validated journal must contain no Record or later
+action, and a fresh passive inspection must explicitly report each observer's
+absence or its exact implementation identity and zero pending replies. An
+observed visit must match the journal. An unexpectedly active capture still
+retains the lease. This early recovery path makes no claim that it stopped audio.
 
 Timed-out work remains tracked. Cleanup cancels and drains it, then confirms
 resource state again; unresolved late work retains ownership. Resume passes an
