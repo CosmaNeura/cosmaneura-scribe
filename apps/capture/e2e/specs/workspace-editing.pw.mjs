@@ -18,17 +18,27 @@ async function forbidMedia(page) {
   });
 }
 
+async function pauseAutosaveClock(page) {
+  await page.clock.install({ time: new Date("2026-10-25T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-10-25T12:00:01Z"));
+}
+
 for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 430 }]) {
   test(`unsaved decision stays visible and restores the actual editor at ${viewport.width}px`, async ({ context, page, baseURL }, testInfo) => {
     await forbidMedia(page); await page.setViewportSize(viewport);
-    const server = await installNoteServer(context, { loseSaveResponse: false, origin: baseURL });
+    await pauseAutosaveClock(page);
+    const server = await installNoteServer(context, { loseSaveResponse: false, origin: baseURL,
+      clockNow: () => page.evaluate(() => new Date().toISOString()) });
     await openDraft(page, server);
     await page.screenshot({ path: testInfo.outputPath("draft-editor.png") });
     const plan = page.getByRole("textbox", { name: "Plan", exact: true });
     await plan.fill("Synthetic interrupted edit. No real patient.");
     await plan.focus();
     await plan.evaluate(field => { field.setSelectionRange(9, 20); window.savedEditorNode = field; });
-    await page.getByRole("button", { name: "Review transcript", exact: true }).click();
+    // Exercise navigation before the 750 ms autosave debounce. Showing the
+    // conversation now intentionally keeps the same editor without a dialog.
+    const refresh = page.getByRole("button", { name: "Refresh current visit", exact: true });
+    await refresh.click();
     const dialog = page.getByRole("dialog", { name: "Keep your note edits?" });
     await expect(dialog).toBeInViewport();
     await page.screenshot({ path: testInfo.outputPath("visible-unsaved-decision.png") });
@@ -40,7 +50,7 @@ for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 430 
     expect(await plan.evaluate(field => ({ same: field === window.savedEditorNode, start: field.selectionStart, end: field.selectionEnd })))
       .toEqual({ same: true, start: 9, end: 20 });
     await expect(plan).toHaveValue("Synthetic interrupted edit. No real patient.");
-    await page.getByRole("button", { name: "Review transcript", exact: true }).click();
+    await refresh.click();
     await page.getByRole("button", { name: "Save & continue", exact: true }).click();
     await expect(plan).not.toBeVisible();
     expect(server.calls.filter(call => call === "save")).toHaveLength(1);
@@ -51,16 +61,26 @@ for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 430 
 
   test(`save preserves position and recovers a lost response without resubmitting at ${viewport.width}px`, async ({ context, page, baseURL }, testInfo) => {
     await forbidMedia(page); await page.setViewportSize(viewport);
-    const server = await installNoteServer(context, { loseSaveResponse: true, origin: baseURL, saveDelayMs: 400 });
+    await pauseAutosaveClock(page);
+    const server = await installNoteServer(context, { loseSaveResponse: true, origin: baseURL, saveDelayMs: 400,
+      statusPending: true, clockNow: () => page.evaluate(() => new Date().toISOString()) });
     await openDraft(page, server);
     await page.screenshot({ path: testInfo.outputPath("draft-editor.png") });
     const plan = page.getByRole("textbox", { name: "Plan", exact: true });
     await plan.fill("Synthetic exact saved edit. No treatment plan discussed.");
     await plan.focus(); await plan.evaluate(field => { field.setSelectionRange(10, 15); window.savedEditorNode = field; });
     const before = await page.evaluate(() => window.scrollY);
-    await page.getByRole("button", { name: "Save draft", exact: true }).click();
+    await expect(page.locator("[data-note-save-state]")).toHaveText("Draft saving…");
+    expect(server.calls.filter(call => call === "save")).toHaveLength(0);
+    await page.clock.runFor(750);
+    await expect(page.locator("[data-note-save-state]")).toHaveText("Draft save not confirmed");
     await expect(plan).toHaveAttribute("readonly");
-    await expect(page.locator("[data-note-save-state]")).toHaveText("Saved · Not clinically reviewed");
+    await expect.poll(() => server.calls.filter(call => call === "save_status").length).toBeGreaterThan(0);
+    expect(await plan.evaluate(field => ({ same: field === window.savedEditorNode, start: field.selectionStart, end: field.selectionEnd })))
+      .toEqual({ same: true, start: 10, end: 15 });
+    server.releaseStatus();
+    await page.clock.runFor(2_000);
+    await expect(page.locator("[data-note-save-state]")).toHaveText(/^Draft saved at /u);
     await expect(page.locator("[data-workspace-notice]")).toBeEmpty();
     expect(await plan.evaluate(field => ({ same: field === window.savedEditorNode, start: field.selectionStart, end: field.selectionEnd, readonly: field.readOnly })))
       .toEqual({ same: true, start: 10, end: 15, readonly: false });
@@ -78,17 +98,24 @@ for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 430 
   });
 }
 
-test("a pending save keeps exact edits locked and stops automatic checking after 30 seconds", async ({ context, page, baseURL }) => {
+test("a pending save retains edits and offers manual recovery after automatic checking stops", async ({ context, page, baseURL }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 430 });
-  await forbidMedia(page); await page.clock.install();
-  const server = await installNoteServer(context, { loseSaveResponse: true, origin: baseURL, statusPending: true });
+  await forbidMedia(page); await pauseAutosaveClock(page);
+  const server = await installNoteServer(context, { loseSaveResponse: true, origin: baseURL, statusPending: true,
+    clockNow: () => page.evaluate(() => new Date().toISOString()) });
   await openDraft(page, server);
   const plan = page.getByRole("textbox", { name: "Plan", exact: true });
   await plan.fill("Retained synthetic edit");
-  await page.getByRole("button", { name: "Save draft", exact: true }).click();
-  await expect(page.locator("[data-note-save-state]")).toHaveText("Save confirmation pending · Edits retained");
+  await page.clock.runFor(750);
+  await expect(page.locator("[data-note-save-state]")).toHaveText("Draft save not confirmed");
   await expect(page.locator("[data-note-save-state]")).toBeInViewport();
-  await expect(page.getByRole("button", { name: "Check save status", exact: true })).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath("pending-edit-retained.png") });
+  // Background autosave preserves the editor's position. Deliberately scroll
+  // to its recovery action instead of requiring autosave to move the reader.
+  const check = page.getByRole("button", { name: "Check save status", exact: true });
+  await check.scrollIntoViewIfNeeded(); await expect(check).toBeInViewport();
+  expect((await check.boundingBox()).height).toBeGreaterThanOrEqual(44);
+  await page.screenshot({ path: testInfo.outputPath("pending-save-recovery.png") });
   await expect(page.locator("[data-workspace-notice]")).toBeEmpty();
   await expect(plan).toHaveValue("Retained synthetic edit");
   await expect(plan).toHaveAttribute("readonly");
@@ -99,22 +126,30 @@ test("a pending save keeps exact edits locked and stops automatic checking after
   expect(server.calls.filter(call => call === "save_status")).toHaveLength(checks);
   expect(server.calls.filter(call => call === "save")).toHaveLength(1);
   expect(server.calls.filter(call => call === "resolve")).toHaveLength(0);
-  await expect(page.getByRole("button", { name: "Check save status", exact: true })).toBeVisible();
+  await expect(check).toBeVisible();
+  server.releaseStatus(); await check.click();
+  await expect(page.locator("[data-note-save-state]")).toHaveText(/^Draft saved at /u);
+  await expect(plan).toHaveValue("Retained synthetic edit");
+  await expect(plan).not.toHaveAttribute("readonly");
+  expect(server.calls.filter(call => call === "save")).toHaveLength(1);
+  expect(server.calls.filter(call => call === "resolve")).toHaveLength(1);
   server.assertHealthy();
 });
 
 
-test("phone note and transcript tabs retain unsaved edits without a save or remount", async ({ context, page, baseURL }) => {
+test("phone conversation view retains unsaved edits without a save or remount", async ({ context, page, baseURL }) => {
   await forbidMedia(page); await page.setViewportSize({ width: 390, height: 600 });
-  const server = await installNoteServer(context, { loseSaveResponse: false, origin: baseURL });
+  await pauseAutosaveClock(page);
+  const server = await installNoteServer(context, { loseSaveResponse: false, origin: baseURL,
+    clockNow: () => page.evaluate(() => new Date().toISOString()) });
   await openDraft(page, server);
   const plan = page.getByRole("textbox", { name: "Plan", exact: true });
   await plan.fill("Synthetic retained draft"); await plan.focus();
   await plan.evaluate(field => { window.savedEditorNode = field; field.setSelectionRange(2, 6); });
-  await page.getByRole("button", { name: "Transcript", exact: true }).click();
+  await page.getByRole("button", { name: "Show the conversation", exact: true }).click();
   await expect(plan).not.toBeVisible();
   await expect(page.locator(".provider-note-evidence")).toBeVisible();
-  await page.getByRole("button", { name: "Note", exact: true }).click();
+  await page.getByRole("button", { name: "Back to note", exact: true }).click();
   await expect(plan).toHaveValue("Synthetic retained draft");
   await expect(plan).toBeFocused();
   expect(await plan.evaluate(field => ({ same: field === window.savedEditorNode, start: field.selectionStart, end: field.selectionEnd })))

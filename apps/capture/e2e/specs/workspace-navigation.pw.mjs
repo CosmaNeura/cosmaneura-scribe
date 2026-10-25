@@ -16,11 +16,16 @@ for (const platform of ["desktop", "ios"]) {
   test(`${platform} refresh preserves the visit without replaying capture and stays blocked during recording`, async ({ page }) => {
     await page.setViewportSize({ width: platform === "desktop" ? 1280 : 320, height: 844 });
     await page.goto(`/e2e/fixtures/optional-dob.html?platform=${platform}&recents`);
-    await page.getByRole("button", { name: /Synthetic walk-in/u }).click();
+    const row = page.locator('[data-visit-ref="appointment_01j00000000000000000000000"]');
+    await row.getByRole("button", { name: "Start", exact: true }).click();
     const back = page.getByRole("button", { name: "Back to encounters", exact: true });
     const refresh = page.getByRole("button", { name: "Refresh current visit", exact: true });
     await expect(back).toBeInViewport(); await expect(refresh).toBeInViewport();
-    await page.getByRole("button", { name: "Confirm consent & record", exact: true }).click();
+    const consent = page.getByRole("checkbox", { name: "The patient said yes", exact: true });
+    const record = page.getByRole("button", { name: "Start recording", exact: true });
+    await expect(consent).not.toBeChecked(); await expect(record).toBeDisabled();
+    expect(await page.evaluate(() => [window.dobLab.admissions, window.dobLab.starts])).toEqual([0, 0]);
+    await consent.click(); await record.click();
     await expect.poll(() => page.evaluate(() => window.dobLab.starts)).toBe(1);
     await expect(refresh).toBeDisabled();
     await page.evaluate(() => window.dobLab.emit({ state: "paused", statusCode: "capture_paused",
