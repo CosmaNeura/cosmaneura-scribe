@@ -40,6 +40,15 @@ if (layout) {
 const plugin = await encryptedFixturePlugin(scope.workspaceId);
 const forbidden = () => { throw new Error("Outside the synthetic DOB fixture"); };
 const fixture = window.dobLab = { creates: [], starts: 0, admissions: 0, admissionRequests: [], dobUpdates: [], openedRefs: [], closes: 0 };
+// Model another window settling/replacing the encrypted creation intent after
+// this window has displayed its pending screen. No live account is involved.
+fixture.replacePendingCreation = async () => {
+  const key = "provider-encounter-creation-v1:" + scope.workspaceId;
+  const saved = await plugin.get({ key }), value = JSON.parse(atob(saved.data));
+  value.pending = { ...value.pending, creationKey: crypto.randomUUID(), openAfterCreation: false };
+  await plugin.compareAndSwap({ key, expectedRevision: saved.revision, data: btoa(JSON.stringify(value)) });
+  return value.pending.creationKey;
+};
 let admissionCommitted = false;
 const listGate = new Promise(resolve => { fixture.releaseList = resolve; });
 const gatedAdmission = new URL(window.location.href).searchParams.has("gate-admission");

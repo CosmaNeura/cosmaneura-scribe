@@ -163,6 +163,28 @@ for (const platform of ["desktop", "ios"]) {
     expect(await page.evaluate(() => [window.dobLab.openedRefs.length, window.dobLab.admissions,
       window.dobLab.recorderCalls, window.dobLab.starts])).toEqual([0, 0, 0, 0]);
   });
+
+  test(`${platform} stale pending screen cannot open a replacement create-only intent`, async ({ page }) => {
+    await page.goto(`/e2e/fixtures/optional-dob.html?platform=${platform}&existing`);
+    await page.getByRole("button", { name: "+ Walk-in or new patient", exact: true }).click();
+    await page.getByLabel("Patient’s name", { exact: true }).fill("Synthetic walk-in");
+    await page.evaluate(() => { window.dobLab.failCreate = true; });
+    await page.getByRole("button", { name: "Continue to recording setup", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Check encounter creation", exact: true })).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "+ Walk-in or new patient", exact: true }).click();
+    const retry = page.getByRole("button", { name: "Check and open visit", exact: true });
+    await expect(retry).toBeVisible();
+    const replacement = await page.evaluate(() => window.dobLab.replacePendingCreation());
+    await retry.click();
+    await expect(page.getByRole("heading", { name: "Check encounter creation", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => [window.dobLab.creates.length, window.dobLab.openedRefs.length])).toEqual([0, 0]);
+    await page.getByRole("button", { name: "Check and continue", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Visit created", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => window.dobLab.creates.map(body => body.creation_key))).toEqual([replacement]);
+    expect(await page.evaluate(() => [window.dobLab.openedRefs.length, window.dobLab.admissions,
+      window.dobLab.recorderCalls, window.dobLab.starts])).toEqual([0, 0, 0, 0]);
+  });
 }
 
 const confirmAndStart = async page => {

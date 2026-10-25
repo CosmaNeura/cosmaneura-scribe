@@ -404,13 +404,14 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     requireValue(host.encounterSetup && setupState);
     step = "encounter creation";
     const n = generation;
-    const draft: EncounterDraft | null = patient === null ? null : {
+    const draft: EncounterDraft | null = patient === null ? setupState.pending : {
       creationKey: crypto.randomUUID(), patient, appointmentAt: new Date().toISOString(), title: "Visit",
       ...(!openAfterCreation ? { openAfterCreation: false } : {}),
     };
+    requireValue(draft);
     // Recovery follows the durable original choice, never a new button or a
     // default that could mount capture after an uncertain create-only request.
-    const shouldOpen = (draft ?? setupState.pending)?.openAfterCreation !== false;
+    const shouldOpen = draft.openAfterCreation !== false;
     show(shouldOpen ? '<h1>Opening your visit…</h1><p>Saving the patient’s name. Recording starts after you confirm consent.</p>'
       : '<h1>Creating your visit…</h1><p>Saving the patient’s name.</p>');
     const created = await host.encounterSetup.submit(draft, host.signal);
@@ -421,7 +422,7 @@ export function mountProviderWorkspace(root: HTMLElement, host: ProviderWorkspac
     if (shouldOpen) await open(created.appointmentRef);
     else show(`<h1>Visit created</h1><p>${escape(created.patientName ?? created.title)}</p>
       <p>To use a Zoom meeting bot, open Schedule in Cosmas, select your meeting, and enable its bot for this visit.</p>
-      <p>The bot has not been enabled. Scribe recording setup has not been opened.</p>
+      <p>Creating this visit does not enable a bot or open Scribe recording setup.</p>
       <div class="provider-create-actions"><button data-workspace-action="create">Open dashboard</button><button data-workspace-action="encounters">Today’s patients</button></div>`);
   };
   const showSetup = (query = ""): void => {
