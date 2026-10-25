@@ -60,10 +60,16 @@ case "${1:-help}" in
     (cd "$REPO" && node apps/capture/e2e/node_modules/@playwright/test/cli.js test --config apps/capture/e2e/playwright.full-stack.config.mjs)
     ;;
   browser-auth) node "$LAB_SOURCE/browser-auth.mjs" ;;
+  auth-normal) node "$LAB_SOURCE/coordinator/normal-auth.mjs" "${2:?Supply a new private evidence directory}" "${3:-example.com}" ;;
+  doctor|run|resume|cleanup|matrix|matrix-resume)
+    mode="$1"; shift
+    node "$LAB_SOURCE/coordinator/cli.mjs" "$mode" "$@"
+    ;;
+  coordinator-test) node --test "$LAB_SOURCE"/coordinator/*.test.mjs "$LAB_SOURCE"/native/*observer.test.mjs "$LAB_SOURCE"/native/note-observation.test.mjs ;;
   auth-public) python3 "$LAB_SOURCE/native-auth/run.py" --output "$SCRIBE_LAB_ROOT/native-auth" --mode public ;;
   auth-bootstrap) python3 "$LAB_SOURCE/native-auth/run.py" --output "$SCRIBE_LAB_ROOT/native-auth" --mode email --bootstrap ;;
   evaluation) "$SCRIBE_LAB_ROOT/python/bin/python" "$LAB_SOURCE/evaluation/evaluate.py" self-check ;;
-  appium) appium --address 127.0.0.1 --port 4729 --log-level warn ;;
+  appium) appium --address 127.0.0.1 --port 4729 --log-level warn --allow-insecure='*:session_discovery' ;;
   down) "${COMPOSE[@]}" stop ;;
-  *) echo 'Commands: setup | up | network | browser | api-browser | auth-public | auth-bootstrap | browser-auth | evaluation | appium | down' ;;
+  *) echo 'Commands: setup | up | network | browser | api-browser | auth-public | auth-bootstrap | browser-auth | auth-normal | doctor | run | resume | cleanup | matrix | matrix-resume | coordinator-test | evaluation | appium | down' ;;
 esac
