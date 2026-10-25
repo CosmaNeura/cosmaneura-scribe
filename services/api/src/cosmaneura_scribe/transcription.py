@@ -207,7 +207,9 @@ class AzureSpeechTranscriber:
                 ),
                 profanity_filter_mode=ProfanityFilterMode.NONE,
                 diarization_options=TranscriptionDiarizationOptions(
-                    max_speakers=self._max_speakers,
+                    # SDK 1.0.0 omits the enable flag despite promising automatic
+                    # enablement. The service requires it in the serialized request.
+                    {"maxSpeakers": self._max_speakers, "enabled": True},
                 ),
             )
             try:
