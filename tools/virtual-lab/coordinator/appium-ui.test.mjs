@@ -568,3 +568,96 @@ test('ambiguous or missing native controls cannot choose an arbitrary first matc
   }
   ui.request = async () => [{ [key]: 'unique' }]; assert.equal(await ui.find(locator), 'unique');
 });
+
+test('concurrent participant observations and native clicks share the complete webview context transaction', async () => {
+  const ui = new AppiumUI('/unused');
+  ui.binding = admission; ui.admission = admission; ui.scenario = { targetId: 'mock-ios' };
+  ui.config = { target: { role: 'owned-ios-simulator' }, admissionBinding: { runId: admission.runId }, sourceReaders: {
+    state: { locator: { using: 'accessibility id', value: 'Recording' }, kind: 'text' },
+    elapsed: { locator: { using: 'accessibility id', value: 'elapsed' }, kind: 'text' } } };
+  let context = 'NATIVE_APP', recordingReads = 0; const nativeContexts = [];
+  ui.rawRequest = async (path, method = 'GET', body) => {
+    if (path === '/context' && method === 'GET') return context;
+    if (path === '/contexts') return ['NATIVE_APP', 'WEBVIEW_owned'];
+    if (path === '/context') { context = body.name; return null; }
+    if (path === '/execute/sync') {
+      assert.equal(context, 'WEBVIEW_owned');
+      if (body.script.includes('readCurrent')) return { ...admission, source: 'normal-native-mount-response' };
+      if (body.script.includes('readRecording')) {
+        if (++recordingReads === 2) await new Promise(resolve => setTimeout(resolve, 35));
+        return recording();
+      }
+      throw Error('unexpected_test_script');
+    }
+    await new Promise(resolve => setTimeout(resolve, 5));
+    nativeContexts.push(context); assert.equal(context, 'NATIVE_APP');
+    if (path === '/elements') return [{ 'element-6066-11e4-a52e-4f735466cecf': body.value }];
+    if (path.endsWith('/displayed')) return true;
+    if (path.endsWith('/text')) return path.includes('/Recording/') ? 'Recording' : '00:04';
+    if (path.endsWith('/click')) return null;
+    throw Error('unexpected_test_request');
+  };
+  const results = await Promise.all([ui.sourceObservation(), ui.sourceObservation(),
+    ui.request('/element/owned-pause/click', 'POST', {})]);
+  assert.equal(results[0].capture.elapsedSeconds, 4); assert.equal(results[1].capture.elapsedSeconds, 4);
+  assert.equal(recordingReads, 2); assert.ok(nativeContexts.length >= 9);
+  assert.equal(context, 'NATIVE_APP'); assert.equal(ui.contextUncertain, false);
+});
+
+test('unexpected initial context and failed restoration block later native controls', async () => {
+  const ui = new AppiumUI('/unused'); ui.config = { target: { role: 'owned-ios-simulator' } };
+  let context = 'WEBVIEW_foreign', controls = 0;
+  ui.rawRequest = async (path, method = 'GET', body) => {
+    if (path === '/context' && method === 'GET') return context;
+    if (path === '/contexts') return ['NATIVE_APP', 'WEBVIEW_owned'];
+    if (path === '/context') {
+      if (body.name === 'NATIVE_APP') throw Error('restore_response_lost');
+      context = body.name; return null;
+    }
+    if (path === '/execute/sync') return null;
+    controls++; return null;
+  };
+  await assert.rejects(ui.request('/element/start/click', 'POST', {}), /native_context_unconfirmed/);
+  await assert.rejects(ui.webview('return null'), /native_context_unconfirmed/);
+  context = 'NATIVE_APP';
+  await assert.rejects(ui.webview('return null'), /restore_response_lost/);
+  assert.equal(ui.contextUncertain, true);
+  await assert.rejects(ui.request('/element/start/click', 'POST', {}), /native_context_unconfirmed/);
+  assert.equal(controls, 0);
+});
+
+test('fresh simulator input custody must pass immediately before the Record click', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'scribe-pre-record-route-'));
+  try {
+    const ui = driver(), events = []; ui.output = root;
+    ui.config.target = { role: 'owned-ios-simulator' }; ui.config.sources = { inputCustody: {} };
+    ui.assertVisit = async () => { events.push('visit'); };
+    ui.steps = async () => { events.push('record-click'); };
+    ui.observe = async () => ({ nativeObservation: recording() }); ui.assertMicrophoneSignal = () => {};
+    ui.inspectInputScope = async (signal, requireOwnedInput) => {
+      assert.equal(requireOwnedInput, false); events.push('route');
+      return { assessment: { status: 'BLOCKED', reasons: ['virtual_input_route_not_exclusive'] } };
+    };
+    await assert.rejects(ui.perform('record', {}, new AbortController().signal), /virtual_input_scope_unconfirmed_before_record/);
+    assert.deepEqual(events, ['visit', 'route']); assert.equal((await readdir(root)).length, 1);
+    events.length = 0;
+    ui.inspectInputScope = async () => { events.push('route'); return { assessment: { status: 'OBSERVED_ALLOWED' } }; };
+    await ui.perform('record', {}, new AbortController().signal);
+    assert.deepEqual(events, ['visit', 'route', 'record-click']);
+    delete ui.config.sources.inputCustody;
+    await assert.rejects(ui.perform('record', {}, new AbortController().signal), /virtual_input_custody_configuration_required/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('pending Record reconciliation proves initial silence before any source may resume', async () => {
+  const ui = driver(); ui.config.target = { role: 'owned-ios-simulator' };
+  ui.config.sources = { participants: [{ kind: 'virtual-microphone' }] };
+  const native = { ...recording(), capturedAudioFrames: 160, signal: { version: 2,
+    inputBuffers: 1, convertedBuffers: 1, inputMuted: false, inputEverNonzero: false,
+    convertedEverNonzero: false, inputLevel: 0, convertedLevel: 0 } };
+  ui.observe = async () => ({ nativeObservation: native });
+  await ui.reconcile('record', {}, { signal: new AbortController().signal });
+  assert.deepEqual(ui.initialMicrophoneObservation, native);
+  native.signal.inputEverNonzero = true;
+  await assert.rejects(ui.reconcile('record', {}), /native_microphone_initial_silence_missing/);
+});

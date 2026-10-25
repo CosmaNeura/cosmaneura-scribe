@@ -30,7 +30,7 @@ export const IOS_OBSERVER_HASHES = Object.freeze({
 export class AppiumUI {
   constructor(configPath) {
     this.configPath = configPath; this.session = null; this.sources = null; this.admission = null;
-    this.lifetime = new AbortController(); this.pending = new Set(); this.webviewTail = Promise.resolve();
+    this.lifetime = new AbortController(); this.pending = new Set(); this.uiTail = Promise.resolve();
     this.observerLifetime = new AbortController(); this.desktop = null;
     this.uncertainMutations = new Set(); this.commandSequence = 0;
   }
@@ -58,6 +58,7 @@ export class AppiumUI {
     }
     const caps = this.config.capabilities;
     if (Object.hasOwn(caps, SESSION_ATTEMPT_CAPABILITY)) throw Error('session_attempt_capability_reserved');
+    if (caps['appium:autoWebview'] === true || caps.autoWebview === true) throw Error('native_initial_context_required');
     if (caps['appium:noReset'] !== true || caps['appium:forceAppLaunch'] === true || caps['appium:fullReset'] === true
         || caps['appium:prerun'] !== undefined || caps['appium:postrun'] !== undefined
         || caps['appium:app'] !== undefined || (this.config.target.role === 'owned-ios-simulator'
@@ -86,6 +87,18 @@ export class AppiumUI {
     return pending;
   }
   request(path, method = 'GET', body, signal, { observerInstallation = false } = {}) {
+    return this.withUIContext(async () => {
+      if (this.config?.target?.role === 'owned-ios-simulator'
+          && await this.rawRequest('/context', 'GET', undefined, signal) !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
+      return this.rawRequest(path, method, body, signal, { observerInstallation });
+    });
+  }
+  withUIContext(operation) {
+    const queued = this.uiTail.then(operation);
+    this.uiTail = queued.catch(() => {});
+    return this.track(() => queued);
+  }
+  rawRequest(path, method = 'GET', body, signal, { observerInstallation = false } = {}) {
     const active = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : []), AbortSignal.timeout(30000)]);
     return this.track(async () => {
     active.throwIfAborted();
@@ -160,16 +173,21 @@ export class AppiumUI {
     finally { signal.removeEventListener('abort', abortObserver); }
   }
   webview(script, args = [], signal, observerInstallation = false) {
-    const operation = this.webviewTail.then(async () => {
-      const previous = await this.request('/context', 'GET', undefined, signal);
-      const contexts = (await this.request('/contexts', 'GET', undefined, signal)).filter(item => item.startsWith('WEBVIEW'));
+    return this.withUIContext(async () => {
+      const previous = await this.rawRequest('/context', 'GET', undefined, signal);
+      if (previous !== 'NATIVE_APP') throw Error('native_context_unconfirmed');
+      const contexts = (await this.rawRequest('/contexts', 'GET', undefined, signal)).filter(item => item.startsWith('WEBVIEW'));
       if (contexts.length !== 1) throw Error('owned_webview_ambiguous');
-      await this.request('/context', 'POST', { name: contexts[0] }, signal);
-      try { return await this.request('/execute/sync', 'POST', { script, args }, signal, { observerInstallation }); }
-      finally { await this.request('/context', 'POST', { name: previous }, signal); }
+      this.contextUncertain = true;
+      try {
+        await this.rawRequest('/context', 'POST', { name: contexts[0] }, signal);
+        return await this.rawRequest('/execute/sync', 'POST', { script, args }, signal, { observerInstallation });
+      }
+      finally {
+        try { await this.rawRequest('/context', 'POST', { name: previous }, signal); this.contextUncertain = false; }
+        catch (error) { this.contextUncertain = true; throw error; }
+      }
     });
-    this.webviewTail = operation.catch(() => {});
-    return operation;
   }
   async installObserver(signal) {
     if (!this.binding) throw Error('created_visit_binding_missing');
@@ -527,11 +545,22 @@ export class AppiumUI {
     // a same-visit replacement session must never receive this run's Finish.
     if (action === 'finish') await this.assertFinishable(signal);
     if (action === 'save') await this.readNote(null, signal);
+    if (action === 'record') await this.assertInputBeforeRecord(signal);
     await this.steps(this.config.journey?.[action], signal);
     if (action === 'prepare' && this.sources) await this.sources.connect({ signal });
     const observed = await this.observe(action, signal);
     if (action === 'record') this.assertMicrophoneSignal(observed.nativeObservation, 'initial');
     return observed;
+  }
+  inspectInputScope(signal, requireOwnedInput) {
+    return inspectHALScope({ ...this.config.sources.inputCustody, target: this.config.target, signal, requireOwnedInput });
+  }
+  async assertInputBeforeRecord(signal) {
+    if (this.config.target?.role !== 'owned-ios-simulator') return;
+    if (!this.output || !this.config.sources?.inputCustody) throw Error('virtual_input_custody_configuration_required');
+    const receipt = await this.inspectInputScope(signal, false);
+    await atomicJSON(resolve(this.output, `hal-before-record-${randomUUID()}.json`), receipt);
+    if (receipt.assessment?.status !== 'OBSERVED_ALLOWED') throw Error('virtual_input_scope_unconfirmed_before_record');
   }
   async startInputWatch(signal) {
     if (this.config.target?.role !== 'owned-ios-simulator'
@@ -599,6 +628,7 @@ export class AppiumUI {
     if (['prepare', 'consent', 'record', 'finish', 'review', 'save', 'reopen'].includes(action)) await this.assertVisit(signal);
     if (action === 'record' && !this.admission) throw Error('consent_observation_requires_recovery');
     const observation = await this.observe(action, signal);
+    if (action === 'record') this.assertMicrophoneSignal(observation.nativeObservation, 'initial');
     if (action === 'prepare' && this.sources) await this.sources.connect({ signal });
     return observation;
   }
@@ -735,7 +765,7 @@ export class AppiumUI {
     const sourceCleanup = this.sources?.cleanup();
     // Session creation can settle after cancellation. Drain it before deciding
     // whether a session exists; a transport-lost creation retains quarantine.
-    await Promise.allSettled([...this.pending, this.webviewTail]);
+    await Promise.allSettled([...this.pending, this.uiTail]);
     const source = await sourceCleanup;
     try { await this.stopInputWatch(); } catch { this.inputWatchCleanupUncertain = true; }
     const observer = this.desktop ? await this.desktop.close({ preserveForRecovery }) : await this.cleanupIOSObservers(preserveForRecovery);
@@ -764,7 +794,7 @@ export class AppiumUI {
       observerInstallationUncertain: this.observerInstallationUncertain === true,
       ...(this.inputWatchSummary ? { inputScope: this.inputWatchSummary } : {}),
       ...(this.inputWatchUnsafeEvidence ? { inputUnsafeEvidence: this.inputWatchUnsafeEvidence } : {}),
-      ownedResourcesSettled: closed && this.pending.size === 0 && this.uncertainMutations.size === 0 && !this.observerInstallationUncertain && !this.observerCleanupUncertain && !this.dashboardCleanupUncertain && !this.inputWatchCleanupUncertain
+      ownedResourcesSettled: closed && this.pending.size === 0 && this.uncertainMutations.size === 0 && !this.contextUncertain && !this.observerInstallationUncertain && !this.observerCleanupUncertain && !this.dashboardCleanupUncertain && !this.inputWatchCleanupUncertain
         && (!source || source.ownedResourcesSettled === true) && (!observer || observer.ownedResourcesSettled === true),
       nativeAppTerminated: false, nativeCaptureState: 'requires-product-state-inspection' };
   }
