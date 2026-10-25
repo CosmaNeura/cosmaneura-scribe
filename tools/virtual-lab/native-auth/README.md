@@ -14,6 +14,9 @@ Offline tests exercise real SDK middleware failures and synthetic client state.
 Public mode fetches staging configuration; neither proves account/Core access.
 Explicit bootstrap creates/reuses only approved `scribe-lab-a/b+clerk_test@example.com`
 users; required cryptorandom passwords remain in memory. OTP `424242` sends no email.
+`--bootstrap-domain cosmaneura.com` selects the separately approved Cosmas MD
+synthetic accounts. This is identity setup only; normal hosted client sign-in and
+legitimate practice enrollment must still be tested separately.
 Synthetic user IDs go to `synthetic-accounts.json`; no Core grants are created.
 Existing-account `--mode email`/`ticket` needs trusted environment values:
 `SCRIBE_LAB_SYNTHETIC_ONLY=1`, `SCRIBE_LAB_USER_A/B_ID`, plus `SCRIBE_LAB_EMAIL_A/B`

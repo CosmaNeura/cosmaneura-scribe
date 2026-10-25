@@ -107,6 +107,8 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("/Users/jw/Desktop/Cosmas/Scribe-Virtual-Lab-20261024/native-auth"))
     parser.add_argument("--mode", choices=["offline", "public", "email", "ticket"], default="offline")
     parser.add_argument("--bootstrap", action="store_true", help="Create/reuse only the two approved synthetic +clerk_test accounts (email mode)")
+    parser.add_argument("--bootstrap-domain", choices=["example.com", "cosmaneura.com"], default="example.com",
+                        help="Explicit approved synthetic practice domain; never an arbitrary address")
     args = parser.parse_args()
     if args.bootstrap and args.mode != "email":
         parser.error("bootstrap_requires_email_mode")
@@ -144,6 +146,7 @@ def main():
             env.update({"SCRIBE_LAB_LIVE": "1" if args.mode != "offline" else "0",
                         "SCRIBE_LAB_AUTH_STRATEGY": args.mode,
                         "SCRIBE_LAB_BOOTSTRAP": "1" if args.bootstrap else "0",
+                        "SCRIBE_LAB_BOOTSTRAP_DOMAIN": args.bootstrap_domain,
                         "SCRIBE_LAB_ACCOUNT_RECEIPT": str(output / "synthetic-accounts.json"),
                         "SCRIBE_LAB_PHASE_RECEIPT": str(output / "phase-result.json")})
             if args.bootstrap:
