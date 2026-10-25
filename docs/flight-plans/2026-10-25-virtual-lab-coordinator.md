@@ -47,3 +47,35 @@ selected. The full context transaction remains under the existing UI mutex.
 No app authentication, consent, recording, source or storage logic changes.
 Keep the original failed run and frozen tooling; an original-run recovery
 requires separately reviewed reconciliation before a fresh run uses new tools.
+
+The Zoom profile increment is Tier 2 because it can follow normal account OAuth
+and authorize an exact appointment/meeting through the hosted UI. It uses only
+the two synthetic providers and their existing normal Clerk session stores.
+Fresh Settings doctor identity, current Clerk identity and explicitly inactive
+support-view responses precede a mutation. A pinned read-only staging collector
+checks the dedicated host's current binding. A foreign owner, unknown patient
+inventory, native capture binding, missing note schema or started meeting blocks
+authorization. The existing Dev/John Zoom connection must remain untouched.
+
+This first slice has no bot-media adapter. Profile, account connection and future
+meeting authorization are separate observations; bot consent, joining, recording,
+fixture delivery, transcript, note and playback gates remain unrun. An OAuth user
+checkpoint never collects credentials. A durable intent precedes each click, and
+resume rechecks normal UI and scoped collector responses without replaying an
+uncertain mutation. Browser scope stays subject to its 15-second freshness limit,
+including after the slower management/database collection. The exact bound host
+observation is revalidated before authorization and its 120-second expiry is
+checked again after dialog waits and at the normal POST. An OAuth timeout
+closes the owned browser and reports incomplete authentication; resume only
+reconciles a separately completed normal connection and cannot resume that
+browser session. A new normal OAuth action requires explicit separate intent.
+
+Recovery closes only owned browser resources and retains uncertain process or
+collector ownership. Disconnect is a normal separate account action, not a bot
+stop. Before moving the one test host from A to B, separately prove actual bot
+stop and use normal disconnection; never silently replace another provider's
+binding or run parallel captures. Revert the tooling to disable new executions;
+retain already-created journals and any external authorization for explicit
+same-run inspection. No production configuration or schema migration is part of
+this increment. Exact-head independent review and retained local/live scope
+receipts are required; a profile-only pass cannot close overall lab acceptance.

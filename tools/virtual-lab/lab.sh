@@ -61,7 +61,7 @@ case "${1:-help}" in
     ;;
   browser-auth) node "$LAB_SOURCE/browser-auth.mjs" ;;
   auth-normal) node "$LAB_SOURCE/coordinator/normal-auth.mjs" "${2:?Supply a new private evidence directory}" "${3:-example.com}" ;;
-  doctor|run|resume|cleanup|matrix|matrix-resume)
+  doctor|run|resume|cleanup|matrix|matrix-resume|zoom-doctor|zoom-run|zoom-resume)
     mode="$1"; shift
     node "$LAB_SOURCE/coordinator/cli.mjs" "$mode" "$@"
     ;;
@@ -71,5 +71,5 @@ case "${1:-help}" in
   evaluation) "$SCRIBE_LAB_ROOT/python/bin/python" "$LAB_SOURCE/evaluation/evaluate.py" self-check ;;
   appium) appium --address 127.0.0.1 --port 4729 --log-level warn --allow-insecure='*:session_discovery' ;;
   down) "${COMPOSE[@]}" stop ;;
-  *) echo 'Commands: setup | up | network | browser | api-browser | auth-public | auth-bootstrap | browser-auth | auth-normal | doctor | run | resume | cleanup | matrix | matrix-resume | coordinator-test | evaluation | appium | down' ;;
+  *) echo 'Commands: setup | up | network | browser | api-browser | auth-public | auth-bootstrap | browser-auth | auth-normal | doctor | run | resume | cleanup | matrix | matrix-resume | zoom-doctor | zoom-run | zoom-resume | coordinator-test | evaluation | appium | down' ;;
 esac

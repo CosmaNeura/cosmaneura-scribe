@@ -143,3 +143,75 @@ speech/note output, recovery, synchronization, editing and staging dashboard
 gates. Mock engine tests always return `MOCK_JOURNEY_PASS`; they can never
 produce a live acceptance result. Unconfigured or unexecuted lanes stay
 BLOCKED or NOT RUN.
+# Zoom profile and authorization runner
+
+`lab.sh zoom-doctor CONFIG OUTPUT`, `zoom-run CONFIG OUTPUT`, and
+`zoom-resume CONFIG OUTPUT` use a separate bot journal. They do not invoke the
+native journey, start a meeting, join a bot, emit audio, or qualify capture.
+The first slice observes normal Settings, offers a bounded normal OAuth user
+checkpoint, and can authorize one future Schedule meeting through its actual
+appointment picker. `AUTHORIZATION_OBSERVED` means the UI and exact response
+agree; recording, transcription, note quality and playback remain `NOT_RUN`.
+The inspected bot note viewer has no manual Save or saved-audio control, so
+those capabilities are reported `NOT_AVAILABLE`, never inferred from native
+Scribe. The dedicated bot-note projector binds a doctor, appointment, note and
+AI transcript; it cannot accept a native session receipt.
+
+The private JSON configuration requires `schema:1`, `syntheticOnly:true`,
+`executionKind:"live"`, UUID `runId`, `account` A/B, actual `doctorRef`,
+`identitySHA256` (SHA256 of the normal Clerk user ID), actual `hostId`,
+`action` profile/connect/authorize, staging `apiOrigin`, absolute
+`playwrightPath`, and a private normal `storageState` file with its exact
+`storageStateSHA256`. No testing token, API token, cookie override or password
+is accepted. Supply explicit `uiTimeoutMs` ≤30000, `oauthTimeoutMs` ≤120000,
+and `collectorTimeoutMs` ≤240000. `collector` pins an absolute `executable`
+and `script` with `executableSHA256` and `scriptSHA256`.
+
+The read-only collector accepts a bounded stdin request with `version:1`,
+`runId`, fresh `requestNonce`, account, hostId and doctorRef. It must return the
+`live-staging-zoom-bot-observation` schema validated in zoom-bot-evidence.mjs,
+including actual profile identity, exact host-owner counts, integration counts,
+deployment identity and its collection bracket. A host already bound to another
+doctor is refused. The collector's scoped source query and deployment check
+must be pinned inside its script. Its ≤120s observation-age allowance and ±5s
+wall-clock skew allowance are engineering bounds, not measured clock precision.
+Immediate normal Clerk and inactive view-as checks precede the UI mutation.
+The same nonce-bound host/synthetic-scope observation is revalidated immediately
+before authorization. Its expiry is passed to the UI and checked after the
+dialog wait and at the exact POST; expiration blocks the request without a
+collector requery or another authorization attempt. A Settings/ViewAs request
+or main-frame navigation invalidates the browser mutation permit immediately;
+the POST also checks the captured response/navigation generations and the
+unchanged 15-second identity freshness limit.
+
+For action authorize, also supply exact `authorization` keys: `meetingId`
+(numeric Zoom ID), `meetingRecordRef` (zmtg), `appointmentRef`, and explicitly
+preauthorized `allowedAppointmentRefs` / `allowedPatientRefs`. The collector
+must return complete bounded inventories for this exact synthetic doctor;
+every returned hash must belong to these sets. Unknown rows block the broad
+doctor-scoped picker requests. Native capture bindings, another linked meeting,
+missing note schemas, a foreign appointment and an already-started meeting all
+block new authorization. No mocked or filtered network response is supplied.
+
+Each mutation intent is fsynced before its normal UI click. Resume verifies
+configuration, tooling and every observation hash, inspects fresh owned browser
+process absence, and reconciles Settings/Schedule plus the collector. It never
+replays an uncertain Connect or authorization intent. A bounded OAuth timeout
+closes the owned browser and reports `OAUTH_INCOMPLETE_BROWSER_CLOSED` (or
+`OAUTH_INCOMPLETE_CLEANUP_UNCONFIRMED` if its closure cannot be proved). This is
+not browser-session resumption: `zoom-resume` only checks whether a separately
+completed normal OAuth connection now exists. An unconnected account needs a
+separate explicit normal OAuth action through its normal Settings UI, or a new
+authorized run after ownership settlement; the existing pending intent is never
+replayed. Unresolved authorization needs explicit normal UI inspection. Changing tooling/configuration requires a new run after
+owned-resource settlement. The per-host mutex is shared across output paths;
+dead-owner recovery is allowed only for the exact same run. Missing process
+identity or uncertain collector transport retains the guard. Never delete it
+blindly or act on an old PID.
+
+Use A and B sequentially. Keep an existing unrelated Zoom connection intact.
+If only one test Zoom host is available, finish and independently verify its
+actual bot stop before normal disconnection and the other account's connection.
+Disconnect is not a stop command. Browser cleanup closes only owned control
+resources and does not imply a bot or native recorder stopped. Mock tests are
+explicitly classified; the CLI accepts live configurations only.
