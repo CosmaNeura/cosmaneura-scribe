@@ -6,6 +6,7 @@ import { parseInputSignal } from "../native/ios-input-signal";
 import { isMicrophoneInput, type MicrophoneInput } from "../native/microphone-input";
 import { parseAudioInputDevices } from "./ios-audio-preflight";
 import type { AudioInputDevice } from "./audio-preflight";
+import { NativeClockMapper, parseNativeTimingSample, type NativeTimingSample, type NativeClockCorrelation } from "./native-recording-timing";
 
 export type NativeRecordingCommand = "read" | "start" | "pause" | "seal" | "close" | "input";
 export interface NativeRecordingPort {
@@ -20,6 +21,7 @@ export interface NativeRecordingState {
   readonly busy: boolean; readonly recordedChunks: number; readonly recordedPlaintextBytes: number;
   /** Accepted 16 kHz mono frames, including the retained pre-run baseline. Not custody proof. */
   readonly capturedAudioFrames?: number;
+  readonly nativeTiming?: NativeTimingSample;
   readonly maximumPlaintextBytes: number; readonly input: MicrophoneInput; readonly signal: unknown;
   readonly inputDevices?: readonly AudioInputDevice[];
   readonly selectedInputId?: string | null;
@@ -37,6 +39,7 @@ export async function connectNativeProviderRecorder(options: {
   uuid(sessionId);
   let state: NativeRecordingState | null = null, closed = false, accepted = false, starting = false;
   let startAttempt = 0;
+  let clockMapper: NativeClockMapper | undefined, clockCorrelation: NativeClockCorrelation | undefined;
   let confirmStartCancelled: (() => void) | undefined;
   let status: string | null = null, reading: Promise<void> | null = null, closing: Promise<void> | null = null;
   let uploading: Promise<void> | null = null;
@@ -69,20 +72,28 @@ export async function connectNativeProviderRecorder(options: {
     remainingAuthoritySeconds: null, transcriptionStatus: null, transcript: null,
     ...(state.inputDevices ? { inputDevices: state.inputDevices, selectedInputId: state.selectedInputId ?? null } : {}),
     native: { phase: awaitingStart ? "starting" : phase, busy: state.busy,
+      ...(clockCorrelation ? { clockCorrelation: structuredClone(clockCorrelation) } : {}),
       ...(uploadProgress ? { uploadProgress: { ...uploadProgress } } : {}) } };
   };
   const publish = (): void => {
     if (!state || closed || signal.aborted) return;
     for (const listener of listeners) { try { listener(snapshot()); } catch { /* Observer isolation. */ } }
   };
-  const accept = (value: unknown, requestId: string, close = false): boolean => {
+  const accept = (value: unknown, requestId: string, close = false, sentAtRendererMs?: number): boolean => {
+    const receivedAtRendererMs = performance.now();
     const response = exact(value, ["requestId", "ok", "recording"]);
     if (response.requestId !== requestId || typeof response.ok !== "boolean") throw failure();
     if (close) { if (response.recording !== null) throw failure(); }
     else {
       const next = parseNativeRecordingState(response.recording);
       if (next.sessionId !== sessionId || state && next.recorderId !== state.recorderId) throw failure();
-      if (!state || next.revision > state.revision) { state = next; publish(); }
+      if (!state || next.revision > state.revision) {
+        clockMapper ??= new NativeClockMapper(sessionId, next.recorderId);
+        clockCorrelation = next.nativeTiming && sentAtRendererMs !== undefined ? clockMapper.observe({
+          sessionId, recorderId: next.recorderId, revision: next.revision, sample: next.nativeTiming,
+          sentAtRendererMs, receivedAtRendererMs }) : undefined;
+        state = next; publish();
+      }
     }
     return response.ok;
   };
@@ -90,8 +101,9 @@ export async function connectNativeProviderRecorder(options: {
     if (kind !== "close") current();
     if (!state) throw failure();
     const requestId = crypto.randomUUID();
+    const sentAtRendererMs = performance.now();
     const ok = accept(await port.command({ requestId, recorderId: state.recorderId, kind,
-      ...(input === undefined ? {} : { input }), ...(inputId === undefined ? {} : { inputId }) }), requestId, kind === "close");
+      ...(input === undefined ? {} : { input }), ...(inputId === undefined ? {} : { inputId }) }), requestId, kind === "close", sentAtRendererMs);
     if (kind !== "close") current();
     if (!ok) throw failure();
   };
@@ -179,7 +191,8 @@ export async function connectNativeProviderRecorder(options: {
   const openingId = crypto.randomUUID();
   // Even an unsuccessful open returns its retained handle for explicit recovery
   // and close. Do not drop that ownership by throwing before the UI receives it.
-  accept(await port.open(sessionId, openingId), openingId);
+  const openSentAtRendererMs = performance.now();
+  accept(await port.open(sessionId, openingId), openingId, false, openSentAtRendererMs);
   if (!state) throw failure();
   let timer: ReturnType<typeof setInterval> | undefined;
   const stopPolling = (): void => { clearInterval(timer); timer = undefined; document.removeEventListener("visibilitychange", visible); };
@@ -226,11 +239,12 @@ export async function connectNativeProviderRecorder(options: {
 }
 
 export function parseNativeRecordingState(value: unknown): NativeRecordingState {
+  const hasTiming = value !== null && typeof value === "object" && Object.hasOwn(value, "nativeTiming");
   const hasFrames = value !== null && typeof value === "object" && Object.hasOwn(value, "capturedAudioFrames");
   const hasDevices = value !== null && typeof value === "object" && Object.hasOwn(value, "inputDevices");
   const data = exact(value, ["version", "revision", "recorderId", "sessionId", "phase", "failure", "busy", "recordedChunks",
     "recordedPlaintextBytes", "maximumPlaintextBytes", "input", "completion", "signal", ...(hasFrames ? ["capturedAudioFrames"] : []),
-    ...(hasDevices ? ["inputDevices", "selectedInputId"] : [])]);
+    ...(hasDevices ? ["inputDevices", "selectedInputId"] : []), ...(hasTiming ? ["nativeTiming"] : [])]);
   if (data.version !== 1 || !integer(data.revision, 1, Number.MAX_SAFE_INTEGER)
     || typeof data.phase !== "string" || !["unopened", "opening", "ready", "starting", "recording", "pausing", "paused", "stopPending", "sealing", "sealed", "failed", "closed"].includes(data.phase)
     || data.failure !== null && (typeof data.failure !== "string" || !["preparationFailed", "startFailed", "stopPending", "recoveryFailed", "captureInterrupted", "recordingIncomplete"].includes(data.failure))
@@ -242,6 +256,7 @@ export function parseNativeRecordingState(value: unknown): NativeRecordingState 
     Math.max(0, Number(data.recordedPlaintextBytes) - Number(data.recordedChunks) * 44) / 2,
     2048 * 160_000)) throw failure();
   uuid(data.recorderId); uuid(data.sessionId); parseInputSignal(data.signal);
+  if (hasTiming) parseNativeTimingSample(data.nativeTiming);
   if (hasDevices) {
     const devices = parseAudioInputDevices(data.inputDevices);
     if (data.selectedInputId !== null && (typeof data.selectedInputId !== "string"

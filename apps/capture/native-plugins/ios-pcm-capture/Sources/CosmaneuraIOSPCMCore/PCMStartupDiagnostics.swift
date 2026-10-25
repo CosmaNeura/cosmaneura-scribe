@@ -18,23 +18,40 @@ public enum PCMStartupEvent: String, Codable, Sendable {
 public final class PCMStartupDiagnostics: @unchecked Sendable {
   public static let shared = PCMStartupDiagnostics()
   public static let maximumEvents = 128
-  private struct Entry: Codable {
-    let utc: Date; let event: PCMStartupEvent
+  public static let maximumPending = 160
+  private struct Entry: Encodable {
+    let utc: Date; let event: PCMStartupEvent; let clock = "dispatch-uptime-ns"
+    let monotonicNanoseconds: String; let captureAttempt: Int; let droppedEvents: Int
     let durationMilliseconds: Double?; let buildNumber: Int?
     enum CodingKeys: String, CodingKey {
-      case utc, event, durationMilliseconds = "duration_ms", buildNumber = "build_number"
+      case utc, event, clock, monotonicNanoseconds = "monotonic_ns", captureAttempt = "capture_attempt"
+      case droppedEvents = "dropped_events", durationMilliseconds = "duration_ms", buildNumber = "build_number"
     }
   }
-  private let queue = DispatchQueue(label: "com.cosmaneura.scribe.capture-startup-diagnostics")
+  private let queue: DispatchQueue
+  private let monotonicNow: @Sendable () -> UInt64
+  private let wallNow: @Sendable () -> Date
   private let admission = NSLock()
-  private var admitted = 0
+  private var remaining = 128, remainingTerminal = 32, pending = 0, attempt = 0, dropped = 0
   private var destination: URL?
   private var entries: [Entry] = []
 
-  public init() {}
+  public init(monotonicNow: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+    wallNow: @escaping @Sendable () -> Date = { Date() },
+    queue: DispatchQueue = DispatchQueue(label: "com.cosmaneura.scribe.capture-startup-diagnostics")) {
+    self.monotonicNow = monotonicNow; self.wallNow = wallNow; self.queue = queue
+  }
 
-  /// Called only by the native app, with a fixed path in its own Caches folder.
-  /// Reconfiguration cannot reset the per-process bound or redirect an active journal.
+  /// A read-only clock sample in the existing recorder reply. It consumes no
+  /// event allowance and does not grant capture authority or create a request.
+  public func timingSnapshot() -> [String: Any] {
+    admission.withLock {
+      ["version": 1, "clock": "dispatch-uptime-ns", "monotonicNs": String(monotonicNow()),
+        "captureAttempt": attempt, "droppedEvents": dropped]
+    }
+  }
+
+  /// Only the native app configures its fixed local destination, once.
   public func configure(destination: URL) {
     admission.withLock {
       guard self.destination == nil, destination.isFileURL else { return }
@@ -47,8 +64,8 @@ public final class PCMStartupDiagnostics: @unchecked Sendable {
     append(event, durationMilliseconds: nil, buildNumber: nil)
   }
 
-  /// Only the native owner accepts this after confirmed recording. The renderer
-  /// supplies a bounded same-process duration; the build comes from the app.
+  /// The native owner accepts this only after confirmed recording. This duration
+  /// remains a renderer monotonic interval, distinct from the native event clock.
   public func recordReadyTiming(milliseconds: Double, buildNumber: Int? = nil) {
     guard milliseconds.isFinite, milliseconds >= 0, milliseconds <= 3_600_000 else { return }
     let candidate = buildNumber ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")
@@ -59,35 +76,54 @@ public final class PCMStartupDiagnostics: @unchecked Sendable {
   }
 
   private func append(_ event: PCMStartupEvent, durationMilliseconds: Double?, buildNumber: Int?) {
-    let target = admission.withLock { () -> URL? in
-      guard let destination, admitted < Self.maximumEvents else { return nil }
-      admitted += 1
-      return destination
-    }
-    guard let target else { return }
-    let entry = Entry(utc: Date(), event: event, durationMilliseconds: durationMilliseconds, buildNumber: buildNumber)
-    queue.async { [self] in
-      entries.append(entry)
-      do {
-        let encoder = JSONEncoder()
-        // Milliseconds distinguish native setup from reservation/admission waits.
-        // Lifecycle rows keep their two-field envelope. Only the Ready timing
-        // has bounded numeric duration/build fields; no IDs or content enter it.
-        encoder.dateEncodingStrategy = .custom { date, encoder in
-          let formatter = ISO8601DateFormatter()
-          formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-          var container = encoder.singleValueContainer()
-          try container.encode(formatter.string(from: date))
-        }
-        let data = try encoder.encode(entries)
-        guard data.count <= 32_768 else { return }
-        try data.write(to: target, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
-        var url = target
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try url.setResourceValues(values)
-      } catch { /* Diagnostic failure never changes capture or cleanup. */ }
+    admission.withLock {
+      guard let target = destination else { return }
+      // Reset before the pending-queue guard: a saturated earlier attempt must
+      // not permanently suppress the next attempt's evidence after writes settle.
+      if event == .startRequested {
+        remaining = 128; remainingTerminal = 32; attempt = min(2_147_483_647, attempt + 1); dropped = 0
+      }
+      let terminal: Bool
+      switch event {
+      case .startRejected, .readyRejected, .driverRejected, .interrupted, .routeChanged,
+        .mediaServicesLost, .mediaServicesReset, .backgrounded, .permissionRevoked, .captureFailed,
+        .inputFrozen, .driverReleased, .stopRequested, .stopAccepted, .stopRejected: terminal = true
+      default: terminal = false
+      }
+      guard pending < Self.maximumPending, terminal ? remainingTerminal > 0 : remaining > 0 else {
+        dropped = min(2_147_483_647, dropped + 1); return
+      }
+      if terminal { remainingTerminal -= 1 } else { remaining -= 1 }
+      pending += 1
+      let entry = Entry(utc: wallNow(), event: event, monotonicNanoseconds: String(monotonicNow()),
+        captureAttempt: attempt, droppedEvents: dropped,
+        durationMilliseconds: durationMilliseconds, buildNumber: buildNumber)
+      // Enqueue under the admission lock to preserve monotonic admission order
+      // when native lifecycle and callback threads report concurrently.
+      queue.async { [self] in
+        defer { admission.withLock { pending -= 1 } }
+        entries.append(entry)
+        if entries.count > Self.maximumEvents { entries.removeFirst(entries.count - Self.maximumEvents) }
+        do {
+          let encoder = JSONEncoder()
+          encoder.dateEncodingStrategy = .custom { date, encoder in
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var container = encoder.singleValueContainer()
+            try container.encode(formatter.string(from: date))
+          }
+          var data = try encoder.encode(entries)
+          while data.count > 32_768 && entries.count > 1 {
+            entries.removeFirst(); data = try encoder.encode(entries)
+          }
+          guard data.count <= 32_768 else { return }
+          try data.write(to: target, options: .atomic)
+          try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+          var url = target
+          var values = URLResourceValues(); values.isExcludedFromBackup = true
+          try url.setResourceValues(values)
+        } catch { /* Diagnostic failure never changes capture or cleanup. */ }
+      }
     }
   }
 

@@ -50,6 +50,55 @@ async function retainedUpload(h: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("native provider controller", () => {
+  it("maps native time on existing requests without adding a polling or authority path", async () => {
+    const h = await fixture(); let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    h.f.set({ nativeTiming: { version: 1, clock: "dispatch-uptime-ns", monotonicNs: "1000000000", captureAttempt: 0, droppedEvents: 0 } });
+    const original = h.port.command;
+    h.port.command = request => {
+      if (request.kind === "start") {
+        h.f.set({ nativeTiming: { version: 1, clock: "dispatch-uptime-ns", monotonicNs: "1082000000", captureAttempt: 1, droppedEvents: 0 } });
+        now = 184;
+      }
+      return original(request);
+    };
+    const view = await h.open();
+    try {
+      expect(view.controller.snapshot.native?.clockCorrelation?.transportBracketWidthMs).toBe(0);
+      expect(view.controller.snapshot.native?.clockCorrelation?.uncertaintyMs).toBeNull();
+      now = 180; await view.controller.startRecording();
+      const result = view.controller.snapshot.native?.clockCorrelation;
+      expect(result?.sample.captureAttempt).toBe(1);
+      expect(result?.sentAtRendererMs).toBe(180); expect(result?.receivedAtRendererMs).toBe(184);
+      expect(result?.estimatedRendererAtAnchorLowerMs).toBe(100); expect(result?.estimatedRendererAtAnchorUpperMs).toBe(100);
+      expect(result?.qualification).toBe("NOT_ESTABLISHED");
+      expect(h.commands.map(command => command.kind)).toEqual(["start"]);
+      expect(view.controller.snapshot.state).toBe("recording");
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
+  it("ignores a late native time sample after a newer paused reply", async () => {
+    const h = await fixture(); let now = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    h.f.set({ nativeTiming: { version: 1, clock: "dispatch-uptime-ns", monotonicNs: "1000000000", captureAttempt: 1, droppedEvents: 0 } });
+    const view = await h.open(), held = deferred<unknown>(), original = h.port.command;
+    let late: unknown;
+    h.port.command = request => {
+      if (request.kind === "read") { late = h.response(request.requestId); return held.promise; }
+      if (request.kind === "pause") {
+        h.f.set({ nativeTiming: { version: 1, clock: "dispatch-uptime-ns", monotonicNs: "1020000000", captureAttempt: 1, droppedEvents: 0 } });
+        now = 125;
+      }
+      return original(request);
+    };
+    try {
+      now = 110; const reading = view.controller.getCaptureSignal!();
+      now = 115; await view.controller.pauseRecording!();
+      const accepted = view.controller.snapshot.native?.clockCorrelation;
+      now = 130; held.resolve(late); await reading;
+      expect(view.controller.snapshot.native?.clockCorrelation).toEqual(accepted);
+      expect(view.controller.snapshot.state).toBe("paused");
+    } finally { await view.deactivate(); h.storage.close(); }
+  });
   it("finishes the original frontend span only after its positive native recording reply", async () => {
     const h = await fixture(), held = deferred<unknown>(), command = h.port.command;
     let now = 100, requestId = "";
