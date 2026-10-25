@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installVisitScopeObserver } from "./visit-observer.mjs";
+
+test('retained visit observer cannot remove wrappers while a native request remains pending', async () => {
+  let settle;
+  const pending = new Promise(resolve => { settle = resolve; }), original = () => pending;
+  globalThis.window = { Capacitor: { nativePromise: original, fromNative: () => {} } };
+  installVisitScopeObserver({ runId: '11111111-1111-4111-8111-111111111111', observerSHA256: 'b'.repeat(64) });
+  const observer = window.__scribeLabVisitObserver;
+  window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'getState', {});
+  assert.equal(observer.describe().observerSHA256, 'b'.repeat(64));
+  assert.equal(observer.describe().pendingObservedReplies, 1);
+  assert.equal(observer.uninstall().ownedResourcesSettled, false);
+  settle(null); await pending;
+  assert.equal(observer.describe().pendingObservedReplies, 0);
+  assert.equal(observer.uninstall().ownedResourcesSettled, true);
+  assert.equal(window.Capacitor.nativePromise, original);
+});
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const ref = "appointment_01m5q8r3kzeng9szb5frh6ppk3";
 const create = { requestId: id(2), revision: id(3), action: "encounters", body: JSON.stringify({

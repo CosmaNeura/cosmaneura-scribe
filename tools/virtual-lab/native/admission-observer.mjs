@@ -2,7 +2,7 @@
  * Inject into an owned debug WebView before the normal consent/preparation UI.
  * It does not create requests or retain tokens, attestation, body or audio URLs.
  */
-export function installAdmissionObserver(binding, projectNoteObservation = null) {
+export function installAdmissionObserver(binding, projectNoteObservation = null, observerSHA256 = null) {
   const uuid = value => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
   const ref = (value, prefix) => typeof value === "string" && new RegExp(`^${prefix}_[0-7][0-9a-hjkmnp-tv-z]{25}$`, "u").test(value);
   if (!uuid(binding?.runId) || !uuid(binding?.workspaceId) || !ref(binding?.appointmentRef, "appointment")) {
@@ -12,13 +12,19 @@ export function installAdmissionObserver(binding, projectNoteObservation = null)
   const cap = window.Capacitor;
   if (!cap || typeof cap.nativePromise !== "function") throw new Error("native WebView bridge unavailable");
   if (window.__scribeLabAdmissionObserver) throw new Error("admission observer already installed");
+  if (observerSHA256 !== null && !/^[a-f0-9]{64}$/.test(observerSHA256)) throw new Error("invalid observer identity");
   const original = cap.nativePromise;
+  let pendingObservedReplies = 0;
   let receipt = null, recording = null, terminal = null, recorderId = null, mountRef = null, nativeRevision = 0, generation = 0;
   let recordingGeneration = 0, mutationPending = false;
   let notes = {}, noteRequests = {}, noteSession = null, noteGeneration = 0, currentNote = null, currentNoteRequest = null;
   function wrapped(plugin, method, options, ...rest) {
     // The app receives the exact original promise and result.
     const result = original.call(this, plugin, method, options, ...rest);
+    if (plugin === 'CosmasWorkspaceAuth') {
+      pendingObservedReplies++;
+      void Promise.resolve(result).then(() => { pendingObservedReplies--; }, () => { pendingObservedReplies--; });
+    }
     if (plugin === 'CosmasWorkspaceAuth' && method === 'providerRequest' && options?.action === 'capture-notes'
         && typeof projectNoteObservation === 'function') {
       const armed = noteGeneration;
@@ -131,7 +137,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null)
   }
   cap.nativePromise = wrapped;
   window.__scribeLabAdmissionObserver = Object.freeze({
-    describe() { return { ...binding }; },
+    describe() { return { ...binding, observerSHA256, pendingObservedReplies }; },
     clear() { generation += 1; recordingGeneration += 1; mutationPending = false;
       notes = {}; noteRequests = {}; noteSession = null; noteGeneration++; currentNote = currentNoteRequest = null;
       receipt = null; recording = terminal = null; recorderId = null; mountRef = null; nativeRevision = 0; },
@@ -147,7 +153,7 @@ export function installAdmissionObserver(binding, projectNoteObservation = null)
     readNote(action) { return notes[action] ? { ...notes[action] } : null; },
     readCurrentNote() { return currentNote ? { ...currentNote } : null; },
     uninstall() {
-      if (cap.nativePromise !== wrapped) return { ownedResourcesSettled: false, observerRemoved: false };
+      if (cap.nativePromise !== wrapped || pendingObservedReplies !== 0) return { ownedResourcesSettled: false, observerRemoved: false };
       generation += 1; receipt = null; recording = terminal = null; recorderId = null; mountRef = null; nativeRevision = 0;
       notes = {}; noteRequests = {}; noteSession = null; noteGeneration++; currentNote = currentNoteRequest = null;
       recordingGeneration += 1; mutationPending = false;
