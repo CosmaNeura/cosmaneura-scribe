@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from azure.ai.transcription._utils.utils import prepare_multipart_form_data
 from conftest import RepositoryBackend
 from cosmaneura_scribe.azure_speech_source import normalize_azure_source
 from cosmaneura_scribe.external_transcript_v1 import TranscriptLanguageMode
@@ -97,3 +98,8 @@ def test_mixed_track_provider_normalization_and_persistence_preserve_identity(
     assert client.requests[0].definition.diarization_options is not None
     assert client.requests[0].definition.diarization_options.max_speakers == 4
     assert client.requests[0].definition.active_channels is None
+    # Exercise the installed SDK's actual multipart definition serializer. Merely
+    # inspecting max_speakers misses SDK 1.0.0's absent automatic enablement.
+    multipart = prepare_multipart_form_data(client.requests[0].as_dict(), ["audio"], ["definition"])
+    wire_definition = json.loads(next(value for name, value in multipart if name == "definition"))
+    assert wire_definition["diarization"] == {"maxSpeakers": 4, "enabled": True}
