@@ -141,3 +141,30 @@ test('participant close remains retryable until browser close succeeds', async t
   const participant=await createParticipant({fixture:validated,playwrightPath:modulePath,executionKind:'loopback',observeProduct:async()=>null});
   await assert.rejects(participant.close(),/close_failed/);await participant.close();assert.equal(state.closes,2);
 });
+
+test('mock bot participant never schedules fixture audio from a native receipt or absent bot proof', async t => {
+  const input = await fixture(t), validated = await (await openFixtureRegistry(input)).load({caseId: 'case-one'});
+  const modulePath = join(input.root, 'playwright-bot-admission.mjs');
+  await writeFile(modulePath, `export const state={schedules:0,closed:0};
+    const media={fixtureSha256:${JSON.stringify(validated.sha256)},playing:false,audioRequests:1,tracks:[{state:'live',enabled:true}]};
+    const frame={isDetached:()=>false,evaluate:async(fn)=>{if(String(fn).includes('.schedule('))state.schedules++;return media;}};
+    const page={mainFrame:()=>frame,frames:()=>[frame],isClosed:()=>false};
+    export const chromium={launch:async()=>({close:async()=>{state.closed++;},newContext:async()=>({addInitScript:async()=>{},newPage:async()=>page,pages:()=>[page]})})};`);
+  const {pathToFileURL} = await import('node:url'), {randomUUID} = await import('node:crypto');
+  const {createParticipant} = await import('./participant-session.mjs'), {state} = await import(pathToFileURL(modulePath).href);
+  const expected = {runId: randomUUID(), collectorSHA256: 'a'.repeat(64), startedAtEpochMs: Date.now() - 1000,
+    accountIdentitySHA256: 'b'.repeat(64), doctorRef: `doctor_${'0'.repeat(26)}`, patientRefSHA256: 'c'.repeat(64),
+    hostIdSHA256: 'd'.repeat(64), meetingRecordRef: `zmtg_${'0'.repeat(26)}`, meetingIdSHA256: 'e'.repeat(64),
+    appointmentRef: `appointment_${'0'.repeat(26)}`, occurrenceDigest: 'f'.repeat(64)};
+  for (const returned of [null, {...observation, observedAtEpochMs: Date.now()}]) {
+    let request;
+    const participant = await createParticipant({fixture: validated, playwrightPath: modulePath, executionKind: 'loopback',
+      captureProof: {kind: 'zoom-bot', expected}, observeProduct: async value => {request = value; return returned;}});
+    await assert.rejects(participant.schedule({fixtureSha256: validated.sha256, startAtEpochMs: Date.now() + 500, restart: true}), /bot_observer_identity_invalid/);
+    assert.equal(request.kind, 'zoom-bot'); assert.match(request.requestNonce, /^[a-f0-9-]{36}$/);
+    assert.equal(state.schedules, 0);
+    await assert.rejects(participant.load(validated), /bot_fixture_reload_requires_new_participant/);
+    await participant.close();
+  }
+  assert.equal(state.closed, 2);
+});
