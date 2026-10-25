@@ -3,10 +3,19 @@ import AudioToolbox
 import CoreAudio
 import CoreGraphics
 import CryptoKit
+import Darwin
 import Foundation
+import IOKit
 
 // This probe/player only selects BlackHole on its own AudioUnit, never the OS default.
 enum Failure: Error { case invalid, unavailable, denied, empty }
+func hostName() throws -> String {
+    // Match Node os.hostname/the owned marker; Foundation may resolve and
+    // lowercase the DNS hostname only when network access is available.
+    var bytes = [CChar](repeating: 0, count: 512)
+    guard gethostname(&bytes, bytes.count) == 0, bytes.contains(0) else { throw Failure.unavailable }
+    return String(cString: bytes)
+}
 func emit(_ value: [String: Any]) {
     let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
     print(String(data: data, encoding: .utf8)!)
@@ -19,6 +28,15 @@ func child(_ path: String, _ root: String) throws -> URL {
     let url = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
     let base = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
     guard url.path.hasPrefix(base + "/") else { throw Failure.invalid }; return url
+}
+func hardwareHash() throws -> String {
+    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+    guard service != IO_OBJECT_NULL else { throw Failure.unavailable }
+    defer { IOObjectRelease(service) }
+    guard let value = IORegistryEntryCreateCFProperty(service, "IOPlatformUUID" as CFString,
+        kCFAllocatorDefault, 0)?.takeRetainedValue() as? String, UUID(uuidString: value) != nil
+    else { throw Failure.unavailable }
+    return SHA256.hash(data: Data(value.lowercased().utf8)).map { String(format: "%02x", $0) }.joined()
 }
 func property(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) throws -> String {
     var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -71,13 +89,19 @@ do {
     let mode = CommandLine.arguments[1], config = try json(CommandLine.arguments[2])
     guard let target = config["target"] as? [String: Any], let root = target["root"] as? String,
           let markerPath = target["marker"] as? String, let hostname = target["hostname"] as? String,
-          hostname == ProcessInfo.processInfo.hostName, let role = target["role"] as? String,
-          ["owned-macos-guest", "owned-ios-simulator"].contains(role) else { throw Failure.invalid }
+          hostname == (try hostName()), let role = target["role"] as? String,
+          ["owned-macos-guest", "owned-macos-lab", "owned-ios-simulator"].contains(role) else { throw Failure.invalid }
     let marker = try json(child(markerPath, root).path)
     guard marker["purpose"] as? String == "scribe-synthetic-virtual-lab", marker["hostname"] as? String == hostname,
           marker["role"] as? String == role else { throw Failure.invalid }
     if role == "owned-ios-simulator" {
         guard let udid = target["udid"] as? String, !udid.isEmpty, marker["udid"] as? String == udid else { throw Failure.invalid }
+    } else {
+        let hardware = try hardwareHash()
+        guard let control = target["controlHostHardwareUUIDSHA256"] as? String,
+              control.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              control != hardware, marker["hardwareUUIDSHA256"] as? String == hardware
+        else { throw Failure.denied }
     }
     let session = CGSessionCopyCurrentDictionary() as? [String: Any]
     let locked = session?["CGSSessionScreenIsLocked"] as? Bool
@@ -95,7 +119,7 @@ do {
               receipt["source"] as? String == "normal-consent-path", let record = receipt["recordId"] as? String,
               !record.isEmpty, let scenario = config["scenarioId"] as? String, !scenario.isEmpty,
               receipt["scenarioId"] as? String == scenario else { throw Failure.denied }
-        if role == "owned-macos-guest" && locked != false { throw Failure.denied }
+        if role != "owned-ios-simulator" && (locked != false || marker["interactiveSessionUnlocked"] as? Bool != true) { throw Failure.denied }
         let engine = AVAudioEngine()
         if mode == "probe" {
             guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw Failure.denied }

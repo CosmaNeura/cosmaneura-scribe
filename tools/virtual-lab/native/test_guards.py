@@ -1,5 +1,7 @@
 """Safety checks use only disposable plist/JSON fixtures; no audio or Appium session."""
 import copy
+import contextlib
+import io
 import json
 import plistlib
 import socket
@@ -30,6 +32,22 @@ class Guards(unittest.TestCase):
     def test_owned_simulator_metadata(self):
         self.assertEqual(lab.owned(self.config, execute=True), Path(self.temp.name).resolve())
 
+    def test_owned_remote_mac_requires_distinct_hardware_and_actual_marker(self):
+        root = Path(self.temp.name)
+        info = root / "apps/Scribe.app/Info.plist"
+        contents = info.parent / "Contents"; contents.mkdir()
+        info.rename(contents / "Info.plist")
+        self.config["target"].update(role="owned-macos-lab", controlHostHardwareUUIDSHA256="a" * 64)
+        marker = json.loads((root / "target.json").read_text())
+        marker.update(role="owned-macos-lab", hardwareUUIDSHA256="b" * 64, interactiveSessionUnlocked=True)
+        (root / "target.json").write_text(json.dumps(marker))
+        with patch.object(lab, "hardware_uuid_sha256", return_value="b" * 64):
+            self.assertEqual(lab.owned(self.config, execute=True), root.resolve())
+        with patch.object(lab, "hardware_uuid_sha256", return_value="a" * 64):
+            with self.assertRaises(ValueError): lab.owned(self.config)
+        with patch.object(lab, "hardware_uuid_sha256", return_value="c" * 64):
+            with self.assertRaises(ValueError): lab.owned(self.config)
+
     def test_rejects_unowned_target(self):
         self.config["target"]["udid"] = "different-device"
         with self.assertRaises(ValueError): lab.owned(self.config)
@@ -52,22 +70,16 @@ class Guards(unittest.TestCase):
             config = copy.deepcopy(self.config); config["appiumUrl"] = url
             with self.assertRaises(ValueError): lab.owned(config)
 
-    def test_record_click_cannot_start_session_before_state_wait(self):
-        self.config["flow"]["record"] = [{"action": "click"}]
-        with patch.object(lab, "Driver", side_effect=AssertionError("must not create session")):
-            with self.assertRaises((ValueError, KeyError)): lab.run(self.config)
-
-    def test_unverified_physical_route_cannot_start_session(self):
-        receipt = Path(self.config["audio"]["scribeRouteReceipt"])
-        data = json.loads(receipt.read_text()); data["inputKind"] = "physical"; receipt.write_text(json.dumps(data))
-        with patch.object(lab, "Driver", side_effect=AssertionError("must not create session")):
-            with self.assertRaises(ValueError): lab.run(self.config)
-
-    def test_empty_journey_phases_cannot_report_success(self):
-        for phase in ("finish", "save", "reopen"):
-            self.config["flow"] = {"finish": [{}], "save": [{}], "reopen": [{}], phase: []}
-            with patch.object(lab, "Driver", side_effect=AssertionError("must not create session")):
-                with self.assertRaises(ValueError): lab.run(self.config)
+    def test_retired_mutating_modes_do_not_read_config_or_start_processes(self):
+        for mode in ("run", "probe"):
+            with patch("sys.argv", ["lab.py", mode, "/nonexistent/config.json"]), \
+                    patch.object(lab, "read_json", side_effect=AssertionError("must not inspect config")), \
+                    patch.object(lab.subprocess, "run", side_effect=AssertionError("must not execute")), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(lab.main(), 2)
+            receipt = json.loads(output.getvalue())
+            self.assertEqual(receipt["reason"], "legacy_mutating_runner_retired_use_coordinator")
+            self.assertFalse(receipt["nativeRecordingTestRun"])
 
 
 if __name__ == "__main__": unittest.main()
