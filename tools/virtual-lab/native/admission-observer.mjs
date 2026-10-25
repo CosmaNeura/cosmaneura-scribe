@@ -50,6 +50,10 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
     let result;
     try { result = original.call(this, plugin, method, options, ...rest); }
     catch (error) {
+      if (plugin === 'CosmasWorkspaceAuth' && method === 'providerRequest'
+          && ['capture-notes', 'note-opening'].includes(options?.action)) {
+        notes = {}; noteRequests = {}; noteSession = null; noteGeneration++; currentNote = currentNoteRequest = null;
+      }
       if (plugin === 'CosmasWorkspaceAuth' && (method === 'openProviderRecording'
           || method === 'providerRecordingCommand' && options?.kind !== 'read'
           || method === 'providerRequest' && options?.action === 'capture-admissions')) {
@@ -64,7 +68,10 @@ export function installAdmissionObserver(binding, projectNoteObservation = null,
     if (plugin === 'CosmasWorkspaceAuth' && method === 'providerRequest' && ['capture-notes', 'note-opening'].includes(options?.action)
         && currentScopeMatches
         && typeof projectNoteObservation === 'function') {
-      const armed = noteGeneration;
+      // Even an unreadable latest request retires prior note evidence. The real
+      // native bridge, not our parser, decides whether that request had effects.
+      notes = {}; noteRequests = {}; noteSession = null; currentNote = currentNoteRequest = null;
+      const armed = ++noteGeneration;
       let request;
       try { if (typeof options.body !== 'string' || options.body.length > 270336) return result;
         const body = JSON.parse(options.body);

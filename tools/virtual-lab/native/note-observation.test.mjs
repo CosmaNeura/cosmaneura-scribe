@@ -76,3 +76,31 @@ test('same-scope normal remount permits an actual note-opening response after na
   assert.equal(observer.readCurrentNote().requestNonce, request.request_nonce);
   observer.uninstall();
 });
+
+test('malformed latest note requests clear cached evidence and exclude older pending replies', async () => {
+  for (const action of ['capture-notes', 'note-opening']) for (const invalidBody of [undefined, '{invalid', 'x'.repeat(270337)]) {
+    let held, failure;
+    const reply = { status: 200, requestId: id(5), revision: id(6), body: JSON.stringify(body) };
+    const original = () => { if (failure) throw failure; return held ?? Promise.resolve(reply); };
+    globalThis.window = { Capacitor: { nativePromise: original } };
+    installAdmissionObserver(scope, projectNoteObservation);
+    const observer = window.__scribeLabAdmissionObserver;
+    const options = { requestId: id(5), revision: id(6), action: 'capture-notes', body: JSON.stringify(request) };
+    await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', options);
+    assert(observer.readCurrentNote());
+    await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', { ...options, action, body: invalidBody });
+    assert.equal(observer.readCurrentNote(), null); assert.equal(observer.readNote('read'), null);
+    let finish;
+    held = new Promise(resolve => { finish = resolve; });
+    const pending = window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', options);
+    held = null;
+    await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', { ...options, action, body: invalidBody });
+    finish(reply); await pending;
+    assert.equal(observer.readCurrentNote(), null); assert.equal(observer.readNote('read'), null);
+    await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', options);
+    assert(observer.readCurrentNote()); failure = new Error('original synthetic transport error');
+    assert.throws(() => window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', { ...options, action }), error => error === failure);
+    assert.equal(observer.readCurrentNote(), null); assert.equal(observer.readNote('read'), null);
+    observer.uninstall();
+  }
+});
