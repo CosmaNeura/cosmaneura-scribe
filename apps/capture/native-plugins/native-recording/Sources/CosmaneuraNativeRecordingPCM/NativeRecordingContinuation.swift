@@ -43,6 +43,7 @@ public actor NativeRecordingContinuation {
   private let leases: NativeRecordingLeaseOwner
   private let reservations: NativeRecordingReservationOwner
   private let sourceClock: any PCMSourceClock
+  private let diagnostics: PCMStartupDiagnostics
   private let runID: String
   private let initialAuthority: PCMSourceAuthority
   private let initialMaximum: Int
@@ -73,6 +74,7 @@ public actor NativeRecordingContinuation {
     initialLease: NativeRecordingLease, initialAuthority: PCMSourceAuthority,
     initialBatch: NativeRecordingReservationBatch,
     sourceClock: any PCMSourceClock = ContinuousPCMSourceClock(),
+    diagnostics: PCMStartupDiagnostics = .shared,
     validateActiveSource: @escaping @Sendable () async throws -> Void,
     finalizeCapturedAudio: @escaping NativeRecordingFinalizer
   ) throws {
@@ -95,6 +97,7 @@ public actor NativeRecordingContinuation {
     self.leases = leases
     self.reservations = reservations
     self.sourceClock = sourceClock
+    self.diagnostics = diagnostics
     self.validateActiveSource = validateActiveSource
     self.finalizeCapturedAudio = finalizeCapturedAudio
     lease = initialLease
@@ -207,8 +210,9 @@ public actor NativeRecordingContinuation {
       phase = .failed
       if let failure = error as? NativeRecordingFinalizationFailure {
         finalizationFailure = failure
+        diagnostics.record(failure == .storageFailed ? .finalizationStorageFailed : .finalizationAuthorityChanged)
         reason = failure == .storageFailed ? .storageFailed : .sourceRetired
-      } else { reason = .closureUnconfirmed }
+      } else { reason = .closureUnconfirmed; diagnostics.record(.continuationClosureUnconfirmed) }
       stopTask = nil
       throw error
     }
@@ -342,6 +346,14 @@ public actor NativeRecordingContinuation {
     checkStopRetirement: Bool = false) async {
     guard active || phase == .ready else { return }
     reason = value
+    switch value {
+    case .authorityExpired: diagnostics.record(.continuationAuthorityExpired)
+    case .sourceRetired: diagnostics.record(.continuationSourceRetired)
+    case .renewalRejected: diagnostics.record(.continuationRenewalRejected)
+    case .captureFailed: diagnostics.record(.continuationCaptureFailed)
+    case .storageFailed: diagnostics.record(.continuationStorageFailed)
+    case .closureUnconfirmed: diagnostics.record(.continuationClosureUnconfirmed)
+    }
     if value == .renewalRejected || value == .sourceRetired && !checkStopRetirement {
       sink.terminated(.captureFailed)
     } else if value == .sourceRetired {

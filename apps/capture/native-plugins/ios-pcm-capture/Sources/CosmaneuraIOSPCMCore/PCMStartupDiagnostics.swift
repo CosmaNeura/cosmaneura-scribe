@@ -13,6 +13,12 @@ public enum PCMStartupEvent: String, Codable, Sendable {
   case mediaServicesLost, mediaServicesReset, backgrounded, permissionRevoked, captureFailed
   case inputFrozen, driverReleased, stopRequested, stopAccepted, stopRejected
   case recordToNativeReady
+  case inputAdmissionOverflow, firstPacketPersistenceStarted, firstPacketPersistenceCompleted, packetPersistenceFailed
+  case pcmHeartbeatExpired, pcmInvalidInput, pcmBufferOverflow, pcmOutputLimit, pcmSinkFailed
+  case windowAuthorityExpired, windowFrameLimit, windowInterrupted, windowRouteChanged
+  case continuationAuthorityExpired, continuationSourceRetired, continuationRenewalRejected
+  case continuationCaptureFailed, continuationStorageFailed, continuationClosureUnconfirmed
+  case finalizationAuthorityChanged, finalizationStorageFailed, physicalStopRejected, sourceStopRejected
 }
 
 public final class PCMStartupDiagnostics: @unchecked Sendable {
@@ -75,6 +81,33 @@ public final class PCMStartupDiagnostics: @unchecked Sendable {
       buildNumber: build)
   }
 
+  /// Fixed reason enums only; never accepts a vendor error, message, or identity.
+  public func recordTermination(_ code: PCMTerminationCode) {
+    let event: PCMStartupEvent
+    switch code {
+    case .interruption: event = .interrupted
+    case .routeChanged: event = .routeChanged
+    case .backgrounded: event = .backgrounded
+    case .heartbeatExpired: event = .pcmHeartbeatExpired
+    case .permissionRevoked: event = .permissionRevoked
+    case .captureFailed: event = .captureFailed
+    case .invalidPCM: event = .pcmInvalidInput
+    case .bufferOverflow: event = .pcmBufferOverflow
+    case .outputLimitExceeded: event = .pcmOutputLimit
+    case .sinkFailed: event = .pcmSinkFailed
+    }
+    record(event)
+  }
+
+  public func recordWindowClose(_ reason: PCMWindowCloseReason) {
+    switch reason {
+    case .authorityExpired: record(.windowAuthorityExpired)
+    case .frameLimit: record(.windowFrameLimit)
+    case .interruption: record(.windowInterrupted)
+    case .routeChanged: record(.windowRouteChanged)
+    }
+  }
+
   private func append(_ event: PCMStartupEvent, durationMilliseconds: Double?, buildNumber: Int?) {
     admission.withLock {
       guard let target = destination else { return }
@@ -87,7 +120,13 @@ public final class PCMStartupDiagnostics: @unchecked Sendable {
       switch event {
       case .startRejected, .readyRejected, .driverRejected, .interrupted, .routeChanged,
         .mediaServicesLost, .mediaServicesReset, .backgrounded, .permissionRevoked, .captureFailed,
-        .inputFrozen, .driverReleased, .stopRequested, .stopAccepted, .stopRejected: terminal = true
+        .inputFrozen, .driverReleased, .stopRequested, .stopAccepted, .stopRejected,
+        .inputAdmissionOverflow, .packetPersistenceFailed, .pcmHeartbeatExpired, .pcmInvalidInput,
+        .pcmBufferOverflow, .pcmOutputLimit, .pcmSinkFailed, .windowAuthorityExpired, .windowFrameLimit,
+        .windowInterrupted, .windowRouteChanged, .continuationAuthorityExpired, .continuationSourceRetired,
+        .continuationRenewalRejected, .continuationCaptureFailed, .continuationStorageFailed,
+        .continuationClosureUnconfirmed, .finalizationAuthorityChanged, .finalizationStorageFailed,
+        .physicalStopRejected, .sourceStopRejected: terminal = true
       default: terminal = false
       }
       guard pending < Self.maximumPending, terminal ? remainingTerminal > 0 : remaining > 0 else {

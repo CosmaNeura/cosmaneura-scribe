@@ -238,6 +238,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         if let incomplete = error as? NativeRecordingFinalizationFailure, recorder.isPhysicallyIdle {
           completionFailure = incomplete
         } else {
+          PCMStartupDiagnostics.shared.record(.physicalStopRejected)
           failure = .physicalStopPending
           phase = .stopPending
           throw error
@@ -260,6 +261,7 @@ extension NativeEncryptedPCMRecorder: NativeProviderEncryptedRecorder {}
         if completionFailure != nil { failure = .recordingIncomplete }
         else if failure != .startFailed { failure = nil }
       } catch {
+        PCMStartupDiagnostics.shared.record(.sourceStopRejected)
         failure = .sourceStopPending
         phase = .stopPending
         throw error

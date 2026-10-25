@@ -18,6 +18,7 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
   private let lock = NSLock()
   private let scope: NativeRecordingScope
   private let writer: NativeRecordingQueueWriter
+  private let diagnostics: PCMStartupDiagnostics
   private let firstSequence: Int
   private var nextSequence: Int
   private var committedBytes = 0
@@ -32,9 +33,11 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
   public init(
     encryption: NativeRecordingEncryption, recoveryScope: UUID,
     records: any NativeRecordingRecordStore, firstSequence: Int,
-    priorPlaintextBytes: Int, maximumPlaintextBytes: Int = 402_653_184
+    priorPlaintextBytes: Int, maximumPlaintextBytes: Int = 402_653_184,
+    diagnostics: PCMStartupDiagnostics = .shared
   ) throws {
     scope = encryption.scope
+    self.diagnostics = diagnostics
     self.firstSequence = firstSequence
     nextSequence = firstSequence
     writer = try NativeRecordingQueueWriter(
@@ -113,7 +116,15 @@ public final class NativeRecordingPCMSink: PCMEmissionSink, @unchecked Sendable 
     }
     try lock.withLock {
       guard phase == .accepting else { throw NativeRecordingFailure.invalidPacket }
-      do { _ = try persist(packet) } catch {
+      // Only the first packet needs a persistence bracket; ordinary chunks do
+      // not consume the bounded routine journal allowance.
+      let first = nextSequence == firstSequence
+      if first { diagnostics.record(.firstPacketPersistenceStarted) }
+      do {
+        _ = try persist(packet)
+        if first { diagnostics.record(.firstPacketPersistenceCompleted) }
+      } catch {
+        diagnostics.record(.packetPersistenceFailed)
         storageFailed = true
         fail()
         throw error

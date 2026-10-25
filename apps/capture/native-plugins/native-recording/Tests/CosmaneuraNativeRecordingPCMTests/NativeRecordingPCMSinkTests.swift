@@ -7,6 +7,31 @@ import XCTest
 @testable import CosmaneuraIOSPCMCore
 
 @MainActor final class NativeRecordingPCMSinkTests: XCTestCase {
+  func testFirstPacketPersistenceBracketAndFailureContainOnlyMetadata() async throws {
+    for fails in [false, true] {
+      let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+      defer { try? FileManager.default.removeItem(at: directory) }
+      let file = directory.appendingPathComponent("diagnostics.json"), diagnostics = PCMStartupDiagnostics()
+      diagnostics.configure(destination: file)
+      let fixture = try Fixture(), sink = try fixture.sink(diagnostics: diagnostics)
+      try sink.stage(await fixture.reserve(0, 2))
+      if fails { fixture.records.fault = "before" }
+      let first = PCMEncodedPacket(sequenceNumber: 0, bytes: OwnedPCMBytes([0, 0]))
+      if fails { XCTAssertThrowsError(try sink.emit(first)) }
+      else {
+        _ = try sink.emit(first)
+        _ = try sink.emit(PCMEncodedPacket(sequenceNumber: 1, bytes: OwnedPCMBytes([0, 0])))
+      }
+      XCTAssertTrue(first.bytes.isZeroed)
+      await diagnostics.flush()
+      let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [[String: Any]])
+      XCTAssertEqual(rows.compactMap { $0["event"] as? String }, ["firstPacketPersistenceStarted",
+        fails ? "packetPersistenceFailed" : "firstPacketPersistenceCompleted"])
+      XCTAssertTrue(rows.allSatisfy { Set($0.keys) == ["utc", "event", "clock", "monotonic_ns", "capture_attempt", "dropped_events"] })
+    }
+  }
+
   private final class Keys: NativeRecordingKeyStorage, @unchecked Sendable {
     var value: Data?
     func read(account: String) throws -> Data? { value }
@@ -102,12 +127,13 @@ import XCTest
           version: "synthetic-v1",
           modulusBase64URL: encode(der.subdata(in: 9..<393))), storage: Keys())
     }
-    func sink(first: Int = 0, prior: Int = 0, maximum: Int = 402_653_184) throws
+    func sink(first: Int = 0, prior: Int = 0, maximum: Int = 402_653_184,
+      diagnostics: PCMStartupDiagnostics = .shared) throws
       -> NativeRecordingPCMSink
     {
       try NativeRecordingPCMSink(
         encryption: cipher, recoveryScope: recovery, records: records,
-        firstSequence: first, priorPlaintextBytes: prior, maximumPlaintextBytes: maximum)
+        firstSequence: first, priorPlaintextBytes: prior, maximumPlaintextBytes: maximum, diagnostics: diagnostics)
     }
     func reserve(_ first: Int, _ count: Int) async throws -> NativeRecordingReservationBatch {
       let lease = try NativeRecordingLease(
