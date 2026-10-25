@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildNativeTimingMeasurement } from './native-timing.mjs';
+import { buildNativeTimingMeasurement, projectNativeTimingHistory } from './native-timing.mjs';
 import { sha256 } from './journal.mjs';
 
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -17,6 +17,19 @@ const history = samples => ({ source: 'passive-native-timing-history', ...scope,
 const event = (name, ns, attempt = 1, dropped = 0) => ({ utc: '2026-10-25T12:00:00.000Z', event: name,
   clock: 'dispatch-uptime-ns', monotonic_ns: ns, capture_attempt: attempt, dropped_events: dropped });
 const bytes = entries => Buffer.from(JSON.stringify(entries));
+
+test('history projection retains only typed timing metadata and rejects unbound empty histories', () => {
+  const h = history([sample(1, '1000000000', 100, 110)]);
+  h.unexpected = 'never retain'; h.samples[0].unexpected = 'never retain';
+  h.samples[0].transport.unexpected = 'never retain';
+  const clean = projectNativeTimingHistory(h);
+  assert.equal(JSON.stringify(clean).includes('never retain'), false);
+  assert.equal(clean.samples.length, 1);
+  for (const key of ['runId', 'workspaceId', 'appointmentRef']) {
+    const empty = history([]); empty[key] = 'unbound';
+    assert.throws(() => projectNativeTimingHistory(empty), /native_timing_history_invalid/);
+  }
+});
 
 test('subtracts integer native anchors before conversion and keeps transport-only browser estimates unqualified', () => {
   const anchor = 18446744073600000000n;
