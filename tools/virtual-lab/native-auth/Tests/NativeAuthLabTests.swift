@@ -137,6 +137,8 @@ final class NativeAuthLabTests: XCTestCase {
             throw XCTSkip("Live lane not selected; no account or network proof claimed")
         }
         let bootstrap = strategy == "email" && env["SCRIBE_LAB_BOOTSTRAP"] == "1"
+        let bootstrapDomain = env["SCRIBE_LAB_BOOTSTRAP_DOMAIN"] ?? "example.com"
+        guard ["example.com", "cosmaneura.com"].contains(bootstrapDomain) else { throw SafeFailure.configuration }
         let key = env["SCRIBE_LAB_CLERK_PUBLISHABLE_KEY"] ??
             ("pk_test_" + Data("resolved-emu-53.clerk.accounts.dev$".utf8).base64EncodedString())
         let userA = env["SCRIBE_LAB_USER_A_ID"], userB = env["SCRIBE_LAB_USER_B_ID"]
@@ -163,7 +165,7 @@ final class NativeAuthLabTests: XCTestCase {
                     guard let ticket = env["SCRIBE_LAB_TICKET_\(label)"], !ticket.isEmpty else { throw SafeFailure.configuration }
                     attempt = try await clerk.auth.signInWithTicket(ticket)
                 } else {
-                    let email = bootstrap ? "scribe-lab-\(label.lowercased())+clerk_test@example.com" : env["SCRIBE_LAB_EMAIL_\(label)"]
+                    let email = bootstrap ? "scribe-lab-\(label.lowercased())+clerk_test@\(bootstrapDomain)" : env["SCRIBE_LAB_EMAIL_\(label)"]
                     guard let email,
                           email.split(separator: "@").count == 2,
                           email.split(separator: "@")[0].hasSuffix("+clerk_test") else { throw SafeFailure.configuration }
