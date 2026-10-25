@@ -236,6 +236,7 @@ private func recordingUUID(_ value: Any?) throws -> UUID {
       "failure": host.failure?.rawValue as Any? ?? NSNull(), "busy": host.busy,
       "recordedChunks": count, "recordedPlaintextBytes": bytes,
       "capturedAudioFrames": host.capturedAudioFrames,
+      "nativeTiming": PCMStartupDiagnostics.shared.timingSnapshot(),
       "maximumPlaintextBytes": NativeRecordingFlowOwner.maximumPlaintextBytes,
       "input": host.microphoneInput.rawValue, "completion": completion as Any? ?? NSNull(),
       "inputDevices": host.inputDevices, "selectedInputId": host.selectedInputID as Any? ?? NSNull(),

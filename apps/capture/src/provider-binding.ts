@@ -1,3 +1,4 @@
+import type { NativeClockCorrelation } from "./provider/native-recording-timing";
 import type { MicrophoneInput } from "./native/microphone-input";
 import type { CaptureFlowSnapshot } from "./flow";
 import type { AuthorizedReviewRequest, CreatorReviewView } from "../../review-ui/src/creator-review-api";
@@ -19,6 +20,8 @@ export interface ProviderRecorderSnapshot extends CaptureFlowSnapshot {
   readonly selectedInputId?: string | null;
   readonly reconnecting?: boolean;
   readonly native?: { readonly phase: string; readonly busy: boolean;
+    /** Transport-only native clock estimate. Renderer precision remains unqualified; never capture authority. */
+    readonly clockCorrelation?: NativeClockCorrelation;
     readonly uploadProgress?: { readonly total: number; readonly registered: number } };
   readonly desktop?: {
     readonly phase: "preparing" | "ready" | "permission_required" | "starting" | "recording" | "stopping"
