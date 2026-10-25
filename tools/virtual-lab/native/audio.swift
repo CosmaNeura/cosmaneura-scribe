@@ -1,12 +1,20 @@
 import AVFoundation
-import AudioToolbox
 import CoreAudio
 import CoreGraphics
 import CryptoKit
+import Darwin
 import Foundation
+import IOKit
 
-// This probe/player only selects BlackHole on its own AudioUnit, never the OS default.
-enum Failure: Error { case invalid, unavailable, denied, empty }
+// Read-only metadata. This executable cannot open an audio stream or set a route.
+enum Failure: Error { case invalid, unavailable, denied }
+func hostName() throws -> String {
+    // Match Node os.hostname/the owned marker; Foundation may resolve and
+    // lowercase the DNS hostname only when network access is available.
+    var bytes = [CChar](repeating: 0, count: 512)
+    guard gethostname(&bytes, bytes.count) == 0, bytes.contains(0) else { throw Failure.unavailable }
+    return String(cString: bytes)
+}
 func emit(_ value: [String: Any]) {
     let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
     print(String(data: data, encoding: .utf8)!)
@@ -19,6 +27,15 @@ func child(_ path: String, _ root: String) throws -> URL {
     let url = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
     let base = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
     guard url.path.hasPrefix(base + "/") else { throw Failure.invalid }; return url
+}
+func hardwareHash() throws -> String {
+    let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+    guard service != IO_OBJECT_NULL else { throw Failure.unavailable }
+    defer { IOObjectRelease(service) }
+    guard let value = IORegistryEntryCreateCFProperty(service, "IOPlatformUUID" as CFString,
+        kCFAllocatorDefault, 0)?.takeRetainedValue() as? String, UUID(uuidString: value) != nil
+    else { throw Failure.unavailable }
+    return SHA256.hash(data: Data(value.lowercased().utf8)).map { String(format: "%02x", $0) }.joined()
 }
 func property(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) throws -> String {
     var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -43,89 +60,31 @@ func devices() throws -> [(AudioObjectID, String, String)] {
         return (id, try property(id, kAudioDevicePropertyDeviceUID), name)
     }
 }
-func select(_ unit: AudioUnit?, _ device: AudioObjectID) throws {
-    guard let unit else { throw Failure.unavailable }; var id = device
-    guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                               &id, UInt32(MemoryLayout<AudioObjectID>.size)) == noErr else { throw Failure.unavailable }
-    var observed: AudioObjectID = 0; var size = UInt32(MemoryLayout<AudioObjectID>.size)
-    guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                               &observed, &size) == noErr, observed == device else { throw Failure.unavailable }
-}
-final class Counts: @unchecked Sendable {
-    let lock = NSLock(); var frames = 0; var nonzero = 0; var sum = 0.0
-    func add(_ buffer: AVAudioPCMBuffer) {
-        guard let data = buffer.floatChannelData else { return }
-        lock.lock(); defer { lock.unlock() }
-        frames += Int(buffer.frameLength)
-        for i in 0..<Int(buffer.frameLength) {
-            let value = Double(data[0][i])
-            if value.isFinite { sum += value * value; if abs(value) > 0.00001 { nonzero += 1 } }
-        }
-    }
-    func snapshot() -> (Int, Int, Double) {
-        lock.lock(); defer { lock.unlock() }; return (frames, nonzero, frames > 0 ? sqrt(sum / Double(frames)) : 0)
-    }
-}
 do {
-    guard CommandLine.arguments.count == 3 else { throw Failure.invalid }
-    let mode = CommandLine.arguments[1], config = try json(CommandLine.arguments[2])
+    guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "inventory" else {
+        emit(["passed": false, "reason": "read-only-inventory-required"]); exit(2)
+    }
+    let config = try json(CommandLine.arguments[2])
     guard let target = config["target"] as? [String: Any], let root = target["root"] as? String,
           let markerPath = target["marker"] as? String, let hostname = target["hostname"] as? String,
-          hostname == ProcessInfo.processInfo.hostName, let role = target["role"] as? String,
-          ["owned-macos-guest", "owned-ios-simulator"].contains(role) else { throw Failure.invalid }
+          hostname == (try hostName()), let role = target["role"] as? String,
+          ["owned-macos-guest", "owned-macos-lab", "owned-ios-simulator"].contains(role) else { throw Failure.invalid }
     let marker = try json(child(markerPath, root).path)
     guard marker["purpose"] as? String == "scribe-synthetic-virtual-lab", marker["hostname"] as? String == hostname,
           marker["role"] as? String == role else { throw Failure.invalid }
     if role == "owned-ios-simulator" {
         guard let udid = target["udid"] as? String, !udid.isEmpty, marker["udid"] as? String == udid else { throw Failure.invalid }
+    } else {
+        let hardware = try hardwareHash()
+        guard let control = target["controlHostHardwareUUIDSHA256"] as? String,
+              control.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              control != hardware, marker["hardwareUUIDSHA256"] as? String == hardware
+        else { throw Failure.denied }
     }
     let session = CGSessionCopyCurrentDictionary() as? [String: Any]
     let locked = session?["CGSSessionScreenIsLocked"] as? Bool
     let inventory = try devices()
-    if mode == "inventory" {
-        emit(["devices": inventory.map { ["uid": $0.1, "name": $0.2] },
-              "sessionLocked": locked as Any? ?? NSNull(),
-              "microphoneAuthorized": AVCaptureDevice.authorizationStatus(for: .audio) == .authorized])
-    } else {
-        guard mode == "probe" || mode == "play", let audio = config["audio"] as? [String: Any],
-              let uid = audio["uid"] as? String, let device = inventory.first(where: { $0.1 == uid }),
-              let receiptPath = config["consentReceipt"] as? String else { throw Failure.invalid }
-        let receipt = try json(child(receiptPath, root).path)
-        guard receipt["syntheticOnly"] as? Bool == true, receipt["verified"] as? Bool == true,
-              receipt["source"] as? String == "normal-consent-path", let record = receipt["recordId"] as? String,
-              !record.isEmpty, let scenario = config["scenarioId"] as? String, !scenario.isEmpty,
-              receipt["scenarioId"] as? String == scenario else { throw Failure.denied }
-        if role == "owned-macos-guest" && locked != false { throw Failure.denied }
-        let engine = AVAudioEngine()
-        if mode == "probe" {
-            guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw Failure.denied }
-            try select(engine.inputNode.audioUnit, device.0)
-            let format = engine.inputNode.outputFormat(forBus: 0)
-            guard format.sampleRate > 0, format.channelCount > 0 else { throw Failure.unavailable }
-            let counts = Counts()
-            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in counts.add(buffer) }
-            defer { engine.stop(); engine.inputNode.removeTap(onBus: 0) }
-            try engine.start(); RunLoop.current.run(until: Date().addingTimeInterval(3))
-            let (frames, nonzero, rms) = counts.snapshot()
-            emit(["kind": "virtual-route-probe", "boundary": "CoreAudio-HAL-to-AVAudioEngine",
-                  "routePassed": frames > 0 && nonzero > 0, "sampleRate": format.sampleRate,
-                  "frames": frames, "nonzeroFrames": nonzero, "rms": rms, "scribeCaptureProven": false])
-            if frames == 0 || nonzero == 0 { exit(2) }
-        } else {
-            guard let path = audio["wav"] as? String, let expected = audio["sha256"] as? String else { throw Failure.invalid }
-            let url = try child(path, root)
-            guard let bytes = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber,
-                  bytes.intValue <= 64 * 1024 * 1024 else { throw Failure.invalid }
-            let data = try Data(contentsOf: url)
-            guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == expected else { throw Failure.invalid }
-            let file = try AVAudioFile(forReading: url), duration = Double(file.length) / file.processingFormat.sampleRate
-            guard duration.isFinite, duration > 0, duration <= 600 else { throw Failure.invalid }
-            try select(engine.outputNode.audioUnit, device.0)
-            let player = AVAudioPlayerNode(); engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
-            player.scheduleFile(file, at: nil); try engine.start(); player.play()
-            RunLoop.current.run(until: Date().addingTimeInterval(duration + 0.25)); player.stop(); engine.stop()
-            emit(["kind": "virtual-audio-playback", "completed": true, "durationSeconds": duration])
-        }
-    }
+    emit(["devices": inventory.map { ["uid": $0.1, "name": $0.2] },
+          "sessionLocked": locked as Any? ?? NSNull(),
+          "microphoneAuthorized": AVCaptureDevice.authorizationStatus(for: .audio) == .authorized])
 } catch { emit(["passed": false, "reason": "virtual-audio-precondition-failed"]); exit(2) }

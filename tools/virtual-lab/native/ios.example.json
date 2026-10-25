@@ -1,7 +1,7 @@
 {
   "scenarioId": "virtual-synthetic-continuity",
   "target": {"role": "owned-ios-simulator", "hostname": "REPLACE_HOSTNAME", "root": "/OWNED_SIM_ROOT", "marker": "/OWNED_SIM_ROOT/target.json", "udid": "REPLACE_OWNED_SIMULATOR_UUID"},
-  "app": {"path": "/OWNED_SIM_ROOT/apps/Scribe.app", "bundleId": "com.cosmaneura.scribe.beta", "build": "80"},
+  "app": {"path": "/OWNED_SIM_ROOT/apps/Scribe.app", "bundleId": "com.cosmaneura.scribe.beta", "build": "REPLACE_OWNED_BUILD"},
   "appiumUrl": "http://127.0.0.1:4729",
   "capabilities": {"platformName": "iOS", "appium:automationName": "XCUITest", "appium:noReset": true, "appium:shouldTerminateApp": false},
   "consentReceipt": "/OWNED_SIM_ROOT/consent.json",
@@ -18,5 +18,14 @@
     "finish": [{"action": "click", "locator": {"using": "accessibility id", "value": "Finish"}}, {"action": "wait", "locator": {"using": "accessibility id", "value": "REPLACE_FINISHED_STATUS"}}],
     "save": [{"action": "click", "locator": {"using": "accessibility id", "value": "Save and review"}}, {"action": "wait", "locator": {"using": "accessibility id", "value": "REPLACE_SAVED_STATUS"}}],
     "reopen": [{"action": "relaunch"}, {"action": "click", "locator": {"using": "accessibility id", "value": "REPLACE_REOPEN_SYNTHETIC_VISIT"}}, {"action": "assertText", "locator": {"using": "accessibility id", "value": "REPLACE_SAVED_CONVERSATION"}, "contains": "green teapot"}]
+  },
+  "admissionBinding": {"runId": "REPLACE_RUN_UUID", "workspaceId": "REPLACE_ACTUAL_WORKSPACE_UUID", "appointmentRef": "REPLACE_NORMAL_CREATED_APPOINTMENT_REF"},
+  "observations": {
+    "consent": {"locator": {"using": "accessibility id", "value": "REPLACE_NORMAL_CONSENT_CONTROL"}, "attribute": "value", "equals": "REPLACE_OBSERVED_CHECKED_VALUE"},
+    "route": {"locator": {"using": "accessibility id", "value": "REPLACE_SELECTED_INPUT_CONTROL"}, "attribute": "value", "equals": "REPLACE_OBSERVED_BLACKHOLE_NAME"},
+    "recording": {"locator": {"using": "accessibility id", "value": "Recording"}, "attribute": "text", "equals": "Recording"},
+    "paused": {"locator": {"using": "accessibility id", "value": "Paused"}, "attribute": "text", "equals": "Paused"},
+    "finished": {"locator": {"using": "accessibility id", "value": "REPLACE_FINISHED_STATUS"}, "attribute": "text", "equals": "REPLACE_FINISHED_STATUS"},
+    "saved": {"locator": {"using": "accessibility id", "value": "REPLACE_SAVED_STATUS"}, "attribute": "text", "equals": "REPLACE_SAVED_STATUS"}
   }
 }

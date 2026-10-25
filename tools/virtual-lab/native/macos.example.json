@@ -1,7 +1,7 @@
 {
   "scenarioId": "virtual-synthetic-continuity",
-  "target": {"role": "owned-macos-guest", "hostname": "REPLACE_OWNED_GUEST_HOSTNAME", "root": "/Users/lab/ScribeVirtualLab", "marker": "/Users/lab/ScribeVirtualLab/target.json"},
-  "app": {"path": "/Users/lab/ScribeVirtualLab/apps/Cosmaneura Scribe Store.app", "bundleId": "com.cosmaneura.scribe.beta.desktop.store", "build": "120", "nativeUiBundleId": "REPLACE_OBSERVED_NATIVE_UI_BUNDLE"},
+  "target": {"role": "owned-macos-lab", "hostname": "REPLACE_OWNED_GUEST_HOSTNAME", "root": "/Users/lab/ScribeVirtualLab", "marker": "/Users/lab/ScribeVirtualLab/target.json", "controlHostHardwareUUIDSHA256": "REPLACE_HASH_OF_PHYSICAL_CONTROL_HOST_UUID"},
+  "app": {"path": "/Users/lab/ScribeVirtualLab/apps/Cosmaneura Scribe Store.app", "bundleId": "com.cosmaneura.scribe.beta.desktop.store", "build": "REPLACE_OWNED_BUILD", "nativeUiBundleId": "REPLACE_OBSERVED_NATIVE_UI_BUNDLE"},
   "appiumUrl": "http://127.0.0.1:4729",
   "capabilities": {"platformName": "mac", "appium:automationName": "mac2", "appium:skipAppKill": true, "appium:noReset": true},
   "consentReceipt": "/Users/lab/ScribeVirtualLab/consent.json",
@@ -18,5 +18,14 @@
     "finish": [{"action": "click", "locator": {"using": "accessibility id", "value": "Finish"}}, {"action": "wait", "locator": {"using": "accessibility id", "value": "REPLACE_FINISHED_STATUS"}}],
     "save": [{"action": "click", "locator": {"using": "accessibility id", "value": "Save and review"}}, {"action": "wait", "locator": {"using": "accessibility id", "value": "REPLACE_SAVED_STATUS"}}],
     "reopen": [{"action": "relaunch"}, {"action": "click", "locator": {"using": "accessibility id", "value": "REPLACE_REOPEN_SYNTHETIC_VISIT"}}, {"action": "assertText", "locator": {"using": "accessibility id", "value": "REPLACE_SAVED_CONVERSATION"}, "contains": "green teapot"}]
+  },
+  "admissionBinding": {"runId": "REPLACE_RUN_UUID", "workspaceId": "REPLACE_ACTUAL_WORKSPACE_UUID", "appointmentRef": "REPLACE_NORMAL_CREATED_APPOINTMENT_REF"},
+  "observations": {
+    "consent": {"locator": {"using": "accessibility id", "value": "REPLACE_NORMAL_CONSENT_CONTROL"}, "attribute": "value", "equals": "REPLACE_OBSERVED_CHECKED_VALUE"},
+    "route": {"locator": {"using": "accessibility id", "value": "REPLACE_SELECTED_INPUT_CONTROL"}, "attribute": "value", "equals": "REPLACE_OBSERVED_BLACKHOLE_NAME"},
+    "recording": {"locator": {"using": "accessibility id", "value": "Recording"}, "attribute": "text", "equals": "Recording"},
+    "paused": {"locator": {"using": "accessibility id", "value": "Paused"}, "attribute": "text", "equals": "Paused"},
+    "finished": {"locator": {"using": "accessibility id", "value": "REPLACE_FINISHED_STATUS"}, "attribute": "text", "equals": "REPLACE_FINISHED_STATUS"},
+    "saved": {"locator": {"using": "accessibility id", "value": "REPLACE_SAVED_STATUS"}, "attribute": "text", "equals": "REPLACE_SAVED_STATUS"}
   }
 }
