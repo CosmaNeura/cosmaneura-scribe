@@ -33,6 +33,7 @@ test('passive iOS note observer preserves promise identity and excludes late or 
   assert.equal(window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', options), held);
   window.__scribeLabAdmissionObserver.clear(); finish(reply); await held; held = null;
   assert.equal(window.__scribeLabAdmissionObserver.readNote('read'), null);
+  window.__scribeLabAdmissionObserver.rebindCurrent({ ...scope, revision: id(6) });
   await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', options);
   assert.equal(window.__scribeLabAdmissionObserver.readNote('read').session_id, id(3));
   assert.equal(window.__scribeLabAdmissionObserver.readCurrentNote().action, 'read');
@@ -43,4 +44,35 @@ test('passive iOS note observer preserves promise identity and excludes late or 
   assert.equal(window.__scribeLabAdmissionObserver.readCurrentNote(), null);
   assert.equal(window.__scribeLabAdmissionObserver.uninstall().ownedResourcesSettled, true);
   assert.equal(window.Capacitor.nativePromise, original); delete globalThis.window;
+});
+
+test('normal coordinated note-opening projects the saved tuple only from the exact nested session and nonce', () => {
+  const openingRequest = { ...request, action: undefined, transportAction: 'note_opening' };
+  const opening = { ...body, action: undefined, operation: 'note_opening',
+    receipt: { session_id: id(3), review: { private: 'must not persist' }, templates: [], note: body.receipt } };
+  const note = projectNoteObservation(openingRequest, opening, scope);
+  assert.equal(note.action, 'read'); assert.equal(note.transportAction, 'note_opening'); assert.equal(note.note_sha256, body.receipt.note_sha256);
+  assert(!JSON.stringify(note).includes('must not persist'));
+  for (const patch of [{ operation: 'read' }, { request_nonce: id(99) }, { action: 'read' },
+    { receipt: { ...opening.receipt, session_id: id(99) } }, { receipt: { ...opening.receipt, note: null } },
+    { receipt: { ...opening.receipt, note: { ...body.receipt, session_id: id(99) } } }])
+    assert.equal(projectNoteObservation(openingRequest, { ...opening, ...patch }, scope), null);
+});
+
+test('same-scope normal remount permits an actual note-opening response after navigation clears cached notes', async () => {
+  let reply; globalThis.window = { Capacitor: { nativePromise: () => Promise.resolve(reply) } };
+  installAdmissionObserver(scope, projectNoteObservation);
+  const observer = window.__scribeLabAdmissionObserver;
+  const openingRequest = { ...request, action: undefined };
+  const options = { requestId: id(5), revision: id(6), action: 'note-opening', body: JSON.stringify(openingRequest) };
+  reply = { status: 200, requestId: id(5), revision: id(6), body: JSON.stringify({ ...body, action: undefined,
+    operation: 'note_opening', receipt: { session_id: id(3), review: {}, templates: [], note: body.receipt } }) };
+  observer.clear({ reason: 'navigation' });
+  await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', options);
+  assert.equal(observer.readNote('read'), null);
+  observer.rebindCurrent({ ...scope, revision: id(6) });
+  await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', options);
+  assert.equal(observer.readNote('read').transportAction, 'note_opening');
+  assert.equal(observer.readCurrentNote().requestNonce, request.request_nonce);
+  observer.uninstall();
 });

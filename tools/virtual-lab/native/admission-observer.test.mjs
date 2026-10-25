@@ -110,7 +110,8 @@ test("expires a receipt and never changes a failed product promise", async () =>
 
 test("retains actual native phases and counts only for the admitted recording", async () => {
   let value = response, pending = null;
-  globalThis.window = { Capacitor: { nativePromise: () => pending ?? Promise.resolve(value) } };
+  globalThis.window = { Capacitor: { nativePromise: (_plugin, method, options) => pending ?? Promise.resolve(
+    ['openProviderRecording', 'providerRecordingCommand'].includes(method) ? { requestId: options.requestId, ok: true, recording: value } : value) } };
   installAdmissionObserver(binding);
   await window.Capacitor.nativePromise("CosmasWorkspaceAuth", "providerRequest", request);
   value = { version: 1, revision: 1, recorderId: id(8), sessionId: id(7), phase: "ready", busy: false,
@@ -134,12 +135,12 @@ test("retains actual native phases and counts only for the admitted recording", 
   pending = new Promise(resolve => { finishPause = resolve; });
   const mutation = window.Capacitor.nativePromise("CosmasWorkspaceAuth", "providerRecordingCommand", { ...command, kind: "pause" });
   assert.equal(window.__scribeLabAdmissionObserver.readRecording(), null);
-  finishOldRead(value); await oldRead;
+  finishOldRead({ requestId: command.requestId, ok: true, recording: value }); await oldRead;
   assert.equal(window.__scribeLabAdmissionObserver.readRecording(), null);
-  pending = Promise.resolve(value);
+  pending = Promise.resolve({ requestId: command.requestId, ok: true, recording: value });
   await window.Capacitor.nativePromise("CosmasWorkspaceAuth", "providerRecordingCommand", command);
   assert.equal(window.__scribeLabAdmissionObserver.readRecording(), null);
-  finishPause({ ...value, phase: "paused", revision: 3 }); await mutation; pending = null;
+  finishPause({ requestId: command.requestId, ok: true, recording: { ...value, phase: "paused", revision: 3 } }); await mutation; pending = null;
   assert.equal(window.__scribeLabAdmissionObserver.readRecording().phase, "paused");
   value = { ...value, phase: "paused", sessionId: id(99), revision: 3 };
   await window.Capacitor.nativePromise("CosmasWorkspaceAuth", "providerRecordingCommand", command);
@@ -152,7 +153,7 @@ test("retains actual native phases and counts only for the admitted recording", 
   assert.equal(window.__scribeLabAdmissionObserver.readRecording().phase, "paused");
   assert.equal(window.__scribeLabAdmissionObserver.readTerminal(), null);
   value = { ...value, phase: "sealed", revision: 5 };
-  await window.Capacitor.nativePromise("CosmasWorkspaceAuth", "providerRecordingCommand", { ...command, kind: "finish" });
+  await window.Capacitor.nativePromise("CosmasWorkspaceAuth", "providerRecordingCommand", { ...command, kind: "seal" });
   assert.equal(window.__scribeLabAdmissionObserver.readTerminal().sessionId, id(7));
   const stoppedAt = window.__scribeLabAdmissionObserver.readTerminal().observedAtMonotonicMs;
   await new Promise(resolve => setTimeout(resolve, 5));
@@ -170,4 +171,227 @@ test("retains actual native phases and counts only for the admitted recording", 
   window.__scribeLabAdmissionObserver.clear();
   assert.equal(window.__scribeLabAdmissionObserver.readRecording(), null);
   window.__scribeLabAdmissionObserver.uninstall();
+});
+
+// Public build7 reply shape: NativeProviderRecordingBridge.snapshot and
+// PCMSignalMonitor.Snapshot. No hardware or native requests occur in these tests.
+const silentSignal = () => ({ version: 2, signal: {
+  inputBuffers: 12, convertedBuffers: 11, inputEverNonzero: false, convertedEverNonzero: false,
+  inputLevel: 0, convertedLevel: 0, inputAgeMs: 4, convertedAgeMs: 7,
+  zeroInputMs: 250, route: 'built_in', inputMuted: false,
+} });
+async function signalHarness() {
+  let value = response, calls = 0, lastPromise;
+  globalThis.window = { Capacitor: { nativePromise: (_plugin, method, options) => {
+    calls++; return lastPromise = Promise.resolve(['openProviderRecording', 'providerRecordingCommand'].includes(method)
+      ? { requestId: options.requestId, ok: true, recording: value } : value);
+  } } };
+  installAdmissionObserver(binding);
+  await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', request);
+  value = { version: 1, revision: 1, recorderId: id(8), sessionId: id(7), phase: 'recording', busy: false,
+    recordedChunks: 0, recordedPlaintextBytes: 0, capturedAudioFrames: 4000, input: 'built_in', signal: silentSignal() };
+  await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'openProviderRecording', {
+    requestId: id(9), revision: id(4), sessionId: id(7), workspaceId: binding.workspaceId,
+    bindingRef: 'synthetic-mount-reference',
+  });
+  return { observer: window.__scribeLabAdmissionObserver,
+    calls: () => calls,
+    async reply(signal, patch = {}) {
+      value = { ...value, ...patch, revision: value.revision + 1, signal };
+      const promise = window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRecordingCommand', {
+        requestId: id(10), revision: id(4), recorderId: id(8), kind: 'read',
+      });
+      assert.equal(promise, lastPromise);
+      assert.equal((await promise).recording, value);
+      return value;
+    },
+  };
+}
+
+test('projects separate input/conversion boundaries without retaining arbitrary native fields or making requests', async () => {
+  const h = await signalHarness();
+  try {
+    const initial = h.observer.readRecording();
+    assert.deepEqual(initial.signal, { version: 2, ...silentSignal().signal });
+    assert.equal(initial.capturedAudioFrames, 4000);
+    const inputOnly = silentSignal();
+    Object.assign(inputOnly.signal, { inputBuffers: 24, inputEverNonzero: true, inputLevel: 0.2,
+      zeroInputMs: 0, deviceUID: 'must-not-retain', audioURL: 'must-not-retain', samples: [1, 2] });
+    inputOnly.private = 'must-not-retain';
+    const productValue = await h.reply(inputOnly);
+    assert.equal(productValue.signal, inputOnly);
+    const input = h.observer.readRecording();
+    assert.equal(input.signal.inputEverNonzero, true);
+    assert.equal(input.signal.convertedEverNonzero, false);
+    assert(!JSON.stringify(input).includes('must-not-retain'));
+    input.signal.inputBuffers = 999;
+    assert.equal(h.observer.readRecording().signal.inputBuffers, 24);
+    const converted = silentSignal();
+    Object.assign(converted.signal, { inputBuffers: 25, convertedBuffers: 24,
+      inputEverNonzero: true, convertedEverNonzero: true, inputLevel: 0.25, convertedLevel: 0.24, zeroInputMs: 0 });
+    await h.reply(converted, { capturedAudioFrames: 16000 });
+    const end = h.observer.readRecording();
+    assert.equal(end.signal.convertedEverNonzero, true);
+    assert.equal(end.capturedAudioFrames, 16000);
+    assert(end.nativeRevision > initial.nativeRevision);
+    assert.equal(end.sessionId, initial.sessionId);
+    assert.equal(h.calls(), 4); // admission/open and exactly the two product reads above
+  } finally { assert.equal(h.observer.uninstall().ownedResourcesSettled, true); }
+});
+
+test('absent or malformed signal is unavailable and never reuses earlier nonzero evidence', async () => {
+  const h = await signalHarness();
+  try {
+    const invalid = [undefined, null, { version: 1, signal: silentSignal().signal }, { version: 2, signal: null },
+      ...[{ inputBuffers: -1 }, { convertedBuffers: 2147483648 }, { inputBuffers: 1.5 },
+        { inputEverNonzero: 1 }, { convertedEverNonzero: 'true' }, { inputLevel: NaN },
+        { convertedLevel: Infinity }, { inputLevel: 1.01 }, { convertedLevel: -0.01 },
+        { inputAgeMs: -1 }, { convertedAgeMs: 86400001 }, { inputAgeMs: undefined },
+        { zeroInputMs: null }, { zeroInputMs: 0.5 }, { zeroInputMs: 86400001 },
+        { route: 'BlackHole2ch_UID' }, { inputMuted: undefined }]
+        .map(patch => ({ version: 2, signal: { ...silentSignal().signal, ...patch } }))];
+    for (const malformed of invalid) {
+      await h.reply({ version: 2, signal: { ...silentSignal().signal, inputEverNonzero: true } });
+      assert.equal(h.observer.readRecording().signal.inputEverNonzero, true);
+      await h.reply(malformed);
+      assert.equal(h.observer.readRecording().signal, null);
+    }
+    for (const route of ['none', 'built_in', 'bluetooth', 'wired', 'usb', 'other']) {
+      await h.reply({ version: 2, signal: { ...silentSignal().signal, route,
+        inputAgeMs: null, convertedAgeMs: 86400000, inputMuted: true } });
+      assert.equal(h.observer.readRecording().signal.route, route);
+    }
+  } finally { assert.equal(h.observer.uninstall().ownedResourcesSettled, true); }
+});
+
+test('signal shares recorder freshness, stop history and scope invalidation', async () => {
+  const originalPerformance = globalThis.performance;
+  let now = 5;
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now, timeOrigin: 10 } });
+  const h = await signalHarness();
+  try {
+    now += 15001;
+    assert.equal(h.observer.readRecording(), null);
+    await h.reply(silentSignal(), { phase: 'sealed' });
+    const terminal = h.observer.readTerminal();
+    terminal.signal.route = 'usb';
+    assert.equal(h.observer.readTerminal().signal.route, 'built_in');
+    now += 15001;
+    assert.equal(h.observer.readRecording(), null);
+    assert.equal(h.observer.readTerminal().observedAtMonotonicMs, terminal.observedAtMonotonicMs);
+    await h.reply(silentSignal(), { sessionId: id(99) });
+    assert.equal(h.observer.readRecording(), null);
+    assert.equal(h.observer.readTerminal(), null);
+  } finally {
+    assert.equal(h.observer.uninstall().ownedResourcesSettled, true);
+    Object.defineProperty(globalThis, 'performance', { configurable: true, value: originalPerformance });
+  }
+});
+
+async function lifecycleHarness() {
+  let next, lastPromise, nextError;
+  const original = () => { if (nextError) { const error = nextError; nextError = null; throw error; }
+    return lastPromise = Promise.resolve(next); };
+  globalThis.window = { Capacitor: { nativePromise: original } };
+  installAdmissionObserver(binding);
+  next = response; await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'providerRequest', request);
+  const state = { version: 1, revision: 8, recorderId: id(8), sessionId: id(7), phase: 'sealed', busy: false,
+    recordedChunks: 2, recordedPlaintextBytes: 32000, capturedAudioFrames: 16000, input: 'built_in' };
+  const open = { requestId: id(9), revision: id(4), workspaceId: binding.workspaceId, bindingRef: 'synthetic-mount-reference', sessionId: id(7) };
+  next = { requestId: open.requestId, ok: true, recording: state };
+  await window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'openProviderRecording', open);
+  const close = { requestId: id(10), revision: id(4), recorderId: id(8), kind: 'close' };
+  return { observer: window.__scribeLabAdmissionObserver, state, open, close,
+    throws(method, options, error) { nextError = error;
+      assert.throws(() => window.Capacitor.nativePromise('CosmasWorkspaceAuth', method, options), actual => actual === error); },
+    invoke(method, options, reply) { next = reply; const promise = window.Capacitor.nativePromise('CosmasWorkspaceAuth', method, options);
+      assert.equal(promise, lastPromise); return promise; } };
+}
+
+test('actual recording envelope is required; a flat state, failed or foreign reply never becomes native evidence', async () => {
+  for (const change of [value => value.recording, value => ({ ...value, requestId: id(99) }),
+    value => ({ ...value, ok: false }), value => ({ ...value, recording: null })]) {
+    const h = await lifecycleHarness();
+    await h.invoke('openProviderRecording', h.open, change({ requestId: h.open.requestId, ok: true, recording: h.state }));
+    assert.equal(h.observer.readRecording(), null); assert.equal(h.observer.readClosed(), null);
+    h.observer.uninstall();
+  }
+});
+
+test('correlated close survives same-scope navigation and remains an absorbing lifecycle receipt, not fresh recording', async () => {
+  const h = await lifecycleHarness(); let settle;
+  const held = new Promise(resolve => { settle = resolve; });
+  const promise = h.invoke('providerRecordingCommand', h.close, held);
+  h.observer.clear({ reason: 'navigation' });
+  assert.equal(h.observer.readClosed(), null); assert.equal(h.observer.uninstall().ownedResourcesSettled, false);
+  settle({ requestId: h.close.requestId, ok: true, recording: null }); await promise;
+  const closed = h.observer.readClosed();
+  assert.equal(closed.source, 'normal-native-recorder-close-response'); assert.equal(closed.phase, 'closed');
+  assert.equal(closed.sessionId, id(7)); assert.equal(closed.recorderId, id(8));
+  assert.equal(closed.nativeRevisionBeforeClose, 8); assert.equal(closed.pendingObservedReplies, 0);
+  assert.equal(closed.currentCaptureMutationSequence, closed.captureMutationSequence);
+  assert.equal(h.observer.rebindCurrent({ ...binding, revision: id(4) }), true);
+  await new Promise(resolve => setTimeout(resolve, 2));
+  assert.equal(h.observer.readClosed().observedAtMonotonicMs, closed.observedAtMonotonicMs);
+  assert(h.observer.readClosed().inspectedAtMonotonicMs > closed.inspectedAtMonotonicMs);
+  assert.equal(h.observer.readRecording(), null); assert.equal(h.observer.read(), null);
+  h.observer.rebindCurrent({ ...binding, workspaceId: id(99), revision: id(4) });
+  assert.equal(h.observer.readClosed(), null); h.observer.uninstall();
+});
+
+test('failed, uncorrelated and late closes cannot settle a newer recorder or survive auth invalidation', async () => {
+  for (const patch of [{ ok: false }, { requestId: id(99) }, { recording: {} }, { unexpected: true }]) {
+    const h = await lifecycleHarness();
+    await h.invoke('providerRecordingCommand', h.close, { requestId: h.close.requestId, ok: true, recording: null, ...patch });
+    assert.equal(h.observer.readClosed(), null); h.observer.uninstall();
+  }
+  for (const invalidate of ['open', 'start', 'auth']) {
+    const h = await lifecycleHarness(); let settle;
+    const closing = h.invoke('providerRecordingCommand', h.close, new Promise(resolve => { settle = resolve; }));
+    if (invalidate === 'auth') h.observer.clear();
+    else if (invalidate === 'open') await h.invoke('openProviderRecording', h.open, { requestId: h.open.requestId, ok: true, recording: h.state });
+    else await h.invoke('providerRecordingCommand', { ...h.close, requestId: id(11), kind: 'start' }, { requestId: id(11), ok: true, recording: h.state });
+    settle({ requestId: h.close.requestId, ok: true, recording: null }); await closing;
+    assert.equal(h.observer.readClosed(), null); h.observer.uninstall();
+  }
+});
+
+test('idempotent iOS close retains its first timestamp, and old close acknowledgement cannot bind a new recorder', async () => {
+  const h = await lifecycleHarness(), reply = { requestId: h.close.requestId, ok: true, recording: null };
+  await h.invoke('providerRecordingCommand', h.close, reply);
+  const first = h.observer.readClosed(); await new Promise(resolve => setTimeout(resolve, 2));
+  const repeat = { ...h.close, requestId: id(11) };
+  await h.invoke('providerRecordingCommand', repeat, { ...reply, requestId: repeat.requestId });
+  const repeated = h.observer.readClosed();
+  assert.equal(repeated.observedAtMonotonicMs, first.observedAtMonotonicMs);
+  assert.equal(repeated.closeRequestId, first.closeRequestId);
+  assert(repeated.captureMutationSequence > first.captureMutationSequence);
+  assert.equal(repeated.captureMutationSequence, repeated.currentCaptureMutationSequence);
+  await h.invoke('openProviderRecording', h.open, { requestId: h.open.requestId, ok: true,
+    recording: { ...h.state, recorderId: id(88) } });
+  await h.invoke('providerRecordingCommand', h.close, reply);
+  assert.equal(h.observer.readClosed(), null); h.observer.uninstall();
+});
+
+test('synchronous recording or admission mutations invalidate closed evidence without replacing the product error', async () => {
+  for (const [method, options] of [['openProviderRecording', null], ['providerRecordingCommand', { kind: 'start' }],
+    ['providerRequest', request]]) {
+    const h = await lifecycleHarness();
+    await h.invoke('providerRecordingCommand', h.close, { requestId: h.close.requestId, ok: true, recording: null });
+    assert(h.observer.readClosed());
+    h.throws(method, options ?? h.open, new Error('original synthetic bridge failure'));
+    assert.equal(h.observer.readClosed(), null); assert.equal(h.observer.describe().pendingObservedReplies, 0);
+    h.observer.uninstall();
+  }
+});
+
+test('every attempted admission invalidates closure even when its body cannot be observed', async () => {
+  for (const body of [undefined, '{invalid', 'x'.repeat(8193), JSON.stringify({ workspace_id: id(99) })]) {
+    const h = await lifecycleHarness();
+    await h.invoke('providerRecordingCommand', h.close, { requestId: h.close.requestId, ok: true, recording: null });
+    assert(h.observer.readClosed());
+    await h.invoke('providerRequest', { ...request, body }, response);
+    assert.equal(h.observer.readClosed(), null); assert.equal(h.observer.read(), null);
+    h.observer.uninstall();
+  }
 });
