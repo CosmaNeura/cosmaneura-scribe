@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
 import { sha256 } from './journal.mjs';
-import { DASHBOARD_ORIGIN, assertIsolationResponse, completeOptionalOnboarding, dashboardRequestAllowed, projectNoteDetail, validateSavedReceipt } from './dashboard.mjs';
+import { DASHBOARD_ORIGIN, assertDashboardAccountScope, assertIsolationResponse, completeOptionalOnboarding,
+  dashboardRequestAllowed, observeDashboardAccount, projectNoteDetail, validateSavedReceipt } from './dashboard.mjs';
 
 const id = '01m5q661ryetaa28yxe7vbqrex', uuid = '11111111-1111-4111-8111-111111111111';
 const fields = { Assessment: 'Invented headache.', Plan: 'Synthetic saved correction.' };
@@ -66,11 +68,116 @@ test('optional onboarding submits only after the distinct Go to Cosmas control',
   assert.equal(result.status, 200);
 });
 test('cross-account isolation needs an actual 403/404 for the current inactive actor', () => {
-  const sample = { identitySHA256: 'a'.repeat(64), expectedIdentitySHA256: 'a'.repeat(64), viewerDoctorRef: 'doctor_' + id,
-    viewAs: { active: false, targetPresent: false, actorDoctorRef: 'doctor_' + id } };
+  const sample = { ...accountSample(), viewerDoctorRef: 'doctor_' + id };
   for (const status of [403, 404]) assert.equal(assertIsolationResponse({ ...sample, status }).httpStatus, status);
   for (const status of [undefined, 200, 401, 500]) assert.throws(() => assertIsolationResponse({ ...sample, status }), /denial_not_observed/);
   assert.throws(() => assertIsolationResponse({ ...sample, status: 404, identitySHA256: 'b'.repeat(64) }), /actor_scope/);
   assert.throws(() => assertIsolationResponse({ ...sample, status: 404, viewAs: { ...sample.viewAs, active: true } }), /actor_scope/);
   assert.throws(() => assertIsolationResponse({ ...sample, status: 404, viewAs: null }), /actor_scope/);
+});
+
+function accountSample() {
+  const common = { sequence: 1, status: 200, observedAtEpochMs: Date.now() };
+  return { identitySHA256: sha256('user_a'), expectedIdentitySHA256: sha256('user_a'), hostedSessionSHA256: sha256('session_a'),
+    expectedDoctorRef: 'doctor_' + id,
+    settings: { ...common, source: 'normal-hosted-settings-response', doctorRef: 'doctor_' + id },
+    viewAs: { ...common, source: 'normal-hosted-view-as-response', active: false, targetPresent: false,
+      actorDoctorRef: null, canViewAs: false, readOnly: false, requestBinding: 'inactive' } };
+}
+test('ordinary provider actor-null is bound to fresh Settings doctor and current Clerk', () => {
+  const sample = accountSample(), actual = assertDashboardAccountScope(sample);
+  assert.equal(actual.doctorRef, sample.settings.doctorRef); assert.equal(actual.viewAs.actorDoctorRef, null);
+  const privileged = { ...sample, viewAs: { ...sample.viewAs, canViewAs: true, actorDoctorRef: sample.settings.doctorRef } };
+  assert.equal(assertDashboardAccountScope(privileged).doctorRef, sample.settings.doctorRef);
+  assert.equal(assertIsolationResponse({ ...sample, viewerDoctorRef: sample.settings.doctorRef, status: 404 }).doctorSource, 'normal-settings-response');
+});
+test('missing, stale, active, unsupported or foreign identity evidence cannot qualify saved/reopened/denied scope', () => {
+  const base = accountSample();
+  for (const mutate of [s => { delete s.settings; }, s => { delete s.viewAs; }, s => { delete s.hostedSessionSHA256; },
+    s => { s.identitySHA256 = sha256('other'); }, s => { s.settings.doctorRef += '0'; },
+    s => { s.settings.observedAtEpochMs -= 16000; }, s => { s.viewAs.observedAtEpochMs = NaN; },
+    s => { s.settings.observedAtEpochMs += 1000; }, s => { s.viewAs.sequence = 0; },
+    s => { s.viewAs.active = true; }, s => { s.viewAs.targetPresent = true; }, s => { s.viewAs.readOnly = true; },
+    s => { delete s.viewAs.canViewAs; }, s => { s.viewAs.canViewAs = true; }, s => { s.viewAs.requestBinding = 'other'; },
+    s => { s.viewAs.actorDoctorRef = 'doctor_other'; }, s => { s.viewAs.actorDoctorRef = undefined; },
+    s => { s.viewAs.canViewAs = true; s.viewAs.actorDoctorRef = 'doctor_other'; },
+    s => { s.settings.status = 403; }, s => { s.viewAs.source = 'configured'; }]) {
+    const sample = structuredClone(base); mutate(sample);
+    assert.throws(() => assertDashboardAccountScope(sample), /dashboard_actor_scope/);
+    assert.throws(() => assertIsolationResponse({ ...sample, viewerDoctorRef: base.settings.doctorRef, status: 404 }), /isolation_actor_scope/);
+  }
+});
+
+const inactive = () => ({ active: false, actor: null, target: null, can_view_as: false, read_only: false, request_binding: 'inactive' });
+const options = () => ({ expectedIdentitySHA256: sha256('user_a'), expectedDoctorRef: 'doctor_' + id, signal: new AbortController().signal, timeoutMs: 50 });
+const tick = () => new Promise(resolve => setImmediate(resolve));
+class ScopePage extends EventEmitter {
+  userId = 'user_a'; sessionId = 'session_a'; visits = []; calls = 0;
+  async waitForFunction() {}
+  async evaluate() { this.calls++; return { userId: this.userId, sessionId: this.sessionId }; }
+  getByRole(role, query) { assert.equal(role, 'heading'); assert.equal(query.name, 'Settings'); return { waitFor: async () => {} }; }
+  request(path) {
+    const request = { method: () => 'GET', url: () => `${DASHBOARD_ORIGIN}/internal/v1/${path}` }; this.emit('request', request); return request;
+  }
+  response(request, data, status = 200) {
+    this.emit('response', { request: () => request, status: () => status, json: async () => data });
+  }
+  async goto(url) {
+    this.visits.push(url);
+    this.response(this.request('settings'), { doctor_id: 'doctor_' + id });
+    this.response(this.request('view-as/status'), inactive());
+  }
+}
+test('account priming performs only normal Settings navigation and obtains a new response pair on reopen', async () => {
+  const page = new ScopePage(), observer = observeDashboardAccount(page, DASHBOARD_ORIGIN);
+  const first = await observer.prime(options()), second = await observer.prime(options());
+  assert.equal(first.settings.sequence, 2); assert.equal(second.settings.sequence, 4);
+  assert.deepEqual(page.visits, [`${DASHBOARD_ORIGIN}/settings`, `${DASHBOARD_ORIGIN}/settings`]);
+  assert.equal(page.calls, 2); await observer.dispose();
+});
+test('a newer failed Settings request cannot be overwritten by an older delayed body', async () => {
+  const page = new ScopePage(), observer = observeDashboardAccount(page, DASHBOARD_ORIGIN); await observer.prime(options());
+  let finish; const old = page.request('settings'); page.response(old, new Promise(resolve => { finish = resolve; }));
+  const newest = page.request('settings'); assert.equal(observer.snapshot().settings, null);
+  page.response(newest, {}, 503); finish({ doctor_id: 'doctor_' + id }); await tick();
+  assert.equal(observer.snapshot().settings, null);
+  await assert.rejects(observer.read(options()), /account_response_not_observed/); await observer.dispose();
+});
+test('newest active view-as response defeats a delayed old inactive response', async () => {
+  const page = new ScopePage(), observer = observeDashboardAccount(page, DASHBOARD_ORIGIN); await observer.prime(options());
+  let finish; page.response(page.request('view-as/status'), new Promise(resolve => { finish = resolve; }));
+  page.response(page.request('view-as/status'), { ...inactive(), active: true, target: { doctor_id: 'doctor_other' } });
+  finish(inactive()); await tick();
+  assert.equal(observer.snapshot().viewAs.active, true);
+  await assert.rejects(observer.read(options()), /dashboard_actor_scope/); await observer.dispose();
+});
+test('Clerk is read after delayed normal responses settle, so an intervening account change is rejected', async () => {
+  const page = new ScopePage(), observer = observeDashboardAccount(page, DASHBOARD_ORIGIN); await observer.prime(options());
+  let finish; page.response(page.request('settings'), new Promise(resolve => { finish = resolve; }));
+  const reading = observer.read(options()); await tick(); assert.equal(page.calls, 1);
+  page.userId = 'user_other'; finish({ doctor_id: 'doctor_' + id });
+  await assert.rejects(reading, /dashboard_actor_scope/); assert.equal(page.calls, 2); await observer.dispose();
+});
+test('new request during final Clerk read forces a new check rather than using captured account cells', async () => {
+  const page = new ScopePage(), observer = observeDashboardAccount(page, DASHBOARD_ORIGIN); await observer.prime(options());
+  let finish; page.evaluate = async () => { page.evaluate = ScopePage.prototype.evaluate; return new Promise(resolve => { finish = resolve; }); };
+  const reading = observer.read(options()); await tick();
+  page.response(page.request('settings'), { doctor_id: 'doctor_01m5sf1cwwfwv9mk5fnx07cwr9' });
+  finish({ userId: 'user_a', sessionId: 'session_a' });
+  await assert.rejects(reading, /dashboard_actor_scope/); await observer.dispose();
+});
+test('reopen without fresh normal Settings/ViewAs replies cannot reuse earlier account proof', async () => {
+  const page = new ScopePage(), observer = observeDashboardAccount(page, DASHBOARD_ORIGIN); await observer.prime(options());
+  page.goto = async () => {};
+  await assert.rejects(observer.prime(options()), /account_response_not_observed/); await observer.dispose();
+});
+test('navigation retires previous document cells before goto and ignores late previous replies', async () => {
+  const page = new ScopePage(), observer = observeDashboardAccount(page, DASHBOARD_ORIGIN); await observer.prime(options());
+  let finish; page.response(page.request('settings'), new Promise(resolve => { finish = resolve; }));
+  page.goto = async () => {
+    assert.deepEqual(observer.snapshot(), { settings: null, viewAs: null });
+    finish({ doctor_id: 'doctor_' + id });
+  };
+  await assert.rejects(observer.prime(options()), /account_response_not_observed/);
+  assert.deepEqual(observer.snapshot(), { settings: null, viewAs: null }); await observer.dispose();
 });

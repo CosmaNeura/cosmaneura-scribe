@@ -9,6 +9,103 @@ const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value
 const ref = (value, prefix) => typeof value === 'string' && new RegExp(`^${prefix}_[0-7][0-9a-hjkmnp-tv-z]{25}$`).test(value);
 const failure = error => /^[a-z_]{1,100}$/.test(error?.message) ? error.message : 'dashboard_ui_unavailable';
 
+/** Ordinary providers have actor:null when they have no support-view
+ * capability. Their doctor identity comes from the normal Settings response. */
+export function assertDashboardAccountScope({ settings, viewAs, identitySHA256, hostedSessionSHA256,
+  expectedIdentitySHA256, expectedDoctorRef, now = Date.now() }) {
+  const fresh = value => value?.status === 200 && Number.isSafeInteger(value.sequence) && value.sequence > 0
+    && Number.isFinite(value.observedAtEpochMs) && value.observedAtEpochMs <= now + 50
+    && now - value.observedAtEpochMs <= 15000;
+  if (!digest(identitySHA256) || identitySHA256 !== expectedIdentitySHA256 || !digest(hostedSessionSHA256)
+    || !fresh(settings) || settings.source !== 'normal-hosted-settings-response' || !ref(settings.doctorRef, 'doctor')
+    || expectedDoctorRef !== undefined && settings.doctorRef !== expectedDoctorRef
+    || !fresh(viewAs) || viewAs.source !== 'normal-hosted-view-as-response'
+    || viewAs.active !== false || viewAs.targetPresent !== false || viewAs.readOnly !== false || viewAs.requestBinding !== 'inactive'
+    || !(viewAs.canViewAs === false && viewAs.actorDoctorRef === null
+      || viewAs.canViewAs === true && viewAs.actorDoctorRef === settings.doctorRef)) throw Error('dashboard_actor_scope_mismatch');
+  return { source: 'normal-hosted-account-observation', identitySHA256, hostedSessionSHA256,
+    doctorRef: settings.doctorRef, settings, viewAs, observedAtEpochMs: now };
+}
+
+/** Passive projection of page-initiated replies. New requests invalidate old
+ * values immediately, even if their older bodies have not finished parsing. */
+export function observeDashboardAccount(page, apiOrigin) {
+  const cells = { settings: { sequence: 0, value: null }, viewAs: { sequence: 0, value: null } };
+  const requests = new WeakMap(), pending = new Set(); let disposed = false;
+  const keyFor = request => request.method() !== 'GET' ? null
+    : request.url() === `${apiOrigin}/internal/v1/settings` ? 'settings'
+    : request.url() === `${apiOrigin}/internal/v1/view-as/status` ? 'viewAs' : null;
+  const request = item => {
+    const key = keyFor(item); if (!key || disposed) return;
+    const cell = cells[key]; cell.value = null; requests.set(item, { key, sequence: ++cell.sequence });
+  };
+  const response = item => {
+    const tracked = requests.get(item.request()); if (!tracked || disposed) return;
+    const work = (async () => {
+      let timer, value = null;
+      try {
+        if (item.status() !== 200) return;
+        const data = await Promise.race([item.json(), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Error('dashboard_scope_body_timeout')), 5000);
+        })]);
+        const common = { sequence: tracked.sequence, status: item.status(), observedAtEpochMs: Date.now() };
+        value = tracked.key === 'settings'
+          ? { ...common, source: 'normal-hosted-settings-response', doctorRef: data.doctor_id }
+          : { ...common, source: 'normal-hosted-view-as-response', active: data.active, canViewAs: data.can_view_as,
+            readOnly: data.read_only, requestBinding: data.request_binding, actorDoctorRef: data.actor === null ? null : data.actor?.doctor_id,
+            targetPresent: data.target !== null };
+      } catch { /* An unreadable newest response leaves the current proof absent. */ }
+      finally {
+        clearTimeout(timer);
+        if (!disposed && cells[tracked.key].sequence === tracked.sequence) cells[tracked.key].value = value;
+      }
+    })();
+    pending.add(work); work.finally(() => pending.delete(work));
+  };
+  page.on('request', request); page.on('response', response);
+  const snapshot = () => ({ settings: cells.settings.value, viewAs: cells.viewAs.value });
+  async function read({ expectedIdentitySHA256, expectedDoctorRef, signal, minimumSequences = {}, timeoutMs = 5000 }) {
+    const deadline = Date.now() + timeoutMs;
+    await page.waitForFunction(() => Boolean(window.Clerk?.loaded && window.Clerk?.user?.id && window.Clerk?.session?.id));
+    while (!disposed) {
+      signal.throwIfAborted();
+      await Promise.allSettled([...pending]);
+      const sequences = [cells.settings.sequence, cells.viewAs.sequence], current = snapshot();
+      if (current.settings && current.viewAs && cells.settings.sequence >= (minimumSequences.settings ?? 0)
+        && cells.viewAs.sequence >= (minimumSequences.viewAs ?? 0)) {
+        // Read Clerk after all current response work, then ensure no response
+        // generation changed while that native browser read was in flight.
+        const identity = await page.evaluate(() => ({ userId: window.Clerk?.user?.id, sessionId: window.Clerk?.session?.id }));
+        signal.throwIfAborted();
+        if (cells.settings.sequence !== sequences[0] || cells.viewAs.sequence !== sequences[1]) continue;
+        return assertDashboardAccountScope({ ...current, expectedIdentitySHA256, expectedDoctorRef,
+          identitySHA256: typeof identity.userId === 'string' ? sha256(identity.userId) : null,
+          hostedSessionSHA256: typeof identity.sessionId === 'string' ? sha256(identity.sessionId) : null });
+      }
+      if (Date.now() >= deadline) throw Error('dashboard_account_response_not_observed');
+      await new Promise(resolveWait => setTimeout(resolveWait, 25));
+    }
+    throw Error('dashboard_account_observer_closed');
+  }
+  return {
+    read, snapshot,
+    async prime(options) {
+      // Retire the prior document before navigation. An older body completing
+      // while the new app loads must not refill this navigation's cells.
+      for (const cell of Object.values(cells)) { cell.value = null; cell.sequence++; }
+      const minimumSequences = { settings: cells.settings.sequence + 1, viewAs: cells.viewAs.sequence + 1 };
+      options.signal.throwIfAborted();
+      await page.goto(`${DASHBOARD_ORIGIN}/settings`, { waitUntil: 'domcontentloaded' });
+      await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor({ state: 'visible' });
+      return read({ ...options, minimumSequences });
+    },
+    async dispose() {
+      disposed = true; cells.settings.value = null; cells.viewAs.value = null;
+      page.off('request', request); page.off('response', response); await Promise.allSettled([...pending]);
+    },
+  };
+}
+
 /** The native adapter supplies this projection of a normal saved/read draft
  * response, already bound to its run, mounted visit and admitted session. */
 export function validateSavedReceipt(receipt, scenario) {
@@ -120,7 +217,7 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
   const receipt = { origin: 'product-ui', executionKind: 'live', action: 'dashboard', targetId: scenario.targetId,
     checks: [], networkBoundary: [], nativeSavedReceiptSHA256: sha256(JSON.stringify(savedReceipt)),
     savedPassagePlayback: { status: 'NOT_RUN', reason: 'dashboard_has_no_saved_audio_player' } };
-  let lastDetail, lastViewAs, expectedTranscriptText = [], responseSequence = 0, viewAsSequence = 0;
+  let lastDetail, accountObserver, expectedTranscriptText = [], responseSequence = 0;
   const requestSequences = new WeakMap();
   const responseWork = new Set();
   try {
@@ -136,45 +233,34 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
         await route.abort('blockedbyclient');
       } else await route.continue();
     });
+    accountObserver = observeDashboardAccount(page, config.apiOrigin);
     page.on('request', request => {
-      if (request.url() === `${config.apiOrigin}/internal/v1/view-as/status`) {
-        requestSequences.set(request, ++viewAsSequence); lastViewAs = null;
+      if (request.url() === `${config.apiOrigin}/internal/v1/notes/${savedReceipt.appointmentRef}` && request.method() === 'GET') {
+        requestSequences.set(request, ++responseSequence); lastDetail = null; expectedTranscriptText = [];
       }
     });
     page.on('response', response => {
-      if (response.url() === `${config.apiOrigin}/internal/v1/view-as/status`) {
-        const sequence = requestSequences.get(response.request());
-        const work = (async () => {
-          if (!response.ok()) return;
-          const value = await response.json();
-          if (sequence === viewAsSequence) lastViewAs = { active: value.active, actorDoctorRef: value.actor?.doctor_id, targetPresent: value.target !== null };
-        })().catch(() => { if (sequence === viewAsSequence) lastViewAs = null; });
-        responseWork.add(work); work.finally(() => responseWork.delete(work));
-        return;
-      }
-      if (response.url() !== `${config.apiOrigin}/internal/v1/notes/${savedReceipt.appointmentRef}` || response.request().method() !== 'GET') return;
-      const sequence = ++responseSequence;
+      const sequence = requestSequences.get(response.request());
+      if (sequence === undefined) return;
       const work = (async () => {
         const observation = { sequence, status: response.status(), observedAtEpochMs: Date.now() };
         try {
           if (!response.ok()) throw Error('dashboard_detail_unavailable');
           const data = await response.json();
           observation.binding = projectNoteDetail(data, savedReceipt);
-          if (!lastDetail || sequence >= lastDetail.sequence) expectedTranscriptText = [...(data.note_transcripts ?? []), data.transcript]
+          if (sequence === responseSequence) expectedTranscriptText = [...(data.note_transcripts ?? []), data.transcript]
             .find(item => item?.id === savedReceipt.transcript_ref).transcript_data.map(item => item.content);
         } catch (error) { observation.failureCode = failure(error); }
-        if (!lastDetail || sequence >= lastDetail.sequence) lastDetail = observation;
+        if (sequence === responseSequence) lastDetail = observation;
       })();
       responseWork.add(work); work.finally(() => responseWork.delete(work));
     });
-    // Establish identity without loading a notes list. This is a normal hosted
-    // page and passive Clerk state read, not token creation or session injection.
-    await page.goto(`${DASHBOARD_ORIGIN}/onboarding`, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => Boolean(window.Clerk?.loaded && window.Clerk?.user?.id));
-    const identity = await page.evaluate(() => ({ userId: window.Clerk.user.id, sessionId: window.Clerk.session?.id }));
-    if (!identity.sessionId || sha256(identity.userId) !== config.identitySHA256) throw Error('hosted_account_identity_mismatch');
-    receipt.identitySHA256 = sha256(identity.userId);
-    receipt.hostedSessionSHA256 = sha256(identity.sessionId);
+    // Normal Settings navigation supplies the ordinary provider's doctor ID.
+    // No API fetch, support impersonation or notes-list request is introduced.
+    const accountOptions = { expectedIdentitySHA256: config.identitySHA256, signal: active };
+    receipt.initialAccount = await accountObserver.prime(accountOptions);
+    receipt.identitySHA256 = receipt.initialAccount.identitySHA256;
+    receipt.hostedSessionSHA256 = receipt.initialAccount.hostedSessionSHA256;
     active.throwIfAborted();
     const url = `${DASHBOARD_ORIGIN}/notes/${savedReceipt.appointmentRef}?reviewNote=${savedReceipt.note_ref}`;
     await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -183,8 +269,10 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
     await page.getByText('Note ready', { exact: true }).first().waitFor({ state: 'visible' });
     await Promise.allSettled([...responseWork]);
     if (!lastDetail?.binding) throw Error(lastDetail?.failureCode ?? 'dashboard_detail_not_observed');
-    if (lastViewAs?.active !== false || lastViewAs.targetPresent !== false || lastViewAs.actorDoctorRef !== lastDetail.binding.doctorRef) throw Error('dashboard_actor_scope_mismatch');
-    receipt.detail = lastDetail;
+    const savedDetail = lastDetail;
+    receipt.savedAccount = await accountObserver.read({ ...accountOptions, expectedDoctorRef: savedDetail.binding.doctorRef });
+    if (lastDetail !== savedDetail) throw Error('dashboard_detail_changed_during_identity_read');
+    receipt.detail = savedDetail;
     const headings = await note.locator('h3').allTextContents();
     receipt.checks.push({ locator: '#note-' + savedReceipt.note_ref, kind: 'attribute', actual: await note.getAttribute('id'), expected: 'note-' + savedReceipt.note_ref },
       { locator: 'Note ready', kind: 'text', actual: await page.getByText('Note ready', { exact: true }).first().innerText(), expected: 'Note ready' },
@@ -202,16 +290,19 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
     const transcriptText = await panel.innerText();
     if (!expectedTranscriptText.every(text => transcriptText.includes(text))) throw Error('dashboard_transcript_text_mismatch');
     receipt.renderedTranscriptSHA256 = sha256(transcriptText);
-    // Reopen through the same normal route to establish persistence, preserving
-    // the first read and requiring a second real detail response.
+    // Refresh normal account proof, then reopen the same exact note route.
+    // Require a new detail request; a late prior reply cannot satisfy it.
+    await accountObserver.prime({ ...accountOptions, expectedDoctorRef: receipt.detail.binding.doctorRef });
     const beforeReload = responseSequence;
-    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
     await page.locator(`[data-note-viewer][id="note-${savedReceipt.note_ref}"]`).waitFor({ state: 'visible' });
     await Promise.allSettled([...responseWork]);
     if (responseSequence <= beforeReload || !lastDetail?.binding) throw Error('dashboard_reopen_not_observed');
-    if (lastViewAs?.active !== false || lastViewAs.targetPresent !== false || lastViewAs.actorDoctorRef !== lastDetail.binding.doctorRef
-        || await page.evaluate(() => window.Clerk?.user?.id) !== identity.userId) throw Error('dashboard_actor_scope_mismatch');
-    receipt.reopenedDetail = lastDetail;
+    const reopenedDetail = lastDetail;
+    receipt.reopenedAccount = await accountObserver.read({ ...accountOptions, expectedDoctorRef: reopenedDetail.binding.doctorRef });
+    if (lastDetail !== reopenedDetail) throw Error('dashboard_detail_changed_during_identity_read');
+    if (receipt.reopenedAccount.doctorRef !== receipt.savedAccount.doctorRef) throw Error('dashboard_actor_scope_mismatch');
+    receipt.reopenedDetail = reopenedDetail;
     await note.screenshot({ path: resolve(output, 'dashboard-saved-note.png') });
   } catch (error) {
     receipt.failureCode = active.aborted ? 'dashboard_aborted' : failure(error);
@@ -222,6 +313,8 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
     await close().catch(() => {});
     if (browser && !closed) await close().catch(() => {});
     await Promise.allSettled([...responseWork]);
+    receipt.lastAccountResponses = accountObserver?.snapshot();
+    await accountObserver?.dispose();
     receipt.cleanup = { ownedResourcesSettled: !browser || closed, ownedBrowserClosed: !browser || closed };
     receipt.observedAtEpochMs = Date.now();
     await atomicJSON(resolve(output, 'dashboard-observation.json'), receipt);
@@ -229,11 +322,15 @@ export async function verifyDashboard({ config, scenario, savedReceipt, output, 
   return receipt;
 }
 
-export function assertIsolationResponse({ status, identitySHA256, expectedIdentitySHA256, viewAs, viewerDoctorRef }) {
+export function assertIsolationResponse({ status, identitySHA256, expectedIdentitySHA256, hostedSessionSHA256,
+  settings, viewAs, viewerDoctorRef, now }) {
   if (![403, 404].includes(status)) throw Error('cross_account_denial_not_observed');
-  if (identitySHA256 !== expectedIdentitySHA256 || viewAs?.active !== false || viewAs.targetPresent !== false
-      || !ref(viewerDoctorRef, 'doctor') || viewAs.actorDoctorRef !== viewerDoctorRef) throw Error('isolation_actor_scope_mismatch');
-  return { httpStatus: status, identitySHA256, actorDoctorRef: viewAs.actorDoctorRef,
+  if (!ref(viewerDoctorRef, 'doctor')) throw Error('isolation_actor_scope_mismatch');
+  let account;
+  try { account = assertDashboardAccountScope({ settings, viewAs, identitySHA256, hostedSessionSHA256,
+    expectedIdentitySHA256, expectedDoctorRef: viewerDoctorRef, now }); }
+  catch { throw Error('isolation_actor_scope_mismatch'); }
+  return { httpStatus: status, identitySHA256, actorDoctorRef: account.doctorRef, doctorSource: 'normal-settings-response',
     activeViewAs: viewAs.active, viewAsTargetPresent: viewAs.targetPresent };
 }
 
@@ -250,8 +347,7 @@ export async function verifyDashboardIsolation({ config, scenario, foreignScenar
   await mkdir(output, { recursive: true, mode: 0o700 });
   const stateBytes = await readFile(await realpath(config.storageState));
   if (sha256(stateBytes) !== config.storageStateSHA256) throw Error('hosted_session_store_changed');
-  let browser, page, closing, closed = false, viewAs, sequence = 0;
-  const pending = new Set(), requestSequences = new WeakMap();
+  let browser, page, accountObserver, closing, closed = false;
   const close = () => !browser ? Promise.resolve() : closing ??= browser.close().then(() => { closed = true; })
     .catch(error => { closing = null; throw error; });
   const abort = () => { void close().catch(() => {}); };
@@ -272,23 +368,9 @@ export async function verifyDashboardIsolation({ config, scenario, foreignScenar
         await route.abort('blockedbyclient');
       } else await route.continue();
     });
-    page.on('request', request => {
-      if (request.url() === `${config.apiOrigin}/internal/v1/view-as/status`) { requestSequences.set(request, ++sequence); viewAs = null; }
-    });
-    page.on('response', response => {
-      if (response.url() !== `${config.apiOrigin}/internal/v1/view-as/status`) return;
-      const observedSequence = requestSequences.get(response.request());
-      const work = (async () => {
-        if (!response.ok()) return;
-        const value = await response.json();
-        if (observedSequence === sequence) viewAs = { active: value.active, actorDoctorRef: value.actor?.doctor_id, targetPresent: value.target !== null };
-      })().catch(() => { if (observedSequence === sequence) viewAs = null; });
-      pending.add(work); work.finally(() => pending.delete(work));
-    });
-    await page.goto(`${DASHBOARD_ORIGIN}/onboarding`, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => Boolean(window.Clerk?.loaded && window.Clerk?.user?.id && window.Clerk?.session?.id));
-    const initialIdentity = await page.evaluate(() => window.Clerk.user.id);
-    if (sha256(initialIdentity) !== config.identitySHA256) throw Error('hosted_account_identity_mismatch');
+    accountObserver = observeDashboardAccount(page, config.apiOrigin);
+    const accountOptions = { expectedIdentitySHA256: config.identitySHA256, expectedDoctorRef: viewerDoctorRef, signal: active };
+    observation.initialAccount = await accountObserver.prime(accountOptions);
     active.throwIfAborted();
     const detail = page.waitForResponse(response => response.url() === `${config.apiOrigin}/internal/v1/notes/${foreignSavedReceipt.appointmentRef}`
       && response.request().method() === 'GET');
@@ -296,17 +378,17 @@ export async function verifyDashboardIsolation({ config, scenario, foreignScenar
     await page.goto(`${DASHBOARD_ORIGIN}/notes/${foreignSavedReceipt.appointmentRef}?reviewNote=${foreignSavedReceipt.note_ref}`, { waitUntil: 'domcontentloaded' });
     const actual = await detail;
     observation.httpStatus = actual.status();
-    await Promise.allSettled([...pending]);
-    const currentIdentity = await page.evaluate(() => window.Clerk?.user?.id);
-    observation.identitySHA256 = typeof currentIdentity === 'string' ? sha256(currentIdentity) : null;
-    observation.denial = assertIsolationResponse({ status: actual.status(), identitySHA256: observation.identitySHA256,
-      expectedIdentitySHA256: config.identitySHA256, viewAs, viewerDoctorRef });
+    observation.currentAccount = await accountObserver.read(accountOptions);
+    observation.identitySHA256 = observation.currentAccount.identitySHA256;
+    observation.denial = assertIsolationResponse({ status: actual.status(), ...observation.currentAccount,
+      expectedIdentitySHA256: config.identitySHA256, viewerDoctorRef });
     active.throwIfAborted();
   } catch (error) { observation.failureCode = active.aborted ? 'dashboard_aborted' : failure(error); }
   finally {
     active.removeEventListener('abort', abort);
     await close().catch(() => {}); if (browser && !closed) await close().catch(() => {});
-    await Promise.allSettled([...pending]);
+    observation.lastAccountResponses = accountObserver?.snapshot();
+    await accountObserver?.dispose();
     observation.cleanup = { ownedResourcesSettled: !browser || closed, ownedBrowserClosed: !browser || closed };
     observation.observedAtEpochMs = Date.now();
     await atomicJSON(resolve(output, 'isolation-observation.json'), observation);
