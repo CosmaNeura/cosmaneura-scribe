@@ -111,12 +111,13 @@ describe("local runtime diagnostics", () => {
       record("audio_start_pending"); record("audio_ready"); record("provider_record_to_native_ready", 250);
       record("audio_stop_confirmed");
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(164));
-      const rows = (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      const rows = (await readFile(path, "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { event: string; capture_attempt: number; monotonic_ns: string });
       expect(rows.slice(-4).map(row => row.event)).toEqual([
         "audio_start_pending", "audio_ready", "provider_record_to_native_ready", "audio_stop_confirmed",
       ]);
       expect(rows.slice(-4).every(row => row.capture_attempt === 1)).toBe(true);
-      expect(rows.every((row, index) => index === 0 || BigInt(row.monotonic_ns) >= BigInt(rows[index - 1].monotonic_ns))).toBe(true);
+      expect(rows.every((row, index) => index === 0 || BigInt(row.monotonic_ns) >= BigInt(rows[index - 1]!.monotonic_ns))).toBe(true);
       expect((await stat(path)).size).toBeLessThanOrEqual(65_536);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
@@ -131,7 +132,8 @@ describe("local runtime diagnostics", () => {
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(160));
       record("audio_ready"); record("provider_record_to_native_ready", 250); record("audio_stop_confirmed");
       await vi.waitFor(async () => expect((await readFile(path, "utf8")).trim().split("\n")).toHaveLength(163));
-      const rows = (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      const rows = (await readFile(path, "utf8")).trim().split("\n")
+        .map(line => JSON.parse(line) as { event: string; capture_attempt: number });
       expect(rows.slice(-3).map(row => row.event)).toEqual([
         "audio_ready", "provider_record_to_native_ready", "audio_stop_confirmed",
       ]);
