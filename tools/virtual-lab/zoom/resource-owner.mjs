@@ -39,19 +39,22 @@ async function ownerFile(path) {
   const bytes = await readFile(path), owner = JSON.parse(bytes);
   if (owner.schema !== 1 || !uuid(owner.runId) || !uuid(owner.resourceId) || owner.host !== hostname()
       || !Number.isSafeInteger(owner.coordinatorPid) || owner.coordinatorPid < 1
+      || ![undefined, 'browser', 'coreaudio-source'].includes(owner.kind)
       || !['launching', 'active', 'closed'].includes(owner.phase)) throw Error('participant_owner_identity_invalid');
   return { owner, sha256: sha256(bytes) };
 }
 
-export async function prepareParticipantOwner(config, fixtureSHA256) {
+export async function prepareParticipantOwner(config, fixtureSHA256, { kind = 'browser', executableSHA256 } = {}) {
   if (!uuid(config?.runId) || !isAbsolute(config?.ownedRoot ?? '') || !/^[a-f0-9]{64}$/.test(fixtureSHA256)) throw Error('participant_resource_owner_required');
+  if (!['browser', 'coreaudio-source'].includes(kind) || kind === 'coreaudio-source' && !/^[a-f0-9]{64}$/.test(executableSHA256 ?? ''))
+    throw Error('participant_resource_kind_invalid');
   await mkdir(config.ownedRoot, { recursive: true, mode: 0o700 });
   const rootStat = await lstat(config.ownedRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw Error('participant_owner_root_invalid');
   const ownedRoot = await realpath(config.ownedRoot), resourceId = randomUUID();
   const path = resolve(ownedRoot, `${resourceId}.json`);
   let owner = { schema: 1, runId: config.runId, resourceId, host: hostname(), coordinatorPid: process.pid,
-    fixtureSHA256, phase: 'launching', createdAtEpochMs: Date.now() };
+    fixtureSHA256, kind, phase: 'launching', createdAtEpochMs: Date.now() };
   await atomicJSON(path, owner);
   async function replace(patch) {
     const current = (await ownerFile(path)).owner;
@@ -63,13 +66,15 @@ export async function prepareParticipantOwner(config, fixtureSHA256) {
     async launched(child) {
       const profileArg = child?.spawnargs?.find(value => value.startsWith('--user-data-dir='));
       if (!Number.isSafeInteger(child?.pid) || child.pid < 1 || !child.spawnargs.includes(markerFor(resourceId))
-          || !profileArg || !isAbsolute(child.spawnfile)) throw Error('participant_process_identity_missing');
-      const profile = await realpath(profileArg.slice('--user-data-dir='.length));
-      await replace({ phase: 'active', browser: { pid: child.pid, executable: await realpath(child.spawnfile), profile }, launchedAtEpochMs: Date.now() });
+          || kind === 'browser' && !profileArg || !isAbsolute(child.spawnfile)) throw Error('participant_process_identity_missing');
+      const processIdentity = { pid: child.pid, executable: await realpath(child.spawnfile) };
+      if (kind === 'browser') processIdentity.profile = await realpath(profileArg.slice('--user-data-dir='.length));
+      else processIdentity.executableSHA256 = executableSHA256;
+      await replace({ phase: 'active', [kind === 'browser' ? 'browser' : 'nativeHelper']: processIdentity, launchedAtEpochMs: Date.now() });
       return { markerPath: path, ...(await ownerFile(path)) };
     },
     async settled({ signal } = {}) {
-      if (!owner.browser) throw Error('participant_launch_settlement_unknown');
+      if (!owner.browser && !owner.nativeHelper) throw Error('participant_launch_settlement_unknown');
       const matches = matchingParticipantProcesses(await processInventory(signal), owner);
       if (matches.length) throw Error('participant_process_still_present');
       await replace({ phase: 'closed', lastAbsenceObservedAtEpochMs: Date.now() });
@@ -99,8 +104,10 @@ export async function inspectParticipantResources({ ownedRoot, runId, signal }) 
     signal.throwIfAborted();
     if ((await ownerFile(resolve(ownedRoot, name))).sha256 !== markerSHA256) throw Error('participant_owner_changed');
     const matches = matchingParticipantProcesses(inventory, owner);
-    if (!owner.browser || !Number.isSafeInteger(owner.browser.pid) || !isAbsolute(owner.browser.profile ?? '')
-        || !isAbsolute(owner.browser.executable ?? '')) unresolvedOwnedResources.push({ resourceId: owner.resourceId, reason: 'launch_identity_missing' });
+    const process = owner.kind === 'coreaudio-source' ? owner.nativeHelper : owner.browser;
+    if (!process || !Number.isSafeInteger(process.pid) || !isAbsolute(process.executable ?? '')
+        || (owner.kind === 'coreaudio-source' ? !/^[a-f0-9]{64}$/.test(process.executableSHA256 ?? '') : !isAbsolute(process.profile ?? '')))
+      unresolvedOwnedResources.push({ resourceId: owner.resourceId, reason: 'launch_identity_missing' });
     else if (matches.length) unresolvedOwnedResources.push({ resourceId: owner.resourceId, reason: 'owned_process_present', processes: matches });
     observations.push({ resourceId: owner.resourceId, markerSHA256, phase: owner.phase, matchingProcesses: matches });
   }

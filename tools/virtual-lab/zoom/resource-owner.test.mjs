@@ -25,3 +25,15 @@ test('owner is persisted before launch and missing child identity cannot be repo
     assert.equal(receipt.owner.phase, 'active'); assert.equal(receipt.owner.browser.pid, 123);
   } finally { await rm(ownedRoot, { recursive: true, force: true }); }
 });
+
+test('native source ownership binds its actual marked child and binary hash without inventing a browser profile', async () => {
+  const ownedRoot = await mkdtemp(resolve(tmpdir(), 'scribe-native-owner-'));
+  try {
+    const owner = await prepareParticipantOwner({ runId: randomUUID(), ownedRoot }, 'a'.repeat(64), { kind: 'coreaudio-source', executableSHA256: 'b'.repeat(64) });
+    await assert.rejects(owner.launched({ pid: 123, spawnfile: process.execPath, spawnargs: [] }), /identity_missing/);
+    const receipt = await owner.launched({ pid: 123, spawnfile: process.execPath, spawnargs: [owner.argument] });
+    assert.equal(receipt.owner.kind, 'coreaudio-source'); assert.equal(receipt.owner.nativeHelper.executableSHA256, 'b'.repeat(64));
+    assert.equal(receipt.owner.browser, undefined);
+    assert.deepEqual(matchingParticipantProcesses(`123 1 owned-helper ${owner.argument}\n124 123 child\n125 1 unrelated`, receipt.owner), [{ pid: 123, parentPid: 1 }, { pid: 124, parentPid: 123 }]);
+  } finally { await rm(ownedRoot, { recursive: true, force: true }); }
+});
