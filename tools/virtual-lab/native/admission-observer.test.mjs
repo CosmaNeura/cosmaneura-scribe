@@ -2,6 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { installAdmissionObserver } from "./admission-observer.mjs";
 
+test('retained admission observer exposes implementation identity and refuses teardown of pending native work', async () => {
+  let settle;
+  const pending = new Promise(resolve => { settle = resolve; }), original = () => pending;
+  globalThis.window = { Capacitor: { nativePromise: original } };
+  const binding = { runId: '11111111-1111-4111-8111-111111111111', workspaceId: '22222222-2222-4222-8222-222222222222', appointmentRef: 'appointment_01m5q8r3kzeng9szb5frh6ppk3' };
+  installAdmissionObserver(binding, null, 'a'.repeat(64));
+  const observer = window.__scribeLabAdmissionObserver;
+  assert.equal(window.Capacitor.nativePromise('CosmasWorkspaceAuth', 'getState', {}), pending);
+  assert.equal(observer.describe().observerSHA256, 'a'.repeat(64));
+  assert.equal(observer.describe().pendingObservedReplies, 1);
+  assert.equal(observer.uninstall().ownedResourcesSettled, false);
+  assert.equal(window.__scribeLabAdmissionObserver, observer);
+  settle(null); await pending;
+  assert.equal(observer.describe().pendingObservedReplies, 0);
+  assert.equal(observer.uninstall().ownedResourcesSettled, true);
+  assert.equal(window.Capacitor.nativePromise, original);
+});
+
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const binding = { runId: id(1), workspaceId: id(2), appointmentRef: "appointment_01m5q8r3kzeng9szb5frh6ppk3" };
 const request = { requestId: id(3), revision: id(4), action: "capture-admissions", body: JSON.stringify({
@@ -20,9 +38,9 @@ test("observes only the exact normal admission and preserves promise identity", 
   globalThis.window = { Capacitor: { nativePromise: original } };
   installAdmissionObserver(binding);
   const described = window.__scribeLabAdmissionObserver.describe();
-  assert.deepEqual(described, binding);
+  assert.deepEqual(described, { ...binding, observerSHA256: null, pendingObservedReplies: 0 });
   described.runId = id(99);
-  assert.deepEqual(window.__scribeLabAdmissionObserver.describe(), binding);
+  assert.deepEqual(window.__scribeLabAdmissionObserver.describe(), { ...binding, observerSHA256: null, pendingObservedReplies: 0 });
   assert.equal(window.Capacitor.nativePromise("CosmasWorkspaceAuth", "providerRequest", request), promise);
   await promise;
   const receipt = window.__scribeLabAdmissionObserver.read();

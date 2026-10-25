@@ -1,11 +1,13 @@
 /** Passive, owned iOS lab scope observation. No requests, patient text or authority retained. */
-export function installVisitScopeObserver({ runId }) {
+export function installVisitScopeObserver({ runId, observerSHA256 = null }) {
   const uuid = value => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
   const appointment = value => typeof value === "string" && /^appointment_[0-7][0-9a-hjkmnp-tv-z]{25}$/u.test(value);
   const cap = window.Capacitor;
   if (!uuid(runId) || typeof cap?.nativePromise !== "function" || typeof cap?.fromNative !== "function"
     || window.__scribeLabVisitObserver) throw new Error("owned native scope observer unavailable");
   const original = cap.nativePromise, originalFromNative = cap.fromNative;
+  if (observerSHA256 !== null && !/^[a-f0-9]{64}$/.test(observerSHA256)) throw new Error("invalid observer identity");
+  let pendingObservedReplies = 0;
   let current = null, created = null, revision = null, generation = 0, alive = true, authCheckedAt = 0;
   const invalidate = (auth = false) => {
     generation += 1; current = null;
@@ -32,6 +34,10 @@ export function installVisitScopeObserver({ runId }) {
   function wrapped(plugin, method, options, ...rest) {
     if (alive && plugin === "CosmasWorkspaceAuth" && ["signIn", "signOut"].includes(method)) invalidate(true);
     const result = original.call(this, plugin, method, options, ...rest);
+    if (plugin === 'CosmasWorkspaceAuth') {
+      pendingObservedReplies++;
+      void Promise.resolve(result).then(() => { pendingObservedReplies--; }, () => { pendingObservedReplies--; });
+    }
     if (!alive || plugin !== "CosmasWorkspaceAuth" || method !== "providerRequest"
       || !["encounters", "mount"].includes(options?.action)) return result;
     let request;
@@ -69,12 +75,12 @@ export function installVisitScopeObserver({ runId }) {
   }
   cap.nativePromise = wrapped; cap.fromNative = fromNative;
   window.__scribeLabVisitObserver = Object.freeze({
-    describe() { return { runId }; },
+    describe() { return { runId, observerSHA256, pendingObservedReplies }; },
     readCreated() { return created && { ...created }; },
     readCurrent() { return current && performance.now() - authCheckedAt <= 15000 ? { ...current } : null; },
     clear() { invalidate(true); },
     uninstall() {
-      if (cap.nativePromise !== wrapped || cap.fromNative !== fromNative)
+      if (cap.nativePromise !== wrapped || cap.fromNative !== fromNative || pendingObservedReplies !== 0)
         return { ownedResourcesSettled: false, observerRemoved: false };
       invalidate(true); alive = false;
       if (cap.nativePromise === wrapped) cap.nativePromise = original;
