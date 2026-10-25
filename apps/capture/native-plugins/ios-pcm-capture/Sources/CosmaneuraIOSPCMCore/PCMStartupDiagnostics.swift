@@ -14,6 +14,7 @@ public enum PCMStartupEvent: String, Codable, Sendable {
   case inputFrozen, driverReleased, stopRequested, stopAccepted, stopRejected
   case recordToNativeReady
   case inputAdmissionOverflow, firstPacketPersistenceStarted, firstPacketPersistenceCompleted, packetPersistenceFailed
+  case driverAdmissionOverflow
   case pcmHeartbeatExpired, pcmInvalidInput, pcmBufferOverflow, pcmOutputLimit, pcmSinkFailed
   case windowAuthorityExpired, windowFrameLimit, windowInterrupted, windowRouteChanged
   case continuationAuthorityExpired, continuationSourceRetired, continuationRenewalRejected
@@ -121,7 +122,7 @@ public final class PCMStartupDiagnostics: @unchecked Sendable {
       case .startRejected, .readyRejected, .driverRejected, .interrupted, .routeChanged,
         .mediaServicesLost, .mediaServicesReset, .backgrounded, .permissionRevoked, .captureFailed,
         .inputFrozen, .driverReleased, .stopRequested, .stopAccepted, .stopRejected,
-        .inputAdmissionOverflow, .packetPersistenceFailed, .pcmHeartbeatExpired, .pcmInvalidInput,
+        .inputAdmissionOverflow, .driverAdmissionOverflow, .packetPersistenceFailed, .pcmHeartbeatExpired, .pcmInvalidInput,
         .pcmBufferOverflow, .pcmOutputLimit, .pcmSinkFailed, .windowAuthorityExpired, .windowFrameLimit,
         .windowInterrupted, .windowRouteChanged, .continuationAuthorityExpired, .continuationSourceRetired,
         .continuationRenewalRejected, .continuationCaptureFailed, .continuationStorageFailed,

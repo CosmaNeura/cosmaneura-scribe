@@ -160,11 +160,12 @@ public actor AVFoundationPCMDriver: PCMAudioDriving {
     system: any AppleAudioSystem,
     foreground: any AppleApplicationForegroundProviding,
     frameCapacity: UInt32 = 4_096,
-    lifecycle: AppleRecordingLifecycle = .foregroundOnly
+    lifecycle: AppleRecordingLifecycle = .foregroundOnly,
+    diagnostics: PCMStartupDiagnostics = .shared
   ) {
     self.system = system
     self.foreground = foreground
-    callbackGate = DriverCallbackGate(continueInBackground: lifecycle == .nativeEncrypted)
+    callbackGate = DriverCallbackGate(continueInBackground: lifecycle == .nativeEncrypted, diagnostics: diagnostics)
     profile = lifecycle == .nativeEncrypted ? .nativeEncryptedSpeech : .foregroundTwoPartySpeech
     self.frameCapacity = min(
       max(frameCapacity, 1),
@@ -375,6 +376,7 @@ private final class DriverCallbackGate: @unchecked Sendable {
 
   private let lock = NSLock()
   private let continueInBackground: Bool
+  private let diagnostics: PCMStartupDiagnostics
   private var generation: UInt64?
   private var callbacks: PCMAudioCallbacks?
   private var framesOpen = false
@@ -386,7 +388,10 @@ private final class DriverCallbackGate: @unchecked Sendable {
   private var frameWaiters: [CheckedContinuation<Bool, Never>] = []
   private var terminalDelivery: Task<Void, Never>?
 
-  init(continueInBackground: Bool) { self.continueInBackground = continueInBackground }
+  init(continueInBackground: Bool, diagnostics: PCMStartupDiagnostics) {
+    self.continueInBackground = continueInBackground
+    self.diagnostics = diagnostics
+  }
 
   func activate(generation: UInt64, callbacks: PCMAudioCallbacks) {
     lock.withLock {
@@ -445,6 +450,7 @@ private final class DriverCallbackGate: @unchecked Sendable {
       guard !frameOutstanding else {
         framesOpen = false
         if !terminalEventSent {
+          diagnostics.record(.driverAdmissionOverflow)
           terminalEventSent = true
           hardEventSent = true
           callbacks.invalidate?(.captureFailed)

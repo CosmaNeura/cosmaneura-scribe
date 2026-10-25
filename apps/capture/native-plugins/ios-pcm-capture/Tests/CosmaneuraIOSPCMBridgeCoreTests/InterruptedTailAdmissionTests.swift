@@ -5,6 +5,43 @@ import Testing
 @testable import CosmaneuraIOSPCMCore
 
 struct InterruptedTailAdmissionTests {
+  @Test func driverOverflowIsReportedBeforeAnotherFrameReachesCore() async throws {
+    // Explicit synthetic consent; this boundary uses no OS audio or real PCM.
+    let consent = (allPartiesConsented: true, recordID: UUID())
+    try #require(consent.allPartiesConsented)
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(consent.recordID.uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let path = directory.appendingPathComponent("diagnostics.json"), diagnostics = PCMStartupDiagnostics()
+    diagnostics.configure(destination: path); diagnostics.record(.startRequested)
+    for _ in 0..<128 { diagnostics.record(.firstInputBuffer) }
+    let system = PendingSystem(), pending = PendingReceipt(), events = EventReceipt()
+    let driver = AVFoundationPCMDriver(system: system, foreground: SyntheticForeground(),
+      lifecycle: .nativeEncrypted, diagnostics: diagnostics)
+    try await driver.start(sessionID: 1, callbacks: PCMAudioCallbacks(
+      frames: { frames in
+        PCMFrameAdmission(accepted: true, completion: Task {
+          await pending.wait(); frames.zeroize()
+        }, release: {})
+      }, event: { events.record($0) }, invalidate: { events.invalidate($0) }), cancellation: StartupCancellation())
+    let admitted = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
+    let rejected = OwnedAudioFrames(sampleRateHz: 16_000, channels: [[0]])
+    system.offer(admitted); system.offer(rejected)
+    #expect(rejected.isZeroed && !admitted.isZeroed)
+    let deadline = ContinuousClock.now + .seconds(3)
+    while events.count == 0 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+    #expect(events.count == 1 && events.invalidations == 1 && !events.sawBenign)
+    await pending.release()
+    try await driver.freezeInput(sessionID: 1); try await driver.release(sessionID: 1)
+    await diagnostics.flush()
+    let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [[String: Any]])
+    #expect(rows.last?["event"] as? String == "driverAdmissionOverflow")
+    #expect(rows.filter { $0["event"] as? String == "driverAdmissionOverflow" }.count == 1)
+    #expect(!rows.contains { $0["event"] as? String == "inputAdmissionOverflow" })
+    #expect(rows.allSatisfy { Set($0.keys) == ["utc", "event", "clock", "monotonic_ns", "capture_attempt", "dropped_events"] })
+    #expect(system.releases == 1)
+  }
+
   @Test(arguments: [AppleAudioSystemEvent.permissionRevoked, .captureFailed, nil])
   func hardFailureOrTimeoutDoesNotWaitForAnAdmittedCallback(
     _ hard: AppleAudioSystemEvent?
