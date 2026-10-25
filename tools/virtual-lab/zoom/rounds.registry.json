@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "cases": {
+    "round1-two-patients": "cb1f70e61045438030dcdb9e7eb929feaae9dd155b131c622f6d38f8867a26e1",
+    "round2-corrections": "ef1d513eb2be387c62970561eb1a6104a450b89fd86b183c970b4ffcf6bf2ea8",
+    "round3-pause-resume": "7f58a829232f1ead67566afc406573486463782a94670c144889bee4fcf92f02"
+  }
+}
