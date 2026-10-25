@@ -223,7 +223,8 @@ test('mock participant latches a bot collector failure after admission; native r
       assert.equal(state.schedules, 0);
       await participant.schedule(options); // A pre-admission failure does not manufacture an admitted capture.
       assert.equal(state.schedules, 1); await participant.pause();
-      await assert.rejects(participant.resume(), error => error === failure);
+      if (kind === 'zoom-bot') await assert.rejects(participant.verifyRecording({signal:new AbortController().signal}), error => error === failure);
+      else await assert.rejects(participant.resume(), error => error === failure);
       if (kind === 'zoom-bot') await assert.rejects(participant.resume(), /bot_recording_restart_forbidden/);
       else await participant.resume();
       assert.equal(state.schedules, kind === 'zoom-bot' ? 1 : 2); assert.equal(calls, 4);
