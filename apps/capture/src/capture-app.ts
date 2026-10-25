@@ -378,7 +378,10 @@ export class CaptureApp extends LitElement {
               <strong>${provider.encounterLabel}</strong>
               <span>${provider.languageMode === "english_spanish" ? "Spanish and English · note in English" : "English"} · ${provider.visitLabel ?? (desktopProvider ? "Video visit" : "In-person visit")}</span>
             </div>` : ""}
-            ${desktopProvider || nativeProvider ? this.#renderProviderProgress() : ""}
+            ${nativeProvider ? html`<div class="native-recording-essential">
+              ${this.#renderProviderProgress()}
+              ${this.#renderRecordingActions()}
+            </div>` : desktopProvider ? this.#renderProviderProgress() : ""}
             ${desktopProvider && this.#snapshot.desktop?.phase === "recording" && !this.#stopping
               ? html`<scribe-desktop-input-meter .signal=${this.#snapshot.desktop.inputSignal} .microphoneOnly=${this.#snapshot.desktop.audioMode === "microphone"}></scribe-desktop-input-meter>` : ""}
             ${showInputMeter
@@ -412,69 +415,7 @@ export class CaptureApp extends LitElement {
             ${desktopProvider && this.#snapshot.desktop?.audioMode === "meeting" && this.#snapshot.desktop.meetingWindows
               && !this.#isStarting() && ["preparing", "ready", "permission_required", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase)
               ? this.#renderMeetingWindowSelection() : ""}
-            <div class="record-actions">
-              ${desktopProvider && this.#snapshot.desktop?.phase === "preparing" && this.#pendingProviderActionSignal
-                && !this.#pendingProviderActionSignal.aborted ? html`<button class="secondary"
-                  data-workspace-action="cancel-recording-action">Cancel recording start</button>` : ""}
-              ${desktopProvider && this.#snapshot.statusCode === "capture_window_selection_pending"
-                && provider.controller.showWindowChooser ? html`<button class="primary" data-testid="show-window-chooser"
-                ?disabled=${this.#showingChooser || this.#stopping} @click=${this.#showWindowChooser}>${this.#showingChooser
-                  ? "Showing chooser…" : "Show window chooser"}</button>` : ""}
-              <button
-                data-testid="record-button"
-                class="record-button"
-                ?hidden=${(nativeProvider || desktopProvider) && (this.#snapshot.state !== "ready" && this.#snapshot.desktop?.phase !== "preparing" || this.#isStarting())}
-                aria-label=${provider ? "Start recording" : this.#sourceKind === "microphone"
-                  ? "Start foreground microphone test recording"
-                  : "Start silent synthetic recording"}
-                ?disabled=${this.#snapshot.state !== "ready" || this.#busy || this.#stopping
-                  || this.#meetingWindowPickerOpen
-                  || this.#needsCallConfirmation()
-                  || this.#snapshot.desktop !== undefined && this.#snapshot.desktop.phase !== "ready"
-                  || this.#meetingWindowRequired()}
-                @click=${this.#record}
-              >
-                <span aria-hidden="true"></span>
-                ${this.#busy && this.#snapshot.state === "ready" || this.#snapshot.statusCode === "capture_starting" ? "Starting…" : desktopProvider ? "Start recording" : "Record"}
-              </button>
-              ${provider?.controller.pauseRecording && this.#snapshot.state === "recording"
-                && (!this.#snapshot.desktop || this.#snapshot.desktop.phase === "recording") ? html`<button
-                class="secondary" data-testid="pause-recording" ?disabled=${this.#busy || this.#stopping}
-                @click=${this.#pause}>Pause</button>` : ""}
-              ${provider?.controller.resumeRecording && this.#snapshot.state === "paused"
-                && this.#snapshot.statusCode !== "capture_stop_acknowledgement_pending"
-                && (!this.#snapshot.desktop || ["ready", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase))
-                && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
-                class=${this.#snapshot.statusCode === "capture_recovery_pending" ? "secondary" : "primary"} data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping
-                  || this.#meetingWindowPickerOpen
-                  || this.#needsCallConfirmation()
-                  || this.#meetingWindowRequired()}
-                @click=${this.#resume}>${this.#isCancelledEmptyStart() || this.#isExpiredEmptyStart()
-                    ? "Start recording" : "Resume recording"}</button>` : ""}
-              ${this.#isExpiredEmptyStart() ? html`<button class="secondary" data-testid="empty-setup-encounters"
-                data-workspace-action="encounters" ?disabled=${this.#busy || this.#stopping}>Your encounters</button>` : ""}
-              <button
-                data-testid="stop-button"
-                class=${provider && ["capture_recovery_pending", "capture_stop_acknowledgement_pending"].includes(this.#snapshot.statusCode) ? "primary" : "secondary"}
-                ?hidden=${(desktopProvider || nativeProvider) && (!this.#canStop() || this.#isCancelledEmptyStart()
-                  || this.#isExpiredEmptyStart()) && !this.#stopping}
-                ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && !this.#snapshot.native && this.#busy}
-                @click=${this.#stop}
-              >
-                ${this.#stopping ? this.#snapshot.native?.phase === "sealing" ? "Saving…"
-                  : this.#uploadAfterStop() ? this.#snapshot.statusCode === "capture_upload_confirming" ? "Confirming upload…" : "Uploading…"
-                  : this.#isStarting() ? "Cancelling start…" : "Stopping…"
-                  : this.#isStarting() && this.#snapshot.recordedChunks === 0 ? "Cancel start"
-                  : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
-                  : this.#snapshot.statusCode === "capture_recovery_pending" ? "Retry saving"
-                  : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
-                  ? "Retry finish recording" : provider ? "Finish visit" : "Stop and upload"}
-              </button>
-              ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
-                data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Set up recording access</button>` : ""}
-              ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
-                ?disabled=${this.#busy || this.#stopping} @click=${this.#retryUpload}>Retry upload</button>` : ""}
-            </div>
+            ${nativeProvider ? "" : this.#renderRecordingActions()}
             ${this.#chooserUnavailable && this.#snapshot.statusCode === "capture_window_selection_pending"
               ? html`<p class="recording-recovery" role="alert">The chooser is still opening or could not come forward. Try Show window chooser again, or Cancel start.</p>` : ""}
             ${provider?.privateNotes ? html`<scribe-private-note .port=${provider.privateNotes}></scribe-private-note>` : ""}
@@ -851,6 +792,75 @@ export class CaptureApp extends LitElement {
     if (this.#providerClosed) return;
     await this.#requireController().resumeRecording?.();
   }, "resume"); };
+
+  #renderRecordingActions(): TemplateResult {
+    const provider = this.#provider;
+    const nativeProvider = provider?.captureMode === "native_microphone";
+    const desktopProvider = provider?.captureMode === "desktop_meeting";
+    return html`<div class="record-actions">
+              ${desktopProvider && this.#snapshot.desktop?.phase === "preparing" && this.#pendingProviderActionSignal
+                && !this.#pendingProviderActionSignal.aborted ? html`<button class="secondary"
+                  data-workspace-action="cancel-recording-action">Cancel recording start</button>` : ""}
+              ${desktopProvider && this.#snapshot.statusCode === "capture_window_selection_pending"
+                && provider.controller.showWindowChooser ? html`<button class="primary" data-testid="show-window-chooser"
+                ?disabled=${this.#showingChooser || this.#stopping} @click=${this.#showWindowChooser}>${this.#showingChooser
+                  ? "Showing chooser…" : "Show window chooser"}</button>` : ""}
+              <button
+                data-testid="record-button"
+                class="record-button"
+                ?hidden=${(nativeProvider || desktopProvider) && (this.#snapshot.state !== "ready" && this.#snapshot.desktop?.phase !== "preparing" || this.#isStarting())}
+                aria-label=${provider ? "Start recording" : this.#sourceKind === "microphone"
+                  ? "Start foreground microphone test recording"
+                  : "Start silent synthetic recording"}
+                ?disabled=${this.#snapshot.state !== "ready" || this.#busy || this.#stopping
+                  || this.#meetingWindowPickerOpen
+                  || this.#needsCallConfirmation()
+                  || this.#snapshot.desktop !== undefined && this.#snapshot.desktop.phase !== "ready"
+                  || this.#meetingWindowRequired()}
+                @click=${this.#record}
+              >
+                <span aria-hidden="true"></span>
+                ${this.#busy && this.#snapshot.state === "ready" || this.#snapshot.statusCode === "capture_starting" ? "Starting…" : desktopProvider ? "Start recording" : "Record"}
+              </button>
+              ${provider?.controller.pauseRecording && this.#snapshot.state === "recording"
+                && (!this.#snapshot.desktop || this.#snapshot.desktop.phase === "recording") ? html`<button
+                class="secondary" data-testid="pause-recording" ?disabled=${this.#busy || this.#stopping}
+                @click=${this.#pause}>Pause</button>` : ""}
+              ${provider?.controller.resumeRecording && this.#snapshot.state === "paused"
+                && this.#snapshot.statusCode !== "capture_stop_acknowledgement_pending"
+                && (!this.#snapshot.desktop || ["ready", "interrupted", "stopped"].includes(this.#snapshot.desktop.phase))
+                && (!this.#snapshot.native || this.#snapshot.native.phase === "paused") ? html`<button
+                class=${this.#snapshot.statusCode === "capture_recovery_pending" ? "secondary" : "primary"} data-testid="resume-recording" ?disabled=${this.#busy || this.#stopping
+                  || this.#meetingWindowPickerOpen
+                  || this.#needsCallConfirmation()
+                  || this.#meetingWindowRequired()}
+                @click=${this.#resume}>${this.#isCancelledEmptyStart() || this.#isExpiredEmptyStart()
+                    ? "Start recording" : "Resume recording"}</button>` : ""}
+              ${this.#isExpiredEmptyStart() ? html`<button class="secondary" data-testid="empty-setup-encounters"
+                data-workspace-action="encounters" ?disabled=${this.#busy || this.#stopping}>Your encounters</button>` : ""}
+              <button
+                data-testid="stop-button"
+                class=${provider && ["capture_recovery_pending", "capture_stop_acknowledgement_pending"].includes(this.#snapshot.statusCode) ? "primary" : "secondary"}
+                ?hidden=${(desktopProvider || nativeProvider) && (!this.#canStop() || this.#isCancelledEmptyStart()
+                  || this.#isExpiredEmptyStart()) && !this.#stopping}
+                ?disabled=${!this.#canStop() || this.#stopping || !this.#snapshot.desktop && !this.#snapshot.native && this.#busy}
+                @click=${this.#stop}
+              >
+                ${this.#stopping ? this.#snapshot.native?.phase === "sealing" ? "Saving…"
+                  : this.#uploadAfterStop() ? this.#snapshot.statusCode === "capture_upload_confirming" ? "Confirming upload…" : "Uploading…"
+                  : this.#isStarting() ? "Cancelling start…" : "Stopping…"
+                  : this.#isStarting() && this.#snapshot.recordedChunks === 0 ? "Cancel start"
+                  : this.#snapshot.statusCode === "capture_stop_acknowledgement_pending" ? "Retry confirmation and upload"
+                  : this.#snapshot.statusCode === "capture_recovery_pending" ? "Retry saving"
+                  : this.#snapshot.desktop?.phase === "stop_unconfirmed" || this.#snapshot.statusCode === "audio_capture_native_stop_failed"
+                  ? "Retry finish recording" : provider ? "Finish visit" : "Stop and upload"}
+              </button>
+              ${this.#snapshot.desktop?.phase === "permission_required" ? html`<button class="secondary"
+                data-testid="refresh-permissions" ?disabled=${this.#busy} @click=${this.#refreshPermissions}>Set up recording access</button>` : ""}
+              ${this.#canRetryUpload() ? html`<button class="primary" data-testid="retry-upload"
+                ?disabled=${this.#busy || this.#stopping} @click=${this.#retryUpload}>Retry upload</button>` : ""}
+            </div>`;
+  }
 
   #isNativeIPhone(): boolean {
     return !this.#snapshot.desktop && this.#sourceKind === "microphone"

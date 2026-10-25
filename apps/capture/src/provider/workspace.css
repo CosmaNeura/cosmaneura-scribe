@@ -225,3 +225,19 @@
  .provider-workspace:has(.provider-preparation-desktop) [data-provider-encounter] { font-size:1.5rem; }
 }
 @media(max-width:600px) { .provider-preparation { padding:16px; } }
+
+/* Native capture keeps its stop/pause controls ahead of diagnostic content.
+   Sticky positioning preserves access while reading a long input advisory. */
+.provider-workspace:has(.provider-native-capture) { padding:12px 16px 28px; }
+.provider-workspace:has(.provider-native-capture) .provider-header { gap:8px; margin-bottom:12px; }
+.provider-workspace:has(.provider-native-capture) [data-provider-encounter] { font-size:1.25rem; overflow-wrap:anywhere; }
+.provider-workspace cosmaneura-capture .provider-native-capture .recorder { padding:16px; gap:12px; }
+.provider-workspace cosmaneura-capture .native-recording-essential { position:sticky; top:env(safe-area-inset-top,0px); z-index:2; display:grid; gap:12px; padding-block:8px; background:white; }
+.provider-workspace cosmaneura-capture .provider-native-capture .recording-progress { align-items:center; justify-items:start; gap:8px; text-align:left; }
+.provider-workspace cosmaneura-capture .provider-native-capture .recording-duration strong { font-size:2.25rem; }
+.provider-workspace cosmaneura-capture .provider-native-capture .record-actions { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.provider-workspace cosmaneura-capture .provider-native-capture .record-actions button { min-height:44px; font-size:1rem; padding:10px 8px; }
+.provider-workspace cosmaneura-capture .provider-native-capture scribe-ios-input-meter { scroll-margin-top:10rem; }
+
+/* A larger root text size must not turn the 320px layout minimum into a wider viewport. */
+html:has(.provider-native-capture) { min-width:320px; }

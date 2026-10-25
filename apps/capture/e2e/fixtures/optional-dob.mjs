@@ -9,7 +9,10 @@ if (platform === "ios") {
     PluginHeaders: [{ name: "IOSPCM", methods: ["selectMicrophoneInput", "getCaptureSignal"].map(name => ({ name, rtype: "promise" })) }],
     async nativePromise(plugin, method, options) {
       if (plugin !== "IOSPCM") throw new Error("Unexpected native fixture call");
-      if (method === "getCaptureSignal") return null;
+      if (method === "getCaptureSignal") return new URL(window.location.href).searchParams.has("quiet-input")
+        ? { version: 2, signal: { inputBuffers: 50, convertedBuffers: 50, inputEverNonzero: false,
+          convertedEverNonzero: false, inputLevel: 0, convertedLevel: 0, inputAgeMs: 0,
+          convertedAgeMs: 0, zeroInputMs: 5000, inputMuted: false, route: "built_in" } } : null;
       if (method !== "selectMicrophoneInput") throw new Error("Unexpected native fixture method");
       return { version: 1, input: options.input };
     },
@@ -27,6 +30,7 @@ const sessionId = "10000000-0000-4000-8000-000000000001";
 const account = { email: "provider@synthetic.invalid", environment: "Staging" };
 const encounter = { appointmentRef: scope.appointmentRef, title: "Synthetic walk-in", detail: `Visit · ${new Date().toISOString()}`,
   patientRef: "patient_01j00000000000000000000000", dateOfBirth: null };
+if (new URL(window.location.href).searchParams.has("long-name")) encounter.title = "Casey Vale Dublin R2 Bulk Clear";
 if (layout) {
   encounter.detail = `Visit · ${new Date().toISOString()}`;
   if (new URL(window.location.href).searchParams.has("known-dob")) encounter.dateOfBirth = "1980-01-02";
@@ -172,10 +176,14 @@ mountProviderWorkspace(document.querySelector("#provider"), {
             fixture.emit({ selectedInputId, inputDevices: inputDevices.map(input => ({ ...input, current: input.id === selectedInputId })) });
           },
           async pauseRecording() {
-            fixture.emit({ state: "paused", statusCode: "capture_paused", desktop: { ...snapshot.desktop, phase: "interrupted", coverage: "complete" } });
+            fixture.emit({ state: "paused", statusCode: "capture_paused", ...(snapshot.native
+              ? { native: { phase: "paused", busy: false } }
+              : { desktop: { ...snapshot.desktop, phase: "interrupted", coverage: "complete" } }) });
           },
           async resumeRecording() {
-            fixture.emit({ state: "recording", statusCode: "capture_recording", desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned" } });
+            fixture.emit({ state: "recording", statusCode: "capture_recording", ...(snapshot.native
+              ? { native: { phase: "recording", busy: false } }
+              : { desktop: { ...snapshot.desktop, phase: "recording", coverage: "aligned" } }) });
           },
         } : {}),
         ...(platform === "desktop" ? {
