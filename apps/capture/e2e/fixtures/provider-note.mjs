@@ -9,7 +9,7 @@ const plugin = await encryptedFixturePlugin(state.scope.workspaceId);
 const abort = new AbortController();
 const forbidden = () => { throw new Error("Recording, creation and external navigation are outside this fixture"); };
 const savedAudioReview = new URL(window.location.href).searchParams.has("saved-audio");
-const lab = window.noteLab = { passageReads: 0, dashboardOpens: 0 };
+const lab = window.noteLab = { passageReads: 0, dashboardOpens: 0, listCalls: 0 };
 const playPassage = async (sessionId, segmentId, signal) => {
   if (signal.aborted || sessionId !== state.review.session_id || segmentId !== state.review.source.segments[0].source_segment_id) throw new Error("fixture passage scope denied");
   lab.passageReads++;
@@ -23,7 +23,7 @@ const playPassage = async (sessionId, segmentId, signal) => {
 mountProviderWorkspace(document.querySelector("#provider"), {
   signal: abort.signal,
   account: { environment: "Local synthetic", email: "provider@example.invalid" },
-  listEncounters: async () => state.encounters,
+  listEncounters: async () => { lab.listCalls++; return state.encounters; },
   createEncounter: forbidden,
   openEncounter: async (ref, signal) => {
     if (signal.aborted || ref !== state.scope.appointmentRef) throw new Error("fixture scope denied");
