@@ -645,6 +645,80 @@ test('ambiguous or missing native controls cannot choose an arbitrary first matc
   ui.request = async () => [{ [key]: 'unique' }]; assert.equal(await ui.find(locator), 'unique');
 });
 
+test('failed native assertions retain only bounded final-poll indexes and reason enums', async () => {
+  const ui = new AppiumUI('/unused'), key = 'element-6066-11e4-a52e-4f735466cecf';
+  const privateText = 'private synthetic content and locator';
+  const plan = { waitMs: 1, assertions: [
+    { locator: { using: 'accessibility id', value: privateText }, kind: 'text', expected: privateText },
+    { locator: { using: 'accessibility id', value: 'later private control' }, kind: 'visible', expected: true },
+  ] };
+  for (const [matches, result] of [[[], 'missing'], [[{ [key]: 'a' }, { [key]: 'b' }], 'ambiguous'],
+    [[null], 'invalid_response'], [{ privateText }, 'invalid_response']]) {
+    ui.request = async () => matches;
+    await assert.rejects(ui.check(plan), /native_state_not_observed/);
+    assert.deepEqual(ui.lastCheckFailure.assertions, [{ index: 0, kind: 'text', result }]);
+    assert.equal(JSON.stringify(ui.lastCheckFailure).includes(privateText), false);
+  }
+  ui.value = async spec => spec.kind === 'text' ? 'different private text' : true;
+  await assert.rejects(ui.check(plan), /native_state_not_observed/);
+  assert.deepEqual(ui.lastCheckFailure.assertions, [
+    { index: 0, kind: 'text', result: 'mismatched' }, { index: 1, kind: 'visible', result: 'matched' },
+  ]);
+  assert.equal(JSON.stringify(ui.lastCheckFailure).includes('private'), false);
+  ui.value = async () => { throw Error('__proto__'); };
+  await assert.rejects(ui.check(plan), /native_state_not_observed/);
+  assert.equal(ui.lastCheckFailure.assertions[0].result, 'driver_error');
+});
+
+test('assertion diagnostics preserve all gate checks while capping retained entries and clearing stale failures', async () => {
+  const ui = new AppiumUI('/unused'); let calls = 0;
+  const plan = { waitMs: 1, assertions: Array.from({ length: 70 }, () => ({ locator: {}, kind: 'visible', expected: true })) };
+  ui.value = async () => { calls++; return false; };
+  await assert.rejects(ui.check(plan), /native_state_not_observed/);
+  assert.equal(calls, 70); assert.equal(ui.lastCheckFailure.assertions.length, 64);
+  assert.equal(ui.lastCheckFailure.assertionCount, 70); assert.equal(ui.lastCheckFailure.truncated, true);
+  ui.value = async () => true;
+  assert.equal((await ui.check(plan)).length, 70); assert.equal(ui.lastCheckFailure, null);
+  await assert.rejects(ui.check({ ...plan, waitMs: 0 }), /native_wait_deadline_invalid/);
+  assert.equal(ui.lastCheckFailure, null);
+  const abort = new AbortController();
+  ui.value = async () => { abort.abort(); throw Error('private driver error'); };
+  await assert.rejects(ui.check(plan, abort.signal), /private driver error/);
+  assert.equal(ui.lastCheckFailure, null);
+});
+
+test('late failed checks cannot overwrite diagnostics for a newer successful check', async () => {
+  const ui = new AppiumUI('/unused'); let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  ui.value = async spec => spec.kind === 'text' ? pending : true;
+  const older = ui.check({ waitMs: 1, assertions: [{ kind: 'text', locator: {}, expected: 'required' }] });
+  await ui.check({ waitMs: 1, assertions: [{ kind: 'visible', locator: {}, expected: true }] });
+  release('mismatched'); await assert.rejects(older, /native_state_not_observed/);
+  assert.equal(ui.lastCheckFailure, null);
+});
+
+test('phase and step-wait failure artifacts persist private assertion metadata without replacing failures', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'scribe-assertion-diagnostics-'));
+  try {
+    const ui = new AppiumUI('/unused'); ui.output = root; ui.session = 'test-owned';
+    ui.scenario = { targetId: 'test-only' }; ui.value = async () => false;
+    const plan = { waitMs: 1, assertions: [{ locator: { value: 'private locator' }, kind: 'visible', expected: true }] };
+    ui.config = { journey: { record: plan } };
+    ui.request = async path => path === '/screenshot' ? artifactPNG.toString('base64') : '<App/>';
+    await assert.rejects(ui.observe('record'), /native_state_not_observed/);
+    const phase = (await readdir(root)).find(name => /^phase-record-.*\.json$/.test(name));
+    const receipt = JSON.parse(await readFile(join(root, phase)));
+    assert.deepEqual(receipt.assertionDiagnostics.assertions, [{ index: 0, kind: 'visible', result: 'mismatched' }]);
+    await ui.failureArtifact(join(root, 'failure'));
+    const sidecar = (await readdir(root)).find(name => /^failure\.assertions-.*\.json$/.test(name));
+    assert.equal((await stat(join(root, sidecar))).mode & 0o777, 0o600);
+    const bytes = await readFile(join(root, sidecar)); assert.equal(bytes.includes('private locator'), false);
+    assert.deepEqual(JSON.parse(bytes), receipt.assertionDiagnostics);
+    ui.value = async () => true; await ui.check(plan);
+    assert.equal((await ui.capturePhaseArtifacts('record')).assertionDiagnostics, undefined);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('concurrent participant observations and native clicks share the complete webview context transaction', async () => {
   const ui = new AppiumUI('/unused');
   ui.binding = admission; ui.admission = admission; ui.scenario = { targetId: 'mock-ios' };
