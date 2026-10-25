@@ -60,6 +60,72 @@ func devices() throws -> [(AudioObjectID, String, String)] {
         return (id, try property(id, kAudioDevicePropertyDeviceUID), name)
     }
 }
+
+// CGSession can be absent in an SSH bootstrap session even while the same
+// owned user has an unlocked console. Absence alone never proves unlocked.
+func strictBoolean(_ value: Any?) -> Bool? {
+    guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+    return number.boolValue
+}
+func strictUserID(_ value: Any?) -> Int? {
+    guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+          ["i", "s", "l", "q", "I", "S", "L", "Q", "c", "C"].contains(String(cString: number.objCType)),
+          number.int64Value > 0, number.int64Value <= Int64(UInt32.max) else { return nil }
+    return Int(number.int64Value)
+}
+struct SessionObservation {
+    let locked: Bool?
+    let source: String
+    let reason: String
+    var metadata: [String: Any] { ["source": source, "reason": reason] }
+}
+func sessionObservation(cgLocked: Any?, registry: [String: Any]?, expectedUID: Int,
+                        expectedName: String?, consoleUID: Int?) -> SessionObservation {
+    func unknown(_ reason: String) -> SessionObservation {
+        SessionObservation(locked: nil, source: "unavailable", reason: reason)
+    }
+    let cg = strictBoolean(cgLocked)
+    if cgLocked != nil && cg == nil { return unknown("invalid-cg-lock-value") }
+    guard let ioLocked = strictBoolean(registry?["IOConsoleLocked"]) else { return unknown("missing-console-lock") }
+    if let cg, cg != ioLocked { return unknown("conflicting-lock-observations") }
+    if ioLocked { return SessionObservation(locked: true, source: "io-registry", reason: "console-locked") }
+    guard expectedUID > 0, let expectedName, !expectedName.isEmpty, consoleUID == expectedUID
+    else { return unknown("console-owner-mismatch") }
+    guard let users = registry?["IOConsoleUsers"] as? [[String: Any]], !users.isEmpty, users.count <= 32,
+          users.allSatisfy({ strictBoolean($0["kCGSSessionOnConsoleKey"]) != nil })
+    else { return unknown("invalid-console-users") }
+    let active = users.filter { strictBoolean($0["kCGSSessionOnConsoleKey"]) == true }
+    guard active.count == 1, let user = active.first,
+          strictUserID(user["kCGSSessionUserIDKey"]) == expectedUID,
+          user["kCGSSessionUserNameKey"] as? String == expectedName,
+          strictBoolean(user["kCGSessionLoginDoneKey"]) == true
+    else { return unknown("console-login-not-matched") }
+    return SessionObservation(locked: false,
+        source: cg == nil ? "io-registry-and-console-owner" : "cg-session-and-io-registry",
+        reason: "owned-console-unlocked")
+}
+func consoleRegistry() -> [String: Any]? {
+    let root = IORegistryGetRootEntry(kIOMainPortDefault)
+    guard root != IO_OBJECT_NULL else { return nil }
+    defer { IOObjectRelease(root) }
+    var properties: Unmanaged<CFMutableDictionary>?
+    guard IORegistryEntryCreateCFProperties(root, &properties, kCFAllocatorDefault, 0) == KERN_SUCCESS
+    else { return nil }
+    return properties?.takeRetainedValue() as? [String: Any]
+}
+func observeSession() -> SessionObservation {
+    let uid = getuid()
+    let name = getpwuid(uid).flatMap { $0.pointee.pw_name }.map { String(cString: $0) }
+    var info = stat()
+    let owner = stat("/dev/console", &info) == 0 ? Int(info.st_uid) : nil
+    let cg = CGSessionCopyCurrentDictionary() as? [String: Any]
+    return sessionObservation(cgLocked: cg?["CGSSessionScreenIsLocked"], registry: consoleRegistry(),
+                              expectedUID: Int(uid), expectedName: name, consoleUID: owner)
+}
+
+#if !SCRIBE_LAB_SESSION_TESTS
+@main struct AudioInventoryMain {
+static func main() {
 do {
     guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "inventory" else {
         emit(["passed": false, "reason": "read-only-inventory-required"]); exit(2)
@@ -81,10 +147,12 @@ do {
               control != hardware, marker["hardwareUUIDSHA256"] as? String == hardware
         else { throw Failure.denied }
     }
-    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
-    let locked = session?["CGSSessionScreenIsLocked"] as? Bool
+    let session = observeSession()
     let inventory = try devices()
     emit(["devices": inventory.map { ["uid": $0.1, "name": $0.2] },
-          "sessionLocked": locked as Any? ?? NSNull(),
+          "sessionLocked": session.locked as Any? ?? NSNull(), "sessionEvidence": session.metadata,
           "microphoneAuthorized": AVCaptureDevice.authorizationStatus(for: .audio) == .authorized])
 } catch { emit(["passed": false, "reason": "virtual-audio-precondition-failed"]); exit(2) }
+}
+}
+#endif
