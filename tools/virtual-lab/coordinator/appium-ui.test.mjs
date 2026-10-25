@@ -662,6 +662,75 @@ test('failed or unbounded intermediate state waits never advance to an input mut
   }
 });
 
+function scrollingDriver() {
+  const ui = driver();
+  ui.config.target = { role: 'owned-ios-simulator' };
+  ui.config.capabilities = { platformName: 'iOS', 'appium:automationName': 'XCUITest' };
+  return ui;
+}
+test('bounded native scrolling precedes the unchanged visible control assertion and unique click', async () => {
+  const ui = scrollingDriver(), calls = [];
+  ui.request = async (path, method, body) => { calls.push({ path, method, body }); };
+  ui.value = async () => false;
+  ui.find = async () => { throw Error('hidden control must not be clicked'); };
+  const plan = { actions: [{ action: 'scroll', direction: 'down', count: 2 },
+    { action: 'wait', waitMs: 1, assertions: [{ locator: {}, kind: 'visible', expected: true }] },
+    { action: 'click', locator: {} }] };
+  await assert.rejects(ui.steps(plan), /native_state_not_observed/);
+  assert.deepEqual(calls, Array.from({ length: 2 }, () => ({ path: '/execute/sync', method: 'POST',
+    body: { script: 'mobile: scroll', args: [{ direction: 'down' }] } })));
+  calls.length = 0; ui.value = async () => true; ui.find = async () => 'unique-visible-note';
+  await ui.steps(plan);
+  assert.equal(calls.length, 3); assert.equal(calls[2].path, '/element/unique-visible-note/click');
+  calls.length = 0; await ui.steps({ actions: [{ action: 'scroll', direction: 'up', count: 3 }] });
+  assert.equal(calls.length, 3); assert.equal(calls[0].body.args[0].direction, 'up');
+});
+test('scroll rejects unsupported targets, ambiguous directions, unbounded counts and extra commands before dispatch', async () => {
+  const step = { action: 'scroll', direction: 'down', count: 1 };
+  const invalid = [{ direction: 'left' }, { direction: 'down; tap' }, { count: 0 }, { count: -1 },
+    { count: 4 }, { count: 1.5 }, { count: Infinity }, { count: '1' }, { count: null },
+    { count: undefined }, { locator: {} }, { script: 'other' }];
+  for (const change of invalid) {
+    const ui = scrollingDriver(); ui.request = async () => { throw Error('must not dispatch'); };
+    await assert.rejects(ui.steps({ actions: [{ ...step, ...change }] }), /native_scroll_arguments_invalid/);
+  }
+  for (const change of [ui => { ui.config.target.role = 'owned-macos-lab'; },
+    ui => { ui.config.capabilities.platformName = 'mac'; },
+    ui => { ui.config.capabilities['appium:automationName'] = 'Mac2'; }]) {
+    const ui = scrollingDriver(); change(ui); ui.request = async () => { throw Error('must not dispatch'); };
+    await assert.rejects(ui.steps({ actions: [step] }), /native_scroll_target_unsupported/);
+  }
+});
+test('scroll cancellation or uncertain first response prevents remaining scrolls and later clicks', async () => {
+  for (const outcome of ['cancel', 'failure']) {
+    const ui = scrollingDriver(), cancel = new AbortController(); let calls = 0;
+    ui.request = async () => { calls++; if (outcome === 'cancel') cancel.abort(); else throw Error('lost_scroll_reply'); };
+    ui.find = async () => { throw Error('later click must not run'); };
+    await assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 3 },
+      { action: 'click', locator: {} }] }, cancel.signal), /native_action_aborted|lost_scroll_reply/);
+    assert.equal(calls, 1);
+  }
+});
+test('transport-lost mobile scroll is retained as an uncertain native mutation', async () => {
+  let seen; const arrived = new Promise(resolve => { seen = resolve; });
+  const server = createServer(async (request, response) => {
+    let raw = ''; for await (const chunk of request) raw += chunk;
+    if (request.url.endsWith('/context')) return response.end('{"value":"NATIVE_APP"}');
+    assert.equal(JSON.parse(raw).script, 'mobile: scroll'); seen();
+    setTimeout(() => response.end('{"value":null}'), 40);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const ui = scrollingDriver(); ui.base = `http://127.0.0.1:${server.address().port}`; ui.session = 'owned';
+    const cancel = new AbortController();
+    const rejected = assert.rejects(ui.steps({ actions: [{ action: 'scroll', direction: 'down', count: 1 }] }, cancel.signal));
+    await arrived; cancel.abort(); await rejected;
+    assert.equal(ui.uncertainMutations.size, 1);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(ui.uncertainMutations.size, 1);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
 test('ambiguous or missing native controls cannot choose an arbitrary first match', async () => {
   const ui = new AppiumUI('/unused'), key = 'element-6066-11e4-a52e-4f735466cecf';
   const locator = { using: 'accessibility id', value: 'Open note' };

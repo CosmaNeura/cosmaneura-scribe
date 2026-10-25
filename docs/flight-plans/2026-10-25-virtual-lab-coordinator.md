@@ -178,3 +178,16 @@ tooling for new runs; never edit an existing run's frozen implementation to
 make it pass. Adversarial metadata/deadline tests and independent exact-head
 review precede live use. The first actual full source/capture/save journey on
 this path remains an acceptance prerequisite, not a consequence of unit tests.
+
+The offscreen visit navigation increment is Tier 1 lab tooling. The owned iOS
+list retains prior visits, so an exact saved-note row can be below the viewport.
+An explicit `scroll` action permits only XCUITest on an owned iOS simulator,
+vertical `up` or `down`, and one to three sequential normal `mobile: scroll`
+commands. The following unique-locator and visible-control assertions remain
+mandatory in the run configuration; scrolling does not establish note identity
+or bypass those checks. Cancellation stops remaining inputs, and a lost scroll
+response retains native-mutation uncertainty rather than allowing automatic
+replay. No desktop action, arbitrary script, horizontal day navigation, capture
+command or product code changes. Revert the tooling for new runs and preserve
+frozen failed-run evidence. Focused invalid-input, visibility and late-response
+tests precede independent final-head review and actual native navigation.
